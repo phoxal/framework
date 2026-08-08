@@ -231,7 +231,7 @@ impl Participant for Motion {
         while let Some(observed) = api.manual.try_recv() {
             let observed_at = observed.observed_at;
             match state.manual.offer(
-                observed.metadata.producer,
+                observed.metadata.source.producer(),
                 observed.metadata.sequence,
                 observed_at,
                 observed.body,
@@ -250,8 +250,7 @@ impl Participant for Motion {
             if let Some(at) = observed.metadata.produced_exactly_at() {
                 let body = observed.body;
                 let decision = state.autonomous_authority.offer(
-                    observed.metadata.participant.as_ref(),
-                    observed.metadata.producer,
+                    observed.metadata.source.participant_source(),
                     observed.metadata.sequence,
                     observed.observed_at,
                     body.clone(),

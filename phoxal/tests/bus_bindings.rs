@@ -10,7 +10,8 @@
 
 use phoxal::api;
 use phoxal::bus::{
-    BusMetadata, CodecId, ContractBody, ProducerId, RobotInstant, TimeWindow, TimelineId,
+    BusMetadata, CodecId, ContractBody, ParticipantSourceIdentity, ProducerId, RobotInstant,
+    SourceAttribution, TimeWindow, TimelineId,
 };
 
 #[test]
@@ -37,11 +38,12 @@ fn bus_metadata_for_a_real_body_round_trips() {
     let timeline = TimelineId::mint();
     let meta = BusMetadata {
         codec: CodecId::MessagePack.as_u8(),
-        producer: ProducerId::try_from((1_u128 << 124) | 1).expect("a test producer is canonical"),
         sequence: 9,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
-        participant: Some(phoxal_bus::ParticipantId::new("tester").expect("test participant")),
-        source_label: None,
+        source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
+            phoxal_bus::ParticipantId::new("tester").expect("test participant"),
+            ProducerId::try_from((1_u128 << 124) | 1).expect("a test producer is canonical"),
+        )),
     };
     assert_eq!(BusMetadata::decode(&meta.encode().unwrap()).unwrap(), meta);
 

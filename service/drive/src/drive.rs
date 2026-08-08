@@ -497,8 +497,7 @@ impl Participant for Drive {
         // cannot transfer authority: the exact Ready source set decides.
         while let Some(observed) = api.target.try_recv() {
             let decision = state.target.offer(
-                observed.metadata.participant.as_ref(),
-                observed.metadata.producer,
+                observed.metadata.source.participant_source(),
                 observed.metadata.sequence,
                 observed.observed_at,
                 observed.body,
@@ -535,7 +534,7 @@ mod tests {
     use phoxal::api;
     use phoxal::bus::{
         FixedSourceLease, LeaseDecision, LocalInstant, ParticipantId, ParticipantReadyStatus,
-        ProducerId, RobotInstant, TimelineId,
+        ParticipantSourceIdentity, ProducerId, RobotInstant, TimelineId,
     };
     use phoxal::model::RobotBuilder;
     use phoxal::model::builder::Kinematics;
@@ -806,7 +805,10 @@ mod tests {
         let source = producer(1);
         let mut target =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        target.update_ready(&motion, source, ParticipantReadyStatus::Ready);
+        target.update_ready(
+            &ParticipantSourceIdentity::new(motion.clone(), source),
+            ParticipantReadyStatus::Ready,
+        );
         DriveState {
             kinematics,
             limits: LIMITS,
@@ -887,9 +889,12 @@ mod tests {
         let (host_now, now) = instants();
         let mut state = drive_state(KINEMATICS);
         let motion = state.target.expected_participant().clone();
-        state
-            .target
-            .offer(Some(&motion), producer(1), 1, host_now, requested.clone());
+        state.target.offer(
+            Some(&ParticipantSourceIdentity::new(motion.clone(), producer(1))),
+            1,
+            host_now,
+            requested.clone(),
+        );
 
         let (published, wheels) = state.decide(host_now, now);
 
@@ -939,9 +944,12 @@ mod tests {
         let (host_now, now) = instants();
         let mut state = drive_state(DifferentialDrive::new(f64::MIN_POSITIVE, 0.4));
         let motion = state.target.expected_participant().clone();
-        state
-            .target
-            .offer(Some(&motion), producer(1), 1, host_now, requested.clone());
+        state.target.offer(
+            Some(&ParticipantSourceIdentity::new(motion.clone(), producer(1))),
+            1,
+            host_now,
+            requested.clone(),
+        );
 
         let (published, wheels) = state.decide(host_now, now);
 
@@ -970,8 +978,16 @@ mod tests {
         let motion = ParticipantId::new("motion").unwrap();
         let mut silent =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        silent.update_ready(&motion, producer, ParticipantReadyStatus::Ready);
-        silent.offer(Some(&motion), producer, 1, host_start, requested.clone());
+        silent.update_ready(
+            &ParticipantSourceIdentity::new(motion.clone(), producer),
+            ParticipantReadyStatus::Ready,
+        );
+        silent.offer(
+            Some(&ParticipantSourceIdentity::new(motion.clone(), producer)),
+            1,
+            host_start,
+            requested.clone(),
+        );
         assert!(silent.live(host_start, robot_start).is_some());
         let past_silence = host_start.saturating_add(TARGET_SILENCE + Duration::from_millis(1));
         assert!(
@@ -981,8 +997,16 @@ mod tests {
 
         let mut held =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        held.update_ready(&motion, producer, ParticipantReadyStatus::Ready);
-        held.offer(Some(&motion), producer, 1, host_start, requested);
+        held.update_ready(
+            &ParticipantSourceIdentity::new(motion.clone(), producer),
+            ParticipantReadyStatus::Ready,
+        );
+        held.offer(
+            Some(&ParticipantSourceIdentity::new(motion.clone(), producer)),
+            1,
+            host_start,
+            requested,
+        );
         assert!(held.live(host_start, robot_start).is_some());
         let past_hold = robot_start.saturating_add(TARGET_HOLD + Duration::from_millis(1));
         assert!(
@@ -1003,16 +1027,40 @@ mod tests {
         let motion = ParticipantId::new("motion").unwrap();
         let mut lease =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        lease.update_ready(&motion, first, ParticipantReadyStatus::Ready);
-        lease.offer(Some(&motion), first, 9, host_now, target(0.1));
-        lease.update_ready(&motion, second, ParticipantReadyStatus::Ready);
+        lease.update_ready(
+            &ParticipantSourceIdentity::new(motion.clone(), first),
+            ParticipantReadyStatus::Ready,
+        );
+        lease.offer(
+            Some(&ParticipantSourceIdentity::new(motion.clone(), first)),
+            9,
+            host_now,
+            target(0.1),
+        );
+        lease.update_ready(
+            &ParticipantSourceIdentity::new(motion.clone(), second),
+            ParticipantReadyStatus::Ready,
+        );
         assert!(matches!(
-            lease.offer(Some(&motion), second, 0, host_now, target(0.2)),
+            lease.offer(
+                Some(&ParticipantSourceIdentity::new(motion.clone(), second)),
+                0,
+                host_now,
+                target(0.2),
+            ),
             LeaseDecision::Rejected(_)
         ));
-        lease.update_ready(&motion, first, ParticipantReadyStatus::Lost);
+        lease.update_ready(
+            &ParticipantSourceIdentity::new(motion.clone(), first),
+            ParticipantReadyStatus::Lost,
+        );
         assert!(matches!(
-            lease.offer(Some(&motion), second, 0, host_now, target(0.2)),
+            lease.offer(
+                Some(&ParticipantSourceIdentity::new(motion.clone(), second)),
+                0,
+                host_now,
+                target(0.2),
+            ),
             LeaseDecision::Acquired
         ));
         assert_eq!(lease.producer(), Some(second));
@@ -1023,7 +1071,12 @@ mod tests {
             Some(0.2)
         );
         assert!(matches!(
-            lease.offer(Some(&motion), second, 0, host_now, target(0.3)),
+            lease.offer(
+                Some(&ParticipantSourceIdentity::new(motion.clone(), second)),
+                0,
+                host_now,
+                target(0.3),
+            ),
             LeaseDecision::Rejected(_)
         ));
     }

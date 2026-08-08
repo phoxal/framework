@@ -8,7 +8,7 @@
 //! ([`BusError::Transport`] and [`KeyProblem::NotAKeyExpression`]) carry
 //! Zenoh's own message and are named so that is visible at the use site.
 
-use phoxal_runtime_contract::identity::{IdentityError, ProducerId};
+use phoxal_runtime_contract::identity::{ExecutionId, IdentityError, ProducerId};
 
 use crate::abi::{CodecError, EncodingError};
 use crate::topic::WildcardPublish;
@@ -50,6 +50,17 @@ pub enum BusError {
         expected: ProducerId,
         /// Identity read back from the opened Zenoh session.
         observed: ProducerId,
+    },
+
+    /// Zenoh did not honor the execution identity pinned by a router.
+    /// Continuing would let one router advertise and route a different run
+    /// than the one the supervisor selected.
+    #[error("router execution identity mismatch: expected {expected}, observed {observed}")]
+    ExecutionIdentityMismatch {
+        /// Execution identity requested in the router configuration.
+        expected: ExecutionId,
+        /// Execution identity read back from the opened Zenoh session.
+        observed: ExecutionId,
     },
 
     /// A codec failure encoding or decoding a body.

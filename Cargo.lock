@@ -2240,6 +2240,7 @@ dependencies = [
 name = "phoxal-bus"
 version = "0.55.0"
 dependencies = [
+ "getrandom 0.3.4",
  "libc",
  "phoxal-runtime-contract",
  "rmp-serde",

@@ -19,6 +19,7 @@ use phoxal_bundle::ParticipantRuntimeInputs;
 use phoxal_bus::{BusConfig, BusHandle, BusOwner};
 use phoxal_runtime_contract::identity::ParticipantId;
 use phoxal_runtime_contract::launch::ClockMode;
+use phoxal_runtime_contract::origin::ExecutionOrigin;
 
 use super::ShutdownController;
 use super::executable::verify_current_executable;
@@ -38,7 +39,7 @@ pub(crate) struct PreparedRun<R: Participant, C: ClockSource> {
     pub(crate) bundle: Option<ParticipantRuntimeInputs>,
     pub(crate) config: R::Config,
     pub(crate) clock_mode: ClockMode,
-    pub(crate) clock: C,
+    pub(crate) clock: Option<C>,
     pub(crate) query_reply_delay: Option<Duration>,
 }
 
@@ -93,7 +94,12 @@ where
 /// Validate and select the persisted participant before opening the bus.
 pub(crate) fn validate_launch<R>(
     launch: &SupervisedLaunch,
-) -> crate::Result<(ParticipantRuntimeInputs, R::Config, RealClock, ClockMode)>
+) -> crate::Result<(
+    ParticipantRuntimeInputs,
+    R::Config,
+    Option<RealClock>,
+    ClockMode,
+)>
 where
     R: Participant,
 {
@@ -133,30 +139,91 @@ where
     // Deserialize the selected config while the process is still local. A
     // custom `Deserialize` implementation may reject a value that its JSON
     // Schema accepts; that must not become a transport-visible startup error.
-    let config = participant_config::<R::Config>(bundle.participant.config.as_ref())?;
-    let origin = launch
-        .execution_origin
-        .ok_or(TimeUnsynchronized::MissingOrigin)?;
-    let clock = RealClock::new(origin)?;
     let clock_mode = bundle.participant.clock;
-    validate_clock_inputs::<R, _>(clock_mode, &clock)?;
+    let config = participant_config::<R::Config>(bundle.participant.config.as_ref())?;
+    let clock = clock_for_mode(clock_mode, launch.execution_origin)?;
+    validate_clock_inputs::<R, _>(clock_mode, clock.as_ref())?;
     Ok((bundle, config, clock, clock_mode))
+}
+
+/// Select the host clock only for real participants. Simulation and clockless
+/// participants deliberately ignore any supplied execution origin: simulated
+/// timestamps come from the live world clock, while clockless participants do
+/// not produce robot-time steps at all.
+pub(crate) fn clock_for_mode(
+    clock_mode: ClockMode,
+    execution_origin: Option<ExecutionOrigin>,
+) -> crate::Result<Option<RealClock>> {
+    if clock_mode == ClockMode::Real {
+        let origin = execution_origin.ok_or(TimeUnsynchronized::MissingOrigin)?;
+        Ok(Some(RealClock::new(origin)?))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Validate scheduler selection and the initial clock discipline before any
 /// supervised transport is opened. The lifecycle repeats construction after
 /// the bus connects so it retains the live scheduler handle.
-pub(crate) fn validate_clock_inputs<R, C>(clock_mode: ClockMode, clock: &C) -> crate::Result<()>
+pub(crate) fn validate_clock_inputs<R, C>(
+    clock_mode: ClockMode,
+    clock: Option<&C>,
+) -> crate::Result<()>
 where
     R: Participant,
     C: ClockSource,
 {
-    let reading = clock.read();
-    if clock_mode == ClockMode::Real
-        && let ClockReading::Unsynchronized(reason) = reading
-    {
-        return Err(lifecycle::ClockDisciplineLost { reason }.into());
+    let now = if clock_mode == ClockMode::Real {
+        let reading = clock
+            .map(ClockSource::read)
+            .unwrap_or(ClockReading::Unsynchronized(
+                TimeUnsynchronized::MissingOrigin,
+            ));
+        match reading {
+            ClockReading::Synchronized(_) => reading.instant(),
+            ClockReading::Unsynchronized(reason) => {
+                return Err(lifecycle::ClockDisciplineLost { reason }.into());
+            }
+        }
+    } else {
+        None
+    };
+    AnyStepScheduler::validate_clock_mode(clock_mode, R::__step_schedule(), now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_origin_is_required_only_for_real_clock_mode() {
+        let origin = ExecutionOrigin::mint();
+
+        let missing_real = clock_for_mode(ClockMode::Real, None)
+            .expect_err("real mode without an origin must fail before bus startup");
+        assert!(matches!(
+            missing_real.downcast_ref::<TimeUnsynchronized>(),
+            Some(TimeUnsynchronized::MissingOrigin)
+        ));
+        assert!(
+            clock_for_mode(ClockMode::Real, Some(origin))
+                .expect("a current-host real origin is valid")
+                .is_some()
+        );
+        assert!(
+            clock_for_mode(ClockMode::Simulation, None)
+                .expect("simulation mode does not need a host origin")
+                .is_none()
+        );
+        assert!(
+            clock_for_mode(ClockMode::Simulation, Some(origin))
+                .expect("simulation mode ignores a supplied host origin")
+                .is_none()
+        );
+        assert!(
+            clock_for_mode(ClockMode::Clockless, None)
+                .expect("clockless mode does not need a host origin")
+                .is_none()
+        );
     }
-    AnyStepScheduler::for_clock_mode(clock_mode, R::__step_schedule(), reading.instant())?;
-    Ok(())
 }

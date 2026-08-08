@@ -124,6 +124,7 @@ impl std::error::Error for ParticipantFault {
 pub(crate) enum RunnerClock<C: ClockSource> {
     Delegated(C),
     Simulation(SimulationClock),
+    Disabled,
 }
 
 impl<C: ClockSource> ClockSource for RunnerClock<C> {
@@ -131,6 +132,7 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
         match self {
             Self::Delegated(clock) => clock.read(),
             Self::Simulation(clock) => clock.read(),
+            Self::Disabled => ClockReading::Unsynchronized(TimeUnsynchronized::MissingOrigin),
         }
     }
 }
@@ -227,9 +229,32 @@ where
     } = prepared;
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
     let schedule = R::__step_schedule();
-    let reading = clock.read();
+    let now = if clock_mode == ClockMode::Real {
+        let reading =
+            clock
+                .as_ref()
+                .map(ClockSource::read)
+                .unwrap_or(ClockReading::Unsynchronized(
+                    TimeUnsynchronized::MissingOrigin,
+                ));
+        match reading {
+            ClockReading::Synchronized(_) => reading.instant(),
+            ClockReading::Unsynchronized(reason) => {
+                let result = close_session_with_result(
+                    Err(ClockDisciplineLost { reason }.into()),
+                    session,
+                    ShutdownDeadline::from_now(shutdown_grace),
+                )
+                .await;
+                bus_logs.shutdown();
+                return result;
+            }
+        }
+    } else {
+        None
+    };
     let (scheduler, clock_handle) =
-        match AnyStepScheduler::for_clock_mode(clock_mode, schedule, reading.instant()) {
+        match AnyStepScheduler::for_clock_mode(clock_mode, schedule, now) {
             Ok(value) => value,
             Err(error) => {
                 let result = close_session_with_result(
@@ -246,7 +271,23 @@ where
         AnyStepScheduler::Simulation(simulation) => {
             RunnerClock::Simulation(simulation.simulation_clock())
         }
-        AnyStepScheduler::Real(_) | AnyStepScheduler::Disabled => RunnerClock::Delegated(clock),
+        AnyStepScheduler::Real(_) => {
+            let Some(clock) = clock else {
+                let result = close_session_with_result(
+                    Err(ClockDisciplineLost {
+                        reason: TimeUnsynchronized::MissingOrigin,
+                    }
+                    .into()),
+                    session,
+                    ShutdownDeadline::from_now(shutdown_grace),
+                )
+                .await;
+                bus_logs.shutdown();
+                return result;
+            };
+            RunnerClock::Delegated(clock)
+        }
+        AnyStepScheduler::Disabled => RunnerClock::Disabled,
     };
     let start = Runner::<R, C>::start(
         StartInputs {
@@ -450,23 +491,20 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         let ready = match &session {
             #[cfg(feature = "test-harness")]
             BusLease::Borrowed => {
-                tokio::select! {
-                    biased;
-                    _ = shutdown.wait() => {
-                        if let Some(queries) = queries.take() {
-                            queries.close();
-                        }
-                        return startup_teardown(
-                            managed_tasks,
-                            &participant,
-                            &api,
-                            &mut state,
-                            shutdown_grace,
-                            Ok(()),
-                            session,
-                        ).await;
+                if shutdown.is_requested() {
+                    if let Some(queries) = queries.take() {
+                        queries.close();
                     }
-                    _ = tokio::task::yield_now() => {}
+                    return startup_teardown(
+                        managed_tasks,
+                        &participant,
+                        &api,
+                        &mut state,
+                        shutdown_grace,
+                        Ok(()),
+                        session,
+                    )
+                    .await;
                 }
                 None
             }
@@ -519,44 +557,6 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                 },
             }),
         };
-
-        // Do not accept the token merely because its await won the race. Give
-        // task completions that became ready during declaration a scheduling
-        // turn, drain them, and revoke the just-acquired token before any Ready
-        // announcement or Runner is returned.
-        tokio::task::yield_now().await;
-        if shutdown.is_requested() {
-            drop(ready);
-            if let Some(queries) = queries.take() {
-                queries.close();
-            }
-            return startup_teardown(
-                managed_tasks,
-                &participant,
-                &api,
-                &mut state,
-                shutdown_grace,
-                Ok(()),
-                session,
-            )
-            .await;
-        }
-        if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
-            drop(ready);
-            if let Some(queries) = queries.take() {
-                queries.close();
-            }
-            return startup_teardown(
-                managed_tasks,
-                &participant,
-                &api,
-                &mut state,
-                shutdown_grace,
-                Err(exit.into()),
-                session,
-            )
-            .await;
-        }
 
         tracing::info!(
             target: "phoxal.runtime",

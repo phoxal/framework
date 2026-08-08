@@ -27,7 +27,7 @@ use zenoh::key_expr::OwnedKeyExpr;
 use crate::abi::truncate_utf8;
 use crate::error::{BusError, KeyProblem, OutboundBound, Result, SessionIdRole};
 use crate::lock::lock;
-use crate::metadata::{BusMetadata, MAX_SOURCE_PARTICIPANT_BYTES, SourceAttribution, SourceLabel};
+use crate::metadata::{BusMetadata, MAX_SOURCE_LABEL_BYTES, SourceAttribution, SourceLabel};
 use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
 use crate::time::TimeWindow;
 
@@ -57,40 +57,19 @@ pub struct BusConfig {
     /// from a previous execution - an ad hoc publisher, an attached tool, a
     /// replayed recording, a second checkout of the same project - physically
     /// cannot be observed as current.
-    pub execution: ExecutionId,
+    execution: ExecutionId,
     /// The compiled participant identity, when this is a participant session.
     /// External/operator sessions leave this absent and may provide only a
     /// diagnostic label.
-    pub participant: Option<ParticipantId>,
+    participant: Option<ParticipantId>,
     /// A bounded diagnostic label for an external producer. It never affects
     /// routing, authority, or Ready admission.
-    pub diagnostic_label: Option<SourceLabel>,
+    diagnostic_label: Option<SourceLabel>,
     /// Zenoh connect endpoints. Empty = in-process (local sim / tests).
-    pub connect_endpoints: Vec<String>,
+    connect_endpoints: Vec<String>,
 }
 
 impl BusConfig {
-    /// An in-process config (no endpoints, multicast off) for local sim + tests,
-    /// on a freshly minted execution.
-    pub fn in_process(participant: ParticipantId) -> Self {
-        BusConfig {
-            execution: ExecutionId::mint(),
-            participant: Some(participant),
-            diagnostic_label: None,
-            connect_endpoints: Vec::new(),
-        }
-    }
-
-    /// Build an in-process external client with an optional diagnostic label.
-    pub fn external_in_process(label: Option<SourceLabel>) -> Self {
-        BusConfig {
-            execution: ExecutionId::mint(),
-            participant: None,
-            diagnostic_label: label,
-            connect_endpoints: Vec::new(),
-        }
-    }
-
     /// Build a participant bus configuration.
     pub fn for_participant(
         execution: ExecutionId,
@@ -105,10 +84,33 @@ impl BusConfig {
         }
     }
 
-    pub(crate) fn attribution(&self) -> SourceAttribution {
+    /// Build an external bus configuration with an optional diagnostic label.
+    pub fn for_external(
+        execution: ExecutionId,
+        label: Option<SourceLabel>,
+        connect_endpoints: Vec<String>,
+    ) -> Self {
+        BusConfig {
+            execution,
+            participant: None,
+            diagnostic_label: label,
+            connect_endpoints,
+        }
+    }
+
+    /// The execution scope this session joins.
+    #[must_use]
+    pub fn execution(&self) -> ExecutionId {
+        self.execution
+    }
+
+    pub(crate) fn attribution(&self, producer: ProducerId) -> SourceAttribution {
         match (&self.participant, &self.diagnostic_label) {
-            (Some(participant), _) => SourceAttribution::Participant(participant.clone()),
+            (Some(participant), _) => SourceAttribution::Participant(
+                crate::metadata::ParticipantSourceIdentity::new(participant.clone(), producer),
+            ),
             (None, label) => SourceAttribution::External {
+                producer,
                 label: label.clone(),
             },
         }
@@ -265,21 +267,21 @@ impl Drop for BusOwner {
 }
 
 impl BusOwner {
-    /// Open a session, compose its execution-scoped key root, adopt the
-    /// producer identity Zenoh assigned the session, and start the outbound
-    /// drain task.
+    /// Open a session, compose its execution-scoped key root, pin the
+    /// bus-owned producer identity into Zenoh, and start the outbound drain
+    /// task.
     pub async fn open(config: BusConfig) -> Result<(Self, BusHandle)> {
         if let Some(source) = config
             .participant
             .as_ref()
             .map(ParticipantId::as_str)
             .or_else(|| config.diagnostic_label.as_ref().map(SourceLabel::as_str))
-            && source.len() > MAX_SOURCE_PARTICIPANT_BYTES
+            && source.len() > MAX_SOURCE_LABEL_BYTES
         {
             return Err(BusError::invalid_key(
                 source,
                 KeyProblem::TooLong {
-                    limit: MAX_SOURCE_PARTICIPANT_BYTES,
+                    limit: MAX_SOURCE_LABEL_BYTES,
                 },
             ));
         }
@@ -291,7 +293,7 @@ impl BusOwner {
         // Validate the composed root resolves to a legal Zenoh key.
         OwnedKeyExpr::new(root.clone()).map_err(|e| BusError::not_a_key_expression(&root, e))?;
 
-        let producer = ProducerId::mint();
+        let producer = mint_producer_id()?;
         let session = zenoh::open(zenoh_config(&config.connect_endpoints, producer)?)
             .await
             .map_err(|e| BusError::Transport(e.to_string()))?;
@@ -317,7 +319,7 @@ impl BusOwner {
             identity: Arc::new(BusIdentity {
                 root,
                 execution: config.execution,
-                attribution: config.attribution(),
+                attribution: config.attribution(producer),
                 producer,
                 seq: AtomicU64::new(0),
                 health: BusHealth::default(),
@@ -426,7 +428,8 @@ impl BusHandle {
         &self.identity.attribution
     }
 
-    /// This session's producer identity - the id Zenoh assigned the session.
+    /// This session's producer identity - the id minted by the bus owner and
+    /// verified against the opened Zenoh session.
     ///
     /// The guarantee is per *session incarnation*, not per process: a process
     /// that closes its bus and opens another is a different producer, which is
@@ -442,11 +445,9 @@ impl BusHandle {
         self.live_inner()?;
         Ok(BusMetadata {
             codec: crate::abi::CodecId::MessagePack.as_u8(),
-            producer: self.identity.producer,
             sequence: self.next_sequence()?,
             produced_at,
-            participant: self.identity.attribution.participant().cloned(),
-            source_label: self.identity.attribution.label().cloned(),
+            source: self.identity.attribution.clone(),
         })
     }
 
@@ -822,7 +823,8 @@ pub(crate) fn execution_from_zid(zid: ZenohId) -> Result<ExecutionId> {
     })
 }
 
-/// The producer identity of a session, read back from the id Zenoh assigned it.
+/// The producer identity of a session, read back from the id the bus owner
+/// pinned into Zenoh.
 pub(crate) fn producer_from_zid(zid: ZenohId) -> Result<ProducerId> {
     ProducerId::try_from(u128::from_le_bytes(zid.to_le_bytes())).map_err(|source| {
         BusError::ForeignSessionId {
@@ -831,6 +833,23 @@ pub(crate) fn producer_from_zid(zid: ZenohId) -> Result<ProducerId> {
             source,
         }
     })
+}
+
+/// Mint the only production [`ProducerId`] in the workspace.
+///
+/// The runtime-contract crate intentionally exposes the producer as an opaque
+/// value with parsing/conversion only. A producer is a bus-session concern, so
+/// its random mint belongs here beside the code that pins it into Zenoh.
+fn mint_producer_id() -> Result<ProducerId> {
+    let mut bytes = [0_u8; ProducerId::LEN / 2];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| BusError::Transport(format!("failed to mint producer id: {error}")))?;
+    let mut value = u128::from_be_bytes(bytes);
+    if value >> 124 == 0 {
+        value |= 1 << 124;
+    }
+    ProducerId::try_from(value)
+        .map_err(|error| BusError::Transport(format!("failed to mint producer id: {error}")))
 }
 
 /// Hand out the next sequence, failing closed at the end of the range.
@@ -1043,8 +1062,12 @@ mod tests {
     use crate::contract::ContractBody;
     use crate::handle::publisher::StatePublisher;
     use crate::handle::subscriber::{Latest, Subscriber};
-    use crate::test_support::{Target, step};
+    use crate::test_support::{Target, participant_config, step};
     use crate::topic::{Publish, Subscribe, Topic};
+
+    fn test_producer(value: u128) -> ProducerId {
+        ProducerId::try_from((1_u128 << 124) | value).expect("canonical test producer")
+    }
 
     #[test]
     fn concurrent_byte_reservations_never_exceed_the_global_limit() {
@@ -1093,9 +1116,9 @@ mod tests {
 
     #[test]
     fn phoxal_transport_settings_are_accepted_by_pinned_zenoh_config() {
-        zenoh_config(&[], ProducerId::mint())
+        zenoh_config(&[], test_producer(1))
             .expect("pinned Zenoh must accept Phoxal lease settings");
-        zenoh_config(&["tcp/127.0.0.1:7447".to_string()], ProducerId::mint())
+        zenoh_config(&["tcp/127.0.0.1:7447".to_string()], test_producer(2))
             .expect("pinned Zenoh must accept Phoxal client settings");
     }
 
@@ -1105,7 +1128,7 @@ mod tests {
         // to retry - the key must be absent, not merely zero, so it cannot be
         // mistaken for "connect once, no retry" on a config path that never
         // connects at all.
-        let in_process = zenoh_config(&[], ProducerId::mint()).expect("in-process config");
+        let in_process = zenoh_config(&[], test_producer(3)).expect("in-process config");
         assert_eq!(
             in_process
                 .get_json("connect/timeout_ms")
@@ -1119,7 +1142,7 @@ mod tests {
         // Client mode (this is what a real launch uses) must carry the bounded,
         // nonzero timeout that switches Zenoh onto its own retry-with-backoff
         // path - see CONNECT_TIMEOUT_MS's docs for why this exact value.
-        let client = zenoh_config(&["tcp/127.0.0.1:7447".to_string()], ProducerId::mint())
+        let client = zenoh_config(&["tcp/127.0.0.1:7447".to_string()], test_producer(4))
             .expect("client config");
         assert_eq!(
             client
@@ -1161,7 +1184,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn an_external_bus_does_not_require_participant_attribution() {
-        let config = BusConfig::external_in_process(None);
+        let config = BusConfig::for_external(ExecutionId::mint(), None, Vec::new());
         let (owner, bus) = BusOwner::open(config).await.unwrap();
         assert!(bus.participant().is_none());
         assert!(matches!(
@@ -1195,10 +1218,7 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reopening_an_execution_mints_a_new_pinned_producer() {
-        let config = BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("reopen")
-                .expect("valid participant id"),
-        );
+        let config = participant_config("reopen");
         let (first_owner, first) = BusOwner::open(config.clone()).await.unwrap();
         assert_eq!(
             first.producer().to_string(),
@@ -1220,12 +1240,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_clone_uses_one_session_sequence_allocator() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("sequence")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("sequence"))
+            .await
+            .unwrap();
         let clone = bus.clone();
         assert_eq!(bus.next_sequence().unwrap(), 0);
         assert_eq!(clone.next_sequence().unwrap(), 1);
@@ -1284,11 +1301,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn close_reports_bounded_stuck_workers() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            ParticipantId::new("stuck-worker").unwrap(),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("stuck-worker"))
+            .await
+            .unwrap();
         let stuck = tokio::spawn(std::future::pending::<()>());
         bus.register_worker(stuck).expect("worker is admitted");
         let report = owner.close().await.unwrap();
@@ -1298,11 +1313,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn close_until_expired_deadline_is_fail_closed_with_evidence() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            ParticipantId::new("expired-close").unwrap(),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("expired-close"))
+            .await
+            .unwrap();
         let stuck = tokio::spawn(std::future::pending::<()>());
         bus.register_worker(stuck).expect("worker is admitted");
 
@@ -1321,11 +1334,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn close_waits_for_an_admitted_operation_and_rejects_later_operations() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            ParticipantId::new("operation-race").unwrap(),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("operation-race"))
+            .await
+            .unwrap();
         let admitted = bus.admit_operation().expect("operation is admitted");
         let close = tokio::spawn(owner.close());
         tokio::task::yield_now().await;
@@ -1350,11 +1361,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_stalled_admitted_operation_is_typed_close_timeout_evidence() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            ParticipantId::new("stalled-operation").unwrap(),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("stalled-operation"))
+            .await
+            .unwrap();
         let admitted = bus.admit_operation().expect("operation is admitted");
         let report = owner.close().await.unwrap();
         assert!(report.timed_out.contains(&BusCloseTimeout::Operations(1)));
@@ -1364,11 +1373,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn transport_evidence_is_bounded_at_utf8_boundaries() {
-        let (owner, _bus) = BusOwner::open(BusConfig::in_process(
-            ParticipantId::new("transport-evidence").unwrap(),
-        ))
-        .await
-        .unwrap();
+        let (owner, _bus) = BusOwner::open(participant_config("transport-evidence"))
+            .await
+            .unwrap();
         for _ in 0..40 {
             record_transport_error(&owner.inner, "é".repeat(2_000));
         }
@@ -1392,12 +1399,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worker_registration_after_close_is_returned_for_joining() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("worker-race")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("worker-race"))
+            .await
+            .unwrap();
         owner.close().await.unwrap();
 
         let worker = tokio::spawn(async {});
@@ -1413,11 +1417,8 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn the_key_root_is_the_execution() {
-        let config = BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("r1")
-                .expect("valid participant id"),
-        );
-        let execution = config.execution;
+        let config = participant_config("r1");
+        let execution = config.execution();
         let (owner, bus) = BusOwner::open(config).await.unwrap();
         let expected_root = format!("phoxal/{execution}");
         assert_eq!(bus.root(), expected_root);
@@ -1434,12 +1435,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_producer_is_the_publishing_session() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("producer")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("producer"))
+            .await
+            .unwrap();
         assert_eq!(
             bus.producer().to_string(),
             bus.session().unwrap().zid().to_string()
@@ -1468,7 +1466,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let observed = observed.expect("the sample must arrive");
-        assert_eq!(observed.metadata.producer, bus.producer());
+        assert_eq!(observed.metadata.source.producer(), bus.producer());
 
         owner.close().await.unwrap();
     }
@@ -1479,18 +1477,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_previous_execution_cannot_be_observed_as_current() {
-        let (previous_owner, previous) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("scoped")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
-        let (current_owner, current) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("scoped")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (previous_owner, previous) =
+            BusOwner::open(participant_config("scoped")).await.unwrap();
+        let (current_owner, current) = BusOwner::open(participant_config("scoped")).await.unwrap();
         assert_ne!(previous.root(), current.root());
 
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);

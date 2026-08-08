@@ -3,8 +3,8 @@
 //! - [`ExecutionId`] names one supervised run. It scopes participants, bus
 //!   traffic, and authority, and it is the bus session root, so traffic from a
 //!   previous execution cannot physically be observed as current.
-//! - [`ProducerId`] names one publishing session. It is minted by the unique
-//!   bus owner before opening the transport and pinned as the Zenoh session id.
+//! - [`ProducerId`] names one publishing session. It is minted by `phoxal-bus`
+//!   before opening the transport and pinned as the Zenoh session id.
 //! - [`TimelineId`] names one world history. A simulation reset or a replay
 //!   branch creates a new timeline within the same execution.
 //!
@@ -133,6 +133,29 @@ const ZID_HEX_LEN: usize = ZID_BYTES * 2;
 /// digits stays reachable.
 const CANONICAL_TOP_NIBBLE: u128 = 1 << 124;
 
+/// Mint one canonical full-width session value.
+///
+/// Both transport identities use the same representation. Keep the random
+/// draw and the leading-nibble repair in one place so a future identity cannot
+/// accidentally drift to a different canonicalization rule.
+fn mint_canonical_value() -> u128 {
+    let mut bytes = [0_u8; ZID_BYTES];
+    #[expect(
+        clippy::expect_used,
+        reason = "a session identity is the root of bus provenance; a host without randomness cannot safely start one"
+    )]
+    getrandom::fill(&mut bytes).expect("the host must provide randomness");
+    let mut value = u128::from_be_bytes(bytes);
+    if value >> 124 == 0 {
+        value |= CANONICAL_TOP_NIBBLE;
+    }
+    value
+}
+
+fn canonical_hex(value: u128) -> String {
+    format!("{value:032x}")
+}
+
 /// One supervised run.
 ///
 /// The supervisor mints it once per run and every bus participant carries it:
@@ -160,20 +183,7 @@ impl ExecutionId {
     /// alone keeps the full nonzero leading-digit range that the transport's
     /// own session ids cover.
     pub fn mint() -> Self {
-        let mut bytes = [0_u8; ZID_BYTES];
-        #[expect(
-            clippy::expect_used,
-            reason = "an execution identity is the root every bus key and every authority \
-                      decision is scoped by, so a host whose randomness source is unavailable \
-                      cannot start an execution at all; there is no weaker identity to fall \
-                      back to and no caller that could carry on without one"
-        )]
-        getrandom::fill(&mut bytes).expect("the host must provide randomness");
-        let mut value = u128::from_be_bytes(bytes);
-        if value >> 124 == 0 {
-            value |= CANONICAL_TOP_NIBBLE;
-        }
-        ExecutionId(value)
+        ExecutionId(mint_canonical_value())
     }
 
     /// Parse a rendered execution identity (as it appears in the launch
@@ -219,7 +229,7 @@ impl From<ExecutionId> for u128 {
 
 impl fmt::Display for ExecutionId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{:x}", self.0)
+        formatter.write_str(&canonical_hex(self.0))
     }
 }
 
@@ -256,21 +266,6 @@ pub struct ProducerId(u128);
 impl ProducerId {
     /// The rendered width of a canonical producer id.
     pub const LEN: usize = ZID_HEX_LEN;
-
-    /// Mint a fresh, canonical producer identity.
-    pub fn mint() -> Self {
-        let mut bytes = [0_u8; ZID_BYTES];
-        #[expect(
-            clippy::expect_used,
-            reason = "a producer is the source identity for every publication; without a host randomness source there is no safe fallback identity"
-        )]
-        getrandom::fill(&mut bytes).expect("the host must provide randomness");
-        let mut value = u128::from_be_bytes(bytes);
-        if value >> 124 == 0 {
-            value |= CANONICAL_TOP_NIBBLE;
-        }
-        Self(value)
-    }
 
     /// Parse a rendered producer identity.
     ///
@@ -310,7 +305,7 @@ impl From<ProducerId> for u128 {
 
 impl fmt::Display for ProducerId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{:032x}", self.0)
+        formatter.write_str(&canonical_hex(self.0))
     }
 }
 
@@ -511,8 +506,8 @@ mod tests {
     }
 
     #[test]
-    fn a_producer_is_minted_in_the_canonical_transport_form() {
-        let minted = ProducerId::mint();
+    fn a_producer_round_trips_in_the_canonical_transport_form() {
+        let minted = ProducerId::try_from((1_u128 << 124) | 0x0123_4567_89ab_cdef).unwrap();
         assert_eq!(minted.to_string().len(), ProducerId::LEN);
         assert_eq!(ProducerId::parse(&minted.to_string()), Ok(minted));
 

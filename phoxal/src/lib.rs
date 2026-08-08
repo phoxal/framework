@@ -183,15 +183,16 @@ pub mod bus {
     pub use phoxal_bus::{
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
         CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
-        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, ExecutionId,
-        FixedSourceLease, LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LocalInstant,
+        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, FixedSourceLease,
+        LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LocalInstant,
         MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack, Observed,
         ParticipantId, ParticipantReadyEvent, ParticipantReadyEvents, ParticipantReadyStatus,
-        ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure, QueryResult, Result,
-        RobotInstant, RobotTimeError, ServeQuery, SourceAttribution, SourceLabel, StateContract,
-        StatePublisher, StepStamp, StepToken, StreamContract, StreamPublisher, Subscribe,
-        Subscriber, TimeWindow, Timed, TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole,
-        WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
+        ParticipantSourceIdentity, ProducerId, Publish, Querier, QueryCode, QueryError,
+        QueryFailure, QueryResult, Result, RobotInstant, RobotTimeError, ServeQuery,
+        SourceAttribution, SourceLabel, StateContract, StatePublisher, StepStamp, StepToken,
+        StreamContract, StreamPublisher, Subscribe, Subscriber, TimeWindow, Timed, TimelineId,
+        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
+        WorldClockContract, WorldStepToken,
     };
 }
 

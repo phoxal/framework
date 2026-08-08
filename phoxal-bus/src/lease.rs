@@ -12,6 +12,7 @@ use std::time::Duration;
 use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 
 use crate::liveliness::{ParticipantReadyEvent, ParticipantReadyStatus};
+use crate::metadata::ParticipantSourceIdentity;
 use crate::time::{LocalInstant, RobotInstant, RobotTimeError};
 
 /// The maximum number of simultaneously observed Ready incarnations retained
@@ -125,13 +126,13 @@ impl<B> FixedSourceLease<B> {
     /// Update one exact participant/producer Ready token.
     pub fn update_ready(
         &mut self,
-        participant: &ParticipantId,
-        producer: ProducerId,
+        source: &ParticipantSourceIdentity,
         status: ParticipantReadyStatus,
     ) {
-        if participant != &self.expected_participant {
+        if source.participant != self.expected_participant {
             return;
         }
+        let producer = source.producer;
         match status {
             ParticipantReadyStatus::Ready => {
                 if !self.ready.contains(&producer) && self.ready.len() >= MAX_READY_PRODUCERS {
@@ -157,8 +158,8 @@ impl<B> FixedSourceLease<B> {
     /// Apply an exact observer event, ignoring Ready tokens for other
     /// participants in the execution.
     pub fn update_ready_event(&mut self, event: &ParticipantReadyEvent) {
-        if event.participant == self.expected_participant {
-            self.update_ready(&event.participant, event.producer, event.status);
+        if event.source.participant == self.expected_participant {
+            self.update_ready(&event.source, event.status);
         }
     }
 
@@ -187,39 +188,45 @@ impl<B> FixedSourceLease<B> {
     /// Offer one fixed-source body with transport provenance.
     pub fn offer(
         &mut self,
-        participant: Option<&ParticipantId>,
-        producer: ProducerId,
+        source: Option<&ParticipantSourceIdentity>,
         sequence: u64,
         observed_at: LocalInstant,
         body: B,
     ) -> LeaseDecision {
-        let decision = if participant != Some(&self.expected_participant) {
-            LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
-        } else if self.ready_overflow {
-            LeaseDecision::Rejected(LeaseRejection::ReadyStateOverflow)
-        } else if self.ready.is_empty() {
-            LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
-        } else if self.ready.len() != 1 || !self.ready.contains(&producer) {
-            LeaseDecision::Rejected(LeaseRejection::SourceConflict)
-        } else if let Some((active, accepted)) = self.active {
-            if active != producer {
-                // A different producer can only be admitted after the Ready
-                // loss cleared `active`; packet arrival never performs a
-                // takeover.
+        let producer = source.map(|source| source.producer);
+        let decision =
+            if source.map(|source| &source.participant) != Some(&self.expected_participant) {
+                LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
+            } else if self.ready_overflow {
+                LeaseDecision::Rejected(LeaseRejection::ReadyStateOverflow)
+            } else if self.ready.is_empty() {
+                LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
+            } else if self.ready.len() != 1
+                || !producer.is_some_and(|producer| self.ready.contains(&producer))
+            {
                 LeaseDecision::Rejected(LeaseRejection::SourceConflict)
-            } else if sequence <= accepted {
-                LeaseDecision::Rejected(LeaseRejection::StaleSequence {
-                    accepted,
-                    observed: sequence,
-                })
+            } else if let Some((active, accepted)) = self.active {
+                if Some(active) != producer {
+                    // A different producer can only be admitted after the Ready
+                    // loss cleared `active`; packet arrival never performs a
+                    // takeover.
+                    LeaseDecision::Rejected(LeaseRejection::SourceConflict)
+                } else if sequence <= accepted {
+                    LeaseDecision::Rejected(LeaseRejection::StaleSequence {
+                        accepted,
+                        observed: sequence,
+                    })
+                } else {
+                    LeaseDecision::Renewed
+                }
             } else {
-                LeaseDecision::Renewed
-            }
-        } else {
-            LeaseDecision::Acquired
-        };
+                LeaseDecision::Acquired
+            };
 
         self.observations = self.observations.saturating_add(1);
+        let Some(producer) = producer else {
+            return decision;
+        };
         self.trace(producer, sequence, decision);
         if matches!(decision, LeaseDecision::Renewed | LeaseDecision::Acquired) {
             self.active = Some((producer, sequence));
@@ -528,6 +535,13 @@ mod tests {
         ParticipantId::new(name).expect("valid test participant")
     }
 
+    fn source_identity(
+        participant: &ParticipantId,
+        producer: ProducerId,
+    ) -> ParticipantSourceIdentity {
+        ParticipantSourceIdentity::new(participant.clone(), producer)
+    }
+
     fn step(line: TimelineId, ticks: u64) -> RobotInstant {
         RobotInstant::new(line, ticks)
     }
@@ -545,18 +559,24 @@ mod tests {
         );
         let at = LocalInstant::from_boot_ns(0);
         assert_eq!(
-            lease.offer(Some(&expected), source, 1, at, "blocked"),
+            lease.offer(Some(&source_identity(&expected, source)), 1, at, "blocked"),
             LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
         );
-        lease.update_ready(&wrong, source, ParticipantReadyStatus::Ready);
+        lease.update_ready(
+            &source_identity(&wrong, source),
+            ParticipantReadyStatus::Ready,
+        );
         assert_eq!(lease.ready_count(), 0);
         assert_eq!(
-            lease.offer(Some(&wrong), source, 2, at, "wrong"),
+            lease.offer(Some(&source_identity(&wrong, source)), 2, at, "wrong"),
             LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
         );
-        lease.update_ready(&expected, source, ParticipantReadyStatus::Ready);
+        lease.update_ready(
+            &source_identity(&expected, source),
+            ParticipantReadyStatus::Ready,
+        );
         assert_eq!(
-            lease.offer(Some(&expected), source, 1, at, "ok"),
+            lease.offer(Some(&source_identity(&expected, source)), 1, at, "ok"),
             LeaseDecision::Acquired
         );
     }
@@ -573,20 +593,29 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(1),
         );
-        lease.update_ready(&expected, first, ParticipantReadyStatus::Ready);
+        lease.update_ready(
+            &source_identity(&expected, first),
+            ParticipantReadyStatus::Ready,
+        );
         assert_eq!(
-            lease.offer(Some(&expected), first, 7, at, "old"),
+            lease.offer(Some(&source_identity(&expected, first)), 7, at, "old"),
             LeaseDecision::Acquired
         );
-        lease.update_ready(&expected, second, ParticipantReadyStatus::Ready);
+        lease.update_ready(
+            &source_identity(&expected, second),
+            ParticipantReadyStatus::Ready,
+        );
         assert_eq!(lease.producer(), None);
         assert_eq!(
-            lease.offer(Some(&expected), second, 0, at, "new"),
+            lease.offer(Some(&source_identity(&expected, second)), 0, at, "new"),
             LeaseDecision::Rejected(LeaseRejection::SourceConflict)
         );
-        lease.update_ready(&expected, first, ParticipantReadyStatus::Lost);
+        lease.update_ready(
+            &source_identity(&expected, first),
+            ParticipantReadyStatus::Lost,
+        );
         assert_eq!(
-            lease.offer(Some(&expected), second, 0, at, "new"),
+            lease.offer(Some(&source_identity(&expected, second)), 0, at, "new"),
             LeaseDecision::Acquired
         );
         assert_eq!(lease.producer(), Some(second));
@@ -603,13 +632,16 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(1),
         );
-        lease.update_ready(&expected, source, ParticipantReadyStatus::Ready);
+        lease.update_ready(
+            &source_identity(&expected, source),
+            ParticipantReadyStatus::Ready,
+        );
         assert_eq!(
-            lease.offer(Some(&expected), source, 3, at, "first"),
+            lease.offer(Some(&source_identity(&expected, source)), 3, at, "first"),
             LeaseDecision::Acquired
         );
         assert_eq!(
-            lease.offer(Some(&expected), source, 3, at, "replay"),
+            lease.offer(Some(&source_identity(&expected, source)), 3, at, "replay"),
             LeaseDecision::Rejected(LeaseRejection::StaleSequence {
                 accepted: 3,
                 observed: 3,
@@ -624,16 +656,32 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            lease.offer(Some(&expected), source, 1, at, "expired replay"),
+            lease.offer(
+                Some(&source_identity(&expected, source)),
+                1,
+                at,
+                "expired replay"
+            ),
             LeaseDecision::Rejected(LeaseRejection::StaleSequence {
                 accepted: 3,
                 observed: 1,
             })
         );
-        lease.update_ready(&expected, source, ParticipantReadyStatus::Lost);
-        lease.update_ready(&expected, source, ParticipantReadyStatus::Ready);
+        lease.update_ready(
+            &source_identity(&expected, source),
+            ParticipantReadyStatus::Lost,
+        );
+        lease.update_ready(
+            &source_identity(&expected, source),
+            ParticipantReadyStatus::Ready,
+        );
         assert_eq!(
-            lease.offer(Some(&expected), source, 0, at, "new incarnation"),
+            lease.offer(
+                Some(&source_identity(&expected, source)),
+                0,
+                at,
+                "new incarnation"
+            ),
             LeaseDecision::Acquired
         );
     }
