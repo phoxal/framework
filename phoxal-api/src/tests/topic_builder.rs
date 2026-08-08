@@ -4,6 +4,26 @@
 use crate::v0_1 as api;
 
 #[test]
+fn current_control_topics_use_the_v0_2_keyspace() {
+    assert_eq!(
+        crate::v0_2::topic::client().drive().target().key(),
+        "v0.2/drive/target"
+    );
+    assert_eq!(
+        crate::v0_2::topic::client().drive().state().key(),
+        "v0.2/drive/state"
+    );
+    assert_eq!(
+        crate::v0_2::topic::client().motion().manual().key(),
+        "v0.2/motion/manual"
+    );
+    assert_eq!(
+        crate::v0_2::topic::client().motion().state().key(),
+        "v0.2/motion/state"
+    );
+}
+
+#[test]
 fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         api::topic::client().drive().state().key(),

@@ -518,7 +518,7 @@ mod tests {
     #[tokio::test]
     async fn typed_query_dispatch_decodes_mutates_and_encodes() {
         let registration = QueryRegistration::new(
-            "v0.1/supervisor/asset/get".to_string(),
+            "v0.2/supervisor/asset/get".to_string(),
             QueryParticipant::get,
         );
         let participant = QueryParticipant;

@@ -5,9 +5,9 @@ use phoxal_bus::{ApiVersion, TopicRole};
 use crate::v0_1 as api;
 
 #[test]
-fn v0_1_is_the_single_train_selected_revision() {
+fn v0_2_is_the_train_selected_revision_while_v0_1_remains_immutable() {
     assert_eq!(<api::Api as ApiVersion>::ID, "v0.1");
-    assert_eq!(<crate::latest::Api as ApiVersion>::ID, "v0.1");
+    assert_eq!(<crate::latest::Api as ApiVersion>::ID, "v0.2");
 }
 
 /// The cross-binary API identity and the bus key segment are the same
@@ -18,7 +18,7 @@ fn v0_1_is_the_single_train_selected_revision() {
 #[test]
 fn the_declared_api_identity_namespaces_the_train_selected_revision() {
     assert_eq!(
-        phoxal_runtime_contract::version::RobotApi::V0_1.as_str(),
+        phoxal_runtime_contract::version::RobotApi::V0_2.as_str(),
         format!(
             "phoxal/robot-api/{}",
             <crate::latest::Api as ApiVersion>::ID
@@ -48,6 +48,13 @@ fn every_command_topic_is_classified() {
         ("v0.1::navigation::Request", "one-shot"),
         ("v0.1::component::led::Command", "one-shot"),
         ("v0.1::component::speaker::Chunk", "one-shot"),
+        ("v0.2::motion::ManualCommand", "leased"),
+        ("v0.2::drive::Target", "internal actuation"),
+        ("v0.2::component::motor::Command", "internal actuation"),
+        ("v0.2::power::Command", "one-shot"),
+        ("v0.2::navigation::Request", "one-shot"),
+        ("v0.2::component::led::Command", "one-shot"),
+        ("v0.2::component::speaker::Chunk", "one-shot"),
     ];
 
     let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
@@ -69,8 +76,8 @@ fn every_command_topic_is_classified() {
 fn generated_contract_manifest_lists_contract_shapes() {
     assert_eq!(
         crate::API_CONTRACT_MANIFEST.len(),
-        1,
-        "the train ships exactly one concrete revision"
+        2,
+        "the train ships the immutable v0.1 and current v0.2 revisions"
     );
 
     let version = crate::API_CONTRACT_MANIFEST
@@ -84,6 +91,17 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .find(|contract| contract.family == "v0.1::drive::State")
         .expect("drive::State should be in the generated manifest");
     assert_eq!(drive_state.topic, "v0.1/drive/state");
+
+    let current = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|version| version.name == "v0.2")
+        .expect("v0.2 should be in the generated manifest");
+    let current_drive_state = current
+        .contracts
+        .iter()
+        .find(|contract| contract.family == "v0.2::drive::State")
+        .expect("drive::State should be in the v0.2 manifest");
+    assert_eq!(current_drive_state.topic, "v0.2/drive/state");
 
     // A contract under two dynamic nodes carries both placeholders in the key
     // the manifest reports, exactly as `ContractBody::TOPIC` does.

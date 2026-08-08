@@ -1654,7 +1654,7 @@ mod tests {
             BinaryCompatibility {
                 participant_id: ParticipantId::new("drive").expect("participant id"),
                 kind: ParticipantKind::Service,
-                api: RobotApi::V0_1,
+                api: RobotApi::V0_2,
                 schemas: ParticipantSchemas {
                     bus: BusAbi::V0,
                     launch: LaunchAbi::V0,

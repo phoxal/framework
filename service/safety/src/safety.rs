@@ -220,11 +220,12 @@ impl WorldInputs {
 
         if let Some(drive) = usable(self.drive.as_ref(), now, INPUT_STALE)
             && matches!(
-                drive.stop_reason,
-                Some(
-                    api::drive::StopReason::Fault
-                        | api::drive::StopReason::ActuatorCommandNotFinite
-                )
+                drive,
+                api::drive::State::Stopped {
+                    reason: api::drive::StopReason::Fault
+                        | api::drive::StopReason::ActuatorCommandNotFinite,
+                    ..
+                }
             )
         {
             constraints.push(stop_constraint(

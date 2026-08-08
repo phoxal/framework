@@ -103,7 +103,7 @@ mod tests {
 
     fn record(fields: &str) -> Vec<u8> {
         format!(
-            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{SCHEMAS},{fields}}}"#
+            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},{fields}}}"#
         )
         .into_bytes()
     }
@@ -121,7 +121,7 @@ mod tests {
         ))
         .expect("the exact document a role macro embeds must parse");
 
-        assert_eq!(api, RobotApi::V0_1);
+        assert_eq!(api, RobotApi::V0_2);
         assert_eq!(schemas.bus, BusAbi::V0);
         assert_eq!(schemas.launch, LaunchAbi::V0);
         assert_eq!(schemas.robot, RobotSchema::V0);
@@ -165,14 +165,14 @@ mod tests {
     #[test]
     fn a_version_identity_from_another_train_is_rejected_by_name() {
         let bytes = format!(
-            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},"id":"drive","kind":"service","config_schema":null}}"#
+            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.3","schemas":{SCHEMAS},"id":"drive","kind":"service","config_schema":null}}"#
         )
         .into_bytes();
         let message = ParticipantMetadata::from_bytes(&bytes)
             .expect_err("an API revision this train does not speak must not parse")
             .to_string();
+        assert!(message.contains("phoxal/robot-api/v0.3"), "{message}");
         assert!(message.contains("phoxal/robot-api/v0.2"), "{message}");
-        assert!(message.contains("phoxal/robot-api/v0.1"), "{message}");
     }
 
     /// The 0.53-era embedded document, byte for byte: a bare `v0.1` API

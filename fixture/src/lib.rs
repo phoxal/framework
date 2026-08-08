@@ -110,7 +110,7 @@ pub fn staged_bundle() -> StagedBundle {
             BinaryCompatibility {
                 participant_id: participant_id.clone(),
                 kind,
-                api: RobotApi::V0_1,
+                api: RobotApi::V0_2,
                 schemas: ParticipantSchemas {
                     bus: BusAbi::V0,
                     launch: LaunchAbi::V0,

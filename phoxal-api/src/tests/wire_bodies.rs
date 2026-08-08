@@ -3,15 +3,45 @@
 //! rather than silently reinterpreted.
 
 use super::{instant, round_trip};
-use crate::v0_1 as api;
+use crate::{v0_1 as legacy, v0_2 as api};
+
+#[test]
+fn historic_v0_1_control_bodies_round_trip_without_shape_translation() {
+    let target = legacy::drive::Target {
+        linear_x_mps: 0.3,
+        angular_z_radps: -0.2,
+        curvature_limit_radpm: Some(0.4),
+    };
+    round_trip(&target);
+    round_trip(&legacy::drive::State {
+        target: target.clone(),
+        limited_target: target.clone(),
+        actuator_authority: legacy::drive::ActuatorAuthority::Active,
+        stop_reason: None,
+    });
+
+    let motion_target = legacy::motion::Target {
+        linear_x_mps: 0.1,
+        angular_z_radps: 0.2,
+        curvature_limit_radpm: None,
+    };
+    round_trip(&motion_target);
+    round_trip(&legacy::motion::State {
+        manual_observed_age_ns: Some(10),
+        autonomous_candidate_age_ns: None,
+        safety_constraints_age_ns: Some(5),
+        selected_source: Some(legacy::motion::Source::Manual),
+        final_target: motion_target,
+        zero_reason: None,
+        safety_runtime: legacy::motion::SafetyRuntime::Present,
+        component_estop_blocked: false,
+        active_safety_constraints: Vec::new(),
+    });
+}
 
 #[test]
 fn body_serializes_as_plain_payload_without_version_tag() {
-    let target = api::drive::Target {
-        linear_x_mps: 1.0,
-        angular_z_radps: 0.5,
-        curvature_limit_radpm: None,
-    };
+    let target = api::drive::Target::try_new(1.0, 0.5).unwrap();
     // MessagePack-as-JSON projection: the wire body is the plain struct, with no
     // `v`/`data` envelope around it.
     let json = serde_json::to_value(&target).unwrap();
@@ -25,23 +55,101 @@ fn body_serializes_as_plain_payload_without_version_tag() {
 
 #[test]
 fn body_round_trips_through_messagepack() {
-    let state = api::drive::State {
-        target: api::drive::Target {
-            linear_x_mps: 0.3,
-            angular_z_radps: -0.2,
-            curvature_limit_radpm: None,
+    let target = api::drive::Target::try_new(0.3, -0.2).unwrap();
+    for state in [
+        api::drive::State::Active {
+            target: target.clone(),
+            limited_target: target.clone(),
         },
-        limited_target: api::drive::Target {
-            linear_x_mps: 0.3,
-            angular_z_radps: -0.2,
-            curvature_limit_radpm: None,
+        api::drive::State::Stopped {
+            target: target.clone(),
+            reason: api::drive::StopReason::TargetStale,
         },
-        actuator_authority: api::drive::ActuatorAuthority::Active,
+    ] {
+        let bytes = rmp_serde::to_vec_named(&state).unwrap();
+        let decoded: api::drive::State = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(state, decoded);
+    }
+}
+
+#[test]
+fn target_rejects_non_finite_messagepack_scalars() {
+    #[derive(serde::Serialize)]
+    struct RawTarget {
+        linear_x_mps: f32,
+        angular_z_radps: f32,
+    }
+
+    for raw in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY]
+        .into_iter()
+        .flat_map(|value| {
+            [
+                RawTarget {
+                    linear_x_mps: value,
+                    angular_z_radps: 0.0,
+                },
+                RawTarget {
+                    linear_x_mps: 0.0,
+                    angular_z_radps: value,
+                },
+            ]
+        })
+    {
+        let bytes = rmp_serde::to_vec_named(&raw).unwrap();
+        assert!(rmp_serde::from_slice::<api::drive::Target>(&bytes).is_err());
+    }
+
+    let missing = serde_json::json!({"linear_x_mps": 0.0});
+    let bytes = rmp_serde::to_vec_named(&missing).unwrap();
+    assert!(rmp_serde::from_slice::<api::drive::Target>(&bytes).is_err());
+}
+
+#[test]
+fn old_parallel_drive_state_is_not_a_valid_wire_state() {
+    #[derive(serde::Serialize)]
+    struct OldState {
+        target: legacy::drive::Target,
+        limited_target: legacy::drive::Target,
+        actuator_authority: &'static str,
+        stop_reason: Option<legacy::drive::StopReason>,
+    }
+
+    let target = legacy::drive::Target::stopped();
+    let bytes = rmp_serde::to_vec_named(&OldState {
+        target,
+        limited_target: legacy::drive::Target::stopped(),
+        actuator_authority: "Active",
         stop_reason: None,
-    };
-    let bytes = rmp_serde::to_vec_named(&state).unwrap();
-    let decoded: api::drive::State = rmp_serde::from_slice(&bytes).unwrap();
-    assert_eq!(state, decoded);
+    })
+    .unwrap();
+    assert!(rmp_serde::from_slice::<api::drive::State>(&bytes).is_err());
+
+    let old_json = serde_json::json!({
+        "target": {"linear_x_mps": 0.0, "angular_z_radps": 0.0},
+        "limited_target": {"linear_x_mps": 0.0, "angular_z_radps": 0.0},
+        "actuator_authority": "Active",
+        "stop_reason": null,
+    });
+    assert!(serde_json::from_value::<api::drive::State>(old_json).is_err());
+}
+
+#[test]
+fn old_target_extra_field_is_not_a_valid_wire_target() {
+    let legacy_field = ["curvature", "limit_radpm"].join("_");
+    let mut old_json = serde_json::Map::from_iter([
+        ("linear_x_mps".to_string(), serde_json::json!(0.0)),
+        ("angular_z_radps".to_string(), serde_json::json!(0.0)),
+    ]);
+    old_json.insert(legacy_field, serde_json::json!(0.4));
+    assert!(
+        serde_json::from_value::<api::drive::Target>(serde_json::Value::Object(old_json)).is_err()
+    );
+    assert!(
+        serde_json::from_value::<api::drive::Target>(serde_json::json!({
+            "linear_x_mps": 0.0,
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -156,21 +264,25 @@ fn domain_bodies_round_trip_through_messagepack() {
         status: api::power::Status::Idle,
         detail: None,
     });
-    round_trip(&api::motion::State {
-        manual_observed_age_ns: Some(10),
-        autonomous_candidate_age_ns: None,
-        safety_constraints_age_ns: Some(5),
-        selected_source: Some(api::motion::Source::Manual),
-        final_target: api::motion::Target {
-            linear_x_mps: 0.1,
-            angular_z_radps: 0.2,
-            curvature_limit_radpm: None,
+    for decision in [
+        api::motion::Decision::Active {
+            source: api::motion::Source::Manual,
+            target: api::drive::Target::try_new(0.1, 0.2).unwrap(),
         },
-        zero_reason: None,
-        safety_runtime: api::motion::SafetyRuntime::Present,
-        component_estop_blocked: false,
-        active_safety_constraints: Vec::new(),
-    });
+        api::motion::Decision::Stopped {
+            reason: api::motion::ZeroReason::SafetyProtectiveStop,
+        },
+    ] {
+        round_trip(&api::motion::State {
+            decision,
+            manual_observed_age_ns: Some(10),
+            autonomous_candidate_age_ns: None,
+            safety_constraints_age_ns: Some(5),
+            safety_runtime: api::motion::SafetyRuntime::Present,
+            component_estop_blocked: false,
+            active_safety_constraints: Vec::new(),
+        });
+    }
     round_trip(&api::safety::MotionConstraints {
         sequence: 1,
         stop: true,
@@ -312,7 +424,7 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
     });
 
     let topic = api::supervisor::RuntimeTopic {
-        topic: "v0.1/drive/state".to_string(),
+        topic: "v0.2/drive/state".to_string(),
         direction: api::supervisor::RuntimeDirection::Subscribe,
         buffer_kind: api::supervisor::RuntimeBufferKind::Latest,
         count: 42,

@@ -42,16 +42,8 @@ impl Participant for AvoidObstacles {
         // Trivial policy: creep forward once we have observed a drive state,
         // otherwise hold still. Real runtimes would fuse perception here.
         let target = match api.state.latest() {
-            Some(_) => api::drive::Target {
-                linear_x_mps: 0.2,
-                angular_z_radps: 0.0,
-                curvature_limit_radpm: None,
-            },
-            None => api::drive::Target {
-                linear_x_mps: 0.0,
-                angular_z_radps: 0.0,
-                curvature_limit_radpm: None,
-            },
+            Some(_) => api::drive::Target::try_new(0.2, 0.0)?,
+            None => api::drive::Target::stopped(),
         };
 
         api.target.send(target)?;
