@@ -75,8 +75,8 @@ impl SerializedSmoke {
 async fn a_query_waits_for_an_in_flight_step_and_stepping_resumes_afterward() {
     STEP_COUNT.store(0, Ordering::Release);
     let first_step = step_started().notified();
-    let launch = ParticipantLaunch::local("serialized-smoke", "smoke")
-        .with_execution_origin(ExecutionOrigin::mint());
+    let launch =
+        ParticipantLaunch::local("serialized-smoke").with_execution_origin(ExecutionOrigin::mint());
     let bus = Bus::open(BusConfig {
         execution: launch.execution,
         participant: launch.participant_id.clone(),

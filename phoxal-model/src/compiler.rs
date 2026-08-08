@@ -19,12 +19,8 @@ use std::collections::BTreeMap;
 use crate::component::Component;
 use crate::component::capability::Capability;
 use crate::error::ModelError;
-use crate::identity::{
-    CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, RobotNamespace,
-};
-use crate::robot::{
-    Clock, ComponentInstance, KinematicConfig, MotionLimits, MotionModel, Robot, RobotIdentity,
-};
+use crate::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
+use crate::robot::{Clock, ComponentInstance, KinematicConfig, MotionLimits, MotionModel, Robot};
 use crate::simulation::{self, Simulation};
 use crate::structure::Structure;
 
@@ -34,7 +30,6 @@ use crate::structure::Structure;
 /// one pass, and [`robot`] validates the whole before any of it is observable.
 pub struct RobotParts {
     pub id: RobotId,
-    pub namespace: RobotNamespace,
     pub clock: Clock,
     pub kinematic: KinematicConfig,
     pub motion_limits: MotionLimits,
@@ -91,7 +86,7 @@ pub fn component_instance(
 /// Returns the first [`ModelError`] the assembled model violates.
 pub fn robot(parts: RobotParts) -> Result<Robot, ModelError> {
     Robot::new(
-        RobotIdentity::new(parts.id, parts.namespace),
+        parts.id,
         parts.clock,
         MotionModel::new(parts.kinematic, parts.motion_limits),
         parts.component_instances,

@@ -258,7 +258,6 @@ pub enum StructureError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentifierKind {
     RobotId,
-    RobotNamespace,
     RobotLink,
     RobotJoint,
     ComponentType,
@@ -270,7 +269,6 @@ impl fmt::Display for IdentifierKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::RobotId => "robot id",
-            Self::RobotNamespace => "robot namespace",
             Self::RobotLink => "robot link",
             Self::RobotJoint => "robot joint",
             Self::ComponentType => "component type",

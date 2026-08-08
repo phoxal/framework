@@ -45,9 +45,9 @@ const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Connection inputs for opening a bus session.
 ///
-/// The execution is the *only* routing input. A robot's namespace and id are
-/// model data: two robots in one execution are two participants under one root,
-/// and two executions never share a key however they are named.
+/// The execution is the *only* routing input. `RobotId` is model data and never
+/// contributes to a key: two executions never share a key, even when they run
+/// the same logical robot.
 #[derive(Clone, Debug)]
 pub struct BusConfig {
     /// The supervised run this session joins. It is the key root, so traffic

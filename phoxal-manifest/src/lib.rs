@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use phoxal_model::AssetId;
 use phoxal_model::compiler::RobotParts;
-use phoxal_model::identity::{
-    CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, RobotNamespace,
-};
+use phoxal_model::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
 
 use source::SourceError;
 
@@ -368,7 +366,6 @@ impl ResolvedSources {
 
         let robot = phoxal_model::compiler::robot(RobotParts {
             id: self.identity(RobotId::new(&manifest.robot.id))?,
-            namespace: self.identity(RobotNamespace::new(&manifest.robot.namespace))?,
             clock: manifest.clock.into(),
             kinematic: manifest.robot.kinematic.clone(),
             motion_limits: manifest.robot.motion_limits,

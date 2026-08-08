@@ -37,4 +37,4 @@ pub use error::{
     IdentifierKind, JointOwner, KinematicScalarField, LinkRole, ModelError, MotionLimitField,
     PoseOwner, StructureError,
 };
-pub use robot::{Clock, Robot, RobotIdentity};
+pub use robot::{Clock, Robot};

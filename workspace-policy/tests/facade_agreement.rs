@@ -28,7 +28,6 @@ fn the_facade_manifest_schemas_match_the_documents_phoxal_manifest_accepts() -> 
         r#"schema: {}
 robot:
   id: rover
-  namespace: dev
   kinematic: {{ kind: omnidirectional, actuators: [drive.motor], encoders: [] }}
   motion_limits: {{ max_linear_speed_mps: 0.5, max_angular_speed_radps: 1.0 }}
   components:

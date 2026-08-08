@@ -98,7 +98,6 @@ use crate::component::capability::{
 use crate::error::ModelError;
 use crate::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId, RobotId,
-    RobotNamespace,
 };
 use crate::robot::{Clock, KinematicConfig, MotionLimits, Robot};
 use crate::simulation;
@@ -115,9 +114,6 @@ const LINK_JOINT_SUFFIX: &str = "_joint";
 const MOUNT_LINK_SUFFIX: &str = "_mount";
 /// The joint attaching `base_link` beneath the root, when none is stated.
 const BASE_JOINT: &str = "base_joint";
-
-/// The namespace a built robot carries unless one is stated.
-const DEFAULT_NAMESPACE: &str = "dev";
 
 /// The envelope a built robot clamps motion to unless limits are stated.
 const DEFAULT_MOTION_LIMITS: MotionLimits = MotionLimits {
@@ -695,13 +691,12 @@ struct InstanceSpec {
 ///     .component("front_camera", "rgbd")
 ///     .build()?;
 ///
-/// assert_eq!(robot.identity().id().as_str(), "rover");
+/// assert_eq!(robot.id().as_str(), "rover");
 /// # Ok::<(), phoxal_model::ModelError>(())
 /// ```
 #[derive(Debug)]
 pub struct RobotBuilder {
     id: String,
-    namespace: String,
     clock: Clock,
     motion_limits: MotionLimits,
     /// The drive, already normalized. Held as a `Result` so that a malformed
@@ -734,8 +729,8 @@ pub struct ComponentBuilder {
 impl RobotBuilder {
     /// A robot with the given id, no components and no drive.
     ///
-    /// It starts on the real clock, in the `dev` namespace, with an
-    /// omnidirectional kinematic config declaring no actuators - the one
+    /// It starts on the real clock, with an omnidirectional kinematic config
+    /// declaring no actuators - the one
     /// geometry that describes nothing a robot without a drive would have to
     /// invent.
     ///
@@ -744,7 +739,7 @@ impl RobotBuilder {
     ///
     /// let robot = RobotBuilder::new("rover").build()?;
     ///
-    /// assert_eq!(robot.identity().namespace().as_str(), "dev");
+    /// assert_eq!(robot.id().as_str(), "rover");
     /// assert_eq!(robot.clock(), phoxal_model::Clock::Real);
     /// # Ok::<(), phoxal_model::ModelError>(())
     /// ```
@@ -752,7 +747,6 @@ impl RobotBuilder {
     pub fn new(id: &str) -> Self {
         Self {
             id: id.to_owned(),
-            namespace: DEFAULT_NAMESPACE.to_owned(),
             clock: Clock::Real,
             motion_limits: DEFAULT_MOTION_LIMITS,
             kinematic: Ok(KinematicConfig::Omnidirectional {
@@ -764,13 +758,6 @@ impl RobotBuilder {
             types: BTreeMap::new(),
             instances: BTreeMap::new(),
         }
-    }
-
-    /// Scope this robot's runtime identities under `namespace`.
-    #[must_use]
-    pub fn namespace(mut self, namespace: &str) -> Self {
-        self.namespace = namespace.to_owned();
-        self
     }
 
     /// Put this robot on the given time domain.
@@ -996,7 +983,6 @@ impl RobotBuilder {
     /// ```
     pub fn build(self) -> Result<Robot, ModelError> {
         let id = RobotId::new(self.id)?;
-        let namespace = RobotNamespace::new(self.namespace)?;
         let kinematic = self.kinematic?;
         let types = build_types(self.types)?;
         let mut component_instances = BTreeMap::new();
@@ -1025,7 +1011,6 @@ impl RobotBuilder {
         let structure = robot_structure(&id, self.joints, &mounts, &self.bodies)?;
         compiler::robot(RobotParts {
             id,
-            namespace,
             clock: self.clock,
             kinematic,
             motion_limits: self.motion_limits,
@@ -2052,7 +2037,6 @@ mod tests {
     #[test]
     fn identity_clock_and_limits_are_carried_as_stated() {
         let robot = RobotBuilder::new("rover")
-            .namespace("lab")
             .clock(Clock::Simulated)
             .motion_limits(MotionLimits {
                 max_linear_speed_mps: 0.6,
@@ -2061,8 +2045,7 @@ mod tests {
             .build()
             .expect("a valid robot");
 
-        assert_eq!(robot.identity().id().as_str(), "rover");
-        assert_eq!(robot.identity().namespace().as_str(), "lab");
+        assert_eq!(robot.id().as_str(), "rover");
         assert_eq!(robot.clock(), Clock::Simulated);
         assert_eq!(robot.motion().limits().max_linear_speed_mps, 0.6);
     }
@@ -2363,13 +2346,6 @@ mod tests {
             RobotBuilder::new("Rover").build(),
             Err(ModelError::NotNormalized {
                 kind: IdentifierKind::RobotId,
-                ..
-            })
-        ));
-        assert!(matches!(
-            RobotBuilder::new("rover").namespace("lab space").build(),
-            Err(ModelError::NotNormalized {
-                kind: IdentifierKind::RobotNamespace,
                 ..
             })
         ));

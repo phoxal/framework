@@ -232,7 +232,6 @@ mod tests {
 schema: phoxal/robot/v0
 robot:
   id: test-bot
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -318,7 +317,6 @@ robot:
 schema: phoxal/robot/v0
 robot:
   id: test-bot
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0

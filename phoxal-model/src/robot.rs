@@ -12,7 +12,7 @@ use crate::error::{
 };
 use crate::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, LinkId,
-    MODULE_INSTANCE_SEPARATOR, RobotId, RobotNamespace,
+    MODULE_INSTANCE_SEPARATOR, RobotId,
 };
 use crate::simulation::Simulation;
 use crate::structure::{Joint, JointKind, Structure};
@@ -28,13 +28,6 @@ pub enum Clock {
     Real,
     /// Time published by a simulation world authority.
     Simulated,
-}
-
-/// Stable canonical robot identity.
-#[derive(Debug, Clone)]
-pub struct RobotIdentity {
-    id: RobotId,
-    namespace: RobotNamespace,
 }
 
 /// One resolved component instance in the canonical robot.
@@ -530,25 +523,13 @@ pub enum KinematicKind {
 /// Fully normalized runtime-facing robot model.
 #[derive(Debug, Clone)]
 pub struct Robot {
-    identity: RobotIdentity,
+    id: RobotId,
     clock: Clock,
     motion: MotionModel,
     component_instances: BTreeMap<ComponentInstanceId, ComponentInstance>,
     component_types: BTreeMap<ComponentTypeId, Component>,
     simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
-}
-
-impl RobotIdentity {
-    #[must_use]
-    pub const fn id(&self) -> &RobotId {
-        &self.id
-    }
-
-    #[must_use]
-    pub const fn namespace(&self) -> &RobotNamespace {
-        &self.namespace
-    }
 }
 
 impl ComponentInstance {
@@ -647,7 +628,7 @@ impl fmt::Display for KinematicKind {
 
 impl Robot {
     pub(crate) fn new(
-        identity: RobotIdentity,
+        id: RobotId,
         clock: Clock,
         motion: MotionModel,
         component_instances: BTreeMap<ComponentInstanceId, ComponentInstance>,
@@ -656,7 +637,7 @@ impl Robot {
         structure: Structure,
     ) -> Result<Self, ModelError> {
         let robot = Self {
-            identity,
+            id,
             clock,
             motion,
             component_instances,
@@ -669,8 +650,8 @@ impl Robot {
     }
 
     #[must_use]
-    pub const fn identity(&self) -> &RobotIdentity {
-        &self.identity
+    pub const fn id(&self) -> &RobotId {
+        &self.id
     }
 
     /// The time domain this robot runs on.
@@ -1086,12 +1067,6 @@ impl Robot {
     }
 }
 
-impl RobotIdentity {
-    pub(crate) const fn new(id: RobotId, namespace: RobotNamespace) -> Self {
-        Self { id, namespace }
-    }
-}
-
 impl MotionModel {
     pub(crate) const fn new(kinematic: KinematicConfig, limits: MotionLimits) -> Self {
         Self { kinematic, limits }
@@ -1397,7 +1372,6 @@ mod tests {
     fn robot_with(instance_ids: &[&str]) -> Robot {
         compiler::robot(RobotParts {
             id: RobotId::new("rover").expect("a normalized robot id"),
-            namespace: RobotNamespace::new("phoxal").expect("a normalized namespace"),
             clock: Clock::Real,
             kinematic: KinematicConfig::Omnidirectional {
                 actuators: Vec::new(),
