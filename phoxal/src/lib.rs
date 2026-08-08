@@ -221,9 +221,9 @@ pub mod bundle {
 /// [`model::Robot`] - but a test or a tool that has no bundle does.
 pub mod model {
     pub use phoxal_model::{
-        Clock, IdentifierKind, JointOwner, KinematicScalarField, LinkRole, ModelError,
-        MotionLimitField, PoseOwner, Robot, RobotBuilder, StructureError, builder, component,
-        identity, robot, simulation, structure,
+        Clock, FootprintEnvelope, IdentifierKind, JointOwner, KinematicScalarField, LinkRole,
+        ModelError, MotionLimitField, PoseOwner, Robot, RobotBuilder, StructureError, builder,
+        component, footprint, identity, robot, simulation, structure,
     };
 }
 

@@ -133,6 +133,109 @@ fn old_parallel_drive_state_is_not_a_valid_wire_state() {
     assert!(serde_json::from_value::<api::drive::State>(old_json).is_err());
 }
 
+fn valid_grid_window() -> api::map::GridWindow {
+    let bounds = api::map::Bounds {
+        min_x_m: 0.0,
+        min_y_m: 0.0,
+        max_x_m: 0.1,
+        max_y_m: 0.1,
+    };
+    api::map::GridWindow {
+        frame_id: "map".to_string(),
+        origin_pose: api::map::Pose {
+            x_m: 0.0,
+            y_m: 0.0,
+            yaw_rad: 0.0,
+        },
+        cell_origin: api::map::Point { x_m: 0.0, y_m: 0.0 },
+        resolution_m: 0.05,
+        width: 2,
+        height: 2,
+        cells: vec![api::map::Occupancy::Free; 4],
+        revision: 7,
+        requested: bounds.clone(),
+        covered: bounds,
+    }
+}
+
+#[test]
+fn v0_2_grid_window_is_self_describing_and_validated_on_deserialize() {
+    let response = api::map::SubmapResponse::Window(valid_grid_window());
+    round_trip(&response);
+
+    let value = serde_json::to_value(response).unwrap();
+    assert_eq!(value["Window"]["frame_id"], "map");
+    assert_eq!(value["Window"]["revision"], 7);
+    assert!(serde_json::from_value::<api::map::SubmapResponse>(value).is_ok());
+}
+
+#[test]
+fn malformed_grid_shape_resolution_dimensions_and_cell_domain_are_rejected() {
+    let base = serde_json::to_value(api::map::SubmapResponse::Window(valid_grid_window())).unwrap();
+    for malformed in [
+        serde_json::json!({
+            "Window": {
+                "frame_id": "map",
+                "origin_pose": {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0},
+                "cell_origin": {"x_m": 0.0, "y_m": 0.0},
+                "resolution_m": 0.0,
+                "width": 2,
+                "height": 2,
+                "cells": ["free", "free", "free", "free"],
+                "revision": 1,
+                "requested": {"min_x_m": 0.0, "min_y_m": 0.0, "max_x_m": 0.1, "max_y_m": 0.1},
+                "covered": {"min_x_m": 0.0, "min_y_m": 0.0, "max_x_m": 0.1, "max_y_m": 0.1}
+            }
+        }),
+        {
+            let mut value = base.clone();
+            value["Window"]["width"] = serde_json::json!(0);
+            value
+        },
+        {
+            let mut value = base.clone();
+            value["Window"]["cells"] = serde_json::json!(["free"]);
+            value
+        },
+        {
+            let mut value = base.clone();
+            value["Window"]["cells"] =
+                serde_json::json!(["not-an-occupancy", "free", "free", "free"]);
+            value
+        },
+        {
+            let mut value = base.clone();
+            value["Window"]["width"] = serde_json::json!(u32::MAX);
+            value["Window"]["height"] = serde_json::json!(u32::MAX);
+            value["Window"]["cells"] = serde_json::json!([]);
+            value
+        },
+        {
+            let mut value = base.clone();
+            value["Window"]["covered"]["max_x_m"] = serde_json::json!(0.15);
+            value
+        },
+        {
+            let mut value = base.clone();
+            value["Window"]["origin_pose"]["x_m"] = serde_json::json!("NaN");
+            value
+        },
+    ] {
+        assert!(
+            serde_json::from_value::<api::map::SubmapResponse>(malformed).is_err(),
+            "malformed grid payload must fail during deserialization"
+        );
+    }
+}
+
+#[test]
+fn messagepack_grid_rejects_nonfinite_revisioned_fields() {
+    let mut window = valid_grid_window();
+    window.resolution_m = f32::NAN;
+    let bytes = rmp_serde::to_vec_named(&api::map::SubmapResponse::Window(window)).unwrap();
+    assert!(rmp_serde::from_slice::<api::map::SubmapResponse>(&bytes).is_err());
+}
+
 #[test]
 fn old_target_extra_field_is_not_a_valid_wire_target() {
     let legacy_field = ["curvature", "limit_radpm"].join("_");
@@ -290,7 +393,7 @@ fn navigation_and_safety_wire_shapes_are_golden() {
     );
     round_trip(&navigation);
 
-    let constraint = api::safety::Constraint {
+    let constraint = api::safety::Constraint::Stopped {
         reason: api::safety::ConstraintReason::ObstacleProximity,
         source: api::safety::ConstraintSource {
             kind: api::safety::ConstraintSourceKind::Range,
@@ -298,27 +401,27 @@ fn navigation_and_safety_wire_shapes_are_golden() {
             component_id: Some("front".to_string()),
             capability_id: Some("range".to_string()),
         },
-        stop: true,
-        max_linear_speed_mps: None,
-        max_angular_speed_radps: None,
         observed_value: Some(0.1),
         valid_from: instant(100),
         expires_at: instant(400),
     };
     let safety = api::safety::MotionConstraints {
         sequence: 3,
-        stop: true,
-        max_linear_speed_mps: None,
-        max_angular_speed_radps: None,
+        permission: api::safety::MotionPermission::Stopped {
+            reasons: vec![api::safety::ConstraintReason::ObstacleProximity],
+        },
         constraints: vec![constraint],
         expires_at: instant(400),
     };
     let safety_json = serde_json::to_value(&safety).unwrap();
     assert_eq!(
-        safety_json["constraints"][0]["reason"],
+        safety_json["constraints"][0]["Stopped"]["reason"],
         "obstacle_proximity"
     );
-    assert_eq!(safety_json["constraints"][0]["source"]["kind"], "range");
+    assert_eq!(
+        safety_json["constraints"][0]["Stopped"]["source"]["kind"],
+        "range"
+    );
     round_trip(&safety);
 }
 
@@ -331,6 +434,74 @@ fn navigation_and_safety_reject_malformed_payloads() {
     .unwrap();
     assert!(rmp_serde::from_slice::<api::navigation::Request>(&wrong).is_err());
     assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&wrong).is_err());
+}
+
+#[test]
+fn safety_permission_must_agree_with_constraints_on_json_and_messagepack_wire() {
+    let constraint = api::safety::Constraint::Stopped {
+        reason: api::safety::ConstraintReason::ObstacleProximity,
+        source: api::safety::ConstraintSource {
+            kind: api::safety::ConstraintSourceKind::Range,
+            participant_id: "front-range".to_string(),
+            component_id: Some("front".to_string()),
+            capability_id: Some("range".to_string()),
+        },
+        observed_value: Some(0.1),
+        valid_from: instant(100),
+        expires_at: instant(400),
+    };
+    let safety = api::safety::MotionConstraints {
+        sequence: 3,
+        permission: api::safety::MotionPermission::Stopped {
+            reasons: vec![api::safety::ConstraintReason::ObstacleProximity],
+        },
+        constraints: vec![constraint],
+        expires_at: instant(400),
+    };
+
+    let mut divergent = serde_json::to_value(&safety).unwrap();
+    divergent["permission"] = serde_json::to_value(api::safety::MotionPermission::Clear).unwrap();
+    assert!(serde_json::from_value::<api::safety::MotionConstraints>(divergent.clone()).is_err());
+    let bytes = rmp_serde::to_vec_named(&divergent).unwrap();
+    assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&bytes).is_err());
+
+    let mut state = serde_json::to_value(api::safety::State {
+        constraints: safety,
+    })
+    .unwrap();
+    state["permission"] = serde_json::json!("Clear");
+    assert!(serde_json::from_value::<api::safety::State>(state.clone()).is_err());
+    let bytes = rmp_serde::to_vec_named(&state).unwrap();
+    assert!(rmp_serde::from_slice::<api::safety::State>(&bytes).is_err());
+}
+
+#[test]
+fn safety_nonfinite_limits_are_rejected_from_messagepack_wire() {
+    let safety = api::safety::MotionConstraints {
+        sequence: 3,
+        permission: api::safety::MotionPermission::Limited {
+            effective_linear_speed_mps: f32::NAN,
+            effective_angular_speed_radps: 0.2,
+            reasons: vec![api::safety::ConstraintReason::ObstacleProximity],
+        },
+        constraints: vec![api::safety::Constraint::Limited {
+            reason: api::safety::ConstraintReason::ObstacleProximity,
+            source: api::safety::ConstraintSource {
+                kind: api::safety::ConstraintSourceKind::Range,
+                participant_id: "front-range".to_string(),
+                component_id: Some("front".to_string()),
+                capability_id: Some("range".to_string()),
+            },
+            max_linear_speed_mps: f32::NAN,
+            max_angular_speed_radps: 0.2,
+            observed_value: Some(0.4),
+            valid_from: instant(100),
+            expires_at: instant(400),
+        }],
+        expires_at: instant(400),
+    };
+    let bytes = rmp_serde::to_vec_named(&safety).unwrap();
+    assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&bytes).is_err());
 }
 
 #[test]
@@ -370,14 +541,15 @@ fn domain_bodies_round_trip_through_messagepack() {
             safety_runtime: api::motion::SafetyRuntime::Present,
             component_estop_blocked: false,
             active_safety_constraints: Vec::new(),
+            safety_permission: api::safety::MotionPermission::Clear,
         });
     }
     round_trip(&api::safety::MotionConstraints {
         sequence: 1,
-        stop: true,
-        max_linear_speed_mps: Some(0.0),
-        max_angular_speed_radps: Some(0.0),
-        constraints: vec![api::safety::Constraint {
+        permission: api::safety::MotionPermission::Stopped {
+            reasons: vec![api::safety::ConstraintReason::ObstacleProximity],
+        },
+        constraints: vec![api::safety::Constraint::Stopped {
             reason: api::safety::ConstraintReason::ObstacleProximity,
             source: api::safety::ConstraintSource {
                 kind: api::safety::ConstraintSourceKind::Range,
@@ -385,9 +557,6 @@ fn domain_bodies_round_trip_through_messagepack() {
                 component_id: Some("front-range".to_string()),
                 capability_id: Some("range".to_string()),
             },
-            stop: true,
-            max_linear_speed_mps: Some(0.0),
-            max_angular_speed_radps: Some(0.0),
             observed_value: Some(0.1),
             valid_from: instant(10),
             expires_at: instant(310),

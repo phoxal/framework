@@ -3,6 +3,7 @@
 //! Run with `cargo run --example runtime_serialized_queries`.
 
 use phoxal::api;
+use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
 
 #[derive(Clone)]
@@ -23,13 +24,86 @@ impl Grid {
         }
     }
 
-    fn response(&self) -> api::map::SubmapResponse {
-        api::map::SubmapResponse {
-            width: self.width,
-            height: self.height,
-            resolution_m: self.resolution_m,
-            cells: self.cells.clone(),
+    fn response(
+        &self,
+        request: &api::map::SubmapRequest,
+        revision: u64,
+    ) -> QueryResult<api::map::SubmapResponse> {
+        let requested = bounds_from_request(request)?;
+        let map_max_x = f64::from(self.width) * f64::from(self.resolution_m);
+        let map_max_y = f64::from(self.height) * f64::from(self.resolution_m);
+        let min_x = requested.min_x_m.max(0.0);
+        let min_y = requested.min_y_m.max(0.0);
+        let max_x = requested.max_x_m.min(map_max_x);
+        let max_y = requested.max_y_m.min(map_max_y);
+        if !(min_x < max_x && min_y < max_y) {
+            return Ok(api::map::SubmapResponse::OutOfBounds {
+                requested,
+                frame_id: "map".to_string(),
+                revision,
+            });
         }
+
+        let resolution = f64::from(self.resolution_m);
+        let start_x = cell_start(min_x, resolution, self.width);
+        let start_y = cell_start(min_y, resolution, self.height);
+        let end_x = cell_end(max_x, resolution, self.width);
+        let end_y = cell_end(max_y, resolution, self.height);
+        if start_x >= end_x || start_y >= end_y {
+            return Ok(api::map::SubmapResponse::OutOfBounds {
+                requested,
+                frame_id: "map".to_string(),
+                revision,
+            });
+        }
+
+        let width = end_x - start_x;
+        let height = end_y - start_y;
+        let mut cells = Vec::with_capacity((width as usize) * (height as usize));
+        for y in start_y..end_y {
+            let row_start = (y * self.width + start_x) as usize;
+            let row_end = row_start + width as usize;
+            cells.extend(
+                self.cells[row_start..row_end]
+                    .iter()
+                    .copied()
+                    .map(|cell| match cell {
+                        0..=20 => api::map::Occupancy::Free,
+                        255 => api::map::Occupancy::Unknown,
+                        _ => api::map::Occupancy::Occupied,
+                    }),
+            );
+        }
+        let covered = api::map::Bounds {
+            min_x_m: f64::from(start_x) * resolution,
+            min_y_m: f64::from(start_y) * resolution,
+            max_x_m: f64::from(end_x) * resolution,
+            max_y_m: f64::from(end_y) * resolution,
+        };
+        let window = api::map::GridWindow {
+            frame_id: "map".to_string(),
+            origin_pose: api::map::Pose {
+                x_m: covered.min_x_m,
+                y_m: covered.min_y_m,
+                yaw_rad: 0.0,
+            },
+            cell_origin: api::map::Point {
+                x_m: covered.min_x_m,
+                y_m: covered.min_y_m,
+            },
+            width,
+            height,
+            resolution_m: self.resolution_m,
+            cells,
+            revision,
+            requested: requested.clone(),
+            covered: covered.clone(),
+        };
+        Ok(if bounds_equal(&requested, &covered) {
+            api::map::SubmapResponse::Window(window)
+        } else {
+            api::map::SubmapResponse::Partial { window }
+        })
     }
 }
 
@@ -109,11 +183,65 @@ impl SerializedMap {
     async fn submap(
         &self,
         _api: &Api,
-        _request: api::map::SubmapRequest,
+        request: api::map::SubmapRequest,
         state: &mut MapState,
     ) -> QueryResult<api::map::SubmapResponse> {
-        Ok(state.grid.response())
+        state.grid.response(&request, state.rev)
     }
+}
+
+fn bounds_from_request(request: &api::map::SubmapRequest) -> QueryResult<api::map::Bounds> {
+    if ![
+        request.min_x_m,
+        request.min_y_m,
+        request.max_x_m,
+        request.max_y_m,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || request.min_x_m >= request.max_x_m
+        || request.min_y_m >= request.max_y_m
+    {
+        return Err(QueryFailure::invalid_argument(
+            "map query bounds must be finite and have positive extent",
+        ));
+    }
+    Ok(api::map::Bounds {
+        min_x_m: request.min_x_m,
+        min_y_m: request.min_y_m,
+        max_x_m: request.max_x_m,
+        max_y_m: request.max_y_m,
+    })
+}
+
+fn cell_start(min: f64, resolution: f64, dimension: u32) -> u32 {
+    let ratio = min / resolution;
+    let nearest = ratio.round();
+    let index = if (ratio - nearest).abs() <= 1.0e-9 {
+        nearest
+    } else {
+        ratio.ceil()
+    };
+    index.clamp(0.0, f64::from(dimension)) as u32
+}
+
+fn cell_end(max: f64, resolution: f64, dimension: u32) -> u32 {
+    let ratio = max / resolution;
+    let nearest = ratio.round();
+    let index = if (ratio - nearest).abs() <= 1.0e-9 {
+        nearest
+    } else {
+        ratio.floor()
+    };
+    index.clamp(0.0, f64::from(dimension)) as u32
+}
+
+fn bounds_equal(left: &api::map::Bounds, right: &api::map::Bounds) -> bool {
+    let epsilon = 1.0e-6;
+    (left.min_x_m - right.min_x_m).abs() <= epsilon
+        && (left.min_y_m - right.min_y_m).abs() <= epsilon
+        && (left.max_x_m - right.max_x_m).abs() <= epsilon
+        && (left.max_y_m - right.max_y_m).abs() <= epsilon
 }
 
 fn main() -> phoxal::Result<()> {

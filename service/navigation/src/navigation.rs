@@ -246,11 +246,11 @@ impl Navigation {
         };
         let response = api
             .map_submap
-            .query(submap_request.clone())
+            .query(submap_request)
             .await
             .map_err(|error| QueryFailure::unavailable(error.to_string()))?;
         let robot_xy_m = (localization.body.x_m, localization.body.y_m);
-        let frontier = OccupancyGrid::from_submap(&submap_request, response).and_then(|grid| {
+        let frontier = OccupancyGrid::from_submap(response).and_then(|grid| {
             grid.score_frontiers(grid.detect_frontiers(), robot_xy_m)
                 .into_iter()
                 .next()

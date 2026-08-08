@@ -241,6 +241,204 @@ where
         .ok_or_else(|| serde::de::Error::custom("perception position must be finite"))
 }
 
+/// Deserialize a map scalar that participates in a world-space bound.
+pub(crate) fn deserialize_finite_map_scalar<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .is_finite()
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("map coordinate must be finite"))
+}
+
+/// A map window dimension is part of a checked `width * height` shape, so zero
+/// is not a valid wire value even before the cell vector is considered.
+pub(crate) fn deserialize_nonzero_map_dimension<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+    (value != 0)
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("map window dimensions must be nonzero"))
+}
+
+/// Grid resolution is a physical scalar rather than an arbitrary float.
+pub(crate) fn deserialize_finite_positive_resolution<'de, D>(
+    deserializer: D,
+) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    (value.is_finite() && value > 0.0)
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("map resolution must be finite and positive"))
+}
+
+/// A frame name is part of the map identity and may not be absent or blank.
+pub(crate) fn deserialize_nonempty_frame_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    (!value.trim().is_empty())
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("map frame id must not be empty"))
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GridBoundsWire {
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub min_x_m: f64,
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub min_y_m: f64,
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub max_x_m: f64,
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub max_y_m: f64,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GridPoseWire {
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub x_m: f64,
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub y_m: f64,
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub yaw_rad: f64,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GridPointWire {
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub x_m: f64,
+    #[serde(deserialize_with = "crate::deserialize_finite_map_scalar")]
+    pub y_m: f64,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GridWindowWire {
+    #[serde(deserialize_with = "crate::deserialize_nonempty_frame_id")]
+    pub frame_id: String,
+    pub origin_pose: crate::v0_2::map::Pose,
+    pub cell_origin: crate::v0_2::map::Point,
+    #[serde(deserialize_with = "crate::deserialize_finite_positive_resolution")]
+    pub resolution_m: f32,
+    #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
+    pub width: u32,
+    #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
+    pub height: u32,
+    pub cells: Vec<crate::v0_2::map::Occupancy>,
+    pub revision: u64,
+    pub requested: crate::v0_2::map::Bounds,
+    pub covered: crate::v0_2::map::Bounds,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct GridWireError(pub &'static str);
+
+impl std::fmt::Display for GridWireError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for GridWireError {}
+
+fn deserialize_finite_nonnegative_safety_limit<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    (value.is_finite() && value >= 0.0)
+        .then_some(value)
+        .ok_or_else(|| {
+            serde::de::Error::custom("safety speed limit must be finite and nonnegative")
+        })
+}
+
+fn deserialize_optional_finite_safety_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <Option<f32> as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .map(|value| {
+            value
+                .is_finite()
+                .then_some(value)
+                .ok_or_else(|| serde::de::Error::custom("safety observed value must be finite"))
+        })
+        .transpose()
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum SafetyMotionPermissionWire {
+    Clear,
+    Limited {
+        #[serde(deserialize_with = "crate::deserialize_finite_nonnegative_safety_limit")]
+        effective_linear_speed_mps: f32,
+        #[serde(deserialize_with = "crate::deserialize_finite_nonnegative_safety_limit")]
+        effective_angular_speed_radps: f32,
+        reasons: Vec<crate::v0_2::safety::ConstraintReason>,
+    },
+    Stopped {
+        reasons: Vec<crate::v0_2::safety::ConstraintReason>,
+    },
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum SafetyConstraintWire {
+    Limited {
+        reason: crate::v0_2::safety::ConstraintReason,
+        source: crate::v0_2::safety::ConstraintSource,
+        #[serde(deserialize_with = "crate::deserialize_finite_nonnegative_safety_limit")]
+        max_linear_speed_mps: f32,
+        #[serde(deserialize_with = "crate::deserialize_finite_nonnegative_safety_limit")]
+        max_angular_speed_radps: f32,
+        #[serde(deserialize_with = "crate::deserialize_optional_finite_safety_value")]
+        observed_value: Option<f32>,
+        valid_from: ::phoxal_bus::RobotInstant,
+        expires_at: ::phoxal_bus::RobotInstant,
+    },
+    Stopped {
+        reason: crate::v0_2::safety::ConstraintReason,
+        source: crate::v0_2::safety::ConstraintSource,
+        #[serde(deserialize_with = "crate::deserialize_optional_finite_safety_value")]
+        observed_value: Option<f32>,
+        valid_from: ::phoxal_bus::RobotInstant,
+        expires_at: ::phoxal_bus::RobotInstant,
+    },
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SafetyMotionConstraintsWire {
+    pub sequence: u64,
+    pub permission: SafetyMotionPermissionWire,
+    pub constraints: Vec<SafetyConstraintWire>,
+    pub expires_at: ::phoxal_bus::RobotInstant,
+}
+
 phoxal_api_tree! {
     version v0_1 {
         drive {
@@ -1460,6 +1658,7 @@ phoxal_api_tree! {
                 safety_runtime: SafetyRuntime,
                 component_estop_blocked: bool,
                 active_safety_constraints: Vec<super::safety::Constraint>,
+                safety_permission: super::safety::MotionPermission,
             }
         }
 
@@ -1518,6 +1717,176 @@ phoxal_api_tree! {
             replace topic result: event Result;
         }
 
+        safety {
+            /// Why safety is stopping or limiting body motion in v0.2. The
+            /// map/footprint reasons are deliberately distinct so a fail
+            /// closed decision remains diagnosable without parsing text.
+            #[serde(rename_all = "snake_case")]
+            replace enum ConstraintReason {
+                WorldUnavailable,
+                MapUnavailable,
+                MapStale,
+                MapPartial,
+                MapRevisionInvalid,
+                UnknownOccupancy,
+                FootprintUnavailable,
+                FootprintMismatch,
+                FootprintObstacle,
+                DrivableSpaceUnavailable,
+                LocalizationUnavailable,
+                LocalizationUncertain,
+                ObstacleProximity,
+                RangeSensorFault,
+                DriveFault,
+                BatteryLow,
+                BatteryCritical,
+                BatteryUnavailable,
+                BatteryStale,
+                SpeedZone,
+                OperatorPolicy,
+            }
+
+            /// Additional provenance category for the compiled footprint
+            /// checks. The source is still the safety participant, but the
+            /// category tells operators which safety input failed.
+            #[serde(rename_all = "snake_case")]
+            replace enum ConstraintSourceKind {
+                WorldModel,
+                Map,
+                Localization,
+                Range,
+                Drive,
+                Battery,
+                Footprint,
+                Operator,
+            }
+
+            /// A constraint is one shape only: a `Limited` item carries
+            /// effective limits and a `Stopped` item carries no contradictory
+            /// limit fields. This prevents a consumer from having to choose
+            /// between `stop = true` and a nonzero limit.
+            #[serde(try_from = "crate::SafetyConstraintWire")]
+            replace enum Constraint {
+                Limited {
+                    reason: ConstraintReason,
+                    source: ConstraintSource,
+                    max_linear_speed_mps: f32,
+                    max_angular_speed_radps: f32,
+                    observed_value: Option<f32>,
+                    valid_from: ::phoxal_bus::RobotInstant,
+                    expires_at: ::phoxal_bus::RobotInstant,
+                },
+                Stopped {
+                    reason: ConstraintReason,
+                    source: ConstraintSource,
+                    observed_value: Option<f32>,
+                    valid_from: ::phoxal_bus::RobotInstant,
+                    expires_at: ::phoxal_bus::RobotInstant,
+                },
+            }
+
+            /// The sole safety permission consumed by motion. Its variants
+            /// are mutually exclusive and carry exactly the fields that make
+            /// sense for that decision.
+            #[serde(try_from = "crate::SafetyMotionPermissionWire")]
+            enum MotionPermission {
+                Clear,
+                Limited {
+                    effective_linear_speed_mps: f32,
+                    effective_angular_speed_radps: f32,
+                    reasons: Vec<ConstraintReason>,
+                },
+                Stopped {
+                    reasons: Vec<ConstraintReason>,
+                },
+            }
+
+            #[serde(try_from = "crate::SafetyMotionConstraintsWire")]
+            replace struct MotionConstraints {
+                sequence: u64,
+                permission: MotionPermission,
+                constraints: Vec<Constraint>,
+                expires_at: ::phoxal_bus::RobotInstant,
+            }
+
+            #[serde(deny_unknown_fields)]
+            replace struct State {
+                constraints: MotionConstraints,
+            }
+        }
+
+        map {
+            /// A finite world-space point used as the cell origin and pose
+            /// translation in a self-describing grid response.
+            #[serde(try_from = "crate::GridPointWire")]
+            struct Point {
+                x_m: f64,
+                y_m: f64,
+            }
+
+            /// The map-frame pose of the grid's reference origin.
+            #[serde(try_from = "crate::GridPoseWire")]
+            struct Pose {
+                x_m: f64,
+                y_m: f64,
+                yaw_rad: f64,
+            }
+
+            /// Requested and covered map-frame bounds.
+            #[serde(try_from = "crate::GridBoundsWire")]
+            struct Bounds {
+                min_x_m: f64,
+                min_y_m: f64,
+                max_x_m: f64,
+                max_y_m: f64,
+            }
+
+            /// Occupancy has a closed wire domain. Unknown is not treated as
+            /// free by safety or navigation.
+            #[serde(rename_all = "snake_case")]
+            enum Occupancy {
+                Free,
+                Occupied,
+                Unknown,
+            }
+
+            /// A revisioned map window whose origin, frame, extent and bounds
+            /// travel with the cells themselves.
+            #[serde(try_from = "crate::GridWindowWire")]
+            struct GridWindow {
+                frame_id: String,
+                origin_pose: Pose,
+                cell_origin: Point,
+                #[serde(deserialize_with = "crate::deserialize_finite_positive_resolution")]
+                resolution_m: f32,
+                #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
+                width: u32,
+                #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
+                height: u32,
+                cells: Vec<Occupancy>,
+                revision: u64,
+                requested: Bounds,
+                covered: Bounds,
+            }
+
+            /// A query either returns a complete window, a clipped window
+            /// with explicit requested/covered bounds, or an explicit
+            /// out-of-bounds result. A responder may not silently substitute
+            /// a different extent for what was requested.
+            replace enum SubmapResponse {
+                Window(GridWindow),
+                Partial { window: GridWindow },
+                OutOfBounds {
+                    requested: Bounds,
+                    #[serde(deserialize_with = "crate::deserialize_nonempty_frame_id")]
+                    frame_id: String,
+                    revision: u64,
+                },
+            }
+
+            replace topic submap: query SubmapRequest => SubmapResponse;
+        }
+
         component(instance) {
             speaker(capability) {
                 replace topic stream: stream Chunk;
@@ -1535,6 +1904,286 @@ phoxal_api_tree! {
         }
     }
     latest v0_2;
+}
+
+impl TryFrom<GridBoundsWire> for v0_2::map::Bounds {
+    type Error = GridWireError;
+
+    fn try_from(value: GridBoundsWire) -> Result<Self, Self::Error> {
+        if !(value.min_x_m < value.max_x_m && value.min_y_m < value.max_y_m) {
+            return Err(GridWireError("map bounds must have positive extent"));
+        }
+        Ok(Self {
+            min_x_m: value.min_x_m,
+            min_y_m: value.min_y_m,
+            max_x_m: value.max_x_m,
+            max_y_m: value.max_y_m,
+        })
+    }
+}
+
+impl TryFrom<GridPoseWire> for v0_2::map::Pose {
+    type Error = GridWireError;
+
+    fn try_from(value: GridPoseWire) -> Result<Self, Self::Error> {
+        Ok(Self {
+            x_m: value.x_m,
+            y_m: value.y_m,
+            yaw_rad: value.yaw_rad,
+        })
+    }
+}
+
+impl TryFrom<GridPointWire> for v0_2::map::Point {
+    type Error = GridWireError;
+
+    fn try_from(value: GridPointWire) -> Result<Self, Self::Error> {
+        Ok(Self {
+            x_m: value.x_m,
+            y_m: value.y_m,
+        })
+    }
+}
+
+impl TryFrom<GridWindowWire> for v0_2::map::GridWindow {
+    type Error = GridWireError;
+
+    fn try_from(value: GridWindowWire) -> Result<Self, Self::Error> {
+        let expected = usize::try_from(value.width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(value.height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or(GridWireError("map grid dimensions overflow"))?;
+        if value.cells.len() != expected {
+            return Err(GridWireError(
+                "map grid cell shape does not match dimensions",
+            ));
+        }
+        if !(value.covered.min_x_m >= value.requested.min_x_m
+            && value.covered.min_y_m >= value.requested.min_y_m
+            && value.covered.max_x_m <= value.requested.max_x_m
+            && value.covered.max_y_m <= value.requested.max_y_m)
+        {
+            return Err(GridWireError(
+                "map covered bounds must be contained in requested bounds",
+            ));
+        }
+        let epsilon = f64::from(value.resolution_m) * 1.0e-6;
+        if (value.cell_origin.x_m - value.covered.min_x_m).abs() > epsilon
+            || (value.cell_origin.y_m - value.covered.min_y_m).abs() > epsilon
+        {
+            return Err(GridWireError(
+                "map cell origin must equal the covered lower corner",
+            ));
+        }
+        if (value.origin_pose.x_m - value.cell_origin.x_m).abs() > epsilon
+            || (value.origin_pose.y_m - value.cell_origin.y_m).abs() > epsilon
+        {
+            return Err(GridWireError(
+                "map origin pose translation must equal the cell origin",
+            ));
+        }
+        let covered_width = f64::from(value.width) * f64::from(value.resolution_m);
+        let covered_height = f64::from(value.height) * f64::from(value.resolution_m);
+        if (value.covered.max_x_m - value.covered.min_x_m - covered_width).abs() > epsilon
+            || (value.covered.max_y_m - value.covered.min_y_m - covered_height).abs() > epsilon
+        {
+            return Err(GridWireError("map covered bounds do not match grid extent"));
+        }
+        Ok(Self {
+            frame_id: value.frame_id,
+            origin_pose: value.origin_pose,
+            cell_origin: value.cell_origin,
+            resolution_m: value.resolution_m,
+            width: value.width,
+            height: value.height,
+            cells: value.cells,
+            revision: value.revision,
+            requested: value.requested,
+            covered: value.covered,
+        })
+    }
+}
+
+impl TryFrom<SafetyMotionPermissionWire> for v0_2::safety::MotionPermission {
+    type Error = GridWireError;
+
+    fn try_from(value: SafetyMotionPermissionWire) -> Result<Self, Self::Error> {
+        match value {
+            SafetyMotionPermissionWire::Clear => Ok(Self::Clear),
+            SafetyMotionPermissionWire::Limited {
+                effective_linear_speed_mps,
+                effective_angular_speed_radps,
+                reasons,
+            } if !reasons.is_empty() => Ok(Self::Limited {
+                effective_linear_speed_mps,
+                effective_angular_speed_radps,
+                reasons,
+            }),
+            SafetyMotionPermissionWire::Stopped { reasons } if !reasons.is_empty() => {
+                Ok(Self::Stopped { reasons })
+            }
+            _ => Err(GridWireError(
+                "safety permission must carry reasons for limited or stopped motion",
+            )),
+        }
+    }
+}
+
+impl TryFrom<SafetyConstraintWire> for v0_2::safety::Constraint {
+    type Error = GridWireError;
+
+    fn try_from(value: SafetyConstraintWire) -> Result<Self, Self::Error> {
+        let (source, valid_from, expires_at) = match &value {
+            SafetyConstraintWire::Limited {
+                source,
+                valid_from,
+                expires_at,
+                ..
+            }
+            | SafetyConstraintWire::Stopped {
+                source,
+                valid_from,
+                expires_at,
+                ..
+            } => (source, *valid_from, *expires_at),
+        };
+        let validity = valid_from.checked_cmp(expires_at);
+        if source.participant_id.trim().is_empty()
+            || !validity.is_ok_and(|order| order != std::cmp::Ordering::Greater)
+        {
+            return Err(GridWireError(
+                "safety constraint source and validity interval are invalid",
+            ));
+        }
+        Ok(match value {
+            SafetyConstraintWire::Limited {
+                reason,
+                source,
+                max_linear_speed_mps,
+                max_angular_speed_radps,
+                observed_value,
+                valid_from,
+                expires_at,
+            } => Self::Limited {
+                reason,
+                source,
+                max_linear_speed_mps,
+                max_angular_speed_radps,
+                observed_value,
+                valid_from,
+                expires_at,
+            },
+            SafetyConstraintWire::Stopped {
+                reason,
+                source,
+                observed_value,
+                valid_from,
+                expires_at,
+            } => Self::Stopped {
+                reason,
+                source,
+                observed_value,
+                valid_from,
+                expires_at,
+            },
+        })
+    }
+}
+
+impl TryFrom<SafetyMotionConstraintsWire> for v0_2::safety::MotionConstraints {
+    type Error = GridWireError;
+
+    fn try_from(value: SafetyMotionConstraintsWire) -> Result<Self, Self::Error> {
+        let permission = value.permission.try_into()?;
+        let constraints = value
+            .constraints
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<v0_2::safety::Constraint>, GridWireError>>()?;
+        let expected = expected_safety_permission(&constraints)?;
+        if permission != expected {
+            return Err(GridWireError(
+                "safety permission disagrees with its constraints",
+            ));
+        }
+        for constraint in &constraints {
+            let (valid_from, expires_at) = match constraint {
+                v0_2::safety::Constraint::Limited {
+                    valid_from,
+                    expires_at,
+                    ..
+                }
+                | v0_2::safety::Constraint::Stopped {
+                    valid_from,
+                    expires_at,
+                    ..
+                } => (*valid_from, *expires_at),
+            };
+            if value.expires_at.checked_cmp(expires_at).is_err()
+                || !value
+                    .expires_at
+                    .checked_cmp(expires_at)
+                    .is_ok_and(|order| order != std::cmp::Ordering::Less)
+            {
+                return Err(GridWireError(
+                    "safety product expiry must cover every constraint",
+                ));
+            }
+            if valid_from.checked_cmp(value.expires_at).is_err() {
+                return Err(GridWireError("safety product uses mixed timelines"));
+            }
+        }
+        Ok(Self {
+            sequence: value.sequence,
+            permission,
+            constraints,
+            expires_at: value.expires_at,
+        })
+    }
+}
+
+fn expected_safety_permission(
+    constraints: &[v0_2::safety::Constraint],
+) -> Result<v0_2::safety::MotionPermission, GridWireError> {
+    let reasons = constraints
+        .iter()
+        .map(|constraint| match constraint {
+            v0_2::safety::Constraint::Limited { reason, .. }
+            | v0_2::safety::Constraint::Stopped { reason, .. } => reason.clone(),
+        })
+        .collect::<Vec<_>>();
+    if constraints
+        .iter()
+        .any(|constraint| matches!(constraint, v0_2::safety::Constraint::Stopped { .. }))
+    {
+        return Ok(v0_2::safety::MotionPermission::Stopped { reasons });
+    }
+    if constraints.is_empty() {
+        return Ok(v0_2::safety::MotionPermission::Clear);
+    }
+    let mut linear = f32::MAX;
+    let mut angular = f32::MAX;
+    for constraint in constraints {
+        let v0_2::safety::Constraint::Limited {
+            max_linear_speed_mps,
+            max_angular_speed_radps,
+            ..
+        } = constraint
+        else {
+            return Err(GridWireError("safety constraint shape is contradictory"));
+        };
+        linear = linear.min(*max_linear_speed_mps);
+        angular = angular.min(*max_angular_speed_radps);
+    }
+    Ok(v0_2::safety::MotionPermission::Limited {
+        effective_linear_speed_mps: linear,
+        effective_angular_speed_radps: angular,
+        reasons,
+    })
 }
 
 #[cfg(test)]

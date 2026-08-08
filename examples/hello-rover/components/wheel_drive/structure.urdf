@@ -16,11 +16,6 @@
         <cylinder radius="0.05" length="0.03" />
       </geometry>
     </visual>
-    <collision>
-      <geometry>
-        <cylinder radius="0.05" length="0.03" />
-      </geometry>
-    </collision>
     <inertial>
       <mass value="0.2" />
       <inertia ixx="0.00014" ixy="0" ixz="0" iyy="0.00014" iyz="0" izz="0.00025" />

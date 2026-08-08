@@ -38,12 +38,28 @@ impl TypedQueries {
         _request: api::map::SubmapRequest,
         _state: &mut State,
     ) -> QueryResult<api::map::SubmapResponse> {
-        Ok(api::map::SubmapResponse {
-            width: 0,
-            height: 0,
+        let bounds = api::map::Bounds {
+            min_x_m: 0.0,
+            min_y_m: 0.0,
+            max_x_m: 0.1,
+            max_y_m: 0.1,
+        };
+        Ok(api::map::SubmapResponse::Window(api::map::GridWindow {
+            frame_id: "map".to_owned(),
+            origin_pose: api::map::Pose {
+                x_m: 0.0,
+                y_m: 0.0,
+                yaw_rad: 0.0,
+            },
+            cell_origin: api::map::Point { x_m: 0.0, y_m: 0.0 },
+            width: 1,
+            height: 1,
             resolution_m: 0.1,
-            cells: Vec::new(),
-        })
+            cells: vec![api::map::Occupancy::Free],
+            revision: 0,
+            requested: bounds.clone(),
+            covered: bounds,
+        }))
     }
 }
 
