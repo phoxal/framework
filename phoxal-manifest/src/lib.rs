@@ -8,6 +8,7 @@ use phoxal_model::compiler::RobotParts;
 use phoxal_model::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
 
 use source::SourceError;
+use source::robot::v0::DriverConfig;
 
 pub mod build_requirements;
 pub mod schema;
@@ -175,46 +176,35 @@ pub enum AssetError {
     Missing { id: AssetId },
 }
 
-/// The complete source-to-runtime compilation result.
+/// The complete source compilation result handed to build tooling.
 #[derive(Debug, Clone)]
 pub struct CompiledProject {
     robot: phoxal_model::Robot,
-    participants: ParticipantDeclarations,
+    services: Vec<CompiledService>,
+    drivers: Vec<CompiledDriver>,
     assets: CompiledAssets,
 }
 
-/// Normalized participant declarations kept outside the canonical robot.
-#[derive(Debug, Clone, Default)]
-pub struct ParticipantDeclarations(Vec<Participant>);
-
-/// One selected project participant, independent of process launch policy.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Participant {
+/// One service declared by the authored project.
+///
+/// This is source input for build tooling, not a process or binary
+/// declaration. The tooling layer combines it with workspace/catalog facts
+/// before it creates a persisted runtime participant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledService {
     pub id: String,
-    pub kind: ParticipantKind,
-    pub component_instance: Option<String>,
     pub config: Option<serde_json::Value>,
 }
 
-/// What a participant is.
+/// One component instance whose authored source declares a hardware driver.
 ///
-/// This must round-trip every kind a real participant binary declares in its
-/// embedded metadata, which is why `Brain` is here even though a brain is never
-/// declared under `robot.yaml` `services:` - the authored grammar owns that
-/// exclusion, through `RESERVED_BRAIN_ID`, and a deserializable enum is the
-/// wrong place to express it.
-///
-/// The canonical definition is `phoxal_runtime_contract::ParticipantKind`.
-/// This crate cannot depend on it (that edge is forbidden), so the two are
-/// coupled by convention and pinned by a test.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ParticipantKind {
-    Service,
-    Driver,
-    Simulator,
-    Brain,
+/// The component type is intentionally not repeated here: the canonical
+/// [`phoxal_model::Robot`] resolves it from `component_instance`, while this
+/// fact retains only the source-owned driver declaration and configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledDriver {
+    pub component_instance: ComponentInstanceId,
+    pub config: DriverConfig,
 }
 
 /// Deterministic compiled runtime assets.
@@ -246,12 +236,13 @@ impl SourceSet {
             robot_root: project_root.clone(),
             component_roots: self.component_roots,
         };
-        let (robot, participants) = resolved.compile_model(&manifest)?;
+        let (robot, services, drivers) = resolved.compile_model(&manifest)?;
         let assets = resolved.compile_assets(&project_root, &manifest, &robot)?;
 
         Ok(CompiledProject {
             robot,
-            participants,
+            services,
+            drivers,
             assets,
         })
     }
@@ -290,12 +281,19 @@ impl ResolvedSources {
         })
     }
 
-    /// Build the canonical model and participant declarations from documents
-    /// that are already resolved on disk.
+    /// Build the canonical model and source-owned service/driver facts from
+    /// documents that are already resolved on disk.
     fn compile_model(
         &self,
         manifest: &source::robot::v0::Manifest,
-    ) -> Result<(phoxal_model::Robot, ParticipantDeclarations), CompileError> {
+    ) -> Result<
+        (
+            phoxal_model::Robot,
+            Vec<CompiledService>,
+            Vec<CompiledDriver>,
+        ),
+        CompileError,
+    > {
         let mut component_types = BTreeMap::new();
         let mut simulation_types = BTreeMap::new();
         for component_type in manifest.used_component_types() {
@@ -389,8 +387,8 @@ impl ResolvedSources {
             source,
         })?;
 
-        let participants = self.compile_participants(manifest)?;
-        Ok((robot, participants))
+        let (services, drivers) = self.compile_source_facts(manifest)?;
+        Ok((robot, services, drivers))
     }
 
     /// Load and normalize one component type's documents.
@@ -494,62 +492,36 @@ impl ResolvedSources {
         }
     }
 
-    fn compile_participants(
+    fn compile_source_facts(
         &self,
         manifest: &source::robot::v0::Manifest,
-    ) -> Result<ParticipantDeclarations, CompileError> {
+    ) -> Result<(Vec<CompiledService>, Vec<CompiledDriver>), CompileError> {
         // `services` cannot contain the reserved `brain` identity here: every
         // entry into this compiler validates the authored document first, and
         // `Manifest::validate` owns that rejection.
-        let mut participants = manifest
+        let services = manifest
             .services
             .iter()
-            .map(|(id, service)| Participant {
+            .map(|(id, service)| CompiledService {
                 id: id.clone(),
-                kind: ParticipantKind::Service,
-                component_instance: None,
                 config: service.config.clone(),
             })
             .collect::<Vec<_>>();
-        for (instance, component) in &manifest.robot.components {
-            if let Some(driver) = &component.driver {
-                participants.push(Participant {
-                    id: component.component.clone(),
-                    kind: ParticipantKind::Driver,
-                    component_instance: Some(instance.clone()),
-                    config: Some(Self::transcode(driver, "driver configuration")?),
-                });
-            }
-            if self
-                .component_root(&component.component)?
-                .join("simulation.yaml")
-                .is_file()
-            {
-                participants.push(Participant {
-                    id: component.component.clone(),
-                    kind: ParticipantKind::Simulator,
-                    component_instance: Some(instance.clone()),
-                    config: None,
-                });
-            }
-        }
-        // Every constructor above is keyed by a distinct authored map: `services`
-        // by service id, and the driver/simulator declarations by component
-        // instance. The `(kind, id, component_instance)` triple is therefore
-        // unique by construction, so there is no duplicate check to run here.
-        participants.sort_by(|left, right| {
-            (
-                left.kind as u8,
-                left.id.as_str(),
-                left.component_instance.as_deref(),
-            )
-                .cmp(&(
-                    right.kind as u8,
-                    right.id.as_str(),
-                    right.component_instance.as_deref(),
-                ))
-        });
-        Ok(ParticipantDeclarations(participants))
+        let drivers = manifest
+            .robot
+            .components
+            .iter()
+            .filter_map(|(instance, component)| {
+                component.driver.as_ref().map(|config| {
+                    self.identity(ComponentInstanceId::new(instance))
+                        .map(|instance| CompiledDriver {
+                            component_instance: instance,
+                            config: config.clone(),
+                        })
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((services, drivers))
     }
 
     /// Stage every mesh tree the project owns, then prove the canonical model
@@ -593,8 +565,13 @@ impl CompiledProject {
     }
 
     #[must_use]
-    pub const fn participants(&self) -> &ParticipantDeclarations {
-        &self.participants
+    pub fn services(&self) -> &[CompiledService] {
+        &self.services
+    }
+
+    #[must_use]
+    pub fn drivers(&self) -> &[CompiledDriver] {
+        &self.drivers
     }
 
     #[must_use]
@@ -603,19 +580,15 @@ impl CompiledProject {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (phoxal_model::Robot, ParticipantDeclarations, CompiledAssets) {
-        (self.robot, self.participants, self.assets)
-    }
-}
-
-impl ParticipantDeclarations {
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Participant> {
-        self.0.iter()
-    }
-
-    #[must_use]
-    pub fn into_vec(self) -> Vec<Participant> {
-        self.0
+    pub fn into_parts(
+        self,
+    ) -> (
+        phoxal_model::Robot,
+        Vec<CompiledService>,
+        Vec<CompiledDriver>,
+        CompiledAssets,
+    ) {
+        (self.robot, self.services, self.drivers, self.assets)
     }
 }
 
@@ -686,8 +659,6 @@ fn collect_files(
 
 #[cfg(test)]
 mod tests {
-    use super::ParticipantKind;
-
     #[test]
     fn asset_ids_are_normalized() {
         for invalid in ["", "/a", "../a", "a/../b", "a\\b", "a//b"] {
@@ -699,22 +670,5 @@ mod tests {
                 .as_str(),
             "meshes/base.stl"
         );
-    }
-
-    /// A participant binary's embedded metadata serializes its kind with the
-    /// canonical `phoxal_runtime_contract::ParticipantKind` names. This crate
-    /// must not depend on that crate, so the coupling is pinned here: adding a
-    /// kind there without adding it below makes a real binary's metadata
-    /// undeserializable, and this test is what says so.
-    #[test]
-    fn every_canonical_participant_kind_round_trips() {
-        const CANONICAL: [&str; 4] = ["service", "driver", "simulator", "brain"];
-        for name in CANONICAL {
-            let json = format!("\"{name}\"");
-            let kind: ParticipantKind = serde_json::from_str(&json)
-                .unwrap_or_else(|error| panic!("'{name}' must deserialize: {error}"));
-            assert_eq!(serde_json::to_string(&kind).unwrap(), json);
-        }
-        assert!(serde_json::from_str::<ParticipantKind>("\"tool\"").is_err());
     }
 }

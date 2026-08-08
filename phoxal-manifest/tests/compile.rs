@@ -220,10 +220,29 @@ fn an_authored_behaviors_directory_is_never_read() {
     );
     assert!(
         compiled
-            .participants()
+            .services()
             .iter()
-            .all(|participant| participant.id != "behavior"),
-        "no behavior participant may be declared"
+            .all(|service| service.id != "behavior"),
+        "no behavior service may be declared"
+    );
+}
+
+#[test]
+fn declared_services_are_emitted_as_source_facts() {
+    let temp = tempfile::tempdir().unwrap();
+    staged_project(
+        temp.path(),
+        "\nservices:\n  localize:\n    config:\n      rate_hz: 10\n",
+    );
+
+    let compiled = sources(temp.path())
+        .compile()
+        .expect("a declared source service must compile");
+    assert_eq!(compiled.services().len(), 1);
+    assert_eq!(compiled.services()[0].id, "localize");
+    assert_eq!(
+        compiled.services()[0].config,
+        Some(serde_json::json!({"rate_hz": 10}))
     );
 }
 
@@ -245,7 +264,7 @@ fn a_service_claiming_the_reserved_brain_identity_fails_compilation() {
 }
 
 #[test]
-fn one_component_can_have_distinct_driver_and_simulator_participants() {
+fn driver_facts_are_source_owned_and_simulation_stays_on_the_robot() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
     let temp = tempfile::tempdir().unwrap();
@@ -271,23 +290,16 @@ fn one_component_can_have_distinct_driver_and_simulator_participants() {
     let compiled = sources(temp.path())
         .compile()
         .expect("driver plus simulator must compile");
-    let matching = compiled
-        .participants()
-        .iter()
-        .filter(|participant| {
-            participant.id == "drive_motor"
-                && participant.component_instance.as_deref() == Some("front_left_drive")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(matching.len(), 2);
-    assert!(
-        matching
-            .iter()
-            .any(|participant| { participant.kind == phoxal_manifest::ParticipantKind::Driver })
+    assert_eq!(compiled.drivers().len(), 1);
+    assert_eq!(
+        compiled.drivers()[0].component_instance.as_str(),
+        "front_left_drive"
     );
     assert!(
-        matching
-            .iter()
-            .any(|participant| { participant.kind == phoxal_manifest::ParticipantKind::Simulator })
+        compiled
+            .robot()
+            .simulation_for_instance("front_left_drive")
+            .is_some(),
+        "simulation membership belongs to the canonical robot"
     );
 }
