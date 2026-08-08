@@ -227,12 +227,7 @@ impl Participant for Odometry {
         ))
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.pose = Pose::default();
         state.left.fill(None);
         state.right.fill(None);
@@ -240,12 +235,7 @@ impl Participant for Odometry {
     }
 
     #[phoxal::step(hz = 50)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         state.drain(api);
 
         let Some((linear_x_mps, angular_z_radps)) = state.twist(step.now()) else {

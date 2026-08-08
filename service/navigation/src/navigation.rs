@@ -92,12 +92,7 @@ impl Participant for Navigation {
     }
 
     #[phoxal::step(hz = 20)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         let now = step.now();
         state.last_time = Some(now);
         while let Some(received) = api.localize.try_recv() {
@@ -207,12 +202,7 @@ impl Participant for Navigation {
         Ok(())
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         *state = NavigationState::default();
         Ok(())
     }

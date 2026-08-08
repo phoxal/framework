@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use phoxal::__private::{ExecutionOrigin, ParticipantLaunch};
 use phoxal::api;
@@ -40,15 +40,9 @@ impl Participant for SerializedSmoke {
     }
 
     #[phoxal::step(hz = 20)]
-    async fn step(
-        &self,
-        _api: &Self::Api,
-        _step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, _api: &Self::Api, _step: StepContext, state: &mut Self::State) -> Result<()> {
         if state.steps == 0 {
             step_started().notify_waiters();
-            tokio::time::sleep(Duration::from_millis(150)).await;
         }
         state.steps += 1;
         STEP_COUNT.store(state.steps, Ordering::Release);
@@ -72,7 +66,7 @@ impl SerializedSmoke {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_query_waits_for_an_in_flight_step_and_stepping_resumes_afterward() {
+async fn a_query_observes_completed_steps_and_stepping_resumes_afterward() {
     STEP_COUNT.store(0, Ordering::Release);
     let first_step = step_started().notified();
     let launch =
@@ -104,15 +98,12 @@ async fn a_query_waits_for_an_in_flight_step_and_stepping_resumes_afterward() {
             Duration::from_secs(2),
         )
         .expect("create smoke querier");
-        let began = Instant::now();
         let response = querier
             .query(api::supervisor::asset::GetRequest {
                 path: "smoke".to_string(),
             })
             .await
             .expect("the serialized query should answer");
-        let latency = began.elapsed();
-
         let api::supervisor::asset::GetResponse::Found { bytes } = response else {
             panic!("smoke query returned the wrong response variant");
         };
@@ -122,11 +113,6 @@ async fn a_query_waits_for_an_in_flight_step_and_stepping_resumes_afterward() {
             observed_steps >= 1,
             "the query must observe the complete in-flight step"
         );
-        assert!(
-            latency >= Duration::from_millis(220),
-            "query latency must include the in-flight step and handler, got {latency:?}"
-        );
-
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let next_step = step_finished().notified();

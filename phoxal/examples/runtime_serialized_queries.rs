@@ -74,12 +74,7 @@ impl Participant for SerializedMap {
     }
 
     #[phoxal::step(hz = 2)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         if api.localize.latest().is_some() {
             state.rev = state.rev.saturating_add(1);
         }

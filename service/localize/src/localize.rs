@@ -51,23 +51,13 @@ impl Participant for Localize {
         ))
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.last_odometry = None;
         Ok(())
     }
 
     #[phoxal::step(hz = 20)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         while let Some(observed) = api.odometry.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
                 state.last_odometry = Some(Timed::new(observed.body, at));

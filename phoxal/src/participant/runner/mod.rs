@@ -15,18 +15,16 @@ use std::pin::{Pin, pin};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::api;
 use crate::bus::{LocalInstant, RobotInstant, StepToken, Subscriber, TimelineId};
 use crate::participant::api::Participant;
-use crate::participant::bus_log::{self, BusLogState};
+use crate::participant::bus_log::{self, BusLogState, BusLogTask};
 use crate::participant::clock::real::RealClock;
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, SetupContext, StepContext, TimelineRetention};
 use crate::participant::launch::ParticipantLaunchPolicy;
-use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
+use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{AnyStepScheduler, SchedulerTick, StepSchedule, StepScheduler};
@@ -41,7 +39,7 @@ pub(crate) mod teardown;
 use inputs::{ParticipantBundleInputs, participant_config};
 use query::QuerySurface;
 use signal::shutdown_signal;
-use teardown::{Teardown, abandon_setup};
+use teardown::{Teardown, TeardownReport, abandon_setup, combine};
 
 /// How often the runner wakes for work that is not a step: publishing the
 /// runtime-performance rollup, and re-checking clock discipline.
@@ -70,11 +68,14 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     // `Participant::__retain_embedded_metadata`'s docs.
     R::__retain_embedded_metadata();
 
+    init_tracing();
+    // Install the process signal handlers before launch parsing, bus open, or
+    // setup can await. A supervisor's SIGTERM during startup must become the
+    // same teardown request as one received by the steady-state loop.
+    let shutdown = shutdown_signal();
     let launch = R::LaunchPolicy::from_cli(R::ID)?;
 
-    init_tracing();
-
-    run_with::<R, _>(launch, shutdown_signal()).await
+    run_with::<R, _>(launch, shutdown).await
 }
 
 /// Run a participant against an explicit launch and shutdown trigger, on a bus
@@ -108,10 +109,10 @@ where
 
     let result = run_with_bus::<R, S>(&bus, launch, shutdown).await;
 
-    if let Err(e) = bus.close().await {
-        tracing::warn!(target: "phoxal.runtime", error = %e, "bus close failed");
+    match bus.close().await {
+        Ok(()) => result,
+        Err(error) => teardown::add_bus_close_error(result, error.into()),
     }
-    result
 }
 
 /// Run a participant on a **caller-owned** bus, against an explicit launch and
@@ -178,9 +179,9 @@ where
     init_tracing();
 
     let participant_id = launch.participant_id.clone();
-    let bus_logs = bus_log::attach(bus.clone(), &participant_id);
-    let result = run_lifecycle::<R, C, S>(bus, launch, clock, shutdown).await;
-    bus_logs.shutdown().await;
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), &participant_id);
+    let result = run_lifecycle::<R, C, S>(bus, launch, clock, shutdown, bus_log_task).await;
+    bus_logs.shutdown();
     result
 }
 
@@ -189,6 +190,7 @@ async fn run_lifecycle<R, C, S>(
     launch: ParticipantLaunch,
     clock: C,
     shutdown: S,
+    bus_log_task: BusLogTask,
 ) -> crate::Result<()>
 where
     R: Participant,
@@ -219,27 +221,23 @@ where
         AnyStepScheduler::Real(_) | AnyStepScheduler::Clockless => RunnerClock::Delegated(clock),
     };
     // Subscribe before setup so the simulation clock can advance while setup runs.
-    let clock_feed = clock_handle
-        .map(|handle| spawn_simulation_clock_feed(bus, handle))
-        .transpose()?;
-
-    let result = match Runner::<R, C>::start(
+    match Runner::<R, C>::start(
         bus,
         &launch,
         effective_clock,
         scheduler,
         schedule,
         clock_mode,
+        RunnerTasks {
+            simulation_clock: clock_handle,
+            bus_log: bus_log_task,
+        },
     )
     .await
     {
         Ok(runner) => runner.run(shutdown).await,
         Err(error) => Err(error),
-    };
-    if let Some(task) = clock_feed {
-        task.abort();
     }
-    result
 }
 
 /// The failure a participant reports when it cannot trust its own clock.
@@ -265,12 +263,16 @@ enum LoopExit {
     /// The host asked the participant to stop. The only exit that is not a
     /// failure.
     ShutdownRequested,
-    /// A task the participant declared as fault-on-exit went away.
+    /// A runner-owned task violated its completion policy.
     ManagedTaskFaulted(ManagedTaskExit),
     /// The clock stopped being trustworthy, so no further step could be timed.
     ClockDisciplineLost(TimeUnsynchronized),
     /// `Participant::reset` refused the replacement world history.
     ResetFailed(anyhow::Error),
+    /// A scheduled state transition failed. Step failures are terminal so the
+    /// runner can park the participant immediately instead of continuing with
+    /// state whose invariants the transition may have left unknown.
+    StepFailed(anyhow::Error),
 }
 
 impl LoopExit {
@@ -280,6 +282,7 @@ impl LoopExit {
             LoopExit::ManagedTaskFaulted(exit) => Err(exit.into()),
             LoopExit::ClockDisciplineLost(reason) => Err(ClockDisciplineLost { reason }.into()),
             LoopExit::ResetFailed(error) => Err(error),
+            LoopExit::StepFailed(error) => Err(error),
         }
     }
 }
@@ -354,10 +357,19 @@ struct Runner<R: Participant, C: ClockSource> {
     runtime_performance_publisher: RuntimePerformancePublisher,
     runtime_performance: RuntimePerformance,
     managed_tasks: ManagedTasks,
-    /// Held for the participant's whole run: dropping it is what tells the graph
-    /// this participant is gone, so it must outlive the shutdown hook.
+    /// The participant's Ready/liveliness lease. It is revoked before any
+    /// shutdown work starts, so observers never see Ready while resources are
+    /// being unwound.
     liveliness: ParticipantLivelinessToken,
     shutdown_grace_ms: u64,
+}
+
+/// Framework tasks that must be registered before setup can declare Ready.
+/// Keeping them together makes the startup boundary explicit and prevents the
+/// runner's setup signature from turning into an unowned parameter list.
+struct RunnerTasks {
+    simulation_clock: Option<SimulationClockHandle>,
+    bus_log: BusLogTask,
 }
 
 impl<R: Participant, C: ClockSource> Runner<R, C> {
@@ -374,12 +386,24 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         scheduler: AnyStepScheduler,
         schedule: Option<StepSchedule>,
         clock_mode: ClockMode,
+        tasks: RunnerTasks,
     ) -> crate::Result<Self> {
         let config: R::Config = participant_config(launch.config.as_ref())?;
         let bundle = ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref())?;
 
         let mut ctx =
             SetupContext::<R>::new(bus.clone(), bundle, launch.component_instance.clone());
+        ctx.spawn_managed_with(
+            "bus-log-drain",
+            ManagedTaskPolicy::Finite,
+            tasks.bus_log.run(),
+        );
+        if let Some(handle) = tasks.simulation_clock {
+            ctx.spawn_managed(
+                "simulation-clock-ingest",
+                simulation_clock_feed(bus.clone(), handle),
+            );
+        }
         let participant = R::__new();
         let (mut state, api) = match participant.setup(&mut ctx, config).await {
             Ok(pair) => pair,
@@ -395,7 +419,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // From here on the runner - not `SetupContext` - owns watching the tasks
         // `ctx.spawn_managed(...)` started for an unexpected exit, and
         // cancelling/joining them at shutdown.
-        let managed_tasks = ctx.take_managed_tasks();
+        let mut managed_tasks = ctx.take_managed_tasks();
         let timeline_retentions = ctx.take_timeline_retentions();
         let query_registrations = ctx.take_query_registrations();
 
@@ -403,27 +427,74 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             managed_tasks,
             grace_ms: launch.shutdown_grace_ms,
         };
-        let queries = match QuerySurface::declare(bus, query_registrations).await {
-            Ok(queries) => queries,
-            Err(error) => {
-                wind_down(managed_tasks)
-                    .run(&participant, &api, &mut state)
-                    .await;
-                return Err(error);
+        let mut queries =
+            match QuerySurface::declare(bus, query_registrations, &mut managed_tasks).await {
+                Ok(queries) => queries,
+                Err(error) => {
+                    let report = wind_down(managed_tasks)
+                        .run(&participant, &api, &mut state)
+                        .await;
+                    return combine(Err(error), report);
+                }
+            };
+
+        // Setup and query declaration may have started tasks whose failure is
+        // already ready to observe. Drain those completions before acquiring
+        // the Ready/liveliness token so a failed critical task can never pass
+        // through a transient "ready" state.
+        if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
+            if let Some(queries) = queries.take() {
+                queries.close();
             }
-        };
-        let liveliness = match bus.declare_participant_liveliness().await {
-            Ok(token) => token,
-            Err(error) => {
-                if let Some(queries) = queries {
+            let report = wind_down(managed_tasks)
+                .run(&participant, &api, &mut state)
+                .await;
+            return combine(Err(exit.into()), report);
+        }
+        // Ready acquisition is itself a lifecycle boundary. Race the bus
+        // declaration against already-supervised task completion so a
+        // Critical setup/query failure cannot win the await and briefly make
+        // an unhealthy participant visible.
+        let liveliness = tokio::select! {
+            biased;
+            exit = managed_tasks.next_unexpected_exit() => {
+                if let Some(queries) = queries.take() {
                     queries.close();
                 }
-                wind_down(managed_tasks)
+                let report = wind_down(managed_tasks)
                     .run(&participant, &api, &mut state)
                     .await;
-                return Err(error.into());
+                return combine(Err(exit.into()), report);
             }
+            result = bus.declare_participant_liveliness() => match result {
+                Ok(token) => token,
+                Err(error) => {
+                    if let Some(queries) = queries.take() {
+                        queries.close();
+                    }
+                    let report = wind_down(managed_tasks)
+                        .run(&participant, &api, &mut state)
+                        .await;
+                    return combine(Err(error.into()), report);
+                }
+            },
         };
+
+        // Do not accept the token merely because its await won the race. Give
+        // task completions that became ready during declaration a scheduling
+        // turn, drain them, and revoke the just-acquired token before any
+        // Ready announcement or Runner is returned.
+        tokio::task::yield_now().await;
+        if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
+            drop(liveliness);
+            if let Some(queries) = queries.take() {
+                queries.close();
+            }
+            let report = wind_down(managed_tasks)
+                .run(&participant, &api, &mut state)
+                .await;
+            return combine(Err(exit.into()), report);
+        }
 
         tracing::info!(
             target: "phoxal.runtime",
@@ -461,11 +532,12 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         S: Future<Output = ()>,
     {
         let exit = self.main_loop(pin!(shutdown)).await;
-        self.finish().await;
-        exit.into_result()
+        let primary = exit.into_result();
+        let report = self.finish().await;
+        combine(primary, report)
     }
 
-    async fn finish(self) {
+    async fn finish(self) -> TeardownReport {
         let Runner {
             participant,
             api,
@@ -477,7 +549,11 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             ..
         } = self;
 
-        // Query receive tasks stop first: nothing after this point serves a
+        // Ready is revoked first: teardown must never leave a live lease while
+        // participant resources are being unwound.
+        drop(liveliness);
+
+        // Query receive tasks stop next: nothing after this point serves a
         // request, and one arriving mid-teardown must not reach state the
         // shutdown hook is already unwinding.
         if let Some(queries) = queries {
@@ -488,8 +564,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             grace_ms: shutdown_grace_ms,
         }
         .run(&participant, &api, &mut state)
-        .await;
-        drop(liveliness);
+        .await
     }
 
     async fn main_loop<S>(&mut self, mut shutdown: Pin<&mut S>) -> LoopExit
@@ -556,7 +631,6 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                         if let Err(error) = self
                             .participant
                             .reset(reset, &self.api, &mut self.state)
-                            .await
                         {
                             return LoopExit::ResetFailed(error);
                         }
@@ -669,17 +743,17 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     };
                     step_index += 1;
 
-                    // A handler `Err` is a domain outcome: stay healthy, log, and
-                    // continue. A panic still unwinds and aborts the process.
+                    // A handler error is terminal. A scheduled transition owns
+                    // the participant's mutable state, so continuing after an
+                    // error would make the Ready claim untrustworthy.
                     let observation = self
                         .runtime_performance
                         .begin_step(target, fired_at, missed_ticks);
-                    let success = match self.participant.step(&self.api, step, &mut self.state).await
-                    {
+                    let success = match self.participant.step(&self.api, step, &mut self.state) {
                         Ok(()) => true,
                         Err(e) => {
-                            tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
-                            false
+                            self.runtime_performance.finish_step(observation, false);
+                            return LoopExit::StepFailed(e);
                         }
                     };
                     self.runtime_performance.finish_step(observation, success);
@@ -728,57 +802,47 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
 /// separate pause flag is needed.
 ///
 /// The task owns `handle` for its whole lifetime and runs until the
-/// subscriber's underlying bus session closes; the caller aborts it
-/// explicitly at shutdown. Nothing else drives `handle` once this task is
+/// subscriber's underlying bus session closes. The runner registers it as a
+/// `Critical` managed task before setup, then cancels and joins it through the
+/// ordinary teardown sequence. Nothing else drives `handle` once this task is
 /// spawned, so keeping it running for the loop's duration is what keeps the
 /// scheduler advancing - the simulation scheduler separately retains its own
 /// sender keepalive (see its docs), so the watch channel itself would not close
 /// even if this task stopped, but a stopped task means logical time simply never
 /// advances again.
-fn spawn_simulation_clock_feed(
-    bus: &Bus,
-    handle: SimulationClockHandle,
-) -> crate::Result<JoinHandle<()>> {
-    let bus = bus.clone();
-    Ok(tokio::spawn(async move {
-        let topic = api::topic::client().simulation().clock();
-        let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
-            Ok(subscriber) => subscriber,
-            Err(error) => {
-                tracing::error!(
-                    target: "phoxal.runtime",
-                    error = %error,
-                    "failed to subscribe simulation/clock; simulation-mode steps will never advance"
-                );
-                return;
-            }
+async fn simulation_clock_feed(bus: Bus, handle: SimulationClockHandle) -> crate::Result<()> {
+    let topic = api::topic::client().simulation().clock();
+    let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
+        Ok(subscriber) => subscriber,
+        Err(error) => return Err(error.into()),
+    };
+    tracing::info!(
+        target: "phoxal.runtime",
+        topic = topic.key(),
+        "subscribed the live simulation/clock feed; driving the simulation scheduler from it"
+    );
+    loop {
+        let observed = subscriber
+            .recv()
+            .await
+            .map_err(|error| anyhow::anyhow!("simulation/clock subscriber terminated: {error}"))?;
+        let Some(at) = observed.metadata.produced_exactly_at() else {
+            return Err(anyhow::anyhow!(
+                "simulation/clock sample has no exact production instant"
+            ));
         };
-        tracing::info!(
-            target: "phoxal.runtime",
-            topic = topic.key(),
-            "subscribed the live simulation/clock feed; driving the simulation scheduler from it"
-        );
-        while let Ok(observed) = subscriber.recv().await {
-            let Some(at) = observed.metadata.produced_exactly_at() else {
+        match handle.advance(at) {
+            SimulationClockAdvance::Advanced | SimulationClockAdvance::DuplicateOrBackward => {}
+            SimulationClockAdvance::RetiredTimeline => {
                 tracing::warn!(
                     target: "phoxal.runtime",
-                    "discarding a simulation clock with no exact production instant"
+                    timeline = %at.timeline(),
+                    ticks = at.ticks(),
+                    "ignoring late simulation clock from a retired world history"
                 );
-                continue;
-            };
-            match handle.advance(at) {
-                SimulationClockAdvance::Advanced | SimulationClockAdvance::DuplicateOrBackward => {}
-                SimulationClockAdvance::RetiredTimeline => {
-                    tracing::warn!(
-                        target: "phoxal.runtime",
-                        timeline = %at.timeline(),
-                        ticks = at.ticks(),
-                        "ignoring late simulation clock from a retired world history"
-                    );
-                }
             }
         }
-    }))
+    }
 }
 
 /// Resolve on the next request when the participant declared a query surface,
@@ -900,6 +964,7 @@ mod tests {
         let panicked = LoopExit::ManagedTaskFaulted(ManagedTaskExit {
             name: "io-pump".to_string(),
             panic_message: Some("serial port vanished".to_string()),
+            error_message: None,
         })
         .into_result()
         .expect_err("a faulted managed task is a failure");
@@ -911,6 +976,7 @@ mod tests {
         let returned = LoopExit::ManagedTaskFaulted(ManagedTaskExit {
             name: "io-pump".to_string(),
             panic_message: None,
+            error_message: None,
         })
         .into_result()
         .expect_err("a faulted managed task is a failure");
@@ -920,5 +986,40 @@ mod tests {
         );
 
         assert!(LoopExit::ShutdownRequested.into_result().is_ok());
+    }
+
+    /// A Critical task that fails while the bus-side Ready declaration is
+    /// awaiting must win the boundary race, so no Ready token is accepted.
+    #[tokio::test(start_paused = true)]
+    async fn ready_declaration_race_prefers_a_task_failure() {
+        let (trigger, triggered) = tokio::sync::oneshot::channel();
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn(
+            "declaration-race",
+            ManagedTaskPolicy::Critical,
+            async move {
+                triggered.await.expect("the declaration triggers the task");
+                Err::<(), _>(anyhow::anyhow!(
+                    "setup task failed during Ready declaration"
+                ))
+            },
+        );
+
+        let declaration = async move {
+            trigger.send(()).expect("the task is still supervised");
+            tokio::task::yield_now().await;
+            Ok::<(), ()>(())
+        };
+        let failure = tokio::select! {
+            biased;
+            exit = tasks.next_unexpected_exit() => Some(exit),
+            _ = declaration => None,
+        };
+        let failure = failure.expect("task failure must preempt Ready acquisition");
+        assert_eq!(failure.name, "declaration-race");
+        assert_eq!(
+            failure.error_message.as_deref(),
+            Some("setup task failed during Ready declaration")
+        );
     }
 }

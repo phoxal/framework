@@ -1,5 +1,7 @@
 //! The host's "stop" request, as it reaches the runner.
 
+use std::future::Future;
+
 #[cfg(unix)]
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -49,29 +51,43 @@ impl TerminationSignals {
 /// during teardown is absorbed rather than killing the participant mid-park; a
 /// supervisor that wants a hard stop escalates to SIGKILL.
 #[cfg(unix)]
-pub(crate) async fn shutdown_signal() {
-    match TerminationSignals::register() {
-        Ok(mut signals) => signals.next().await,
-        Err(error) => {
-            // Not a stop request either: without a handler the participant runs
-            // until SIGKILL, which is strictly better than parking the hardware
-            // because a registration failed at startup.
-            tracing::error!(
-                target: "phoxal.runtime",
-                error = %error,
-                "failed to listen for SIGINT/SIGTERM; only SIGKILL will stop this participant"
-            );
-            std::future::pending::<()>().await
+pub(crate) fn shutdown_signal() -> impl Future<Output = ()> {
+    // Register synchronously while the runner is starting, before bus open or
+    // participant setup can await. The returned future only waits on the
+    // already-installed handlers.
+    let registered = TerminationSignals::register();
+    async move {
+        match registered {
+            Ok(mut signals) => signals.next().await,
+            Err(error) => {
+                // Not a stop request either: without a handler the participant
+                // runs until SIGKILL, which is strictly better than parking the
+                // hardware because a registration failed at startup.
+                tracing::error!(
+                    target: "phoxal.runtime",
+                    error = %error,
+                    "failed to listen for SIGINT/SIGTERM; only SIGKILL will stop this participant"
+                );
+                std::future::pending::<()>().await
+            }
         }
     }
 }
 
-/// Resolve when the host asks this participant to stop. Platforms without POSIX
-/// signals have Ctrl-C only.
+/// Resolve when the host asks this participant to stop.
+///
+/// Tokio's non-Unix Ctrl-C API has no synchronous registration constructor, so
+/// the handler is installed when this returned future is first polled. The
+/// Unix path above is eagerly registered before bus startup; non-Unix targets
+/// therefore honestly provide Ctrl-C coverage once the runner reaches its
+/// supervised loop, but cannot promise protection from a startup Ctrl-C during
+/// an in-flight bus open.
 #[cfg(not(unix))]
-pub(crate) async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::warn!(target: "phoxal.runtime", error = %e, "failed to listen for ctrl-c");
+pub(crate) fn shutdown_signal() -> impl Future<Output = ()> {
+    async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::warn!(target: "phoxal.runtime", error = %e, "failed to listen for ctrl-c");
+        }
     }
 }
 
@@ -115,5 +131,17 @@ mod tests {
     #[serial_test::serial(process_signals)]
     async fn sigint_triggers_shutdown() {
         resolves_on(libc::SIGINT).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(process_signals)]
+    async fn shutdown_future_registers_before_its_first_poll() {
+        let shutdown = shutdown_signal();
+        // If registration were deferred until polling the future, this signal
+        // would still have the process-default terminating disposition.
+        assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .expect("a startup signal must be queued before the wait is polled");
     }
 }

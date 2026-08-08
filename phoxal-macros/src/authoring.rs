@@ -661,9 +661,9 @@ pub fn expand_participant(
 // #[phoxal::step(hz = N)]
 // ---------------------------------------------------------------------------
 
-/// Record the step cadence on the ordinary `Participant::step` override. The
-/// schedule rides on a hidden associated fn rather than replacing the method,
-/// so the authored body stays exactly as written.
+/// Record the step cadence on the ordinary synchronous `Participant::step`
+/// override. The schedule rides on a hidden associated fn rather than
+/// replacing the method, so the authored body stays exactly as written.
 pub fn expand_step(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let hz = parse_step_hz(attr)?;
     let method: ImplItemFn = syn::parse2(item)?;
@@ -674,13 +674,12 @@ pub fn expand_step(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
             "#[phoxal::step] must annotate the `step` Participant method",
         ));
     }
-    if method.sig.asyncness.is_none() {
+    if method.sig.asyncness.is_some() {
         return Err(syn::Error::new_spanned(
             &method.sig,
-            "#[phoxal::step] requires an async method",
+            "#[phoxal::step] requires a synchronous method",
         ));
     }
-
     let phoxal = quote!(::phoxal);
     Ok(quote! {
         #[doc(hidden)]
@@ -1050,7 +1049,7 @@ mod tests {
         let expanded = expand_step(
             quote!(hz = 50),
             quote! {
-                async fn step(
+                fn step(
                     &self,
                     _api: &Self::Api,
                     _step: StepContext,
@@ -1066,6 +1065,25 @@ mod tests {
         assert!(expanded.contains("__step_schedule"));
         assert!(expanded.contains("__assert_schedulable_surface"));
         assert!(expanded.contains("StepSchedule :: hz (50f64)"));
-        assert!(expanded.contains("async fn step"));
+        assert!(expanded.contains("fn step"));
+    }
+
+    #[test]
+    fn step_rejects_async_transitions_at_macro_expansion() {
+        let error = expand_step(
+            quote!(hz = 50),
+            quote! {
+                async fn step(
+                    &self,
+                    _api: &Self::Api,
+                    _step: StepContext,
+                    _state: &mut Self::State,
+                ) -> Result<()> {
+                    Ok(())
+                }
+            },
+        )
+        .expect_err("scheduled transitions must not be async");
+        assert!(error.to_string().contains("synchronous method"));
     }
 }

@@ -17,12 +17,7 @@ impl Participant for AsyncParticipant {
     }
 
     #[phoxal::step(hz = 1)]
-    async fn step(
-        &self,
-        _api: &Self::Api,
-        _step: StepContext,
-        _state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, _api: &Self::Api, _step: StepContext, _state: &mut Self::State) -> Result<()> {
         Ok(())
     }
 }

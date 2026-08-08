@@ -3,9 +3,9 @@
 //!
 //! A managed task is the framework-tracked alternative to a raw `tokio::spawn`
 //! for long-lived work (sensor polling loops, serial/USB readers, async IO
-//! pumps): the runner records it during `Participant::setup`, watches for an unexpected
-//! exit or panic while the participant runs, and cancels + joins it during
-//! shutdown before the bus closes. See [`ManagedTaskPolicy`] for what
+//! pumps): the runner records it during `Participant::setup`, watches for an
+//! unexpected exit or panic while the participant runs, and cancels + joins it
+//! during shutdown before the bus closes. See [`ManagedTaskPolicy`] for what
 //! "unexpected" means.
 
 use std::collections::HashMap;
@@ -15,31 +15,47 @@ use std::time::Duration;
 use tokio::task::{Id, JoinError, JoinSet};
 use tokio::time::Instant;
 
-/// Whether a managed task ending on its own (without being cancelled by the
-/// runner) is a runtime fault.
+/// What completion a managed task promises to the participant runner.
 ///
-/// The runner only ever cancels a managed task during its shutdown sequence;
-/// outside of that window, the task ending - by returning, panicking, or
-/// otherwise stopping early - is always *unexpected* from the runner's point of
-/// view. This policy just says how the runner should react to that.
+/// Cancellation and joining are owned by the runner. Outside teardown, every
+/// task completion is observed as a lifecycle event: a [`Critical`] task must
+/// remain alive, while a [`Finite`] task is allowed to complete successfully.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ManagedTaskPolicy {
-    /// Ending on its own is a runtime fault: the runner logs the exit, marks
-    /// the participant `Failed`, and stops.
-    ///
-    /// The default, and the right choice for anything meant to run for the
-    /// participant's whole lifetime (sensor loops, IO pumps, watchdogs) - if the
-    /// loop ever returns, the participant has silently lost that capability and
-    /// should not keep reporting `Ready`.
+    /// A long-lived task whose unsolicited completion is a participant fault.
+    /// A clean return, an error, a panic, or an unexpected cancellation all
+    /// revoke the runner's ability to claim readiness.
     #[default]
-    FaultOnExit,
-    /// Ending on its own is expected and does not fault the participant.
-    ///
-    /// For one-shot setup-time work (a background warm-up, a best-effort cache
-    /// prime) that legitimately finishes and returns. The runner treats any
-    /// completion under this policy as non-fatal; a panic may still be reported by
-    /// Tokio's panic hook, but it does not mark the participant `Failed`.
-    AllowExit,
+    Critical,
+    /// A setup-time or finite operation whose successful completion is normal.
+    /// An error, panic, or unexpected cancellation remains a participant fault.
+    Finite,
+}
+
+/// The output accepted by [`SetupContext::spawn_managed`](crate::SetupContext::spawn_managed).
+///
+/// `()` keeps long-lived loops concise. Returning `Result<(), E>` lets a task
+/// carry an operational failure back to the runner instead of logging and
+/// continuing. This trait is intentionally hidden from the authoring facade;
+/// it is only the conversion seam for runner-owned task supervision.
+#[doc(hidden)]
+pub trait ManagedTaskOutput: Send + 'static {
+    fn into_managed_result(self) -> anyhow::Result<()>;
+}
+
+impl ManagedTaskOutput for () {
+    fn into_managed_result(self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl<E> ManagedTaskOutput for Result<(), E>
+where
+    E: Into<anyhow::Error> + Send + 'static,
+{
+    fn into_managed_result(self) -> anyhow::Result<()> {
+        self.map_err(Into::into)
+    }
 }
 
 /// One managed task's diagnostic identity, recorded at spawn time and looked up
@@ -62,6 +78,8 @@ pub(crate) struct ManagedTaskExit {
     /// `Some(panic message)` if the task panicked; `None` if it returned
     /// normally.
     pub(crate) panic_message: Option<String>,
+    /// `Some(detail)` when the task returned an operational error.
+    pub(crate) error_message: Option<String>,
 }
 
 impl std::fmt::Display for ManagedTaskExit {
@@ -72,16 +90,31 @@ impl std::fmt::Display for ManagedTaskExit {
                 "managed task \"{}\" panicked: {message}",
                 self.name
             ),
-            None => write!(
-                formatter,
-                "managed task \"{}\" exited unexpectedly",
-                self.name
-            ),
+            None => match &self.error_message {
+                Some(message) => write!(
+                    formatter,
+                    "managed task \"{}\" failed: {message}",
+                    self.name
+                ),
+                None => write!(
+                    formatter,
+                    "managed task \"{}\" exited unexpectedly",
+                    self.name
+                ),
+            },
         }
     }
 }
 
 impl std::error::Error for ManagedTaskExit {}
+
+/// Join evidence collected during teardown. Cancellation is expected, while
+/// an operational error or panic during cleanup is retained as evidence.
+#[derive(Debug, Default)]
+pub(crate) struct ManagedTaskShutdown {
+    pub(crate) unjoined: Vec<String>,
+    pub(crate) failures: Vec<anyhow::Error>,
+}
 
 /// Registry `SetupContext` accumulates managed tasks into during `Participant::setup`;
 /// the runner takes ownership of it once `Participant::setup` returns
@@ -91,7 +124,7 @@ impl std::error::Error for ManagedTaskExit {}
 /// ([`Self::shutdown_within`]).
 #[derive(Default)]
 pub(crate) struct ManagedTasks {
-    join_set: JoinSet<()>,
+    join_set: JoinSet<anyhow::Result<()>>,
     info: HashMap<Id, ManagedTaskInfo>,
 }
 
@@ -99,9 +132,12 @@ impl ManagedTasks {
     /// Spawn `future` as a managed task named `name` under `policy`.
     pub(crate) fn spawn<F>(&mut self, name: impl Into<String>, policy: ManagedTaskPolicy, future: F)
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future + Send + 'static,
+        F::Output: ManagedTaskOutput,
     {
-        let abort = self.join_set.spawn(future);
+        let abort = self
+            .join_set
+            .spawn(async move { future.await.into_managed_result() });
         self.info.insert(
             abort.id(),
             ManagedTaskInfo {
@@ -111,46 +147,31 @@ impl ManagedTasks {
         );
     }
 
-    /// Wait for the next `FaultOnExit` managed task to end (return or panic),
-    /// skipping over `AllowExit` completions. Pending forever once there are no
-    /// `FaultOnExit` tasks left to watch, so callers can `select!` this
+    /// Wait for the next policy violation, skipping successful `Finite`
+    /// completions. Pending forever once there are no `Critical` tasks left to
+    /// watch, so callers can `select!` this
     /// alongside other branches without it ever winning a race spuriously.
     pub(crate) async fn next_unexpected_exit(&mut self) -> ManagedTaskExit {
         loop {
             let Some(result) = self.join_set.join_next_with_id().await else {
                 return std::future::pending().await;
             };
+            if let Some(exit) = self.unexpected_exit(result) {
+                return exit;
+            }
+        }
+    }
 
-            match result {
-                Ok((id, ())) => {
-                    let Some(info) = self.info.remove(&id) else {
-                        continue;
-                    };
-                    if info.policy == ManagedTaskPolicy::AllowExit {
-                        continue;
-                    }
-                    return ManagedTaskExit {
-                        name: info.name,
-                        panic_message: None,
-                    };
-                }
-                Err(join_error) => {
-                    let id = join_error.id();
-                    let Some(info) = self.info.remove(&id) else {
-                        continue;
-                    };
-                    if info.policy == ManagedTaskPolicy::AllowExit || join_error.is_cancelled() {
-                        continue;
-                    }
-                    let panic_message = join_error
-                        .is_panic()
-                        .then(|| panic_message(join_error.into_panic()));
-                    return ManagedTaskExit {
-                        name: info.name,
-                        panic_message,
-                    };
-                }
-            };
+    /// Drain completions that are already available without waiting. This is
+    /// used at lifecycle boundaries such as the Ready claim: a setup or query
+    /// task that completed just before the boundary must be observed before
+    /// the participant becomes visible as ready.
+    pub(crate) fn try_next_unexpected_exit(&mut self) -> Option<ManagedTaskExit> {
+        loop {
+            let result = self.join_set.try_join_next_with_id()?;
+            if let Some(exit) = self.unexpected_exit(result) {
+                return Some(exit);
+            }
         }
     }
 
@@ -160,18 +181,19 @@ impl ManagedTasks {
     }
 
     /// Cancel every remaining managed task and join them within `grace`.
-    /// Returns the names of tasks still unjoined when `grace` elapsed.
-    pub(crate) async fn shutdown_within(mut self, grace: Duration) -> Vec<String> {
+    /// Returns unjoined task names and any non-cancellation join failures.
+    pub(crate) async fn shutdown_within(mut self, grace: Duration) -> ManagedTaskShutdown {
         self.cancel();
         let deadline = Instant::now() + grace;
         self.join_until(deadline).await
     }
 
     /// Join remaining tasks until the shared shutdown deadline is exhausted.
-    /// Returns the names of tasks still unjoined at `deadline`.
-    pub(crate) async fn join_until(mut self, deadline: Instant) -> Vec<String> {
+    /// Returns unjoined task names and any non-cancellation join failures.
+    pub(crate) async fn join_until(mut self, deadline: Instant) -> ManagedTaskShutdown {
+        let mut failures = Vec::new();
         loop {
-            self.drain_ready();
+            self.drain_ready(&mut failures);
             if self.info.is_empty() {
                 break;
             }
@@ -182,31 +204,120 @@ impl ManagedTasks {
             }
 
             match tokio::time::timeout(remaining, self.join_set.join_next_with_id()).await {
-                Ok(Some(result)) => self.forget_finished(result),
+                Ok(Some(result)) => self.forget_finished(result, &mut failures),
                 Ok(None) => break,
                 Err(_elapsed) => {
-                    self.drain_ready();
+                    self.drain_ready(&mut failures);
                     break;
                 }
             }
         }
 
-        self.info.into_values().map(|info| info.name).collect()
+        // The primary grace phase may have elapsed while a task was still
+        // running. Abort those tasks explicitly and give the JoinSet a second,
+        // bounded phase to reap their JoinHandles. This keeps ownership
+        // explicit: a JoinSet is never relied on as the only cleanup action.
+        if !self.info.is_empty() {
+            self.join_set.abort_all();
+            let reap_deadline = Instant::now() + Duration::from_millis(50);
+            loop {
+                self.drain_ready(&mut failures);
+                if self.info.is_empty() {
+                    break;
+                }
+                let remaining = reap_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(remaining, self.join_set.join_next_with_id()).await {
+                    Ok(Some(result)) => self.forget_finished(result, &mut failures),
+                    Ok(None) | Err(_) => {
+                        self.drain_ready(&mut failures);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut unjoined: Vec<_> = self.info.into_values().map(|info| info.name).collect();
+        unjoined.sort();
+        failures.sort_by_key(ToString::to_string);
+        ManagedTaskShutdown { unjoined, failures }
     }
 
-    fn drain_ready(&mut self) {
+    fn drain_ready(&mut self, failures: &mut Vec<anyhow::Error>) {
         while let Some(result) = self.join_set.try_join_next_with_id() {
-            self.forget_finished(result);
+            self.forget_finished(result, failures);
         }
     }
 
-    fn forget_finished(&mut self, result: Result<(Id, ()), JoinError>) {
+    fn forget_finished(
+        &mut self,
+        result: Result<(Id, anyhow::Result<()>), JoinError>,
+        failures: &mut Vec<anyhow::Error>,
+    ) {
         match result {
-            Ok((id, ())) => {
-                self.info.remove(&id);
+            Ok((id, task_result)) => {
+                if let Some(info) = self.info.remove(&id)
+                    && let Err(error) = task_result
+                {
+                    failures.push(error.context(format!(
+                        "managed task \"{}\" failed during shutdown",
+                        info.name
+                    )));
+                }
             }
             Err(join_error) => {
-                self.info.remove(&join_error.id());
+                if let Some(info) = self.info.remove(&join_error.id())
+                    && !join_error.is_cancelled()
+                {
+                    let detail = if join_error.is_panic() {
+                        panic_message(join_error.into_panic())
+                    } else {
+                        join_error.to_string()
+                    };
+                    failures.push(anyhow::anyhow!(detail).context(format!(
+                        "managed task \"{}\" failed during shutdown",
+                        info.name
+                    )));
+                }
+            }
+        }
+    }
+
+    fn unexpected_exit(
+        &mut self,
+        result: Result<(Id, anyhow::Result<()>), JoinError>,
+    ) -> Option<ManagedTaskExit> {
+        match result {
+            Ok((id, result)) => {
+                let info = self.info.remove(&id)?;
+                if info.policy == ManagedTaskPolicy::Finite && result.is_ok() {
+                    return None;
+                }
+                Some(ManagedTaskExit {
+                    name: info.name,
+                    panic_message: None,
+                    error_message: result.err().map(|error| error.to_string()),
+                })
+            }
+            Err(join_error) => {
+                let info = self.info.remove(&join_error.id())?;
+                let error_message = if join_error.is_cancelled() {
+                    Some("cancelled unexpectedly".to_string())
+                } else {
+                    None
+                };
+                let panic_message = if join_error.is_panic() {
+                    Some(panic_message(join_error.into_panic()))
+                } else {
+                    None
+                };
+                Some(ManagedTaskExit {
+                    name: info.name,
+                    panic_message,
+                    error_message,
+                })
             }
         }
     }
@@ -238,11 +349,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_early_return_faults_and_names_the_task() {
         let mut tasks = ManagedTasks::default();
-        tasks.spawn("sensor-loop", ManagedTaskPolicy::FaultOnExit, async {});
+        tasks.spawn("sensor-loop", ManagedTaskPolicy::Critical, async {});
 
         let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
             .await
-            .expect("a FaultOnExit task that returns must be reported");
+            .expect("a Critical task that returns must be reported");
         assert_eq!(exit.name, "sensor-loop");
         assert_eq!(
             exit.panic_message, None,
@@ -250,54 +361,95 @@ mod tests {
         );
     }
 
+    /// A Critical task that completed before a lifecycle boundary is drained
+    /// synchronously, rather than being allowed to cross the Ready claim.
+    #[tokio::test(start_paused = true)]
+    async fn an_already_completed_critical_task_is_drained_before_ready() {
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("setup-watchdog", ManagedTaskPolicy::Critical, async {});
+        tokio::task::yield_now().await;
+
+        let exit = tasks
+            .try_next_unexpected_exit()
+            .expect("a completed Critical task must be visible at the Ready boundary");
+        assert_eq!(exit.name, "setup-watchdog");
+        assert_eq!(exit.panic_message, None);
+    }
+
     /// A panic is reported with its message, so the participant's failure says
     /// what actually broke.
     #[tokio::test(start_paused = true)]
     async fn a_panic_is_reported_with_its_message() {
         let mut tasks = ManagedTasks::default();
-        tasks.spawn("io-pump", ManagedTaskPolicy::FaultOnExit, async {
+        tasks.spawn("io-pump", ManagedTaskPolicy::Critical, async {
             panic!("serial port vanished");
+            #[allow(unreachable_code)]
+            ()
         });
 
         let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
             .await
-            .expect("a panicking FaultOnExit task must be reported");
+            .expect("a panicking Critical task must be reported");
         assert_eq!(exit.name, "io-pump");
         assert_eq!(exit.panic_message.as_deref(), Some("serial port vanished"));
     }
 
-    /// `AllowExit` is the whole point of the policy: neither a clean return nor
-    /// a panic may fault the participant, and with nothing left to watch the
-    /// future stays pending rather than resolving spuriously.
+    /// A successful `Finite` return is expected, while a panic still faults the
+    /// participant. A finite task is not silently detached merely because it is
+    /// allowed to complete.
     #[tokio::test(start_paused = true)]
-    async fn allow_exit_suppresses_both_a_return_and_a_panic() {
+    async fn finite_success_is_allowed_but_panic_is_a_fault() {
         let mut tasks = ManagedTasks::default();
-        tasks.spawn("cache-prime", ManagedTaskPolicy::AllowExit, async {});
-        tasks.spawn("warm-up", ManagedTaskPolicy::AllowExit, async {
+        tasks.spawn("cache-prime", ManagedTaskPolicy::Finite, async {});
+        tasks.spawn("warm-up", ManagedTaskPolicy::Finite, async {
             panic!("best-effort work failed");
+            #[allow(unreachable_code)]
+            ()
         });
 
-        assert!(
-            tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
-                .await
-                .is_err(),
-            "AllowExit completions must never surface as unexpected exits"
+        let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
+            .await
+            .expect("a finite panic must surface as a task fault");
+        assert_eq!(exit.name, "warm-up");
+        assert_eq!(
+            exit.panic_message.as_deref(),
+            Some("best-effort work failed")
         );
     }
 
-    /// A `FaultOnExit` task is still watched while `AllowExit` siblings come and
-    /// go, so a real fault is not masked by the ones being skipped.
     #[tokio::test(start_paused = true)]
-    async fn a_real_fault_is_not_masked_by_allow_exit_siblings() {
+    async fn finite_error_is_a_fault_with_operational_detail() {
         let mut tasks = ManagedTasks::default();
-        tasks.spawn("cache-prime", ManagedTaskPolicy::AllowExit, async {});
-        tasks.spawn("watchdog", ManagedTaskPolicy::FaultOnExit, async {
+        tasks.spawn("cache-prime", ManagedTaskPolicy::Finite, async {
+            Err::<(), _>(anyhow::anyhow!("cache index is corrupt"))
+        });
+
+        let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
+            .await
+            .expect("a finite operational error must surface as a task fault");
+        assert_eq!(
+            exit.error_message.as_deref(),
+            Some("cache index is corrupt")
+        );
+        assert_eq!(
+            format!("{exit}"),
+            "managed task \"cache-prime\" failed: cache index is corrupt"
+        );
+    }
+
+    /// A `Critical` task is still watched while `Finite` siblings complete, so a
+    /// real fault is not masked by successful finite work.
+    #[tokio::test(start_paused = true)]
+    async fn a_real_fault_is_not_masked_by_finite_siblings() {
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("cache-prime", ManagedTaskPolicy::Finite, async {});
+        tasks.spawn("watchdog", ManagedTaskPolicy::Critical, async {
             tokio::task::yield_now().await;
         });
 
         let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
             .await
-            .expect("the FaultOnExit task must still be reported");
+            .expect("the Critical task must still be reported");
         assert_eq!(exit.name, "watchdog");
     }
 
@@ -311,7 +463,7 @@ mod tests {
         let running = Arc::clone(&started);
 
         let mut tasks = ManagedTasks::default();
-        tasks.spawn("forever", ManagedTaskPolicy::FaultOnExit, async move {
+        tasks.spawn("forever", ManagedTaskPolicy::Critical, async move {
             struct OnCancel(Arc<AtomicBool>);
             impl Drop for OnCancel {
                 fn drop(&mut self) {
@@ -329,13 +481,38 @@ mod tests {
 
         let unjoined = tasks.shutdown_within(Duration::from_secs(5)).await;
         assert!(
-            unjoined.is_empty(),
+            unjoined.unjoined.is_empty(),
             "a cancellable task must join: {unjoined:?}"
         );
         assert!(
             cancelled.load(Ordering::Relaxed),
             "the task must observe cancellation"
         );
+    }
+
+    /// A task that misses the primary grace deadline is explicitly aborted and
+    /// then reaped by the bounded second phase once its short synchronous
+    /// section returns.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_timed_out_task_is_reaped_after_explicit_abort() {
+        let started = Arc::new(AtomicBool::new(false));
+        let running = Arc::clone(&started);
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("short-block", ManagedTaskPolicy::Critical, async move {
+            running.store(true, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(25));
+        });
+        while !started.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+
+        let began = std::time::Instant::now();
+        let report = tasks.shutdown_within(Duration::from_millis(1)).await;
+        assert!(
+            report.unjoined.is_empty(),
+            "the second phase must reap the task"
+        );
+        assert!(began.elapsed() < Duration::from_secs(1));
     }
 
     /// A task inside a synchronous section cannot observe cancellation, so it
@@ -349,18 +526,14 @@ mod tests {
         let completed = Arc::clone(&finished);
 
         let mut tasks = ManagedTasks::default();
-        tasks.spawn(
-            "uncancellable",
-            ManagedTaskPolicy::FaultOnExit,
-            async move {
-                running.store(true, Ordering::Relaxed);
-                // Synchronous work cannot observe Tokio cancellation until it
-                // returns to the scheduler. Kept finite so the test runtime still
-                // shuts down promptly once the assertions below have run.
-                std::thread::sleep(Duration::from_millis(1500));
-                completed.store(true, Ordering::Relaxed);
-            },
-        );
+        tasks.spawn("uncancellable", ManagedTaskPolicy::Critical, async move {
+            running.store(true, Ordering::Relaxed);
+            // Synchronous work cannot observe Tokio cancellation until it
+            // returns to the scheduler. Kept finite so the test runtime still
+            // shuts down promptly once the assertions below have run.
+            std::thread::sleep(Duration::from_millis(1500));
+            completed.store(true, Ordering::Relaxed);
+        });
 
         while !started.load(Ordering::Relaxed) {
             tokio::task::yield_now().await;
@@ -371,7 +544,7 @@ mod tests {
         let elapsed = began.elapsed();
 
         assert_eq!(
-            unjoined,
+            unjoined.unjoined,
             vec!["uncancellable".to_string()],
             "a task still running at the grace deadline is reported by name"
         );

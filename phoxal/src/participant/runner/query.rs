@@ -1,18 +1,19 @@
 //! Serving the typed queries a participant registered during
 //! `Participant::setup`.
 
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-
 use crate::bus::QueryFailure;
 use crate::participant::api::{Participant, QueryRegistration};
+use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::{Bus, IncomingQuery};
+use tokio::sync::mpsc;
 
 /// How many requests may wait between the receive tasks and the serialized
 /// event loop before the transport is left to apply back-pressure.
 const REQUEST_QUEUE_DEPTH: usize = 64;
 
-/// The typed query surface a participant declared, and the tasks feeding it.
+/// The typed query surface a participant declared. Its receive loops are
+/// runner-owned `Critical` tasks in the same registry as participant tasks;
+/// this value only retains the registrations and serialized request queue.
 ///
 /// The registrations, the channel, and the receive tasks are all-or-nothing: the
 /// channel exists only because there are registrations to dispatch to, a
@@ -23,7 +24,6 @@ const REQUEST_QUEUE_DEPTH: usize = 64;
 pub(crate) struct QuerySurface<R: Participant> {
     registrations: Vec<QueryRegistration<R>>,
     requests: mpsc::Receiver<(usize, IncomingQuery)>,
-    receivers: Vec<JoinHandle<()>>,
 }
 
 impl<R: Participant> QuerySurface<R> {
@@ -36,40 +36,48 @@ impl<R: Participant> QuerySurface<R> {
     pub(crate) async fn declare(
         bus: &Bus,
         registrations: Vec<QueryRegistration<R>>,
+        managed_tasks: &mut ManagedTasks,
     ) -> crate::Result<Option<Self>> {
         if registrations.is_empty() {
             return Ok(None);
         }
         let (sender, requests) = mpsc::channel(REQUEST_QUEUE_DEPTH);
-        let mut receivers: Vec<JoinHandle<()>> = Vec::with_capacity(registrations.len());
         for (index, registration) in registrations.iter().enumerate() {
             let queryable = match bus.declare_server(registration.topic()).await {
                 Ok(queryable) => queryable,
                 Err(error) => {
-                    // Nothing is serving yet. The queryables already declared go
-                    // away with their tasks rather than accepting requests for a
-                    // participant that never reached its run loop.
-                    for receiver in receivers {
-                        receiver.abort();
-                    }
+                    // Nothing is serving yet. The already-registered query
+                    // loops belong to `managed_tasks`; setup rollback will
+                    // cancel and join them before returning this error.
                     return Err(error.into());
                 }
             };
             let sender = sender.clone();
-            receivers.push(tokio::spawn(async move {
-                while let Ok(incoming) = queryable.recv().await {
-                    if sender.send((index, incoming)).await.is_err() {
-                        break;
+            let topic = registration.topic().to_string();
+            managed_tasks.spawn(
+                format!("query-ingest-{index}"),
+                ManagedTaskPolicy::Critical,
+                async move {
+                    loop {
+                        let incoming = queryable.recv().await.map_err(|error| {
+                            anyhow::anyhow!("query ingest for {topic} terminated: {error}")
+                        })?;
+                        if sender.send((index, incoming)).await.is_err() {
+                            // The serialized runner has dropped its receiver as
+                            // part of teardown. That is the one expected clean
+                            // exit; transport/session failure above remains a
+                            // Critical task fault.
+                            return Ok::<(), anyhow::Error>(());
+                        }
                     }
-                }
-            }));
+                },
+            );
         }
         // The only senders left are the ones the receive tasks own, so the
         // channel stays open for exactly as long as something can still feed it.
         Ok(Some(QuerySurface {
             registrations,
             requests,
-            receivers,
         }))
     }
 
@@ -138,11 +146,7 @@ impl<R: Participant> QuerySurface<R> {
         }
     }
 
-    /// Stop serving: abort the receive tasks so nothing forwards a request into
-    /// a participant that is already tearing down.
-    pub(crate) fn close(self) {
-        for receiver in self.receivers {
-            receiver.abort();
-        }
-    }
+    /// Stop admitting requests. The receive tasks are cancelled and joined by
+    /// the runner's managed-task teardown after this receiver is dropped.
+    pub(crate) fn close(self) {}
 }

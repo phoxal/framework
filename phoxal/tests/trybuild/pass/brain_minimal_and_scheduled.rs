@@ -48,7 +48,7 @@ impl Participant for MissionBrain {
     }
 
     #[phoxal::step(hz = 10)]
-    async fn step(
+    fn step(
         &self,
         api: &Self::Api,
         _step: StepContext,

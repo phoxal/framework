@@ -38,12 +38,7 @@ impl Participant for AvoidObstacles {
     }
 
     #[phoxal::step(hz = 50)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        _step: StepContext,
-        _state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, _step: StepContext, _state: &mut Self::State) -> Result<()> {
         // Trivial policy: creep forward once we have observed a drive state,
         // otherwise hold still. Real runtimes would fuse perception here.
         let target = match api.state.latest() {

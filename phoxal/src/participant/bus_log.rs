@@ -10,7 +10,6 @@ use crate::api;
 use crate::participant::lock;
 use phoxal_bus::{Bus, DiagnosticPublisher};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Metadata};
 use tracing_subscriber::Layer;
@@ -339,49 +338,64 @@ pub(crate) fn new_state_from_env() -> Arc<BusLogState> {
     state
 }
 
-pub(crate) fn attach(bus: Bus, participant_id: &str) -> BusLogGuard {
+pub(crate) fn attach(bus: Bus, participant_id: &str) -> (BusLogGuard, BusLogTask) {
     attach_with_capacity(bus, participant_id, DEFAULT_BUFFER_CAPACITY)
 }
 
-fn attach_with_capacity(bus: Bus, participant_id: &str, capacity: usize) -> BusLogGuard {
+fn attach_with_capacity(
+    bus: Bus,
+    participant_id: &str,
+    capacity: usize,
+) -> (BusLogGuard, BusLogTask) {
     let state = crate::participant::runner::bus_log_state();
     let (sender, receiver) = mpsc::channel(capacity.max(1));
     let token = state.install_sender(sender);
     let participant_id = participant_id.to_string();
-    let task = tokio::spawn(drain_loop(
-        Arc::clone(&state),
-        bus,
-        participant_id,
-        receiver,
-    ));
-    BusLogGuard {
-        token,
-        state,
-        task: Some(task),
-    }
+    (
+        BusLogGuard {
+            token,
+            state: Arc::clone(&state),
+        },
+        BusLogTask {
+            state,
+            bus,
+            participant_id,
+            receiver,
+        },
+    )
 }
 
 pub(crate) struct BusLogGuard {
     token: u64,
     state: Arc<BusLogState>,
-    task: Option<JoinHandle<()>>,
 }
 
 impl BusLogGuard {
-    pub(crate) async fn shutdown(mut self) {
+    pub(crate) fn shutdown(self) {
         self.state.clear_sender(self.token);
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
-        }
     }
 }
 
 impl Drop for BusLogGuard {
     fn drop(&mut self) {
         self.state.clear_sender(self.token);
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+    }
+}
+
+/// The drain operation is returned separately from [`BusLogGuard`] so the
+/// runner can register it in its one managed task group before participant
+/// setup. The guard only owns the diagnostic sender lease; dropping it stops
+/// new records from entering the queue.
+pub(crate) struct BusLogTask {
+    state: Arc<BusLogState>,
+    bus: Bus,
+    participant_id: String,
+    receiver: mpsc::Receiver<LogRecord>,
+}
+
+impl BusLogTask {
+    pub(crate) async fn run(self) -> crate::Result<()> {
+        drain_loop(self.state, self.bus, self.participant_id, self.receiver).await
     }
 }
 
@@ -390,12 +404,9 @@ async fn drain_loop(
     bus: Bus,
     participant_id: String,
     mut receiver: mpsc::Receiver<LogRecord>,
-) {
+) -> crate::Result<()> {
     let topic = api::topic::owner().logs(&participant_id).topic();
-    let publisher = match DiagnosticPublisher::<api::logs::Event>::new(bus, &topic) {
-        Ok(publisher) => publisher,
-        Err(_) => return,
-    };
+    let publisher = DiagnosticPublisher::<api::logs::Event>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let dropped = state.take_dropped();
@@ -413,6 +424,7 @@ async fn drain_loop(
                 .fetch_add(u64::from(dropped).saturating_add(1), Ordering::Relaxed);
         }
     }
+    Ok(())
 }
 
 fn target_is_filtered(target: &str) -> bool {
