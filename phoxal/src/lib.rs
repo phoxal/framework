@@ -162,9 +162,10 @@ pub use phoxal_api::latest as api;
 /// the codec, the [`BusMetadata`](bus::BusMetadata) attachment, the four
 /// non-interchangeable time types, the body-typed handles, and side-branded
 /// [`Topic`](bus::Topic) values. Participants build their IO through
-/// [`SetupContext`] and the api-local topic builders, so the session-owning
-/// types (`Bus`, `BusConfig`, `BusHealth`, `IncomingQuery`, `ServerQueryable`)
-/// have no place here.
+/// [`SetupContext`] and the api-local topic builders, so session construction,
+/// ownership, raw handles, incoming queries, and server queryables have no
+/// place here. Host tooling that owns a session depends on `phoxal-bus`
+/// directly; a participant cannot open a second session through this facade.
 ///
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
 /// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) are absent for a
@@ -176,18 +177,17 @@ pub use phoxal_api::latest as api;
 /// strong that guarantee is.
 pub mod bus {
     pub use phoxal_bus::{
-        ApiVersion, AskQuery, BusCloseReport, BusConfig, BusError, BusHandle, BusMetadata,
-        BusOwner, CaptureStamp, Codec, CodecError, CodecId, CommandContract, CommandPublisher,
-        ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily, DiagnosticContract,
-        DiagnosticPublisher, ExclusiveProducerLease, ExecutionId, FixedSourceLease,
-        LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LivelinessStatus, LocalInstant,
+        ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
+        CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
+        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, ExecutionId,
+        FixedSourceLease, LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LocalInstant,
         MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack, Observed,
-        ParticipantId, ParticipantLivelinessEvent, ParticipantReadyEvents, ProducerId, Publish,
-        Querier, QueryCode, QueryError, QueryFailure, QueryResult, Result, RobotInstant,
-        RobotTimeError, ServeQuery, SourceAttribution, SourceLabel, StateContract, StatePublisher,
-        StepStamp, StepToken, StreamContract, StreamPublisher, Subscribe, Subscriber, TimeWindow,
-        Timed, TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp,
-        WildcardPublish, WorldClockContract, WorldStepToken,
+        ParticipantId, ParticipantReadyEvent, ParticipantReadyEvents, ParticipantReadyStatus,
+        ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure, QueryResult, Result,
+        RobotInstant, RobotTimeError, ServeQuery, SourceAttribution, SourceLabel, StateContract,
+        StatePublisher, StepStamp, StepToken, StreamContract, StreamPublisher, Subscribe,
+        Subscriber, TimeWindow, Timed, TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole,
+        WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
     };
 }
 
@@ -370,7 +370,7 @@ pub mod __private {
 
     /// Explicit in-process test-harness injection. A production participant
     /// enters through `phoxal::run`, which parses the strict supervised launch
-    /// and opens its own [`BusOwner`].
+    /// and opens its own unique bus owner.
     #[cfg(feature = "test-harness")]
     pub use crate::participant::clock::ClockSource;
     #[cfg(feature = "test-harness")]

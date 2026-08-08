@@ -1,0 +1,8 @@
+error[E0432]: unresolved imports `phoxal::bus::BusConfig`, `phoxal::bus::BusHandle`, `phoxal::bus::BusOwner`
+ --> tests/trybuild/fail/participant_facade_cannot_open_bus.rs:1:19
+  |
+1 | use phoxal::bus::{BusConfig, BusHandle, BusOwner};
+  |                   ^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^ no `BusOwner` in `bus`
+  |                   |          |
+  |                   |          no `BusHandle` in `bus`
+  |                   no `BusConfig` in `bus`

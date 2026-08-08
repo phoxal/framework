@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 
-use crate::liveliness::{LivelinessStatus, ParticipantLivelinessEvent};
+use crate::liveliness::{ParticipantReadyEvent, ParticipantReadyStatus};
 use crate::time::{LocalInstant, RobotInstant, RobotTimeError};
 
 /// The maximum number of simultaneously observed Ready incarnations retained
@@ -127,20 +127,20 @@ impl<B> FixedSourceLease<B> {
         &mut self,
         participant: &ParticipantId,
         producer: ProducerId,
-        status: LivelinessStatus,
+        status: ParticipantReadyStatus,
     ) {
         if participant != &self.expected_participant {
             return;
         }
         match status {
-            LivelinessStatus::Alive => {
+            ParticipantReadyStatus::Ready => {
                 if !self.ready.contains(&producer) && self.ready.len() >= MAX_READY_PRODUCERS {
                     self.ready_overflow = true;
                 } else {
                     self.ready.insert(producer);
                 }
             }
-            LivelinessStatus::Lost => {
+            ParticipantReadyStatus::Lost => {
                 self.ready.remove(&producer);
                 if self.active.is_some_and(|(active, _)| active == producer) {
                     self.active = None;
@@ -156,13 +156,9 @@ impl<B> FixedSourceLease<B> {
 
     /// Apply an exact observer event, ignoring Ready tokens for other
     /// participants in the execution.
-    pub fn update_ready_event(&mut self, event: &ParticipantLivelinessEvent) {
-        if event.key.participant() == self.expected_participant.as_str() {
-            self.update_ready(
-                &self.expected_participant.clone(),
-                event.key.producer(),
-                event.status,
-            );
+    pub fn update_ready_event(&mut self, event: &ParticipantReadyEvent) {
+        if event.participant == self.expected_participant {
+            self.update_ready(&event.participant, event.producer, event.status);
         }
     }
 
@@ -552,13 +548,13 @@ mod tests {
             lease.offer(Some(&expected), source, 1, at, "blocked"),
             LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
         );
-        lease.update_ready(&wrong, source, LivelinessStatus::Alive);
+        lease.update_ready(&wrong, source, ParticipantReadyStatus::Ready);
         assert_eq!(lease.ready_count(), 0);
         assert_eq!(
             lease.offer(Some(&wrong), source, 2, at, "wrong"),
             LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
         );
-        lease.update_ready(&expected, source, LivelinessStatus::Alive);
+        lease.update_ready(&expected, source, ParticipantReadyStatus::Ready);
         assert_eq!(
             lease.offer(Some(&expected), source, 1, at, "ok"),
             LeaseDecision::Acquired
@@ -577,18 +573,18 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(1),
         );
-        lease.update_ready(&expected, first, LivelinessStatus::Alive);
+        lease.update_ready(&expected, first, ParticipantReadyStatus::Ready);
         assert_eq!(
             lease.offer(Some(&expected), first, 7, at, "old"),
             LeaseDecision::Acquired
         );
-        lease.update_ready(&expected, second, LivelinessStatus::Alive);
+        lease.update_ready(&expected, second, ParticipantReadyStatus::Ready);
         assert_eq!(lease.producer(), None);
         assert_eq!(
             lease.offer(Some(&expected), second, 0, at, "new"),
             LeaseDecision::Rejected(LeaseRejection::SourceConflict)
         );
-        lease.update_ready(&expected, first, LivelinessStatus::Lost);
+        lease.update_ready(&expected, first, ParticipantReadyStatus::Lost);
         assert_eq!(
             lease.offer(Some(&expected), second, 0, at, "new"),
             LeaseDecision::Acquired
@@ -607,7 +603,7 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(1),
         );
-        lease.update_ready(&expected, source, LivelinessStatus::Alive);
+        lease.update_ready(&expected, source, ParticipantReadyStatus::Ready);
         assert_eq!(
             lease.offer(Some(&expected), source, 3, at, "first"),
             LeaseDecision::Acquired
@@ -634,8 +630,8 @@ mod tests {
                 observed: 1,
             })
         );
-        lease.update_ready(&expected, source, LivelinessStatus::Lost);
-        lease.update_ready(&expected, source, LivelinessStatus::Alive);
+        lease.update_ready(&expected, source, ParticipantReadyStatus::Lost);
+        lease.update_ready(&expected, source, ParticipantReadyStatus::Ready);
         assert_eq!(
             lease.offer(Some(&expected), source, 0, at, "new incarnation"),
             LeaseDecision::Acquired

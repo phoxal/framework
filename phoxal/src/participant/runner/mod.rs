@@ -37,7 +37,7 @@ use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerform
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{AnyStepScheduler, SchedulerTick, StepSchedule, StepScheduler};
 use phoxal_bundle::Sha256Digest;
-use phoxal_bus::{BusConfig, BusHandle, BusOwner, ParticipantLivelinessToken};
+use phoxal_bus::{BusConfig, BusHandle, BusOwner, ParticipantReadyToken};
 use phoxal_runtime_contract::identity::ParticipantId;
 use phoxal_runtime_contract::launch::ClockMode;
 
@@ -585,10 +585,10 @@ struct Runner<R: Participant, C: ClockSource> {
     runtime_performance_publisher: RuntimePerformancePublisher,
     runtime_performance: RuntimePerformance,
     managed_tasks: ManagedTasks,
-    /// The participant's Ready/liveliness lease. It is revoked before any
+    /// The participant's Ready lease. It is revoked before any
     /// shutdown work starts, so observers never see Ready while resources are
     /// being unwound.
-    liveliness: Option<ParticipantLivelinessToken>,
+    ready: Option<ParticipantReadyToken>,
     shutdown_grace_ms: u64,
 }
 
@@ -690,7 +690,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // declaration against already-supervised task completion so a
         // Critical setup/query failure cannot win the await and briefly make
         // an unhealthy participant visible.
-        let liveliness = match owner.as_ref() {
+        let ready = match owner.as_ref() {
             None => None,
             Some(owner) => Some(tokio::select! {
                 biased;
@@ -724,7 +724,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // Ready announcement or Runner is returned.
         tokio::task::yield_now().await;
         if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
-            drop(liveliness);
+            drop(ready);
             if let Some(queries) = queries.take() {
                 queries.close();
             }
@@ -758,7 +758,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             runtime_performance_publisher: RuntimePerformancePublisher::attach(bus.clone()),
             runtime_performance: RuntimePerformance::new(schedule),
             managed_tasks,
-            liveliness,
+            ready,
             shutdown_grace_ms,
         })
     }
@@ -784,14 +784,14 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             queries,
             managed_tasks,
             owner,
-            liveliness,
+            ready,
             shutdown_grace_ms,
             ..
         } = self;
 
         // Ready is revoked first: teardown must never leave a live lease while
         // participant resources are being unwound.
-        drop(liveliness);
+        drop(ready);
 
         // Query receive tasks stop next: nothing after this point serves a
         // request, and one arriving mid-teardown must not reach state the

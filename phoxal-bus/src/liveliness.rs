@@ -6,7 +6,7 @@
 //! root is execution-scoped, a previous run's tokens are on different keys
 //! entirely and can never be mistaken for the current run's.
 
-use phoxal_runtime_contract::identity::ProducerId;
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -18,15 +18,15 @@ use crate::session::{BusHandle, BusOwner};
 
 const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 
-/// One stable participant Liveliness key.
+/// One stable participant Ready key in the Zenoh Liveliness transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParticipantLivelinessKey {
+struct ParticipantReadyKey {
     key: OwnedKeyExpr,
-    participant: String,
+    participant: ParticipantId,
     producer: ProducerId,
 }
 
-impl ParticipantLivelinessKey {
+impl ParticipantReadyKey {
     pub(crate) fn for_bus(bus: &BusHandle) -> Result<Self> {
         let participant = bus
             .participant()
@@ -36,10 +36,12 @@ impl ParticipantLivelinessKey {
 
     /// Build and validate a producer-qualified participant key below an
     /// existing execution root.
-    pub fn new(root: &str, participant: impl Into<String>, producer: ProducerId) -> Result<Self> {
+    fn new(root: &str, participant: impl Into<String>, producer: ProducerId) -> Result<Self> {
         validate_root(root)?;
         let participant = participant.into();
         validate_participant(&participant)?;
+        let participant = ParticipantId::new(participant.clone())
+            .map_err(|_| BusError::invalid_key(participant, KeyProblem::NotOneSegment))?;
         let raw = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{producer}");
         let key = OwnedKeyExpr::new(raw.clone())
             .map_err(|error| BusError::not_a_key_expression(&raw, error))?;
@@ -51,22 +53,22 @@ impl ParticipantLivelinessKey {
     }
 
     /// The complete execution-rooted Zenoh key.
-    pub fn as_str(&self) -> &str {
+    fn as_str(&self) -> &str {
         self.key.as_str()
     }
 
     /// Participant id encoded in the key.
-    pub fn participant(&self) -> &str {
+    fn participant(&self) -> &ParticipantId {
         &self.participant
     }
 
     /// Producer identity encoded in the key.
-    pub fn producer(&self) -> ProducerId {
+    fn producer(&self) -> ProducerId {
         self.producer
     }
 
     /// Parse a concrete participant key emitted below `root`.
-    pub fn parse(root: &str, key: &str) -> Option<Self> {
+    fn parse(root: &str, key: &str) -> Option<Self> {
         let suffix = key.strip_prefix(root)?.strip_prefix('/')?;
         let suffix = suffix
             .strip_prefix(PARTICIPANT_LIVELINESS_PREFIX)?
@@ -79,7 +81,7 @@ impl ParticipantLivelinessKey {
     }
 
     /// Wildcard selector used by an execution-scoped observer.
-    pub fn selector(root: &str) -> Result<OwnedKeyExpr> {
+    fn selector(root: &str) -> Result<OwnedKeyExpr> {
         validate_root(root)?;
         let selector = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/*/*");
         OwnedKeyExpr::new(selector.clone())
@@ -96,6 +98,24 @@ pub enum LivelinessStatus {
     Lost,
 }
 
+/// Whether one exact participant producer currently owns its Ready lease.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParticipantReadyStatus {
+    /// The producer-qualified Ready lease is present.
+    Ready,
+    /// The producer-qualified Ready lease disappeared.
+    Lost,
+}
+
+impl From<SampleKind> for ParticipantReadyStatus {
+    fn from(kind: SampleKind) -> Self {
+        match kind {
+            SampleKind::Put => ParticipantReadyStatus::Ready,
+            SampleKind::Delete => ParticipantReadyStatus::Lost,
+        }
+    }
+}
+
 impl From<SampleKind> for LivelinessStatus {
     fn from(kind: SampleKind) -> Self {
         match kind {
@@ -105,30 +125,38 @@ impl From<SampleKind> for LivelinessStatus {
     }
 }
 
-/// A parsed participant Liveliness observation.
+/// A participant Ready change for one exact producer incarnation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParticipantLivelinessEvent {
-    /// The exact producer-qualified key the change was observed on.
-    pub key: ParticipantLivelinessKey,
-    /// Whether that key's token appeared or went away.
-    pub status: LivelinessStatus,
+pub struct ParticipantReadyEvent {
+    /// The stable compiled participant role.
+    pub participant: ParticipantId,
+    /// The exact process/session incarnation that declared Ready.
+    pub producer: ProducerId,
+    /// Whether that exact Ready lease appeared or disappeared.
+    pub status: ParticipantReadyStatus,
 }
 
-/// Keeps a declared participant token alive until it is dropped.
-pub struct ParticipantLivelinessToken {
+/// Keeps this participant producer's Ready lease alive until it is dropped.
+pub struct ParticipantReadyToken {
     _token: zenoh::liveliness::LivelinessToken,
-    key: ParticipantLivelinessKey,
+    participant: ParticipantId,
+    producer: ProducerId,
 }
 
-impl ParticipantLivelinessToken {
-    /// The concrete key represented by this token.
-    pub fn key(&self) -> &ParticipantLivelinessKey {
-        &self.key
+impl ParticipantReadyToken {
+    /// The stable participant role represented by this lease.
+    pub fn participant(&self) -> &ParticipantId {
+        &self.participant
+    }
+
+    /// The exact producer incarnation represented by this lease.
+    pub fn producer(&self) -> ProducerId {
+        self.producer
     }
 }
 
-/// Keeps a history-enabled participant observer declared until it is dropped.
-pub struct ParticipantLivelinessObserver {
+/// Keeps a history-enabled participant Ready observer declared until dropped.
+pub struct ParticipantReadyObserver {
     _subscriber: zenoh::pubsub::Subscriber<()>,
 }
 
@@ -140,14 +168,14 @@ pub struct ParticipantLivelinessObserver {
 /// [`Self::overflowed`] remains true and fixed-source consumers must fail
 /// closed rather than act on an incomplete Ready set.
 pub struct ParticipantReadyEvents {
-    receiver: Mutex<mpsc::Receiver<ParticipantLivelinessEvent>>,
-    _observer: ParticipantLivelinessObserver,
+    receiver: Mutex<mpsc::Receiver<ParticipantReadyEvent>>,
+    _observer: ParticipantReadyObserver,
     overflowed: Arc<AtomicBool>,
 }
 
 impl ParticipantReadyEvents {
     /// Drain one Ready event without waiting.
-    pub fn try_recv(&self) -> Option<ParticipantLivelinessEvent> {
+    pub fn try_recv(&self) -> Option<ParticipantReadyEvent> {
         match self.receiver.lock() {
             Ok(mut receiver) => receiver.try_recv().ok(),
             Err(_) => {
@@ -184,17 +212,21 @@ impl KeyLivelinessObserver {
 }
 
 impl BusOwner {
-    /// Declare this bus participant's token. Call this only after setup succeeds.
-    pub async fn declare_participant_ready(&self) -> Result<ParticipantLivelinessToken> {
+    /// Declare this bus participant's Ready lease. Call only after setup succeeds.
+    pub async fn declare_participant_ready(&self) -> Result<ParticipantReadyToken> {
         let bus = self.handle();
-        let key = ParticipantLivelinessKey::for_bus(&bus)?;
+        let key = ParticipantReadyKey::for_bus(&bus)?;
         let token = bus
             .session()?
             .liveliness()
             .declare_token(key.as_str())
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
-        Ok(ParticipantLivelinessToken { _token: token, key })
+        Ok(ParticipantReadyToken {
+            _token: token,
+            participant: key.participant().clone(),
+            producer: key.producer(),
+        })
     }
 }
 
@@ -232,10 +264,10 @@ impl BusHandle {
     /// one producer remains live.
     pub async fn observe_participant_ready(
         &self,
-        callback: impl Fn(ParticipantLivelinessEvent) + Send + Sync + 'static,
-    ) -> Result<ParticipantLivelinessObserver> {
+        callback: impl Fn(ParticipantReadyEvent) + Send + Sync + 'static,
+    ) -> Result<ParticipantReadyObserver> {
         let root = self.root().to_string();
-        let selector = ParticipantLivelinessKey::selector(&root)?;
+        let selector = ParticipantReadyKey::selector(&root)?;
         let subscriber = self
             .session()?
             .liveliness()
@@ -250,7 +282,7 @@ impl BusHandle {
             })
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
-        Ok(ParticipantLivelinessObserver {
+        Ok(ParticipantReadyObserver {
             _subscriber: subscriber,
         })
     }
@@ -336,20 +368,18 @@ fn validate_relative_key(relative_key: &str) -> Result<()> {
     validate_concrete_path(relative_key)
 }
 
-fn participant_event(
-    root: &str,
-    key: &str,
-    kind: SampleKind,
-) -> Option<ParticipantLivelinessEvent> {
-    let key = ParticipantLivelinessKey::parse(root, key)?;
-    Some(ParticipantLivelinessEvent {
-        key,
-        status: LivelinessStatus::from(kind),
+fn participant_event(root: &str, key: &str, kind: SampleKind) -> Option<ParticipantReadyEvent> {
+    let key = ParticipantReadyKey::parse(root, key)?;
+    Some(ParticipantReadyEvent {
+        participant: key.participant().clone(),
+        producer: key.producer(),
+        status: ParticipantReadyStatus::from(kind),
     })
 }
 
 /// A participant id becomes exactly one key segment, so it may carry neither a
-/// separator nor a wildcard.
+/// separator nor a wildcard. The typed `ParticipantId` constructor applies its
+/// stricter topology grammar after this transport-specific diagnosis.
 fn validate_participant(participant: &str) -> Result<()> {
     if participant.is_empty() {
         return Err(BusError::invalid_key(participant, KeyProblem::Empty));
@@ -395,21 +425,21 @@ mod tests {
     #[test]
     fn key_builder_owns_validation_and_round_trips_identity() {
         let producer = producer(1);
-        let key = ParticipantLivelinessKey::new(ROOT, "drive", producer).unwrap();
+        let key = ParticipantReadyKey::new(ROOT, "drive", producer).unwrap();
         assert_eq!(
             key.as_str(),
             format!("{ROOT}/liveliness/participants/drive/{producer}")
         );
         assert_eq!(
-            ParticipantLivelinessKey::parse(ROOT, key.as_str()),
+            ParticipantReadyKey::parse(ROOT, key.as_str()),
             Some(key.clone())
         );
-        assert_eq!(key.participant(), "drive");
+        assert_eq!(key.participant().as_str(), "drive");
         assert_eq!(key.producer(), producer);
-        assert!(ParticipantLivelinessKey::new(ROOT, "bad/id", producer).is_err());
-        assert!(ParticipantLivelinessKey::new("phoxal/*", "drive", producer).is_err());
+        assert!(ParticipantReadyKey::new(ROOT, "bad/id", producer).is_err());
+        assert!(ParticipantReadyKey::new("phoxal/*", "drive", producer).is_err());
         assert!(
-            ParticipantLivelinessKey::parse(
+            ParticipantReadyKey::parse(
                 ROOT,
                 &format!("{ROOT}/liveliness/participants/drive/not-a-producer")
             )
@@ -424,18 +454,18 @@ mod tests {
         let alive = participant_event(ROOT, &key, SampleKind::Put).unwrap();
         let lost = participant_event(ROOT, &key, SampleKind::Delete).unwrap();
 
-        assert_eq!(alive.key.participant(), "drive");
-        assert_eq!(alive.key.producer(), producer);
-        assert_eq!(alive.status, LivelinessStatus::Alive);
-        assert_eq!(lost.status, LivelinessStatus::Lost);
+        assert_eq!(alive.participant.as_str(), "drive");
+        assert_eq!(alive.producer, producer);
+        assert_eq!(alive.status, ParticipantReadyStatus::Ready);
+        assert_eq!(lost.status, ParticipantReadyStatus::Lost);
         assert!(participant_event(ROOT, "other/robot/key", SampleKind::Put).is_none());
     }
 
     #[test]
     fn observer_selector_covers_exactly_the_emitted_identity_segments() {
         let root = ROOT;
-        let selector = ParticipantLivelinessKey::selector(root).unwrap();
-        let key = ParticipantLivelinessKey::new(root, "drive", producer(3)).unwrap();
+        let selector = ParticipantReadyKey::selector(root).unwrap();
+        let key = ParticipantReadyKey::new(root, "drive", producer(3)).unwrap();
         assert_eq!(
             selector.as_str(),
             format!("{ROOT}/liveliness/participants/*/*")
