@@ -23,6 +23,7 @@ mod error;
 pub mod asset;
 pub mod builder;
 pub mod component;
+pub mod footprint;
 pub mod identity;
 pub mod robot;
 pub mod simulation;
@@ -37,4 +38,5 @@ pub use error::{
     IdentifierKind, JointOwner, KinematicScalarField, LinkRole, ModelError, MotionLimitField,
     PoseOwner, StructureError,
 };
+pub use footprint::FootprintEnvelope;
 pub use robot::{Clock, Robot};

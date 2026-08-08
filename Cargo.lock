@@ -2461,6 +2461,7 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "tokio",
 ]
 
 [[package]]

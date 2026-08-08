@@ -7,8 +7,7 @@ use std::collections::VecDeque;
 use phoxal::api;
 use phoxal::geometry::planar_distance;
 
-const UNKNOWN: u8 = 255;
-const FREE_MAX: u8 = 20;
+const MAP_FRAME: &str = "map";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct OccupancyGrid {
@@ -17,29 +16,64 @@ pub(crate) struct OccupancyGrid {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) resolution_m: f32,
-    pub(crate) cells: Vec<u8>,
+    pub(crate) cells: Vec<api::map::Occupancy>,
 }
 
 impl OccupancyGrid {
-    pub(crate) fn from_submap(
-        request: &api::map::SubmapRequest,
-        response: api::map::SubmapResponse,
-    ) -> Option<Self> {
-        let cell_count = cell_count(response.width, response.height)?;
-        if response.cells.len() != cell_count {
-            return None;
-        }
-        if !response.resolution_m.is_finite() || response.resolution_m <= 0.0 {
+    /// Materialize the extent the map owner actually returned. The request is
+    /// deliberately absent from this function: a partial window is allowed,
+    /// and reconstructing an origin from a request would put cells at the
+    /// wrong world coordinates.
+    pub(crate) fn from_submap(response: api::map::SubmapResponse) -> Option<Self> {
+        let window = match response {
+            api::map::SubmapResponse::Window(window)
+            | api::map::SubmapResponse::Partial { window } => window,
+            api::map::SubmapResponse::OutOfBounds { .. } => return None,
+        };
+        let cell_count = cell_count(window.width, window.height)?;
+        let resolution = f64::from(window.resolution_m);
+        let epsilon = resolution * 1.0e-6;
+        if window.cells.len() != cell_count
+            || !window.resolution_m.is_finite()
+            || window.resolution_m <= 0.0
+            || window.frame_id != MAP_FRAME
+            || !window.origin_pose.x_m.is_finite()
+            || !window.origin_pose.y_m.is_finite()
+            || !window.origin_pose.yaw_rad.is_finite()
+            || window.origin_pose.yaw_rad.abs() > f64::EPSILON
+            || !window.cell_origin.x_m.is_finite()
+            || !window.cell_origin.y_m.is_finite()
+            || !bounds_are_valid(&window.requested)
+            || !bounds_are_valid(&window.covered)
+            || window.covered.min_x_m < window.requested.min_x_m
+            || window.covered.min_y_m < window.requested.min_y_m
+            || window.covered.max_x_m > window.requested.max_x_m
+            || window.covered.max_y_m > window.requested.max_y_m
+            || (window.origin_pose.x_m - window.cell_origin.x_m).abs() > epsilon
+            || (window.origin_pose.y_m - window.cell_origin.y_m).abs() > epsilon
+            || (window.cell_origin.x_m - window.covered.min_x_m).abs() > epsilon
+            || (window.cell_origin.y_m - window.covered.min_y_m).abs() > epsilon
+            || (window.covered.max_x_m
+                - window.covered.min_x_m
+                - f64::from(window.width) * resolution)
+                .abs()
+                > epsilon
+            || (window.covered.max_y_m
+                - window.covered.min_y_m
+                - f64::from(window.height) * resolution)
+                .abs()
+                > epsilon
+        {
             return None;
         }
 
         Some(Self {
-            origin_x_m: request.min_x_m,
-            origin_y_m: request.min_y_m,
-            width: response.width,
-            height: response.height,
-            resolution_m: response.resolution_m,
-            cells: response.cells,
+            origin_x_m: window.cell_origin.x_m,
+            origin_y_m: window.cell_origin.y_m,
+            width: window.width,
+            height: window.height,
+            resolution_m: window.resolution_m,
+            cells: window.cells,
         })
     }
 
@@ -64,8 +98,8 @@ impl OccupancyGrid {
         for y in 0..height {
             for x in 0..width {
                 let index = cell_index(width, x, y);
-                if is_free(self.cells[index])
-                    && neighbors4(width, height, x, y).any(|n| is_unknown(self.cells[n]))
+                if is_free(&self.cells[index])
+                    && neighbors4(width, height, x, y).any(|n| is_unknown(&self.cells[n]))
                 {
                     frontier_cells[index] = true;
                 }
@@ -112,7 +146,7 @@ impl OccupancyGrid {
                     || !robot_xy_m.1.is_finite()
                     || !self
                         .cell_at_xy(frontier.x_m, frontier.y_m)
-                        .is_some_and(is_free)
+                        .is_some_and(|cell| is_free(&cell))
                 {
                     return None;
                 }
@@ -134,7 +168,7 @@ impl OccupancyGrid {
         scored
     }
 
-    pub(crate) fn cell_at_xy(&self, x_m: f64, y_m: f64) -> Option<u8> {
+    pub(crate) fn cell_at_xy(&self, x_m: f64, y_m: f64) -> Option<api::map::Occupancy> {
         if !x_m.is_finite() || !y_m.is_finite() {
             return None;
         }
@@ -152,7 +186,7 @@ impl OccupancyGrid {
         if x >= width || y >= height {
             return None;
         }
-        self.cells.get(cell_index(width, x, y)).copied()
+        self.cells.get(cell_index(width, x, y)).cloned()
     }
 
     fn world_xy(&self, x: usize, y: usize) -> (f64, f64) {
@@ -197,12 +231,25 @@ impl OccupancyGrid {
     }
 }
 
-fn is_free(cell: u8) -> bool {
-    cell <= FREE_MAX
+fn bounds_are_valid(bounds: &api::map::Bounds) -> bool {
+    [
+        bounds.min_x_m,
+        bounds.min_y_m,
+        bounds.max_x_m,
+        bounds.max_y_m,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        && bounds.min_x_m < bounds.max_x_m
+        && bounds.min_y_m < bounds.max_y_m
 }
 
-fn is_unknown(cell: u8) -> bool {
-    cell == UNKNOWN
+fn is_free(cell: &api::map::Occupancy) -> bool {
+    matches!(cell, api::map::Occupancy::Free)
+}
+
+fn is_unknown(cell: &api::map::Occupancy) -> bool {
+    matches!(cell, api::map::Occupancy::Unknown)
 }
 
 fn frontier_from_points(points: Vec<(f64, f64)>) -> Option<api::navigation::Frontier> {
@@ -294,7 +341,7 @@ mod tests {
     #[test]
     fn frontier_with_non_free_centroid_cell_is_filtered() {
         let mut grid = grid(4, 4, vec![0; 16]);
-        grid.cells[5] = 100;
+        grid.cells[5] = api::map::Occupancy::Occupied;
 
         let scored = grid.score_frontiers(vec![frontier(1.5, 1.5, 3)], (0.5, 0.5));
 
@@ -306,20 +353,41 @@ mod tests {
     /// ranked.
     #[test]
     fn submap_detection_and_scoring_preserve_cluster_size_and_score() {
-        let request = api::map::SubmapRequest {
-            min_x_m: 0.0,
-            min_y_m: 0.0,
-            max_x_m: 3.0,
-            max_y_m: 2.0,
-        };
-        let response = api::map::SubmapResponse {
+        let response = api::map::SubmapResponse::Window(api::map::GridWindow {
+            frame_id: "map".to_string(),
+            origin_pose: api::map::Pose {
+                x_m: 0.0,
+                y_m: 0.0,
+                yaw_rad: 0.0,
+            },
+            cell_origin: api::map::Point { x_m: 0.0, y_m: 0.0 },
             width: 3,
             height: 2,
             resolution_m: 1.0,
-            cells: vec![0, 0, 255, 0, 0, 255],
-        };
+            cells: vec![
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Unknown,
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Unknown,
+            ],
+            revision: 1,
+            requested: api::map::Bounds {
+                min_x_m: 0.0,
+                min_y_m: 0.0,
+                max_x_m: 3.0,
+                max_y_m: 2.0,
+            },
+            covered: api::map::Bounds {
+                min_x_m: 0.0,
+                min_y_m: 0.0,
+                max_x_m: 3.0,
+                max_y_m: 2.0,
+            },
+        });
 
-        let grid = OccupancyGrid::from_submap(&request, response).unwrap();
+        let grid = OccupancyGrid::from_submap(response).unwrap();
         let ranked = grid.score_frontiers(grid.detect_frontiers(), (0.5, 0.5));
 
         assert_eq!(ranked[0].size, 2);
@@ -342,7 +410,14 @@ mod tests {
             width,
             height,
             resolution_m: 1.0,
-            cells,
+            cells: cells
+                .into_iter()
+                .map(|cell| match cell {
+                    0..=20 => api::map::Occupancy::Free,
+                    255 => api::map::Occupancy::Unknown,
+                    _ => api::map::Occupancy::Occupied,
+                })
+                .collect(),
         }
     }
 }

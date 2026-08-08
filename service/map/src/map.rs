@@ -2,16 +2,14 @@
 //!
 //! A scheduled participant with a serialized query handler. It subscribes to
 //! `localize/state`, publishes `map/revision` (the current revision and grid
-//! resolution), and serves `map/submap` from the same state the step mutates.
-//! Each step it marks the cell under the latest localization pose as free,
-//! bumping the revision only when a cell actually changes.
+//! resolution), and serves a bounded window from the same state the step
+//! mutates. Each step it marks the cell under the latest localization pose as
+//! free, bumping the revision only when a cell actually changes.
 //!
-//! The grid is a fixed 64x64 window anchored at the map origin, it is built
-//! from the localization trace alone (no range, depth or lidar observation
-//! reaches it), and `map/submap` returns that whole window whatever bounds the
-//! request asks for - so a consumer must treat the response's own
-//! `width`/`height`/`resolution_m` as the extent it received, never the extent
-//! it requested.
+//! Queries are clipped to the fixed 64x64 map and report the exact requested
+//! and covered bounds in the response. A request that does not intersect the
+//! map receives an explicit `OutOfBounds` outcome; no query is silently
+//! replaced with the whole grid.
 
 use phoxal::api;
 use phoxal::bus::QueryFailure;
@@ -49,19 +47,92 @@ impl Grid {
         }
     }
 
-    /// The whole grid, whatever window `request` asks for.
-    ///
-    /// The requested bounds are not honoured: the response describes its own
-    /// extent, so a caller that reads `width`/`height`/`resolution_m` off the
-    /// response is correct, and one that assumes it received the window it
-    /// asked for reads cells from the wrong place.
-    fn submap(&self, _request: &api::map::SubmapRequest) -> api::map::SubmapResponse {
-        api::map::SubmapResponse {
-            width: self.width,
-            height: self.height,
-            resolution_m: self.resolution_m,
-            cells: self.cells.clone(),
+    /// Return the requested window, clipping only at the map boundary.
+    fn submap(
+        &self,
+        request: &api::map::SubmapRequest,
+        revision: u64,
+    ) -> QueryResult<api::map::SubmapResponse> {
+        let requested = bounds_from_request(request)?;
+        let map_bounds = api::map::Bounds {
+            min_x_m: 0.0,
+            min_y_m: 0.0,
+            max_x_m: f64::from(self.width) * f64::from(self.resolution_m),
+            max_y_m: f64::from(self.height) * f64::from(self.resolution_m),
+        };
+        let min_x = requested.min_x_m.max(map_bounds.min_x_m);
+        let min_y = requested.min_y_m.max(map_bounds.min_y_m);
+        let max_x = requested.max_x_m.min(map_bounds.max_x_m);
+        let max_y = requested.max_y_m.min(map_bounds.max_y_m);
+        if !(min_x < max_x && min_y < max_y) {
+            return Ok(api::map::SubmapResponse::OutOfBounds {
+                requested,
+                frame_id: MAP_FRAME.to_string(),
+                revision,
+            });
         }
+
+        let resolution = f64::from(self.resolution_m);
+        // Return only complete cells whose physical extent is contained in the
+        // requested bounds. This keeps `covered` truthful for unaligned
+        // requests instead of returning a cell that extends beyond the query.
+        // A query narrower than one cell has an explicit typed outcome below.
+        let start_x = cell_start(min_x, resolution, self.width);
+        let start_y = cell_start(min_y, resolution, self.height);
+        let end_x = cell_end(max_x, resolution, self.width);
+        let end_y = cell_end(max_y, resolution, self.height);
+        if start_x >= end_x || start_y >= end_y {
+            return Ok(api::map::SubmapResponse::OutOfBounds {
+                requested,
+                frame_id: MAP_FRAME.to_string(),
+                revision,
+            });
+        }
+
+        let width = end_x - start_x;
+        let height = end_y - start_y;
+        let mut cells = Vec::with_capacity((width as usize) * (height as usize));
+        for y in start_y..end_y {
+            let row_start = (y * self.width + start_x) as usize;
+            let row_end = row_start + width as usize;
+            cells.extend(
+                self.cells[row_start..row_end]
+                    .iter()
+                    .copied()
+                    .map(occupancy),
+            );
+        }
+        let covered = api::map::Bounds {
+            min_x_m: f64::from(start_x) * resolution,
+            min_y_m: f64::from(start_y) * resolution,
+            max_x_m: f64::from(end_x) * resolution,
+            max_y_m: f64::from(end_y) * resolution,
+        };
+        let window = api::map::GridWindow {
+            frame_id: MAP_FRAME.to_string(),
+            origin_pose: api::map::Pose {
+                x_m: covered.min_x_m,
+                y_m: covered.min_y_m,
+                yaw_rad: 0.0,
+            },
+            cell_origin: api::map::Point {
+                x_m: covered.min_x_m,
+                y_m: covered.min_y_m,
+            },
+            resolution_m: self.resolution_m,
+            width,
+            height,
+            cells,
+            revision,
+            requested: requested.clone(),
+            covered: covered.clone(),
+        };
+        let complete = bounds_equal(&requested, &covered);
+        Ok(if complete {
+            api::map::SubmapResponse::Window(window)
+        } else {
+            api::map::SubmapResponse::Partial { window }
+        })
     }
 
     /// Mark the cell containing `(x_m, y_m)` free, reporting whether that
@@ -188,7 +259,73 @@ impl Map {
                 "map has no localization-backed revision yet",
             ));
         }
-        Ok(state.grid.submap(&request))
+        state.grid.submap(&request, state.rev)
+    }
+}
+
+const MAP_FRAME: &str = "map";
+
+fn bounds_from_request(request: &api::map::SubmapRequest) -> QueryResult<api::map::Bounds> {
+    if !([
+        request.min_x_m,
+        request.min_y_m,
+        request.max_x_m,
+        request.max_y_m,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        && request.min_x_m < request.max_x_m
+        && request.min_y_m < request.max_y_m)
+    {
+        return Err(QueryFailure::invalid_argument(
+            "map query bounds must be finite and have positive extent",
+        ));
+    }
+    Ok(api::map::Bounds {
+        min_x_m: request.min_x_m,
+        min_y_m: request.min_y_m,
+        max_x_m: request.max_x_m,
+        max_y_m: request.max_y_m,
+    })
+}
+
+fn bounds_equal(left: &api::map::Bounds, right: &api::map::Bounds) -> bool {
+    let epsilon = 1.0e-6;
+    (left.min_x_m - right.min_x_m).abs() <= epsilon
+        && (left.min_y_m - right.min_y_m).abs() <= epsilon
+        && (left.max_x_m - right.max_x_m).abs() <= epsilon
+        && (left.max_y_m - right.max_y_m).abs() <= epsilon
+}
+
+fn cell_start(min: f64, resolution: f64, dimension: u32) -> u32 {
+    // The small tolerance preserves an exact boundary after a representable
+    // decimal such as 0.3/0.1 is rounded just below its mathematical value.
+    let ratio = min / resolution;
+    let nearest = ratio.round();
+    let index = if (ratio - nearest).abs() <= 1.0e-9 {
+        nearest
+    } else {
+        ratio.ceil()
+    };
+    index.clamp(0.0, f64::from(dimension)) as u32
+}
+
+fn cell_end(max: f64, resolution: f64, dimension: u32) -> u32 {
+    let ratio = max / resolution;
+    let nearest = ratio.round();
+    let index = if (ratio - nearest).abs() <= 1.0e-9 {
+        nearest
+    } else {
+        ratio.floor()
+    };
+    index.clamp(0.0, f64::from(dimension)) as u32
+}
+
+fn occupancy(cell: u8) -> api::map::Occupancy {
+    match cell {
+        0..=20 => api::map::Occupancy::Free,
+        255 => api::map::Occupancy::Unknown,
+        _ => api::map::Occupancy::Occupied,
     }
 }
 
@@ -218,18 +355,121 @@ mod tests {
     #[test]
     fn submap_returns_full_grid_window() {
         let grid = Grid::empty(4, 3, 0.25);
-        let response = grid.submap(&api::map::SubmapRequest {
-            min_x_m: 0.0,
-            min_y_m: 0.0,
-            max_x_m: 1.0,
-            max_y_m: 1.0,
-        });
+        let response = grid
+            .submap(
+                &api::map::SubmapRequest {
+                    min_x_m: 0.0,
+                    min_y_m: 0.0,
+                    max_x_m: 1.0,
+                    max_y_m: 0.75,
+                },
+                7,
+            )
+            .expect("valid query");
 
+        let api::map::SubmapResponse::Window(response) = response else {
+            panic!("the request exactly covers the map");
+        };
         assert_eq!(response.width, 4);
         assert_eq!(response.height, 3);
         assert_eq!(response.resolution_m, 0.25);
+        assert_eq!(response.revision, 7);
+        assert_eq!(response.cell_origin, api::map::Point { x_m: 0.0, y_m: 0.0 });
+        assert_eq!(
+            response.origin_pose,
+            api::map::Pose {
+                x_m: 0.0,
+                y_m: 0.0,
+                yaw_rad: 0.0
+            }
+        );
         assert_eq!(response.cells.len(), 12);
-        assert!(response.cells.iter().all(|cell| *cell == 255));
+        assert!(
+            response
+                .cells
+                .iter()
+                .all(|cell| *cell == api::map::Occupancy::Unknown)
+        );
+    }
+
+    #[test]
+    fn submap_reports_clipping_and_origin_instead_of_ignoring_bounds() {
+        let grid = Grid::empty(4, 3, 0.25);
+        let response = grid
+            .submap(
+                &api::map::SubmapRequest {
+                    min_x_m: -0.5,
+                    min_y_m: 0.25,
+                    max_x_m: 0.5,
+                    max_y_m: 0.75,
+                },
+                9,
+            )
+            .expect("valid query");
+
+        let api::map::SubmapResponse::Partial { window } = response else {
+            panic!("the request must be reported as partial");
+        };
+        assert_eq!(
+            window.cell_origin,
+            api::map::Point {
+                x_m: 0.0,
+                y_m: 0.25
+            }
+        );
+        assert_eq!(window.origin_pose.x_m, 0.0);
+        assert_eq!(window.origin_pose.y_m, 0.25);
+        assert_eq!(window.width, 2);
+        assert_eq!(window.height, 2);
+        assert_eq!(window.requested.min_x_m, -0.5);
+        assert_eq!(window.covered.min_x_m, 0.0);
+    }
+
+    #[test]
+    fn submap_keeps_unaligned_covered_extent_inside_the_request() {
+        let grid = Grid::empty(4, 3, 0.25);
+        let response = grid
+            .submap(
+                &api::map::SubmapRequest {
+                    min_x_m: 0.1,
+                    min_y_m: 0.1,
+                    max_x_m: 0.9,
+                    max_y_m: 0.9,
+                },
+                10,
+            )
+            .expect("valid query");
+
+        let api::map::SubmapResponse::Partial { window } = response else {
+            panic!("an unaligned request should report a partial window");
+        };
+        assert!(window.covered.min_x_m >= window.requested.min_x_m);
+        assert!(window.covered.min_y_m >= window.requested.min_y_m);
+        assert!(window.covered.max_x_m <= window.requested.max_x_m);
+        assert!(window.covered.max_y_m <= window.requested.max_y_m);
+        assert_eq!(window.width, 2);
+        assert_eq!(window.height, 2);
+    }
+
+    #[test]
+    fn submap_reports_out_of_bounds() {
+        let grid = Grid::empty(4, 3, 0.25);
+        let response = grid
+            .submap(
+                &api::map::SubmapRequest {
+                    min_x_m: 2.0,
+                    min_y_m: 0.0,
+                    max_x_m: 3.0,
+                    max_y_m: 1.0,
+                },
+                11,
+            )
+            .expect("finite query");
+
+        assert!(matches!(
+            response,
+            api::map::SubmapResponse::OutOfBounds { revision: 11, .. }
+        ));
     }
 
     #[test]

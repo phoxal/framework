@@ -363,6 +363,17 @@ impl ResolvedSources {
                 source,
             })?;
 
+        // Stock safety is an explicit compiler product. Unsupported movable
+        // collision geometry and meshes are rejected here, before a runtime
+        // document can be emitted with an envelope that would overclaim what
+        // it covers. Generic model construction may retain a missing envelope
+        // for legacy/test documents; the authored manifest path is strict.
+        phoxal_model::footprint::compile(&structure, &component_instances, &component_types)
+            .map_err(|source| CompileError::CanonicalModel {
+                path: self.robot_manifest.clone(),
+                source,
+            })?;
+
         let robot = phoxal_model::compiler::robot(RobotParts {
             id: self.identity(RobotId::new(&manifest.robot.id))?,
             clock: manifest.clock.into(),

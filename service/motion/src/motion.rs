@@ -295,6 +295,16 @@ impl Participant for Motion {
                         }
                     },
                 ),
+                safety_permission: state
+                    .last_safety_constraints
+                    .as_ref()
+                    .filter(|constraints| safety_is_usable(constraints, now))
+                    .map_or(
+                        api::safety::MotionPermission::Stopped {
+                            reasons: vec![api::safety::ConstraintReason::MapUnavailable],
+                        },
+                        |constraints| constraints.body.permission.clone(),
+                    ),
             },
         )?;
         Ok(())

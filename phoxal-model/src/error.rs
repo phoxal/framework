@@ -159,6 +159,25 @@ pub enum ModelError {
         field: KinematicScalarField,
     },
 
+    /// Stock safety cannot conservatively account for a collision shape that
+    /// is attached below a movable joint.
+    #[error("stock safety footprint cannot include movable joint '{joint}'")]
+    FootprintMovableJoint { joint: JointId },
+
+    /// Mesh dimensions depend on asset contents and therefore cannot be
+    /// compiled into the source-free stock safety envelope.
+    #[error("stock safety footprint does not support mesh collision on link '{link}'")]
+    FootprintMesh { link: LinkId },
+
+    /// A footprint scalar must remain finite after all fixed-joint transforms.
+    #[error("stock safety footprint contains a non-finite value")]
+    FootprintNonFinite,
+
+    /// A compiled footprint radius is invalid, which must never enter a
+    /// runtime bundle or authorize motion.
+    #[error("stock safety footprint radius must be finite and positive")]
+    FootprintRadius,
+
     /// The canonical structure itself is invalid.
     #[error(transparent)]
     Structure(#[from] StructureError),

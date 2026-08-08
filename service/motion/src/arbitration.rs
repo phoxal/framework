@@ -44,10 +44,12 @@ impl Arbitration {
             // protective stop still wins, and every manual command remains
             // bounded by e-stop, the lease, finite-value, and robot limits.
             let limits = match safety.filter(|constraints| safety_is_usable(constraints, now)) {
-                Some(safety) if safety.body.stop => {
-                    return Self::zero(api::motion::ZeroReason::SafetyProtectiveStop);
-                }
-                Some(safety) => constrained_limits(limits, &safety.body),
+                Some(safety) => match &safety.body.permission {
+                    api::safety::MotionPermission::Stopped { .. } => {
+                        return Self::zero(api::motion::ZeroReason::SafetyProtectiveStop);
+                    }
+                    permission => constrained_limits(limits, permission),
+                },
                 None => limits,
             };
             return Self::select(
@@ -65,10 +67,13 @@ impl Arbitration {
             else {
                 return Self::zero(api::motion::ZeroReason::SafetyConstraintsUnavailable);
             };
-            if safety.body.stop {
+            if matches!(
+                safety.body.permission,
+                api::safety::MotionPermission::Stopped { .. }
+            ) {
                 return Self::zero(api::motion::ZeroReason::SafetyProtectiveStop);
             }
-            let limits = constrained_limits(limits, &safety.body);
+            let limits = constrained_limits(limits, &safety.body.permission);
             return Self::select(
                 api::motion::Source::Navigation,
                 f64::from(autonomous.body.linear_x_mps),
@@ -161,17 +166,60 @@ pub(crate) fn safety_is_usable(
     now: RobotInstant,
 ) -> bool {
     let body = &constraints.body;
-    let entry_stop = body.constraints.iter().any(|constraint| constraint.stop);
-    let entry_linear = body
-        .constraints
-        .iter()
-        .filter_map(|constraint| constraint.max_linear_speed_mps)
-        .reduce(f32::min);
-    let entry_angular = body
-        .constraints
-        .iter()
-        .filter_map(|constraint| constraint.max_angular_speed_radps)
-        .reduce(f32::min);
+    let mut reasons = Vec::new();
+    let mut entry_linear = None;
+    let mut entry_angular = None;
+    let mut entry_stopped = false;
+    let constraints_valid = body.constraints.iter().all(|constraint| {
+        let (reason, valid_from, expires_at, observed_value) = match constraint {
+            api::safety::Constraint::Limited {
+                reason,
+                max_linear_speed_mps,
+                max_angular_speed_radps,
+                valid_from,
+                expires_at,
+                observed_value,
+                ..
+            } => {
+                entry_linear = Some(entry_linear.map_or(*max_linear_speed_mps, |value: f32| {
+                    value.min(*max_linear_speed_mps)
+                }));
+                entry_angular = Some(
+                    entry_angular.map_or(*max_angular_speed_radps, |value: f32| {
+                        value.min(*max_angular_speed_radps)
+                    }),
+                );
+                (reason, *valid_from, *expires_at, *observed_value)
+            }
+            api::safety::Constraint::Stopped {
+                reason,
+                valid_from,
+                expires_at,
+                observed_value,
+                ..
+            } => {
+                entry_stopped = true;
+                (reason, *valid_from, *expires_at, *observed_value)
+            }
+        };
+        reasons.push(reason.clone());
+        at_or_after(now, valid_from)
+            && not_yet_expired(expires_at, now)
+            && at_or_after(body.expires_at, expires_at)
+            && at_or_after(expires_at, valid_from)
+            && observed_value.is_none_or(f32::is_finite)
+    });
+    let expected_permission = if entry_stopped {
+        api::safety::MotionPermission::Stopped { reasons }
+    } else if body.constraints.is_empty() {
+        api::safety::MotionPermission::Clear
+    } else {
+        api::safety::MotionPermission::Limited {
+            effective_linear_speed_mps: entry_linear.unwrap_or(f32::MAX),
+            effective_angular_speed_radps: entry_angular.unwrap_or(f32::MAX),
+            reasons,
+        }
+    };
     // The product carries its own expiry, so age is not what bounds it here.
     // `Duration::MAX` asks only the two questions the carrier still owns: that
     // the stamp belongs to this world history, and that it is not in this
@@ -179,40 +227,46 @@ pub(crate) fn safety_is_usable(
     constraints.fresh_within(now, Duration::MAX)
         && not_yet_expired(body.expires_at, now)
         && at_or_after(body.expires_at, constraints.at)
-        && body.stop == entry_stop
-        && body.max_linear_speed_mps == entry_linear
-        && body.max_angular_speed_radps == entry_angular
-        && body
-            .max_linear_speed_mps
-            .is_none_or(|limit| limit.is_finite() && limit >= 0.0)
-        && body
-            .max_angular_speed_radps
-            .is_none_or(|limit| limit.is_finite() && limit >= 0.0)
+        && body.permission == expected_permission
+        && constraints_valid
         && body.constraints.iter().all(|constraint| {
-            at_or_after(now, constraint.valid_from)
-                && not_yet_expired(constraint.expires_at, now)
-                && at_or_after(body.expires_at, constraint.expires_at)
-                && at_or_after(constraint.expires_at, constraint.valid_from)
-                && constraint
-                    .max_linear_speed_mps
-                    .is_none_or(|limit| limit.is_finite() && limit >= 0.0)
-                && constraint
-                    .max_angular_speed_radps
-                    .is_none_or(|limit| limit.is_finite() && limit >= 0.0)
-                && constraint.observed_value.is_none_or(f32::is_finite)
-                && !constraint.source.participant_id.is_empty()
+            let source = match constraint {
+                api::safety::Constraint::Limited { source, .. }
+                | api::safety::Constraint::Stopped { source, .. } => source,
+            };
+            !source.participant_id.is_empty()
+                && match constraint {
+                    api::safety::Constraint::Limited {
+                        max_linear_speed_mps,
+                        max_angular_speed_radps,
+                        ..
+                    } => {
+                        max_linear_speed_mps.is_finite()
+                            && *max_linear_speed_mps >= 0.0
+                            && max_angular_speed_radps.is_finite()
+                            && *max_angular_speed_radps >= 0.0
+                    }
+                    api::safety::Constraint::Stopped { .. } => true,
+                }
         })
 }
 
 fn constrained_limits(
     mut limits: MotionLimits,
-    constraints: &api::safety::MotionConstraints,
+    permission: &api::safety::MotionPermission,
 ) -> MotionLimits {
-    if let Some(max_linear) = constraints.max_linear_speed_mps {
-        limits.max_linear_speed_mps = limits.max_linear_speed_mps.min(f64::from(max_linear));
-    }
-    if let Some(max_angular) = constraints.max_angular_speed_radps {
-        limits.max_angular_speed_radps = limits.max_angular_speed_radps.min(f64::from(max_angular));
+    if let api::safety::MotionPermission::Limited {
+        effective_linear_speed_mps,
+        effective_angular_speed_radps,
+        ..
+    } = permission
+    {
+        limits.max_linear_speed_mps = limits
+            .max_linear_speed_mps
+            .min(f64::from(*effective_linear_speed_mps));
+        limits.max_angular_speed_radps = limits
+            .max_angular_speed_radps
+            .min(f64::from(*effective_angular_speed_radps));
     }
     limits
 }
@@ -273,9 +327,7 @@ mod tests {
         Timed {
             body: api::safety::MotionConstraints {
                 sequence: 1,
-                stop: false,
-                max_linear_speed_mps: None,
-                max_angular_speed_radps: None,
+                permission: api::safety::MotionPermission::Clear,
                 constraints: Vec::new(),
                 expires_at: RobotInstant::new(line(), NOW_NS + 1),
             },
@@ -284,20 +336,52 @@ mod tests {
     }
 
     fn safety_constraint(stop: bool) -> api::safety::Constraint {
-        api::safety::Constraint {
-            reason: api::safety::ConstraintReason::ObstacleProximity,
-            source: api::safety::ConstraintSource {
-                kind: api::safety::ConstraintSourceKind::Range,
-                participant_id: "safety".to_string(),
-                component_id: Some("front_range".to_string()),
-                capability_id: Some("range".to_string()),
+        let source = api::safety::ConstraintSource {
+            kind: api::safety::ConstraintSourceKind::Range,
+            participant_id: "safety".to_string(),
+            component_id: Some("front_range".to_string()),
+            capability_id: Some("range".to_string()),
+        };
+        if stop {
+            api::safety::Constraint::Stopped {
+                reason: api::safety::ConstraintReason::ObstacleProximity,
+                source,
+                observed_value: Some(0.1),
+                valid_from: RobotInstant::new(line(), NOW_NS),
+                expires_at: RobotInstant::new(line(), NOW_NS + 1),
+            }
+        } else {
+            api::safety::Constraint::Limited {
+                reason: api::safety::ConstraintReason::ObstacleProximity,
+                source,
+                max_linear_speed_mps: 0.1,
+                max_angular_speed_radps: f32::MAX,
+                observed_value: Some(0.1),
+                valid_from: RobotInstant::new(line(), NOW_NS),
+                expires_at: RobotInstant::new(line(), NOW_NS + 1),
+            }
+        }
+    }
+
+    fn mutate_constraint(constraint: &mut api::safety::Constraint, mode: u8) {
+        match constraint {
+            api::safety::Constraint::Limited {
+                valid_from,
+                expires_at,
+                observed_value,
+                ..
+            }
+            | api::safety::Constraint::Stopped {
+                valid_from,
+                expires_at,
+                observed_value,
+                ..
+            } => match mode {
+                0 => *valid_from = RobotInstant::new(line(), NOW_NS + 1),
+                1 => *expires_at = RobotInstant::new(line(), NOW_NS - 1),
+                2 => *expires_at = RobotInstant::new(line(), NOW_NS),
+                _ => *observed_value = Some(f32::NAN),
             },
-            stop,
-            max_linear_speed_mps: None,
-            max_angular_speed_radps: None,
-            observed_value: Some(0.1),
-            valid_from: RobotInstant::new(line(), NOW_NS),
-            expires_at: RobotInstant::new(line(), NOW_NS + 1),
         }
     }
 
@@ -350,25 +434,10 @@ mod tests {
 
     #[test]
     fn future_expired_and_non_finite_nested_constraints_fail_closed() {
-        for mutate in [
-            |constraint: &mut api::safety::Constraint| {
-                constraint.valid_from = RobotInstant::new(line(), NOW_NS + 1);
-            },
-            |constraint: &mut api::safety::Constraint| {
-                constraint.expires_at = RobotInstant::new(line(), NOW_NS - 1);
-            },
-            // The exact expiry instant is already expired: a constraint is
-            // usable *before* it lapses, never at the moment it does.
-            |constraint: &mut api::safety::Constraint| {
-                constraint.expires_at = RobotInstant::new(line(), NOW_NS);
-            },
-            |constraint: &mut api::safety::Constraint| {
-                constraint.observed_value = Some(f32::NAN);
-            },
-        ] {
+        for mode in 0..4 {
             let mut safety = safety();
             let mut constraint = safety_constraint(false);
-            mutate(&mut constraint);
+            mutate_constraint(&mut constraint, mode);
             safety.body.constraints.push(constraint);
             let autonomous = autonomous();
             let result =
@@ -482,9 +551,12 @@ mod tests {
         assert_eq!(active_target(&missing).linear_x_mps(), 0.5);
 
         let mut constrained = safety();
-        constrained.body.max_linear_speed_mps = Some(0.1);
-        let mut entry = safety_constraint(false);
-        entry.max_linear_speed_mps = Some(0.1);
+        let entry = safety_constraint(false);
+        constrained.body.permission = api::safety::MotionPermission::Limited {
+            effective_linear_speed_mps: 0.1,
+            effective_angular_speed_radps: f32::MAX,
+            reasons: vec![api::safety::ConstraintReason::ObstacleProximity],
+        };
         constrained.body.constraints.push(entry);
         let result = Arbitration::decide(
             Some(&manual),
@@ -512,7 +584,9 @@ mod tests {
     fn valid_safety_protective_stop_still_blocks_manual() {
         let manual = manual(0.5, 0.4);
         let mut stopped = safety();
-        stopped.body.stop = true;
+        stopped.body.permission = api::safety::MotionPermission::Stopped {
+            reasons: vec![api::safety::ConstraintReason::ObstacleProximity],
+        };
         stopped.body.constraints.push(safety_constraint(true));
         let result = Arbitration::decide(Some(&manual), None, false, Some(&stopped), LIMITS, now());
         assert!(matches!(

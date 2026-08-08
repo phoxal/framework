@@ -10,6 +10,7 @@ use crate::component::capability::{
 use crate::error::{
     IdentifierKind, JointOwner, KinematicScalarField, ModelError, MotionLimitField,
 };
+use crate::footprint::FootprintEnvelope;
 use crate::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, LinkId,
     MODULE_INSTANCE_SEPARATOR, RobotId,
@@ -532,6 +533,9 @@ pub struct Robot {
     component_types: BTreeMap<ComponentTypeId, Component>,
     simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
+    /// Compiler-derived stock-safety facts. Legacy runtime documents may omit
+    /// this value; safety consumers treat that as unavailable.
+    footprint: Option<FootprintEnvelope>,
 }
 
 /// The canonical robot wire shape used by a persisted runtime document.
@@ -552,6 +556,8 @@ struct RobotWire {
     component_types: BTreeMap<ComponentTypeId, Component>,
     simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
+    #[serde(default)]
+    footprint: Option<FootprintEnvelope>,
 }
 
 impl serde::Serialize for Robot {
@@ -565,6 +571,7 @@ impl serde::Serialize for Robot {
             component_types: self.component_types.clone(),
             simulation_types: self.simulation_types.clone(),
             structure: self.structure.clone(),
+            footprint: self.footprint,
         }
         .serialize(serializer)
     }
@@ -581,6 +588,7 @@ impl<'de> serde::Deserialize<'de> for Robot {
             wire.component_types,
             wire.simulation_types,
             wire.structure,
+            wire.footprint,
         )
         .map_err(serde::de::Error::custom)
     }
@@ -681,6 +689,7 @@ impl fmt::Display for KinematicKind {
 }
 
 impl Robot {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: RobotId,
         clock: Clock,
@@ -689,6 +698,7 @@ impl Robot {
         component_types: BTreeMap<ComponentTypeId, Component>,
         simulation_types: BTreeMap<ComponentTypeId, Simulation>,
         structure: Structure,
+        footprint: Option<FootprintEnvelope>,
     ) -> Result<Self, ModelError> {
         let robot = Self {
             id,
@@ -698,6 +708,7 @@ impl Robot {
             component_types,
             simulation_types,
             structure,
+            footprint,
         };
         robot.validate()?;
         Ok(robot)
@@ -762,6 +773,12 @@ impl Robot {
     #[must_use]
     pub const fn structure(&self) -> &Structure {
         &self.structure
+    }
+
+    /// The persisted compiler-derived stock-safety envelope, if available.
+    #[must_use]
+    pub const fn footprint_envelope(&self) -> Option<FootprintEnvelope> {
+        self.footprint
     }
 
     /// The referenced capability, if the robot declares it.
@@ -906,7 +923,8 @@ impl Robot {
         self.validate_component_types()?;
         self.validate_component_instances()?;
         self.validate_simulation_types()?;
-        self.validate_kinematic()
+        self.validate_kinematic()?;
+        self.validate_footprint()
     }
 
     /// The robot's own structure carries flattened identities, so no authored
@@ -953,6 +971,32 @@ impl Robot {
                     });
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Validate a persisted envelope against the canonical collision geometry.
+    ///
+    /// Older runtime documents may omit the envelope and remain readable, but
+    /// a present envelope must be at least as conservative as the freshly
+    /// compiled extent. Stock safety treats an omitted envelope as
+    /// unavailable; it is never silently re-derived at runtime.
+    fn validate_footprint(&self) -> Result<(), ModelError> {
+        let compiled = crate::footprint::compile(
+            &self.structure,
+            &self.component_instances,
+            &self.component_types,
+        );
+        let Some(stored) = self.footprint else {
+            return Ok(());
+        };
+        let Some(expected) = compiled? else {
+            return Err(ModelError::FootprintRadius);
+        };
+        FootprintEnvelope::new(stored.radius_m, stored.clearance_m)?;
+        let tolerance = expected.required_radius_m().max(1.0) * 1.0e-12;
+        if stored.required_radius_m() + tolerance < expected.required_radius_m() {
+            return Err(ModelError::FootprintRadius);
         }
         Ok(())
     }
@@ -1382,6 +1426,36 @@ mod tests {
         .expect("a well-formed robot structure fixture")
     }
 
+    fn robot_structure_with_collision() -> Structure {
+        compiler::structure(json!({
+            "name": "rover",
+            "links": [
+                {
+                    "name": "base_footprint",
+                    "inertial": inertial(),
+                    "visuals": [],
+                    "collisions": [{
+                        "name": "hull",
+                        "origin": { "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0] },
+                        "geometry": { "kind": "sphere", "radius": 0.5 }
+                    }]
+                },
+                link("base_link")
+            ],
+            "joints": [{
+                "name": "base_joint",
+                "kind": "fixed",
+                "origin": { "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0] },
+                "parent": "base_footprint",
+                "child": "base_link",
+                "axis": [0.0, 0.0, 1.0],
+                "limit": { "lower": 0.0, "upper": 0.0, "effort": 0.0, "velocity": 0.0 }
+            }],
+            "materials": []
+        }))
+        .expect("a well-formed colliding robot structure fixture")
+    }
+
     fn component_structure() -> Structure {
         compiler::structure(json!({
             "name": "drive",
@@ -1423,7 +1497,7 @@ mod tests {
         )
     }
 
-    fn robot_with(instance_ids: &[&str]) -> Robot {
+    fn robot_with_structure(structure: Structure, instance_ids: &[&str]) -> Robot {
         compiler::robot(RobotParts {
             id: RobotId::new("rover").expect("a normalized robot id"),
             clock: Clock::Real,
@@ -1451,9 +1525,34 @@ mod tests {
             .into_iter()
             .collect(),
             simulation_types: BTreeMap::new(),
-            structure: robot_structure(),
+            structure,
         })
         .expect("a valid canonical robot")
+    }
+
+    fn robot_with(instance_ids: &[&str]) -> Robot {
+        robot_with_structure(robot_structure(), instance_ids)
+    }
+
+    #[test]
+    fn a_legacy_robot_wire_without_a_footprint_defaults_to_unavailable() {
+        let robot = robot_with(&[]);
+        let mut value = serde_json::to_value(&robot).expect("robot serializes");
+        value
+            .as_object_mut()
+            .expect("robot wire is an object")
+            .remove("footprint");
+        let decoded: Robot = serde_json::from_value(value).expect("legacy robot decodes");
+        assert_eq!(decoded.footprint_envelope(), None);
+    }
+
+    #[test]
+    fn a_tampered_smaller_footprint_is_rejected_on_robot_deserialize() {
+        let robot = robot_with_structure(robot_structure_with_collision(), &[]);
+        assert_eq!(robot.footprint_envelope().unwrap().radius_m, 0.5);
+        let mut value = serde_json::to_value(&robot).expect("robot serializes");
+        value["footprint"]["radius_m"] = json!(0.1);
+        assert!(serde_json::from_value::<Robot>(value).is_err());
     }
 
     fn reference(component: &str, capability: &str) -> CapabilityRef {
