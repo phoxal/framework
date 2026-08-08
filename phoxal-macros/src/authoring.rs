@@ -268,17 +268,6 @@ impl ParticipantKind {
         }
     }
 
-    fn launch_policy(self, phoxal: &TokenStream) -> TokenStream {
-        match self {
-            ParticipantKind::Simulator => {
-                quote!(#phoxal::__private::SimulatorParticipantLaunch)
-            }
-            ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Brain => {
-                quote!(#phoxal::__private::ClockedParticipantLaunch)
-            }
-        }
-    }
-
     /// Emits the participant's sealed authoring surfaces. Writing one of these
     /// impls by hand - without going through this macro - does not compile
     /// because the sealing bound is left
@@ -561,7 +550,6 @@ pub fn expand_participant(
 
     let phoxal = quote!(::phoxal);
     let artifact_kind = kind.artifact_kind(&phoxal);
-    let launch_policy = kind.launch_policy(&phoxal);
     let marker = kind.marker_impl(&phoxal, struct_name);
     let metadata_const_ident = Ident::new(
         &format!(
@@ -591,7 +579,6 @@ pub fn expand_participant(
         impl #phoxal::__private::ParticipantSpec for #struct_name {
             const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
             const ID: &'static str = #id;
-            type LaunchPolicy = #launch_policy;
             // The train-selected facade revision, spliced from the framework
             // path rather than named by the author: a participant does not get
             // to pick an API revision, and every handle it builds is bounded on
@@ -854,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn the_brain_role_fixes_its_identity_kind_config_and_launch_policy() {
+    fn the_brain_role_fixes_its_identity_kind_and_config() {
         let expanded = compact_tokens(
             expand_participant(quote! {}, quote! { struct Brain; }, ParticipantKind::Brain)
                 .expect("expands"),
@@ -870,11 +857,8 @@ mod tests {
             "{expanded}"
         );
         assert!(expanded.contains("type Config = () ;"), "{expanded}");
-        // The ordinary clocked launch policy, not a second brain-specific one.
-        assert!(
-            expanded.contains("__private :: ClockedParticipantLaunch"),
-            "{expanded}"
-        );
+        // Launch parsing is one process-boundary contract in `phoxal`; role
+        // macros carry no launch policy or environment fallback.
         // The embedded record carries the brain kind under the fixed identity,
         // and every version comes from the facade compatibility set as a typed
         // value rather than a literal in this expansion.

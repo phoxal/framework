@@ -11,25 +11,35 @@
 //! branch.
 
 use std::future::Future;
+#[cfg(target_os = "linux")]
+use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use std::pin::{Pin, pin};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::api;
 use crate::bus::{LocalInstant, RobotInstant, StepToken, Subscriber, TimelineId};
-use crate::participant::api::Participant;
+use crate::participant::api::{Participant, ParticipantConfig};
 use crate::participant::bus_log::{self, BusLogState, BusLogTask};
 use crate::participant::clock::real::RealClock;
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, SetupContext, StepContext, TimelineRetention};
-use crate::participant::launch::ParticipantLaunchPolicy;
+use crate::participant::launch::SupervisedLaunch;
+#[cfg(feature = "test-harness")]
+use crate::participant::launch::TestHarness;
 use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{AnyStepScheduler, SchedulerTick, StepSchedule, StepScheduler};
+use phoxal_bundle::Sha256Digest;
 use phoxal_bus::{BusConfig, BusHandle, BusOwner, ParticipantLivelinessToken};
-use phoxal_runtime_contract::launch::{ClockMode, ParticipantLaunch};
+use phoxal_runtime_contract::identity::ParticipantId;
+use phoxal_runtime_contract::launch::ClockMode;
 
 pub(crate) mod inputs;
 pub(crate) mod query;
@@ -47,9 +57,8 @@ const RUNTIME_PERFORMANCE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
-/// The participant macro's launch policy decides whether clock selection exists
-/// at all: services/drivers are selectable, while simulators are
-/// structurally host-driven. The default binary entrypoint is
+/// The compiled runtime record decides whether clock selection exists at all;
+/// the process launch carries no scheduler override. The default binary entrypoint is
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub fn run<R: Participant>() -> crate::Result<()> {
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -69,19 +78,19 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     R::__retain_embedded_metadata();
 
     init_tracing();
-    // Install the process signal handlers before launch parsing, bus open, or
-    // setup can await. A supervisor's SIGTERM during startup must become the
-    // same teardown request as one received by the steady-state loop.
+    // Parse the supervised process contract before opening anything. A
+    // supervisor's signal is installed immediately after parsing so startup
+    // teardown still follows the same steady-state path.
+    let launch = SupervisedLaunch::parse()?;
     let shutdown = shutdown_signal();
-    let launch = R::LaunchPolicy::from_cli(R::ID)?;
 
     run_with::<R, _>(launch, shutdown).await
 }
 
-/// Run a participant against an explicit launch and shutdown trigger, on a bus
+/// Run a participant against a strict launch and shutdown trigger, on a bus
 /// this function opens and closes. The runner owns the host clock; simulators
 /// therefore have no clock parameter to receive or override.
-async fn run_with<R, S>(launch: ParticipantLaunch, shutdown: S) -> crate::Result<()>
+async fn run_with<R, S>(launch: SupervisedLaunch, shutdown: S) -> crate::Result<()>
 where
     R: Participant,
     S: Future<Output = ()>,
@@ -91,96 +100,235 @@ where
     // Validate and select the persisted participant before opening the bus.
     // A malformed runtime document or unknown topology id is a local startup
     // failure, never a bus-visible participant.
-    let bundle =
-        ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref(), &launch.participant_id)?;
-
-    if !launch.bus.connect_endpoints.is_empty() {
-        // One line, not a per-attempt one: a participant racing a router that
-        // has not opened its listener yet can take several seconds to connect
-        // (`phoxal_bus::session` bounds and backs off the retry internally,
-        // via Zenoh's own `connect/timeout_ms`). Without this, that gap looks
-        // like a silent hang rather than expected startup activity.
-        tracing::info!(
-            target: "phoxal.runtime",
-            endpoints = ?launch.bus.connect_endpoints,
-            "connecting to the bus"
+    // Bundle validation and exact participant selection happen before any bus
+    // session exists. A malformed bundle therefore has no producer or wire
+    // side effects to clean up.
+    let bundle = ParticipantBundleInputs::for_launch(&launch.bundle_root, &launch.participant_id)?;
+    if launch.participant_id.as_str() != R::ID {
+        anyhow::bail!(
+            "supervised participant id '{}' does not match this binary's compiled id '{}'",
+            launch.participant_id,
+            R::ID
         );
     }
-    let participant_id = phoxal_bus::ParticipantId::new(launch.participant_id.clone())
-        .map_err(|error| anyhow::anyhow!(error))?;
-    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-        launch.execution,
-        participant_id,
-        launch.bus.connect_endpoints.clone(),
-    ))
-    .await?;
-
+    if bundle.participant.kind != R::KIND {
+        anyhow::bail!(
+            "runtime participant '{}' has kind {:?}, but this binary declares {:?}",
+            launch.participant_id,
+            bundle.participant.kind,
+            R::KIND
+        );
+    }
+    verify_current_executable(bundle.participant.binary.digest)?;
+    let process_config_schema: serde_json::Value = serde_json::from_str(R::Config::SCHEMA_JSON)
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "binary '{}' carries an invalid compiled config schema: {error}",
+                R::ID
+            )
+        })?;
+    if process_config_schema != bundle.participant.binary.compatibility.config_schema {
+        anyhow::bail!(
+            "runtime config schema for participant '{}' does not match this binary",
+            launch.participant_id
+        );
+    }
+    // Deserialize the selected config while the process is still local. A
+    // custom `Deserialize` implementation may reject a value that its JSON
+    // Schema accepts; that must not become a transport-visible startup error.
+    let config = participant_config::<R::Config>(bundle.participant.config.as_ref())?;
     let clock = match launch.execution_origin {
         Some(origin) => RealClock::new(origin),
         None => RealClock::without_origin(),
     };
-    run_with_bus_inner::<R, RealClock, S>(&bus, Some(owner), launch, bundle, clock, shutdown).await
+    let clock_mode = bundle.participant.clock;
+    validate_clock_inputs::<R, _>(clock_mode, &clock)?;
+
+    // One line, not a per-attempt one: a participant racing a router that has
+    // not opened its listener yet can take several seconds to connect. Without
+    // this, that gap looks like a silent hang rather than expected startup.
+    tracing::info!(
+        target: "phoxal.runtime",
+        endpoints = ?launch.connect_endpoints,
+        "connecting to the bus"
+    );
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        launch.execution_id,
+        launch.participant_id.clone(),
+        launch.connect_endpoints.clone(),
+    ))
+    .await?;
+
+    run_inner::<R, RealClock, S>(
+        &bus,
+        Some(owner),
+        &launch.participant_id,
+        launch.shutdown_grace_ms,
+        Some(bundle),
+        config,
+        clock_mode,
+        clock,
+        shutdown,
+    )
+    .await
 }
 
-/// Run a participant on a **caller-owned** bus, against an explicit launch and
-/// shutdown trigger. Unlike `run_with`, this does not open or close the bus - the
-/// caller controls its lifecycle.
+/// Hash the executable image that is actually running this participant.
+///
+/// Linux's `/proc/self/exe` is opened directly: if the bundle path is replaced
+/// or unlinked after `execve`, the kernel still exposes the original executable
+/// inode through that handle. Targets without an equivalent secure primitive
+/// fail closed before transport startup; `current_exe()` is deliberately not
+/// used because its path lookup is vulnerable to replacement between lookup
+/// and open.
+#[cfg(target_os = "linux")]
+fn verify_current_executable(expected: Sha256Digest) -> crate::Result<()> {
+    let (path, mut executable) = open_current_executable()?;
+    let mut bytes = Vec::new();
+    executable.read_to_end(&mut bytes).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to read running executable {}: {error}",
+            path.display()
+        )
+    })?;
+    let actual = Sha256Digest::of(&bytes);
+    if actual != expected {
+        anyhow::bail!(
+            "running executable {} does not match the runtime bundle binary digest (expected {}, got {})",
+            path.display(),
+            expected,
+            actual
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verify_current_executable(_expected: Sha256Digest) -> crate::Result<()> {
+    Err(UnsupportedSecureExecutableIdentification.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "secure executable identification is unsupported on this target; supervised launch is disabled"
+)]
+struct UnsupportedSecureExecutableIdentification;
+
+#[cfg(target_os = "linux")]
+fn open_current_executable() -> crate::Result<(PathBuf, std::fs::File)> {
+    let proc_path = Path::new("/proc/self/exe");
+    let display_path = std::fs::read_link(proc_path).unwrap_or_else(|_| proc_path.into());
+    let executable = std::fs::File::open(proc_path).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to open the running executable {}: {error}",
+            display_path.display()
+        )
+    })?;
+    Ok((display_path, executable))
+}
+
+/// Validate scheduler selection and the initial clock discipline before any
+/// supervised transport is opened. The lifecycle repeats the construction to
+/// retain its scheduler handle, but this pass makes malformed clock inputs a
+/// local startup failure.
+fn validate_clock_inputs<R, C>(clock_mode: ClockMode, clock: &C) -> crate::Result<()>
+where
+    R: Participant,
+    C: ClockSource,
+{
+    let reading = clock.read();
+    if clock_mode == ClockMode::Real
+        && let ClockReading::Unsynchronized(reason) = reading
+    {
+        return Err(ClockDisciplineLost { reason }.into());
+    }
+    AnyStepScheduler::for_clock_mode(clock_mode, R::__step_schedule(), reading.instant())?;
+    Ok(())
+}
+
+/// Run a participant on a **caller-owned** bus using explicit test-harness
+/// input. Unlike the supervised entrypoint, this does not open or close the
+/// bus - the caller controls its lifecycle.
 ///
 /// This is the embedding seam for co-locating participants on a single in-process
-/// [`Bus`] (a single-process simulation, or an integration test exercising
-/// participant-to-participant data flow over a shared session). Note that bus metadata
-/// `source` identity is a property of the *bus*, not the launch: participants
-/// sharing one [`Bus`] publish under that bus's participant id, so distinct
-/// per-participant source attribution still requires a bus per participant. The
-/// `launch` here drives config, robot-model, and component-instance resolution.
-pub async fn run_with_bus<R, S>(
+/// [`Bus`] in an explicit test harness. Bus metadata `source` identity is a
+/// property of the bus, so participants sharing one bus publish under its
+/// participant attribution.
+#[cfg(feature = "test-harness")]
+pub async fn run_test_harness<R, S>(
     bus: &BusHandle,
-    launch: ParticipantLaunch,
+    harness: TestHarness,
     shutdown: S,
 ) -> crate::Result<()>
 where
     R: Participant,
     S: Future<Output = ()>,
 {
-    let bundle =
-        ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref(), &launch.participant_id)?;
-    let clock = match launch.execution_origin {
-        Some(origin) => RealClock::new(origin),
-        None => RealClock::without_origin(),
-    };
-    run_with_bus_inner::<R, RealClock, S>(bus, None, launch, bundle, clock, shutdown).await
+    let clock = RealClock::new(harness.execution_origin);
+    let config = participant_config::<R::Config>(None)?;
+    validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
+    run_inner::<R, RealClock, S>(
+        bus,
+        None,
+        &harness.participant_id,
+        harness.shutdown_grace_ms,
+        None,
+        config,
+        ClockMode::Real,
+        clock,
+        shutdown,
+    )
+    .await
 }
 
-/// Deterministic clock-injection seam for clock-selectable checked participants.
-/// The fixed simulator launch policy excludes them even if user code manually
-/// adds the public typed-I/O surface marker.
+/// Deterministic clock-injection seam for checked participants.
 ///
 /// Behind the `test-harness` feature: a shipped participant binary that could
 /// substitute a clock it drives itself could stamp instants it never reached.
 #[cfg(feature = "test-harness")]
 #[doc(hidden)]
-pub async fn run_with_bus_clock<R, C, S>(
+pub async fn run_test_harness_with_clock<R, C, S>(
     bus: &BusHandle,
-    launch: ParticipantLaunch,
+    harness: TestHarness,
     clock: C,
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: Participant<LaunchPolicy = crate::participant::launch::ClockedParticipantLaunch>
-        + crate::__private::surface::TypedIoSurface,
+    R: Participant
+        + crate::__private::surface::TypedIoSurface
+        + crate::__private::surface::SchedulableSurface,
     C: ClockSource,
     S: Future<Output = ()>,
 {
-    let bundle =
-        ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref(), &launch.participant_id)?;
-    run_with_bus_inner::<R, C, S>(bus, None, launch, bundle, clock, shutdown).await
+    let config = participant_config::<R::Config>(None)?;
+    validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
+    run_inner::<R, C, S>(
+        bus,
+        None,
+        &harness.participant_id,
+        harness.shutdown_grace_ms,
+        None,
+        config,
+        ClockMode::Real,
+        clock,
+        shutdown,
+    )
+    .await
 }
 
-async fn run_with_bus_inner<R, C, S>(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the runner keeps ownership, selected inputs, clock mode, and shutdown explicit"
+)]
+async fn run_inner<R, C, S>(
     bus: &BusHandle,
     owner: Option<BusOwner>,
-    launch: ParticipantLaunch,
+    participant_id: &ParticipantId,
+    shutdown_grace_ms: u64,
     bundle: Option<ParticipantBundleInputs>,
+    config: R::Config,
+    clock_mode: ClockMode,
     clock: C,
     shutdown: S,
 ) -> crate::Result<()>
@@ -191,19 +339,36 @@ where
 {
     init_tracing();
 
-    let participant_id = launch.participant_id.clone();
-    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), &participant_id);
-    let result =
-        run_lifecycle::<R, C, S>(bus, owner, launch, bundle, clock, shutdown, bus_log_task).await;
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
+    let result = run_lifecycle::<R, C, S>(
+        bus,
+        owner,
+        participant_id,
+        shutdown_grace_ms,
+        bundle,
+        config,
+        clock_mode,
+        clock,
+        shutdown,
+        bus_log_task,
+    )
+    .await;
     bus_logs.shutdown();
     result
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "startup keeps the strict launch selection, validated bundle, scheduler, clock, and owned tasks explicit"
+)]
 async fn run_lifecycle<R, C, S>(
     bus: &BusHandle,
     mut owner: Option<BusOwner>,
-    launch: ParticipantLaunch,
+    participant_id: &ParticipantId,
+    shutdown_grace_ms: u64,
     bundle: Option<ParticipantBundleInputs>,
+    config: R::Config,
+    clock_mode: ClockMode,
     clock: C,
     shutdown: S,
     bus_log_task: BusLogTask,
@@ -214,13 +379,9 @@ where
     S: Future<Output = ()>,
 {
     let schedule = R::__step_schedule();
-    // A loaded runtime record is authoritative for its scheduler policy. The
-    // launch clock remains the local/no-bundle fallback until the separate
-    // launch-contract migration removes that legacy field.
-    let clock_mode = bundle.as_ref().map_or_else(
-        || R::LaunchPolicy::clock_mode(&launch),
-        |bundle| bundle.participant.clock,
-    );
+    // A validated runtime record is the sole authority for scheduler policy.
+    // The only caller without a bundle is the explicit in-process test
+    // harness, which uses the participant's ordinary real-clock default.
     let reading = clock.read();
     if clock_mode == ClockMode::Real
         && let ClockReading::Unsynchronized(reason) = reading
@@ -249,8 +410,10 @@ where
     match Runner::<R, C>::start(
         bus,
         &mut owner,
-        &launch,
+        participant_id,
+        shutdown_grace_ms,
         bundle,
+        config,
         effective_clock,
         scheduler,
         schedule,
@@ -438,7 +601,7 @@ struct RunnerTasks {
 }
 
 impl<R: Participant, C: ClockSource> Runner<R, C> {
-    /// Resolve the launch, run `Participant::setup`, and declare everything the
+    /// Resolve the selected runtime record, run `Participant::setup`, and declare everything the
     /// participant announced - after which the participant is live on the graph.
     ///
     /// Every failure after `setup` succeeds still runs the full teardown, so a
@@ -446,36 +609,26 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
     /// participant's hardware-safety hook.
     #[expect(
         clippy::too_many_arguments,
-        reason = "startup keeps the validated bundle, scheduler, clock, launch, and framework tasks explicit"
+        reason = "startup keeps the validated bundle, scheduler, clock, and framework tasks explicit"
     )]
     async fn start(
         bus: &BusHandle,
         owner: &mut Option<BusOwner>,
-        launch: &ParticipantLaunch,
+        participant_id: &ParticipantId,
+        shutdown_grace_ms: u64,
         bundle: Option<ParticipantBundleInputs>,
+        config: R::Config,
         clock: RunnerClock<C>,
         scheduler: AnyStepScheduler,
         schedule: Option<StepSchedule>,
         clock_mode: ClockMode,
         tasks: RunnerTasks,
     ) -> crate::Result<Self> {
-        // Once a runtime bundle is present, its selected record is the sole
-        // authority: `None` means JSON null/absent and must not be replaced by
-        // a launch override. The launch fields remain the no-bundle fallback
-        // until the separate launch-contract migration removes them.
-        let config_value = match bundle.as_ref() {
-            Some(bundle) => bundle.participant.config.as_ref(),
-            None => launch.config.as_ref(),
-        };
-        let config: R::Config = participant_config(config_value)?;
-        let component_instance = match bundle.as_ref() {
-            Some(bundle) => bundle
-                .participant
-                .binding
-                .as_ref()
-                .map(|binding| binding.component_instance.to_string()),
-            None => launch.component_instance.clone(),
-        };
+        // The selected runtime record (or explicit test harness) was already
+        // deserialized before entering this transport-owned startup path.
+        let component_instance = bundle
+            .as_ref()
+            .and_then(|bundle| bundle.component_instance.clone());
 
         let mut ctx = SetupContext::<R>::new(bus.clone(), bundle, component_instance);
         ctx.spawn_managed_with(
@@ -493,12 +646,9 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         let (mut state, api) = match participant.setup(&mut ctx, config).await {
             Ok(pair) => pair,
             Err(error) => {
-                return Err(abandon_setup(
-                    ctx.take_managed_tasks(),
-                    error,
-                    launch.shutdown_grace_ms,
-                )
-                .await);
+                return Err(
+                    abandon_setup(ctx.take_managed_tasks(), error, shutdown_grace_ms).await,
+                );
             }
         };
         // From here on the runner - not `SetupContext` - owns watching the tasks
@@ -510,7 +660,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
 
         let wind_down = |managed_tasks| Teardown {
             managed_tasks,
-            grace_ms: launch.shutdown_grace_ms,
+            grace_ms: shutdown_grace_ms,
         };
         let mut queries =
             match QuerySurface::declare(bus, query_registrations, &mut managed_tasks).await {
@@ -587,7 +737,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         tracing::info!(
             target: "phoxal.runtime",
             id = R::ID,
-            participant = %launch.participant_id,
+            participant = %participant_id,
             "runtime ready"
         );
         Ok(Runner {
@@ -609,7 +759,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             runtime_performance: RuntimePerformance::new(schedule),
             managed_tasks,
             liveliness,
-            shutdown_grace_ms: launch.shutdown_grace_ms,
+            shutdown_grace_ms,
         })
     }
 
@@ -1009,7 +1159,9 @@ pub(crate) fn init_tracing() {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        // Process launch is strict Clap argv. Logging uses this fixed default
+        // rather than reading ambient process variables or mutating process state.
+        let filter = EnvFilter::new("info");
         let bus_layer = bus_log::BusLogLayer::new(bus_log_state());
         let _ = tracing_subscriber::registry()
             .with(filter)
@@ -1021,7 +1173,7 @@ pub(crate) fn init_tracing() {
 
 pub(crate) fn bus_log_state() -> Arc<BusLogState> {
     static STATE: OnceLock<Arc<BusLogState>> = OnceLock::new();
-    Arc::clone(STATE.get_or_init(bus_log::new_state_from_env))
+    Arc::clone(STATE.get_or_init(bus_log::new_state))
 }
 
 #[cfg(test)]
@@ -1094,6 +1246,31 @@ mod tests {
         );
 
         assert!(LoopExit::ShutdownRequested.into_result().is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wrong_running_executable_digest_is_rejected_before_bus_open() {
+        let error = verify_current_executable(Sha256Digest::of(b"not-this-process"))
+            .expect_err("a substituted executable must fail local startup");
+        let message = format!("{error:#}");
+        assert!(message.contains("does not match the runtime bundle binary digest"));
+        assert!(message.contains("expected"));
+        assert!(message.contains("got"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn unsupported_executable_identity_fails_before_bus_open() {
+        let error = verify_current_executable(Sha256Digest::of(b"ignored"))
+            .expect_err("supervised launch must fail closed on unsupported targets");
+        assert!(
+            error
+                .downcast_ref::<UnsupportedSecureExecutableIdentification>()
+                .is_some(),
+            "the failure must identify the secure executable primitive as unsupported"
+        );
+        assert!(format!("{error:#}").contains("supervised launch is disabled"));
     }
 
     /// A Critical task that fails while the bus-side Ready declaration is

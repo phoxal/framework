@@ -16,8 +16,9 @@
 //!   and its strict parser.
 //! - [`emit`] - the one sanctioned writer of that record, in both of its
 //!   evaluation modes.
-//! - [`launch`] - the launch record and environment ABI a supervisor hands a
-//!   participant process.
+//! - [`launch`] - scheduler policy facts persisted in the compiled runtime
+//!   bundle. Process launch parsing is owned by `phoxal` and is strict Clap
+//!   argv only.
 //! - [`origin`] - the boot-anchored origin of one real execution.
 
 pub mod emit;

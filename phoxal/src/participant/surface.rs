@@ -33,7 +33,7 @@ pub trait ComponentBoundSurface: sealing::Sealed {}
 /// A scheduled `Participant::step`.
 #[doc(hidden)]
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` has a clockless launch policy and cannot own a scheduled step",
+    message = "`{Self}` is clockless and cannot own a scheduled step",
     label = "scheduled steps are available only on services and drivers"
 )]
 pub trait SchedulableSurface {}

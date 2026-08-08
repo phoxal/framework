@@ -1,4 +1,4 @@
-error[E0277]: `ScheduledSimulator` has a clockless launch policy and cannot own a scheduled step
+error[E0277]: `ScheduledSimulator` is clockless and cannot own a scheduled step
   --> tests/trybuild/fail/simulator_cannot_schedule_step.rs:15:5
    |
 15 |     #[phoxal::step(hz = 10)]

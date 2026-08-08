@@ -91,7 +91,7 @@ version_identity! {
 }
 
 version_identity! {
-    /// The launch record and environment-variable ABI.
+    /// The process launch compatibility identity.
     LaunchAbi {
         V0 = "phoxal/participant-launch/v0",
     }

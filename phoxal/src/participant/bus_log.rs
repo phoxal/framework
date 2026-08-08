@@ -65,23 +65,6 @@ impl BusLogState {
         }
     }
 
-    /// The level named by a `PHOXAL_BUS_LOG_LEVEL` value, or `None` when the
-    /// value names no level at all.
-    fn parse_level(value: &str) -> Option<Level> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "error" => Some(Level::ERROR),
-            "warn" | "warning" => Some(Level::WARN),
-            "info" => Some(Level::INFO),
-            "debug" => Some(Level::DEBUG),
-            "trace" => Some(Level::TRACE),
-            _ => None,
-        }
-    }
-
-    fn set_max_level(&self, level: Level) {
-        self.max_level.store(Self::gate(level), Ordering::Relaxed);
-    }
-
     fn try_enqueue(&self, record: LogRecord) {
         let active = lock(&self.active);
         let Some(active) = active.as_ref() else {
@@ -327,15 +310,8 @@ fn bounded_text(value: &str, max_bytes: usize) -> (String, bool) {
     (value[..end].to_string(), true)
 }
 
-pub(crate) fn new_state_from_env() -> Arc<BusLogState> {
-    let state = Arc::new(BusLogState::new());
-    if let Some(level) = std::env::var("PHOXAL_BUS_LOG_LEVEL")
-        .ok()
-        .and_then(|value| BusLogState::parse_level(&value))
-    {
-        state.set_max_level(level);
-    }
-    state
+pub(crate) fn new_state() -> Arc<BusLogState> {
+    Arc::new(BusLogState::new())
 }
 
 pub(crate) fn attach(bus: BusHandle, participant_id: &str) -> (BusLogGuard, BusLogTask) {
@@ -483,9 +459,6 @@ mod tests {
         assert!(state.allows(Level::INFO, "app"));
         assert!(state.allows(Level::WARN, "app"));
         assert!(!state.allows(Level::DEBUG, "app"));
-
-        state.set_max_level(Level::DEBUG);
-        assert!(state.allows(Level::DEBUG, "app"));
     }
 
     #[test]

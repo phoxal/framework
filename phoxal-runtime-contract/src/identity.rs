@@ -397,7 +397,7 @@ impl fmt::Debug for TimelineId {
 /// A value this module refused to accept as one of its identities.
 ///
 /// The message already names the rejected value and the shape that was
-/// required, because the caller that produced it - a launch record, a wire
+/// required, because the caller that produced it - a process boundary value, a wire
 /// field, a transport session id - is never in a position to explain the
 /// identity grammar itself.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

@@ -143,7 +143,7 @@ impl ParticipantConfig for () {
 }
 
 /// An optional config is a config: `config = Option<T>` (a participant whose
-/// `PHOXAL_CONFIG` may be absent, deserializing to `None`) works whenever
+/// compiled config may be null, deserializing to `None`) works whenever
 /// `T: ParticipantConfig`; `Option<T>`'s own `Deserialize` maps `null`/absent
 /// to `None` and a present object to `Some(T)`. A participant crate cannot
 /// write `impl ParticipantConfig for Option<LocalConfig>` itself (orphan
@@ -212,10 +212,6 @@ pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The participant id (`id = "…"`, default derived from the crate's
     /// `CARGO_PKG_NAME`; see `#[phoxal::service]`'s docs).
     const ID: &'static str;
-    /// The process launch contract. Simulators use a clockless policy;
-    /// services and drivers use the configurable robot-clock policy.
-    #[doc(hidden)]
-    type LaunchPolicy: crate::participant::launch::ParticipantLaunchPolicy;
     /// The single API revision every typed handle this participant builds must
     /// come from. Role attributes fix it to the train-selected facade
     /// (`phoxal::api::Api`); there is no participant-local choice.

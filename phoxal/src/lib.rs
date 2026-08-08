@@ -192,7 +192,7 @@ pub mod bus {
 /// Reading the finalized runtime bundle a participant was launched against.
 ///
 /// A participant normally never touches this module: the runner loads the
-/// bundle named by `PHOXAL_BUNDLE_ROOT`, selects the exact persisted
+/// bundle named by strict Clap launch argv, selects the exact persisted
 /// `ParticipantId`, and binds the validated model and assets onto
 /// [`SetupContext`]. It is public because the same loader is useful to a host
 /// tool embedding the framework to inspect a bundle it did not launch.
@@ -329,7 +329,7 @@ pub mod __private {
         pub const API: RobotApi = RobotApi::V0_2;
         /// The bus wire ABI.
         pub const BUS: BusAbi = BusAbi::V0;
-        /// The launch record / environment ABI.
+        /// The process launch compatibility identity.
         pub const LAUNCH: LaunchAbi = LaunchAbi::V0;
         /// The authored robot document grammar.
         pub const ROBOT: RobotSchema = RobotSchema::V0;
@@ -352,11 +352,6 @@ pub mod __private {
     /// `bytes_of`, and the hygienic `concatcp` re-export.
     pub use crate::participant::api::meta;
 
-    /// The launch policy each role attribute assigns to `ParticipantSpec`.
-    pub use crate::participant::launch::{
-        ClockedParticipantLaunch, ParticipantLaunchPolicy, SimulatorParticipantLaunch,
-    };
-
     /// The capability marker traits a role attribute implements for its marker.
     pub use crate::participant::surface;
 
@@ -370,17 +365,16 @@ pub mod __private {
     /// `Participant::__step_schedule`.
     pub use crate::participant::scheduler::StepSchedule;
 
-    /// Driving a participant on a bus the caller already owns.
-    ///
-    /// These are not part of the macro ABI. They are the only way to run a
-    /// participant against an in-process bus without going through process
-    /// launch, which is what the framework's own integration tests and the
-    /// official participants' tests need. They are here rather than behind a
-    /// `cfg(test)` gate because a participant crate's tests are a separate
-    /// compilation unit that has no way to enable this crate's test cfg.
+    /// Explicit in-process test-harness injection. A production participant
+    /// enters through `phoxal::run`, which parses the strict supervised launch
+    /// and opens its own [`BusOwner`].
+    #[cfg(feature = "test-harness")]
     pub use crate::participant::clock::ClockSource;
-    pub use crate::participant::runner::run_with_bus;
-    pub use phoxal_runtime_contract::launch::ParticipantLaunch;
+    #[cfg(feature = "test-harness")]
+    pub use crate::participant::launch::TestHarness;
+    #[cfg(feature = "test-harness")]
+    pub use crate::participant::runner::run_test_harness;
+    #[cfg(feature = "test-harness")]
     pub use phoxal_runtime_contract::origin::ExecutionOrigin;
 
     /// Injecting a clock the caller drives, for the same in-process runs.
@@ -391,5 +385,5 @@ pub mod __private {
     #[cfg(feature = "test-harness")]
     pub use crate::participant::clock::test::TestClock;
     #[cfg(feature = "test-harness")]
-    pub use crate::participant::runner::run_with_bus_clock;
+    pub use crate::participant::runner::run_test_harness_with_clock;
 }

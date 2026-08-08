@@ -21,7 +21,7 @@ anyhow = { workspace = true }
 
 [dev-dependencies]
 # The lifecycle test drives the participant over a real bus with a `TestClock`
-# injected through `run_with_bus_clock`. Neither is production authoring API, so
+# injected through `run_test_harness_with_clock`. Neither is production authoring API, so
 # both sit behind `test-harness` and are pulled in for tests only.
 phoxal = { workspace = true, features = ["test-harness"] }
 tokio = { workspace = true }

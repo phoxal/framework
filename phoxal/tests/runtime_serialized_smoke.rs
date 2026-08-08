@@ -2,10 +2,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use phoxal::__private::{ExecutionOrigin, ParticipantLaunch};
+use phoxal::__private::{TestHarness, run_test_harness};
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_bus::{BusConfig, BusOwner};
+use phoxal_bus::{BusConfig, BusOwner, ExecutionId};
 use tokio::sync::Notify;
 
 static STEP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -69,12 +69,12 @@ impl SerializedSmoke {
 async fn a_query_observes_completed_steps_and_stepping_resumes_afterward() {
     STEP_COUNT.store(0, Ordering::Release);
     let first_step = step_started().notified();
-    let launch =
-        ParticipantLaunch::local("serialized-smoke").with_execution_origin(ExecutionOrigin::mint());
-    let participant = phoxal::bus::ParticipantId::new(launch.participant_id.clone())
-        .expect("test participant id");
+    let launch = TestHarness::new("serialized-smoke").expect("valid test participant");
+    let participant =
+        phoxal::bus::ParticipantId::new("serialized-smoke").expect("test participant id");
+    let execution = ExecutionId::mint();
     let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-        launch.execution,
+        execution,
         participant,
         Vec::new(),
     ))
@@ -84,7 +84,7 @@ async fn a_query_observes_completed_steps_and_stepping_resumes_afterward() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let runner_bus = bus.clone();
     let runner = async move {
-        phoxal::__private::run_with_bus::<SerializedSmoke, _>(&runner_bus, launch, async {
+        run_test_harness::<SerializedSmoke, _>(&runner_bus, launch, async {
             let _ = shutdown_rx.await;
         })
         .await
