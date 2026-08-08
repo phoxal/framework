@@ -91,7 +91,18 @@ pub fn staged_bundle() -> StagedBundle {
             let participant_id = ParticipantId::new(participant_name)
                 .expect("the assembler emitted a normalized participant id");
             if !artifacts.contains_key(&artifact_id) {
-                let bytes = format!("fixture binary {}", artifact_id.as_str()).into_bytes();
+                let source = bundle.path().join("sources").join(artifact_id.as_str());
+                std::fs::create_dir_all(
+                    source.parent().expect("fixture binary source has a parent"),
+                )
+                .expect("fixture binary source directory");
+                std::fs::write(&source, b"#!/bin/sh\nexit 0\n").expect("fixture executable source");
+                #[cfg(unix)]
+                std::fs::set_permissions(
+                    &source,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o755),
+                )
+                .expect("fixture executable source mode");
                 let binary_path =
                     BundlePath::new(format!("bin/{}", artifact_id.as_str())).expect("binary path");
                 let config_schema = if config.is_some() {
@@ -99,7 +110,7 @@ pub fn staged_bundle() -> StagedBundle {
                 } else {
                     serde_json::json!({"type": "null"})
                 };
-                let binary = BinaryReference::from_bytes(
+                let binary = BinaryReference::from_file(
                     binary_path.clone(),
                     ParticipantContract {
                         id: artifact_id.clone(),
@@ -113,9 +124,10 @@ pub fn staged_bundle() -> StagedBundle {
                         requirement: None,
                         config_schema,
                     },
-                    &bytes,
-                );
-                binaries.insert(binary_path, bytes);
+                    &source,
+                )
+                .expect("fixture binary source hashes");
+                binaries.insert(binary_path, source);
                 artifacts.insert(artifact_id.clone(), binary);
             }
             participants.push(RuntimeParticipant::new(
@@ -163,7 +175,7 @@ pub fn staged_bundle() -> StagedBundle {
     }
     let runtime = Runtime::new(robot, artifacts, participants, asset_index, None)
         .expect("fixture runtime is valid");
-    let document = RuntimeDocument::new(runtime).expect("fixture runtime document");
+    let document = RuntimeDocument::new(runtime);
     let root = bundle.path().join("bundle");
     BundleWriter::write(&root, &document, &assets, &binaries)
         .expect("the fixture runtime bundle writes");
@@ -181,7 +193,7 @@ pub fn staged_bundle() -> StagedBundle {
 )]
 pub fn robot() -> Robot {
     let bundle = staged_bundle();
-    RuntimeBundle::open(bundle.path())
+    RuntimeBundle::open_verified(bundle.path())
         .expect("the staged bundle must load")
         .robot()
         .clone()
@@ -213,7 +225,7 @@ mod tests {
     #[test]
     fn driver_instances_reuse_one_artifact_and_simulation_has_one_controller() {
         let bundle = staged_bundle();
-        let loaded = RuntimeBundle::open(bundle.path()).expect("the staged bundle loads");
+        let loaded = RuntimeBundle::open_verified(bundle.path()).expect("the staged bundle loads");
         let driver = ParticipantArtifactId::new("drive_motor").expect("driver artifact");
         assert_eq!(
             loaded

@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,6 +28,13 @@ use phoxal_runtime_contract::identity::ParticipantId;
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod path;
+pub use path::{BundlePath, BundlePathError, DigestError, Sha256Digest};
+mod asset;
+pub use asset::ParticipantAssets;
+mod reader;
+pub use reader::{ParticipantBundle, ParticipantRuntimeInputs, RuntimeBundle};
 
 /// The only schema tag currently readable by this framework train.
 pub const RUNTIME_SCHEMA: &str = "phoxal/runtime-bundle/v0";
@@ -83,16 +90,16 @@ impl<'de> Deserialize<'de> for RuntimeDocument {
         }
 
         match Wire::deserialize(deserializer)? {
-            Wire::V0(runtime) => Self::new(runtime).map_err(serde::de::Error::custom),
+            Wire::V0(runtime) => Ok(Self::new(runtime)),
         }
     }
 }
 
 impl RuntimeDocument {
-    /// Construct and validate one runtime document.
-    pub fn new(runtime: Runtime) -> Result<Self, DocumentError> {
-        runtime.validate()?;
-        Ok(Self::V0(runtime))
+    /// Wrap one already-validated runtime document.
+    #[must_use]
+    pub const fn new(runtime: Runtime) -> Self {
+        Self::V0(runtime)
     }
 
     /// The runtime payload.
@@ -125,11 +132,6 @@ impl RuntimeDocument {
     #[must_use]
     pub fn artifacts(&self) -> &BTreeMap<ParticipantArtifactId, BinaryReference> {
         &self.runtime().artifacts
-    }
-
-    /// Validate all typed invariants without touching the filesystem.
-    pub fn validate(&self) -> Result<(), DocumentError> {
-        self.runtime().validate()
     }
 
     /// Find the exact persisted participant selected by a process boundary.
@@ -175,20 +177,20 @@ impl<'de> Deserialize<'de> for Runtime {
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        let runtime = Self {
-            robot: wire.robot,
-            artifacts: wire.artifacts,
-            participants: wire.participants,
-            assets: wire.assets,
-            router: wire.router,
-        };
-        runtime.validate().map_err(serde::de::Error::custom)?;
-        Ok(runtime)
+        Self::new(
+            wire.robot,
+            wire.artifacts,
+            wire.participants,
+            wire.assets,
+            wire.router,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
 impl Runtime {
-    /// Construct one runtime payload from the complete build-side assembly.
+    /// Construct the complete in-memory runtime document, validating its
+    /// cross-field invariants exactly once.
     pub fn new(
         robot: Robot,
         artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
@@ -237,8 +239,7 @@ impl Runtime {
         self.router.as_ref()
     }
 
-    /// Validate the complete in-memory runtime document.
-    pub fn validate(&self) -> Result<(), DocumentError> {
+    fn validate(&self) -> Result<(), DocumentError> {
         let mut ids = BTreeSet::new();
         let mut artifact_paths = BTreeSet::new();
         for (id, artifact) in &self.artifacts {
@@ -398,18 +399,45 @@ pub struct BinaryReference {
     path: BundlePath,
     /// The exact bytes staged at `path`.
     digest: Sha256Digest,
+    /// The exact byte length staged at `path`.
+    size_bytes: u64,
     /// The embedded process-contract facts the binary declared.
     contract: ParticipantContract,
 }
 
 impl BinaryReference {
-    /// Construct a reference for already-built bytes.
-    pub fn from_bytes(path: BundlePath, contract: ParticipantContract, bytes: &[u8]) -> Self {
-        Self {
+    /// Construct a reference for an already-built executable.
+    ///
+    /// The bytes are hashed from the source file rather than accepted from an
+    /// in-memory copy: the same executable is what the writer later stages.
+    pub fn from_file(
+        path: BundlePath,
+        contract: ParticipantContract,
+        source: impl AsRef<Path>,
+    ) -> Result<Self, BundleError> {
+        let source = source.as_ref();
+        let file = std::fs::File::open(source).map_err(|source_error| BundleError::ReadFile {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+        let size_bytes = file
+            .metadata()
+            .map_err(|source_error| BundleError::ReadFile {
+                path: source.to_path_buf(),
+                source: source_error,
+            })?
+            .len();
+        Ok(Self {
             path,
-            digest: Sha256Digest::of(bytes),
+            digest: Sha256Digest::from_reader(file).map_err(|source_error| {
+                BundleError::ReadFile {
+                    path: source.to_path_buf(),
+                    source: source_error,
+                }
+            })?,
+            size_bytes,
             contract,
-        }
+        })
     }
 
     /// The normalized bundle-relative binary path.
@@ -422,6 +450,12 @@ impl BinaryReference {
     #[must_use]
     pub const fn digest(&self) -> Sha256Digest {
         self.digest
+    }
+
+    /// The exact byte length of the staged executable.
+    #[must_use]
+    pub const fn size_bytes(&self) -> u64 {
+        self.size_bytes
     }
 
     /// The embedded process contract declared by this artifact.
@@ -648,61 +682,13 @@ impl AssetRecord {
     }
 }
 
-/// A normalized, traversal-proof bundle-relative path.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct BundlePath(String);
-
-impl BundlePath {
-    /// Validate a forward-slash relative path.
-    pub fn new(value: impl Into<String>) -> Result<Self, BundlePathError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(BundlePathError::Empty);
-        }
-        if value.starts_with('/') {
-            return Err(BundlePathError::Absolute(value));
-        }
-        if value.contains('\\') {
-            return Err(BundlePathError::NotNormalized(value));
-        }
-        let mut components = value.split('/');
-        if components.any(|component| component.is_empty() || component == "." || component == "..")
-        {
-            return Err(BundlePathError::NotNormalized(value));
-        }
-        Ok(Self(value))
-    }
-
-    /// The normalized path string stored in JSON.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn starts_with_directory(&self, directory: &str) -> bool {
-        self.0
-            .strip_prefix(directory)
-            .is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
-    }
-
-    fn filesystem_path(&self, root: &Path) -> PathBuf {
-        root.join(self.0.split('/').collect::<PathBuf>())
-    }
-}
-
-impl fmt::Display for BundlePath {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
 /// A bundle root pinned to one directory object for the lifetime of a load.
 ///
 /// The path is retained only for diagnostics and compatibility with the
 /// public `root()` accessor. All trusted file opens use the descriptor on Unix;
 /// they never re-resolve this path after acquisition.
 #[derive(Clone)]
-struct BundleRoot {
+pub(crate) struct BundleRoot {
     path: PathBuf,
     #[cfg(unix)]
     fd: Arc<std::os::fd::OwnedFd>,
@@ -718,7 +704,7 @@ impl fmt::Debug for BundleRoot {
 }
 
 impl BundleRoot {
-    fn open(requested: &Path) -> Result<Self, BundleError> {
+    pub(crate) fn open(requested: &Path) -> Result<Self, BundleError> {
         #[cfg(unix)]
         {
             use std::ffi::CString;
@@ -756,123 +742,48 @@ impl BundleRoot {
         }
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }
 
-impl Serialize for BundlePath {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
+pub(crate) fn read_runtime_document(root: &BundleRoot) -> Result<RuntimeDocument, BundleError> {
+    let runtime_path = root.path().join(RUNTIME_FILE);
+    let mut runtime_file =
+        open_bundle_file(root, &BundlePath::new(RUNTIME_FILE)?).map_err(|error| match error {
+            BundleError::ReadFile { path, source } => BundleError::ReadDocument { path, source },
+            BundleError::MissingFile { path } => BundleError::ReadDocument {
+                path,
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, RUNTIME_FILE),
+            },
+            other => other,
+        })?;
+    let mut bytes = Vec::new();
+    runtime_file
+        .read_to_end(&mut bytes)
+        .map_err(|source| BundleError::ReadDocument {
+            path: runtime_path,
+            source,
+        })?;
+    serde_json::from_slice(&bytes).map_err(BundleError::from)
 }
 
-impl<'de> Deserialize<'de> for BundlePath {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-    }
-}
-
-/// A SHA-256 digest rendered as exactly 64 lowercase hexadecimal characters.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Sha256Digest([u8; 32]);
-
-impl Sha256Digest {
-    /// Hash one byte sequence.
-    #[must_use]
-    pub fn of(bytes: &[u8]) -> Self {
-        Self(Sha256::digest(bytes).into())
-    }
-
-    /// Stream one reader into the digest without buffering the complete file.
-    pub fn from_reader(mut reader: impl Read) -> std::io::Result<Self> {
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
+#[cfg(unix)]
+pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), BundleError> {
+    for directory in [ASSETS_DIR, BIN_DIR] {
+        let path = root.path().join(directory);
+        if open_relative_directory(root, directory, &path)?.is_none() {
+            return Err(BundleError::MissingFile { path });
         }
-        Ok(Self(hasher.finalize().into()))
     }
-
-    /// Parse the canonical JSON representation.
-    pub fn parse(value: &str) -> Result<Self, DigestError> {
-        if value.len() != 64
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            return Err(DigestError(value.to_string()));
-        }
-        let mut bytes = [0; 32];
-        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
-            bytes[index] = (hex(pair[0])? << 4) | hex(pair[1])?;
-        }
-        Ok(Self(bytes))
-    }
-
-    /// Render the canonical lowercase hexadecimal representation.
-    #[must_use]
-    pub fn as_hex(self) -> String {
-        let mut output = String::with_capacity(64);
-        for byte in self.0 {
-            output.push(hex_digit(byte >> 4));
-            output.push(hex_digit(byte & 0x0f));
-        }
-        output
-    }
+    Ok(())
 }
 
-impl fmt::Display for Sha256Digest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.as_hex())
-    }
-}
-
-impl Serialize for Sha256Digest {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.as_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for Sha256Digest {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::parse(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-    }
-}
-
-fn hex(value: u8) -> Result<u8, DigestError> {
-    match value {
-        b'0'..=b'9' => Ok(value - b'0'),
-        b'a'..=b'f' => Ok(value - b'a' + 10),
-        _ => Err(DigestError(String::from("non-hex digest"))),
-    }
-}
-
-const fn hex_digit(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        _ => (b'a' + value - 10) as char,
-    }
-}
-
-/// A digest that was not the canonical lowercase SHA-256 spelling.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("digest must be 64 lowercase hexadecimal characters, got '{0}'")]
-pub struct DigestError(String);
-
-/// Why a bundle-relative path was rejected.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum BundlePathError {
-    #[error("bundle path is empty")]
-    Empty,
-    #[error("bundle path is absolute: '{0}'")]
-    Absolute(String),
-    #[error("bundle path is not normalized: '{0}'")]
-    NotNormalized(String),
+#[cfg(not(unix))]
+pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), BundleError> {
+    Err(BundleError::UnsupportedSecureOpen {
+        path: root.path().to_path_buf(),
+    })
 }
 
 /// Why a persisted runtime document is not a valid execution plan.
@@ -1013,6 +924,8 @@ pub enum BundleError {
     ForbiddenSymlink { path: PathBuf },
     #[error("bundle contains unsupported filesystem entry {path}")]
     UnsupportedEntry { path: PathBuf },
+    #[error("bundle executable is not executable: {path}")]
+    NotExecutable { path: PathBuf },
     #[error("bundle contains unexpected file {path}")]
     UnexpectedFile { path: PathBuf },
     #[error("bundle contains unindexed directory {path}")]
@@ -1047,220 +960,6 @@ pub enum BundleError {
     Selection(#[from] SelectionError),
 }
 
-/// Participant-readable, digest-checked asset access.
-#[derive(Clone, Debug)]
-pub struct ParticipantAssets {
-    root: BundleRoot,
-    entries: BTreeMap<AssetId, AssetRecord>,
-}
-
-impl ParticipantAssets {
-    fn new(root: BundleRoot, index: &AssetIndex) -> Self {
-        Self {
-            root,
-            entries: index
-                .entries
-                .iter()
-                .map(|entry| (entry.id.clone(), entry.clone()))
-                .collect(),
-        }
-    }
-
-    /// Every logical asset declared by this runtime bundle.
-    pub fn ids(&self) -> impl ExactSizeIterator<Item = &AssetId> {
-        self.entries.keys()
-    }
-
-    /// Read a declared asset through one no-follow file descriptor and verify
-    /// the bytes consumed from that same descriptor.
-    pub fn read(&self, id: &AssetId) -> Result<Vec<u8>, BundleError> {
-        let entry = self
-            .entries
-            .get(id)
-            .ok_or_else(|| BundleError::UndeclaredAsset { id: id.clone() })?;
-        let path = entry.path.filesystem_path(self.root.path());
-        let mut file = open_bundle_file(&self.root, &entry.path)?;
-        let bytes = read_and_verify(&mut file, &path, entry.digest, Some(entry.size_bytes))?;
-        Ok(bytes)
-    }
-
-    /// Open a declared asset after hashing the bytes from that same owned file
-    /// descriptor. The returned handle is rewound and never re-resolves a
-    /// pathname, so a later directory or leaf substitution cannot redirect it.
-    pub fn open(&self, id: &AssetId) -> Result<std::fs::File, BundleError> {
-        let entry = self
-            .entries
-            .get(id)
-            .ok_or_else(|| BundleError::UndeclaredAsset { id: id.clone() })?;
-        let path = entry.path.filesystem_path(self.root.path());
-        let mut verification = open_bundle_file(&self.root, &entry.path)?;
-        let mut reader = verification
-            .try_clone()
-            .map_err(|source| BundleError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
-        let _ = read_and_verify(&mut reader, &path, entry.digest, Some(entry.size_bytes))?;
-        verification
-            .seek(SeekFrom::Start(0))
-            .map_err(|source| BundleError::ReadFile { path, source })?;
-        Ok(verification)
-    }
-}
-
-/// One selected participant and the immutable runtime inputs it consumes.
-#[derive(Clone, Debug)]
-pub struct ParticipantRuntimeInputs {
-    robot: Arc<Robot>,
-    participant: RuntimeParticipant,
-    /// The reusable artifact selected by `participant.artifact`.
-    artifact: BinaryReference,
-    assets: ParticipantAssets,
-}
-
-impl ParticipantRuntimeInputs {
-    /// The canonical robot selected with this participant.
-    #[must_use]
-    pub fn robot(&self) -> &Robot {
-        self.robot.as_ref()
-    }
-
-    /// The exact persisted participant record selected for this process.
-    #[must_use]
-    pub const fn participant(&self) -> &RuntimeParticipant {
-        &self.participant
-    }
-
-    /// The reusable executable artifact selected by the participant record.
-    #[must_use]
-    pub const fn artifact(&self) -> &BinaryReference {
-        &self.artifact
-    }
-
-    /// Participant-readable, digest-checked assets from the same bundle.
-    #[must_use]
-    pub const fn assets(&self) -> &ParticipantAssets {
-        &self.assets
-    }
-}
-
-/// A loaded, integrity-checked runtime bundle.
-#[derive(Clone, Debug)]
-pub struct RuntimeBundle {
-    root: BundleRoot,
-    document: RuntimeDocument,
-    assets: ParticipantAssets,
-}
-
-impl RuntimeBundle {
-    /// Open and validate one installed bundle.
-    pub fn open(root: impl AsRef<Path>) -> Result<Self, BundleError> {
-        let requested = root.as_ref();
-        let root = BundleRoot::open(requested)?;
-        let runtime_path = root.path().join(RUNTIME_FILE);
-        let mut runtime_file = open_bundle_file(&root, &BundlePath::new(RUNTIME_FILE)?).map_err(
-            |error| match error {
-                BundleError::ReadFile { path, source } => {
-                    BundleError::ReadDocument { path, source }
-                }
-                BundleError::MissingFile { path } => BundleError::ReadDocument {
-                    path,
-                    source: std::io::Error::new(std::io::ErrorKind::NotFound, "runtime.json"),
-                },
-                other => other,
-            },
-        )?;
-        let mut bytes = Vec::new();
-        runtime_file
-            .read_to_end(&mut bytes)
-            .map_err(|source| BundleError::ReadDocument {
-                path: runtime_path.clone(),
-                source,
-            })?;
-        let document: RuntimeDocument = serde_json::from_slice(&bytes)?;
-        document.validate()?;
-        validate_layout(&root, document.runtime())?;
-        Ok(Self {
-            assets: ParticipantAssets::new(root.clone(), &document.runtime().assets),
-            root,
-            document,
-        })
-    }
-
-    /// The requested installed root path, retained for diagnostics.
-    ///
-    /// Runtime access is pinned to the directory descriptor acquired during
-    /// [`Self::open`]; callers must not use this path as a trust boundary.
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        self.root.path()
-    }
-
-    /// The validated persisted document.
-    #[must_use]
-    pub const fn document(&self) -> &RuntimeDocument {
-        &self.document
-    }
-
-    /// The canonical robot loaded from runtime.json, with no source parser.
-    #[must_use]
-    pub fn robot(&self) -> &Robot {
-        self.document.robot()
-    }
-
-    /// The sole persisted RobotId.
-    #[must_use]
-    pub fn robot_id(&self) -> &phoxal_model::identity::RobotId {
-        self.document.robot_id()
-    }
-
-    /// The final persisted participant set.
-    #[must_use]
-    pub fn participants(&self) -> &[RuntimeParticipant] {
-        self.document.participants()
-    }
-
-    /// The reusable executable artifacts retained by this bundle.
-    #[must_use]
-    pub fn artifacts(&self) -> &BTreeMap<ParticipantArtifactId, BinaryReference> {
-        self.document.artifacts()
-    }
-
-    /// Participant-readable digest-checked assets.
-    #[must_use]
-    pub const fn assets(&self) -> &ParticipantAssets {
-        &self.assets
-    }
-
-    /// Select one exact participant record before opening any bus session.
-    pub fn participant(&self, id: &ParticipantId) -> Result<&RuntimeParticipant, SelectionError> {
-        self.document.participant(id)
-    }
-
-    /// Build one selected runtime-input object, cloning only immutable model
-    /// data so it can outlive this loader handle inside a participant runner.
-    pub fn participant_inputs(
-        &self,
-        id: &ParticipantId,
-    ) -> Result<ParticipantRuntimeInputs, SelectionError> {
-        let participant = self.participant(id)?.clone();
-        let artifact = self
-            .artifacts()
-            .get(&participant.artifact)
-            .cloned()
-            .ok_or_else(|| SelectionError::MissingArtifact {
-                participant: participant.id.clone(),
-                artifact: participant.artifact.clone(),
-            })?;
-        Ok(ParticipantRuntimeInputs {
-            robot: Arc::new(self.robot().clone()),
-            participant,
-            artifact,
-            assets: self.assets.clone(),
-        })
-    }
-}
-
 /// A build-tool-facing writer for the explicit final assembly boundary.
 pub struct BundleWriter;
 
@@ -1275,7 +974,7 @@ impl BundleWriter {
         root: impl AsRef<Path>,
         document: &RuntimeDocument,
         assets: &BTreeMap<AssetId, Vec<u8>>,
-        binaries: &BTreeMap<BundlePath, Vec<u8>>,
+        binaries: &BTreeMap<BundlePath, PathBuf>,
     ) -> Result<RuntimeBundle, BundleError> {
         Self::write_inner(root, document, assets, binaries, publish_staging_root)
     }
@@ -1284,13 +983,12 @@ impl BundleWriter {
         root: impl AsRef<Path>,
         document: &RuntimeDocument,
         assets: &BTreeMap<AssetId, Vec<u8>>,
-        binaries: &BTreeMap<BundlePath, Vec<u8>>,
+        binaries: &BTreeMap<BundlePath, PathBuf>,
         publish: F,
     ) -> Result<RuntimeBundle, BundleError>
     where
         F: FnOnce(&Path, &Path) -> Result<(), BundleError>,
     {
-        document.validate()?;
         let expected_assets = &document.runtime().assets;
         let supplied_assets = AssetIndex::from_bytes(assets)?;
         if supplied_assets.entries != expected_assets.entries {
@@ -1306,35 +1004,34 @@ impl BundleWriter {
         if expected_binaries != supplied_binaries {
             return Err(BundleError::Document(DocumentError::BinaryIndexMismatch));
         }
-        for artifact in document.artifacts().values() {
-            let bytes = binaries
-                .get(&artifact.path)
-                .ok_or_else(|| BundleError::MissingFile {
-                    path: artifact.path.filesystem_path(root.as_ref()),
-                })?;
-            let digest = Sha256Digest::of(bytes);
-            if digest != artifact.digest {
-                return Err(BundleError::Integrity {
-                    path: artifact.path.filesystem_path(root.as_ref()),
-                    expected: artifact.digest,
-                    actual: digest,
-                });
-            }
-        }
-
         let requested_root = root.as_ref();
         let publish_target = prepare_publish_parent(requested_root)?;
         reject_existing_target(&publish_target)?;
         let root = create_staging_root(&publish_target)?;
         let staged = (|| {
+            ensure_staging_directory(&root, &root.join(ASSETS_DIR))?;
+            ensure_staging_directory(&root, &root.join(BIN_DIR))?;
             for (id, bytes) in assets {
                 let path = root
                     .join(ASSETS_DIR)
                     .join(id.as_str().split('/').collect::<PathBuf>());
                 write_new_file(&root, &path, bytes)?;
             }
-            for (path, bytes) in binaries {
-                write_new_file(&root, &path.filesystem_path(&root), bytes)?;
+            for (path, source) in binaries {
+                let artifact = document
+                    .artifacts()
+                    .values()
+                    .find(|artifact| artifact.path == *path)
+                    .ok_or_else(|| BundleError::MissingFile {
+                        path: path.filesystem_path(&root),
+                    })?;
+                copy_executable_source(
+                    &root,
+                    source,
+                    &path.filesystem_path(&root),
+                    artifact.digest,
+                    artifact.size_bytes,
+                )?;
             }
             let json = serde_json::to_vec_pretty(document)?;
             write_new_file(&root, &root.join(RUNTIME_FILE), &json)
@@ -1347,7 +1044,7 @@ impl BundleWriter {
             let _ = std::fs::remove_dir_all(&root);
             return Err(error);
         }
-        RuntimeBundle::open(&publish_target)
+        RuntimeBundle::open_verified(&publish_target)
     }
 }
 
@@ -1368,6 +1065,101 @@ fn write_new_file(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BundleEr
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn copy_executable_source(
+    root: &Path,
+    source: &Path,
+    destination: &Path,
+    expected_digest: Sha256Digest,
+    expected_size: u64,
+) -> Result<(), BundleError> {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    let source_metadata =
+        std::fs::symlink_metadata(source).map_err(|source_error| BundleError::ReadFile {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+    if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
+        return Err(BundleError::UnsupportedEntry {
+            path: source.to_path_buf(),
+        });
+    }
+    #[cfg(unix)]
+    if source_metadata.permissions().mode() & 0o111 == 0 {
+        return Err(BundleError::NotExecutable {
+            path: source.to_path_buf(),
+        });
+    }
+
+    ensure_staging_ancestors(root, destination)?;
+    let mut input = std::fs::File::open(source).map_err(|source_error| BundleError::ReadFile {
+        path: source.to_path_buf(),
+        source: source_error,
+    })?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|source_error| BundleError::ReadFile {
+            path: destination.to_path_buf(),
+            source: source_error,
+        })?;
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = input
+            .read(&mut buffer)
+            .map_err(|source_error| BundleError::ReadFile {
+                path: source.to_path_buf(),
+                source: source_error,
+            })?;
+        if count == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut output, &buffer[..count]).map_err(|source_error| {
+            BundleError::ReadFile {
+                path: destination.to_path_buf(),
+                source: source_error,
+            }
+        })?;
+        hasher.update(&buffer[..count]);
+        total = total
+            .checked_add(count as u64)
+            .ok_or_else(|| BundleError::Size {
+                path: destination.to_path_buf(),
+                expected: expected_size,
+                actual: u64::MAX,
+            })?;
+    }
+    let actual = Sha256Digest(hasher.finalize().into());
+    if total != expected_size {
+        return Err(BundleError::Size {
+            path: destination.to_path_buf(),
+            expected: expected_size,
+            actual: total,
+        });
+    }
+    if actual != expected_digest {
+        return Err(BundleError::Integrity {
+            path: destination.to_path_buf(),
+            expected: expected_digest,
+            actual,
+        });
+    }
+    #[cfg(unix)]
+    {
+        std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o755)).map_err(
+            |source_error| BundleError::ReadFile {
+                path: destination.to_path_buf(),
+                source: source_error,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn prepare_publish_parent(root: &Path) -> Result<PathBuf, BundleError> {
@@ -1611,10 +1403,11 @@ enum BundleEntryKind {
 }
 
 #[cfg(unix)]
-fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleError> {
+pub(crate) fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleError> {
     use std::os::fd::AsRawFd;
 
     let root_path = root.path();
+    require_layout_directories(root)?;
     let root_fd = duplicate_directory(root.fd.as_raw_fd(), root_path)?;
     let allowed = [RUNTIME_FILE, ASSETS_DIR, BIN_DIR];
     for name in list_directory(root_fd.as_raw_fd(), root_path)? {
@@ -1628,6 +1421,9 @@ fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleErr
             .ok_or_else(|| BundleError::UnsupportedEntry { path: path.clone() })?;
         if !allowed.contains(&name) {
             return Err(BundleError::UnexpectedFile { path });
+        }
+        if name == RUNTIME_FILE && kind != BundleEntryKind::File {
+            return Err(BundleError::UnsupportedEntry { path });
         }
         if name != RUNTIME_FILE && kind != BundleEntryKind::Directory {
             return Err(BundleError::UnsupportedEntry { path });
@@ -1707,7 +1503,7 @@ fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleErr
 }
 
 #[cfg(not(unix))]
-fn validate_layout(root: &BundleRoot, _runtime: &Runtime) -> Result<(), BundleError> {
+pub(crate) fn validate_layout(root: &BundleRoot, _runtime: &Runtime) -> Result<(), BundleError> {
     Err(BundleError::UnsupportedSecureOpen {
         path: root.path().to_path_buf(),
     })
@@ -1820,7 +1616,7 @@ fn open_relative_directory(
             if source.kind() == std::io::ErrorKind::NotFound {
                 return Ok(None);
             }
-            if source.raw_os_error() == Some(libc::ELOOP) {
+            if source.raw_os_error() == Some(libc::ELOOP) || path_contains_symlink(path) {
                 return Err(BundleError::ForbiddenSymlink {
                     path: path.to_path_buf(),
                 });
@@ -1985,7 +1781,7 @@ fn reject_unindexed_directories(
 ) -> Result<(), BundleError> {
     let mut expected = BTreeSet::new();
     for file in files {
-        let mut components = file.0.split('/').collect::<Vec<_>>();
+        let mut components = file.as_str().split('/').collect::<Vec<_>>();
         components.pop();
         for length in 1..=components.len() {
             expected.insert(BundlePath::new(components[..length].join("/"))?);
@@ -2000,7 +1796,21 @@ fn reject_unindexed_directories(
 }
 
 fn verify_binary(root: &BundleRoot, binary: &BinaryReference) -> Result<(), BundleError> {
-    verify_digest_and_size(root, &binary.path, binary.digest, None)
+    let path = binary.path.filesystem_path(root.path());
+    let file = open_bundle_file(root, &binary.path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = file.metadata().map_err(|source| BundleError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(BundleError::NotExecutable { path });
+        }
+    }
+    verify_open_file(file, &path, binary.digest, Some(binary.size_bytes))
 }
 
 fn verify_file(root: &BundleRoot, entry: &AssetRecord) -> Result<(), BundleError> {
@@ -2015,15 +1825,67 @@ fn verify_digest_and_size(
 ) -> Result<(), BundleError> {
     let path = bundle_path.filesystem_path(root.path());
     let file = open_bundle_file(root, bundle_path)?;
-    let mut reader = file.try_clone().map_err(|source| BundleError::ReadFile {
-        path: path.clone(),
+    verify_open_file(file, &path, expected, expected_size)
+}
+
+fn verify_open_file(
+    mut file: std::fs::File,
+    path: &Path,
+    expected: Sha256Digest,
+    expected_size: Option<u64>,
+) -> Result<(), BundleError> {
+    let metadata = file.metadata().map_err(|source| BundleError::ReadFile {
+        path: path.to_path_buf(),
         source,
     })?;
-    let _ = read_and_verify(&mut reader, &path, expected, expected_size)?;
+    if !metadata.is_file() {
+        return Err(BundleError::UnsupportedEntry {
+            path: path.to_path_buf(),
+        });
+    }
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|source| BundleError::ReadFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        total = total
+            .checked_add(count as u64)
+            .ok_or_else(|| BundleError::Size {
+                path: path.to_path_buf(),
+                expected: expected_size.unwrap_or(u64::MAX),
+                actual: u64::MAX,
+            })?;
+    }
+    if let Some(expected_size) = expected_size
+        && total != expected_size
+    {
+        return Err(BundleError::Size {
+            path: path.to_path_buf(),
+            expected: expected_size,
+            actual: total,
+        });
+    }
+    let actual = Sha256Digest(hasher.finalize().into());
+    if actual != expected {
+        return Err(BundleError::Integrity {
+            path: path.to_path_buf(),
+            expected,
+            actual,
+        });
+    }
     Ok(())
 }
 
-fn read_and_verify(
+pub(crate) fn read_and_verify(
     file: &mut std::fs::File,
     path: &Path,
     expected: Sha256Digest,
@@ -2065,7 +1927,10 @@ fn read_and_verify(
     Ok(bytes)
 }
 
-fn open_bundle_file(root: &BundleRoot, path: &BundlePath) -> Result<std::fs::File, BundleError> {
+pub(crate) fn open_bundle_file(
+    root: &BundleRoot,
+    path: &BundlePath,
+) -> Result<std::fs::File, BundleError> {
     let filesystem_path = path.filesystem_path(root.path());
     #[cfg(unix)]
     {
@@ -2080,7 +1945,7 @@ fn open_bundle_file(root: &BundleRoot, path: &BundlePath) -> Result<std::fs::Fil
             });
         }
         let mut parent = unsafe { OwnedFd::from_raw_fd(root_fd) };
-        let components = path.0.split('/').collect::<Vec<_>>();
+        let components = path.as_str().split('/').collect::<Vec<_>>();
         for (index, component) in components.iter().enumerate() {
             let name = CString::new(*component).map_err(|_| BundleError::UnsupportedEntry {
                 path: filesystem_path.clone(),
@@ -2180,7 +2045,7 @@ mod tests {
     type StagedBytes = (
         RuntimeDocument,
         BTreeMap<AssetId, Vec<u8>>,
-        BTreeMap<BundlePath, Vec<u8>>,
+        BTreeMap<BundlePath, PathBuf>,
     );
 
     fn document() -> StagedBytes {
@@ -2192,11 +2057,11 @@ mod tests {
         let mut assets = BTreeMap::new();
         assets.insert(asset_id, asset_bytes);
         let binary_path = BundlePath::new("bin/drive").expect("binary path");
-        let binary_bytes = b"not an executable in the unit test".to_vec();
+        let binary_source = std::env::current_exe().expect("test binary path");
         let mut binaries = BTreeMap::new();
-        binaries.insert(binary_path, binary_bytes.clone());
+        binaries.insert(binary_path, binary_source.clone());
         let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
-        let binary = BinaryReference::from_bytes(
+        let binary = BinaryReference::from_file(
             BundlePath::new("bin/drive").expect("binary path"),
             ParticipantContract {
                 id: artifact_id.clone(),
@@ -2210,8 +2075,9 @@ mod tests {
                 requirement: None,
                 config_schema: serde_json::json!({"type":"null"}),
             },
-            &binary_bytes,
-        );
+            &binary_source,
+        )
+        .expect("test binary hashes");
         let participant = RuntimeParticipant::new(
             ParticipantId::new("drive").expect("participant id"),
             artifact_id.clone(),
@@ -2224,7 +2090,7 @@ mod tests {
         let index = AssetIndex::from_bytes(&assets).expect("asset index");
         let runtime =
             Runtime::new(robot, artifacts, vec![participant], index, None).expect("runtime");
-        let document = RuntimeDocument::new(runtime).expect("runtime document");
+        let document = RuntimeDocument::new(runtime);
         (document, assets, binaries)
     }
 
@@ -2319,7 +2185,16 @@ mod tests {
             .unwrap()
             .contract
             .requirement = Some(ParticipantRequirement::DifferentialDriveVelocity);
-        let document = RuntimeDocument::new(runtime).expect("requirement document is valid");
+        let document = RuntimeDocument::new(
+            Runtime::new(
+                runtime.robot,
+                runtime.artifacts,
+                runtime.participants,
+                runtime.assets,
+                runtime.router,
+            )
+            .expect("requirement runtime is valid"),
+        );
         (document, assets, binaries)
     }
 
@@ -2327,7 +2202,10 @@ mod tests {
     fn stock_drive_requirement_accepts_differential_velocity_motors() {
         let (document, _, _) =
             requirement_document(motor_robot(MotorCommand::Velocity, MotorCommand::Velocity));
-        assert!(document.validate().is_ok());
+        assert_eq!(
+            document.robot().motion().kinematic().kind(),
+            phoxal_model::robot::KinematicKind::Differential
+        );
     }
 
     #[test]
@@ -2337,7 +2215,7 @@ mod tests {
             phoxal_model::robot::KinematicKind::Omnidirectional,
             phoxal_model::robot::KinematicKind::Ackermann,
         ] {
-            let (document, _, _) = {
+            let runtime = {
                 let (base, assets, binaries) = document();
                 let RuntimeDocument::V0(mut runtime) = base;
                 runtime.robot = topology_robot(kind);
@@ -2348,10 +2226,17 @@ mod tests {
                     .unwrap()
                     .contract
                     .requirement = Some(ParticipantRequirement::DifferentialDriveVelocity);
-                (RuntimeDocument::V0(runtime), assets, binaries)
+                let _ = (assets, binaries);
+                runtime
             };
             assert!(matches!(
-                document.validate(),
+                Runtime::new(
+                    runtime.robot,
+                    runtime.artifacts,
+                    runtime.participants,
+                    runtime.assets,
+                    runtime.router,
+                ),
                 Err(DocumentError::RequirementKinematicsMismatch { .. })
             ));
         }
@@ -2381,9 +2266,14 @@ mod tests {
                 .unwrap()
                 .contract
                 .requirement = Some(ParticipantRequirement::DifferentialDriveVelocity);
-            let document = RuntimeDocument::V0(runtime);
             assert!(matches!(
-                document.validate(),
+                Runtime::new(
+                    runtime.robot,
+                    runtime.artifacts,
+                    runtime.participants,
+                    runtime.assets,
+                    runtime.router,
+                ),
                 Err(DocumentError::RequirementMotorModeMismatch { actuator: ref found, .. })
                     if found.to_string() == actuator
             ));
@@ -2462,7 +2352,16 @@ mod tests {
             ParticipantClock::Real,
         ));
 
-        let document = RuntimeDocument::new(runtime).expect("shared artifact is valid");
+        let document = RuntimeDocument::new(
+            Runtime::new(
+                runtime.robot,
+                runtime.artifacts,
+                runtime.participants,
+                runtime.assets,
+                runtime.router,
+            )
+            .expect("shared artifact is valid"),
+        );
         assert_eq!(document.artifacts().len(), 1);
         assert_eq!(document.participants().len(), 2);
         assert!(
@@ -2479,7 +2378,13 @@ mod tests {
         let RuntimeDocument::V0(mut runtime) = document;
         runtime.participants[0].config = Some(serde_json::json!({"unexpected": true}));
         assert!(matches!(
-            RuntimeDocument::new(runtime),
+            Runtime::new(
+                runtime.robot,
+                runtime.artifacts,
+                runtime.participants,
+                runtime.assets,
+                runtime.router,
+            ),
             Err(DocumentError::InvalidConfig { .. })
         ));
     }
@@ -2501,6 +2406,99 @@ mod tests {
         assert!(!root.join("robot.yaml").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn writer_stages_a_real_executable_with_canonical_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
+        let source = parent.path().join("probe-source");
+        std::fs::write(&source, b"#!/bin/sh\nprintf staged\n").expect("probe source");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700))
+            .expect("probe source mode");
+
+        let (document, assets, _) = document();
+        let RuntimeDocument::V0(mut runtime) = document;
+        let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
+        let existing = runtime.artifacts.get(&artifact_id).expect("drive artifact");
+        let reference =
+            BinaryReference::from_file(existing.path.clone(), existing.contract.clone(), &source)
+                .expect("probe reference");
+        runtime.artifacts.insert(artifact_id, reference);
+        let document = RuntimeDocument::new(
+            Runtime::new(
+                runtime.robot,
+                runtime.artifacts,
+                runtime.participants,
+                runtime.assets,
+                runtime.router,
+            )
+            .expect("runtime document"),
+        );
+        let binaries =
+            BTreeMap::from([(BundlePath::new("bin/drive").expect("binary path"), source)]);
+
+        BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        let staged = root.join("bin/drive");
+        assert_eq!(
+            std::fs::metadata(&staged)
+                .expect("staged metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        let output = Command::new(&staged)
+            .output()
+            .expect("staged executable runs");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"staged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_open_rejects_a_non_executable_binary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
+        let (document, assets, binaries) = document();
+        BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        let binary = root.join("bin/drive");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o644))
+            .expect("remove execute bit");
+        assert!(matches!(
+            RuntimeBundle::open_verified(&root),
+            Err(BundleError::NotExecutable { .. })
+        ));
+    }
+
+    #[test]
+    fn verified_and_selected_open_require_both_layout_directories() {
+        for directory in [ASSETS_DIR, BIN_DIR] {
+            let parent = tempfile::tempdir().expect("bundle parent");
+            let root = parent.path().join("bundle");
+            let (document, assets, binaries) = document();
+            BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+            std::fs::remove_dir_all(root.join(directory))
+                .expect("remove required layout directory");
+
+            assert!(matches!(
+                RuntimeBundle::open_verified(&root),
+                Err(BundleError::MissingFile { .. })
+            ));
+            assert!(matches!(
+                ParticipantBundle::open(
+                    &root,
+                    &ParticipantId::new("drive").expect("participant id")
+                ),
+                Err(BundleError::MissingFile { .. })
+            ));
+        }
+    }
+
     #[test]
     fn selection_is_exact_and_happens_before_any_runtime_side_effect() {
         let parent = tempfile::tempdir().expect("bundle parent");
@@ -2512,6 +2510,55 @@ mod tests {
         assert!(matches!(
             loaded.participant(&unknown),
             Err(SelectionError::Unknown { .. })
+        ));
+    }
+
+    #[test]
+    fn participant_open_skips_unrelated_artifact_hashes_but_full_open_does_not() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
+        let (document, assets, mut binaries) = document();
+        let RuntimeDocument::V0(mut runtime) = document;
+        let source = std::env::current_exe().expect("test binary path");
+        let other_artifact = ParticipantArtifactId::new("other").expect("artifact id");
+        let original = runtime
+            .artifacts
+            .get(&ParticipantArtifactId::new("drive").expect("artifact id"))
+            .expect("drive artifact");
+        let mut contract = original.contract.clone();
+        contract.id = other_artifact.clone();
+        let other_path = BundlePath::new("bin/other").expect("binary path");
+        runtime.artifacts.insert(
+            other_artifact.clone(),
+            BinaryReference::from_file(other_path.clone(), contract, &source)
+                .expect("other artifact"),
+        );
+        runtime.participants.push(RuntimeParticipant::new(
+            ParticipantId::new("other").expect("participant id"),
+            other_artifact,
+            None,
+            None,
+            ParticipantClock::Real,
+        ));
+        binaries.insert(other_path, source);
+        let document = RuntimeDocument::new(
+            Runtime::new(
+                runtime.robot,
+                runtime.artifacts,
+                runtime.participants,
+                runtime.assets,
+                runtime.router,
+            )
+            .expect("runtime document"),
+        );
+        BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        std::fs::write(root.join("bin/other"), b"tampered").expect("tamper other artifact");
+
+        ParticipantBundle::open(&root, &ParticipantId::new("drive").expect("participant id"))
+            .expect("selected participant does not hash unrelated artifact");
+        assert!(matches!(
+            RuntimeBundle::open_verified(&root),
+            Err(BundleError::Integrity { .. } | BundleError::Size { .. })
         ));
     }
 
@@ -2530,7 +2577,7 @@ mod tests {
             Err(BundleError::Integrity { .. } | BundleError::Size { .. })
         ));
         assert!(matches!(
-            RuntimeBundle::open(&root),
+            RuntimeBundle::open_verified(&root),
             Err(BundleError::Integrity { .. } | BundleError::Size { .. })
         ));
     }
@@ -2543,7 +2590,7 @@ mod tests {
         BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
         std::fs::write(root.join("bin/drive"), b"tampered").expect("tamper binary");
         assert!(matches!(
-            RuntimeBundle::open(&root),
+            RuntimeBundle::open_verified(&root),
             Err(BundleError::Integrity { .. } | BundleError::Size { .. })
         ));
     }
@@ -2563,7 +2610,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path().join("structure.json"), &asset)
             .expect("symlink asset");
         assert!(matches!(
-            RuntimeBundle::open(&root),
+            RuntimeBundle::open_verified(&root),
             Err(BundleError::ForbiddenSymlink { .. })
         ));
         assert!(matches!(
@@ -2594,7 +2641,7 @@ mod tests {
             Err(BundleError::ForbiddenSymlink { .. })
         ));
         assert!(matches!(
-            RuntimeBundle::open(&root),
+            RuntimeBundle::open_verified(&root),
             Err(BundleError::ForbiddenSymlink { .. })
         ));
     }
@@ -2656,8 +2703,8 @@ mod tests {
             )
             .expect("outside asset");
         }
-        for (path, bytes) in &binaries {
-            std::fs::write(path.filesystem_path(&outside), bytes).expect("outside binary");
+        for (path, source) in &binaries {
+            std::fs::copy(source, path.filesystem_path(&outside)).expect("outside binary");
         }
 
         let pinned = BundleRoot::open(&root).expect("pin original root");
@@ -2678,7 +2725,7 @@ mod tests {
         BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
         std::fs::create_dir(root.join(ASSETS_DIR).join("unused")).expect("empty directory");
         assert!(matches!(
-            RuntimeBundle::open(&root),
+            RuntimeBundle::open_verified(&root),
             Err(BundleError::UnindexedDirectory { .. })
         ));
     }
@@ -2896,7 +2943,7 @@ mod tests {
         BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
         std::fs::write(root.join("robot.yaml"), b"source truth").expect("old source");
         assert!(matches!(
-            RuntimeBundle::open(&root),
+            RuntimeBundle::open_verified(&root),
             Err(BundleError::UnexpectedFile { .. })
         ));
     }

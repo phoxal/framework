@@ -3,7 +3,7 @@
 //! supervisor.
 
 use anyhow::Context;
-use phoxal_bundle::{ParticipantRuntimeInputs, RuntimeBundle};
+use phoxal_bundle::{ParticipantBundle, ParticipantRuntimeInputs};
 use phoxal_runtime_contract::identity::ParticipantId;
 
 /// Deserialize the participant's `Participant::setup` config from the selected
@@ -30,14 +30,13 @@ pub(crate) fn participant_inputs_for_launch(
     root: &std::path::Path,
     participant_id: &ParticipantId,
 ) -> crate::Result<ParticipantRuntimeInputs> {
-    let bundle = RuntimeBundle::open(root)
-        .with_context(|| format!("failed to load runtime bundle {}", root.display()))?;
-    bundle.participant_inputs(participant_id).with_context(|| {
+    let bundle = ParticipantBundle::open(root, participant_id).with_context(|| {
         format!(
             "failed to select participant '{participant_id}' from runtime bundle {}",
             root.display()
         )
-    })
+    })?;
+    Ok(bundle.into_inputs())
 }
 
 #[cfg(test)]
