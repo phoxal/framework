@@ -27,8 +27,8 @@ fn contract_body_topic_is_version_qualified() {
         "v0.1/joint/{joint}/state"
     );
     assert_eq!(
-        <api::video::stream::StreamState as ContractBody>::TOPIC,
-        "v0.1/video/stream/{stream}/state"
+        <api::video::OpenOutcome as ContractBody>::TOPIC,
+        "v0.1/video/open"
     );
     assert_eq!(
         <api::localize::LocalizationState as ContractBody>::TOPIC,

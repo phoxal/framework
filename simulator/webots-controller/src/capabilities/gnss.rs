@@ -29,8 +29,8 @@ impl NativeGnss {
 impl SimulatedSensor for NativeGnss {
     type Sample = api::component::gnss::Sample;
 
-    fn schedule(&self) -> phoxal::SampleSchedule {
-        self.spec.schedule
+    fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
+        &mut self.spec.schedule
     }
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {

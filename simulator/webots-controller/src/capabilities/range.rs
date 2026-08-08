@@ -33,8 +33,8 @@ impl NativeRange {
 impl SimulatedSensor for NativeRange {
     type Sample = api::component::range::Sample;
 
-    fn schedule(&self) -> phoxal::SampleSchedule {
-        self.spec.sampled.schedule
+    fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
+        &mut self.spec.sampled.schedule
     }
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {

@@ -6,7 +6,10 @@ capabilities:
     actuator_type: velocity
   encoder:
     kind: encoder
-    sampling_period_hz: 50.0
+    # The world advances every 16 ms (62.5 Hz). Keep the device on that
+    # cadence; the authored component still publishes at 50 Hz and the
+    # logical-time schedule supplies its honest long-run phase.
+    sampling_period_hz: 62.5
     resolution: 0.003067962
 links:
   wheel:

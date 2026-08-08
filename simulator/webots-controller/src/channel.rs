@@ -146,6 +146,10 @@ impl<S: SimulatedSensor> SensorChannel<S>
 where
     S::Sample: MeasurementContract,
 {
+    fn reset(&mut self, logical_time_ns: u64) -> Result<()> {
+        self.device.reset(logical_time_ns)
+    }
+
     /// Read this step's sample, if there is one, and queue it for publishing
     /// on this channel's own handle.
     ///
@@ -491,6 +495,29 @@ impl CapabilityChannel {
             | CapabilityBinding::Mmwave(_)
             | CapabilityBinding::Microphone(_)
             | CapabilityBinding::Battery(_) => Ok(()),
+        }
+    }
+
+    /// Re-anchor sensor schedules and clear state derived from the previous
+    /// world history before the first sample on a rewound timeline.
+    pub(crate) fn reset(&mut self, logical_time_ns: u64) -> Result<()> {
+        match &mut self.binding {
+            CapabilityBinding::Encoder(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Imu(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Accelerometer(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Gyroscope(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Range(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Camera(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Depth(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Gnss(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Magnetometer(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Lidar(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Mmwave(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Microphone(channel) => channel.reset(logical_time_ns),
+            CapabilityBinding::Battery(channel) => channel.device.reset(logical_time_ns),
+            CapabilityBinding::Motor(_)
+            | CapabilityBinding::Led(_)
+            | CapabilityBinding::Speaker(_) => Ok(()),
         }
     }
 
