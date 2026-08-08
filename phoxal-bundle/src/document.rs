@@ -212,6 +212,7 @@ impl Runtime {
     fn validate(&self) -> Result<(), DocumentError> {
         let mut ids = BTreeSet::new();
         let mut artifact_paths = BTreeSet::new();
+        let mut validators = BTreeMap::new();
         for (id, artifact) in &self.artifacts {
             artifact.validate(id)?;
             if !artifact_paths.insert(artifact.path.clone()) {
@@ -219,7 +220,17 @@ impl Runtime {
                     path: artifact.path.clone(),
                 });
             }
+            let validator =
+                jsonschema::validator_for(&artifact.contract.config_schema).map_err(|error| {
+                    DocumentError::InvalidConfigSchema {
+                        artifact: id.clone(),
+                        error: error.to_string(),
+                    }
+                })?;
+            validate_requirement(artifact.contract(), id, &self.robot)?;
+            validators.insert(id, validator);
         }
+        let mut referenced_artifacts = BTreeSet::new();
         for participant in &self.participants {
             let artifact = self.artifacts.get(&participant.artifact).ok_or_else(|| {
                 DocumentError::UnknownArtifact {
@@ -227,12 +238,28 @@ impl Runtime {
                     artifact: participant.artifact.clone(),
                 }
             })?;
-            participant.validate(&self.robot, artifact)?;
+            let validator = validators.get(&participant.artifact).ok_or_else(|| {
+                DocumentError::UnknownArtifact {
+                    participant: participant.id.clone(),
+                    artifact: participant.artifact.clone(),
+                }
+            })?;
+            participant.validate(&self.robot, artifact, validator)?;
+            referenced_artifacts.insert(participant.artifact.clone());
             if !ids.insert(participant.id.clone()) {
                 return Err(DocumentError::DuplicateParticipant {
                     id: participant.id.clone(),
                 });
             }
+        }
+        if let Some(artifact) = self
+            .artifacts
+            .keys()
+            .find(|id| !referenced_artifacts.contains(*id))
+        {
+            return Err(DocumentError::UnusedArtifact {
+                artifact: artifact.clone(),
+            });
         }
         self.assets.validate()?;
         if let Some(router) = &self.router {
@@ -243,11 +270,10 @@ impl Runtime {
 }
 
 /// Validate one artifact's static topology requirement against the canonical
-/// robot. Instance identity is used only for a useful diagnostic; it never
-/// participates in artifact-contract matching.
+/// robot once, independently of how many runtime instances select it.
 pub(crate) fn validate_requirement(
     contract: &ParticipantContract,
-    participant: &ParticipantId,
+    artifact: &ParticipantArtifactId,
     robot: &Robot,
 ) -> Result<(), DocumentError> {
     let Some(requirement) = contract.requirement else {
@@ -262,40 +288,40 @@ pub(crate) fn validate_requirement(
             } = robot.motion().kinematic()
             else {
                 return Err(DocumentError::RequirementKinematicsMismatch {
-                    participant: participant.clone(),
+                    artifact: artifact.clone(),
                     requirement,
                     actual: robot.motion().kinematic().kind(),
                 });
             };
-            validate_drive_side(participant, "left_actuators", left_actuators, robot)?;
-            validate_drive_side(participant, "right_actuators", right_actuators, robot)
+            validate_drive_side(artifact, "left_actuators", left_actuators, robot)?;
+            validate_drive_side(artifact, "right_actuators", right_actuators, robot)
         }
     }
 }
 
 fn validate_drive_side(
-    participant: &ParticipantId,
+    artifact: &ParticipantArtifactId,
     side: &'static str,
     actuators: &[CapabilityRef],
     robot: &Robot,
 ) -> Result<(), DocumentError> {
     if actuators.is_empty() {
         return Err(DocumentError::RequirementActuatorListEmpty {
-            participant: participant.clone(),
+            artifact: artifact.clone(),
             side,
         });
     }
     for reference in actuators {
         let (motor, _) = robot.require_motor(reference).map_err(|error| {
             DocumentError::RequirementActuatorInvalid {
-                participant: participant.clone(),
+                artifact: artifact.clone(),
                 actuator: reference.clone(),
                 error: error.to_string(),
             }
         })?;
         if motor.command != MotorCommand::Velocity {
             return Err(DocumentError::RequirementMotorModeMismatch {
-                participant: participant.clone(),
+                artifact: artifact.clone(),
                 actuator: reference.clone(),
                 expected: MotorCommand::Velocity,
                 actual: motor.command,

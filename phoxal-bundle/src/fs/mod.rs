@@ -843,8 +843,13 @@ fn verify_binary(root: &BundleRoot, binary: &BinaryReference) -> Result<(), Bund
             path: path.clone(),
             source,
         })?;
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(BundleError::NotExecutable { path });
+        let actual = metadata.permissions().mode() & 0o777;
+        if actual != 0o755 {
+            return Err(BundleError::ExecutableMode {
+                path,
+                expected: 0o755,
+                actual,
+            });
         }
     }
     verify_open_file(file, &path, binary.digest, Some(binary.size_bytes))

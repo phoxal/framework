@@ -37,7 +37,6 @@ pub use artifact::BinaryReference;
 mod participant;
 pub use participant::RuntimeParticipant;
 mod document;
-pub(crate) use document::validate_requirement;
 pub use document::{
     AssetIndex, AssetRecord, ParticipantClock, Runtime, RuntimeDocument, RuntimeRouterConfig,
 };

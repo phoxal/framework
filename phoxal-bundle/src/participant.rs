@@ -3,9 +3,10 @@
 use phoxal_model::identity::ComponentInstanceId;
 use phoxal_model::{Clock, Robot};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
+use phoxal_runtime_contract::metadata::ParticipantKind;
 use serde::{Deserialize, Serialize};
 
-use crate::{BinaryReference, DocumentError, ParticipantClock, validate_requirement};
+use crate::{BinaryReference, DocumentError, ParticipantClock};
 
 /// One exact process entry in the final runtime graph.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -60,6 +61,7 @@ impl RuntimeParticipant {
         &self,
         robot: &Robot,
         artifact: &BinaryReference,
+        config_validator: &jsonschema::Validator,
     ) -> Result<(), DocumentError> {
         if !artifact.path().starts_with_directory(crate::BIN_DIR) {
             return Err(DocumentError::ArtifactOutsideBin {
@@ -74,6 +76,21 @@ impl RuntimeParticipant {
                 participant: self.id.clone(),
                 component_instance: component.clone(),
             });
+        }
+        match (artifact.contract().kind, &self.component) {
+            (ParticipantKind::Driver, None) => {
+                return Err(DocumentError::MissingDriverComponent {
+                    participant: self.id.clone(),
+                });
+            }
+            (ParticipantKind::Driver, Some(_)) | (_, None) => {}
+            (kind, Some(component_instance)) => {
+                return Err(DocumentError::UnexpectedComponent {
+                    participant: self.id.clone(),
+                    kind,
+                    component_instance: component_instance.clone(),
+                });
+            }
         }
         match (robot.clock(), self.clock) {
             (Clock::Real, ParticipantClock::Simulation) => {
@@ -94,19 +111,12 @@ impl RuntimeParticipant {
         }
         let null = serde_json::Value::Null;
         let config = self.config.as_ref().unwrap_or(&null);
-        let validator =
-            jsonschema::validator_for(&artifact.contract().config_schema).map_err(|error| {
-                DocumentError::InvalidConfigSchema {
-                    participant: self.id.clone(),
-                    error: error.to_string(),
-                }
-            })?;
-        if let Err(error) = validator.validate(config) {
+        if let Err(error) = config_validator.validate(config) {
             return Err(DocumentError::InvalidConfig {
                 participant: self.id.clone(),
                 error: error.to_string(),
             });
         }
-        validate_requirement(artifact.contract(), &self.id, robot)
+        Ok(())
     }
 }

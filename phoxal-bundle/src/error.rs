@@ -6,6 +6,7 @@ use phoxal_model::component::capability::MotorCommand;
 use phoxal_model::identity::{CapabilityRef, ComponentInstanceId};
 use phoxal_model::{AssetId, Clock};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
+use phoxal_runtime_contract::metadata::ParticipantKind;
 use phoxal_runtime_contract::metadata::ParticipantRequirement;
 
 use crate::{BundlePath, BundlePathError, DigestError, ParticipantClock, Sha256Digest};
@@ -32,9 +33,21 @@ pub enum DocumentError {
         artifact: ParticipantArtifactId,
         path: BundlePath,
     },
+    #[error("artifact '{artifact}' is not selected by any runtime participant")]
+    UnusedArtifact { artifact: ParticipantArtifactId },
     #[error("participant '{participant}' names unknown component instance '{component_instance}'")]
     UnknownComponent {
         participant: ParticipantId,
+        component_instance: ComponentInstanceId,
+    },
+    #[error("driver participant '{participant}' has no component binding")]
+    MissingDriverComponent { participant: ParticipantId },
+    #[error(
+        "{kind:?} participant '{participant}' cannot bind component instance '{component_instance}'"
+    )]
+    UnexpectedComponent {
+        participant: ParticipantId,
+        kind: ParticipantKind,
         component_instance: ComponentInstanceId,
     },
     #[error(
@@ -46,38 +59,36 @@ pub enum DocumentError {
         participant_clock: ParticipantClock,
     },
     #[error(
-        "participant '{participant}' requires {requirement:?}, but the robot uses {actual} kinematics"
+        "artifact '{artifact}' requires {requirement:?}, but the robot uses {actual} kinematics"
     )]
     RequirementKinematicsMismatch {
-        participant: ParticipantId,
+        artifact: ParticipantArtifactId,
         requirement: ParticipantRequirement,
         actual: phoxal_model::robot::KinematicKind,
     },
-    #[error("participant '{participant}' requires at least one {side} actuator")]
+    #[error("artifact '{artifact}' requires at least one {side} actuator")]
     RequirementActuatorListEmpty {
-        participant: ParticipantId,
+        artifact: ParticipantArtifactId,
         side: &'static str,
     },
-    #[error(
-        "participant '{participant}' requirement could not resolve actuator '{actuator}': {error}"
-    )]
+    #[error("artifact '{artifact}' requirement could not resolve actuator '{actuator}': {error}")]
     RequirementActuatorInvalid {
-        participant: ParticipantId,
+        artifact: ParticipantArtifactId,
         actuator: CapabilityRef,
         error: String,
     },
     #[error(
-        "participant '{participant}' actuator '{actuator}' is configured for {actual:?}, but the binary requires {expected:?}"
+        "artifact '{artifact}' actuator '{actuator}' is configured for {actual:?}, but the binary requires {expected:?}"
     )]
     RequirementMotorModeMismatch {
-        participant: ParticipantId,
+        artifact: ParticipantArtifactId,
         actuator: CapabilityRef,
         expected: MotorCommand,
         actual: MotorCommand,
     },
-    #[error("participant '{participant}' has an invalid config schema: {error}")]
+    #[error("artifact '{artifact}' has an invalid config schema: {error}")]
     InvalidConfigSchema {
-        participant: ParticipantId,
+        artifact: ParticipantArtifactId,
         error: String,
     },
     #[error("participant '{participant}' config does not match its binary schema: {error}")]
@@ -99,7 +110,7 @@ pub enum DocumentError {
     RouterMissingAsset { path: BundlePath },
     #[error("supplied asset bytes do not match the persisted asset index")]
     AssetIndexMismatch,
-    #[error("supplied binary bytes do not match the persisted participant set")]
+    #[error("supplied executable sources do not match the persisted artifact set")]
     BinaryIndexMismatch,
     #[error("bundle path is not valid: {0}")]
     Path(#[from] BundlePathError),
@@ -150,6 +161,14 @@ pub enum BundleError {
     UnsupportedEntry { path: PathBuf },
     #[error("bundle executable is not executable: {path}")]
     NotExecutable { path: PathBuf },
+    #[error(
+        "bundle executable {path} has mode {actual:#05o}, expected canonical mode {expected:#05o}"
+    )]
+    ExecutableMode {
+        path: PathBuf,
+        expected: u32,
+        actual: u32,
+    },
     #[error("bundle contains unexpected file {path}")]
     UnexpectedFile { path: PathBuf },
     #[error("bundle contains unindexed directory {path}")]

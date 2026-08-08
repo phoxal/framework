@@ -346,6 +346,80 @@ fn multiple_participant_instances_may_share_one_artifact() {
 }
 
 #[test]
+fn every_artifact_must_be_selected_by_a_runtime_participant() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    let mut unused = runtime
+        .artifacts
+        .values()
+        .next()
+        .expect("fixture artifact")
+        .clone();
+    let unused_id = ParticipantArtifactId::new("unused").expect("artifact id");
+    unused.path = BundlePath::new("bin/unused").expect("binary path");
+    unused.contract.id = unused_id.clone();
+    runtime.artifacts.insert(unused_id.clone(), unused);
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::UnusedArtifact { artifact }) if artifact == unused_id
+    ));
+}
+
+#[test]
+fn artifact_config_schema_is_validated_once_even_before_config_values() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    let artifact = runtime
+        .artifacts
+        .values_mut()
+        .next()
+        .expect("fixture artifact");
+    artifact.contract.config_schema = serde_json::json!({"type": "not-a-json-schema-type"});
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::InvalidConfigSchema { .. })
+    ));
+}
+
+#[test]
+fn driver_artifacts_require_an_explicit_component_instance_binding() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    runtime
+        .artifacts
+        .values_mut()
+        .next()
+        .expect("fixture artifact")
+        .contract
+        .kind = ParticipantKind::Driver;
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::MissingDriverComponent { .. })
+    ));
+}
+
+#[test]
 fn participant_config_is_validated_against_embedded_binary_schema() {
     let (document, _, _) = document();
     let RuntimeDocument::V0(mut runtime) = document;
@@ -431,7 +505,7 @@ fn writer_stages_a_real_executable_with_canonical_mode() {
 
 #[cfg(unix)]
 #[test]
-fn verified_open_rejects_a_non_executable_binary() {
+fn verified_open_requires_the_canonical_executable_mode() {
     use std::os::unix::fs::PermissionsExt;
 
     let parent = tempfile::tempdir().expect("bundle parent");
@@ -439,11 +513,15 @@ fn verified_open_rejects_a_non_executable_binary() {
     let (document, assets, binaries) = document();
     BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
     let binary = root.join("bin/drive");
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o644))
-        .expect("remove execute bit");
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+        .expect("change the canonical mode");
     assert!(matches!(
         RuntimeBundle::open_verified(&root),
-        Err(BundleError::NotExecutable { .. })
+        Err(BundleError::ExecutableMode {
+            expected: 0o755,
+            actual: 0o700,
+            ..
+        })
     ));
 }
 
