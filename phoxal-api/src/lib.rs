@@ -100,6 +100,77 @@ use phoxal_macros::phoxal_api_tree;
 
 mod behavior;
 
+/// The exact camera capability reference accepted by `video/open`.
+///
+/// This is API-owned because the contract crate intentionally does not depend
+/// upward on the runtime model. It has the same canonical dotted spelling as
+/// the model reference (`component.capability`), but deserialization rejects
+/// malformed or aliased source names before a query reaches a service.
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct VideoSourceRef(String);
+
+impl VideoSourceRef {
+    /// Construct an already validated wire reference.
+    pub fn parse(value: impl Into<String>) -> Result<Self, InvalidVideoSourceRef> {
+        value.into().try_into()
+    }
+
+    /// The canonical dotted source spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Why a `VideoSourceRef` failed its exact wire grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidVideoSourceRef(String);
+
+impl std::fmt::Display for InvalidVideoSourceRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid video source reference '{}'; expected component.capability",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for InvalidVideoSourceRef {}
+
+impl TryFrom<String> for VideoSourceRef {
+    type Error = InvalidVideoSourceRef;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let Some((component, capability)) = value.split_once('.') else {
+            return Err(InvalidVideoSourceRef(value));
+        };
+        if value.matches('.').count() != 1
+            || !valid_video_source_segment(component)
+            || !valid_video_source_segment(capability)
+        {
+            return Err(InvalidVideoSourceRef(value));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<VideoSourceRef> for String {
+    fn from(value: VideoSourceRef) -> Self {
+        value.0
+    }
+}
+
+fn valid_video_source_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+        })
+}
+
 phoxal_api_tree! {
     version v0_1 {
         drive {
@@ -554,40 +625,28 @@ phoxal_api_tree! {
         }
 
         video {
-            /// Ask to open a video stream for a capability at an optional size.
+            /// Ask to open a video stream for one exact camera capability at an
+            /// optional size. The pre-v1 backend currently has no encoded
+            /// transport, so the response reports that outcome instead of
+            /// fabricating a stream identity or lifecycle.
             struct OpenRequest {
-                capability: String,
+                source: crate::VideoSourceRef,
                 width_px: Option<u32>,
                 height_px: Option<u32>,
             }
 
-            /// The id of the stream that was opened.
-            struct OpenResponse {
-                stream_id: String,
+            /// Why a requested video stream could not be opened.
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum OpenOutcome {
+                /// The source exists, but no encoder/transport backend exists
+                /// in this train.
+                Unsupported,
+                /// No camera source is currently available.
+                Unavailable,
             }
 
-            topic open: query OpenRequest => OpenResponse;
-
-            stream(stream) {
-                /// Where one open video stream is in its lifecycle.
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum StreamPhase {
-                    Starting,
-                    Active,
-                    Stopped,
-                }
-
-                /// The published state of one video stream: its lifecycle phase
-                /// and the number of source frames seen so far. The video participant
-                /// publishes it per stream; clients subscribe, hence `state`.
-                struct StreamState {
-                    phase: StreamPhase,
-                    frames_seen: u64,
-                }
-
-                topic state: state StreamState;
-            }
+            topic open: query OpenRequest => OpenOutcome;
         }
 
         simulation {

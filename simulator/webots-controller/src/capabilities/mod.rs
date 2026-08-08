@@ -29,28 +29,27 @@ use phoxal::SampleSchedule;
 use phoxal::model::identity::CapabilityRef;
 use phoxal::model::simulation;
 
-/// The world instant one completed step advanced to, and which step it was.
+/// The world instant one completed step advanced to.
 ///
-/// Most devices only need the index, to decide whether this step publishes.
-/// The encoder and the battery also need the instant: both differentiate their
-/// reading over the elapsed window to report a rate.
+/// Every sensor uses the logical time for its deadline schedule. The encoder
+/// and the battery also use the instant to differentiate their reading over
+/// the elapsed window to report a rate.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SensorStep {
-    pub(crate) index: u64,
     pub(crate) time_ns: u64,
 }
 
 /// A Webots device the controller reads once per world step.
 ///
 /// The cadence rule lives here rather than in each device: a capability
-/// declares a publish rate, the controller resolves it to a step divisor once
-/// at setup, and every family applies it the same way.
+/// declares a publish rate, the controller resolves it to a logical-time
+/// deadline schedule once at setup, and every family applies it the same way.
 pub(crate) trait SimulatedSensor {
     /// The contract body this device produces.
     type Sample;
 
-    /// The publish cadence this capability was bound at.
-    fn schedule(&self) -> SampleSchedule;
+    /// The mutable publish cadence this capability was bound at.
+    fn schedule(&mut self) -> &mut SampleSchedule;
 
     /// Read the device for `step`.
     ///
@@ -58,9 +57,15 @@ pub(crate) trait SimulatedSensor {
     /// never a fabricated one: a sensor that saw nothing publishes nothing.
     fn read(&mut self, step: SensorStep) -> Result<Option<Self::Sample>>;
 
-    /// The reading for `step`, or `None` when `step` is not a publish step.
+    /// Re-anchor this device after Webots starts a new logical world history.
+    fn reset(&mut self, logical_time_ns: u64) -> Result<()> {
+        let delay_ns = self.schedule().period_ns();
+        self.schedule().reanchor_after(logical_time_ns, delay_ns)
+    }
+
+    /// The reading for `step`, or `None` when `step` is not a publish deadline.
     fn read_if_due(&mut self, step: SensorStep) -> Result<Option<Self::Sample>> {
-        if !self.schedule().is_due(step.index) {
+        if !self.schedule().is_due_at(step.time_ns)? {
             return Ok(None);
         }
         self.read(step)
@@ -93,18 +98,34 @@ impl SampledSpec {
     /// positive finite number, which describes no cadence at all.
     pub(crate) fn new(
         reference: CapabilityRef,
-        step_hz: f64,
+        basic_time_step_ms: i32,
         publish_rate_hz: f64,
         simulated: Option<&simulation::Capability>,
     ) -> Result<Self> {
+        if basic_time_step_ms <= 0 {
+            bail!("Webots basicTimeStep must be > 0");
+        }
         let sampling_hz = simulated
             .and_then(Self::simulated_sampling_hz)
             .unwrap_or(publish_rate_hz);
-        let schedule = SampleSchedule::new(&reference.to_string(), step_hz, publish_rate_hz)?;
+        let requested_sampling_period_ms = Self::sampling_period_ms(sampling_hz)?;
+        let sampling_period_ms =
+            Self::quantized_sampling_period_ms(requested_sampling_period_ms, basic_time_step_ms)?;
+        let effective_sampling_period_ns = u64::try_from(sampling_period_ms)
+            .map_err(|_| anyhow::anyhow!("Webots sampling period must be positive"))?
+            .checked_mul(1_000_000)
+            .ok_or_else(|| anyhow::anyhow!("Webots sampling period overflows nanoseconds"))?;
+        let schedule = SampleSchedule::from_source_period_ns(
+            &reference.to_string(),
+            effective_sampling_period_ns,
+            publish_rate_hz,
+        )?;
+        let mut schedule = schedule;
+        schedule.reanchor_after(0, schedule.period_ns())?;
         Ok(Self {
             reference,
             schedule,
-            sampling_period_ms: Self::sampling_period_ms(sampling_hz)?,
+            sampling_period_ms,
         })
     }
 
@@ -135,14 +156,41 @@ impl SampledSpec {
         }
     }
 
-    /// The refresh period Webots is asked to sample the device at. Webots
-    /// takes whole milliseconds and treats zero as "disabled", so the period
-    /// is rounded and floored at one.
+    /// The effective refresh period Webots samples the device at. It is a
+    /// positive whole-millisecond period rounded up to the world's
+    /// `basicTimeStep` grid before the device is enabled.
     fn sampling_period_ms(rate_hz: f64) -> Result<i32> {
         if !rate_hz.is_finite() || rate_hz <= 0.0 {
             bail!("sampling_period_hz must be finite and > 0");
         }
-        Ok((1000.0 / rate_hz).round().max(1.0) as i32)
+        let period_ms = (1000.0 / rate_hz).round().max(1.0);
+        if period_ms > i32::MAX as f64 {
+            bail!("sampling period does not fit in Webots milliseconds");
+        }
+        Ok(period_ms as i32)
+    }
+
+    /// Webots updates a device on the world's integer-step grid. Rounding a
+    /// requested period upward to that grid is conservative: the schedule can
+    /// never publish a repeated value before the device has had a chance to
+    /// refresh it.
+    fn quantized_sampling_period_ms(requested_ms: i32, basic_time_step_ms: i32) -> Result<i32> {
+        if basic_time_step_ms <= 0 {
+            bail!("Webots basicTimeStep must be > 0");
+        }
+        let requested = u64::try_from(requested_ms)
+            .map_err(|_| anyhow::anyhow!("Webots sampling period must be positive"))?;
+        let basic = u64::try_from(basic_time_step_ms)
+            .map_err(|_| anyhow::anyhow!("Webots basicTimeStep must be positive"))?;
+        let steps = requested
+            .checked_add(basic - 1)
+            .and_then(|value| value.checked_div(basic))
+            .ok_or_else(|| anyhow::anyhow!("Webots sampling period quantization overflowed"))?;
+        let quantized = steps
+            .checked_mul(basic)
+            .ok_or_else(|| anyhow::anyhow!("Webots sampling period quantization overflowed"))?;
+        i32::try_from(quantized)
+            .map_err(|_| anyhow::anyhow!("Webots sampling period does not fit in milliseconds"))
     }
 }
 
@@ -183,8 +231,8 @@ macro_rules! vector_sensor {
         impl $crate::capabilities::SimulatedSensor for $native {
             type Sample = $sample;
 
-            fn schedule(&self) -> ::phoxal::SampleSchedule {
-                self.spec.schedule
+            fn schedule(&mut self) -> &mut ::phoxal::SampleSchedule {
+                &mut self.spec.schedule
             }
 
             fn read(
@@ -203,3 +251,43 @@ macro_rules! vector_sensor {
 }
 
 pub(crate) use vector_sensor;
+
+#[cfg(test)]
+mod tests {
+    use super::SampledSpec;
+    use phoxal::model::identity::CapabilityRef;
+
+    #[test]
+    fn webots_sampling_period_is_quantized_up_to_the_world_grid() {
+        assert_eq!(SampledSpec::sampling_period_ms(30.0).unwrap(), 33);
+        assert_eq!(
+            SampledSpec::quantized_sampling_period_ms(33, 10).unwrap(),
+            40
+        );
+        assert_eq!(
+            SampledSpec::quantized_sampling_period_ms(50, 10).unwrap(),
+            50
+        );
+    }
+
+    #[test]
+    fn publish_rate_cannot_outpace_a_quantized_device_refresh() {
+        let reference: CapabilityRef = "front_camera.rgb".parse().unwrap();
+        let error = SampledSpec::new(reference, 10, 30.0, None)
+            .expect_err("30 Hz cannot publish from a 25 Hz device after quantization");
+        assert!(
+            error
+                .to_string()
+                .contains("publish cadence exceeds effective source cadence")
+        );
+    }
+
+    #[test]
+    fn the_first_deadline_waits_for_the_device_refresh() {
+        let reference: CapabilityRef = "front_camera.rgb".parse().unwrap();
+        let spec = SampledSpec::new(reference, 10, 20.0, None).unwrap();
+        let mut schedule = spec.schedule;
+        assert!(!schedule.is_due_at(0).unwrap());
+        assert!(schedule.is_due_at(50_000_000).unwrap());
+    }
+}

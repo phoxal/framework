@@ -37,8 +37,18 @@ impl NativeEncoder {
 impl SimulatedSensor for NativeEncoder {
     type Sample = api::component::encoder::Sample;
 
-    fn schedule(&self) -> phoxal::SampleSchedule {
-        self.spec.sampled.schedule
+    fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
+        &mut self.spec.sampled.schedule
+    }
+
+    fn reset(&mut self, logical_time_ns: u64) -> Result<()> {
+        let delay_ns = self.spec.sampled.schedule.period_ns();
+        self.spec
+            .sampled
+            .schedule
+            .reanchor_after(logical_time_ns, delay_ns)?;
+        self.last = None;
+        Ok(())
     }
 
     /// Webots exposes no joint velocity, so it is differentiated across the

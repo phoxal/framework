@@ -19,7 +19,6 @@ use crate::channel::{CapabilityChannel, StepOutput};
 pub(crate) struct WebotsHandle {
     webots: webots_rs::Webots,
     step_ms: i32,
-    step_ns: u64,
 }
 
 impl WebotsHandle {
@@ -33,11 +32,8 @@ impl WebotsHandle {
     pub(crate) fn open() -> Result<Self> {
         let webots = webots_rs::Webots::new()?;
         let step_ms = webots.get_basic_time_step()?.round() as i32;
-        Ok(Self {
-            webots,
-            step_ms,
-            step_ns: step_ns_from_ms(step_ms)?,
-        })
+        step_ns_from_ms(step_ms)?;
+        Ok(Self { webots, step_ms })
     }
 
     /// The handle capability devices are requested from.
@@ -45,12 +41,18 @@ impl WebotsHandle {
         &self.webots
     }
 
+    /// The world's actual integer control step, obtained from Webots rather
+    /// than assumed by the catalog.
+    pub(crate) const fn basic_time_step_ms(&self) -> i32 {
+        self.step_ms
+    }
+
     /// Take ownership of the world now that every capability is bound to it.
     pub(crate) fn into_backend(self, channels: Vec<CapabilityChannel>) -> WebotsBackend {
         WebotsBackend {
             webots: self.webots,
             step_ms: self.step_ms,
-            step_ns: self.step_ns,
+            last_time_ns: None,
             channels,
         }
     }
@@ -60,7 +62,7 @@ impl WebotsHandle {
 pub(crate) struct WebotsBackend {
     webots: webots_rs::Webots,
     step_ms: i32,
-    step_ns: u64,
+    last_time_ns: Option<u64>,
     channels: Vec<CapabilityChannel>,
 }
 
@@ -72,14 +74,23 @@ impl WebotsBackend {
     ///
     /// Returns an error when a device rejects a command or a reading, and when
     /// Webots asks the controller to shut down.
-    fn advance(&mut self, step: SensorStep) -> Result<StepOutput> {
+    fn advance(&mut self) -> Result<(u64, StepOutput, bool)> {
         for channel in &mut self.channels {
             channel.apply_backlog()?;
         }
         if !self.webots.step(self.step_ms)? {
             bail!("Webots requested controller shutdown");
         }
-        CapabilityChannel::read_all(&mut self.channels, step)
+        let time_ns = simulation_time_ns(self.webots.get_time()?)?;
+        let rewound = time_was_rewound(self.last_time_ns, time_ns);
+        if rewound {
+            for channel in &mut self.channels {
+                channel.reset(time_ns)?;
+            }
+        }
+        let output = CapabilityChannel::read_all(&mut self.channels, SensorStep { time_ns })?;
+        self.last_time_ns = Some(time_ns);
+        Ok((time_ns, output, rewound))
     }
 
     /// Leave the world quiet: every motor stopped and every speaker silent.
@@ -128,23 +139,13 @@ impl SharedBackend {
     /// Advance the world one step, returning the instant it reached and
     /// everything that step produced.
     ///
-    /// `step_index` is the step being left, which is what a capability's
-    /// publish cadence is measured in; the instant belongs to `next_step`, the
-    /// one just completed.
-    pub(crate) async fn advance(
-        &self,
-        step_index: u64,
-        next_step: u64,
-    ) -> Result<(u64, StepOutput)> {
+    /// Sensor publish cadence is measured against Webots' actual logical clock
+    /// instant for the step just completed.
+    pub(crate) async fn advance(&self) -> Result<(u64, StepOutput, bool)> {
         let backend = self.clone();
         tokio::task::spawn_blocking(move || {
             let mut world = backend.lock();
-            let time_ns = next_step.saturating_mul(world.step_ns);
-            let output = world.advance(SensorStep {
-                index: step_index,
-                time_ns,
-            })?;
-            Ok::<_, anyhow::Error>((time_ns, output))
+            world.advance()
         })
         .await
         .context("Webots step worker failed to join")?
@@ -172,14 +173,45 @@ fn step_ns_from_ms(step_ms: i32) -> Result<u64> {
         .context("Webots basicTimeStep overflows nanoseconds")
 }
 
+/// Convert Webots' seconds clock to the framework's checked nanosecond domain.
+fn simulation_time_ns(seconds: f64) -> Result<u64> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        bail!("Webots simulation time must be finite and >= 0");
+    }
+    let nanos = seconds * 1_000_000_000.0;
+    if !nanos.is_finite() || !(0.0..18_446_744_073_709_551_616.0).contains(&nanos) {
+        bail!("Webots simulation time overflows nanoseconds");
+    }
+    Ok(nanos.round() as u64)
+}
+
+fn time_was_rewound(previous_time_ns: Option<u64>, time_ns: u64) -> bool {
+    previous_time_ns.is_some_and(|previous_time_ns| time_ns < previous_time_ns)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::step_ns_from_ms;
+    use super::{simulation_time_ns, step_ns_from_ms, time_was_rewound};
 
     #[test]
     fn webots_step_duration_must_be_positive() {
         assert_eq!(step_ns_from_ms(10).expect("10 ms is valid"), 10_000_000);
         assert!(step_ns_from_ms(0).is_err());
         assert!(step_ns_from_ms(-1).is_err());
+    }
+
+    #[test]
+    fn webots_time_is_checked_when_converted_to_nanoseconds() {
+        assert_eq!(simulation_time_ns(0.125).unwrap(), 125_000_000);
+        assert!(simulation_time_ns(-1.0).is_err());
+        assert!(simulation_time_ns(f64::NAN).is_err());
+        assert!(simulation_time_ns(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn a_webots_rewind_is_detected_before_sensor_reads() {
+        assert!(!time_was_rewound(None, 0));
+        assert!(!time_was_rewound(Some(10_000_000), 20_000_000));
+        assert!(time_was_rewound(Some(20_000_000), 10_000_000));
     }
 }

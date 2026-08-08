@@ -136,10 +136,6 @@ fn owner_builder_produces_identical_keys() {
         api::topic::owner().joint("elbow").state().key(),
         "v0.1/joint/elbow/state"
     );
-    assert_eq!(
-        api::topic::owner().video().stream("front").state().key(),
-        "v0.1/video/stream/front/state"
-    );
 }
 
 #[test]
@@ -148,11 +144,6 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
         api::topic::client().joint("elbow").state().key(),
         "v0.1/joint/elbow/state"
     );
-    assert_eq!(
-        api::topic::client().video().stream("front").state().key(),
-        "v0.1/video/stream/front/state"
-    );
-
     let topic = api::topic::client()
         .component("front_left_drive")
         .motor("motor")

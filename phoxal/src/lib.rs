@@ -265,8 +265,9 @@ pub use participant::runner::run;
 pub use participant::api::Participant;
 pub use participant::context::{ResetContext, SetupContext, StepContext};
 pub use participant::managed::ManagedTaskPolicy;
+pub use phoxal_api::VideoSourceRef;
 pub use phoxal_model::{AssetError, AssetId, ParticipantAssetResolver};
-pub use sample_schedule::SampleSchedule;
+pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
 /// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).

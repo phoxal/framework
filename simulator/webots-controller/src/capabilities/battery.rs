@@ -87,8 +87,18 @@ impl NativeBattery {
 impl SimulatedSensor for NativeBattery {
     type Sample = api::component::battery::State;
 
-    fn schedule(&self) -> phoxal::SampleSchedule {
-        self.spec.sampled.schedule
+    fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
+        &mut self.spec.sampled.schedule
+    }
+
+    fn reset(&mut self, logical_time_ns: u64) -> Result<()> {
+        let delay_ns = self.spec.sampled.schedule.period_ns();
+        self.spec
+            .sampled
+            .schedule
+            .reanchor_after(logical_time_ns, delay_ns)?;
+        self.last = None;
+        Ok(())
     }
 
     /// Like the encoder, the battery differentiates its reading over the step

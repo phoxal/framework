@@ -9,7 +9,7 @@ use anyhow::Result;
 // it is world-clock authority, which only this simulator legitimately names, so
 // it lives behind the explicit `phoxal_bus` opt-in instead - see that module's
 // docs.
-use phoxal_bus::TimelineAuthority;
+use phoxal_bus::{TimelineAuthority, TimelineId};
 
 use crate::backend::SharedBackend;
 use crate::controller::Api;
@@ -50,8 +50,19 @@ impl ControllerRuntime {
     }
 
     async fn step_once(&mut self, api: &Api) -> Result<()> {
-        let next_step = self.step_index.saturating_add(1);
-        let (time_ns, output) = self.backend.advance(self.step_index, next_step).await?;
+        let (time_ns, output, rewound) = self.backend.advance().await?;
+        if rewound {
+            self.authority.replace_timeline(TimelineId::mint());
+            self.step_index = 0;
+            tracing::info!(
+                target: "simulator_webots_controller",
+                "Webots time rewound; replaced the world timeline and re-anchored schedules"
+            );
+        }
+        let next_step = self
+            .step_index
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Webots controller step counter exhausted"))?;
 
         // One completed world advance mints one token, and every output of
         // that advance is stamped with it. There is no other way for this

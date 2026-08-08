@@ -45,6 +45,38 @@ fn body_round_trips_through_messagepack() {
 }
 
 #[test]
+fn video_open_source_is_canonical_and_validated_during_deserialization() {
+    let request = api::video::OpenRequest {
+        source: crate::VideoSourceRef::parse("front_camera.rgb").unwrap(),
+        width_px: Some(640),
+        height_px: Some(480),
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({
+            "source": "front_camera.rgb",
+            "width_px": 640,
+            "height_px": 480,
+        })
+    );
+    round_trip(&request);
+
+    for invalid in [
+        "",
+        "rgb",
+        "front_camera_rgb",
+        "front_camera.rgb.extra",
+        " Front.rgb",
+    ] {
+        let json = serde_json::json!({"source": invalid});
+        assert!(
+            serde_json::from_value::<api::video::OpenRequest>(json).is_err(),
+            "{invalid:?} must not deserialize as a video source"
+        );
+    }
+}
+
+#[test]
 fn navigation_and_safety_wire_shapes_are_golden() {
     let navigation = api::navigation::Result {
         request_id: api::navigation::RequestId {
@@ -202,10 +234,8 @@ fn domain_bodies_round_trip_through_messagepack() {
         }],
         stamp: Some(instant(7)),
     });
-    round_trip(&api::video::stream::StreamState {
-        phase: api::video::stream::StreamPhase::Active,
-        frames_seen: 12,
-    });
+    round_trip(&api::video::OpenOutcome::Unsupported);
+    round_trip(&api::video::OpenOutcome::Unavailable);
 }
 
 /// `truncated` is `#[serde(default)]`, so a publisher that does not write the

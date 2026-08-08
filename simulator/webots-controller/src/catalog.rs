@@ -21,22 +21,6 @@ use crate::capabilities::lidar::LidarSpec;
 use crate::capabilities::motor::MotorSpec;
 use crate::capabilities::range::RangeSpec;
 
-/// The step cadence declared publish rates are resolved against.
-///
-/// It is the controller's assumption about how fast the loop runs, not a
-/// figure read from the world: the real cadence is the world's
-/// `basicTimeStep`, and a world that steps at another rate publishes at a
-/// correspondingly different one.
-const STEP_HZ: f64 = 100.0;
-
-// `SampleSchedule` validates the publish rate but takes the step cadence on
-// trust, so the cadence this crate feeds it is proven here instead - at compile
-// time, which is stronger than the runtime check it replaces.
-const _: () = assert!(
-    STEP_HZ > 0.0,
-    "the step cadence publish rates are divided by must be positive"
-);
-
 /// One capability this controller simulates, carrying everything binding it
 /// needs.
 ///
@@ -118,10 +102,10 @@ impl CapabilityCatalog {
     ///
     /// # Errors
     ///
-    /// Returns an error when a declared capability describes a cadence no
-    /// divisor exists for, or when the robot declares more batteries than a
-    /// Webots robot can hold.
-    pub(crate) fn from_robot(robot: &Robot) -> Result<Self> {
+    /// Returns an error when a declared capability describes an invalid or
+    /// source-too-fast cadence, or when the robot declares more batteries than
+    /// a Webots robot can hold.
+    pub(crate) fn from_robot(robot: &Robot, basic_time_step_ms: i32) -> Result<Self> {
         let mut specs = Vec::new();
 
         for reference in robot.capability_refs(|_| true) {
@@ -141,7 +125,7 @@ impl CapabilityCatalog {
                 Capability::Encoder(config) => specs.push(CapabilitySpec::Encoder(EncoderSpec {
                     sampled: SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?,
@@ -149,14 +133,14 @@ impl CapabilityCatalog {
                 })),
                 Capability::Imu(config) => specs.push(CapabilitySpec::Imu(SampledSpec::new(
                     reference,
-                    STEP_HZ,
+                    basic_time_step_ms,
                     config.publish_rate_hz,
                     simulated,
                 )?)),
                 Capability::Accelerometer(config) => {
                     specs.push(CapabilitySpec::Accelerometer(SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?));
@@ -164,7 +148,7 @@ impl CapabilityCatalog {
                 Capability::Gyroscope(config) => {
                     specs.push(CapabilitySpec::Gyroscope(SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?));
@@ -172,7 +156,7 @@ impl CapabilityCatalog {
                 Capability::Range(config) => specs.push(CapabilitySpec::Range(RangeSpec {
                     sampled: SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?,
@@ -182,7 +166,7 @@ impl CapabilityCatalog {
                 Capability::Camera(config) => specs.push(CapabilitySpec::Camera(CameraSpec {
                     sampled: SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?,
@@ -193,7 +177,7 @@ impl CapabilityCatalog {
                 Capability::Depth(config) => specs.push(CapabilitySpec::Depth(DepthSpec {
                     sampled: SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?,
@@ -202,14 +186,14 @@ impl CapabilityCatalog {
                 })),
                 Capability::Gnss(config) => specs.push(CapabilitySpec::Gnss(SampledSpec::new(
                     reference,
-                    STEP_HZ,
+                    basic_time_step_ms,
                     config.publish_rate_hz,
                     simulated,
                 )?)),
                 Capability::Magnetometer(config) => {
                     specs.push(CapabilitySpec::Magnetometer(SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?));
@@ -217,7 +201,7 @@ impl CapabilityCatalog {
                 Capability::Lidar(config) => specs.push(CapabilitySpec::Lidar(LidarSpec {
                     sampled: SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?,
@@ -226,7 +210,7 @@ impl CapabilityCatalog {
                 Capability::Mmwave(config) => {
                     specs.push(CapabilitySpec::Mmwave(SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?));
@@ -234,7 +218,7 @@ impl CapabilityCatalog {
                 Capability::Microphone(config) => {
                     specs.push(CapabilitySpec::Microphone(SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?));
@@ -242,7 +226,7 @@ impl CapabilityCatalog {
                 Capability::Battery(config) => specs.push(CapabilitySpec::Battery(BatterySpec {
                     sampled: SampledSpec::new(
                         reference,
-                        STEP_HZ,
+                        basic_time_step_ms,
                         config.publish_rate_hz,
                         simulated,
                     )?,
@@ -305,5 +289,59 @@ impl CapabilityCatalog {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use phoxal::model::builder::RobotBuilder;
+    use phoxal::model::simulation;
+
+    use super::CapabilityCatalog;
+
+    /// The checked-in hello-rover world is the smallest shipped Webots
+    /// project. Compile its authored documents, then run the exact catalog
+    /// seam used by controller setup against the world's declared 16 ms step.
+    /// This keeps a component/simulation mismatch from surviving until an
+    /// external Webots process is launched.
+    #[test]
+    fn hello_rover_catalog_resolves_at_its_declared_world_step() {
+        // This is the canonical model shape emitted by the checked-in
+        // wheel_drive component: two encoder instances, authored at 50 Hz,
+        // with the simulator device at the world's 62.5 Hz cadence.
+        let robot = RobotBuilder::new("hello-rover")
+            .component_type("wheel_drive", |wheel_drive| {
+                wheel_drive.encoder("encoder", "motor_joint").simulated(
+                    "encoder",
+                    simulation::Capability::Encoder(simulation::Encoder {
+                        sampling_period_hz: 62.5,
+                        ..Default::default()
+                    }),
+                )
+            })
+            .component("left_drive", "wheel_drive")
+            .component("right_drive", "wheel_drive")
+            .build()
+            .expect("hello-rover catalog model must build");
+
+        let world_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/hello-rover/worlds/default.wbt");
+        let world = fs::read_to_string(world_path).expect("hello-rover world must be readable");
+        let basic_time_step_ms = world
+            .lines()
+            .find_map(|line| {
+                let mut fields = line.split_whitespace();
+                (fields.next() == Some("basicTimeStep"))
+                    .then(|| fields.next()?.parse::<i32>().ok())
+                    .flatten()
+            })
+            .expect("hello-rover world must declare basicTimeStep");
+
+        let catalog = CapabilityCatalog::from_robot(&robot, basic_time_step_ms)
+            .expect("hello-rover capabilities must be schedulable at 16 ms");
+        assert_eq!(catalog.specs().len(), 2);
     }
 }

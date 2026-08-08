@@ -75,14 +75,17 @@ impl Participant for WebotsControllerSimulator {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let catalog = CapabilityCatalog::from_robot(ctx.robot()?)?;
+        // Open Webots before validating the catalog: the world's actual
+        // basicTimeStep determines both device-period quantization and the
+        // effective source cadence schedules are allowed to publish at.
+        let handle = WebotsHandle::open()?;
+        let catalog = CapabilityCatalog::from_robot(ctx.robot()?, handle.basic_time_step_ms())?;
         let clock = ctx
             .world_clock_publisher(api::topic::owner().simulation().clock())
             .await?;
 
         // One pass over the catalog binds each capability's device and its bus
         // handle together, so the two are never matched up by position later.
-        let handle = WebotsHandle::open()?;
         let mut channels = Vec::with_capacity(catalog.specs().len());
         for spec in catalog.specs() {
             channels.push(CapabilityChannel::bind(ctx, handle.webots(), spec).await?);

@@ -37,8 +37,8 @@ impl NativeImu {
 impl SimulatedSensor for NativeImu {
     type Sample = api::component::imu::Sample;
 
-    fn schedule(&self) -> phoxal::SampleSchedule {
-        self.spec.schedule
+    fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
+        &mut self.spec.schedule
     }
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {

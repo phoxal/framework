@@ -30,8 +30,8 @@ impl NativeMmwave {
 impl SimulatedSensor for NativeMmwave {
     type Sample = api::component::mmwave::Scan;
 
-    fn schedule(&self) -> phoxal::SampleSchedule {
-        self.spec.schedule
+    fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
+        &mut self.spec.schedule
     }
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {

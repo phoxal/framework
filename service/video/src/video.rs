@@ -1,15 +1,10 @@
-//! `video` - operator preview stream lifecycle service.
+//! `video` - operator preview stream capability query service.
 //!
-//! The video contract exposes a compact `video/open` query plus a per-stream
-//! `state` topic. This participant enumerates the robot's camera capabilities,
-//! answers `open` requests (resolving the requested capability and validating
-//! dimensions against the native sensor size), subscribes to the matching raw
-//! camera frames, and publishes `video/stream/<id>/state` snapshots.
-//!
-//! The backend is pixel-free: it publishes the stream's lifecycle `phase`
-//! (`Starting` -> `Active` -> `Stopped`) and a monotonic `frames_seen` counter,
-//! incremented per received source frame while active, without linking a codec
-//! or encoding any pixels.
+//! The video contract exposes a compact `video/open` query. This participant
+//! enumerates the robot's camera capabilities and validates an exact source
+//! request, but reports `unsupported` until a real encoded transport exists.
+//! It does not subscribe to raw frames or fabricate a stream identity/lifecycle
+//! from observing them.
 
 use anyhow::{Result, anyhow};
 use phoxal::api;
@@ -19,61 +14,21 @@ use phoxal::model::component::capability::Capability;
 use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
 
-use api::video::stream::{StreamPhase, StreamState};
-
-const CAMERA_STALE: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// One camera capability the operator can preview.
 #[derive(Clone)]
 struct VideoSource {
     capability: CapabilityRef,
     native_width_px: u32,
     native_height_px: u32,
-    stream_id: String,
 }
 
 impl VideoSource {
     fn new(capability: CapabilityRef, native_width_px: u32, native_height_px: u32) -> Self {
-        let stream_id = format!("{}_{}", capability.component_id, capability.capability_id);
         Self {
             capability,
             native_width_px,
             native_height_px,
-            stream_id,
         }
-    }
-
-    /// Video CONSUMES camera frames (the camera driver owns/publishes them), so
-    /// this is the client `Subscribe` side from the public builder.
-    fn camera_topic(
-        &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>> {
-        api::topic::client()
-            .component(&self.capability.component_id)
-            .camera(&self.capability.capability_id)
-            .frame()
-    }
-
-    /// Video OWNS each `video/stream/{id}` node's state telemetry, so this is the
-    /// owner `Publish` side from the owner builder.
-    fn state_topic(
-        &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::Publish<api::video::stream::StreamState>> {
-        api::topic::owner().video().stream(&self.stream_id).state()
-    }
-
-    /// Whether an `open` request naming `requested` selects this source.
-    ///
-    /// Three spellings are accepted for the same source: the dotted capability
-    /// reference (`front_camera.rgb`), the stream id (`front_camera_rgb`), and
-    /// the bare capability id (`rgb`). The bare id is ambiguous across two
-    /// cameras declaring the same capability id - the first source in the
-    /// robot's ordering wins - but narrowing the accepted set would reject
-    /// requests that resolve today.
-    fn accepts(&self, requested: &str) -> bool {
-        self.capability.to_string() == requested
-            || self.stream_id == requested
-            || self.capability.capability_id == requested
     }
 
     fn validate_requested_dimensions(&self, request: &api::video::OpenRequest) -> QueryResult<()> {
@@ -92,116 +47,44 @@ impl VideoSource {
     }
 }
 
-/// The handles bound to one preview stream.
-struct StreamChannel {
-    camera: Subscriber<api::component::camera::Frame>,
-    state: StatePublisher<StreamState>,
-}
-
-/// What the participant latches about one preview stream between steps.
-struct Stream {
-    source: VideoSource,
-    open: bool,
-    phase: StreamPhase,
-    frames_seen: u64,
-    /// When the newest source frame was captured, as honestly as the camera
-    /// driver could say. Absent until the first frame arrives, and absent
-    /// whenever the driver could not translate its device clock into robot
-    /// time.
-    last_frame: Option<TimeWindow>,
-}
-
-impl Stream {
-    fn new(source: VideoSource) -> Self {
-        Self {
-            source,
-            open: false,
-            phase: StreamPhase::Stopped,
-            frames_seen: 0,
-            last_frame: None,
-        }
-    }
-
-    fn published_state(&self) -> StreamState {
-        StreamState {
-            phase: self.phase,
-            frames_seen: self.frames_seen,
-        }
-    }
-
-    /// The phase an open stream is in at `now`.
-    ///
-    /// A stream is `Active` only while some instant the newest capture admits
-    /// is within the staleness bound and none of them is in `now`'s future. A
-    /// capture the driver could not translate into robot time, or one from a
-    /// world that has been replaced, is never fresh - the cross-timeline
-    /// comparison has no answer, and the fail-closed reading is `Starting`.
-    fn phase_at(&self, now: RobotInstant) -> StreamPhase {
-        let fresh = self.last_frame.is_some_and(|captured_at| {
-            captured_at
-                .possibly_fresh_within(now, CAMERA_STALE)
-                .unwrap_or(false)
-        });
-        if fresh {
-            StreamPhase::Active
-        } else {
-            StreamPhase::Starting
-        }
-    }
-}
-
-pub(crate) struct Api {
-    streams: Vec<StreamChannel>,
-}
+pub(crate) struct Api;
 
 pub(crate) struct VideoState {
-    streams: Vec<Stream>,
+    sources: Vec<VideoSource>,
 }
 
 impl VideoState {
-    /// Open the stream an `open` request selects, and name it back.
-    ///
-    /// (Re)opening a closed stream restarts its lifecycle: the next step
-    /// republishes the `Starting` -> `Active` transition from a fresh frame
-    /// count.
-    fn open(&mut self, request: &api::video::OpenRequest) -> QueryResult<api::video::OpenResponse> {
-        let stream = self.resolve_open(request)?;
-        if !stream.open {
-            stream.phase = StreamPhase::Stopped;
-            stream.frames_seen = 0;
-        }
-        stream.open = true;
-        Ok(api::video::OpenResponse {
-            stream_id: stream.source.stream_id.clone(),
-        })
-    }
-
-    fn resolve_open(&mut self, request: &api::video::OpenRequest) -> QueryResult<&mut Stream> {
-        if self.streams.is_empty() {
-            return Err(QueryFailure::unavailable("no camera sources are available"));
+    /// Validate an exact source request and report the current backend outcome.
+    fn open(&self, request: &api::video::OpenRequest) -> QueryResult<api::video::OpenOutcome> {
+        if self.sources.is_empty() {
+            return Ok(api::video::OpenOutcome::Unavailable);
         }
 
-        let requested = request.capability.trim();
-        if requested.is_empty() {
-            return Err(QueryFailure::invalid_argument(
-                "video/open capability must not be empty",
-            ));
-        }
         if request.width_px == Some(0) || request.height_px == Some(0) {
             return Err(QueryFailure::invalid_argument(
                 "video/open dimensions must be non-zero when provided",
             ));
         }
 
-        let stream = self
-            .streams
-            .iter_mut()
-            .find(|stream| stream.source.accepts(requested))
+        let requested = request
+            .source
+            .as_str()
+            .parse::<CapabilityRef>()
+            .map_err(|_| {
+                QueryFailure::invalid_argument(
+                    "video/open source is not a model capability reference",
+                )
+            })?;
+        let source = self
+            .sources
+            .iter()
+            .find(|source| source.capability == requested)
             .ok_or_else(|| {
                 QueryFailure::not_found(format!("unknown camera capability '{requested}'"))
             })?;
-        stream.source.validate_requested_dimensions(request)?;
-        Ok(stream)
+        source.validate_requested_dimensions(request)?;
+
+        Ok(api::video::OpenOutcome::Unsupported)
     }
 }
 
@@ -216,76 +99,10 @@ impl Participant for Video {
     ) -> Result<(Self::State, Self::Api)> {
         let sources = video_sources(ctx.robot()?)?;
 
-        let mut streams = Vec::with_capacity(sources.len());
-        let mut channels = Vec::with_capacity(sources.len());
-        for source in sources {
-            channels.push(StreamChannel {
-                camera: ctx.subscriber(source.camera_topic(), 32).await?,
-                state: ctx.state_publisher(source.state_topic()).await?,
-            });
-            streams.push(Stream::new(source));
-        }
         ctx.query(api::topic::owner().video().open(), Self::open)
             .await?;
 
-        Ok((VideoState { streams }, Api { streams: channels }))
-    }
-
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
-        for stream in &mut state.streams {
-            stream.phase = if stream.open {
-                StreamPhase::Starting
-            } else {
-                StreamPhase::Stopped
-            };
-            stream.frames_seen = 0;
-            stream.last_frame = None;
-        }
-        Ok(())
-    }
-
-    #[phoxal::step(hz = 30)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
-        for (stream, channel) in state.streams.iter_mut().zip(&api.streams) {
-            let mut saw_frame = false;
-            while let Some(observed) = channel.camera.try_recv() {
-                stream.last_frame = observed.metadata.produced_at;
-                if stream.open {
-                    stream.frames_seen = stream.frames_seen.saturating_add(1);
-                    saw_frame = true;
-                }
-            }
-            if saw_frame {
-                channel
-                    .state
-                    .publish(&step.token, stream.published_state())?;
-            }
-        }
-
-        for (stream, channel) in state.streams.iter_mut().zip(&api.streams) {
-            if !stream.open {
-                continue;
-            }
-            let next = stream.phase_at(step.now());
-            if stream.phase != next {
-                stream.phase = next;
-                channel
-                    .state
-                    .publish(&step.token, stream.published_state())?;
-            }
-        }
-
-        Ok(())
+        Ok((VideoState { sources }, Api))
     }
 }
 
@@ -295,7 +112,7 @@ impl Video {
         _api: &Api,
         request: api::video::OpenRequest,
         state: &mut VideoState,
-    ) -> QueryResult<api::video::OpenResponse> {
+    ) -> QueryResult<api::video::OpenOutcome> {
         state.open(&request)
     }
 }
@@ -322,15 +139,14 @@ fn video_sources(robot: &Robot) -> Result<Vec<VideoSource>> {
 
 #[cfg(test)]
 mod tests {
-
     use phoxal::bus::QueryCode;
     use phoxal::model::RobotBuilder;
 
     use super::*;
 
-    fn request(capability: &str) -> api::video::OpenRequest {
+    fn request(source: &str) -> api::video::OpenRequest {
         api::video::OpenRequest {
-            capability: capability.to_string(),
+            source: phoxal::VideoSourceRef::parse(source).expect("test source must be canonical"),
             width_px: None,
             height_px: None,
         }
@@ -347,13 +163,11 @@ mod tests {
     }
 
     fn state_with(sources: Vec<VideoSource>) -> VideoState {
-        VideoState {
-            streams: sources.into_iter().map(Stream::new).collect(),
-        }
+        VideoState { sources }
     }
 
     #[test]
-    fn sources_from_robot_enumerate_camera_topics() {
+    fn sources_from_robot_enumerate_camera_capabilities() {
         // Three cameras and one depth sensor on one component: the depth
         // capability is what proves the enumeration selects cameras only.
         let robot = RobotBuilder::new("rover")
@@ -374,45 +188,28 @@ mod tests {
             .iter()
             .find(|source| source.capability.to_string() == "front_camera.rgb")
             .unwrap();
-        assert_eq!(rgb.stream_id, "front_camera_rgb");
-        assert_eq!(
-            rgb.camera_topic().key(),
-            "v0.1/component/front_camera/camera/rgb/frame"
-        );
-        assert_eq!(
-            rgb.state_topic().key(),
-            "v0.1/video/stream/front_camera_rgb/state"
-        );
+        assert_eq!(rgb.native_width_px, 640);
+        assert_eq!(rgb.native_height_px, 480);
     }
 
     #[test]
-    fn open_activates_matching_source_and_returns_stream_id() {
-        let mut state = state_with(vec![source()]);
+    fn open_reports_unsupported_without_creating_a_stream() {
+        let state = state_with(vec![source()]);
 
         let response = state.open(&request("front_camera.rgb")).unwrap();
 
-        assert_eq!(response.stream_id, "front_camera_rgb");
-        let stream = &state.streams[0];
-        assert!(stream.open);
-        assert_eq!(stream.phase, StreamPhase::Stopped);
-        assert_eq!(stream.frames_seen, 0);
+        assert_eq!(response, api::video::OpenOutcome::Unsupported);
     }
 
-    /// All three spellings resolve, and all three must keep resolving.
     #[test]
-    fn open_accepts_the_reference_the_stream_id_and_the_bare_capability_id() {
-        for spelling in ["front_camera.rgb", "front_camera_rgb", "rgb"] {
-            let mut state = state_with(vec![source()]);
-            assert_eq!(
-                state.open(&request(spelling)).unwrap().stream_id,
-                "front_camera_rgb",
-                "{spelling}"
-            );
+    fn typed_source_rejects_stream_and_bare_capability_aliases() {
+        for alias in ["front_camera_rgb", "rgb", " front_camera.rgb "] {
+            assert!(phoxal::VideoSourceRef::parse(alias).is_err(), "{alias}");
         }
     }
 
     #[test]
-    fn open_rejects_unknown_and_empty_sources() {
+    fn open_rejects_unknown_sources_and_reports_unavailable_without_sources() {
         let unknown = state_with(vec![source()])
             .open(&request("rear_camera.rgb"))
             .unwrap_err();
@@ -420,15 +217,15 @@ mod tests {
 
         let unavailable = state_with(Vec::new())
             .open(&request("front_camera.rgb"))
-            .unwrap_err();
-        assert_eq!(unavailable.code, QueryCode::Unavailable);
+            .unwrap();
+        assert_eq!(unavailable, api::video::OpenOutcome::Unavailable);
     }
 
     #[test]
     fn open_rejects_zero_dimensions() {
         let err = state_with(vec![source()])
             .open(&api::video::OpenRequest {
-                capability: "front_camera.rgb".to_string(),
+                source: phoxal::VideoSourceRef::parse("front_camera.rgb").unwrap(),
                 width_px: Some(0),
                 height_px: Some(240),
             })
@@ -441,7 +238,7 @@ mod tests {
     fn open_rejects_dimensions_above_the_native_camera_size() {
         let err = state_with(vec![source()])
             .open(&api::video::OpenRequest {
-                capability: "front_camera.rgb".to_string(),
+                source: phoxal::VideoSourceRef::parse("front_camera.rgb").unwrap(),
                 width_px: Some(1920),
                 height_px: None,
             })

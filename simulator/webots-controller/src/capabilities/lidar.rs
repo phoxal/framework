@@ -51,8 +51,8 @@ impl NativeLidar {
 impl SimulatedSensor for NativeLidar {
     type Sample = api::component::lidar::Scan;
 
-    fn schedule(&self) -> phoxal::SampleSchedule {
-        self.spec.sampled.schedule
+    fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
+        &mut self.spec.sampled.schedule
     }
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
