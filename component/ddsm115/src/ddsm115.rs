@@ -37,7 +37,7 @@ mod tests {
         let bus = phoxal_bus::Bus::open(phoxal_bus::BusConfig::in_process("ddsm115-test"))
             .await
             .expect("the in-process test bus opens");
-        let launch = phoxal::__private::ParticipantLaunch::local("ddsm115-test", "robot")
+        let launch = phoxal::__private::ParticipantLaunch::local("ddsm115-test")
             .with_execution_origin(phoxal::__private::ExecutionOrigin::mint());
         let result = phoxal::__private::run_with_bus::<Ddsm115, _>(&bus, launch, async {}).await;
         bus.close().await.expect("the in-process test bus closes");
