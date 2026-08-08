@@ -1619,6 +1619,7 @@ mod tests {
             RunnerTasks {
                 simulation_clock: None,
                 bus_log: bus_log_task,
+                query_reply_delay: None,
             },
         )
         .await;
