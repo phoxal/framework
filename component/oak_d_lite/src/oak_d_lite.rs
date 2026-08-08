@@ -37,7 +37,7 @@ mod tests {
         let bus = phoxal_bus::Bus::open(phoxal_bus::BusConfig::in_process("oak-d-lite-test"))
             .await
             .expect("the in-process test bus opens");
-        let launch = phoxal::__private::ParticipantLaunch::local("oak-d-lite-test", "robot")
+        let launch = phoxal::__private::ParticipantLaunch::local("oak-d-lite-test")
             .with_execution_origin(phoxal::__private::ExecutionOrigin::mint());
         let result = phoxal::__private::run_with_bus::<OakDLite, _>(&bus, launch, async {}).await;
         bus.close().await.expect("the in-process test bus closes");

@@ -38,7 +38,7 @@ mod tests {
         let bus = phoxal_bus::Bus::open(phoxal_bus::BusConfig::in_process("zed-f9p-test"))
             .await
             .expect("the in-process test bus opens");
-        let launch = phoxal::__private::ParticipantLaunch::local("zed-f9p-test", "robot")
+        let launch = phoxal::__private::ParticipantLaunch::local("zed-f9p-test")
             .with_execution_origin(phoxal::__private::ExecutionOrigin::mint());
         let result = phoxal::__private::run_with_bus::<ZedF9p, _>(&bus, launch, async {}).await;
         bus.close().await.expect("the in-process test bus closes");
