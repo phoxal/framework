@@ -1,5 +1,8 @@
 //! Pinned-root and filesystem entry points for bundle reads.
 
+#[cfg(unix)]
+mod unix;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
@@ -32,29 +35,9 @@ impl BundleRoot {
     pub(crate) fn open(requested: &Path) -> Result<Self, BundleError> {
         #[cfg(unix)]
         {
-            use std::ffi::CString;
-            use std::os::fd::FromRawFd;
-
-            let requested_c =
-                CString::new(requested.as_os_str().as_encoded_bytes()).map_err(|_| {
-                    BundleError::UnsupportedEntry {
-                        path: requested.to_path_buf(),
-                    }
-                })?;
-            let fd = unsafe {
-                // SAFETY: the CString is NUL-free; flags pin one directory without following it.
-                libc::open(
-                    requested_c.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if fd < 0 {
-                return Err(root_open_error(requested));
-            }
-            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
             Ok(Self {
                 path: requested.to_path_buf(),
-                fd: Arc::new(fd),
+                fd: unix::open_root(requested)?,
             })
         }
         #[cfg(not(unix))]
