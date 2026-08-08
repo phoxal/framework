@@ -72,15 +72,14 @@ fn public_library_dependency_direction_is_exact() -> Result<()> {
     let allowed = [
         ("phoxal", "phoxal-api"),
         ("phoxal", "phoxal-bus"),
+        ("phoxal", "phoxal-bundle"),
         ("phoxal", "phoxal-macros"),
-        // A finalized bundle carries no compiled model document, so the
-        // participant runner builds the canonical model from the bundle's
-        // own finalized documents through the manifest crate's loader.
-        ("phoxal", "phoxal-manifest"),
         ("phoxal", "phoxal-model"),
         ("phoxal", "phoxal-runtime-contract"),
         ("phoxal-api", "phoxal-bus"),
         ("phoxal-api", "phoxal-macros"),
+        ("phoxal-bundle", "phoxal-model"),
+        ("phoxal-bundle", "phoxal-runtime-contract"),
         ("phoxal-bus", "phoxal-runtime-contract"),
         ("phoxal-manifest", "phoxal-model"),
     ];
@@ -127,6 +126,16 @@ fn canonical_crates_and_official_participants_keep_forbidden_edges_absent() -> R
             ],
         ),
         ("phoxal-manifest", &["phoxal", "phoxal-bus", "phoxal-cli"]),
+        (
+            "phoxal-bundle",
+            &[
+                "phoxal-manifest",
+                "phoxal",
+                "phoxal-cli",
+                "serde_yaml",
+                "urdf-rs",
+            ],
+        ),
         (
             "phoxal-runtime-contract",
             &["phoxal", "phoxal-model", "tokio", "clap", "zenoh"],

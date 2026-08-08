@@ -21,7 +21,10 @@ publish = false
 # keeping the engine out means enabling this crate cannot pull a runtime into a
 # test build.
 phoxal-manifest = { workspace = true }
+phoxal-bundle = { workspace = true }
 phoxal-model = { workspace = true }
+phoxal-runtime-contract = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

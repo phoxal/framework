@@ -28,6 +28,99 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// The grammar shared by the topology identities that appear in a persisted
+/// runtime document.
+///
+/// This intentionally lives in the process-contract crate rather than in the
+/// source compiler. A participant id is read by a process that may not have
+/// any authored sources installed, so validating it cannot require the
+/// compiler or its identifier types.
+fn is_participant_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '-')
+        })
+}
+
+/// The stable topology identity of one participant record.
+///
+/// This is deliberately distinct from [`ProducerId`]. A participant id names
+/// a role in a compiled robot topology; a producer id names one transport
+/// session incarnation and is minted only after a process opens its bus.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ParticipantId(String);
+
+impl ParticipantId {
+    /// Validate and construct a participant id.
+    pub fn new(value: impl Into<String>) -> Result<Self, ParticipantIdError> {
+        let value = value.into();
+        if is_participant_token(&value) {
+            Ok(Self(value))
+        } else {
+            Err(ParticipantIdError(value))
+        }
+    }
+
+    /// The canonical wire token.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ParticipantId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ParticipantId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::str::FromStr for ParticipantId {
+    type Err = ParticipantIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for ParticipantId {
+    type Error = ParticipantIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ParticipantId> for String {
+    fn from(value: ParticipantId) -> Self {
+        value.0
+    }
+}
+
+impl Serialize for ParticipantId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ParticipantId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A participant id that is empty or contains a non-canonical token.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("participant id must be a non-empty lowercase token, got '{0}'")]
+pub struct ParticipantIdError(String);
+
 /// Bytes in a full-width session identity.
 const ZID_BYTES: usize = 16;
 
@@ -307,6 +400,32 @@ const fn is_lowercase_hex(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn participant_ids_are_typed_canonical_tokens() {
+        let id = ParticipantId::new("front_camera").expect("a canonical participant id");
+        assert_eq!(id.as_str(), "front_camera");
+        assert_eq!(id.to_string(), "front_camera");
+        assert_eq!(
+            serde_json::to_string(&id).expect("id serializes"),
+            "\"front_camera\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ParticipantId>("\"front_camera\"").expect("id deserializes"),
+            id
+        );
+    }
+
+    #[test]
+    fn participant_ids_reject_noncanonical_and_path_tokens() {
+        for value in ["", "FrontCamera", "front camera", "../brain", "brain/extra"] {
+            assert!(ParticipantId::new(value).is_err(), "{value:?}");
+            assert!(
+                serde_json::from_str::<ParticipantId>(&format!("\"{value}\"")).is_err(),
+                "{value:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_minted_execution_always_renders_at_the_canonical_width() {

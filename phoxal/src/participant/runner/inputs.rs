@@ -4,8 +4,9 @@
 
 use std::sync::Arc;
 
-use crate::ParticipantAssetResolver;
 use crate::model::Robot;
+use phoxal_bundle::{ParticipantAssets, RuntimeBundle, RuntimeParticipant};
+use phoxal_runtime_contract::identity::ParticipantId;
 
 /// Deserialize the participant's `Participant::setup` config from the launch.
 ///
@@ -27,7 +28,8 @@ pub(crate) fn participant_config<C: serde::de::DeserializeOwned>(
 /// no launch that binds one without the other.
 pub(crate) struct ParticipantBundleInputs {
     pub(crate) robot: Arc<Robot>,
-    pub(crate) assets: ParticipantAssetResolver,
+    pub(crate) assets: ParticipantAssets,
+    pub(crate) participant: RuntimeParticipant,
 }
 
 impl ParticipantBundleInputs {
@@ -35,18 +37,30 @@ impl ParticipantBundleInputs {
     /// the ordinary "launched without a bundle root" case; an `Err` means a root
     /// was named and is not a finalized bundle, which fails the launch rather
     /// than silently binding nothing.
-    pub(crate) fn for_launch(bundle_root: Option<&std::path::Path>) -> crate::Result<Option<Self>> {
+    pub(crate) fn for_launch(
+        bundle_root: Option<&std::path::Path>,
+        participant_id: &str,
+    ) -> crate::Result<Option<Self>> {
         let Some(root) = bundle_root else {
             return Ok(None);
         };
-        let (robot, assets) = crate::bundle::FinalizedBundle::load(root)
+        let participant_id = ParticipantId::new(participant_id.to_string())
+            .map_err(|error| anyhow::anyhow!("invalid launch participant id: {error}"))?;
+        let bundle = RuntimeBundle::open(root).map_err(|error| {
+            anyhow::anyhow!("failed to load runtime bundle {}: {error}", root.display())
+        })?;
+        let inputs = bundle
+            .participant_inputs(&participant_id)
             .map_err(|error| {
-                anyhow::anyhow!("failed to load runtime bundle {}: {error}", root.display())
-            })?
-            .into_participant_inputs();
+                anyhow::anyhow!(
+                    "participant '{participant_id}' is not present in runtime bundle {}: {error}",
+                    root.display()
+                )
+            })?;
         Ok(Some(ParticipantBundleInputs {
-            robot: Arc::new(robot),
-            assets,
+            robot: inputs.robot,
+            assets: inputs.assets,
+            participant: inputs.participant,
         }))
     }
 }
@@ -92,20 +106,25 @@ mod tests {
     #[test]
     fn the_bundle_binds_the_model_and_assets_together() {
         assert!(
-            ParticipantBundleInputs::for_launch(None)
+            ParticipantBundleInputs::for_launch(None, "drive")
                 .expect("no root is not an error")
                 .is_none()
         );
 
         let bundle = staged_bundle();
-        let inputs = ParticipantBundleInputs::for_launch(Some(bundle.path()))
-            .expect("the staged bundle loads")
-            .expect("a root binds the bundle");
+        let inputs = ParticipantBundleInputs::for_launch(
+            Some(bundle.path()),
+            "drive_motor-front_left_drive",
+        )
+        .expect("the staged bundle loads")
+        .expect("a root binds the bundle");
         assert_eq!(inputs.robot.id().as_str(), "rgbd-imu-diff-drive");
         assert!(
             inputs
                 .assets
-                .path(&crate::AssetId::new("components/drive_motor/structure.urdf").unwrap())
+                .path(
+                    &crate::AssetId::new("components/drive_motor/meshes/drive_motor.obj").unwrap()
+                )
                 .is_ok()
         );
         // `bin/` is outside the participant fence even though it is inside the
@@ -119,7 +138,7 @@ mod tests {
 
         let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture/robot");
         assert!(
-            ParticipantBundleInputs::for_launch(Some(&missing)).is_err(),
+            ParticipantBundleInputs::for_launch(Some(&missing), "drive_motor").is_err(),
             "a directory that is not a finalized bundle must fail the launch, not bind nothing"
         );
     }

@@ -10,7 +10,6 @@ use phoxal_model::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId,
 use source::SourceError;
 
 pub mod build_requirements;
-pub mod bundle;
 pub mod schema;
 pub mod source;
 

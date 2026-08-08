@@ -21,7 +21,8 @@ use crate::structure::{Joint, JointKind, Structure};
 ///
 /// Authored documents omit it and get [`Clock::Real`]; finalization writes the
 /// resolved value explicitly, so a finalized bundle never leaves it implicit.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Clock {
     /// Host wall/monotonic time driven by real hardware.
     #[default]
@@ -31,7 +32,8 @@ pub enum Clock {
 }
 
 /// One resolved component instance in the canonical robot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
     id: ComponentInstanceId,
     component_type: ComponentTypeId,
@@ -530,6 +532,58 @@ pub struct Robot {
     component_types: BTreeMap<ComponentTypeId, Component>,
     simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
+}
+
+/// The canonical robot wire shape used by a persisted runtime document.
+///
+/// This is intentionally private to the model crate: bundle layout and the
+/// schema tag belong to `phoxal-bundle`, while the model owns the exact fields
+/// and the validation that turns them into a `Robot`. Keeping the wire helper
+/// here also means deserialization can never construct an invalid robot by
+/// bypassing [`Robot::new`].
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RobotWire {
+    id: RobotId,
+    clock: Clock,
+    kinematic: KinematicConfig,
+    motion_limits: MotionLimits,
+    component_instances: BTreeMap<ComponentInstanceId, ComponentInstance>,
+    component_types: BTreeMap<ComponentTypeId, Component>,
+    simulation_types: BTreeMap<ComponentTypeId, Simulation>,
+    structure: Structure,
+}
+
+impl serde::Serialize for Robot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        RobotWire {
+            id: self.id.clone(),
+            clock: self.clock,
+            kinematic: self.motion.kinematic.clone(),
+            motion_limits: self.motion.limits,
+            component_instances: self.component_instances.clone(),
+            component_types: self.component_types.clone(),
+            simulation_types: self.simulation_types.clone(),
+            structure: self.structure.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Robot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = RobotWire::deserialize(deserializer)?;
+        Self::new(
+            wire.id,
+            wire.clock,
+            MotionModel::new(wire.kinematic, wire.motion_limits),
+            wire.component_instances,
+            wire.component_types,
+            wire.simulation_types,
+            wire.structure,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ComponentInstance {
