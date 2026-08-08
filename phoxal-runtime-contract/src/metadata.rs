@@ -17,7 +17,7 @@ use crate::version::{BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, 
 pub struct ParticipantSchemas {
     /// The bus wire ABI.
     pub bus: BusAbi,
-    /// The launch record / environment ABI.
+    /// The process launch compatibility identity.
     pub launch: LaunchAbi,
     /// The authored robot document grammar.
     pub robot: RobotSchema,

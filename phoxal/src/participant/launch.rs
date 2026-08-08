@@ -1,474 +1,253 @@
-//! `ParticipantLaunch` - the clap/env process launch contract.
+//! The one process-boundary launch contract.
 //!
-//! Participant binaries share one common `--flag` set with matching `PHOXAL_*`
-//! env fallbacks. Clocked services and drivers additionally accept `--clock` /
-//! `PHOXAL_CLOCK`; simulators do not expose either input. Supervisors
-//! and systemd units use env, while humans can use flags for bench runs. Flags
-//! win over env through clap's native precedence, and `--help` is the
-//! user-facing contract documentation.
+//! A supervised participant receives only facts owned by the execution
+//! supervisor: the execution identity, the compiled participant identity, the
+//! immutable runtime bundle, router endpoints, the optional real-time origin,
+//! and the teardown grace.  Clap is the sole parser.  There is deliberately no
+//! environment fallback, JSON launch envelope, local execution mint, or
+//! launch-time copy of facts already authoritative in `runtime.json`.
 
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches};
-pub use phoxal_runtime_contract::launch::{ClockMode, LaunchEnv, ParticipantLaunch, env};
+use crate::Result;
+use clap::Parser;
+#[cfg(feature = "test-harness")]
+use phoxal_runtime_contract::identity::ParticipantIdError;
+use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId};
+use phoxal_runtime_contract::origin::ExecutionOrigin;
 
-/// The clap-derived launch fields shared by every participant binary.
-#[derive(Debug, clap::Args)]
-struct CommonLaunchCli {
-    /// Bus-unique participant id. Defaults to the compiled participant artifact id.
-    #[arg(
-        long,
-        env = env::PARTICIPANT_ID,
-        hide_env_values = true,
-        value_name = "ID"
-    )]
-    participant_id: Option<String>,
+/// Default bounded shutdown grace, in milliseconds.
+pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
 
-    /// The supervised run to join. Absent means an unmanaged local run, which
-    /// mints its own.
-    #[arg(
-        long,
-        env = env::EXECUTION_ID,
-        hide_env_values = true,
-        value_name = "ID"
-    )]
-    execution_id: Option<String>,
-
-    /// Supervisor-minted origin of real robot time for this execution.
-    #[arg(
-        long,
-        env = env::EXECUTION_ORIGIN,
-        hide_env_values = true,
-        value_name = "ORIGIN"
-    )]
-    execution_origin: Option<String>,
-
-    /// Root directory containing the resolved robot model.
-    #[arg(
-        long,
-        env = env::BUNDLE_ROOT,
-        hide_env_values = true,
-        value_name = "DIR"
-    )]
-    bundle_root: Option<PathBuf>,
-
-    /// Component instance id for driver launches.
-    #[arg(
-        long,
-        env = env::COMPONENT_INSTANCE,
-        hide_env_values = true,
-        value_name = "ID"
-    )]
-    component_instance: Option<String>,
-
-    /// Comma-separated Zenoh connect endpoints. Empty means in-process.
-    #[arg(
-        long,
-        env = env::CONNECT,
-        hide_env_values = true,
-        value_name = "ENDPOINTS"
-    )]
-    connect: Option<String>,
-
-    /// Inline JSON participant config block.
-    #[arg(
-        long,
-        env = env::CONFIG,
-        hide_env_values = true,
-        value_name = "JSON"
-    )]
-    config: Option<String>,
-}
-
-/// Launch contract for clock-selectable services and drivers.
-#[derive(Debug, clap::Parser)]
+/// The strict process-boundary contract for one supervised participant.
+///
+/// Every field is required except the execution origin and the shutdown grace
+/// default.  Robot identity, participant configuration, component binding,
+/// and scheduler policy are read from the selected compiled runtime record;
+/// the participant bus owner mints its own producer identity after that record
+/// has been validated.  No field has an environment fallback.
+#[derive(Clone, Debug, Parser)]
 #[command(
     name = "phoxal-participant",
-    about = "Run a Phoxal participant.",
+    about = "Run one participant from a validated Phoxal runtime bundle.",
     long_about = None
 )]
-struct ClockedLaunchCli {
-    #[command(flatten)]
-    common: CommonLaunchCli,
+pub(crate) struct SupervisedLaunch {
+    /// The supervisor-owned execution identity and router key root.
+    #[arg(long, value_name = "ID", value_parser = parse_execution_id)]
+    pub(crate) execution_id: ExecutionId,
 
-    /// Clock mode for robot-state execution.
+    /// The exact participant record to select from runtime.json.
+    #[arg(long, value_name = "ID", value_parser = parse_participant_id)]
+    pub(crate) participant_id: ParticipantId,
+
+    /// The installed runtime bundle containing runtime.json, assets/, and bin/.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) bundle_root: PathBuf,
+
+    /// A router endpoint. Repeat --connect once for each endpoint.
+    #[arg(
+        long = "connect",
+        value_name = "ENDPOINT",
+        required = true,
+        value_parser = parse_connect_endpoint
+    )]
+    pub(crate) connect_endpoints: Vec<String>,
+
+    /// The supervisor-minted origin for real robot time.
+    #[arg(long, value_name = "ORIGIN", value_parser = parse_execution_origin)]
+    pub(crate) execution_origin: Option<ExecutionOrigin>,
+
+    /// Maximum time granted to participant shutdown and owned cleanup.
     #[arg(
         long,
-        env = env::CLOCK,
-        hide_env_values = true,
-        value_parser = parse_clock_mode,
-        default_value_t = ClockMode::Real
+        value_name = "MILLISECONDS",
+        default_value_t = DEFAULT_SHUTDOWN_GRACE_MS,
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
-    clock: ClockMode,
+    pub(crate) shutdown_grace_ms: u64,
 }
 
-/// Launch contract for host/Webots-driven simulators. It intentionally has no
-/// clock flag or environment binding: a simulator produces or observes the
-/// semantic simulation clock, but never schedules itself from that feed.
-#[derive(Debug, clap::Parser)]
-#[command(
-    name = "phoxal-simulator",
-    about = "Run a Phoxal simulator.",
-    long_about = None
-)]
-struct SimulatorLaunchCli {
-    #[command(flatten)]
-    common: CommonLaunchCli,
+/// Explicit in-process test input.  This type is not a process launch
+/// protocol: it has no bundle/config/clock override and cannot open a bus.
+/// Tests supply it only alongside a caller-owned `BusHandle`.
+#[cfg(feature = "test-harness")]
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct TestHarness {
+    pub(crate) participant_id: ParticipantId,
+    pub(crate) execution_origin: ExecutionOrigin,
+    pub(crate) shutdown_grace_ms: u64,
 }
 
-impl CommonLaunchCli {
-    fn into_launch(self, default_participant_id: &'static str) -> crate::Result<ParticipantLaunch> {
-        ParticipantLaunch::decode(LaunchEnv {
-            participant_id: self
-                .participant_id
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| default_participant_id.to_string()),
-            execution_id: self.execution_id,
-            execution_origin: self.execution_origin,
-            bundle_root: self.bundle_root,
-            component_instance: self.component_instance,
-            connect: self.connect,
-            config: self.config,
-            clock: ClockMode::Real,
+#[cfg(feature = "test-harness")]
+impl TestHarness {
+    /// Construct an explicit test-harness input for a participant id.
+    pub fn new(participant_id: impl Into<String>) -> std::result::Result<Self, ParticipantIdError> {
+        Ok(Self {
+            participant_id: ParticipantId::new(participant_id)?,
+            execution_origin: ExecutionOrigin::mint(),
+            shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
         })
-        .map_err(anyhow::Error::from)
+    }
+
+    /// Use a caller-selected execution origin in a test clock domain.
+    #[must_use]
+    pub fn with_execution_origin(mut self, origin: ExecutionOrigin) -> Self {
+        self.execution_origin = origin;
+        self
     }
 }
 
-fn command_for<C: CommandFactory>(default_participant_id: &'static str) -> clap::Command {
-    C::command().mut_arg("participant_id", |arg| {
-        arg.default_value(default_participant_id)
-    })
-}
-
-/// Type-level launch contract emitted by the participant macros.
-#[doc(hidden)]
-pub trait ParticipantLaunchPolicy: Send + Sync + 'static {
-    fn from_cli(default_participant_id: &'static str) -> crate::Result<ParticipantLaunch>;
-
-    fn clock_mode(launch: &ParticipantLaunch) -> ClockMode;
-}
-
-/// Clock-selectable launch policy for services and drivers.
-#[doc(hidden)]
-pub struct ClockedParticipantLaunch;
-
-impl ParticipantLaunchPolicy for ClockedParticipantLaunch {
-    fn from_cli(default_participant_id: &'static str) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<ClockedLaunchCli>(default_participant_id).get_matches();
-        let cli = ClockedLaunchCli::from_arg_matches(&matches)?;
-        let mut launch = cli.common.into_launch(default_participant_id)?;
-        launch.clock = cli.clock;
-        Ok(launch)
-    }
-
-    fn clock_mode(launch: &ParticipantLaunch) -> ClockMode {
-        launch.clock
+impl SupervisedLaunch {
+    /// Parse the process argv without consulting process environment state.
+    pub(crate) fn parse() -> Result<Self> {
+        Self::try_parse().map_err(anyhow::Error::from)
     }
 }
 
-/// Clockless launch policy for host/Webots-driven simulators.
-#[doc(hidden)]
-pub struct SimulatorParticipantLaunch;
-
-impl ParticipantLaunchPolicy for SimulatorParticipantLaunch {
-    fn from_cli(default_participant_id: &'static str) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<SimulatorLaunchCli>(default_participant_id).get_matches();
-        let cli = SimulatorLaunchCli::from_arg_matches(&matches)?;
-        cli.common.into_launch(default_participant_id)
-    }
-
-    fn clock_mode(_launch: &ParticipantLaunch) -> ClockMode {
-        ClockMode::Clockless
-    }
+fn parse_execution_id(value: &str) -> std::result::Result<ExecutionId, String> {
+    ExecutionId::parse(value).map_err(|error| error.to_string())
 }
 
-fn parse_clock_mode(value: &str) -> Result<ClockMode, String> {
-    match value {
-        "real" => Ok(ClockMode::Real),
-        "simulation" => Ok(ClockMode::Simulation),
-        "clockless" => Ok(ClockMode::Clockless),
-        _ => Err(format!(
-            "invalid clock mode '{value}'; expected real or simulation"
-        )),
+fn parse_participant_id(value: &str) -> std::result::Result<ParticipantId, String> {
+    value
+        .parse()
+        .map_err(|error: phoxal_runtime_contract::identity::ParticipantIdError| error.to_string())
+}
+
+fn parse_execution_origin(value: &str) -> std::result::Result<ExecutionOrigin, String> {
+    ExecutionOrigin::decode(value)
+        .ok_or_else(|| "execution origin must be <boot>:<boot-ns>:<nonzero-timeline>".to_string())
+}
+
+fn parse_connect_endpoint(value: &str) -> std::result::Result<String, String> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err("connect endpoint must be non-empty and contain no surrounding whitespace or control characters".to_string());
     }
+    Ok(value.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::error::ErrorKind;
-    use phoxal_runtime_contract::identity::ExecutionId;
-    use phoxal_runtime_contract::origin::ExecutionOrigin;
-    use serial_test::serial;
+    use clap::{CommandFactory, error::ErrorKind};
 
-    fn clear_env() {
-        // SAFETY: tests touching process env are `#[serial]`, so no other thread
-        // reads/writes these vars concurrently.
-        for key in env::ALL {
-            unsafe { std::env::remove_var(key) };
-        }
-    }
+    const EXECUTION: &str = "10000000000000000000000000000001";
+    const ORIGIN: &str = "7:42:9";
 
-    fn parse_clocked_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<ClockedLaunchCli>("default-id")
-            .try_get_matches_from(args)
-            .map_err(anyhow::Error::from)?;
-        let cli = ClockedLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
-        let mut launch = cli.common.into_launch("default-id")?;
-        launch.clock = cli.clock;
-        Ok(launch)
-    }
-
-    fn parse_simulator_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<SimulatorLaunchCli>("default-id")
-            .try_get_matches_from(args)
-            .map_err(anyhow::Error::from)?;
-        let cli = SimulatorLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
-        cli.common.into_launch("default-id")
-    }
-
-    #[test]
-    #[serial]
-    fn cli_with_nothing_set_matches_local_defaults() {
-        clear_env();
-        let launch = parse_clocked_from(&["participant-bin"]).unwrap();
-        assert_eq!(launch.participant_id, "default-id");
-        assert_eq!(launch.bundle_root, None);
-        assert_eq!(launch.config, None);
-        assert!(launch.bus.connect_endpoints.is_empty());
-        assert_eq!(launch.clock, ClockMode::Real);
-    }
-
-    #[test]
-    #[serial]
-    fn env_overrides_each_launch_field() {
-        clear_env();
-        let execution = ExecutionId::mint();
-        let origin = ExecutionOrigin::mint();
-        // SAFETY: serialized test; see clear_env.
-        unsafe {
-            std::env::set_var(env::PARTICIPANT_ID, "tof-3");
-            std::env::set_var(env::EXECUTION_ID, execution.to_string());
-            std::env::set_var(env::EXECUTION_ORIGIN, origin.encode());
-            std::env::set_var(env::BUNDLE_ROOT, "/robot");
-            std::env::set_var(env::COMPONENT_INSTANCE, "tof_front");
-            std::env::set_var(env::CONNECT, "tcp/127.0.0.1:7447, tcp/127.0.0.1:7448");
-            std::env::set_var(env::CONFIG, r#"{"rate_hz":10}"#);
-            std::env::set_var(env::CLOCK, "simulation");
-        }
-        let launch = parse_clocked_from(&["participant-bin"]).unwrap();
-        assert_eq!(launch.participant_id, "tof-3");
-        assert_eq!(launch.execution, execution);
-        assert_eq!(launch.execution_origin, Some(origin));
-        assert_eq!(
-            launch.bundle_root.as_deref(),
-            Some(std::path::Path::new("/robot"))
-        );
-        assert_eq!(launch.component_instance.as_deref(), Some("tof_front"));
-        assert_eq!(
-            launch.bus.connect_endpoints,
-            vec![
-                "tcp/127.0.0.1:7447".to_string(),
-                "tcp/127.0.0.1:7448".to_string()
-            ]
-        );
-        assert_eq!(launch.config, Some(serde_json::json!({"rate_hz": 10})));
-        assert_eq!(launch.clock, ClockMode::Simulation);
-        clear_env();
-    }
-
-    #[test]
-    #[serial]
-    fn flags_take_precedence_over_env() {
-        clear_env();
-        let flag_execution = ExecutionId::mint();
-        // SAFETY: serialized test; see clear_env.
-        unsafe {
-            std::env::set_var(env::PARTICIPANT_ID, "env-participant");
-            std::env::set_var(env::EXECUTION_ID, ExecutionId::mint().to_string());
-            std::env::set_var(env::BUNDLE_ROOT, "/env-robot");
-            std::env::set_var(env::COMPONENT_INSTANCE, "env-component");
-            std::env::set_var(env::CONNECT, "tcp/env:7447");
-            std::env::set_var(env::CONFIG, r#"{"source":"env"}"#);
-            std::env::set_var(env::CLOCK, "simulation");
-        }
-
-        let launch = parse_clocked_from(&[
+    fn args() -> Vec<&'static str> {
+        vec![
             "participant-bin",
-            "--participant-id",
-            "flag-participant",
             "--execution-id",
-            &flag_execution.to_string(),
+            EXECUTION,
+            "--participant-id",
+            "drive",
             "--bundle-root",
-            "/flag-robot",
-            "--component-instance",
-            "flag-component",
+            "/var/lib/phoxal/bundle",
             "--connect",
-            "tcp/flag:7447",
+            "tcp/router-a:7447",
+        ]
+    }
+
+    #[test]
+    fn accepts_only_the_supervisor_owned_fields() {
+        let launch = SupervisedLaunch::try_parse_from(args()).expect("valid supervised argv");
+        assert_eq!(launch.execution_id.to_string(), EXECUTION);
+        assert_eq!(launch.participant_id.as_str(), "drive");
+        assert_eq!(launch.bundle_root, PathBuf::from("/var/lib/phoxal/bundle"));
+        assert_eq!(launch.connect_endpoints, ["tcp/router-a:7447"]);
+        assert_eq!(launch.execution_origin, None);
+        assert_eq!(launch.shutdown_grace_ms, DEFAULT_SHUTDOWN_GRACE_MS);
+    }
+
+    #[test]
+    fn accepts_multiple_connect_endpoints_without_a_comma_encoding() {
+        let mut argv = args();
+        argv.extend([
+            "--connect",
+            "tcp/router-b:7447",
+            "--execution-origin",
+            ORIGIN,
+        ]);
+        let launch = SupervisedLaunch::try_parse_from(argv).expect("valid repeated endpoints");
+        assert_eq!(
+            launch.connect_endpoints,
+            ["tcp/router-a:7447", "tcp/router-b:7447"]
+        );
+        assert_eq!(
+            launch.execution_origin,
+            Some(ExecutionOrigin::decode(ORIGIN).expect("test origin"))
+        );
+    }
+
+    #[test]
+    fn missing_required_fields_fails_before_runtime_or_bus_work() {
+        let error = SupervisedLaunch::try_parse_from(["participant-bin"])
+            .expect_err("required supervised fields must not have defaults");
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn malformed_identity_and_origin_are_rejected() {
+        let mut invalid_execution = args();
+        invalid_execution[2] = "short";
+        assert!(SupervisedLaunch::try_parse_from(invalid_execution).is_err());
+
+        let mut invalid_participant = args();
+        invalid_participant[4] = "Drive";
+        assert!(SupervisedLaunch::try_parse_from(invalid_participant).is_err());
+
+        let mut invalid_origin = args();
+        invalid_origin.extend(["--execution-origin", "not-an-origin"]);
+        assert!(SupervisedLaunch::try_parse_from(invalid_origin).is_err());
+    }
+
+    #[test]
+    fn rejected_legacy_launch_fields_have_no_parser_aliases() {
+        for field in [
+            "--robot",
+            "--robot-id",
+            "--namespace",
+            "--producer-id",
             "--config",
-            r#"{"source":"flag"}"#,
             "--clock",
-            "real",
-        ])
-        .unwrap();
-
-        assert_eq!(launch.participant_id, "flag-participant");
-        assert_eq!(launch.execution, flag_execution);
-        assert_eq!(
-            launch.bundle_root.as_deref(),
-            Some(std::path::Path::new("/flag-robot"))
-        );
-        assert_eq!(launch.component_instance.as_deref(), Some("flag-component"));
-        assert_eq!(launch.bus.connect_endpoints, vec!["tcp/flag:7447"]);
-        assert_eq!(launch.config, Some(serde_json::json!({"source": "flag"})));
-        assert_eq!(launch.clock, ClockMode::Real);
-        clear_env();
-    }
-
-    #[test]
-    #[serial]
-    fn rejects_invalid_config_json_and_clock() {
-        clear_env();
-        // SAFETY: serialized test; see clear_env.
-        unsafe { std::env::set_var(env::CONFIG, "not json") };
-        assert!(parse_clocked_from(&["participant-bin"]).is_err());
-        unsafe {
-            std::env::remove_var(env::CONFIG);
-            std::env::set_var(env::CLOCK, "wallclock");
-        }
-        let err = command_for::<ClockedLaunchCli>("default-id")
-            .try_get_matches_from(["participant-bin"])
-            .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::ValueValidation);
-        clear_env();
-    }
-
-    #[test]
-    #[serial]
-    fn help_lists_contract_env_names_without_values() {
-        clear_env();
-        // SAFETY: serialized test; see clear_env.
-        unsafe { std::env::set_var(env::CONFIG, r#"{"secret":"do-not-print"}"#) };
-
-        let mut help = Vec::new();
-        command_for::<ClockedLaunchCli>("default-id")
-            .write_long_help(&mut help)
-            .unwrap();
-        let help = String::from_utf8(help).unwrap();
-
-        for (flag, env_name) in [
-            ("--participant-id", env::PARTICIPANT_ID),
-            ("--execution-id", env::EXECUTION_ID),
-            ("--execution-origin", env::EXECUTION_ORIGIN),
-            ("--bundle-root", env::BUNDLE_ROOT),
-            ("--component-instance", env::COMPONENT_INSTANCE),
-            ("--connect", env::CONNECT),
-            ("--config", env::CONFIG),
-            ("--clock", env::CLOCK),
+            "--component-instance",
         ] {
-            assert!(help.contains(flag), "help should list {flag}");
-            assert!(help.contains(env_name), "help should list {env_name}");
+            let mut argv = args();
+            argv.extend([field, "value"]);
+            let error = SupervisedLaunch::try_parse_from(argv)
+                .expect_err("legacy launch fields must be unknown");
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{field}");
         }
-        assert!(!help.contains("do-not-print"));
-        clear_env();
     }
 
     #[test]
-    #[serial]
-    fn a_malformed_identity_or_origin_is_rejected_rather_than_silently_replaced() {
-        clear_env();
-
-        let error =
-            parse_simulator_from(&["simulator-bin", "--execution-id", "not-an-id"]).unwrap_err();
-        assert!(
-            error.to_string().contains("PHOXAL_EXECUTION_ID is invalid"),
-            "{error:#}"
-        );
-
-        // Nothing on this surface names a producer: a participant's producer is
-        // the session it opens, so there is no flag or variable to get wrong.
-        let error = parse_simulator_from(&["simulator-bin", "--producer-id", "0011"]).unwrap_err();
-        assert!(
-            error.to_string().contains("--producer-id"),
-            "an unknown argument should be reported as such, got: {error:#}"
-        );
-
-        let error =
-            parse_clocked_from(&["participant-bin", "--execution-origin", "1:2"]).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("PHOXAL_EXECUTION_ORIGIN is malformed"),
-            "{error:#}"
-        );
-
-        // An unmanaged local run has no supervisor to mint identities, so it
-        // mints its own rather than defaulting to a shared constant that two
-        // processes would collide on - but it does NOT invent an execution
-        // origin, because that would silently defeat the missing-origin
-        // trigger instead of reporting an untrustworthy clock.
-        let first = parse_simulator_from(&["simulator-bin"]).unwrap();
-        let second = parse_simulator_from(&["simulator-bin"]).unwrap();
-        assert_ne!(first.execution, second.execution);
-        assert_eq!(first.execution_origin, None);
-        clear_env();
+    fn shutdown_grace_must_be_nonzero() {
+        let mut argv = args();
+        argv.extend(["--shutdown-grace-ms", "0"]);
+        assert!(SupervisedLaunch::try_parse_from(argv).is_err());
     }
 
     #[test]
-    #[serial]
-    fn a_launch_record_round_trips_its_identities_and_origin_through_json() {
-        let launch =
-            ParticipantLaunch::local("drive").with_execution_origin(ExecutionOrigin::mint());
-        let encoded = serde_json::to_string(&launch).unwrap();
-        let decoded: ParticipantLaunch = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, launch);
-        assert!(encoded.contains(&launch.execution.to_string()));
-
-        let malformed =
-            encoded.replace(&launch.execution_origin.unwrap().encode(), "not-an-origin");
-        assert!(serde_json::from_str::<ParticipantLaunch>(&malformed).is_err());
+    fn empty_connect_endpoint_is_rejected() {
+        let mut argv = args();
+        argv[8] = "";
+        assert!(SupervisedLaunch::try_parse_from(argv).is_err());
     }
 
     #[test]
-    #[serial]
-    fn simulator_cli_has_no_clock_input() {
-        clear_env();
-        // A generic orchestrator setting is invisible to the simulator launch
-        // parser. Simulators are always host/Webots driven.
-        // SAFETY: serialized test; see clear_env.
-        unsafe { std::env::set_var(env::CLOCK, "simulation") };
-        let launch = parse_simulator_from(&["simulator-bin"]).unwrap();
-        assert_eq!(launch.clock, ClockMode::Real);
-
-        let mut help = Vec::new();
-        command_for::<SimulatorLaunchCli>("default-id")
-            .write_long_help(&mut help)
-            .unwrap();
-        let help = String::from_utf8(help).unwrap();
-        assert!(!help.contains("--clock"));
-        assert!(!help.contains(env::CLOCK));
-
-        for arguments in [
-            vec!["simulator-bin", "--clock", "simulation"],
-            vec!["simulator-bin", "--simulation"],
-        ] {
-            let error = command_for::<SimulatorLaunchCli>("default-id")
-                .try_get_matches_from(arguments)
-                .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    fn every_process_field_is_clap_only_and_has_no_environment_binding() {
+        let command = SupervisedLaunch::command();
+        for argument in command.get_arguments() {
+            assert!(
+                argument.get_env().is_none(),
+                "{} unexpectedly reads an environment variable",
+                argument.get_id()
+            );
         }
-
-        let mut programmatic = ParticipantLaunch::local("simulator");
-        programmatic.clock = ClockMode::Simulation;
-        assert_eq!(
-            SimulatorParticipantLaunch::clock_mode(&programmatic),
-            ClockMode::Clockless
-        );
-        assert_eq!(
-            ClockedParticipantLaunch::clock_mode(&programmatic),
-            ClockMode::Simulation
-        );
-        clear_env();
     }
 }

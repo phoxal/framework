@@ -29,11 +29,10 @@ use crate::runtime::ControllerRuntime;
 
 /// Bootstrap the Webots-owned controller.
 ///
-/// The controller joins the supervised run through `PHOXAL_EXECUTION_ID`, which
-/// the supervisor puts in the Webots application's environment and Webots
-/// passes through to this child process. Its producer identity is the bus
-/// session it opens, and it always mints its own timeline: a world history
-/// belongs to the controller process that runs it, never to the CLI.
+/// The controller joins the supervised run through the same strict Clap argv
+/// as every participant. Its producer identity is the bus session it opens,
+/// and it always mints its own timeline: a world history belongs to the
+/// controller process that runs it, never to the CLI.
 pub(crate) fn run() -> Result<()> {
     phoxal::run::<WebotsControllerSimulator>()
 }

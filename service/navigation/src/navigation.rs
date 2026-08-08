@@ -504,8 +504,7 @@ impl NavigationState {
 mod tests {
     use std::time::Duration;
 
-    use phoxal::__private::ExecutionOrigin;
-    use phoxal::__private::{ClockSource, ParticipantLaunch, TestClock, run_with_bus_clock};
+    use phoxal::__private::{ClockSource, TestClock, TestHarness, run_test_harness_with_clock};
     use phoxal_bus::{
         BusConfig, BusOwner, CommandPublisher, StatePublisher, StepToken, Subscriber,
     };
@@ -633,9 +632,9 @@ mod tests {
 
         let clock = TestClock::new();
         let runner_clock = clock.clone();
-        let runner = run_with_bus_clock::<Navigation, _, _>(
+        let runner = run_test_harness_with_clock::<Navigation, _, _>(
             &bus,
-            ParticipantLaunch::local("navigation-1").with_execution_origin(ExecutionOrigin::mint()),
+            TestHarness::new("navigation-1").expect("valid test participant"),
             runner_clock,
             async { tokio::time::sleep(Duration::from_millis(900)).await },
         );

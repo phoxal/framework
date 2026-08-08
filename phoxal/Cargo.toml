@@ -18,11 +18,11 @@ name = "phoxal"
 path = "src/lib.rs"
 
 [features]
-# Off in every shipped participant binary. It exposes the deterministic
-# `TestClock` and the `run_with_bus_clock` seam that injects one, which exist
-# only so a test can drive a participant on a clock it controls. A downstream
-# crate enables it as a **dev**-dependency feature, because a participant
-# crate's tests are a separate compilation unit that cannot enable this crate's
+# Off in every shipped participant binary. It exposes the explicit in-process
+# harness, deterministic `TestClock`, and clock-injection seam, which exist only
+# so tests can drive a participant on a caller-owned bus. A downstream crate
+# enables it as a **dev**-dependency feature, because a participant crate's
+# tests are a separate compilation unit that cannot enable this crate's
 # `cfg(test)`.
 test-harness = []
 
@@ -34,7 +34,7 @@ phoxal-macros = { workspace = true }
 phoxal-model = { workspace = true }
 phoxal-runtime-contract = { workspace = true }
 anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive", "env"] }
+clap = { workspace = true, features = ["derive"] }
 const_format = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -64,6 +64,11 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "runtime_serialized_smoke"
+path = "tests/runtime_serialized_smoke.rs"
+required-features = ["test-harness"]
 
 [[example]]
 name = "runtime_control_loop"

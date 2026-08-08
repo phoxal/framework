@@ -84,7 +84,7 @@ macro_rules! participant_metadata_json {
         // resolves to its canonical spelling one step earlier.
         const __PHOXAL_API: &str = $api.as_str();
         const __PHOXAL_BUS: &str = $bus.as_str();
-        const __PHOXAL_LAUNCH: &str = $launch.as_str();
+        const __LAUNCH_ABI: &str = $launch.as_str();
         const __PHOXAL_ROBOT: &str = $robot.as_str();
         const __PHOXAL_COMPONENT: &str = $component.as_str();
         const __PHOXAL_SIMULATION: &str = $simulation.as_str();
@@ -104,7 +104,7 @@ macro_rules! participant_metadata_json {
             "\",\"schemas\":{\"bus\":\"",
             __PHOXAL_BUS,
             "\",\"launch\":\"",
-            __PHOXAL_LAUNCH,
+            __LAUNCH_ABI,
             "\",\"robot\":\"",
             __PHOXAL_ROBOT,
             "\",\"component\":\"",

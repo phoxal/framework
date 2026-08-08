@@ -106,13 +106,13 @@ pub(crate) trait StepScheduler: Send + Sync + 'static {
 }
 
 /// The runner's concrete scheduler choice for the active
-/// [`ClockMode`](crate::participant::launch::ClockMode):
-/// [`ClockMode::Real`](crate::participant::launch::ClockMode::Real) selects
+/// [`ClockMode`](phoxal_runtime_contract::launch::ClockMode):
+/// [`ClockMode::Real`](phoxal_runtime_contract::launch::ClockMode::Real) selects
 /// [`RealScheduler`],
-/// [`ClockMode::Simulation`](crate::participant::launch::ClockMode::Simulation)
+/// [`ClockMode::Simulation`](phoxal_runtime_contract::launch::ClockMode::Simulation)
 /// selects [`SimulationScheduler`]. A single non-generic type lets the runner
 /// hold "the scheduler" without threading a third generic parameter through
-/// `run_with`/`run_with_bus` alongside `R`/`C`; a replay scheduler would add a
+/// the runner alongside `R`/`C`; a replay scheduler would add a
 /// variant here rather than change any call site.
 pub(crate) enum AnyStepScheduler {
     /// Wall-clock scheduling (the default).

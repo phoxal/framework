@@ -40,9 +40,11 @@ mod tests {
         ))
         .await
         .expect("the in-process test bus opens");
-        let launch = phoxal::__private::ParticipantLaunch::local("vl53l1x-test")
+        let launch = phoxal::__private::TestHarness::new("vl53l1x-test")
+            .expect("valid test participant")
             .with_execution_origin(phoxal::__private::ExecutionOrigin::mint());
-        let result = phoxal::__private::run_with_bus::<Vl53l1x, _>(&bus, launch, async {}).await;
+        let result =
+            phoxal::__private::run_test_harness::<Vl53l1x, _>(&bus, launch, async {}).await;
         owner.close().await.expect("the in-process test bus closes");
 
         let error = result.expect_err("setup must reject an unavailable hardware backend");

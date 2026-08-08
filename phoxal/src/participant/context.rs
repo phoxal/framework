@@ -256,7 +256,7 @@ impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
     /// The compiled component instance bound to this driver or simulator.
     pub fn component(&self) -> crate::Result<&crate::model::robot::ComponentInstance> {
         let id = self.component_instance.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("no component instance is bound for this participant launch")
+            anyhow::anyhow!("no component instance is bound for this participant record")
         })?;
         self.robot()?.component_instance(id).ok_or_else(|| {
             anyhow::anyhow!("the bound component instance '{id}' is not in the robot model")
