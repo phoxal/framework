@@ -16,7 +16,7 @@ use crate::bus::{
 use crate::model::Robot;
 use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::managed::{ManagedTaskOutput, ManagedTaskPolicy, ManagedTasks};
-use crate::participant::runner::inputs::ParticipantBundleInputs;
+use phoxal_bundle::ParticipantRuntimeInputs;
 use phoxal_bus::{BusHandle, TimelineAuthority, WorldClockPublisher};
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
@@ -52,8 +52,7 @@ pub struct SetupContext<R: Participant> {
     /// launched with one. Model and assets travel together because they are two
     /// views of the same load: there is no launch that binds one without the
     /// other.
-    bundle: Option<ParticipantBundleInputs>,
-    component_instance: Option<String>,
+    runtime: Option<ParticipantRuntimeInputs>,
     managed_tasks: ManagedTasks,
     timeline_retentions: Vec<TimelineRetention>,
     queries: Vec<QueryRegistration<R>>,
@@ -75,15 +74,10 @@ impl<R: Participant> SetupContext<R> {
         Ok(self.bus.participant_ready_events().await?)
     }
 
-    pub(crate) fn new(
-        bus: BusHandle,
-        bundle: Option<ParticipantBundleInputs>,
-        component_instance: Option<String>,
-    ) -> Self {
+    pub(crate) fn new(bus: BusHandle, runtime: Option<ParticipantRuntimeInputs>) -> Self {
         SetupContext {
             bus,
-            bundle,
-            component_instance,
+            runtime,
             managed_tasks: ManagedTasks::default(),
             timeline_retentions: Vec::new(),
             queries: Vec::new(),
@@ -162,20 +156,20 @@ impl<R: Participant> SetupContext<R> {
 
     /// The immutable canonical model loaded from the finalized bundle.
     pub fn robot(&self) -> crate::Result<&Robot> {
-        let bundle = self.bundle.as_ref().ok_or_else(|| {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "no robot model is bound (this participant was launched without a bundle root)"
             )
         })?;
-        Ok(&bundle.robot)
+        Ok(&runtime.robot)
     }
 
     /// The validated assets this participant's runtime bundle declares.
     pub fn assets(&self) -> crate::Result<&ParticipantAssetResolver> {
-        let bundle = self.bundle.as_ref().ok_or_else(|| {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
             anyhow::anyhow!("no bundle assets are bound (this participant has no bundle root)")
         })?;
-        Ok(&bundle.assets)
+        Ok(&runtime.assets)
     }
 }
 
@@ -294,12 +288,19 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
 impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
     /// The compiled component instance bound to this driver or simulator.
     pub fn component(&self) -> crate::Result<&crate::model::robot::ComponentInstance> {
-        let id = self.component_instance.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("no component instance is bound for this participant record")
-        })?;
-        self.robot()?.component_instance(id).ok_or_else(|| {
-            anyhow::anyhow!("the bound component instance '{id}' is not in the robot model")
-        })
+        let id = self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.participant.binding.as_ref())
+            .map(|binding| &binding.component_instance)
+            .ok_or_else(|| {
+                anyhow::anyhow!("no component instance is bound for this participant record")
+            })?;
+        self.robot()?
+            .component_instance(id.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!("the bound component instance '{id}' is not in the robot model")
+            })
     }
 }
 

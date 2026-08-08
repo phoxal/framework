@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
@@ -310,8 +310,31 @@ fn bounded_text(value: &str, max_bytes: usize) -> (String, bool) {
     (value[..end].to_string(), true)
 }
 
-pub(crate) fn new_state() -> Arc<BusLogState> {
-    Arc::new(BusLogState::new())
+fn state() -> Arc<BusLogState> {
+    static STATE: OnceLock<Arc<BusLogState>> = OnceLock::new();
+    Arc::clone(STATE.get_or_init(|| Arc::new(BusLogState::new())))
+}
+
+/// Install the process-wide tracing subscriber and bus-log capture layer.
+///
+/// Logging owns its global state and initialization seam. The participant
+/// runner only asks for logging to be initialized at each public entrypoint;
+/// it does not expose logging internals back to this module.
+pub(crate) fn init_tracing() {
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        use tracing_subscriber::EnvFilter;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let filter = EnvFilter::new("info");
+        let bus_layer = BusLogLayer::new(state());
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_target(true))
+            .with(bus_layer)
+            .try_init();
+    });
 }
 
 pub(crate) fn attach(bus: BusHandle, participant_id: &str) -> (BusLogGuard, BusLogTask) {
@@ -323,7 +346,7 @@ fn attach_with_capacity(
     participant_id: &str,
     capacity: usize,
 ) -> (BusLogGuard, BusLogTask) {
-    let state = crate::participant::runner::bus_log_state();
+    let state = state();
     let (sender, receiver) = mpsc::channel(capacity.max(1));
     let token = state.install_sender(sender);
     let participant_id = participant_id.to_string();

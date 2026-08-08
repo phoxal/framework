@@ -12,20 +12,18 @@
 
 use std::future::Future;
 #[cfg(target_os = "linux")]
-use std::io::Read;
-#[cfg(target_os = "linux")]
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::api;
 use crate::bus::{LocalInstant, RobotInstant, StepToken, Subscriber, TimelineId};
 use crate::participant::api::{Participant, ParticipantConfig};
-use crate::participant::bus_log::{self, BusLogState, BusLogTask};
+use crate::participant::bus_log::{self, BusLogTask};
 use crate::participant::clock::real::RealClock;
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
@@ -47,7 +45,8 @@ pub(crate) mod query;
 pub(crate) mod signal;
 pub(crate) mod teardown;
 
-use inputs::{ParticipantBundleInputs, participant_config};
+use inputs::{participant_config, participant_inputs_for_launch};
+use phoxal_bundle::ParticipantRuntimeInputs;
 use query::QuerySurface;
 use signal::shutdown_signal;
 use teardown::{
@@ -152,7 +151,7 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     // `Participant::__retain_embedded_metadata`'s docs.
     R::__retain_embedded_metadata();
 
-    init_tracing();
+    bus_log::init_tracing();
     // Parse the supervised process contract before opening anything. A
     // supervisor's signal is installed immediately after parsing so startup
     // teardown still follows the same steady-state path.
@@ -170,7 +169,6 @@ where
     R: Participant,
     S: Future<Output = ()>,
 {
-    init_tracing();
     let mut shutdown = ShutdownController::new(shutdown);
     // Convert the Clap millisecond field once at the process boundary. The
     // remainder of the lifecycle carries a typed duration.
@@ -182,7 +180,7 @@ where
     // Bundle validation and exact participant selection happen before any bus
     // session exists. A malformed bundle therefore has no producer or wire
     // side effects to clean up.
-    let bundle = ParticipantBundleInputs::for_launch(&launch.bundle_root, &launch.participant_id)?;
+    let bundle = participant_inputs_for_launch(&launch.bundle_root, &launch.participant_id)?;
     if launch.participant_id.as_str() != R::ID {
         anyhow::bail!(
             "supervised participant id '{}' does not match this binary's compiled id '{}'",
@@ -216,10 +214,10 @@ where
     // custom `Deserialize` implementation may reject a value that its JSON
     // Schema accepts; that must not become a transport-visible startup error.
     let config = participant_config::<R::Config>(bundle.participant.config.as_ref())?;
-    let clock = match launch.execution_origin {
-        Some(origin) => RealClock::new(origin),
-        None => RealClock::without_origin(),
-    };
+    let origin = launch
+        .execution_origin
+        .ok_or(TimeUnsynchronized::MissingOrigin)?;
+    let clock = RealClock::new(origin)?;
     let clock_mode = bundle.participant.clock;
     validate_clock_inputs::<R, _>(clock_mode, &clock)?;
 
@@ -266,15 +264,13 @@ where
 /// and open.
 #[cfg(target_os = "linux")]
 fn verify_current_executable(expected: Sha256Digest) -> crate::Result<()> {
-    let (path, mut executable) = open_current_executable()?;
-    let mut bytes = Vec::new();
-    executable.read_to_end(&mut bytes).map_err(|error| {
+    let (path, executable) = open_current_executable()?;
+    let actual = Sha256Digest::from_reader(executable).map_err(|error| {
         anyhow::anyhow!(
             "failed to read running executable {}: {error}",
             path.display()
         )
     })?;
-    let actual = Sha256Digest::of(&bytes);
     if actual != expected {
         anyhow::bail!(
             "running executable {} does not match the runtime bundle binary digest (expected {}, got {})",
@@ -348,8 +344,9 @@ where
     R: Participant,
     S: Future<Output = ()>,
 {
+    bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
-    let clock = RealClock::new(harness.execution_origin);
+    let clock = RealClock::new(harness.execution_origin)?;
     let config = participant_config::<R::Config>(None)?;
     validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
     let mut shutdown = ShutdownController::new(shutdown);
@@ -387,6 +384,7 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
+    bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
     let config = participant_config::<R::Config>(None)?;
     validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
@@ -415,7 +413,7 @@ async fn run_inner<R, C, S>(
     owner: Option<BusOwner>,
     participant_id: &ParticipantId,
     shutdown_grace: Duration,
-    bundle: Option<ParticipantBundleInputs>,
+    bundle: Option<ParticipantRuntimeInputs>,
     config: R::Config,
     clock_mode: ClockMode,
     clock: C,
@@ -427,8 +425,6 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
-    init_tracing();
-
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
     let result = run_lifecycle::<R, C, S>(
         bus,
@@ -457,7 +453,7 @@ async fn run_lifecycle<R, C, S>(
     mut owner: Option<BusOwner>,
     participant_id: &ParticipantId,
     shutdown_grace: Duration,
-    bundle: Option<ParticipantBundleInputs>,
+    bundle: Option<ParticipantRuntimeInputs>,
     config: R::Config,
     clock_mode: ClockMode,
     clock: C,
@@ -508,7 +504,7 @@ where
         AnyStepScheduler::Simulation(simulation) => {
             RunnerClock::Simulation(simulation.simulation_clock())
         }
-        AnyStepScheduler::Real(_) | AnyStepScheduler::Clockless => RunnerClock::Delegated(clock),
+        AnyStepScheduler::Real(_) | AnyStepScheduler::Disabled => RunnerClock::Delegated(clock),
     };
     // Subscribe before setup so the simulation clock can advance while setup runs.
     match Runner::<R, C>::start(
@@ -638,33 +634,6 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
     }
 }
 
-/// A fixed-interval beat on the host monotonic clock.
-///
-/// The runner's one recurring wake-up that is not a step. Advancing skips
-/// straight to the first beat still in the future, so a loop that stalled
-/// resumes on the original grid instead of firing a burst of missed beats.
-struct MonotonicBeat {
-    next: tokio::time::Instant,
-    interval: Duration,
-}
-
-impl MonotonicBeat {
-    fn every(interval: Duration) -> Self {
-        MonotonicBeat {
-            next: tokio::time::Instant::now(),
-            interval,
-        }
-    }
-
-    fn advance(&mut self) {
-        self.next += self.interval;
-        let now = tokio::time::Instant::now();
-        while self.next <= now {
-            self.next += self.interval;
-        }
-    }
-}
-
 /// One participant, running.
 ///
 /// The runner owns everything the loop reads or mutates - the participant and
@@ -762,7 +731,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         participant_id: &ParticipantId,
         shutdown_grace: Duration,
         shutdown: &mut ShutdownController<S>,
-        bundle: Option<ParticipantBundleInputs>,
+        bundle: Option<ParticipantRuntimeInputs>,
         config: R::Config,
         clock: RunnerClock<C>,
         scheduler: AnyStepScheduler,
@@ -775,11 +744,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
     {
         // The selected runtime record (or explicit test harness) was already
         // deserialized before entering this transport-owned startup path.
-        let component_instance = bundle
-            .as_ref()
-            .and_then(|bundle| bundle.component_instance.clone());
-
-        let mut ctx = SetupContext::<R>::new(bus.clone(), bundle, component_instance);
+        let mut ctx = SetupContext::<R>::new(bus.clone(), bundle);
         ctx.spawn_managed_with(
             "bus-log-drain",
             ManagedTaskPolicy::Finite,
@@ -1099,7 +1064,11 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // to release at, separate from the host-monotonic beat below.
         let mut next_step_target =
             initial_time.and_then(|at| period.map(|period| advance_step_deadline(at, period, 0)));
-        let mut beat = MonotonicBeat::every(RUNTIME_PERFORMANCE_TICK_INTERVAL);
+        let mut beat = tokio::time::interval_at(
+            tokio::time::Instant::now(),
+            RUNTIME_PERFORMANCE_TICK_INTERVAL,
+        );
+        beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -1149,8 +1118,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     last_step_at = Some(fired_at);
                     self.runtime_performance.reset(self.schedule);
                 }
-                _ = tokio::time::sleep_until(beat.next) => {
-                    beat.advance();
+                _ = beat.tick() => {
                     // A real participant with no `Participant::step` schedule would otherwise
                     // check its clock once at startup and never again, and go on
                     // serving queries from state it cannot date. This beat
@@ -1396,30 +1364,6 @@ fn retain_timeline(retentions: &[TimelineRetention], timeline: TimelineId) {
     }
 }
 
-pub(crate) fn init_tracing() {
-    static INIT: OnceLock<()> = OnceLock::new();
-    INIT.get_or_init(|| {
-        use tracing_subscriber::EnvFilter;
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
-
-        // Process launch is strict Clap argv. Logging uses this fixed default
-        // rather than reading ambient process variables or mutating process state.
-        let filter = EnvFilter::new("info");
-        let bus_layer = bus_log::BusLogLayer::new(bus_log_state());
-        let _ = tracing_subscriber::registry()
-            .with(filter)
-            .with(tracing_subscriber::fmt::layer().with_target(true))
-            .with(bus_layer)
-            .try_init();
-    });
-}
-
-pub(crate) fn bus_log_state() -> Arc<BusLogState> {
-    static STATE: OnceLock<Arc<BusLogState>> = OnceLock::new();
-    Arc::clone(STATE.get_or_init(bus_log::new_state))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1601,7 +1545,8 @@ mod tests {
         .expect("real scheduler");
         assert!(clock_handle.is_none());
         let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
-        let clock = RealClock::new(phoxal_runtime_contract::origin::ExecutionOrigin::mint());
+        let clock = RealClock::new(phoxal_runtime_contract::origin::ExecutionOrigin::mint())
+            .expect("current-boot origin");
         let mut owner = Some(owner);
         let mut shutdown = ShutdownController::new(std::future::ready(()));
         let result = Runner::<HangingStartup, RealClock>::start(

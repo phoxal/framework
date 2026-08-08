@@ -1186,8 +1186,8 @@ mod tests {
             .declare_participant_ready()
             .await
             .expect("the owner can declare Ready");
-        assert_eq!(ready.key().participant(), participant.as_str());
-        assert_eq!(ready.key().producer(), bus.producer());
+        assert_eq!(ready.participant(), &participant);
+        assert_eq!(ready.producer(), bus.producer());
         drop(ready);
         owner.close().await.unwrap();
     }
