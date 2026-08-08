@@ -19,7 +19,7 @@ use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchem
 type StagedBytes = (
     RuntimeDocument,
     BTreeMap<AssetId, Vec<u8>>,
-    BTreeMap<BundlePath, PathBuf>,
+    BTreeMap<BundlePath, BinarySource>,
 );
 
 fn document() -> StagedBytes {
@@ -32,11 +32,11 @@ fn document() -> StagedBytes {
     assets.insert(asset_id, asset_bytes);
     let binary_path = BundlePath::new("bin/drive").expect("binary path");
     let binary_source = std::env::current_exe().expect("test binary path");
+    let drive_source = BinarySource::open(&binary_source).expect("drive executable source");
     let mut binaries = BTreeMap::new();
-    binaries.insert(binary_path, binary_source.clone());
     let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
-    let binary = BinaryReference::from_file(
-        BundlePath::new("bin/drive").expect("binary path"),
+    let binary = BinaryReference::from_source(
+        binary_path.clone(),
         ParticipantContract {
             id: artifact_id.clone(),
             kind: ParticipantKind::Service,
@@ -49,7 +49,7 @@ fn document() -> StagedBytes {
             requirement: None,
             config_schema: serde_json::json!({"type":"null"}),
         },
-        &binary_source,
+        &drive_source,
     )
     .expect("test binary hashes");
     let participant = RuntimeParticipant::new(
@@ -59,10 +59,47 @@ fn document() -> StagedBytes {
         None,
         ParticipantClock::Real,
     );
+    let brain_id = ParticipantArtifactId::new("brain").expect("brain artifact id");
+    let brain_path = BundlePath::new("bin/brain").expect("brain binary path");
+    let brain_source = BinarySource::open(&binary_source).expect("brain executable source");
+    let brain = BinaryReference::from_source(
+        brain_path.clone(),
+        ParticipantContract {
+            id: brain_id.clone(),
+            kind: ParticipantKind::Brain,
+            api: RobotApi::V0_2,
+            schemas: ParticipantSchemas {
+                bus: BusAbi::V0,
+                launch: LaunchAbi::V0,
+                runtime: RuntimeSchema::V0,
+            },
+            requirement: None,
+            config_schema: serde_json::json!({"type":"null"}),
+        },
+        &brain_source,
+    )
+    .expect("brain test binary hashes");
+    let brain_participant = RuntimeParticipant::new(
+        ParticipantId::new("brain").expect("brain participant id"),
+        brain_id.clone(),
+        None,
+        None,
+        ParticipantClock::Real,
+    );
+    binaries.insert(binary_path, drive_source);
+    binaries.insert(brain_path, brain_source);
     let mut artifacts = BTreeMap::new();
     artifacts.insert(artifact_id, binary);
+    artifacts.insert(brain_id, brain);
     let index = AssetIndex::from_bytes(&assets).expect("asset index");
-    let runtime = Runtime::new(robot, artifacts, vec![participant], index, None).expect("runtime");
+    let runtime = Runtime::new(
+        robot,
+        artifacts,
+        vec![participant, brain_participant],
+        index,
+        None,
+    )
+    .expect("runtime");
     let document = RuntimeDocument::new(runtime);
     (document, assets, binaries)
 }
@@ -313,6 +350,86 @@ fn runtime_json_is_tagged_strict_and_robot_id_is_persisted_once() {
 }
 
 #[test]
+fn runtime_graph_requires_exactly_one_fixed_brain_instance() {
+    let (base, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = base.clone();
+    runtime
+        .participants
+        .retain(|participant| participant.id.as_str() != "brain");
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::MissingBrain)
+    ));
+
+    let RuntimeDocument::V0(mut runtime) = base;
+    let brain = runtime
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id.as_str() == "brain")
+        .expect("brain participant");
+    brain.id = ParticipantId::new("other-brain").expect("participant id");
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::BrainIdMismatch { .. })
+    ));
+
+    let (artifact_base, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = artifact_base;
+    let brain_id = ParticipantArtifactId::new("brain").expect("brain artifact id");
+    let mut brain = runtime.artifacts.remove(&brain_id).expect("brain artifact");
+    let wrong_id = ParticipantArtifactId::new("other-brain").expect("artifact id");
+    brain.contract.id = wrong_id.clone();
+    brain.path = BundlePath::new("bin/other-brain").expect("binary path");
+    runtime.artifacts.insert(wrong_id.clone(), brain);
+    runtime
+        .participants
+        .iter_mut()
+        .find(|participant| participant.id.as_str() == "brain")
+        .expect("brain participant")
+        .artifact = wrong_id;
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::BrainArtifactId { .. })
+    ));
+
+    let (path_base, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = path_base;
+    runtime
+        .artifacts
+        .get_mut(&ParticipantArtifactId::new("brain").expect("brain artifact id"))
+        .expect("brain artifact")
+        .path = BundlePath::new("bin/not-brain").expect("binary path");
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::BrainArtifactPath { .. })
+    ));
+}
+
+#[test]
 fn multiple_participant_instances_may_share_one_artifact() {
     let (document, _, _) = document();
     let RuntimeDocument::V0(mut runtime) = document;
@@ -335,13 +452,15 @@ fn multiple_participant_instances_may_share_one_artifact() {
         )
         .expect("shared artifact is valid"),
     );
-    assert_eq!(document.artifacts().len(), 1);
-    assert_eq!(document.participants().len(), 2);
-    assert!(
+    assert_eq!(document.artifacts().len(), 2);
+    assert_eq!(document.participants().len(), 3);
+    assert_eq!(
         document
             .participants()
             .iter()
-            .all(|participant| participant.artifact == artifact)
+            .filter(|participant| participant.artifact == artifact)
+            .count(),
+        2
     );
 }
 
@@ -351,8 +470,7 @@ fn every_artifact_must_be_selected_by_a_runtime_participant() {
     let RuntimeDocument::V0(mut runtime) = document;
     let mut unused = runtime
         .artifacts
-        .values()
-        .next()
+        .get(&ParticipantArtifactId::new("drive").expect("drive artifact id"))
         .expect("fixture artifact")
         .clone();
     let unused_id = ParticipantArtifactId::new("unused").expect("artifact id");
@@ -443,8 +561,16 @@ fn writer_and_reader_use_only_runtime_json_and_indexed_files() {
     let (document, assets, binaries) = document();
     let loaded = BundleWriter::write(&root, &document, &assets, &binaries)
         .expect("bundle writes and reopens");
+    assert_eq!(
+        loaded.root(),
+        root.parent()
+            .expect("bundle parent")
+            .canonicalize()
+            .expect("canonical parent")
+            .join(root.file_name().expect("bundle name"))
+    );
     assert_eq!(loaded.robot_id().as_str(), "rover");
-    assert_eq!(loaded.participants().len(), 1);
+    assert_eq!(loaded.participants().len(), 2);
     let id = AssetId::new("robot/structure.json").expect("asset id");
     assert_eq!(
         loaded.assets().read(&id).expect("asset reads"),
@@ -466,12 +592,13 @@ fn writer_stages_a_real_executable_with_canonical_mode() {
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700))
         .expect("probe source mode");
 
-    let (document, assets, _) = document();
+    let (document, assets, mut binaries) = document();
     let RuntimeDocument::V0(mut runtime) = document;
     let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
     let existing = runtime.artifacts.get(&artifact_id).expect("drive artifact");
+    let source = BinarySource::open(&source).expect("probe source opens");
     let reference =
-        BinaryReference::from_file(existing.path.clone(), existing.contract.clone(), &source)
+        BinaryReference::from_source(existing.path.clone(), existing.contract.clone(), &source)
             .expect("probe reference");
     runtime.artifacts.insert(artifact_id, reference);
     let document = RuntimeDocument::new(
@@ -484,7 +611,7 @@ fn writer_stages_a_real_executable_with_canonical_mode() {
         )
         .expect("runtime document"),
     );
-    let binaries = BTreeMap::from([(BundlePath::new("bin/drive").expect("binary path"), source)]);
+    binaries.insert(BundlePath::new("bin/drive").expect("binary path"), source);
 
     BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
     let staged = root.join("bin/drive");
@@ -501,6 +628,79 @@ fn writer_stages_a_real_executable_with_canonical_mode() {
         .expect("staged executable runs");
     assert!(output.status.success());
     assert_eq!(output.stdout, b"staged");
+    for directory in [&root, &root.join(ASSETS_DIR), &root.join(BIN_DIR)] {
+        assert_eq!(
+            std::fs::metadata(directory)
+                .expect("bundle directory metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+    }
+    for file in [
+        root.join(RUNTIME_FILE),
+        root.join("assets/robot/structure.json"),
+    ] {
+        assert_eq!(
+            std::fs::metadata(file)
+                .expect("bundle data metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn opened_binary_source_is_pinned_across_path_substitution() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = tempfile::tempdir().expect("source parent");
+    let source_path = parent.path().join("source");
+    std::fs::write(&source_path, b"#!/bin/sh\nprintf original\n").expect("source bytes");
+    std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o700))
+        .expect("source mode");
+    let source = BinarySource::open(&source_path).expect("source descriptor");
+    let moved = parent.path().join("moved");
+    std::fs::rename(&source_path, &moved).expect("move opened inode");
+    let replacement = parent.path().join("replacement");
+    std::fs::write(&replacement, b"#!/bin/sh\nprintf replacement\n").expect("replacement");
+    std::os::unix::fs::symlink(&replacement, &source_path).expect("replacement symlink");
+    assert!(matches!(
+        BinarySource::open(&source_path),
+        Err(BundleError::ForbiddenSymlink { .. })
+    ));
+
+    let (document, assets, mut binaries) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
+    let existing = runtime.artifacts.get(&artifact_id).expect("drive artifact");
+    let reference =
+        BinaryReference::from_source(existing.path.clone(), existing.contract.clone(), &source)
+            .expect("reference hashes the opened inode");
+    runtime.artifacts.insert(artifact_id, reference);
+    let document = RuntimeDocument::new(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        )
+        .expect("runtime document"),
+    );
+    binaries.insert(BundlePath::new("bin/drive").expect("binary path"), source);
+    let root = parent.path().join("bundle");
+    BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+    assert!(
+        std::fs::read(root.join("bin/drive"))
+            .expect("staged binary")
+            .windows(b"original".len())
+            .any(|window| window == b"original")
+    );
 }
 
 #[cfg(unix)]
@@ -564,7 +764,8 @@ fn participant_open_skips_unrelated_artifact_hashes_but_full_open_does_not() {
     let root = parent.path().join("bundle");
     let (document, assets, mut binaries) = document();
     let RuntimeDocument::V0(mut runtime) = document;
-    let source = std::env::current_exe().expect("test binary path");
+    let source_path = std::env::current_exe().expect("test binary path");
+    let source = BinarySource::open(&source_path).expect("other source opens");
     let other_artifact = ParticipantArtifactId::new("other").expect("artifact id");
     let original = runtime
         .artifacts
@@ -575,7 +776,8 @@ fn participant_open_skips_unrelated_artifact_hashes_but_full_open_does_not() {
     let other_path = BundlePath::new("bin/other").expect("binary path");
     runtime.artifacts.insert(
         other_artifact.clone(),
-        BinaryReference::from_file(other_path.clone(), contract, &source).expect("other artifact"),
+        BinaryReference::from_source(other_path.clone(), contract, &source)
+            .expect("other artifact"),
     );
     runtime.participants.push(RuntimeParticipant::new(
         ParticipantId::new("other").expect("participant id"),
@@ -603,6 +805,22 @@ fn participant_open_skips_unrelated_artifact_hashes_but_full_open_does_not() {
     assert!(matches!(
         RuntimeBundle::open_verified(&root),
         Err(BundleError::Integrity { .. } | BundleError::Size { .. })
+    ));
+}
+
+#[test]
+fn participant_open_leaves_selected_image_verification_to_the_runner() {
+    let parent = tempfile::tempdir().expect("bundle parent");
+    let root = parent.path().join("bundle");
+    let (document, assets, binaries) = document();
+    BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+    std::fs::remove_file(root.join("bin/drive")).expect("remove selected staged binary");
+
+    ParticipantBundle::open(&root, &ParticipantId::new("drive").expect("participant id"))
+        .expect("participant input loading does not consume the staged image");
+    assert!(matches!(
+        RuntimeBundle::open_verified(&root),
+        Err(BundleError::MissingFile { .. })
     ));
 }
 
@@ -743,7 +961,7 @@ fn layout_validation_stays_on_pinned_tree_after_root_substitution() {
         .expect("outside asset");
     }
     for (path, source) in &binaries {
-        std::fs::copy(source, path.filesystem_path(&outside)).expect("outside binary");
+        std::fs::copy(source.path(), path.filesystem_path(&outside)).expect("outside binary");
     }
 
     let pinned = BundleRoot::open(&root).expect("pin original root");

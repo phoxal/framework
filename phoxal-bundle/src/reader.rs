@@ -127,6 +127,12 @@ impl RuntimeBundle {
     ) -> Result<ParticipantRuntimeInputs, SelectionError> {
         selected_inputs(&self.document, self.assets.clone(), id)
     }
+
+    pub(crate) fn relocated(mut self, path: std::path::PathBuf) -> Self {
+        self.root.relocate(path.clone());
+        self.assets.relocate(path);
+        self
+    }
 }
 
 /// The exact runtime record a participant process was launched to consume.
@@ -138,7 +144,9 @@ pub struct ParticipantBundle {
 
 impl ParticipantBundle {
     /// Open one participant's selected runtime inputs without hashing unrelated
-    /// indexed files.
+    /// indexed files or trusting the staged executable path. The supervised
+    /// runner separately hashes its already-running executable against the
+    /// selected artifact digest before it opens the bus.
     pub fn open(root: impl AsRef<Path>, id: &ParticipantId) -> Result<Self, BundleError> {
         let root = BundleRoot::open(root.as_ref())?;
         let document = read_runtime_document(&root)?;

@@ -4,7 +4,10 @@
 mod unix;
 
 #[cfg(unix)]
-pub(crate) use unix::{open_bundle_file, publish_staging_root, require_layout_directories};
+pub(crate) use unix::{
+    create_staging_file, ensure_staging_directory, mark_staging_root_ready, open_bundle_file,
+    open_executable_source, publish_staging_root, require_layout_directories,
+};
 
 #[cfg(not(unix))]
 pub(crate) fn open_bundle_file(
@@ -13,6 +16,41 @@ pub(crate) fn open_bundle_file(
 ) -> Result<std::fs::File, BundleError> {
     Err(BundleError::UnsupportedSecureOpen {
         path: path.filesystem_path(root.path()),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn open_executable_source(path: &Path) -> Result<std::fs::File, BundleError> {
+    Err(BundleError::UnsupportedSecureOpen {
+        path: path.to_path_buf(),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn create_staging_file(
+    root: &BundleRoot,
+    path: &BundlePath,
+    _mode: u32,
+) -> Result<std::fs::File, BundleError> {
+    Err(BundleError::UnsupportedSecureOpen {
+        path: path.filesystem_path(root.path()),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn ensure_staging_directory(
+    root: &BundleRoot,
+    relative: &str,
+) -> Result<(), BundleError> {
+    Err(BundleError::UnsupportedSecureOpen {
+        path: root.path().join(relative),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn mark_staging_root_ready(root: &BundleRoot) -> Result<(), BundleError> {
+    Err(BundleError::UnsupportedSecureOpen {
+        path: root.path().to_path_buf(),
     })
 }
 
@@ -34,7 +72,7 @@ pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), Bundle
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -79,6 +117,10 @@ impl BundleRoot {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+
+    pub(crate) fn relocate(&mut self, path: PathBuf) {
+        self.path = path;
+    }
 }
 
 pub(crate) fn read_runtime_document(root: &BundleRoot) -> Result<RuntimeDocument, BundleError> {
@@ -92,6 +134,8 @@ pub(crate) fn read_runtime_document(root: &BundleRoot) -> Result<RuntimeDocument
             },
             other => other,
         })?;
+    #[cfg(unix)]
+    unix::verify_data_file(&runtime_file, &runtime_path)?;
     let mut bytes = Vec::new();
     runtime_file
         .read_to_end(&mut bytes)
@@ -102,58 +146,29 @@ pub(crate) fn read_runtime_document(root: &BundleRoot) -> Result<RuntimeDocument
     crate::document::decode(&bytes)
 }
 
-pub(crate) fn write_new_file(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BundleError> {
-    ensure_staging_ancestors(root, path)?;
-    let parent = path.parent().ok_or_else(|| BundleError::ReadFile {
-        path: path.to_path_buf(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "file has no parent"),
-    })?;
-    ensure_staging_directory(root, parent)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = options.open(path).map_err(|source| BundleError::ReadFile {
-        path: path.to_path_buf(),
-        source,
-    })?;
+pub(crate) fn write_new_file(
+    root: &BundleRoot,
+    path: &BundlePath,
+    bytes: &[u8],
+) -> Result<(), BundleError> {
+    let mut file = create_staging_file(root, path, 0o644)?;
+    let diagnostic = path.filesystem_path(root.path());
     std::io::Write::write_all(&mut file, bytes).map_err(|source| BundleError::ReadFile {
-        path: path.to_path_buf(),
+        path: diagnostic,
         source,
     })
 }
 
 pub(crate) fn copy_executable_source(
-    root: &Path,
-    source: &Path,
-    destination: &Path,
+    root: &BundleRoot,
+    source: &BinarySource,
+    destination: &BundlePath,
     expected_digest: Sha256Digest,
     expected_size: u64,
 ) -> Result<(), BundleError> {
-    let source_metadata =
-        std::fs::symlink_metadata(source).map_err(|source_error| BundleError::ReadFile {
-            path: source.to_path_buf(),
-            source: source_error,
-        })?;
-    if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
-        return Err(BundleError::UnsupportedEntry {
-            path: source.to_path_buf(),
-        });
-    }
-    #[cfg(unix)]
-    unix::ensure_source_executable(&source_metadata, source)?;
-
-    ensure_staging_ancestors(root, destination)?;
-    let mut input = std::fs::File::open(source).map_err(|source_error| BundleError::ReadFile {
-        path: source.to_path_buf(),
-        source: source_error,
-    })?;
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-        .map_err(|source_error| BundleError::ReadFile {
-            path: destination.to_path_buf(),
-            source: source_error,
-        })?;
+    let mut input = source.reader()?;
+    let mut output = create_staging_file(root, destination, 0o755)?;
+    let diagnostic = destination.filesystem_path(root.path());
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
@@ -161,7 +176,7 @@ pub(crate) fn copy_executable_source(
         let count = input
             .read(&mut buffer)
             .map_err(|source_error| BundleError::ReadFile {
-                path: source.to_path_buf(),
+                path: source.path().to_path_buf(),
                 source: source_error,
             })?;
         if count == 0 {
@@ -169,7 +184,7 @@ pub(crate) fn copy_executable_source(
         }
         std::io::Write::write_all(&mut output, &buffer[..count]).map_err(|source_error| {
             BundleError::ReadFile {
-                path: destination.to_path_buf(),
+                path: diagnostic.clone(),
                 source: source_error,
             }
         })?;
@@ -177,7 +192,7 @@ pub(crate) fn copy_executable_source(
         total = total
             .checked_add(count as u64)
             .ok_or_else(|| BundleError::Size {
-                path: destination.to_path_buf(),
+                path: diagnostic.clone(),
                 expected: expected_size,
                 actual: u64::MAX,
             })?;
@@ -185,20 +200,18 @@ pub(crate) fn copy_executable_source(
     let actual = Sha256Digest(hasher.finalize().into());
     if total != expected_size {
         return Err(BundleError::Size {
-            path: destination.to_path_buf(),
+            path: diagnostic.clone(),
             expected: expected_size,
             actual: total,
         });
     }
     if actual != expected_digest {
         return Err(BundleError::Integrity {
-            path: destination.to_path_buf(),
+            path: diagnostic,
             expected: expected_digest,
             actual,
         });
     }
-    #[cfg(unix)]
-    unix::mark_executable(destination)?;
     Ok(())
 }
 
@@ -295,7 +308,18 @@ pub(crate) fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError>
             std::process::id()
         ));
         match std::fs::create_dir(&staged) {
-            Ok(()) => return Ok(staged),
+            Ok(()) => {
+                #[cfg(unix)]
+                std::fs::set_permissions(
+                    &staged,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o700),
+                )
+                .map_err(|source| BundleError::ReadFile {
+                    path: staged.clone(),
+                    source,
+                })?;
+                return Ok(staged);
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(source) => {
                 return Err(BundleError::ReadFile {
@@ -309,50 +333,6 @@ pub(crate) fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError>
         path: parent.to_path_buf(),
         source: std::io::Error::new(std::io::ErrorKind::AlreadyExists, "staging name exhausted"),
     })
-}
-
-pub(crate) fn ensure_staging_directory(root: &Path, directory: &Path) -> Result<(), BundleError> {
-    let relative = directory
-        .strip_prefix(root)
-        .map_err(|_| BundleError::UnsupportedEntry {
-            path: directory.to_path_buf(),
-        })?;
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return Err(BundleError::UnsupportedEntry {
-                path: directory.to_path_buf(),
-            });
-        };
-        current.push(name);
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(BundleError::ForbiddenSymlink { path: current });
-            }
-            Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => return Err(BundleError::UnsupportedEntry { path: current }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&current).map_err(|source| BundleError::ReadFile {
-                    path: current.clone(),
-                    source,
-                })?;
-            }
-            Err(source) => {
-                return Err(BundleError::ReadFile {
-                    path: current,
-                    source,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn ensure_staging_ancestors(root: &Path, path: &Path) -> Result<(), BundleError> {
-    let parent = path.parent().ok_or_else(|| BundleError::UnsupportedEntry {
-        path: path.to_path_buf(),
-    })?;
-    ensure_staging_directory(root, parent)
 }
 
 #[cfg(unix)]
@@ -499,6 +479,8 @@ fn verify_digest_and_size(
 ) -> Result<(), BundleError> {
     let path = bundle_path.filesystem_path(root.path());
     let file = open_bundle_file(root, bundle_path)?;
+    #[cfg(unix)]
+    unix::verify_data_file(&file, &path)?;
     verify_open_file(file, &path, expected, expected_size)
 }
 

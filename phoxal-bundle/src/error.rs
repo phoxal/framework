@@ -33,6 +33,10 @@ pub enum DocumentError {
         artifact: ParticipantArtifactId,
         path: BundlePath,
     },
+    #[error("brain artifact id is '{actual}', expected 'brain'")]
+    BrainArtifactId { actual: ParticipantArtifactId },
+    #[error("brain artifact path is '{actual}', expected 'bin/brain'")]
+    BrainArtifactPath { actual: BundlePath },
     #[error("artifact '{artifact}' is not selected by any runtime participant")]
     UnusedArtifact { artifact: ParticipantArtifactId },
     #[error("participant '{participant}' names unknown component instance '{component_instance}'")]
@@ -50,6 +54,12 @@ pub enum DocumentError {
         kind: ParticipantKind,
         component_instance: ComponentInstanceId,
     },
+    #[error("runtime graph has no mandatory 'brain' participant")]
+    MissingBrain,
+    #[error("brain artifact is mounted as participant '{actual}', expected 'brain'")]
+    BrainIdMismatch { actual: ParticipantId },
+    #[error("runtime graph contains more than one brain participant")]
+    DuplicateBrain,
     #[error(
         "participant '{participant}' clock {participant_clock:?} conflicts with robot clock {robot:?}"
     )]
@@ -165,6 +175,22 @@ pub enum BundleError {
         "bundle executable {path} has mode {actual:#05o}, expected canonical mode {expected:#05o}"
     )]
     ExecutableMode {
+        path: PathBuf,
+        expected: u32,
+        actual: u32,
+    },
+    #[error(
+        "bundle data file {path} has mode {actual:#05o}, expected canonical mode {expected:#05o}"
+    )]
+    DataFileMode {
+        path: PathBuf,
+        expected: u32,
+        actual: u32,
+    },
+    #[error(
+        "bundle directory {path} has mode {actual:#05o}, expected canonical mode {expected:#05o}"
+    )]
+    DirectoryMode {
         path: PathBuf,
         expected: u32,
         actual: u32,

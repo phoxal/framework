@@ -3,16 +3,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use phoxal_model::Robot;
 use phoxal_model::component::capability::MotorCommand;
 use phoxal_model::identity::CapabilityRef;
-use phoxal_model::{AssetId, Robot};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ASSETS_DIR, BinaryReference, BundleError, BundlePath, DocumentError, RuntimeParticipant,
-    SelectionError, Sha256Digest,
+    ASSETS_DIR, AssetIndex, BinaryReference, BundleError, BundlePath, DocumentError,
+    RuntimeParticipant, SelectionError,
 };
 
 /// The scheduler policy persisted for one runtime participant instance.
@@ -215,6 +215,17 @@ impl Runtime {
         let mut validators = BTreeMap::new();
         for (id, artifact) in &self.artifacts {
             artifact.validate(id)?;
+            if artifact.contract().kind == phoxal_runtime_contract::metadata::ParticipantKind::Brain
+            {
+                if id.as_str() != "brain" {
+                    return Err(DocumentError::BrainArtifactId { actual: id.clone() });
+                }
+                if artifact.path().as_str() != "bin/brain" {
+                    return Err(DocumentError::BrainArtifactPath {
+                        actual: artifact.path().clone(),
+                    });
+                }
+            }
             if !artifact_paths.insert(artifact.path.clone()) {
                 return Err(DocumentError::DuplicateBinary {
                     path: artifact.path.clone(),
@@ -231,6 +242,7 @@ impl Runtime {
             validators.insert(id, validator);
         }
         let mut referenced_artifacts = BTreeSet::new();
+        let mut brain = None;
         for participant in &self.participants {
             let artifact = self.artifacts.get(&participant.artifact).ok_or_else(|| {
                 DocumentError::UnknownArtifact {
@@ -245,12 +257,26 @@ impl Runtime {
                 }
             })?;
             participant.validate(&self.robot, artifact, validator)?;
+            if artifact.contract().kind == phoxal_runtime_contract::metadata::ParticipantKind::Brain
+            {
+                if participant.id.as_str() != "brain" {
+                    return Err(DocumentError::BrainIdMismatch {
+                        actual: participant.id.clone(),
+                    });
+                }
+                if brain.replace(participant.id.clone()).is_some() {
+                    return Err(DocumentError::DuplicateBrain);
+                }
+            }
             referenced_artifacts.insert(participant.artifact.clone());
             if !ids.insert(participant.id.clone()) {
                 return Err(DocumentError::DuplicateParticipant {
                     id: participant.id.clone(),
                 });
             }
+        }
+        if brain.is_none() {
+            return Err(DocumentError::MissingBrain);
         }
         if let Some(artifact) = self
             .artifacts
@@ -364,106 +390,6 @@ impl RuntimeRouterConfig {
             });
         }
         Ok(())
-    }
-}
-
-/// The integrity index for every participant-readable asset.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssetIndex {
-    pub(crate) entries: Vec<AssetRecord>,
-}
-
-impl AssetIndex {
-    /// Build an index for compiled logical assets. The writer places each
-    /// logical id below `assets/` and records its byte length and digest.
-    pub fn from_bytes(assets: &BTreeMap<AssetId, Vec<u8>>) -> Result<Self, DocumentError> {
-        let entries = assets
-            .iter()
-            .map(|(id, bytes)| {
-                Ok(AssetRecord {
-                    id: id.clone(),
-                    path: BundlePath::new(format!("{ASSETS_DIR}/{}", id.as_str()))?,
-                    size_bytes: bytes.len() as u64,
-                    digest: Sha256Digest::of(bytes),
-                })
-            })
-            .collect::<Result<Vec<_>, DocumentError>>()?;
-        let index = Self { entries };
-        index.validate()?;
-        Ok(index)
-    }
-
-    /// Every indexed participant-readable asset, in deterministic order.
-    #[must_use]
-    pub fn entries(&self) -> &[AssetRecord] {
-        &self.entries
-    }
-
-    fn validate(&self) -> Result<(), DocumentError> {
-        let mut ids = BTreeSet::new();
-        let mut paths = BTreeSet::new();
-        for entry in &self.entries {
-            if !entry.path.starts_with_directory(ASSETS_DIR) {
-                return Err(DocumentError::AssetOutsideAssets {
-                    path: entry.path.clone(),
-                });
-            }
-            let expected = format!("{ASSETS_DIR}/{}", entry.id.as_str());
-            if entry.path.as_str() != expected {
-                return Err(DocumentError::AssetPathMismatch {
-                    id: entry.id.clone(),
-                    path: entry.path.clone(),
-                });
-            }
-            if !ids.insert(entry.id.clone()) {
-                return Err(DocumentError::DuplicateAssetId {
-                    id: entry.id.clone(),
-                });
-            }
-            if !paths.insert(entry.path.clone()) {
-                return Err(DocumentError::DuplicateAssetPath {
-                    path: entry.path.clone(),
-                });
-            }
-        }
-        Ok(())
-    }
-}
-
-/// One indexed asset and its expected bytes.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssetRecord {
-    pub(crate) id: AssetId,
-    pub(crate) path: BundlePath,
-    pub(crate) size_bytes: u64,
-    pub(crate) digest: Sha256Digest,
-}
-
-impl AssetRecord {
-    /// The logical asset identity.
-    #[must_use]
-    pub const fn id(&self) -> &AssetId {
-        &self.id
-    }
-
-    /// The normalized indexed bundle path.
-    #[must_use]
-    pub const fn path(&self) -> &BundlePath {
-        &self.path
-    }
-
-    /// The expected byte length.
-    #[must_use]
-    pub const fn size_bytes(&self) -> u64 {
-        self.size_bytes
-    }
-
-    /// The expected SHA-256 digest.
-    #[must_use]
-    pub const fn digest(&self) -> Sha256Digest {
-        self.digest
     }
 }
 

@@ -30,6 +30,144 @@ pub(super) fn open_root(requested: &Path) -> Result<Arc<OwnedFd>, BundleError> {
     Ok(Arc::new(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+pub(crate) fn open_executable_source(path: &Path) -> Result<std::fs::File, BundleError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| BundleError::UnsupportedEntry {
+            path: path.to_path_buf(),
+        })?;
+    // Resolve compatibility symlinks in the caller's parent (for example
+    // macOS /var -> /private/var) once, then pin every component from the
+    // filesystem root. The leaf itself is never canonicalized or followed.
+    let parent = parent
+        .canonicalize()
+        .map_err(|source| BundleError::ReadFile {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    let root = c"/";
+    let root_fd = unsafe {
+        // SAFETY: the static root path is NUL-free and opened as a directory.
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if root_fd < 0 {
+        return Err(io_error_for_path(Path::new("/")));
+    }
+    let mut directory = unsafe { OwnedFd::from_raw_fd(root_fd) };
+    for component in parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        let component =
+            CString::new(component.as_bytes()).map_err(|_| BundleError::UnsupportedEntry {
+                path: path.to_path_buf(),
+            })?;
+        let child = unsafe {
+            // SAFETY: directory is pinned and component is one NUL-free name;
+            // no-follow traversal prevents an ancestor swap from redirecting
+            // the remaining walk.
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if child < 0 {
+            return Err(io_error_for_path(path));
+        }
+        directory = unsafe { OwnedFd::from_raw_fd(child) };
+    }
+    let leaf = CString::new(leaf.as_bytes()).map_err(|_| BundleError::UnsupportedEntry {
+        path: path.to_path_buf(),
+    })?;
+    let fd = unsafe {
+        // SAFETY: the pinned parent descriptor and NUL-free leaf identify one
+        // exact file; O_NOFOLLOW rejects a substituted leaf symlink.
+        libc::openat(
+            directory.as_raw_fd(),
+            leaf.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io_error_for_path(path));
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let metadata = file.metadata().map_err(|source| BundleError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(BundleError::UnsupportedEntry {
+            path: path.to_path_buf(),
+        });
+    }
+    ensure_source_executable(&metadata, path)?;
+    Ok(file)
+}
+
+pub(crate) fn ensure_staging_directory(
+    root: &BundleRoot,
+    relative: &str,
+) -> Result<(), BundleError> {
+    ensure_relative_directory(root, relative).map(|_| ())
+}
+
+pub(crate) fn create_staging_file(
+    root: &BundleRoot,
+    path: &BundlePath,
+    mode: u32,
+) -> Result<std::fs::File, BundleError> {
+    let mut components = path.as_str().rsplitn(2, '/');
+    let name = components
+        .next()
+        .ok_or_else(|| BundleError::UnsupportedEntry {
+            path: path.filesystem_path(root.path()),
+        })?;
+    let parent = components.next().unwrap_or("");
+    let parent_fd = ensure_relative_directory(root, parent)?;
+    let name = CString::new(name).map_err(|_| BundleError::UnsupportedEntry {
+        path: path.filesystem_path(root.path()),
+    })?;
+    let fd = unsafe {
+        // SAFETY: the parent is an owned descriptor below the private staging
+        // root and name is one normalized component. O_EXCL and O_NOFOLLOW
+        // prevent leaf substitution from redirecting the write.
+        libc::openat(
+            parent_fd.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(io_error_for_path(&path.filesystem_path(root.path())));
+    }
+    if unsafe { libc::fchmod(fd, mode as libc::mode_t) } != 0 {
+        let source = std::io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(BundleError::ReadFile {
+            path: path.filesystem_path(root.path()),
+            source,
+        });
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+pub(crate) fn mark_staging_root_ready(root: &BundleRoot) -> Result<(), BundleError> {
+    if unsafe { libc::fchmod(root.fd.as_raw_fd(), 0o755) } != 0 {
+        return Err(BundleError::ReadFile {
+            path: root.path().to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(())
+}
+
 /// Publish a staged directory without replacing a target created by a racing
 /// writer.
 pub(crate) fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
@@ -113,6 +251,7 @@ pub(super) enum BundleEntryKind {
 }
 
 pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), BundleError> {
+    verify_root_mode(root)?;
     for directory in [ASSETS_DIR, BIN_DIR] {
         let path = root.path().join(directory);
         if open_relative_directory(root, directory, &path)?.is_none() {
@@ -120,6 +259,10 @@ pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), Bundle
         }
     }
     Ok(())
+}
+
+pub(super) fn verify_root_mode(root: &BundleRoot) -> Result<(), BundleError> {
+    verify_directory_mode(root.fd.as_raw_fd(), root.path())
 }
 
 pub(super) fn root_entries(
@@ -241,8 +384,78 @@ fn open_relative_directory(
             });
         }
         parent = unsafe { OwnedFd::from_raw_fd(child) };
+        verify_directory_mode(parent.as_raw_fd(), path)?;
     }
     Ok(Some(parent))
+}
+
+fn verify_directory_mode(fd: libc::c_int, path: &Path) -> Result<(), BundleError> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
+        return Err(BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let actual = unsafe { metadata.assume_init() }.st_mode as u32 & 0o777;
+    if actual != 0o755 {
+        return Err(BundleError::DirectoryMode {
+            path: path.to_path_buf(),
+            expected: 0o755,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn ensure_relative_directory(root: &BundleRoot, relative: &str) -> Result<OwnedFd, BundleError> {
+    let mut parent = duplicate_directory(root.fd.as_raw_fd(), root.path())?;
+    if relative.is_empty() {
+        return Ok(parent);
+    }
+    let mut diagnostic = root.path().to_path_buf();
+    for component in relative.split('/') {
+        diagnostic.push(component);
+        let component = CString::new(component).map_err(|_| BundleError::UnsupportedEntry {
+            path: diagnostic.clone(),
+        })?;
+        let created = unsafe {
+            // SAFETY: parent is an owned directory descriptor and component
+            // is one normalized name below the private staging root.
+            libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o755)
+        };
+        if created != 0 {
+            let source = std::io::Error::last_os_error();
+            if source.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(BundleError::ReadFile {
+                    path: diagnostic,
+                    source,
+                });
+            }
+        }
+        let child = unsafe {
+            // SAFETY: O_NOFOLLOW pins the created/existing child as a real
+            // directory before the next component or leaf is touched.
+            libc::openat(
+                parent.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if child < 0 {
+            return Err(io_error_for_path(&diagnostic));
+        }
+        if unsafe { libc::fchmod(child, 0o755) } != 0 {
+            let source = std::io::Error::last_os_error();
+            unsafe { libc::close(child) };
+            return Err(BundleError::ReadFile {
+                path: diagnostic,
+                source,
+            });
+        }
+        parent = unsafe { OwnedFd::from_raw_fd(child) };
+    }
+    Ok(parent)
 }
 
 fn open_directory_child(
@@ -274,7 +487,9 @@ fn open_directory_child(
             source,
         });
     }
-    Ok(unsafe { OwnedFd::from_raw_fd(child) })
+    let child = unsafe { OwnedFd::from_raw_fd(child) };
+    verify_directory_mode(child.as_raw_fd(), path)?;
+    Ok(child)
 }
 
 fn entry_kind(
@@ -466,6 +681,21 @@ pub(super) fn ensure_source_executable(
 ) -> Result<(), BundleError> {
     use std::os::unix::fs::PermissionsExt;
 
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(BundleError::NotExecutable {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn verify_executable(file: &std::fs::File, path: &Path) -> Result<(), BundleError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = file.metadata().map_err(|source| BundleError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let actual = metadata.permissions().mode() & 0o777;
     if actual != 0o755 {
         return Err(BundleError::ExecutableMode {
@@ -477,27 +707,19 @@ pub(super) fn ensure_source_executable(
     Ok(())
 }
 
-pub(super) fn mark_executable(path: &Path) -> Result<(), BundleError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).map_err(|source| {
-        BundleError::ReadFile {
-            path: path.to_path_buf(),
-            source,
-        }
-    })
-}
-
-pub(super) fn verify_executable(file: &std::fs::File, path: &Path) -> Result<(), BundleError> {
+pub(super) fn verify_data_file(file: &std::fs::File, path: &Path) -> Result<(), BundleError> {
     use std::os::unix::fs::PermissionsExt;
 
     let metadata = file.metadata().map_err(|source| BundleError::ReadFile {
         path: path.to_path_buf(),
         source,
     })?;
-    if metadata.permissions().mode() & 0o111 == 0 {
-        return Err(BundleError::NotExecutable {
+    let actual = metadata.permissions().mode() & 0o777;
+    if actual != 0o644 {
+        return Err(BundleError::DataFileMode {
             path: path.to_path_buf(),
+            expected: 0o644,
+            actual,
         });
     }
     Ok(())

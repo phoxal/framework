@@ -1,14 +1,15 @@
 //! Final bundle staging and atomic publication.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use phoxal_model::AssetId;
 
 use crate::{
-    ASSETS_DIR, AssetIndex, BinaryReference, BundleError, BundlePath, DocumentError, RuntimeBundle,
-    RuntimeDocument, copy_executable_source, create_staging_root, ensure_staging_directory,
-    prepare_publish_parent, publish_staging_root, reject_existing_target, write_new_file,
+    ASSETS_DIR, AssetIndex, BinaryReference, BinarySource, BundleError, BundlePath, BundleRoot,
+    DocumentError, RuntimeBundle, RuntimeDocument, copy_executable_source, create_staging_root,
+    ensure_staging_directory, mark_staging_root_ready, prepare_publish_parent,
+    publish_staging_root, reject_existing_target, write_new_file,
 };
 
 /// A build-tool-facing writer for the explicit final assembly boundary.
@@ -20,7 +21,7 @@ impl BundleWriter {
         root: impl AsRef<Path>,
         document: &RuntimeDocument,
         assets: &BTreeMap<AssetId, Vec<u8>>,
-        binaries: &BTreeMap<BundlePath, PathBuf>,
+        binaries: &BTreeMap<BundlePath, BinarySource>,
     ) -> Result<RuntimeBundle, BundleError> {
         write_inner(root, document, assets, binaries, publish_staging_root)
     }
@@ -30,7 +31,7 @@ impl BundleWriter {
         root: impl AsRef<Path>,
         document: &RuntimeDocument,
         assets: &BTreeMap<AssetId, Vec<u8>>,
-        binaries: &BTreeMap<BundlePath, PathBuf>,
+        binaries: &BTreeMap<BundlePath, BinarySource>,
         publish: F,
     ) -> Result<RuntimeBundle, BundleError>
     where
@@ -44,7 +45,7 @@ pub(crate) fn write_inner<F>(
     root: impl AsRef<Path>,
     document: &RuntimeDocument,
     assets: &BTreeMap<AssetId, Vec<u8>>,
-    binaries: &BTreeMap<BundlePath, PathBuf>,
+    binaries: &BTreeMap<BundlePath, BinarySource>,
     publish: F,
 ) -> Result<RuntimeBundle, BundleError>
 where
@@ -67,14 +68,13 @@ where
     }
     let publish_target = prepare_publish_parent(root.as_ref())?;
     reject_existing_target(&publish_target)?;
-    let root = create_staging_root(&publish_target)?;
+    let staging_path = create_staging_root(&publish_target)?;
+    let root = BundleRoot::open(&staging_path)?;
     let staged = (|| {
-        ensure_staging_directory(&root, &root.join(ASSETS_DIR))?;
-        ensure_staging_directory(&root, &root.join(crate::BIN_DIR))?;
+        ensure_staging_directory(&root, ASSETS_DIR)?;
+        ensure_staging_directory(&root, crate::BIN_DIR)?;
         for (id, bytes) in assets {
-            let path = root
-                .join(ASSETS_DIR)
-                .join(id.as_str().split('/').collect::<PathBuf>());
+            let path = BundlePath::new(format!("{ASSETS_DIR}/{}", id.as_str()))?;
             write_new_file(&root, &path, bytes)?;
         }
         for (path, source) in binaries {
@@ -83,26 +83,31 @@ where
                 .values()
                 .find(|artifact| artifact.path() == path)
                 .ok_or_else(|| BundleError::MissingFile {
-                    path: path.filesystem_path(&root),
+                    path: path.filesystem_path(root.path()),
                 })?;
             copy_executable_source(
                 &root,
                 source,
-                &path.filesystem_path(&root),
+                path,
                 artifact.digest(),
                 artifact.size_bytes(),
             )?;
         }
         let json = serde_json::to_vec_pretty(document)?;
-        write_new_file(&root, &root.join(crate::RUNTIME_FILE), &json)
+        write_new_file(&root, &BundlePath::new(crate::RUNTIME_FILE)?, &json)?;
+        mark_staging_root_ready(&root)?;
+        RuntimeBundle::open_verified(root.path())
     })();
-    if let Err(error) = staged {
-        let _ = std::fs::remove_dir_all(&root);
+    let verified = match staged {
+        Ok(verified) => verified,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging_path);
+            return Err(error);
+        }
+    };
+    if let Err(error) = publish(root.path(), &publish_target) {
+        let _ = std::fs::remove_dir_all(&staging_path);
         return Err(error);
     }
-    if let Err(error) = publish(&root, &publish_target) {
-        let _ = std::fs::remove_dir_all(&root);
-        return Err(error);
-    }
-    RuntimeBundle::open_verified(&publish_target)
+    Ok(verified.relocated(publish_target))
 }

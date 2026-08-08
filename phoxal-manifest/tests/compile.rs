@@ -90,6 +90,22 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
 }
 
 #[test]
+fn router_configuration_is_preserved_as_a_compiled_asset_fact() {
+    let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
+    let compiled = sources(&root).compile().expect("fixture must compile");
+    let router = compiled.router().expect("fixture router fact");
+    assert_eq!(router.asset.as_str(), "robot/router.json5");
+    assert_eq!(
+        compiled
+            .assets()
+            .iter()
+            .find(|(id, _)| *id == &router.asset)
+            .map(|(_, bytes)| bytes),
+        Some(b"{}\n".as_slice())
+    );
+}
+
+#[test]
 fn missing_canonical_mesh_is_rejected_at_compile_time() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
@@ -192,6 +208,7 @@ fn staged_project(temp: &Path, extra_top_level: &str) {
         temp.join("structure.urdf"),
     )
     .unwrap();
+    std::fs::copy(source_root.join("router.json5"), temp.join("router.json5")).unwrap();
 }
 
 #[test]
@@ -222,7 +239,7 @@ fn an_authored_behaviors_directory_is_never_read() {
         compiled
             .services()
             .iter()
-            .all(|service| service.id != "behavior"),
+            .all(|service| service.id.as_str() != "behavior"),
         "no behavior service may be declared"
     );
 }
@@ -239,7 +256,7 @@ fn declared_services_are_emitted_as_source_facts() {
         .compile()
         .expect("a declared source service must compile");
     assert_eq!(compiled.services().len(), 1);
-    assert_eq!(compiled.services()[0].id, "localize");
+    assert_eq!(compiled.services()[0].id.as_str(), "localize");
     assert_eq!(
         compiled.services()[0].config,
         Some(serde_json::json!({"rate_hz": 10}))
@@ -261,6 +278,22 @@ fn a_service_claiming_the_reserved_brain_identity_fails_compilation() {
     assert!(matches!(error, CompileError::Document { .. }), "{error}");
     let message = error.to_string();
     assert!(message.contains("services.brain is reserved"), "{message}");
+}
+
+#[test]
+fn a_service_identity_must_be_a_runtime_artifact_token() {
+    let temp = tempfile::tempdir().unwrap();
+    staged_project(temp.path(), "");
+    let mut sources = sources(temp.path());
+    staged_project(temp.path(), "\nservices:\n  Bad Service: {}\n");
+    sources.project_root = temp.path().to_path_buf();
+    sources.robot_manifest = temp.path().join("robot.yaml");
+
+    let error = sources.compile().unwrap_err();
+    assert!(matches!(error, CompileError::Document { .. }), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("services.Bad Service"), "{message}");
+    assert!(message.contains("lowercase ASCII"), "{message}");
 }
 
 #[test]

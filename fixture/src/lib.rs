@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use phoxal_bundle::{
-    AssetIndex, BinaryReference, BundlePath, BundleWriter, ParticipantClock, Runtime,
-    RuntimeBundle, RuntimeDocument, RuntimeParticipant,
+    AssetIndex, BinaryReference, BinarySource, BundlePath, BundleWriter, ParticipantClock, Runtime,
+    RuntimeBundle, RuntimeDocument, RuntimeParticipant, RuntimeRouterConfig,
 };
 use phoxal_manifest::{SourceSet, source};
 use phoxal_model::identity::ComponentInstanceId;
@@ -69,7 +69,7 @@ pub fn staged_bundle() -> StagedBundle {
             .collect(),
     };
     let compiled = sources.compile().expect("the fixture sources compile");
-    let (robot, services, drivers, assets) = compiled.into_parts();
+    let (robot, services, drivers, router, assets) = compiled.into_parts();
     let assets = assets.into_map();
     let asset_index = AssetIndex::from_bytes(&assets).expect("fixture asset index");
 
@@ -110,7 +110,8 @@ pub fn staged_bundle() -> StagedBundle {
                 } else {
                     serde_json::json!({"type": "null"})
                 };
-                let binary = BinaryReference::from_file(
+                let source = BinarySource::open(&source).expect("fixture executable source opens");
+                let binary = BinaryReference::from_source(
                     binary_path.clone(),
                     ParticipantContract {
                         id: artifact_id.clone(),
@@ -138,10 +139,17 @@ pub fn staged_bundle() -> StagedBundle {
                 clock,
             ));
         };
+    stage_participant(
+        "brain".to_string(),
+        "brain".to_string(),
+        ParticipantKind::Brain,
+        None,
+        None,
+    );
     for service in services {
         stage_participant(
-            service.id.clone(),
-            service.id,
+            service.id.as_str().to_string(),
+            service.id.as_str().to_string(),
             ParticipantKind::Service,
             service.config,
             None,
@@ -173,7 +181,13 @@ pub fn staged_bundle() -> StagedBundle {
             None,
         );
     }
-    let runtime = Runtime::new(robot, artifacts, participants, asset_index, None)
+    let router = router.map(|router| {
+        RuntimeRouterConfig::new(
+            BundlePath::new(format!("assets/{}", router.asset.as_str()))
+                .expect("compiled router asset path"),
+        )
+    });
+    let runtime = Runtime::new(robot, artifacts, participants, asset_index, router)
         .expect("fixture runtime is valid");
     let document = RuntimeDocument::new(runtime);
     let root = bundle.path().join("bundle");
@@ -235,7 +249,7 @@ mod tests {
                 .count(),
             4
         );
-        assert_eq!(loaded.artifacts().len(), 2);
+        assert_eq!(loaded.artifacts().len(), 3);
         assert_eq!(
             loaded
                 .participants()
@@ -251,6 +265,17 @@ mod tests {
                 })
                 .count(),
             1
+        );
+        let router = loaded
+            .document()
+            .runtime()
+            .router()
+            .expect("compiled router config is retained");
+        assert_eq!(router.path().as_str(), "assets/robot/router.json5");
+        let router_id = phoxal_model::AssetId::new("robot/router.json5").expect("router asset id");
+        assert_eq!(
+            loaded.assets().read(&router_id).expect("router bytes"),
+            b"{}\n"
         );
     }
 }

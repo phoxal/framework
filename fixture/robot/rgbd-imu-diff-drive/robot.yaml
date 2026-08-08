@@ -1,4 +1,6 @@
 schema: phoxal/robot/v0
+router:
+  config: router.json5
 robot:
   id: rgbd-imu-diff-drive
   structure: structure.urdf

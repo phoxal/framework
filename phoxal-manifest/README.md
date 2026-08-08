@@ -2,8 +2,9 @@
 
 Compiler for authored Phoxal project manifests. It parses project source files,
 validates and resolves them, and produces a canonical `phoxal-model` robot plus
-source-owned service/driver facts and deterministic assets for build tooling
-such as `phoxal-cli`.
+source-owned service/driver facts, an optional indexed router-config fact, and
+deterministic assets for build tooling such as `phoxal-cli`. It never invents
+the final simulator or process graph.
 
 The persisted runtime artifact is owned by the sibling `phoxal-bundle` crate.
 This compiler emits source-owned canonical values and deterministic asset

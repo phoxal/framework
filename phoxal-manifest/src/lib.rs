@@ -152,6 +152,15 @@ pub enum CompileError {
         #[source]
         source: ParticipantArtifactIdError,
     },
+
+    /// A source service id cannot identify the reusable implementation that
+    /// build tooling must resolve.
+    #[error("service '{service}' is not a valid implementation identity: {source}")]
+    InvalidServiceImplementation {
+        service: String,
+        #[source]
+        source: ParticipantArtifactIdError,
+    },
 }
 
 /// Why a runtime asset tree is not compilable.
@@ -194,6 +203,7 @@ pub struct CompiledProject {
     robot: phoxal_model::Robot,
     services: Vec<CompiledService>,
     drivers: Vec<CompiledDriver>,
+    router: Option<CompiledRouter>,
     assets: CompiledAssets,
 }
 
@@ -204,7 +214,7 @@ pub struct CompiledProject {
 /// before it creates a persisted runtime participant.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledService {
-    pub id: String,
+    pub id: ParticipantArtifactId,
     pub config: Option<serde_json::Value>,
 }
 
@@ -222,6 +232,15 @@ pub struct CompiledDriver {
     pub implementation: ParticipantArtifactId,
     pub component_instance: ComponentInstanceId,
     pub config: DriverConfig,
+}
+
+/// The indexed router configuration preserved for final runtime assembly.
+///
+/// The authored pathname is deliberately gone: build tooling consumes this
+/// logical asset identity and never has to reopen the source tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledRouter {
+    pub asset: AssetId,
 }
 
 /// Deterministic compiled runtime assets.
@@ -254,12 +273,13 @@ impl SourceSet {
             component_roots: self.component_roots,
         };
         let (robot, services, drivers) = resolved.compile_model(&manifest)?;
-        let assets = resolved.compile_assets(&project_root, &manifest, &robot)?;
+        let (assets, router) = resolved.compile_assets(&project_root, &manifest, &robot)?;
 
         Ok(CompiledProject {
             robot,
             services,
             drivers,
+            router,
             assets,
         })
     }
@@ -519,11 +539,18 @@ impl ResolvedSources {
         let services = manifest
             .services
             .iter()
-            .map(|(id, service)| CompiledService {
-                id: id.clone(),
-                config: service.config.clone(),
+            .map(|(id, service)| {
+                ParticipantArtifactId::new(id.clone())
+                    .map(|id| CompiledService {
+                        id,
+                        config: service.config.clone(),
+                    })
+                    .map_err(|source| CompileError::InvalidServiceImplementation {
+                        service: id.clone(),
+                        source,
+                    })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let drivers = manifest
             .robot
             .components
@@ -556,7 +583,7 @@ impl ResolvedSources {
         project_root: &Path,
         manifest: &source::robot::v0::Manifest,
         robot: &phoxal_model::Robot,
-    ) -> Result<CompiledAssets, CompileError> {
+    ) -> Result<(CompiledAssets, Option<CompiledRouter>), CompileError> {
         let mut assets = CompiledAssets::default();
         let mut collect = |root: &Path, staged: &str| -> Result<(), CompileError> {
             collect_files(&root.join("meshes"), staged, &mut assets).map_err(|source| {
@@ -579,7 +606,31 @@ impl ResolvedSources {
                 });
             }
         }
-        Ok(assets)
+        let router = if let Some(relative) = &manifest.router.config {
+            let source = self.robot_relative(relative)?;
+            let bytes = std::fs::read(&source).map_err(|source_error| CompileError::Assets {
+                root: project_root.to_path_buf(),
+                source: AssetError::Read {
+                    path: source.clone(),
+                    source: source_error,
+                },
+            })?;
+            let asset =
+                AssetId::new("robot/router.json5").map_err(|source| CompileError::Assets {
+                    root: project_root.to_path_buf(),
+                    source: AssetError::Id { source },
+                })?;
+            assets
+                .insert(asset.clone(), bytes)
+                .map_err(|source| CompileError::Assets {
+                    root: project_root.to_path_buf(),
+                    source,
+                })?;
+            Some(CompiledRouter { asset })
+        } else {
+            None
+        };
+        Ok((assets, router))
     }
 }
 
@@ -600,6 +651,11 @@ impl CompiledProject {
     }
 
     #[must_use]
+    pub const fn router(&self) -> Option<&CompiledRouter> {
+        self.router.as_ref()
+    }
+
+    #[must_use]
     pub const fn assets(&self) -> &CompiledAssets {
         &self.assets
     }
@@ -611,9 +667,16 @@ impl CompiledProject {
         phoxal_model::Robot,
         Vec<CompiledService>,
         Vec<CompiledDriver>,
+        Option<CompiledRouter>,
         CompiledAssets,
     ) {
-        (self.robot, self.services, self.drivers, self.assets)
+        (
+            self.robot,
+            self.services,
+            self.drivers,
+            self.router,
+            self.assets,
+        )
     }
 }
 

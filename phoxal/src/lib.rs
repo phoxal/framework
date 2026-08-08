@@ -131,9 +131,10 @@
 //!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
 //!   the four non-interchangeable time types, body-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
-//! - [`model`] - immutable canonical runtime robot facts, loaded from the
-//!   finalized `runtime.json` by [`bundle`]; authored document readers live in
-//!   `phoxal-manifest`, which is a build/source dependency only.
+//! - [`model`] - immutable canonical runtime robot facts supplied from the
+//!   finalized `runtime.json`; bundle assembly and host-side reading live in
+//!   `phoxal-bundle`, while authored document readers live in
+//!   `phoxal-manifest` as a build/source dependency only.
 //! - [`geometry`] and [`SampleSchedule`] - the small shared arithmetic every
 //!   official participant would otherwise reimplement.
 //! - The **official service set** ships alongside this crate in the workspace

@@ -428,6 +428,14 @@ impl Manifest {
         if self.robot.id.trim().is_empty() {
             errors.push(ValidationError::EmptyRobotId);
         }
+        for id in self.services.keys() {
+            if !phoxal_model::identity::is_valid_token(id) {
+                errors.push(ValidationError::InvalidToken {
+                    field: format!("services.{id}"),
+                    value: id.clone(),
+                });
+            }
+        }
     }
 
     fn validate_reserved_identities(&self, errors: &mut Vec<ValidationError>) {

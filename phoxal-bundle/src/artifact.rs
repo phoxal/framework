@@ -1,12 +1,67 @@
 //! Indexed executable artifact records.
 
-use std::path::Path;
+use std::fmt;
+use std::io::{Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 use phoxal_runtime_contract::identity::ParticipantArtifactId;
 use phoxal_runtime_contract::metadata::ParticipantContract;
 use serde::{Deserialize, Serialize};
 
-use crate::{BIN_DIR, BundleError, BundlePath, DocumentError, Sha256Digest};
+use crate::{
+    BIN_DIR, BundleError, BundlePath, DocumentError, Sha256Digest, open_executable_source,
+};
+
+/// One opened executable source pinned to the exact file descriptor the
+/// writer will hash and copy.
+///
+/// Opening is no-follow on supported platforms. Keeping the descriptor owned
+/// closes the check/open race that a path-only writer would otherwise have.
+pub struct BinarySource {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl fmt::Debug for BinarySource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BinarySource")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BinarySource {
+    /// Open one executable source through a descriptor-pinned parent walk,
+    /// without following a substituted leaf.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, BundleError> {
+        let path = path.as_ref().to_path_buf();
+        let file = open_executable_source(&path)?;
+        Ok(Self { file, path })
+    }
+
+    /// The source pathname retained only for diagnostics.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn reader(&self) -> Result<std::fs::File, BundleError> {
+        let mut file = self
+            .file
+            .try_clone()
+            .map_err(|source| BundleError::ReadFile {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| BundleError::ReadFile {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(file)
+    }
+}
 
 /// A staged reusable executable and its canonical artifact contract.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -20,20 +75,16 @@ pub struct BinaryReference {
 
 impl BinaryReference {
     /// Construct a reference for an already-built executable source.
-    pub fn from_file(
+    pub fn from_source(
         path: BundlePath,
         contract: ParticipantContract,
-        source: impl AsRef<Path>,
+        source: &BinarySource,
     ) -> Result<Self, BundleError> {
-        let source = source.as_ref();
-        let file = std::fs::File::open(source).map_err(|source_error| BundleError::ReadFile {
-            path: source.to_path_buf(),
-            source: source_error,
-        })?;
+        let file = source.reader()?;
         let size_bytes = file
             .metadata()
             .map_err(|source_error| BundleError::ReadFile {
-                path: source.to_path_buf(),
+                path: source.path.clone(),
                 source: source_error,
             })?
             .len();
@@ -41,7 +92,7 @@ impl BinaryReference {
             path,
             digest: Sha256Digest::from_reader(file).map_err(|source_error| {
                 BundleError::ReadFile {
-                    path: source.to_path_buf(),
+                    path: source.path.clone(),
                     source: source_error,
                 }
             })?,
