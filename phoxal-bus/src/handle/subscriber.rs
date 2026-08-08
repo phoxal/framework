@@ -802,9 +802,10 @@ mod tests {
     use crate::abi::CodecId;
     use crate::contract::{ApiVersion, ContractBody, DeliveryFamily, StateContract, TopicRole};
     use crate::handle::publisher::{CommandPublisher, StatePublisher};
+    use crate::metadata::{ParticipantSourceIdentity, SourceAttribution};
     use crate::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
-    use crate::session::{BusConfig, BusOwner};
-    use crate::test_support::{Manual, Target, producer, step, timeline};
+    use crate::session::BusOwner;
+    use crate::test_support::{Manual, Target, participant_config, producer, step, timeline};
     use crate::time::RobotInstant;
     use crate::topic::{Publish, Subscribe};
 
@@ -836,15 +837,14 @@ mod tests {
             body,
             metadata: BusMetadata {
                 codec: CodecId::MessagePack.as_u8(),
-                producer: producer(1),
                 sequence: u64::from(body),
                 produced_at: line
                     .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
-                participant: Some(
+                source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
                     phoxal_runtime_contract::identity::ParticipantId::new("test")
                         .expect("test participant"),
-                ),
-                source_label: None,
+                    producer(1),
+                )),
             },
             observed_at: LocalInstant::try_now().expect("test host clock"),
         }
@@ -914,12 +914,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn retained_state_does_not_require_a_cloneable_body() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("nonclone")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("nonclone"))
+            .await
+            .unwrap();
         let topic = Topic::<Subscribe<NonCloneBody>>::new_static(NonCloneBody::TOPIC);
         let latest = Latest::<NonCloneBody>::new(&bus, &topic)
             .await
@@ -1013,12 +1010,7 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_publisher_to_latest_round_trip() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("rt")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("rt")).await.unwrap();
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
 
@@ -1052,7 +1044,7 @@ mod tests {
             Some(RobotInstant::new(timeline(1), 100)),
             "Latest must retain full provenance, not just the body"
         );
-        assert_eq!(observed.metadata.producer, bus.producer());
+        assert_eq!(observed.metadata.source.producer(), bus.producer());
         assert!(
             observed.observed_at.boot_ns() > 0,
             "every subscription stamps its own observation instant"
@@ -1064,12 +1056,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timeline_barrier_preserves_new_timeline_samples_and_rejects_late_old_samples() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("timeline-barrier")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("timeline-barrier"))
+            .await
+            .unwrap();
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
@@ -1193,12 +1182,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_command_carries_no_production_instant_and_survives_a_reset() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("commands")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("commands"))
+            .await
+            .unwrap();
         let pub_topic = Topic::<Publish<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
         let commands = CommandPublisher::<Manual>::new(bus.clone(), &pub_topic).unwrap();

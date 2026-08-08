@@ -169,18 +169,13 @@ mod tests {
     use serial_test::serial;
 
     use crate::query::QueryCode;
-    use crate::session::{BusConfig, BusOwner};
-    use crate::test_support::{GetRequest, GetResponse};
+    use crate::session::BusOwner;
+    use crate::test_support::{GetRequest, GetResponse, participant_config};
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_query_round_trip_ok_then_error() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("q")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("q")).await.unwrap();
         let server = bus.declare_server("yTEST/asset/get").await.unwrap();
         let server_bus = bus.clone();
 
@@ -242,12 +237,7 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_query_timeout_maps_to_deadline_exceeded() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("timeout")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("timeout")).await.unwrap();
         let server = bus.declare_server("yTEST/asset/get").await.unwrap();
 
         let server_task = tokio::spawn(async move {
@@ -280,12 +270,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn close_tracks_a_query_reply_wait_until_the_query_finishes() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("query-close-race")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("query-close-race"))
+            .await
+            .unwrap();
         let server = bus.declare_server("yTEST/asset/get").await.unwrap();
         let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
         let server_task = tokio::spawn(async move {

@@ -173,7 +173,7 @@ impl<R: Participant> QuerySurface<R> {
                 ))),
             );
         }
-        let query_context = QueryContext::new(metadata.producer);
+        let query_context = QueryContext::new(metadata.source.producer());
         let body = match incoming.request_bytes() {
             Ok(bytes) => bytes,
             Err(error) => {

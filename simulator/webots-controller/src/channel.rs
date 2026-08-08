@@ -228,8 +228,7 @@ impl<A: SimulatedActuator> ActuatorChannel<A> {
                 let body = observed.body;
                 let accepted = matches!(
                     authority.offer(
-                        observed.metadata.participant.as_ref(),
-                        observed.metadata.producer,
+                        observed.metadata.source.participant_source(),
                         observed.metadata.sequence,
                         observed.observed_at,
                         body.clone(),

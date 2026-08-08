@@ -18,7 +18,9 @@ use std::path::Path;
 use phoxal_runtime_contract::identity::ExecutionId;
 
 use crate::error::{BusError, Result};
-use crate::session::{apply_phoxal_transport_policy, client_config, zenoh_id_for};
+use crate::session::{
+    apply_phoxal_transport_policy, client_config, execution_from_zid, zenoh_id_for,
+};
 
 /// A running Zenoh router session.
 ///
@@ -61,6 +63,20 @@ impl Router {
         let session = zenoh::open(router_config(execution, listen_endpoints, config_file)?)
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
+        let observed = match execution_from_zid(session.zid()) {
+            Ok(observed) => observed,
+            Err(error) => {
+                let _ = session.close().await;
+                return Err(error);
+            }
+        };
+        if observed != execution {
+            let _ = session.close().await;
+            return Err(BusError::ExecutionIdentityMismatch {
+                expected: execution,
+                observed,
+            });
+        }
         Ok(Router { session })
     }
 
@@ -374,7 +390,7 @@ mod tests {
             .await
             .expect("the embedded router binds its endpoint");
 
-        let client = |participant: &str| {
+        let client = |execution: ExecutionId, participant: &str| {
             BusConfig::for_participant(
                 execution,
                 phoxal_runtime_contract::identity::ParticipantId::new(participant)
@@ -383,10 +399,10 @@ mod tests {
             )
         };
 
-        let (publishing_owner, publishing) = BusOwner::open(client("publisher"))
+        let (publishing_owner, publishing) = BusOwner::open(client(execution, "publisher"))
             .await
             .expect("publisher dials the embedded router");
-        let (subscribing_owner, subscribing) = BusOwner::open(client("subscriber"))
+        let (subscribing_owner, subscribing) = BusOwner::open(client(execution, "subscriber"))
             .await
             .expect("subscriber dials the embedded router");
         assert_ne!(
@@ -429,13 +445,65 @@ mod tests {
         let observed = observed.expect("the router must relay the sample to the other session");
         assert_eq!(observed.body.linear_x_mps, 0.4);
         assert_eq!(
-            observed.metadata.producer,
+            observed.metadata.source.producer(),
             publishing.producer(),
             "provenance must survive the hop through the router"
         );
 
+        // A second execution shares the exact same physical router/fabric but
+        // has a different execution-rooted key. It gets its own publisher and
+        // subscriber so the test proves both isolation and same-root delivery.
+        let other_execution = ExecutionId::mint();
+        let (other_publishing_owner, other_publishing) =
+            BusOwner::open(client(other_execution, "other-publisher"))
+                .await
+                .expect("the second execution publisher dials the same router");
+        let (other_subscribing_owner, other_subscribing) =
+            BusOwner::open(client(other_execution, "other-subscriber"))
+                .await
+                .expect("the second execution subscriber dials the same router");
+        let other_publisher =
+            StatePublisher::<Target>::new(other_publishing.clone(), &pub_topic).unwrap();
+        let other_latest = Latest::<Target>::new(&other_subscribing, &sub_topic)
+            .await
+            .unwrap();
+
+        assert!(other_latest.latest().is_none());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            other_latest.latest().is_none(),
+            "a sample under one execution root must not reach another root on the same fabric"
+        );
+
+        let mut other_observed = None;
+        for tick in 0..100 {
+            other_publisher
+                .publish(
+                    &step(1, 200 + tick),
+                    Target {
+                        linear_x_mps: 0.8,
+                        angular_z_radps: 0.3,
+                    },
+                )
+                .unwrap();
+            if let Some(sample) = other_latest.observed() {
+                other_observed = Some(sample);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let other_observed =
+            other_observed.expect("the second execution must exchange within its own root");
+        assert_eq!(other_observed.body.linear_x_mps, 0.8);
+        assert_eq!(
+            other_observed.metadata.source.producer(),
+            other_publishing.producer()
+        );
+
         publishing_owner.close().await.unwrap();
         subscribing_owner.close().await.unwrap();
+        other_publishing_owner.close().await.unwrap();
+        other_subscribing_owner.close().await.unwrap();
         router.close().await.unwrap();
     }
 

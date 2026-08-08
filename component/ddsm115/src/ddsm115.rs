@@ -34,8 +34,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn setup_fails_before_modeling_or_publishing_without_hardware() {
-        let (owner, bus) = phoxal_bus::BusOwner::open(phoxal_bus::BusConfig::in_process(
+        let (owner, bus) = phoxal_bus::BusOwner::open(phoxal_bus::BusConfig::for_participant(
+            phoxal_bus::ExecutionId::mint(),
             phoxal_bus::ParticipantId::new("ddsm115-test").expect("valid participant id"),
+            Vec::new(),
         ))
         .await
         .expect("the in-process test bus opens");

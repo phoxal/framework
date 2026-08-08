@@ -232,8 +232,8 @@ mod tests {
     use super::*;
     use crate::contract::{ApiVersion, DeliveryFamily, StreamContract, TopicRole};
     use crate::error::BusError;
-    use crate::session::{BusConfig, BusOwner, OUTBOUND_MAX_BYTES};
-    use crate::test_support::{Target, step};
+    use crate::session::{BusOwner, OUTBOUND_MAX_BYTES};
+    use crate::test_support::{Target, participant_config, step};
     use crate::topic::Topic;
     use serial_test::serial;
 
@@ -264,12 +264,7 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn publishing_on_a_closed_bus_reports_the_loss() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("closed")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("closed")).await.unwrap();
         let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
         owner.close().await.unwrap();
@@ -289,12 +284,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn stream_saturation_is_reported_as_would_block() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("stream-would-block")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("stream-would-block"))
+            .await
+            .unwrap();
         let topic = Topic::<Publish<StreamChunk>>::new_static(StreamChunk::TOPIC);
         let publisher = StreamPublisher::<StreamChunk>::new(bus.clone(), &topic).unwrap();
         let error = publisher

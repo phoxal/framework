@@ -12,7 +12,7 @@
 //! The golden tests that bind the bus to the real generated tree live in the
 //! `phoxal` crate.
 
-use phoxal_runtime_contract::identity::{ProducerId, TimelineId};
+use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 use serde::{Deserialize, Serialize};
 use zenoh::key_expr::KeyExpr;
 use zenoh::sample::{Sample, SampleBuilder};
@@ -22,7 +22,8 @@ use crate::contract::{
     ApiVersion, CommandContract, ContractBody, DeliveryFamily, StateContract, TopicRole,
 };
 use crate::handle::stamp::StepToken;
-use crate::metadata::BusMetadata;
+use crate::metadata::{BusMetadata, ParticipantSourceIdentity, SourceAttribution};
+use crate::session::BusConfig;
 use crate::time::{RobotInstant, TimeWindow};
 
 /// The stand-in api tree. The bus client is generic over [`ApiVersion`] and
@@ -117,6 +118,15 @@ pub(crate) fn producer(value: u128) -> ProducerId {
     ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
 }
 
+/// A participant config for an in-process unit-test fabric.
+pub(crate) fn participant_config(participant: impl Into<String>) -> BusConfig {
+    BusConfig::for_participant(
+        ExecutionId::mint(),
+        ParticipantId::new(participant).expect("valid test participant"),
+        Vec::new(),
+    )
+}
+
 /// A step token on a named timeline.
 pub(crate) fn step(line: u64, ticks: u64) -> StepToken {
     StepToken::mint(RobotInstant::new(timeline(line), ticks))
@@ -126,14 +136,13 @@ pub(crate) fn step(line: u64, ticks: u64) -> StepToken {
 pub(crate) fn metadata() -> BusMetadata {
     BusMetadata {
         codec: CodecId::MessagePack.as_u8(),
-        producer: producer(1),
         sequence: 7,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline(1), 42))),
-        participant: Some(
+        source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
             phoxal_runtime_contract::identity::ParticipantId::new("tester")
                 .expect("test participant"),
-        ),
-        source_label: None,
+            producer(1),
+        )),
     }
 }
 

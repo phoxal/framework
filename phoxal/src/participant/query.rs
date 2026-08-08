@@ -197,8 +197,10 @@ mod tests {
         let participant = QueryParticipant;
         let api = Api;
         let mut state = QueryState::default();
-        let first_producer = phoxal_bus::ProducerId::mint();
-        let second_producer = phoxal_bus::ProducerId::mint();
+        let first_producer =
+            phoxal_bus::ProducerId::try_from((1_u128 << 124) | 1).expect("canonical test producer");
+        let second_producer =
+            phoxal_bus::ProducerId::try_from((1_u128 << 124) | 2).expect("canonical test producer");
 
         let first = MessagePack::encode(&api::supervisor::asset::GetRequest {
             path: "ok".to_string(),

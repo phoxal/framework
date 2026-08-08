@@ -316,8 +316,8 @@ mod tests {
     use crate::contract::ContractBody;
     use crate::handle::publisher::StatePublisher;
     use crate::handle::subscriber::{Latest, Subscriber};
-    use crate::session::{BusConfig, BusOwner};
-    use crate::test_support::{Target, metadata, step};
+    use crate::session::BusOwner;
+    use crate::test_support::{Target, metadata, participant_config, step};
     use crate::topic::{Publish, Subscribe, Topic};
 
     /// Every variant here has to reach the wire.
@@ -431,12 +431,7 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_rows() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("metrics")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("metrics")).await.unwrap();
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();

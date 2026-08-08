@@ -170,8 +170,8 @@ mod tests {
     use serial_test::serial;
     use zenoh::bytes::Encoding;
 
-    use crate::session::{BusConfig, BusOwner};
-    use crate::test_support::{GetRequest, metadata};
+    use crate::session::BusOwner;
+    use crate::test_support::{GetRequest, metadata, participant_config};
 
     /// A request whose encoding string and attachment disagree about the codec
     /// does not agree with itself about how to read its own body, so the server
@@ -179,12 +179,9 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn incoming_query_rejects_encoding_attachment_codec_mismatch() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
-            phoxal_runtime_contract::identity::ParticipantId::new("q-mismatch")
-                .expect("valid participant id"),
-        ))
-        .await
-        .unwrap();
+        let (owner, bus) = BusOwner::open(participant_config("q-mismatch"))
+            .await
+            .unwrap();
         let server = bus.declare_server("yTEST/asset/get").await.unwrap();
 
         let request = GetRequest {

@@ -141,8 +141,10 @@ mod tests {
     // assertion.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_step_publishes_its_outputs_before_its_clock() {
-        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+        let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+            phoxal_bus::ExecutionId::mint(),
             phoxal_bus::ParticipantId::new("webots-controller").expect("valid participant id"),
+            Vec::new(),
         ))
         .await
         .expect("bus should open");

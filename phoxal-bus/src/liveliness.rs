@@ -14,6 +14,7 @@ use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleKind;
 
 use crate::error::{BusError, KeyProblem, Result};
+use crate::metadata::ParticipantSourceIdentity;
 use crate::session::{BusHandle, BusOwner};
 
 const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
@@ -22,8 +23,7 @@ const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ParticipantReadyKey {
     key: OwnedKeyExpr,
-    participant: ParticipantId,
-    producer: ProducerId,
+    source: ParticipantSourceIdentity,
 }
 
 impl ParticipantReadyKey {
@@ -42,14 +42,14 @@ impl ParticipantReadyKey {
         validate_participant(&participant)?;
         let participant = ParticipantId::new(participant.clone())
             .map_err(|_| BusError::invalid_key(participant, KeyProblem::NotOneSegment))?;
-        let raw = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{producer}");
+        let source = ParticipantSourceIdentity::new(participant, producer);
+        let raw = format!(
+            "{root}/{PARTICIPANT_LIVELINESS_PREFIX}/{}/{}",
+            source.participant, source.producer
+        );
         let key = OwnedKeyExpr::new(raw.clone())
             .map_err(|error| BusError::not_a_key_expression(&raw, error))?;
-        Ok(Self {
-            key,
-            participant,
-            producer,
-        })
+        Ok(Self { key, source })
     }
 
     /// The complete execution-rooted Zenoh key.
@@ -58,13 +58,20 @@ impl ParticipantReadyKey {
     }
 
     /// Participant id encoded in the key.
+    #[cfg(test)]
     fn participant(&self) -> &ParticipantId {
-        &self.participant
+        &self.source.participant
     }
 
     /// Producer identity encoded in the key.
+    #[cfg(test)]
     fn producer(&self) -> ProducerId {
-        self.producer
+        self.source.producer
+    }
+
+    /// The participant/source pair encoded in the key.
+    fn source(&self) -> &ParticipantSourceIdentity {
+        &self.source
     }
 
     /// Parse a concrete participant key emitted below `root`.
@@ -128,30 +135,45 @@ impl From<SampleKind> for LivelinessStatus {
 /// A participant Ready change for one exact producer incarnation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParticipantReadyEvent {
-    /// The stable compiled participant role.
-    pub participant: ParticipantId,
-    /// The exact process/session incarnation that declared Ready.
-    pub producer: ProducerId,
+    /// The stable participant role and exact process/session incarnation that
+    /// declared Ready.
+    pub source: ParticipantSourceIdentity,
     /// Whether that exact Ready lease appeared or disappeared.
     pub status: ParticipantReadyStatus,
+}
+
+impl ParticipantReadyEvent {
+    /// The stable participant role represented by this event.
+    pub fn participant(&self) -> &ParticipantId {
+        &self.source.participant
+    }
+
+    /// The exact producer incarnation represented by this event.
+    pub fn producer(&self) -> ProducerId {
+        self.source.producer
+    }
 }
 
 /// Keeps this participant producer's Ready lease alive until it is dropped.
 pub struct ParticipantReadyToken {
     _token: zenoh::liveliness::LivelinessToken,
-    participant: ParticipantId,
-    producer: ProducerId,
+    source: ParticipantSourceIdentity,
 }
 
 impl ParticipantReadyToken {
+    /// The participant/source pair represented by this lease.
+    pub fn source(&self) -> &ParticipantSourceIdentity {
+        &self.source
+    }
+
     /// The stable participant role represented by this lease.
     pub fn participant(&self) -> &ParticipantId {
-        &self.participant
+        &self.source.participant
     }
 
     /// The exact producer incarnation represented by this lease.
     pub fn producer(&self) -> ProducerId {
-        self.producer
+        self.source.producer
     }
 }
 
@@ -224,8 +246,7 @@ impl BusOwner {
             .map_err(|error| BusError::Transport(error.to_string()))?;
         Ok(ParticipantReadyToken {
             _token: token,
-            participant: key.participant().clone(),
-            producer: key.producer(),
+            source: key.source().clone(),
         })
     }
 }
@@ -371,8 +392,7 @@ fn validate_relative_key(relative_key: &str) -> Result<()> {
 fn participant_event(root: &str, key: &str, kind: SampleKind) -> Option<ParticipantReadyEvent> {
     let key = ParticipantReadyKey::parse(root, key)?;
     Some(ParticipantReadyEvent {
-        participant: key.participant().clone(),
-        producer: key.producer(),
+        source: key.source().clone(),
         status: ParticipantReadyStatus::from(kind),
     })
 }
@@ -454,8 +474,8 @@ mod tests {
         let alive = participant_event(ROOT, &key, SampleKind::Put).unwrap();
         let lost = participant_event(ROOT, &key, SampleKind::Delete).unwrap();
 
-        assert_eq!(alive.participant.as_str(), "drive");
-        assert_eq!(alive.producer, producer);
+        assert_eq!(alive.participant().as_str(), "drive");
+        assert_eq!(alive.producer(), producer);
         assert_eq!(alive.status, ParticipantReadyStatus::Ready);
         assert_eq!(lost.status, ParticipantReadyStatus::Lost);
         assert!(participant_event(ROOT, "other/robot/key", SampleKind::Put).is_none());

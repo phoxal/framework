@@ -7,7 +7,7 @@
 //! change to either root convention would drift it silently. This test opens a
 //! real in-process session and asserts the final key.
 
-use phoxal_bus::{BusConfig, BusOwner, ContractBody};
+use phoxal_bus::{BusConfig, BusOwner, ContractBody, ExecutionId};
 use phoxal_macros::phoxal_api_tree;
 
 phoxal_api_tree! {
@@ -26,10 +26,12 @@ phoxal_api_tree! {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_protocol_topic_composes_under_the_execution_scoped_root() {
-    let config = BusConfig::in_process(
+    let config = BusConfig::for_participant(
+        ExecutionId::mint(),
         phoxal_bus::ParticipantId::new("composition").expect("valid participant id"),
+        Vec::new(),
     );
-    let execution = config.execution;
+    let execution = config.execution();
     let (owner, bus) = BusOwner::open(config).await.expect("open in-process bus");
 
     // The macro's half: relative, protocol-led, no revision segment.
