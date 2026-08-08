@@ -15,7 +15,15 @@ readme = "README.md"
 name = "phoxal_model"
 path = "src/lib.rs"
 
+[features]
+# Describe the canonical wire types as JSON Schema. Off by default: the runtime
+# never needs it. It exists so the authored-document layer can point an editor
+# schema at the one canonical definition of a shared type instead of keeping a
+# second copy of it.
+schemars = ["dep:schemars"]
+
 [dependencies]
+schemars = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

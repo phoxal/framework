@@ -1,38 +1,55 @@
-//! The participant engine: static metadata traits, contexts, clock, launch contract,
-//! and the runner.
+//! The participant engine: the authoring traits, the role-gated capability
+//! surface, the setup/step/reset contexts, the clock and step scheduler, the
+//! launch contract, and the runner that drives them.
 //!
 //! Authoring uses a role attribute on a unit marker, an optional
 //! `#[derive(phoxal::Config)]`, and an ordinary `Participant` implementation.
+//!
+//! Nothing here is a public path. Whatever the framework publishes to
+//! participant authors goes out through the crate-root facade in `lib.rs`, and
+//! whatever macro-generated code needs goes out through `crate::__private`;
+//! modules inside the engine import from the module that owns the item.
 
-pub mod api;
-mod bus_log;
-pub mod clock;
-pub mod context;
-pub mod launch;
-mod managed;
-pub mod metadata;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+pub(crate) mod api;
+pub(crate) mod bus_log;
+pub(crate) mod clock;
+pub(crate) mod context;
+pub(crate) mod launch;
+pub(crate) mod managed;
 pub(crate) mod runner;
-mod runtime_performance;
-pub mod scheduler;
-pub mod server;
-pub mod spec;
+pub(crate) mod runtime_performance;
+pub(crate) mod scheduler;
+// `surface` is the one engine module a participant crate reaches by name: the
+// role attributes emit `impl $crate::__private::surface::…` into the
+// participant's own crate, so the module itself is re-exported there.
+pub mod surface;
 
-pub use api::{Participant, ParticipantConfig, ParticipantSpec};
-pub use clock::{
-    BootId, ClockReading, ClockSource, ExecutionOrigin, RealClock, TestClock, TimeUnsynchronized,
-};
-pub use context::{ResetContext, SetupContext, StepContext};
-pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
-pub use managed::ManagedTaskPolicy;
-pub use runner::{run, run_async, run_with};
-pub use scheduler::{
-    AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
-    StepScheduler,
-};
-pub use server::{ServerOutcome, ServerReply};
-pub use spec::{MissedTick, StepSchedule};
+/// A duration as whole nanoseconds, saturating at [`u64::MAX`].
+///
+/// Every nanosecond count the engine carries is a `u64` - `RobotInstant` ticks
+/// and the `*_ns` fields of a runtime-performance rollup alike - while
+/// [`Duration::as_nanos`] is a `u128`. Narrowing it in one place is what keeps
+/// the saturation identical on the cadence path and the telemetry path instead
+/// of letting a second copy wrap.
+pub(crate) fn duration_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
 
-#[cfg(test)]
-mod config_tests;
-#[cfg(test)]
-mod tests;
+/// Lock `mutex`, taking the guard even when another thread panicked holding it.
+///
+/// Poisoning reports only that some thread unwound somewhere; it says nothing
+/// about the guarded value. Everything the engine locks is a plain counter,
+/// instant or channel handle updated by code that cannot unwind mid-update, so
+/// the state behind a poisoned lock is exactly as consistent as behind a healthy
+/// one. These locks all sit on the logging, clock and step paths, where refusing
+/// to proceed would turn one unrelated thread's panic into a participant that
+/// silently stops logging, stops stepping, or stops being able to date its own
+/// samples - strictly worse than carrying on with the state as it stands. So
+/// every lock in the engine recovers the guard rather than propagating the
+/// poison.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}

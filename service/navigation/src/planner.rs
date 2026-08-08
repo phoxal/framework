@@ -7,7 +7,7 @@ pub(crate) fn straight_line(
     goal: &api::navigation::Pose,
     map_revision: Option<u64>,
 ) -> Option<api::navigation::Path> {
-    if !valid_localization(start) || !valid_pose(goal) {
+    if !start.is_usable() || !valid_pose(goal) {
         return None;
     }
 
@@ -43,14 +43,6 @@ pub(crate) fn valid_path(path: &api::navigation::Path) -> bool {
 
 fn valid_pose(pose: &api::navigation::Pose) -> bool {
     pose.x_m.is_finite() && pose.y_m.is_finite() && pose.yaw_rad.is_none_or(f64::is_finite)
-}
-
-fn valid_localization(localization: &api::localize::LocalizationState) -> bool {
-    localization.x_m.is_finite()
-        && localization.y_m.is_finite()
-        && localization.yaw_rad.is_finite()
-        && localization.confidence.is_finite()
-        && localization.confidence > 0.0
 }
 
 #[cfg(test)]

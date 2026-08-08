@@ -1,5 +1,0 @@
-error[E0432]: unresolved import `phoxal::check`
- --> tests/trybuild/fail/retired_check_module_is_absent.rs:1:13
-  |
-1 | use phoxal::check::Graph;
-  |             ^^^^^ could not find `check` in `phoxal`

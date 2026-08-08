@@ -18,37 +18,74 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::lock::lock;
+
+/// Which way samples move through the buffer a row describes.
+///
+/// This is the internal accounting vocabulary. The runner maps it onto the
+/// wire-facing enum in `phoxal-api`. The structural guard at the bottom of this
+/// module fails when a variant is added here; the assertion that the mapping is
+/// total and injective lives in `phoxal-api/src/tests/runtime_metric_parity.rs`,
+/// which is the nearest crate able to name both enums.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeDirection {
+    /// Samples this process publishes.
     Publish,
+    /// Samples this process receives.
     Subscribe,
 }
 
+/// Which bounded buffer a row describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeBufferKind {
+    /// The one session-wide outbound publish queue, viewed per topic.
     Outbound,
+    /// A keep-last-1 slot.
     Latest,
+    /// A drop-oldest subscriber ring.
     Subscriber,
 }
 
+/// Identifies one declared buffer. Two declarations sharing a key aggregate
+/// into one row.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RuntimeMetricKey {
+    /// The version-qualified topic key.
     pub topic: String,
+    /// Which way samples move.
     pub direction: RuntimeDirection,
+    /// Which bounded buffer.
     pub buffer_kind: RuntimeBufferKind,
 }
 
+/// One buffer's counters for one rollup window.
+///
+/// The interval counters (`count`, `drops`, `latest_overwrites`,
+/// `bounded_evictions`, `decode_errors`, `timeline_filtered`) reset when they
+/// are taken. `capacity` and the depth gauges are levels and persist.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeMetricSnapshot {
+    /// Which buffer this row describes.
     pub key: RuntimeMetricKey,
+    /// Samples that passed through the buffer this window.
     pub count: u64,
+    /// Samples lost this window, for any bounded-buffer reason.
     pub drops: u64,
+    /// Keep-last-1 slots overwritten before being read.
     pub latest_overwrites: u64,
+    /// Samples evicted because a bounded ring was full.
     pub bounded_evictions: u64,
+    /// The buffer's declared bound.
     pub capacity: u64,
+    /// Occupancy at the moment of the rollup.
     pub current_depth: u64,
+    /// Peak occupancy since the previous rollup.
     pub high_water_depth: u64,
+    /// Inbound samples this window whose body would not decode.
     pub decode_errors: u64,
+    /// Samples set aside or discarded because they belong to another world
+    /// history. Deliberately separate from `drops`: quarantine churn is not
+    /// active-buffer loss.
     pub timeline_filtered: u64,
 }
 
@@ -104,7 +141,10 @@ impl RuntimeMetricHandle {
         self.set_inbound_depth(1);
     }
 
-    pub(crate) fn record_pending_latest(&self) {
+    /// A sample accepted into a foreign-timeline quarantine. It passed through
+    /// the buffer, so it counts, but it changes no depth gauge: quarantine
+    /// storage is separate from the active buffer this row describes.
+    pub(crate) fn record_pending(&self) {
         self.record_message();
     }
 
@@ -123,10 +163,6 @@ impl RuntimeMetricHandle {
         self.set_inbound_depth(u64::try_from(current_depth).unwrap_or(u64::MAX));
     }
 
-    pub(crate) fn record_pending_subscriber(&self) {
-        self.record_message();
-    }
-
     pub(crate) fn record_subscriber_pop(&self, current_depth: usize) {
         self.set_inbound_depth(u64::try_from(current_depth).unwrap_or(u64::MAX));
     }
@@ -140,7 +176,6 @@ impl RuntimeMetricHandle {
         update_max(&self.counters.high_water_depth, current);
     }
 
-    #[allow(deprecated)]
     pub(crate) fn enqueue_finished(&self) {
         let _ = self.counters.current_depth.fetch_update(
             Ordering::Relaxed,
@@ -224,7 +259,7 @@ impl RuntimeMetrics {
         capacity: usize,
         additive_capacity: bool,
     ) -> RuntimeMetricHandle {
-        let mut rows = self.rows.lock().expect("runtime metrics mutex poisoned");
+        let mut rows = lock(&self.rows);
         let counters = rows.entry(key).or_default();
         let capacity = u64::try_from(capacity).unwrap_or(u64::MAX);
         if additive_capacity {
@@ -239,7 +274,7 @@ impl RuntimeMetrics {
     }
 
     pub(crate) fn take(&self) -> Vec<RuntimeMetricSnapshot> {
-        let rows = self.rows.lock().expect("runtime metrics mutex poisoned");
+        let rows = lock(&self.rows);
         rows.iter()
             .map(|(key, counters)| {
                 let current_depth = counters.current_depth.load(Ordering::Relaxed);
@@ -262,7 +297,6 @@ impl RuntimeMetrics {
     }
 }
 
-#[allow(deprecated)]
 fn update_max(target: &AtomicU64, value: u64) {
     let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         (value > current).then_some(value)
@@ -272,6 +306,72 @@ fn update_max(target: &AtomicU64, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use serial_test::serial;
+    use zenoh::bytes::Encoding;
+    use zenoh::key_expr::OwnedKeyExpr;
+
+    use crate::abi::CodecId;
+    use crate::contract::ContractBody;
+    use crate::handle::publisher::StatePublisher;
+    use crate::handle::subscriber::{Latest, Subscriber};
+    use crate::session::{Bus, BusConfig};
+    use crate::test_support::{Target, metadata, step};
+    use crate::topic::{Publish, Subscribe, Topic};
+
+    /// Every variant here has to reach the wire.
+    ///
+    /// `phoxal-api` declares its own serialized `RuntimeDirection` /
+    /// `RuntimeBufferKind`, and `phoxal`'s rollup maps this enum onto that one.
+    /// The duplication is deliberate wire-versus-internal layering, but it means
+    /// a variant added here and nowhere else silently never reaches an operator.
+    ///
+    /// This crate cannot name the wire enum - `phoxal-api` depends on this crate,
+    /// not the other way round - so the guard is structural: the matches below
+    /// are exhaustive and the lists are exact, so adding a variant fails to
+    /// compile here and fails the assertion, forcing whoever adds it to read
+    /// this comment and extend the wire enum and the mapping too.
+    #[test]
+    fn every_direction_and_buffer_kind_is_accounted_for_on_the_wire() {
+        const DIRECTIONS: [RuntimeDirection; 2] =
+            [RuntimeDirection::Publish, RuntimeDirection::Subscribe];
+        const BUFFER_KINDS: [RuntimeBufferKind; 3] = [
+            RuntimeBufferKind::Outbound,
+            RuntimeBufferKind::Latest,
+            RuntimeBufferKind::Subscriber,
+        ];
+
+        for direction in DIRECTIONS {
+            // Exhaustive on purpose: no wildcard arm may absorb a new variant.
+            let name = match direction {
+                RuntimeDirection::Publish => "publish",
+                RuntimeDirection::Subscribe => "subscribe",
+            };
+            assert!(!name.is_empty());
+        }
+        for buffer_kind in BUFFER_KINDS {
+            let name = match buffer_kind {
+                RuntimeBufferKind::Outbound => "outbound",
+                RuntimeBufferKind::Latest => "latest",
+                RuntimeBufferKind::Subscriber => "subscriber",
+            };
+            assert!(!name.is_empty());
+        }
+
+        assert_eq!(
+            DIRECTIONS.len(),
+            2,
+            "a new RuntimeDirection needs a wire variant in phoxal-api and an arm \
+             in phoxal's runtime performance rollup"
+        );
+        assert_eq!(
+            BUFFER_KINDS.len(),
+            3,
+            "a new RuntimeBufferKind needs a wire variant in phoxal-api and an arm \
+             in phoxal's runtime performance rollup"
+        );
+    }
 
     #[test]
     fn identical_keys_aggregate_and_quiet_rows_persist() {
@@ -323,5 +423,108 @@ mod tests {
         assert_eq!(rows[0].capacity, 1);
         assert_eq!(rows[0].current_depth, 0);
         assert_eq!(metrics.take().len(), 1);
+    }
+
+    /// The rollup against a live session: every declared buffer has a row from
+    /// the moment it is declared, and each row counts its own traffic, its own
+    /// overwrites/evictions, and its own decode errors.
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_rows() {
+        let bus = Bus::open(BusConfig::in_process("metrics")).await.unwrap();
+        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic, 1)
+            .await
+            .unwrap();
+
+        // Declarations are retained even before any traffic.
+        let quiet = bus.take_runtime_metrics();
+        assert_eq!(quiet.len(), 3);
+        assert!(quiet.iter().all(|row| row.count == 0));
+
+        for value in [1.0_f32, 2.0, 3.0] {
+            publisher
+                .publish(
+                    &step(1, value as u64),
+                    Target {
+                        linear_x_mps: value,
+                        angular_z_radps: 0.0,
+                    },
+                )
+                .unwrap();
+        }
+        for _ in 0..50 {
+            if latest
+                .latest()
+                .is_some_and(|sample| sample.linear_x_mps == 3.0)
+                && bus
+                    .health()
+                    .inbound_drops
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    >= 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Inject a malformed body on the exact subscribed key. Both independent
+        // subscriptions reject it and each exact buffer row counts its own error.
+        bus.session()
+            .put(
+                OwnedKeyExpr::new(bus.full_key(<Target as ContractBody>::TOPIC)).unwrap(),
+                vec![0xc1_u8],
+            )
+            .encoding(Encoding::from(CodecId::MessagePack.encoding_string()))
+            .attachment(metadata().encode().expect("test metadata encodes"))
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            if bus
+                .health()
+                .decode_errors
+                .load(std::sync::atomic::Ordering::Relaxed)
+                >= 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let rows = bus.take_runtime_metrics();
+        let outbound = rows
+            .iter()
+            .find(|row| row.key.direction == RuntimeDirection::Publish)
+            .unwrap();
+        assert_eq!(outbound.key.buffer_kind, RuntimeBufferKind::Outbound);
+        assert_eq!(outbound.key.topic, <Target as ContractBody>::TOPIC);
+        assert_eq!(outbound.count, 3);
+
+        let latest_row = rows
+            .iter()
+            .find(|row| row.key.buffer_kind == RuntimeBufferKind::Latest)
+            .unwrap();
+        assert_eq!(latest_row.count, 3);
+        assert_eq!(latest_row.latest_overwrites, 2);
+        assert_eq!(latest_row.capacity, 1);
+        assert_eq!(latest_row.current_depth, 1);
+        assert_eq!(latest_row.decode_errors, 1);
+
+        let subscriber_row = rows
+            .iter()
+            .find(|row| row.key.buffer_kind == RuntimeBufferKind::Subscriber)
+            .unwrap();
+        assert_eq!(subscriber_row.count, 3);
+        assert_eq!(subscriber_row.bounded_evictions, 2);
+        assert_eq!(subscriber_row.drops, 2);
+        assert_eq!(subscriber_row.current_depth, 1);
+        assert_eq!(subscriber_row.high_water_depth, 1);
+        assert_eq!(subscriber_row.decode_errors, 1);
+
+        drop(subscriber);
+        bus.close().await.unwrap();
     }
 }

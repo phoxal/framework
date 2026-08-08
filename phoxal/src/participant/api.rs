@@ -2,27 +2,26 @@
 //! Role attributes declare static identity and `Config`/`State`/`Api` types;
 //! authors implement lifecycle behavior directly.
 //!
-//! `Api` names a participant-authored struct of bus handles. Official
-//! participants use the train-selected `phoxal::api` facade across all fields;
-//! there is no participant-local API version ceiling.
+//! `Api` names a participant-authored struct of bus handles. Every field comes
+//! from the one train-selected `phoxal::api` facade, which is what makes
+//! [`ParticipantSpec::ContractApi`] a true statement about the process.
 //!
-//! The runner's own system contracts (Liveliness/simulation clock) do
-//! not resolve a version through this trait hierarchy either:
-//! `participant::runner` hardcodes `use phoxal::api as api;`,
-//! independent of any participant's chosen `Api`.
+//! The runner's own infrastructure contracts (liveliness, bus logs, simulation
+//! clock) resolve independently of any participant's `Api`:
+//! `participant::runner` names `crate::api` directly.
 //!
-//! Setup capabilities remain role-gated: drivers and simulators resolve a
-//! canonical component, while tools alone receive low-level bus access.
+//! Setup capabilities are role-gated by the marker traits in
+//! [`surface`](crate::participant::surface): a driver or simulator resolves a
+//! bound component, and a simulator alone reaches world-clock authority.
 
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::AsyncFn;
 use std::pin::Pin;
 
-use crate::bus::{Codec, ContractBody, MessagePack};
+use crate::bus::{Codec, ContractBody, MessagePack, QueryFailure};
 use crate::participant::context::{ResetContext, SetupContext, StepContext};
-use crate::participant::server::ServerOutcome;
-use crate::participant::spec::StepSchedule;
+use crate::participant::scheduler::StepSchedule;
 
 /// Const-eval plumbing the participant attribute macros
 /// (`phoxal-macros/src/authoring.rs`'s `expand_participant`) use to build the
@@ -34,16 +33,24 @@ use crate::participant::spec::StepSchedule;
 /// same way), so the final JSON string is only known after `rustc` const-evals
 /// the whole tree in the downstream participant crate - a proc-macro cannot
 /// pre-resolve it into a literal. So the participant attribute emits
-/// **tokens**, not a string: a call into `__concatcp` splicing the
+/// **tokens**, not a string: a call into [`meta::concatcp`] splicing the
 /// participant id and `<Config as ParticipantConfig>::SCHEMA_JSON` between
 /// macro-time-known JSON literal fragments, which `rustc` const-evaluates in
-/// the participant crate. `__bytes_of` then copies the final string into the
+/// the participant crate. [`meta::bytes_of`] then copies the final string into the
 /// fixed byte array placed in the linker section.
 #[doc(hidden)]
-pub mod __meta {
-    /// Re-exported for role-macro metadata generation without requiring every
-    /// participant crate to depend directly on `const_format`.
-    pub use const_format::concatcp as __concatcp;
+pub mod meta {
+    /// `const_format::concatcp!`, made reachable as
+    /// `$crate::__private::meta::concatcp!`.
+    ///
+    /// The role attributes expand inside a participant's own crate, which does
+    /// not depend on `const_format`, so the expansion cannot name that crate
+    /// directly. Routing the call through here is what makes it hygienic: it
+    /// resolves in the participant crate no matter what is in scope there.
+    /// That obligation is the only reason this is public, and it is why the
+    /// item cannot be made private or removed while the role attributes exist.
+    #[doc(hidden)]
+    pub use const_format::concatcp;
 
     /// Fixed-capacity const-eval string builder used for recursively composed
     /// config schemas. A fixed backing array is necessary because stable Rust
@@ -101,11 +108,11 @@ pub mod __meta {
     /// it can be assigned to a `#[link_section]` static (which must be a
     /// plain byte-sized value, not a fat `&str` pointer/len pair). Callers
     /// are expected to pass `N` implicitly via the assignment's expected
-    /// array type (`static X: [u8; LEN] = __bytes_of(S);` with `const LEN:
+    /// array type (`static X: [u8; LEN] = bytes_of(S);` with `const LEN:
     /// usize = S.len();`); the `assert!` is a defense-in-depth check against
     /// that inference ever mismatching, not the primary correctness
     /// mechanism.
-    pub const fn __bytes_of<const N: usize>(s: &str) -> [u8; N] {
+    pub const fn bytes_of<const N: usize>(s: &str) -> [u8; N] {
         let bytes = s.as_bytes();
         assert!(
             bytes.len() == N,
@@ -125,14 +132,14 @@ pub mod __meta {
 /// JSON Schema (Draft 2020-12).
 pub trait ParticipantConfig: serde::de::DeserializeOwned + Send + 'static {
     #[doc(hidden)]
-    const __SCHEMA: __meta::ConstSchema;
+    const __SCHEMA: meta::ConstSchema;
     /// A complete schema or subschema, const-composable by another derived
     /// config without runtime allocation.
     const SCHEMA_JSON: &'static str = Self::__SCHEMA.as_str();
 }
 
 impl ParticipantConfig for () {
-    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::from_str(r#"{"type":"null"}"#);
+    const __SCHEMA: meta::ConstSchema = meta::ConstSchema::from_str(r#"{"type":"null"}"#);
 }
 
 /// An optional config is a config: `config = Option<T>` (a participant whose
@@ -142,28 +149,28 @@ impl ParticipantConfig for () {
 /// write `impl ParticipantConfig for Option<LocalConfig>` itself (orphan
 /// rule: both the trait and `Option` are foreign), so the blanket lives here.
 impl<T: ParticipantConfig> ParticipantConfig for Option<T> {
-    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+    const __SCHEMA: meta::ConstSchema = meta::ConstSchema::new()
         .push_str(r#"{"anyOf":["#)
         .push_str(T::SCHEMA_JSON)
         .push_str(r#",{"type":"null"}]}"#);
 }
 
 impl<T: ParticipantConfig> ParticipantConfig for Vec<T> {
-    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+    const __SCHEMA: meta::ConstSchema = meta::ConstSchema::new()
         .push_str(r#"{"type":"array","items":"#)
         .push_str(T::SCHEMA_JSON)
         .push_str("}");
 }
 
 impl<T: ParticipantConfig> ParticipantConfig for std::collections::BTreeMap<String, T> {
-    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+    const __SCHEMA: meta::ConstSchema = meta::ConstSchema::new()
         .push_str(r#"{"type":"object","additionalProperties":"#)
         .push_str(T::SCHEMA_JSON)
         .push_str("}");
 }
 
 impl<T: ParticipantConfig> ParticipantConfig for std::collections::HashMap<String, T> {
-    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+    const __SCHEMA: meta::ConstSchema = meta::ConstSchema::new()
         .push_str(r#"{"type":"object","additionalProperties":"#)
         .push_str(T::SCHEMA_JSON)
         .push_str("}");
@@ -172,7 +179,7 @@ impl<T: ParticipantConfig> ParticipantConfig for std::collections::HashMap<Strin
 macro_rules! primitive_config_schema {
     ($ty:ty => $schema:literal) => {
         impl ParticipantConfig for $ty {
-            const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::from_str($schema);
+            const __SCHEMA: meta::ConstSchema = meta::ConstSchema::from_str($schema);
         }
     };
 }
@@ -201,7 +208,7 @@ primitive_config_schema!(f64 => r#"{"type":"number","format":"double"}"#);
 pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The authoring kind that produced this artifact, as the framework-owned
     /// value the embedded metadata record declares.
-    const KIND: crate::participant::metadata::ParticipantKind;
+    const KIND: phoxal_runtime_contract::metadata::ParticipantKind;
     /// The participant id (`id = "…"`, default derived from the crate's
     /// `CARGO_PKG_NAME`; see `#[phoxal::service]`'s docs).
     const ID: &'static str;
@@ -304,8 +311,30 @@ pub trait Participant: ParticipantSpec {
     }
 }
 
+/// A successful server reply: the encoded plain `Resp` body.
+///
+/// The reply carries no contract identity of its own, because the request
+/// already arrived on `Resp`'s version-qualified topic key - a receiver that
+/// got the reply knows what it asked for.
+#[derive(Debug)]
+pub(crate) struct ServerReply {
+    /// MessagePack-encoded `Resp` body.
+    pub payload: Vec<u8>,
+}
+
+/// What a query dispatcher returns: a [`ServerReply`] or a structured
+/// [`QueryFailure`].
+pub(crate) type ServerOutcome = std::result::Result<ServerReply, QueryFailure>;
+
 /// One setup-time query binding, type-erased only after its request/response
 /// types and handler have been checked at the `ctx.query(...)` call.
+///
+/// `topic` is a plain `String` rather than a typed
+/// [`Topic`](crate::bus::Topic): erasure is the point of this type, and a
+/// `Topic<ServeQuery<Req, Resp>>` still names `Req` and `Resp`, so it cannot
+/// survive into the erased registration list the runner iterates. The key
+/// string is all that is left to match an incoming query against, and it was
+/// produced by the typed builder at the checked `ctx.query(...)` call site.
 pub(crate) struct QueryRegistration<R: Participant> {
     topic: String,
     handler: Box<dyn ErasedQueryHandler<R>>,
@@ -386,19 +415,131 @@ where
     ) -> Pin<Box<dyn Future<Output = ServerOutcome> + 'a>> {
         Box::pin(async move {
             let request = MessagePack::decode::<Req>(&request).map_err(|error| {
-                crate::bus::QueryFailure::invalid_argument(format!(
+                QueryFailure::invalid_argument(format!(
                     "decode query request for '{}': {error}",
                     Req::TOPIC
                 ))
             })?;
             let response = (self.handler)(participant, api, request, state).await?;
             let payload = MessagePack::encode(&response).map_err(|error| {
-                crate::bus::QueryFailure::internal(format!(
+                QueryFailure::internal(format!(
                     "encode query response for '{}': {error}",
                     Resp::TOPIC
                 ))
             })?;
-            Ok(crate::participant::server::ServerReply { payload })
+            Ok(ServerReply { payload })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParticipantConfig, QueryRegistration, meta::ConstSchema};
+    use crate::api;
+    use crate::bus::{Codec, MessagePack, QueryCode, QueryFailure};
+    use crate::prelude::*;
+
+    #[test]
+    fn const_schema_exposes_only_the_pushed_prefix() {
+        let schema = ConstSchema::from_str(r#"{"type":"#)
+            .push_str(r#""string""#)
+            .push_str("}");
+        assert_eq!(schema.as_str(), r#"{"type":"string"}"#);
+        assert_eq!(ConstSchema::new().as_str(), "");
+    }
+
+    /// The blanket impls this module owns compose a nested schema without
+    /// allocating, so a config type never has to spell its own container
+    /// schemas.
+    #[test]
+    fn blanket_config_schemas_compose_from_the_inner_schema() {
+        assert_eq!(<() as ParticipantConfig>::SCHEMA_JSON, r#"{"type":"null"}"#);
+        assert_eq!(
+            <Option<bool> as ParticipantConfig>::SCHEMA_JSON,
+            r#"{"anyOf":[{"type":"boolean"},{"type":"null"}]}"#
+        );
+        assert_eq!(
+            <Vec<String> as ParticipantConfig>::SCHEMA_JSON,
+            r#"{"type":"array","items":{"type":"string"}}"#
+        );
+        assert_eq!(
+            <std::collections::BTreeMap<String, u32> as ParticipantConfig>::SCHEMA_JSON,
+            r#"{"type":"object","additionalProperties":{"type":"integer","format":"uint32","minimum":0}}"#
+        );
+    }
+
+    struct Api;
+
+    #[derive(Default)]
+    struct QueryState {
+        calls: Vec<String>,
+    }
+
+    #[phoxal::service(id = "query-test", state = QueryState, api = Api)]
+    struct QueryParticipant;
+
+    impl Participant for QueryParticipant {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> Result<(Self::State, Self::Api)> {
+            Ok((QueryState::default(), Api))
+        }
+    }
+
+    impl QueryParticipant {
+        async fn get(
+            &self,
+            _api: &Api,
+            request: api::supervisor::asset::GetRequest,
+            state: &mut QueryState,
+        ) -> QueryResult<api::supervisor::asset::GetResponse> {
+            state.calls.push(request.path.clone());
+            if request.path == "ok" {
+                Ok(api::supervisor::asset::GetResponse::Found {
+                    bytes: vec![1, 2, 3],
+                })
+            } else {
+                Err(QueryFailure::not_found("no such asset"))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_query_dispatch_decodes_mutates_and_encodes() {
+        let registration = QueryRegistration::new(
+            "v0.1/supervisor/asset/get".to_string(),
+            QueryParticipant::get,
+        );
+        let participant = QueryParticipant;
+        let api = Api;
+        let mut state = QueryState::default();
+
+        let first = MessagePack::encode(&api::supervisor::asset::GetRequest {
+            path: "ok".to_string(),
+        })
+        .unwrap();
+        let reply = registration
+            .dispatch(&participant, &api, &mut state, first)
+            .await
+            .unwrap();
+        let response: api::supervisor::asset::GetResponse =
+            MessagePack::decode(&reply.payload).unwrap();
+        assert!(matches!(
+            response,
+            api::supervisor::asset::GetResponse::Found { .. }
+        ));
+
+        let second = MessagePack::encode(&api::supervisor::asset::GetRequest {
+            path: "missing".to_string(),
+        })
+        .unwrap();
+        let failure = registration
+            .dispatch(&participant, &api, &mut state, second)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, QueryCode::NotFound);
+        assert_eq!(state.calls, ["ok", "missing"]);
     }
 }

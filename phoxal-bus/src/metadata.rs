@@ -1,9 +1,9 @@
-//! `BusMetadata` - the per-sample attachment (D43c/D62/D1).
+//! `BusMetadata` - the per-sample attachment.
 //!
-//! The wire body is the plain MessagePack payload (D62); provenance rides here,
-//! in the Zenoh attachment. Identity (which contract, which version) is not
-//! carried in the envelope at all - it lives in the Zenoh key itself (the
-//! version is folded into `<Body as ContractBody>::TOPIC`, D1), so a receiver's
+//! The wire body is the plain MessagePack payload; provenance rides here, in
+//! the Zenoh attachment. Identity (which contract, which version) is not
+//! carried in the envelope at all - it lives in the Zenoh key itself, since the
+//! version is folded into `<Body as ContractBody>::TOPIC`, so a receiver's
 //! per-key subscription is the whole fast-reject.
 //!
 //! Provenance is [`ProducerId`] plus a per-producer sequence, and the
@@ -13,13 +13,13 @@
 //! admissibility decision reads it.
 //!
 //! Receiver-side observation time is deliberately absent: it is process-local
-//! and receiver-specific, so it belongs on [`Observed`](crate::handle::Observed),
-//! never on the wire.
+//! and receiver-specific, so it belongs on
+//! [`Observed`](crate::handle::subscriber::Observed), never on the wire.
 
+use phoxal_runtime_contract::identity::ProducerId;
 use serde::{Deserialize, Serialize};
 
-use crate::abi::CodecId;
-use crate::identity::ProducerId;
+use crate::abi::{CodecId, truncate_utf8};
 use crate::time::{RobotInstant, TimeWindow};
 
 const MAX_METADATA_BYTES: usize = 4 * 1024;
@@ -45,15 +45,20 @@ pub struct BusMetadata {
 
 impl BusMetadata {
     /// Encode to the MessagePack attachment bytes.
-    pub fn encode(&self) -> Vec<u8> {
+    ///
+    /// Fallible rather than infallible: the participant label is caller-supplied
+    /// and the production instant is a nested type, so "this can never fail" is
+    /// a claim about data this type does not own. A failure here happens while
+    /// *reporting* a sample, and panicking there would turn a lost attachment
+    /// into a lost process.
+    pub fn encode(&self) -> std::result::Result<Vec<u8>, rmp_serde::encode::Error> {
         let mut bounded = self.clone();
         if bounded.participant.len() > MAX_SOURCE_PARTICIPANT_BYTES {
             bounded.participant = truncate_utf8(&bounded.participant, MAX_SOURCE_PARTICIPANT_BYTES);
         }
-        let encoded =
-            rmp_serde::to_vec_named(&bounded).expect("BusMetadata is always serializable");
+        let encoded = rmp_serde::to_vec_named(&bounded)?;
         debug_assert!(encoded.len() <= MAX_METADATA_BYTES);
-        encoded
+        Ok(encoded)
     }
 
     /// Decode from the MessagePack attachment bytes.
@@ -81,27 +86,12 @@ impl BusMetadata {
     }
 }
 
-fn truncate_utf8(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_string();
-    }
-    let mut end = max_bytes;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::TimelineId;
+    use phoxal_runtime_contract::identity::TimelineId;
 
-    /// A distinct test producer. Nothing mints a producer in production - a
-    /// session's identity is the session - so tests name theirs explicitly.
-    fn producer(value: u128) -> ProducerId {
-        ProducerId::try_from(value).expect("a test producer is nonzero")
-    }
+    use crate::test_support::producer;
 
     fn metadata(produced_at: Option<TimeWindow>) -> BusMetadata {
         BusMetadata {
@@ -113,10 +103,23 @@ mod tests {
         }
     }
 
+    fn encoded(metadata: &BusMetadata) -> Vec<u8> {
+        metadata.encode().expect("test metadata encodes")
+    }
+
+    #[test]
+    fn provenance_round_trips_through_the_attachment() {
+        let original = metadata(Some(TimeWindow::exact(RobotInstant::new(
+            TimelineId::mint(),
+            42,
+        ))));
+        assert_eq!(BusMetadata::decode(&encoded(&original)).unwrap(), original);
+    }
+
     #[test]
     fn absence_of_a_production_instant_round_trips_as_absence() {
         let original = metadata(None);
-        let decoded = BusMetadata::decode(&original.encode()).unwrap();
+        let decoded = BusMetadata::decode(&encoded(&original)).unwrap();
         assert_eq!(decoded, original);
         assert_eq!(decoded.produced_at, None);
         assert_eq!(decoded.produced_exactly_at(), None);
@@ -126,7 +129,7 @@ mod tests {
     fn an_exact_production_instant_round_trips_without_collapsing_a_window() {
         let timeline = TimelineId::mint();
         let exact = metadata(Some(TimeWindow::exact(RobotInstant::new(timeline, 42))));
-        let decoded = BusMetadata::decode(&exact.encode()).unwrap();
+        let decoded = BusMetadata::decode(&encoded(&exact)).unwrap();
         assert_eq!(
             decoded.produced_exactly_at(),
             Some(RobotInstant::new(timeline, 42))
@@ -137,7 +140,7 @@ mod tests {
             RobotInstant::new(timeline, 44),
         )
         .unwrap();
-        let bounded = BusMetadata::decode(&metadata(Some(window)).encode()).unwrap();
+        let bounded = BusMetadata::decode(&encoded(&metadata(Some(window)))).unwrap();
         assert_eq!(bounded.produced_at, Some(window));
         assert_eq!(
             bounded.produced_exactly_at(),
@@ -149,9 +152,25 @@ mod tests {
     #[test]
     fn an_over_long_participant_label_is_truncated_at_a_char_boundary() {
         let mut long = metadata(None);
-        long.participant = "é".repeat(MAX_SOURCE_PARTICIPANT_BYTES);
-        let decoded = BusMetadata::decode(&long.encode()).unwrap();
+        long.participant = "\u{e9}".repeat(MAX_SOURCE_PARTICIPANT_BYTES);
+        let decoded = BusMetadata::decode(&encoded(&long)).unwrap();
         assert!(decoded.participant.len() <= MAX_SOURCE_PARTICIPANT_BYTES);
-        assert!(decoded.participant.chars().all(|c| c == 'é'));
+        assert!(decoded.participant.chars().all(|c| c == '\u{e9}'));
+    }
+
+    /// The attachment is a bounded wire value at both ends: an encoder that
+    /// could exceed the limit, or a decoder that would accept an unbounded one,
+    /// makes the bound advisory rather than real.
+    #[test]
+    fn the_attachment_stays_inside_its_wire_limit_in_both_directions() {
+        let mut oversized = metadata(None);
+        oversized.participant = "\u{e9}".repeat(10_000);
+        let bytes = encoded(&oversized);
+        assert!(bytes.len() <= MAX_METADATA_BYTES);
+        let decoded = BusMetadata::decode(&bytes).expect("bounded metadata decodes");
+        assert!(decoded.participant.len() <= MAX_SOURCE_PARTICIPANT_BYTES);
+
+        let error = BusMetadata::decode(&vec![0_u8; MAX_METADATA_BYTES + 1]).unwrap_err();
+        assert!(error.to_string().contains("4096-byte limit"));
     }
 }

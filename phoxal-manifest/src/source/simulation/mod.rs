@@ -4,10 +4,10 @@ pub mod v0;
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const SIMULATION_FILE: &str = "simulation.yaml";
+use crate::source::Violations;
+use crate::source::document::{Document, DocumentKind, Origin, SourceError};
 
 /// A versioned authored `simulation.yaml` document; the schema tag selects
 /// the variant.
@@ -18,43 +18,57 @@ pub enum Manifest {
     V0(v0::Manifest),
 }
 
-pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
-    let path = path.as_ref().join(SIMULATION_FILE);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read simulation document {}", path.display()))?;
-    read_from_string(&text)
-        .with_context(|| format!("failed to parse simulation document {}", path.display()))
+impl Document for Manifest {
+    const KIND: DocumentKind = DocumentKind::Simulation;
+
+    fn check(&self) -> Result<(), Violations> {
+        let Self::V0(body) = self;
+        body.validate().map_err(Violations::Simulation)
+    }
 }
 
-pub fn read_from_string(text: &str) -> Result<Manifest> {
-    let manifest: Manifest =
-        serde_yaml::from_str(text).context("failed to parse simulation document")?;
-    let Manifest::V0(body) = &manifest;
-    body.validate()?;
-    Ok(manifest)
-}
+impl Manifest {
+    /// Parse and validate one simulation document from its exact text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Parse`] when the text is not a simulation
+    /// document, and [`SourceError::Invalid`] when it breaks the grammar's
+    /// rules.
+    pub fn parse(text: &str) -> Result<Self, SourceError> {
+        Self::read_text(text, Origin::Text)
+    }
 
-pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("failed to create simulation directory {}", path.display()))?;
-    let destination = path.join(SIMULATION_FILE);
-    std::fs::write(&destination, serde_yaml::to_string(manifest)?).with_context(|| {
-        format!(
-            "failed to write simulation document {}",
-            destination.display()
-        )
-    })
+    /// Read and validate the simulation document at `path`, which is either the
+    /// document file itself or the directory that holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Read`] when the file cannot be read, plus
+    /// whatever [`Manifest::parse`] rejects.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, SourceError> {
+        Self::read_path(path.as_ref())
+    }
+
+    /// Write the document into `directory` as `simulation.yaml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Write`] when the directory or file cannot be
+    /// written.
+    pub fn write_to_dir(&self, directory: impl AsRef<Path>) -> Result<(), SourceError> {
+        self.write_dir(directory.as_ref())
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, read_from_dir, read_from_string, write_to_dir};
+    use super::Manifest;
 
     #[test]
     fn simulation_roundtrips_through_directory() -> anyhow::Result<()> {
         let temp_dir = tempfile::tempdir()?;
-        let source = read_from_string(
+        let source = Manifest::parse(
             r#"
 schema: phoxal/simulation/v0
 capabilities:
@@ -67,15 +81,15 @@ links:
     contact_material: caster_wheel
 "#,
         )?;
-        write_to_dir(&source, temp_dir.path())?;
-        let Manifest::V0(loaded) = read_from_dir(temp_dir.path())?;
+        source.write_to_dir(temp_dir.path())?;
+        let Manifest::V0(loaded) = Manifest::load(temp_dir.path())?;
         assert!(loaded.capabilities.contains_key("motor"));
         Ok(())
     }
 
     #[test]
     fn simulation_parses_range_capability() -> anyhow::Result<()> {
-        let manifest = read_from_string(
+        let Manifest::V0(simulation) = Manifest::parse(
             r#"
 schema: phoxal/simulation/v0
 capabilities:
@@ -86,10 +100,9 @@ capabilities:
     resolution: 0.001
 "#,
         )?;
-        let Manifest::V0(simulation) = manifest;
         assert!(matches!(
             simulation.capabilities.get("range"),
-            Some(super::v0::capability::Capability::Range(_))
+            Some(super::v0::Capability::Range(_))
         ));
         Ok(())
     }
@@ -98,7 +111,7 @@ capabilities:
     /// button, switch, or toggle node, so no simulator drives one.
     #[test]
     fn simulation_parses_emergency_stop_input() -> anyhow::Result<()> {
-        let manifest = read_from_string(
+        let Manifest::V0(simulation) = Manifest::parse(
             r#"
 schema: phoxal/simulation/v0
 capabilities:
@@ -106,17 +119,16 @@ capabilities:
     kind: emergency_stop
 "#,
         )?;
-        let Manifest::V0(simulation) = manifest;
         assert!(matches!(
             simulation.capabilities.get("emergency_stop"),
-            Some(super::v0::capability::Capability::EmergencyStop)
+            Some(super::v0::Capability::EmergencyStop)
         ));
         Ok(())
     }
 
     #[test]
     fn simulation_rejects_invalid_capability_id() {
-        let error = read_from_string(
+        let error = Manifest::parse(
             r#"
 schema: phoxal/simulation/v0
 capabilities:
@@ -129,13 +141,14 @@ capabilities:
         assert!(
             error
                 .to_string()
-                .contains("must use a valid capability token")
+                .contains("must use a valid capability token"),
+            "{error}"
         );
     }
 
     #[test]
     fn simulation_rejects_invalid_numeric_capability_config() {
-        let error = read_from_string(
+        let error = Manifest::parse(
             r#"
 schema: phoxal/simulation/v0
 capabilities:
@@ -149,7 +162,13 @@ capabilities:
         )
         .expect_err("invalid numeric capability config should fail");
         let message = error.to_string();
-        assert!(message.contains("sampling_period_hz must be finite and > 0"));
-        assert!(message.contains("control_pid must contain exactly 3 terms"));
+        assert!(
+            message.contains("sampling_period_hz must be finite and > 0"),
+            "{message}"
+        );
+        assert!(
+            message.contains("control_pid must contain exactly 3 terms"),
+            "{message}"
+        );
     }
 }

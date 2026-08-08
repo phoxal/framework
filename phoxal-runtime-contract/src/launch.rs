@@ -1,8 +1,12 @@
+//! The launch record a supervisor hands one participant process, and the
+//! environment ABI that record encodes to.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ExecutionId, ExecutionOrigin};
+use crate::identity::ExecutionId;
+use crate::origin::ExecutionOrigin;
 
 /// Default bounded shutdown grace, in milliseconds.
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
@@ -172,7 +176,7 @@ pub enum LaunchError {
     #[error("PHOXAL_EXECUTION_ID is invalid ('{value}'): {source}")]
     ExecutionId {
         value: String,
-        source: crate::InvalidIdentity,
+        source: crate::identity::IdentityError,
     },
     #[error("PHOXAL_EXECUTION_ORIGIN is malformed: '{0}'")]
     ExecutionOrigin(String),

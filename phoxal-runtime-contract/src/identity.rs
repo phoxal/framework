@@ -1,4 +1,4 @@
-//! The identity axes that reach the wire (#952 section B / G).
+//! The identity axes that reach the wire.
 //!
 //! - [`ExecutionId`] names one supervised run. It scopes participants, bus
 //!   traffic, and authority, and it is the bus session root, so traffic from a
@@ -69,6 +69,13 @@ impl ExecutionId {
     /// own session ids cover.
     pub fn mint() -> Self {
         let mut bytes = [0_u8; ZID_BYTES];
+        #[expect(
+            clippy::expect_used,
+            reason = "an execution identity is the root every bus key and every authority \
+                      decision is scoped by, so a host whose randomness source is unavailable \
+                      cannot start an execution at all; there is no weaker identity to fall \
+                      back to and no caller that could carry on without one"
+        )]
         getrandom::fill(&mut bytes).expect("the host must provide randomness");
         let mut value = u128::from_be_bytes(bytes);
         if value >> 124 == 0 {
@@ -85,25 +92,25 @@ impl ExecutionId {
     /// Anything else - uppercase, a leading zero, a shorter or longer run of
     /// digits - would render back differently than it was written, so it is
     /// rejected rather than normalized.
-    pub fn parse(value: &str) -> Result<Self, InvalidIdentity> {
+    pub fn parse(value: &str) -> Result<Self, IdentityError> {
         if value.len() != ZID_HEX_LEN || !value.bytes().all(is_lowercase_hex) {
-            return Err(InvalidIdentity(format!(
+            return Err(IdentityError(format!(
                 "an execution id is exactly {ZID_HEX_LEN} lowercase hexadecimal \
                  characters, got '{value}'"
             )));
         }
         let value = u128::from_str_radix(value, 16)
-            .map_err(|error| InvalidIdentity(format!("'{value}' is not hexadecimal: {error}")))?;
+            .map_err(|error| IdentityError(format!("'{value}' is not hexadecimal: {error}")))?;
         ExecutionId::try_from(value)
     }
 }
 
 impl TryFrom<u128> for ExecutionId {
-    type Error = InvalidIdentity;
+    type Error = IdentityError;
 
-    fn try_from(value: u128) -> Result<Self, InvalidIdentity> {
+    fn try_from(value: u128) -> Result<Self, IdentityError> {
         if value >> 124 == 0 {
-            return Err(InvalidIdentity(format!(
+            return Err(IdentityError(format!(
                 "an execution id renders as {ZID_HEX_LEN} characters, so its most \
                  significant nibble is never zero"
             )));
@@ -163,29 +170,29 @@ impl ProducerId {
     /// emits: 1 to [`ExecutionId::LEN`] lowercase hexadecimal characters with
     /// no leading zero. Unlike an execution, a producer is not minted here and
     /// is not pinned to the full width.
-    pub fn parse(value: &str) -> Result<Self, InvalidIdentity> {
+    pub fn parse(value: &str) -> Result<Self, IdentityError> {
         if value.is_empty()
             || value.len() > ZID_HEX_LEN
             || value.starts_with('0')
             || !value.bytes().all(is_lowercase_hex)
         {
-            return Err(InvalidIdentity(format!(
+            return Err(IdentityError(format!(
                 "a producer id is 1 to {ZID_HEX_LEN} lowercase hexadecimal characters \
                  with no leading zero, got '{value}'"
             )));
         }
         let value = u128::from_str_radix(value, 16)
-            .map_err(|error| InvalidIdentity(format!("'{value}' is not hexadecimal: {error}")))?;
+            .map_err(|error| IdentityError(format!("'{value}' is not hexadecimal: {error}")))?;
         ProducerId::try_from(value)
     }
 }
 
 impl TryFrom<u128> for ProducerId {
-    type Error = InvalidIdentity;
+    type Error = IdentityError;
 
-    fn try_from(value: u128) -> Result<Self, InvalidIdentity> {
+    fn try_from(value: u128) -> Result<Self, IdentityError> {
         if value == 0 {
-            return Err(InvalidIdentity("a producer id is never zero".to_string()));
+            return Err(IdentityError("a producer id is never zero".to_string()));
         }
         Ok(ProducerId(value))
     }
@@ -233,10 +240,10 @@ impl<'de> Deserialize<'de> for ProducerId {
 
 /// One world history.
 ///
-/// This is #931's opaque epoch, renamed. Timelines compare only for equality:
-/// a replacement timeline is not "newer", it is simply different, and any
-/// instant from a different timeline is incomparable. Zero is not a timeline -
-/// absence is `Option::None`, never a sentinel value.
+/// An opaque epoch. Timelines compare only for equality: a replacement
+/// timeline is not "newer", it is simply different, and any instant from a
+/// different timeline is incomparable. Zero is not a timeline - absence is
+/// `Option::None`, never a sentinel value.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TimelineId(NonZeroU64);
@@ -245,6 +252,12 @@ impl TimelineId {
     /// Mint a fresh timeline identity.
     pub fn mint() -> Self {
         let mut bytes = [0_u8; 8];
+        #[expect(
+            clippy::expect_used,
+            reason = "a timeline names one world history, so two histories separated by a \
+                      predictable identity would be indistinguishable to every reader; a host \
+                      whose randomness source is unavailable has no correct value to return"
+        )]
         getrandom::fill(&mut bytes).expect("the host must provide randomness");
         // A zero draw is astronomically unlikely and trivially repaired; the
         // point is that the type has no zero value at all.
@@ -277,10 +290,15 @@ impl fmt::Debug for TimelineId {
     }
 }
 
-/// A rendered identity that is not a valid one.
+/// A value this module refused to accept as one of its identities.
+///
+/// The message already names the rejected value and the shape that was
+/// required, because the caller that produced it - a launch record, a wire
+/// field, a transport session id - is never in a position to explain the
+/// identity grammar itself.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
-pub struct InvalidIdentity(String);
+pub struct IdentityError(String);
 
 const fn is_lowercase_hex(byte: u8) -> bool {
     byte.is_ascii_digit() || byte.is_ascii_lowercase() && byte <= b'f'

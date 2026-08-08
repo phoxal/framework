@@ -1,0 +1,28 @@
+[package]
+# The directory is named for the authored documents it holds, which every other
+# crate's tests read by path; the package is the code that stages them. That is
+# why this is the one workspace member whose directory is not its package name,
+# and why `workspace-policy` exempts it.
+name = "phoxal-fixture"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Staging for the workspace fixture robot, used by other crates' tests."
+# Never published. It exists only so the workspace's own tests share one answer
+# to what the fixture robot is, and its assets are meaningless outside this
+# repository.
+publish = false
+
+[dependencies]
+# The authored documents this crate stages are compiled by the manifest crate
+# and land as the model crate's canonical types. It deliberately does not depend
+# on `phoxal`: staging test assets is not participant-engine behavior, and
+# keeping the engine out means enabling this crate cannot pull a runtime into a
+# test build.
+phoxal-manifest = { workspace = true }
+phoxal-model = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

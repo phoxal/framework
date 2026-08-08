@@ -14,7 +14,7 @@ use phoxal_manifest::bundle::{
     BundleError, BundleFile, BundleResolver, FinalizedBundle, InvalidBundlePath,
 };
 use phoxal_manifest::source::robot::v0::Clock;
-use phoxal_manifest::{SourceSet, compile, source};
+use phoxal_manifest::{CompileError, SourceSet, source};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -24,7 +24,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn sources(project_root: &Path) -> SourceSet {
-    let manifest = source::robot::read_from_path(project_root.join("robot.yaml"))
+    let manifest = source::robot::Manifest::load(project_root.join("robot.yaml"))
         .expect("fixture robot manifest must parse");
     let source::robot::Manifest::V0(manifest) = manifest;
     let workspace = workspace_root();
@@ -50,9 +50,12 @@ fn sources(project_root: &Path) -> SourceSet {
 /// the reader, so this lives in the tests that pin the shape.
 fn stage(project_root: &Path, clock: Clock, bundle_root: &Path) {
     let sources = sources(project_root);
-    let compiled = compile(sources.clone()).expect("fixture project must compile");
+    let compiled = sources
+        .clone()
+        .compile()
+        .expect("fixture project must compile");
     let source::robot::Manifest::V0(mut manifest) =
-        source::robot::read_from_path(&sources.robot_manifest).expect("manifest must parse");
+        source::robot::Manifest::load(&sources.robot_manifest).expect("manifest must parse");
 
     let assets = bundle_root.join("assets");
     std::fs::create_dir_all(assets.join("robot")).unwrap();
@@ -118,11 +121,32 @@ fn a_finalized_bundle_loads_without_any_compiled_model_document() {
     let robot = bundle.robot();
 
     assert_eq!(
-        (robot.robot_id(), robot.namespace()),
+        (
+            robot.identity().id().as_str(),
+            robot.identity().namespace().as_str()
+        ),
         ("rgbd-imu-diff-drive", "dev")
     );
     assert_eq!(robot.clock(), phoxal_model::Clock::Real);
-    assert_eq!(robot.components().len(), 7);
+    // Naming the instances rather than counting them states what the authored
+    // document declares, so adding or renaming one fails here describing the
+    // change instead of reporting that a number moved.
+    assert_eq!(
+        robot
+            .components()
+            .map(|instance| instance.id().as_str())
+            .collect::<Vec<_>>(),
+        [
+            "front_camera",
+            "front_center_tof",
+            "front_left_drive",
+            "front_right_drive",
+            "gnss",
+            "imu",
+            "rear_left_drive",
+            "rear_right_drive",
+        ]
+    );
     assert!(
         robot
             .simulation_for_component_type("drive_motor")
@@ -242,7 +266,14 @@ fn a_structure_path_outside_the_bundle_is_refused() {
     });
 
     let error = FinalizedBundle::load(bundle.path()).expect_err("an escaping path must fail");
-    assert!(format!("{error:#}").contains("robot root"), "{error:#}");
+    assert!(
+        matches!(
+            error,
+            BundleError::Compile(CompileError::Escapes { ref root, .. })
+                if root.ends_with("assets")
+        ),
+        "{error}"
+    );
 }
 
 #[test]
@@ -301,7 +332,7 @@ fn a_simulated_clock_cannot_coexist_with_a_component_driver() {
     .unwrap();
 
     // The driver alone is legal: it is the combination that is meaningless.
-    source::robot::read_from_dir(temp.path()).expect("a driver on the real clock is valid");
+    source::robot::Manifest::load(temp.path()).expect("a driver on the real clock is valid");
 
     std::fs::write(
         temp.path().join("robot.yaml"),
@@ -312,7 +343,7 @@ fn a_simulated_clock_cannot_coexist_with_a_component_driver() {
         ),
     )
     .unwrap();
-    let error = source::robot::read_from_dir(temp.path())
+    let error = source::robot::Manifest::load(temp.path())
         .expect_err("a driver under simulated time must fail");
     assert!(
         format!("{error:#}").contains("clock: simulated"),
@@ -322,15 +353,14 @@ fn a_simulated_clock_cannot_coexist_with_a_component_driver() {
 
 #[test]
 fn an_authored_document_defaults_to_the_real_clock() {
-    let source::robot::Manifest::V0(manifest) = source::robot::read_from_path(
+    let source::robot::Manifest::V0(manifest) = source::robot::Manifest::load(
         workspace_root().join("fixture/robot/rgbd-imu-diff-drive/robot.yaml"),
     )
     .expect("the fixture omits `clock:`");
     assert_eq!(manifest.clock, Clock::Real);
 
-    let compiled = compile(sources(
-        &workspace_root().join("fixture/robot/rgbd-imu-diff-drive"),
-    ))
-    .expect("fixture must compile");
+    let compiled = sources(&workspace_root().join("fixture/robot/rgbd-imu-diff-drive"))
+        .compile()
+        .expect("fixture must compile");
     assert_eq!(compiled.robot().clock(), phoxal_model::Clock::Real);
 }

@@ -1,3 +1,9 @@
+//! The read side of the embedded participant-metadata document.
+//!
+//! Every participant binary carries this record in a linker section, and it is
+//! the whole compatibility surface between a `phoxal-cli` and that binary. The
+//! matching writer is [`crate::emit`].
+
 use serde::{Deserialize, Serialize};
 
 use crate::version::{BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema};
@@ -21,6 +27,9 @@ pub struct ParticipantSchemas {
     pub simulation: SimulationSchema,
 }
 
+/// What a participant binary is, as declared by the role macro it was built
+/// with. A supervisor schedules and supervises a process by this alone; there
+/// is no second, finer classification anywhere in the process contract.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantKind {
@@ -53,8 +62,8 @@ impl ParticipantKind {
 /// `__DATA,__phoxal_meta` section at compile time.
 ///
 /// Deserialize-only on purpose: the sole writer is
-/// [`emit::ParticipantMetadataRecord`], so a reader can never accidentally
-/// re-persist a document it merely parsed.
+/// [`crate::emit::ParticipantMetadataRecord`], so a reader can never
+/// accidentally re-persist a document it merely parsed.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum ParticipantMetadata {
@@ -68,11 +77,15 @@ pub enum ParticipantMetadata {
     },
 }
 
-/// Strictly parse an embedded metadata record. The schema tag selects the
-/// variant at parse time, and every version identity inside it selects a
-/// variant of its own enum; there is no post-hoc string check anywhere.
-pub fn parse_participant_metadata(bytes: &[u8]) -> Result<ParticipantMetadata, MetadataError> {
-    serde_json::from_slice(bytes).map_err(MetadataError)
+impl ParticipantMetadata {
+    /// Strictly parse the bytes of an embedded metadata section.
+    ///
+    /// The schema tag selects the variant at parse time, and every version
+    /// identity inside it selects a variant of its own enum; there is no
+    /// post-hoc string check anywhere.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, MetadataError> {
+        serde_json::from_slice(bytes).map_err(MetadataError)
+    }
 }
 
 /// An embedded metadata section that is not a document this framework train
@@ -103,7 +116,7 @@ mod tests {
             id,
             kind,
             config_schema,
-        } = parse_participant_metadata(&record(
+        } = ParticipantMetadata::from_bytes(&record(
             r#""id":"drive","kind":"service","config_schema":{"type":"null"}"#,
         ))
         .expect("the exact document a role macro embeds must parse");
@@ -121,7 +134,7 @@ mod tests {
 
     #[test]
     fn the_root_brain_kind_is_distinct_from_a_service() {
-        let ParticipantMetadata::V0 { id, kind, .. } = parse_participant_metadata(&record(
+        let ParticipantMetadata::V0 { id, kind, .. } = ParticipantMetadata::from_bytes(&record(
             r#""id":"brain","kind":"brain","config_schema":{"type":"null"}"#,
         ))
         .expect("the exact document `#[phoxal::brain]` embeds must parse");
@@ -146,7 +159,7 @@ mod tests {
     #[test]
     fn an_unknown_schema_tag_is_rejected() {
         let bytes = br#"{"schema":"phoxal/participant-metadata/v1","api":"phoxal/robot-api/v0.1","id":"drive","kind":"service","config_schema":null}"#;
-        assert!(parse_participant_metadata(bytes).is_err());
+        assert!(ParticipantMetadata::from_bytes(bytes).is_err());
     }
 
     #[test]
@@ -155,7 +168,7 @@ mod tests {
             r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},"id":"drive","kind":"service","config_schema":null}}"#
         )
         .into_bytes();
-        let message = parse_participant_metadata(&bytes)
+        let message = ParticipantMetadata::from_bytes(&bytes)
             .expect_err("an API revision this train does not speak must not parse")
             .to_string();
         assert!(message.contains("phoxal/robot-api/v0.2"), "{message}");
@@ -176,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_0_53_era_binary_is_rejected_naming_its_token_and_the_expected_spelling() {
-        let message = parse_participant_metadata(ERA_0_53_RECORD.as_bytes())
+        let message = ParticipantMetadata::from_bytes(ERA_0_53_RECORD.as_bytes())
             .expect_err("a 0.53-era binary is not a peer this train can speak to")
             .to_string();
 
@@ -206,7 +219,7 @@ mod tests {
     fn a_0_53_era_schema_spelling_is_rejected_by_name() {
         let bytes = ERA_0_53_RECORD.replace(r#""api":"v0.1""#, r#""api":"phoxal/robot-api/v0.1""#);
 
-        let message = parse_participant_metadata(bytes.as_bytes())
+        let message = ParticipantMetadata::from_bytes(bytes.as_bytes())
             .expect_err("the old bus spelling is not a version this train speaks")
             .to_string();
 
@@ -223,7 +236,7 @@ mod tests {
             .replace(r#""api":"v0.1""#, r#""api":"phoxal/robot-api/v0.1""#)
             .replace(r#""bus":"phoxal/bus/v0""#, r#""bus":"phoxal/bus-abi/v0""#);
 
-        let message = parse_participant_metadata(bytes.as_bytes())
+        let message = ParticipantMetadata::from_bytes(bytes.as_bytes())
             .expect_err("the unnamespaced robot grammar is not a version this train speaks")
             .to_string();
 
@@ -235,22 +248,22 @@ mod tests {
     #[test]
     fn an_unknown_field_is_rejected() {
         assert!(
-            parse_participant_metadata(&record(
+            ParticipantMetadata::from_bytes(&record(
                 r#""id":"drive","kind":"service","config_schema":null,"extra":true"#
             ))
             .is_err()
         );
-        // `class` was the tool/checked discriminator and went with the tool
-        // concept (#978); a binary still emitting it is stale, not compatible.
+        // There is no `class` discriminator in this contract; a binary still
+        // emitting one is stale, not compatible.
         assert!(
-            parse_participant_metadata(&record(
+            ParticipantMetadata::from_bytes(&record(
                 r#""id":"drive","kind":"service","class":"checked","config_schema":null"#
             ))
             .is_err()
         );
         // A framework SemVer is not part of this contract in any form.
         assert!(
-            parse_participant_metadata(&record(
+            ParticipantMetadata::from_bytes(&record(
                 r#""id":"drive","kind":"service","config_schema":null,"framework":"0.53.0""#
             ))
             .is_err()
@@ -260,6 +273,6 @@ mod tests {
     #[test]
     fn a_record_missing_a_participant_schema_is_rejected() {
         let bytes = br#"{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"phoxal/robot/v0","component":"phoxal/component/v0"},"id":"drive","kind":"service","config_schema":null}"#;
-        assert!(parse_participant_metadata(bytes).is_err());
+        assert!(ParticipantMetadata::from_bytes(bytes).is_err());
     }
 }

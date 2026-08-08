@@ -9,26 +9,25 @@ use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::{exploration, follower, planner};
+use crate::follower;
+use crate::frontiers::OccupancyGrid;
+use crate::planner;
 
+/// How long an input sample stays usable. Both the pose and the map revision
+/// are inputs to the same steering decision, so they share one horizon: a fresh
+/// pose against a stale map is not a safer basis for driving than a stale pose.
 const LOCALIZATION_STALE: Duration = Duration::from_secs(1);
-const REQUEST_TIMEOUT_NS: u64 = 120_000_000_000;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const RESULT_CACHE_CAPACITY: usize = 1024;
-
-#[derive(Clone)]
-struct Timed<T> {
-    body: T,
-    at: RobotInstant,
-}
 
 struct Active {
     request_id: api::navigation::RequestId,
     path: api::navigation::Path,
     accepted_published: bool,
-    started_at_ns: u64,
+    started_at: RobotInstant,
 }
 
-pub struct Api {
+pub(crate) struct Api {
     request: Subscriber<api::navigation::Request>,
     localize: Subscriber<api::localize::LocalizationState>,
     map_revision: Subscriber<api::map::Revision>,
@@ -39,17 +38,18 @@ pub struct Api {
     candidate: StatePublisher<api::navigation::Candidate>,
 }
 
-pub struct NavigationState {
+#[derive(Default)]
+pub(crate) struct NavigationState {
     active: Option<Active>,
     last_localize: Option<Timed<api::localize::LocalizationState>>,
     last_map_revision: Option<Timed<api::map::Revision>>,
-    completed: BTreeMap<String, api::navigation::Outcome>,
-    completion_order: VecDeque<String>,
+    completed: BTreeMap<api::navigation::RequestId, api::navigation::Outcome>,
+    completion_order: VecDeque<api::navigation::RequestId>,
     last_time: Option<RobotInstant>,
 }
 
 #[phoxal::service(state = NavigationState, api = Api)]
-pub struct Navigation;
+pub(crate) struct Navigation;
 
 impl Participant for Navigation {
     async fn setup(
@@ -63,14 +63,7 @@ impl Participant for Navigation {
         )
         .await?;
         Ok((
-            NavigationState {
-                active: None,
-                last_localize: None,
-                last_map_revision: None,
-                completed: BTreeMap::new(),
-                completion_order: VecDeque::new(),
-                last_time: None,
-            },
+            NavigationState::default(),
             Api {
                 request: ctx
                     .subscriber(api::topic::owner().navigation().request(), 32)
@@ -98,21 +91,6 @@ impl Participant for Navigation {
         ))
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
-        state.active = None;
-        state.last_localize = None;
-        state.last_map_revision = None;
-        state.completed.clear();
-        state.completion_order.clear();
-        state.last_time = None;
-        Ok(())
-    }
-
     #[phoxal::step(hz = 20)]
     async fn step(
         &self,
@@ -120,115 +98,93 @@ impl Participant for Navigation {
         step: StepContext,
         state: &mut Self::State,
     ) -> Result<()> {
-        state.last_time = Some(step.now());
+        let now = step.now();
+        state.last_time = Some(now);
         while let Some(received) = api.localize.try_recv() {
             if let Some(at) = received.metadata.produced_exactly_at() {
-                state.last_localize = Some(Timed {
-                    body: received.body,
-                    at,
-                });
+                state.last_localize = Some(Timed::new(received.body, at));
             }
         }
         while let Some(received) = api.map_revision.try_recv() {
             if let Some(at) = received.metadata.produced_exactly_at() {
-                state.last_map_revision = Some(Timed {
-                    body: received.body,
-                    at,
-                });
+                state.last_map_revision = Some(Timed::new(received.body, at));
             }
         }
 
         while let Some(received) = api.request.try_recv() {
-            state.handle_request(api, step, received.body).await?;
+            state.handle_request(api, step, received.body)?;
         }
 
-        let now = step.now();
+        // Both gates are pure functions of what arrived above, so reading them
+        // once here keeps the rest of the step working from a single consistent
+        // view of the inputs.
+        let localization = state.fresh_localization(now);
+        let map_revision = state.fresh_map_revision(now);
+
         let Some(active) = state.active.as_mut() else {
             api.state
-                .publish(step.token(), api::navigation::State::Idle)?;
+                .publish(&step.token, api::navigation::State::Idle)?;
             return Ok(());
         };
 
         if !active.accepted_published {
             active.accepted_published = true;
             api.state.publish(
-                step.token(),
+                &step.token,
                 api::navigation::State::Accepted(active.request_id.clone()),
             )?;
             return Ok(());
         }
 
-        if now.ticks().saturating_sub(active.started_at_ns) > REQUEST_TIMEOUT_NS {
-            let request_id = active.request_id.clone();
-            state.active = None;
-            publish_zero(api, step, request_id.clone()).await?;
-            state
-                .publish_terminal(api, step, request_id, api::navigation::Outcome::TimedOut)
-                .await?;
-            return Ok(());
+        // A request that started on a replaced timeline is not aged here: there
+        // is no ordering across timelines to age it by. It still terminates,
+        // because the localization gate below fails closed on exactly that
+        // mismatch.
+        let timed_out = now
+            .duration_since(active.started_at)
+            .is_ok_and(|elapsed| elapsed > REQUEST_TIMEOUT);
+        if timed_out {
+            return state.abandon_active(api, step, api::navigation::Outcome::TimedOut);
         }
 
-        let map_revision = fresh_sample(state.last_map_revision.as_ref(), now);
         if active.path.map_revision.is_some_and(|expected| {
-            map_revision.is_none_or(|current| current.body.revision != expected)
+            map_revision
+                .as_ref()
+                .is_none_or(|current| current.body.revision != expected)
         }) {
-            let request_id = active.request_id.clone();
-            state.active = None;
-            publish_zero(api, step, request_id.clone()).await?;
-            state
-                .publish_terminal(
-                    api,
-                    step,
-                    request_id,
-                    api::navigation::Outcome::Failed(if map_revision.is_some() {
-                        api::navigation::FailureReason::MapChanged
-                    } else {
-                        api::navigation::FailureReason::MapUnavailable
-                    }),
-                )
-                .await?;
-            return Ok(());
+            let reason = if map_revision.is_some() {
+                api::navigation::FailureReason::MapChanged
+            } else {
+                api::navigation::FailureReason::MapUnavailable
+            };
+            return state.abandon_active(api, step, api::navigation::Outcome::Failed(reason));
         }
 
-        let Some(localize) = fresh_sample(state.last_localize.as_ref(), now) else {
-            let request_id = active.request_id.clone();
-            state.active = None;
-            publish_zero(api, step, request_id.clone()).await?;
-            state
-                .publish_terminal(
-                    api,
-                    step,
-                    request_id,
-                    api::navigation::Outcome::Failed(
-                        api::navigation::FailureReason::LocalizationUnavailable,
-                    ),
-                )
-                .await?;
-            return Ok(());
+        let Some(localization) = localization else {
+            return state.abandon_active(
+                api,
+                step,
+                api::navigation::Outcome::Failed(
+                    api::navigation::FailureReason::LocalizationUnavailable,
+                ),
+            );
         };
 
-        let Some(output) = follower::pursue(&active.path, &localize.body) else {
-            let request_id = active.request_id.clone();
-            state.active = None;
-            publish_zero(api, step, request_id.clone()).await?;
-            state
-                .publish_terminal(
-                    api,
-                    step,
-                    request_id,
-                    api::navigation::Outcome::Failed(api::navigation::FailureReason::NoPath),
-                )
-                .await?;
-            return Ok(());
+        let Some(output) = follower::pursue(&active.path, &localization.body) else {
+            return state.abandon_active(
+                api,
+                step,
+                api::navigation::Outcome::Failed(api::navigation::FailureReason::NoPath),
+            );
         };
 
         let request_id = active.request_id.clone();
         api.state.publish(
-            step.token(),
+            &step.token,
             api::navigation::State::Running(request_id.clone()),
         )?;
         api.progress.publish(
-            step.token(),
+            &step.token,
             api::navigation::Progress {
                 request_id: request_id.clone(),
                 distance_remaining_m: output.distance_remaining_m,
@@ -236,7 +192,7 @@ impl Participant for Navigation {
             },
         )?;
         api.candidate.publish(
-            step.token(),
+            &step.token,
             api::navigation::Candidate {
                 request_id: request_id.clone(),
                 linear_x_mps: output.linear_x_mps,
@@ -246,10 +202,18 @@ impl Participant for Navigation {
 
         if output.finished {
             state.active = None;
-            state
-                .publish_terminal(api, step, request_id, api::navigation::Outcome::Succeeded)
-                .await?;
+            state.publish_terminal(api, step, request_id, api::navigation::Outcome::Succeeded)?;
         }
+        Ok(())
+    }
+
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        *state = NavigationState::default();
         Ok(())
     }
 }
@@ -264,12 +228,12 @@ impl Navigation {
         let Some(now) = state.last_time else {
             return Err(QueryFailure::unavailable("no step has run yet"));
         };
-        let Some(localize) = fresh_sample(state.last_localize.as_ref(), now) else {
+        let Some(localization) = state.fresh_localization(now) else {
             return Err(QueryFailure::unavailable(
                 "localization is unavailable or stale",
             ));
         };
-        let Some(revision) = fresh_sample(state.last_map_revision.as_ref(), now) else {
+        let Some(revision) = state.fresh_map_revision(now) else {
             return Err(QueryFailure::unavailable(
                 "map revision is unavailable or stale",
             ));
@@ -295,19 +259,95 @@ impl Navigation {
             .query(submap_request.clone())
             .await
             .map_err(|error| QueryFailure::unavailable(error.to_string()))?;
+        let robot_xy_m = (localization.body.x_m, localization.body.y_m);
+        let frontier = OccupancyGrid::from_submap(&submap_request, response).and_then(|grid| {
+            grid.score_frontiers(grid.detect_frontiers(), robot_xy_m)
+                .into_iter()
+                .next()
+        });
         Ok(api::navigation::FrontierResponse {
-            frontier: exploration::next_frontier(
-                &submap_request,
-                response,
-                (localize.body.x_m, localize.body.y_m),
-            ),
+            frontier,
             map_revision: Some(revision.body.revision),
         })
     }
 }
 
+impl Api {
+    fn publish_result(
+        &self,
+        step: StepContext,
+        request_id: api::navigation::RequestId,
+        outcome: api::navigation::Outcome,
+    ) -> Result<()> {
+        self.result.publish(
+            &step.token,
+            api::navigation::Result {
+                request_id,
+                outcome,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Withdraw this request's motion candidate by commanding zero velocity.
+    fn publish_zero_candidate(
+        &self,
+        step: StepContext,
+        request_id: api::navigation::RequestId,
+    ) -> Result<()> {
+        self.candidate.publish(
+            &step.token,
+            api::navigation::Candidate {
+                request_id,
+                linear_x_mps: 0.0,
+                angular_z_radps: 0.0,
+            },
+        )?;
+        Ok(())
+    }
+}
+
 impl NavigationState {
-    async fn publish_terminal(
+    /// The newest pose estimate, if it is recent enough at `now` to act on.
+    fn fresh_localization(
+        &self,
+        now: RobotInstant,
+    ) -> Option<Timed<api::localize::LocalizationState>> {
+        self.last_localize
+            .as_ref()
+            .filter(|sample| sample.fresh_within(now, LOCALIZATION_STALE))
+            .cloned()
+    }
+
+    /// The newest map revision, if it is recent enough at `now` to act on.
+    fn fresh_map_revision(&self, now: RobotInstant) -> Option<Timed<api::map::Revision>> {
+        self.last_map_revision
+            .as_ref()
+            .filter(|sample| sample.fresh_within(now, LOCALIZATION_STALE))
+            .cloned()
+    }
+
+    /// End the active request with `outcome`.
+    ///
+    /// The motion candidate is withdrawn before the result is published, so no
+    /// consumer can see a request reach a terminal state while the last velocity
+    /// it commanded still stands. Does nothing when no request is active, which
+    /// is the right no-op for the callers that have already established one is
+    /// there.
+    fn abandon_active(
+        &mut self,
+        api: &Api,
+        step: StepContext,
+        outcome: api::navigation::Outcome,
+    ) -> Result<()> {
+        let Some(active) = self.active.take() else {
+            return Ok(());
+        };
+        api.publish_zero_candidate(step, active.request_id.clone())?;
+        self.publish_terminal(api, step, active.request_id, outcome)
+    }
+
+    fn publish_terminal(
         &mut self,
         api: &Api,
         step: StepContext,
@@ -315,7 +355,7 @@ impl NavigationState {
         outcome: api::navigation::Outcome,
     ) -> Result<()> {
         self.remember_terminal(&request_id, &outcome);
-        publish_result(api, step, request_id, outcome).await
+        api.publish_result(step, request_id, outcome)
     }
 
     fn remember_terminal(
@@ -323,27 +363,29 @@ impl NavigationState {
         request_id: &api::navigation::RequestId,
         outcome: &api::navigation::Outcome,
     ) {
-        let key = request_id.value.clone();
-        if !self.completed.contains_key(&key) {
+        if !self.completed.contains_key(request_id) {
             if self.completion_order.len() == RESULT_CACHE_CAPACITY
                 && let Some(oldest) = self.completion_order.pop_front()
             {
                 self.completed.remove(&oldest);
             }
-            self.completion_order.push_back(key.clone());
+            self.completion_order.push_back(request_id.clone());
         }
-        self.completed.insert(key, outcome.clone());
+        self.completed.insert(request_id.clone(), outcome.clone());
     }
 
-    async fn handle_request(
+    fn handle_request(
         &mut self,
         api: &Api,
         step: StepContext,
         request: api::navigation::Request,
     ) -> Result<()> {
-        if !valid_request_id(&request.request_id) {
-            publish_invalid(api, step, request.request_id).await?;
-            return Ok(());
+        if !request.request_id.is_valid() {
+            return api.publish_result(
+                step,
+                request.request_id,
+                api::navigation::Outcome::Refused(api::navigation::RefusalReason::InvalidRequest),
+            );
         }
         if let Some(active) = &self.active
             && active.request_id == request.request_id
@@ -353,36 +395,26 @@ impl NavigationState {
             } else {
                 api::navigation::State::Accepted(active.request_id.clone())
             };
-            api.state.publish(step.token(), state)?;
+            api.state.publish(&step.token, state)?;
             return Ok(());
         }
-        if let Some(outcome) = self.completed.get(&request.request_id.value).cloned() {
-            publish_result(api, step, request.request_id, outcome).await?;
-            return Ok(());
+        if let Some(outcome) = self.completed.get(&request.request_id).cloned() {
+            return api.publish_result(step, request.request_id, outcome);
         }
         match request.kind {
             api::navigation::RequestKind::Cancel(target_request_id) => {
-                let matches = self
+                let cancels_active = self
                     .active
                     .as_ref()
                     .is_some_and(|active| active.request_id == target_request_id);
-                if matches {
-                    self.active = None;
-                    publish_zero(api, step, target_request_id.clone()).await?;
-                    self.publish_terminal(
-                        api,
-                        step,
-                        target_request_id,
-                        api::navigation::Outcome::Cancelled,
-                    )
-                    .await?;
+                if cancels_active {
+                    self.abandon_active(api, step, api::navigation::Outcome::Cancelled)?;
                     self.publish_terminal(
                         api,
                         step,
                         request.request_id,
                         api::navigation::Outcome::Succeeded,
-                    )
-                    .await?;
+                    )?;
                 } else {
                     self.publish_terminal(
                         api,
@@ -391,65 +423,55 @@ impl NavigationState {
                         api::navigation::Outcome::Refused(
                             api::navigation::RefusalReason::InvalidRequest,
                         ),
-                    )
-                    .await?;
+                    )?;
                 }
             }
             api::navigation::RequestKind::GotoPose(goal) => {
                 if self.active.is_some() {
-                    self.publish_terminal(
+                    return self.publish_terminal(
                         api,
                         step,
                         request.request_id,
                         api::navigation::Outcome::Refused(api::navigation::RefusalReason::Busy),
-                    )
-                    .await?;
-                    return Ok(());
+                    );
                 }
-                let Some(localize) = fresh_sample(self.last_localize.as_ref(), step.now()) else {
-                    self.publish_terminal(
+                let Some(localization) = self.fresh_localization(step.now()) else {
+                    return self.publish_terminal(
                         api,
                         step,
                         request.request_id,
                         api::navigation::Outcome::Failed(
                             api::navigation::FailureReason::LocalizationUnavailable,
                         ),
-                    )
-                    .await?;
-                    return Ok(());
+                    );
                 };
-                let Some(revision) = fresh_sample(self.last_map_revision.as_ref(), step.now())
-                else {
-                    self.publish_terminal(
+                let Some(revision) = self.fresh_map_revision(step.now()) else {
+                    return self.publish_terminal(
                         api,
                         step,
                         request.request_id,
                         api::navigation::Outcome::Failed(
                             api::navigation::FailureReason::MapUnavailable,
                         ),
-                    )
-                    .await?;
-                    return Ok(());
+                    );
                 };
                 let Some(path) =
-                    planner::straight_line(&localize.body, &goal, Some(revision.body.revision))
+                    planner::straight_line(&localization.body, &goal, Some(revision.body.revision))
                 else {
-                    self.publish_terminal(
+                    return self.publish_terminal(
                         api,
                         step,
                         request.request_id,
                         api::navigation::Outcome::Refused(
                             api::navigation::RefusalReason::InvalidRequest,
                         ),
-                    )
-                    .await?;
-                    return Ok(());
+                    );
                 };
                 self.active = Some(Active {
                     request_id: request.request_id,
                     path,
                     accepted_published: false,
-                    started_at_ns: step.now().ticks(),
+                    started_at: step.now(),
                 });
             }
             api::navigation::RequestKind::FollowPath(path) => {
@@ -459,11 +481,10 @@ impl NavigationState {
                         step,
                         request.request_id,
                         api::navigation::Outcome::Refused(api::navigation::RefusalReason::Busy),
-                    )
-                    .await?;
+                    )?;
                 } else if planner::valid_path(&path)
                     && path.map_revision.is_some_and(|expected| {
-                        fresh_sample(self.last_map_revision.as_ref(), step.now())
+                        self.fresh_map_revision(step.now())
                             .is_some_and(|current| current.body.revision == expected)
                     })
                 {
@@ -471,7 +492,7 @@ impl NavigationState {
                         request_id: request.request_id,
                         path,
                         accepted_published: false,
-                        started_at_ns: step.now().ticks(),
+                        started_at: step.now(),
                     });
                 } else {
                     self.publish_terminal(
@@ -481,79 +502,12 @@ impl NavigationState {
                         api::navigation::Outcome::Refused(
                             api::navigation::RefusalReason::InvalidRequest,
                         ),
-                    )
-                    .await?;
+                    )?;
                 }
             }
         }
         Ok(())
     }
-}
-
-fn valid_request_id(request_id: &api::navigation::RequestId) -> bool {
-    let value = request_id.value.trim();
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-}
-
-/// A sample is usable only if it belongs to the same world history, is not in
-/// the reference's future, and is within the staleness bound. A cross-timeline
-/// comparison is a checked error, so it can never silently pass.
-fn fresh_sample<T>(sample: Option<&Timed<T>>, now: RobotInstant) -> Option<&Timed<T>> {
-    sample.filter(|sample| {
-        TimeWindow::exact(sample.at)
-            .possibly_fresh_within(now, LOCALIZATION_STALE)
-            .unwrap_or(false)
-    })
-}
-
-async fn publish_invalid(
-    api: &Api,
-    step: StepContext,
-    request_id: api::navigation::RequestId,
-) -> Result<()> {
-    publish_result(
-        api,
-        step,
-        request_id,
-        api::navigation::Outcome::Refused(api::navigation::RefusalReason::InvalidRequest),
-    )
-    .await
-}
-
-async fn publish_zero(
-    api: &Api,
-    step: StepContext,
-    request_id: api::navigation::RequestId,
-) -> Result<()> {
-    api.candidate.publish(
-        step.token(),
-        api::navigation::Candidate {
-            request_id,
-            linear_x_mps: 0.0,
-            angular_z_radps: 0.0,
-        },
-    )?;
-    Ok(())
-}
-
-async fn publish_result(
-    api: &Api,
-    step: StepContext,
-    request_id: api::navigation::RequestId,
-    outcome: api::navigation::Outcome,
-) -> Result<()> {
-    api.result.publish(
-        step.token(),
-        api::navigation::Result {
-            request_id,
-            outcome,
-        },
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -567,58 +521,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_outcomes_cannot_represent_running() {
-        let outcomes = [
-            api::navigation::Outcome::Succeeded,
-            api::navigation::Outcome::Cancelled,
-            api::navigation::Outcome::TimedOut,
-        ];
-        assert_eq!(outcomes.len(), 3);
-    }
-
-    #[test]
-    fn request_ids_are_nonempty_bounded_and_filesystem_safe() {
-        let id = |value: &str| api::navigation::RequestId {
-            value: value.to_string(),
-        };
-        assert!(valid_request_id(&id("goto-42")));
-        assert!(!valid_request_id(&id("")));
-        assert!(!valid_request_id(&id("contains space")));
-        assert!(!valid_request_id(&id(&"x".repeat(129))));
-    }
-
-    #[test]
-    fn localization_freshness_rejects_future_and_stale_samples() {
+    fn input_gates_reject_future_stale_and_replaced_world_samples() {
         let line = TimelineId::mint();
         let other = TimelineId::mint();
-        let sample = |ticks| Timed {
-            body: (),
-            at: RobotInstant::new(line, ticks),
+        let at = |timeline, ticks| RobotInstant::new(timeline, ticks);
+        let state_at = |timeline, ticks| NavigationState {
+            last_localize: Some(Timed::new(
+                api::localize::LocalizationState {
+                    x_m: 0.0,
+                    y_m: 0.0,
+                    yaw_rad: 0.0,
+                    confidence: 1.0,
+                },
+                at(timeline, ticks),
+            )),
+            ..NavigationState::default()
         };
-        let now = |ticks| RobotInstant::new(line, ticks);
-        assert!(fresh_sample(Some(&sample(100)), now(100)).is_some());
+
         assert!(
-            fresh_sample(Some(&sample(101)), now(100)).is_none(),
+            state_at(line, 100)
+                .fresh_localization(at(line, 100))
+                .is_some()
+        );
+        assert!(
+            state_at(line, 101)
+                .fresh_localization(at(line, 100))
+                .is_none(),
             "a sample from the reference's future is not a fresh observation"
         );
         let stale = u64::try_from(LOCALIZATION_STALE.as_nanos()).unwrap() + 1;
-        assert!(fresh_sample(Some(&sample(0)), now(stale)).is_none());
         assert!(
-            fresh_sample(Some(&sample(100)), RobotInstant::new(other, 100)).is_none(),
+            state_at(line, 0)
+                .fresh_localization(at(line, stale))
+                .is_none()
+        );
+        assert!(
+            state_at(line, 100)
+                .fresh_localization(at(other, 100))
+                .is_none(),
             "a sample from a replaced world is incomparable, never fresh"
+        );
+        assert!(
+            NavigationState::default()
+                .fresh_map_revision(at(line, 100))
+                .is_none(),
+            "a revision that never arrived is never fresh"
         );
     }
 
     #[test]
     fn terminal_results_are_replayable_and_bounded() {
-        let mut navigation = NavigationState {
-            active: None,
-            last_localize: None,
-            last_map_revision: None,
-            completed: BTreeMap::new(),
-            completion_order: VecDeque::new(),
-            last_time: None,
-        };
+        let mut navigation = NavigationState::default();
         for index in 0..=RESULT_CACHE_CAPACITY {
             navigation.remember_terminal(
                 &request_id(&format!("request-{index}")),
@@ -628,9 +581,9 @@ mod tests {
 
         assert_eq!(navigation.completed.len(), RESULT_CACHE_CAPACITY);
         assert_eq!(navigation.completion_order.len(), RESULT_CACHE_CAPACITY);
-        assert!(!navigation.completed.contains_key("request-0"));
+        assert!(!navigation.completed.contains_key(&request_id("request-0")));
         assert_eq!(
-            navigation.completed.get("request-1024"),
+            navigation.completed.get(&request_id("request-1024")),
             Some(&api::navigation::Outcome::Succeeded)
         );
 
@@ -640,7 +593,7 @@ mod tests {
         );
         assert_eq!(navigation.completed.len(), RESULT_CACHE_CAPACITY);
         assert_eq!(
-            navigation.completed.get("request-1024"),
+            navigation.completed.get(&request_id("request-1024")),
             Some(&api::navigation::Outcome::Cancelled)
         );
     }
@@ -696,113 +649,113 @@ mod tests {
             runner_clock,
             async { tokio::time::sleep(Duration::from_millis(900)).await },
         );
-        let client =
-            async {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                // Stand in for the upstream services: the test drives the same
-                // clock the runner reads, so its stamps land on the runner's
-                // own timeline.
-                let step =
-                    StepToken::__mint(clock.read().instant().expect("test clock is synchronized"));
-                localization
-                    .publish(
-                        &step,
-                        api::localize::LocalizationState {
-                            x_m: 0.0,
-                            y_m: 0.0,
-                            yaw_rad: 0.0,
-                            confidence: 1.0,
-                        },
-                    )
-                    .expect("publish localization");
-                map_revision
-                    .publish(
-                        &step,
-                        api::map::Revision {
-                            revision: 7,
-                            resolution_m: 0.05,
-                        },
-                    )
-                    .expect("publish map revision");
-                tokio::time::sleep(Duration::from_millis(100)).await;
+        let client = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Stand in for the upstream services: the test drives the same
+            // clock the runner reads, so its stamps land on the runner's
+            // own timeline.
+            let step = StepToken::mint(clock.read().instant().expect("test clock is synchronized"));
+            localization
+                .publish(
+                    &step,
+                    api::localize::LocalizationState {
+                        x_m: 0.0,
+                        y_m: 0.0,
+                        yaw_rad: 0.0,
+                        confidence: 1.0,
+                    },
+                )
+                .expect("publish localization");
+            map_revision
+                .publish(
+                    &step,
+                    api::map::Revision {
+                        revision: 7,
+                        resolution_m: 0.05,
+                    },
+                )
+                .expect("publish map revision");
+            tokio::time::sleep(Duration::from_millis(100)).await;
 
-                let immediate_id = request_id("immediate");
-                request
-                    .send(api::navigation::Request {
-                        request_id: immediate_id.clone(),
-                        kind: api::navigation::RequestKind::GotoPose(api::navigation::Pose {
-                            x_m: 0.0,
-                            y_m: 0.0,
-                            yaw_rad: Some(0.0),
-                        }),
-                    })
-                    .expect("publish immediate request");
-                await_state(&states, |state| {
+            let immediate_id = request_id("immediate");
+            request
+                .send(api::navigation::Request {
+                    request_id: immediate_id.clone(),
+                    kind: api::navigation::RequestKind::GotoPose(api::navigation::Pose {
+                        x_m: 0.0,
+                        y_m: 0.0,
+                        yaw_rad: Some(0.0),
+                    }),
+                })
+                .expect("publish immediate request");
+            await_state(&states, |state| {
                 matches!(state, api::navigation::State::Accepted(id) if id == &immediate_id)
             })
             .await;
-                await_state(&states, |state| {
-                matches!(state, api::navigation::State::Running(id) if id == &immediate_id)
-            })
+            await_state(
+                &states,
+                |state| matches!(state, api::navigation::State::Running(id) if id == &immediate_id),
+            )
             .await;
-                let succeeded = await_result(&results, "immediate").await;
-                assert!(matches!(
-                    succeeded.outcome,
-                    api::navigation::Outcome::Succeeded
-                ));
+            let succeeded = await_result(&results, "immediate").await;
+            assert!(matches!(
+                succeeded.outcome,
+                api::navigation::Outcome::Succeeded
+            ));
 
-                request
-                    .send(api::navigation::Request {
-                        request_id: immediate_id,
-                        kind: api::navigation::RequestKind::GotoPose(api::navigation::Pose {
-                            x_m: 99.0,
-                            y_m: 99.0,
-                            yaw_rad: None,
-                        }),
-                    })
-                    .expect("replay completed request");
-                let replayed = await_result(&results, "immediate").await;
-                assert!(matches!(
-                    replayed.outcome,
-                    api::navigation::Outcome::Succeeded
-                ));
+            request
+                .send(api::navigation::Request {
+                    request_id: immediate_id,
+                    kind: api::navigation::RequestKind::GotoPose(api::navigation::Pose {
+                        x_m: 99.0,
+                        y_m: 99.0,
+                        yaw_rad: None,
+                    }),
+                })
+                .expect("replay completed request");
+            let replayed = await_result(&results, "immediate").await;
+            assert!(matches!(
+                replayed.outcome,
+                api::navigation::Outcome::Succeeded
+            ));
 
-                let moving_id = request_id("moving");
-                request
-                    .send(api::navigation::Request {
-                        request_id: moving_id.clone(),
-                        kind: api::navigation::RequestKind::GotoPose(api::navigation::Pose {
-                            x_m: 5.0,
-                            y_m: 0.0,
-                            yaw_rad: None,
-                        }),
-                    })
-                    .expect("publish moving request");
-                await_state(&states, |state| {
-                matches!(state, api::navigation::State::Accepted(id) if id == &moving_id)
-            })
+            let moving_id = request_id("moving");
+            request
+                .send(api::navigation::Request {
+                    request_id: moving_id.clone(),
+                    kind: api::navigation::RequestKind::GotoPose(api::navigation::Pose {
+                        x_m: 5.0,
+                        y_m: 0.0,
+                        yaw_rad: None,
+                    }),
+                })
+                .expect("publish moving request");
+            await_state(
+                &states,
+                |state| matches!(state, api::navigation::State::Accepted(id) if id == &moving_id),
+            )
             .await;
 
-                request
-                    .send(api::navigation::Request {
-                        request_id: request_id("cancel-moving"),
-                        kind: api::navigation::RequestKind::Cancel(moving_id),
-                    })
-                    .expect("publish cancellation");
-                let cancelled = await_result(&results, "moving").await;
-                assert!(matches!(
-                    cancelled.outcome,
-                    api::navigation::Outcome::Cancelled
-                ));
-                let cancel_result = await_result(&results, "cancel-moving").await;
-                assert!(matches!(
-                    cancel_result.outcome,
-                    api::navigation::Outcome::Succeeded
-                ));
-                let zero = await_candidate(&candidates, "moving").await;
-                assert_eq!(zero.linear_x_mps, 0.0);
-                assert_eq!(zero.angular_z_radps, 0.0);
-            };
+            request
+                .send(api::navigation::Request {
+                    request_id: request_id("cancel-moving"),
+                    kind: api::navigation::RequestKind::Cancel(moving_id),
+                })
+                .expect("publish cancellation");
+            let cancelled = await_result(&results, "moving").await;
+            assert!(matches!(
+                cancelled.outcome,
+                api::navigation::Outcome::Cancelled
+            ));
+            let cancel_result = await_result(&results, "cancel-moving").await;
+            assert!(matches!(
+                cancel_result.outcome,
+                api::navigation::Outcome::Succeeded
+            ));
+            let zero = await_candidate(&candidates, "moving").await;
+            assert_eq!(zero.linear_x_mps, 0.0);
+            assert_eq!(zero.angular_z_radps, 0.0);
+        };
 
         let (runner_result, ()) = tokio::join!(runner, client);
         runner_result.expect("navigation runner completed cleanly");

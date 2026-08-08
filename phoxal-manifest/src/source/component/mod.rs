@@ -4,10 +4,10 @@ pub mod v0;
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const COMPONENT_FILE: &str = "component.yaml";
+use crate::source::Violations;
+use crate::source::document::{Document, DocumentKind, Origin, SourceError};
 
 /// A versioned authored `component.yaml` document; the schema tag selects the
 /// variant.
@@ -18,43 +18,83 @@ pub enum Manifest {
     V0(v0::Manifest),
 }
 
-pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
-    let path = path.as_ref().join(COMPONENT_FILE);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read component document {}", path.display()))?;
-    read_from_string(&text)
-        .with_context(|| format!("failed to parse component document {}", path.display()))
+impl Document for Manifest {
+    const KIND: DocumentKind = DocumentKind::Component;
+
+    fn check(&self) -> Result<(), Violations> {
+        let Self::V0(body) = self;
+        body.validate().map_err(Violations::Component)
+    }
 }
 
-pub fn read_from_string(text: &str) -> Result<Manifest> {
-    let manifest: Manifest =
-        serde_yaml::from_str(text).context("failed to parse component document")?;
-    let Manifest::V0(body) = &manifest;
-    body.validate()?;
-    Ok(manifest)
-}
+impl Manifest {
+    /// Parse and validate one component document from its exact text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Parse`] when the text is not a component
+    /// document, and [`SourceError::Invalid`] when it breaks the grammar's
+    /// rules.
+    pub fn parse(text: &str) -> Result<Self, SourceError> {
+        Self::read_text(text, Origin::Text)
+    }
 
-pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("failed to create component directory {}", path.display()))?;
-    let destination = path.join(COMPONENT_FILE);
-    std::fs::write(&destination, serde_yaml::to_string(manifest)?).with_context(|| {
-        format!(
-            "failed to write component document {}",
-            destination.display()
-        )
-    })
+    /// Read and validate the component document at `path`, which is either the
+    /// document file itself or the directory that holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Read`] when the file cannot be read, plus
+    /// whatever [`Manifest::parse`] rejects.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, SourceError> {
+        Self::read_path(path.as_ref())
+    }
+
+    /// Write the document into `directory` as `component.yaml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Write`] when the directory or file cannot be
+    /// written.
+    pub fn write_to_dir(&self, directory: impl AsRef<Path>) -> Result<(), SourceError> {
+        self.write_dir(directory.as_ref())
+    }
+
+    /// Validate this document as the definition of `component_type`, so the
+    /// rejection names the type an author is actually editing.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`v0::ValidationError`] the document breaks.
+    pub fn validate_as(&self, component_type: &str) -> Result<(), Vec<v0::ValidationError>> {
+        let Self::V0(body) = self;
+        body.validate().map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.in_component(component_type))
+                .collect()
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, read_from_dir, read_from_string, write_to_dir};
+    use super::Manifest;
+    use crate::source::Violations;
+
+    fn violations(text: &str) -> Vec<super::v0::ValidationError> {
+        Manifest::parse(text)
+            .expect_err("the document must be rejected")
+            .violations()
+            .and_then(Violations::component)
+            .expect("a rejected component document carries component violations")
+            .to_vec()
+    }
 
     #[test]
     fn component_roundtrips_through_directory() -> anyhow::Result<()> {
         let temp_dir = tempfile::tempdir()?;
-        let source = read_from_string(
+        let source = Manifest::parse(
             r#"
 schema: phoxal/component/v0
 capabilities:
@@ -67,9 +107,8 @@ capabilities:
 "#,
         )?;
 
-        write_to_dir(&source, temp_dir.path())?;
-        let loaded = read_from_dir(temp_dir.path())?;
-        let Manifest::V0(loaded) = loaded;
+        source.write_to_dir(temp_dir.path())?;
+        let Manifest::V0(loaded) = Manifest::load(temp_dir.path())?;
         assert!(loaded.capabilities.contains_key("motor"));
         Ok(())
     }
@@ -81,16 +120,16 @@ capabilities:
             temp_dir.path().join("component.yaml"),
             "schema: phoxal/component/v1\n",
         )?;
-        let error = read_from_dir(temp_dir.path()).expect_err("unknown version must fail");
-        let message = format!("{error:#}");
-        assert!(message.contains("phoxal/component/v0"));
-        assert!(message.contains("component.yaml"));
+        let error = Manifest::load(temp_dir.path()).expect_err("unknown version must fail");
+        let message = error.to_string();
+        assert!(message.contains("phoxal/component/v0"), "{message}");
+        assert!(message.contains("component.yaml"), "{message}");
         Ok(())
     }
 
     #[test]
     fn component_validates_token_ids() {
-        let error = read_from_string(
+        let errors = violations(
             r#"
 schema: phoxal/component/v0
 capabilities:
@@ -99,17 +138,20 @@ capabilities:
     command: velocity
     target: { kind: joint, id: j }
 "#,
-        )
-        .expect_err("invalid capability id must fail");
+        );
         assert!(
-            format!("{error:#}").contains("capability id 'InvalidCapability'"),
-            "got: {error:#}"
+            errors.iter().any(|error| matches!(
+                error,
+                super::v0::ValidationError::InvalidCapabilityId { capability, .. }
+                    if capability == "InvalidCapability"
+            )),
+            "{errors:?}"
         );
     }
 
     #[test]
     fn component_parses_and_round_trips_gtin() -> anyhow::Result<()> {
-        let manifest = read_from_string(
+        let manifest = Manifest::parse(
             "schema: phoxal/component/v0\ngtin: \"1234567890123\"\ncapabilities: {}\n",
         )?;
         let Manifest::V0(component) = &manifest;
@@ -117,9 +159,7 @@ capabilities:
             component.gtin.as_ref().map(super::v0::Gtin::as_str),
             Some("1234567890123")
         );
-        let yaml = serde_yaml::to_string(&manifest)?;
-        let reparsed = read_from_string(&yaml)?;
-        let Manifest::V0(reparsed) = reparsed;
+        let Manifest::V0(reparsed) = Manifest::parse(&serde_yaml::to_string(&manifest)?)?;
         assert_eq!(
             reparsed.gtin.as_ref().map(super::v0::Gtin::as_str),
             Some("1234567890123")
@@ -129,7 +169,7 @@ capabilities:
 
     #[test]
     fn component_rejects_non_positive_motor_gear_ratio() {
-        let error = read_from_string(
+        let errors = violations(
             r#"
 schema: phoxal/component/v0
 capabilities:
@@ -139,17 +179,22 @@ capabilities:
     gear_ratio: 0.0
     target: { kind: joint, id: motor_joint }
 "#,
-        )
-        .expect_err("motor gear_ratio must be enforced");
-        let message = format!("{error:#}");
-        assert!(message.contains("capabilities.motor.gear_ratio"));
-        assert!(message.contains("requires"));
-        assert!(message.contains("> 0"), "got: {message}");
+        );
+        let rendered = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("capabilities.motor.gear_ratio"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("> 0"), "{rendered}");
     }
 
     #[test]
     fn component_rejects_non_positive_encoder_values() {
-        let error = read_from_string(
+        let errors = violations(
             r#"
 schema: phoxal/component/v0
 capabilities:
@@ -160,25 +205,34 @@ capabilities:
     counts_per_revolution: 0
     target: { kind: joint, id: motor_joint }
 "#,
-        )
-        .expect_err("encoder gear_ratio and counts must be enforced");
-        let message = format!("{error:#}");
-        assert!(message.contains("capabilities.encoder.gear_ratio"));
-        assert!(message.contains("capabilities.encoder.counts_per_revolution"));
-        assert!(message.matches("> 0").count() >= 2, "got: {message}");
+        );
+        let rendered = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("capabilities.encoder.gear_ratio"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("capabilities.encoder.counts_per_revolution"),
+            "{rendered}"
+        );
+        assert!(rendered.matches("> 0").count() >= 2, "{rendered}");
     }
 
     #[test]
     fn component_rejects_malformed_gtin() {
         let error =
-            read_from_string("schema: phoxal/component/v0\ngtin: \"123\"\ncapabilities: {}\n")
+            Manifest::parse("schema: phoxal/component/v0\ngtin: \"123\"\ncapabilities: {}\n")
                 .expect_err("13-digit GTIN must be enforced");
-        assert!(format!("{error:#}").contains("13 digits"), "got: {error:#}");
+        assert!(error.to_string().contains("13 digits"), "got: {error}");
     }
 
     #[test]
     fn component_without_gtin_is_none_and_omits_on_serialize() -> anyhow::Result<()> {
-        let manifest = read_from_string("schema: phoxal/component/v0\ncapabilities: {}\n")?;
+        let manifest = Manifest::parse("schema: phoxal/component/v0\ncapabilities: {}\n")?;
         let Manifest::V0(component) = &manifest;
         assert!(component.gtin.is_none());
         let yaml = serde_yaml::to_string(&manifest)?;
@@ -191,7 +245,7 @@ capabilities:
 
     #[test]
     fn component_parses_range_and_emergency_stop_capabilities() -> anyhow::Result<()> {
-        let manifest = read_from_string(
+        let Manifest::V0(component) = Manifest::parse(
             r#"
 schema: phoxal/component/v0
 capabilities:
@@ -207,7 +261,6 @@ capabilities:
     target: { kind: link, id: button_link }
 "#,
         )?;
-        let Manifest::V0(component) = manifest;
         assert!(matches!(
             component.capabilities.get("range"),
             Some(super::v0::capability::Capability::Range(_))
@@ -221,7 +274,7 @@ capabilities:
 
     #[test]
     fn camera_native_envelope_roundtrips_without_component_profiles() -> anyhow::Result<()> {
-        let component = read_from_string(
+        let component = Manifest::parse(
             r#"
 schema: phoxal/component/v0
 capabilities:
@@ -242,8 +295,7 @@ capabilities:
     target: { kind: link, id: native_camera_link }
 "#,
         )?;
-        let reparsed = read_from_string(&serde_yaml::to_string(&component)?)?;
-        let Manifest::V0(reparsed) = reparsed;
+        let Manifest::V0(reparsed) = Manifest::parse(&serde_yaml::to_string(&component)?)?;
         for (id, width, height, rate) in [("rgb", 640, 480, 30.0), ("native_only", 320, 240, 15.0)]
         {
             let Some(super::v0::capability::Capability::Camera(camera)) =
@@ -261,7 +313,7 @@ capabilities:
 
     #[test]
     fn component_profiles_list_is_rejected() {
-        let error = read_from_string(
+        let error = Manifest::parse(
             r#"
 schema: phoxal/component/v0
 capabilities:
@@ -276,7 +328,10 @@ capabilities:
       publish_rate_hz: 5.0
 "#,
         )
-        .expect_err("removed profiles field must remain rejected");
-        assert!(format!("{error:#}").contains("unknown field `profiles`"));
+        .expect_err("a capability carries no profile list");
+        assert!(
+            error.to_string().contains("unknown field `profiles`"),
+            "{error}"
+        );
     }
 }

@@ -14,17 +14,9 @@ repository.workspace = true
 name = "phoxal-service-video"
 path = "src/main.rs"
 
-[features]
-default = []
-h264 = []
-
 [dependencies]
 phoxal = { workspace = true }
 anyhow = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

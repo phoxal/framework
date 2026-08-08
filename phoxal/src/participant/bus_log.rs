@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
+use crate::participant::lock;
 use phoxal_bus::{Bus, DiagnosticPublisher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -47,18 +48,43 @@ impl BusLogState {
         Self {
             active: Mutex::new(None),
             dropped: AtomicU64::new(0),
-            max_level: AtomicU8::new(level_to_gate(Level::INFO)),
+            max_level: AtomicU8::new(Self::gate(Level::INFO)),
             next_token: AtomicU64::new(1),
         }
     }
 
+    /// A level as this gate ranks it: smaller is more severe, so "at most
+    /// `max_level`" is a single integer comparison on the hot path rather than
+    /// a `tracing::Level` ordering behind a lock.
+    const fn gate(level: Level) -> u8 {
+        match level {
+            Level::ERROR => 1,
+            Level::WARN => 2,
+            Level::INFO => 3,
+            Level::DEBUG => 4,
+            Level::TRACE => 5,
+        }
+    }
+
+    /// The level named by a `PHOXAL_BUS_LOG_LEVEL` value, or `None` when the
+    /// value names no level at all.
+    fn parse_level(value: &str) -> Option<Level> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "error" => Some(Level::ERROR),
+            "warn" | "warning" => Some(Level::WARN),
+            "info" => Some(Level::INFO),
+            "debug" => Some(Level::DEBUG),
+            "trace" => Some(Level::TRACE),
+            _ => None,
+        }
+    }
+
     fn set_max_level(&self, level: Level) {
-        self.max_level
-            .store(level_to_gate(level), Ordering::Relaxed);
+        self.max_level.store(Self::gate(level), Ordering::Relaxed);
     }
 
     fn try_enqueue(&self, record: LogRecord) {
-        let active = self.active.lock().expect("bus log mutex poisoned");
+        let active = lock(&self.active);
         let Some(active) = active.as_ref() else {
             return;
         };
@@ -82,18 +108,18 @@ impl BusLogState {
         if IN_BUS_LOG_PUBLISH.with(Cell::get) {
             return false;
         }
-        level_to_gate(level) <= self.max_level.load(Ordering::Relaxed)
+        Self::gate(level) <= self.max_level.load(Ordering::Relaxed)
     }
 
     fn install_sender(&self, sender: mpsc::Sender<LogRecord>) -> u64 {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-        let mut active = self.active.lock().expect("bus log mutex poisoned");
+        let mut active = lock(&self.active);
         *active = Some(ActivePublisher { token, sender });
         token
     }
 
     fn clear_sender(&self, token: u64) {
-        let mut active = self.active.lock().expect("bus log mutex poisoned");
+        let mut active = lock(&self.active);
         if active.as_ref().is_some_and(|active| active.token == token) {
             *active = None;
         }
@@ -142,13 +168,24 @@ struct LogRecord {
 }
 
 impl LogRecord {
+    /// A tracing level as the wire enum names it.
+    fn wire_level(level: Level) -> api::logs::Level {
+        match level {
+            Level::ERROR => api::logs::Level::Error,
+            Level::WARN => api::logs::Level::Warn,
+            Level::INFO => api::logs::Level::Info,
+            Level::DEBUG => api::logs::Level::Debug,
+            Level::TRACE => api::logs::Level::Trace,
+        }
+    }
+
     fn from_event(event: &Event<'_>) -> Self {
         let mut visitor = FieldVisitor::default();
         event.record(&mut visitor);
         let (target, target_truncated) = bounded_text(event.metadata().target(), MAX_TARGET_BYTES);
         Self {
             time: timestamp_now(),
-            level: level_from_tracing(*event.metadata().level()),
+            level: Self::wire_level(*event.metadata().level()),
             target,
             message: visitor.message.unwrap_or_default(),
             fields: visitor.fields,
@@ -295,7 +332,7 @@ pub(crate) fn new_state_from_env() -> Arc<BusLogState> {
     let state = Arc::new(BusLogState::new());
     if let Some(level) = std::env::var("PHOXAL_BUS_LOG_LEVEL")
         .ok()
-        .and_then(|value| parse_level(&value))
+        .and_then(|value| BusLogState::parse_level(&value))
     {
         state.set_max_level(level);
     }
@@ -382,37 +419,6 @@ fn target_is_filtered(target: &str) -> bool {
     target.starts_with("zenoh")
         || target.starts_with("phoxal_bus")
         || target.starts_with("phoxal.bus")
-}
-
-fn level_to_gate(level: Level) -> u8 {
-    match level {
-        Level::ERROR => 1,
-        Level::WARN => 2,
-        Level::INFO => 3,
-        Level::DEBUG => 4,
-        Level::TRACE => 5,
-    }
-}
-
-fn level_from_tracing(level: Level) -> api::logs::Level {
-    match level {
-        Level::ERROR => api::logs::Level::Error,
-        Level::WARN => api::logs::Level::Warn,
-        Level::INFO => api::logs::Level::Info,
-        Level::DEBUG => api::logs::Level::Debug,
-        Level::TRACE => api::logs::Level::Trace,
-    }
-}
-
-fn parse_level(value: &str) -> Option<Level> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "error" => Some(Level::ERROR),
-        "warn" | "warning" => Some(Level::WARN),
-        "info" => Some(Level::INFO),
-        "debug" => Some(Level::DEBUG),
-        "trace" => Some(Level::TRACE),
-        _ => None,
-    }
 }
 
 fn timestamp_now() -> api::logs::Timestamp {
@@ -517,7 +523,7 @@ mod tests {
         state.clear_sender(token);
     }
 
-    /// #952: the decision trace is evidence an operator can actually read, not
+    /// The decision trace is evidence an operator can actually read, not
     /// in-process state. Every lease transition has to survive the real bus-log
     /// pipeline - its target must not be one of the filtered ones - and carry
     /// the producer, the sender's sequence, this receiver's observation ordinal,

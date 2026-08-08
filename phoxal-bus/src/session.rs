@@ -1,16 +1,29 @@
 //! The Zenoh session wrapper: the execution-scoped key root, the non-blocking
-//! outbound queue (D43e), and health counters.
+//! outbound queue, and health counters.
+//!
+//! This module also owns the two Zenoh <-> Phoxal identity conversions, because
+//! the session is where that equivalence is realized: an execution pins the
+//! run's router session, and a producer is read back from the session that
+//! publishes. Both cross the *value*, never the storage bytes - `uhlc::ID` keeps
+//! its bytes little-endian, so hexing the array would produce a byte-reversed
+//! string that no longer matches Zenoh's own rendering of the same identity.
+//!
+//! They are free functions rather than `From` impls or inherent methods because
+//! `ZenohId` is foreign to this crate and the Phoxal identities are foreign to
+//! Zenoh's, so neither side can carry the conversion.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use phoxal_runtime_contract::identity::{ExecutionId, ProducerId};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use zenoh::bytes::{Encoding, ZBytes};
+use zenoh::config::ZenohId;
 use zenoh::key_expr::OwnedKeyExpr;
 
-use crate::error::{BusError, Result};
-use crate::identity::{ExecutionId, ProducerId, execution_from_zid, producer_from_zid};
+use crate::error::{BusError, KeyProblem, OutboundBound, Result, SessionIdRole};
+use crate::lock::lock;
 use crate::metadata::{BusMetadata, MAX_SOURCE_PARTICIPANT_BYTES};
 use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
 use crate::time::TimeWindow;
@@ -22,11 +35,12 @@ const BUS_KEY_PREFIX: &str = "phoxal";
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
 /// exceed this drops the sample and bumps the drop counter - it never blocks the
-/// step loop (D35/D43e).
+/// step loop.
 pub(crate) const OUTBOUND_CAPACITY: usize = 1024;
 
-/// Byte bound of the outbound queue (D43e: limits in samples AND bytes). A
-/// publish that would exceed it is dropped + counted rather than blocking.
+/// Byte bound of the outbound queue. The queue is bounded in samples AND bytes,
+/// because either alone lets a conforming publisher exhaust the other. A publish
+/// that would exceed it is dropped + counted rather than blocking.
 const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Connection inputs for opening a bus session.
@@ -36,13 +50,13 @@ const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// and two executions never share a key however they are named.
 #[derive(Clone, Debug)]
 pub struct BusConfig {
-    /// The supervised run this session joins (#952 section B). It is the key
-    /// root, so traffic from a previous execution - an ad hoc publisher, an
-    /// attached tool, a replayed recording, a second checkout of the same
-    /// project - physically cannot be observed as current.
+    /// The supervised run this session joins. It is the key root, so traffic
+    /// from a previous execution - an ad hoc publisher, an attached tool, a
+    /// replayed recording, a second checkout of the same project - physically
+    /// cannot be observed as current.
     pub execution: ExecutionId,
     /// The participant id (`ParticipantLaunch.participant_id`, never the static
-    /// participant/artifact id - D53). A diagnostic label, never identity.
+    /// participant/artifact id). A diagnostic label, never identity.
     pub participant: String,
     /// Zenoh connect endpoints. Empty = in-process (local sim / tests).
     pub connect_endpoints: Vec<String>,
@@ -58,25 +72,18 @@ impl BusConfig {
             connect_endpoints: Vec::new(),
         }
     }
-
-    /// Join `execution` instead of a freshly minted one.
-    #[must_use]
-    pub fn in_execution(mut self, execution: ExecutionId) -> Self {
-        self.execution = execution;
-        self
-    }
 }
 
-/// Live health counters for one session (D32/D35/D37).
+/// Live health counters for one session.
 #[derive(Debug, Default)]
 pub struct BusHealth {
     /// Samples dropped because the outbound queue was full.
     pub outbound_drops: AtomicU64,
     /// Inbound samples dropped because the ring was full (slow consumer).
     pub inbound_drops: AtomicU64,
-    /// Inbound samples that failed to decode (D1: identity now lives in the key,
-    /// so decode failures are the only remaining rejection - there is no
-    /// separate schema/family mismatch counter).
+    /// Inbound samples that failed to decode. Contract identity lives in the
+    /// Zenoh key, so a receiver's per-key subscription is the whole
+    /// fast-reject and a decode failure is the only remaining rejection.
     pub decode_errors: AtomicU64,
 }
 
@@ -128,23 +135,23 @@ impl Bus {
     /// drain task.
     pub async fn open(config: BusConfig) -> Result<Self> {
         if config.participant.is_empty() {
-            return Err(BusError::Namespace(
-                "participant id must not be empty".to_string(),
-            ));
+            return Err(BusError::invalid_key("", KeyProblem::Empty));
         }
         if config.participant.len() > MAX_SOURCE_PARTICIPANT_BYTES {
-            return Err(BusError::Namespace(format!(
-                "participant id exceeds the {MAX_SOURCE_PARTICIPANT_BYTES}-byte limit"
-            )));
+            return Err(BusError::invalid_key(
+                &config.participant,
+                KeyProblem::TooLong {
+                    limit: MAX_SOURCE_PARTICIPANT_BYTES,
+                },
+            ));
         }
 
         // Execution scoping lives in the *root*, not in any contract name: a
         // previous run's traffic lands on a different key and cannot be
-        // observed as current (#952 section B).
+        // observed as current.
         let root = format!("{BUS_KEY_PREFIX}/{}", config.execution);
         // Validate the composed root resolves to a legal Zenoh key.
-        OwnedKeyExpr::new(root.clone())
-            .map_err(|e| BusError::Namespace(format!("invalid key root '{root}': {e}")))?;
+        OwnedKeyExpr::new(root.clone()).map_err(|e| BusError::not_a_key_expression(&root, e))?;
 
         let session = zenoh::open(zenoh_config(&config.connect_endpoints)?)
             .await
@@ -172,7 +179,7 @@ impl Bus {
         });
 
         let drain = tokio::spawn(drain_loop(drain_session, rx, Arc::clone(&inner)));
-        *inner.drain.lock().expect("drain mutex poisoned") = Some(drain);
+        *lock(&inner.drain) = Some(drain);
 
         Ok(Bus { inner })
     }
@@ -190,7 +197,7 @@ impl Bus {
     /// only routers reachable through `endpoint` are ever reported. Connect
     /// retry is deliberately *not* shared: the answer is "what is connected
     /// now", so an endpoint with nothing behind it fails immediately instead of
-    /// spending [`CONNECT_TIMEOUT_MS`] hoping a router appears.
+    /// spending the shared connect-retry budget hoping a router appears.
     ///
     /// Cardinality is the caller's rule. This reports what is connected -
     /// none, one, or several - and errors only when a connected session id is
@@ -249,7 +256,10 @@ impl Bus {
         &self.inner.health
     }
 
-    #[doc(hidden)]
+    /// Drain this session's queue-pressure counters for one rollup window.
+    ///
+    /// Interval counters reset; declared rows and depth gauges persist. See
+    /// [`crate::runtime_metrics`] for what a row means and what it does not.
     pub fn take_runtime_metrics(&self) -> Vec<RuntimeMetricSnapshot> {
         self.inner.runtime_metrics.take()
     }
@@ -281,7 +291,7 @@ impl Bus {
 
     /// Non-blocking enqueue onto the outbound queue. A full queue (samples or
     /// bytes) drops the sample, bumps the drop counter, and returns
-    /// `Saturated` - it never blocks the step loop (D35/D43e).
+    /// `Saturated` - it never blocks the step loop.
     pub(crate) fn enqueue(
         &self,
         key: String,
@@ -301,7 +311,7 @@ impl Bus {
         // observe an individually valid pre-add value and collectively exceed it.
         if !reserve_outbound_bytes(&self.inner.queued_bytes, bytes) {
             metric.record_drop();
-            return Err(self.dropped(&key, "byte bound"));
+            return Err(self.dropped(&key, OutboundBound::Byte));
         }
 
         metric.enqueue_started();
@@ -323,7 +333,7 @@ impl Bus {
                 self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
                 out.metric.enqueue_finished();
                 out.metric.record_drop();
-                Err(self.dropped(&out.key, "sample bound"))
+                Err(self.dropped(&out.key, OutboundBound::Sample))
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
@@ -333,7 +343,7 @@ impl Bus {
         }
     }
 
-    fn dropped(&self, key: &str, detail: &str) -> BusError {
+    fn dropped(&self, key: &str, bound: OutboundBound) -> BusError {
         self.inner
             .health
             .outbound_drops
@@ -342,12 +352,12 @@ impl Bus {
             target: "phoxal.bus",
             participant = %self.inner.participant,
             key,
-            detail,
+            bound = %bound,
             "outbound queue saturated; dropped sample (publish never blocks the step loop)"
         );
         BusError::Saturated {
             topic: key.to_string(),
-            detail: detail.to_string(),
+            bound,
         }
     }
 
@@ -360,12 +370,7 @@ impl Bus {
         // polled yet - e.g. on a single-worker runtime).
         self.inner.closing.store(true, Ordering::Release);
         self.inner.shutdown.notify_one();
-        let handle = self
-            .inner
-            .drain
-            .lock()
-            .expect("drain mutex poisoned")
-            .take();
+        let handle = lock(&self.inner.drain).take();
         if let Some(handle) = handle {
             let _ = handle.await;
         }
@@ -376,6 +381,40 @@ impl Bus {
             .map_err(|e| BusError::Transport(e.to_string()))?;
         Ok(())
     }
+}
+
+/// The Zenoh session identity a run's router opens with.
+#[cfg(any(test, feature = "router"))]
+pub(crate) fn zenoh_id_for(execution: ExecutionId) -> Result<ZenohId> {
+    ZenohId::try_from(&u128::from(execution).to_le_bytes()[..])
+        .map_err(|error| BusError::Transport(format!("execution {execution}: {error}")))
+}
+
+/// The execution a router is routing, read back from its session id.
+///
+/// The inverse of [`zenoh_id_for`]: a Phoxal router opens with its execution as
+/// its Zenoh id, so a router's id *is* the execution. A session id that is not
+/// a legal execution therefore belongs to something that is not a Phoxal
+/// router, which is a fact worth an error rather than a silent skip.
+pub(crate) fn execution_from_zid(zid: ZenohId) -> Result<ExecutionId> {
+    ExecutionId::try_from(u128::from_le_bytes(zid.to_le_bytes())).map_err(|source| {
+        BusError::ForeignSessionId {
+            zid: zid.to_string(),
+            role: SessionIdRole::Execution,
+            source,
+        }
+    })
+}
+
+/// The producer identity of a session, read back from the id Zenoh assigned it.
+pub(crate) fn producer_from_zid(zid: ZenohId) -> Result<ProducerId> {
+    ProducerId::try_from(u128::from_le_bytes(zid.to_le_bytes())).map_err(|source| {
+        BusError::ForeignSessionId {
+            zid: zid.to_string(),
+            role: SessionIdRole::Producer,
+            source,
+        }
+    })
 }
 
 /// Hand out the next sequence, failing closed at the end of the range.
@@ -391,7 +430,6 @@ fn allocate_sequence(seq: &AtomicU64) -> Result<u64> {
     .map_err(|_| BusError::SequenceExhausted)
 }
 
-#[allow(deprecated)]
 fn reserve_outbound_bytes(queued: &AtomicUsize, bytes: usize) -> bool {
     queued
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -556,6 +594,15 @@ mod tests {
     use super::*;
     use std::sync::Barrier;
     use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    use serial_test::serial;
+
+    use crate::contract::ContractBody;
+    use crate::handle::publisher::StatePublisher;
+    use crate::handle::subscriber::Latest;
+    use crate::test_support::{Target, step};
+    use crate::topic::{Publish, Subscribe, Topic};
 
     #[test]
     fn concurrent_byte_reservations_never_exceed_the_global_limit() {
@@ -626,10 +673,9 @@ mod tests {
              bound",
         );
 
-        // Client mode (this is what a real launch uses, D-participant#run_with)
-        // must carry the bounded, nonzero timeout that switches Zenoh onto its
-        // own retry-with-backoff path - see CONNECT_TIMEOUT_MS's docs for why
-        // this exact value.
+        // Client mode (this is what a real launch uses) must carry the bounded,
+        // nonzero timeout that switches Zenoh onto its own retry-with-backoff
+        // path - see CONNECT_TIMEOUT_MS's docs for why this exact value.
         let client = zenoh_config(&["tcp/127.0.0.1:7447".to_string()]).expect("client config");
         assert_eq!(
             client
@@ -637,5 +683,258 @@ mod tests {
                 .expect("client config must set a connect timeout"),
             CONNECT_TIMEOUT_MS.to_string(),
         );
+    }
+
+    #[test]
+    fn an_execution_and_its_session_identity_render_identically() {
+        let execution = ExecutionId::mint();
+        let zid = zenoh_id_for(execution).expect("an execution is always a session id");
+        assert_eq!(zid.to_string(), execution.to_string());
+
+        // And back: the session that opened with it reports a producer whose
+        // text is the same string again.
+        let producer = producer_from_zid(zid).expect("a session id is always a producer");
+        assert_eq!(producer.to_string(), execution.to_string());
+    }
+
+    #[test]
+    fn a_narrow_session_identity_survives_the_round_trip_unpadded() {
+        // Zenoh mints session ids uniformly across the value range, so roughly
+        // one in sixteen renders narrower than an execution's pinned width. A
+        // producer must carry that exactly, not pad it into a different string.
+        let zid: ZenohId = "abc".parse().expect("a short session id is legal");
+        let producer = producer_from_zid(zid).expect("a session id is always a producer");
+        assert_eq!(producer.to_string(), "abc");
+        assert_eq!(ProducerId::parse(&zid.to_string()), Ok(producer));
+    }
+
+    #[tokio::test]
+    async fn a_participant_label_must_be_one_concrete_key_segment() {
+        let mut config = BusConfig::in_process("r1");
+        config.participant = String::new();
+        let error = Bus::open(config).await.unwrap_err();
+        assert!(matches!(
+            error,
+            BusError::InvalidKey {
+                problem: KeyProblem::Empty,
+                ..
+            }
+        ));
+
+        let mut config = BusConfig::in_process("r1");
+        config.participant = "x".repeat(MAX_SOURCE_PARTICIPANT_BYTES + 1);
+        let error = Bus::open(config).await.unwrap_err();
+        assert!(matches!(
+            error,
+            BusError::InvalidKey {
+                problem: KeyProblem::TooLong { .. },
+                ..
+            }
+        ));
+    }
+
+    /// The root is the execution and nothing else: no namespace, no robot id, and
+    /// no prefix character in front of the identity - a canonical session id always
+    /// starts with a legal chunk character.
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn the_key_root_is_the_execution() {
+        let config = BusConfig::in_process("r1");
+        let execution = config.execution;
+        let bus = Bus::open(config).await.unwrap();
+        let expected_root = format!("phoxal/{execution}");
+        assert_eq!(bus.root(), expected_root);
+        assert!(!bus.root().contains("r1"), "the robot id is not routing");
+        assert_eq!(
+            bus.full_key("yTEST/drive/state"),
+            format!("{expected_root}/yTEST/drive/state")
+        );
+        bus.close().await.unwrap();
+    }
+
+    /// A session publishes under the identity Zenoh gave it, so provenance can be
+    /// matched against the transport without a side channel.
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_producer_is_the_publishing_session() {
+        let bus = Bus::open(BusConfig::in_process("producer")).await.unwrap();
+        assert_eq!(bus.producer().to_string(), bus.session().zid().to_string());
+
+        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+
+        let mut observed = None;
+        for tick in 0..100 {
+            publisher
+                .publish(
+                    &step(1, 100 + tick),
+                    Target {
+                        linear_x_mps: 1.0,
+                        angular_z_radps: 0.0,
+                    },
+                )
+                .unwrap();
+            if let Some(sample) = latest.observed() {
+                observed = Some(sample);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let observed = observed.expect("the sample must arrive");
+        assert_eq!(observed.metadata.producer, bus.producer());
+
+        bus.close().await.unwrap();
+    }
+
+    /// Traffic from a previous execution lands on a different key root and cannot
+    /// be observed as current - the structural property execution scoping exists
+    /// to provide.
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_previous_execution_cannot_be_observed_as_current() {
+        let previous = Bus::open(BusConfig::in_process("scoped")).await.unwrap();
+        let current = Bus::open(BusConfig::in_process("scoped")).await.unwrap();
+        assert_ne!(previous.root(), current.root());
+
+        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let stale = StatePublisher::<Target>::new(previous.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new(&current, &sub_topic).await.unwrap();
+
+        stale
+            .publish(
+                &step(1, 100),
+                Target {
+                    linear_x_mps: 6.0,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            latest.latest().is_none(),
+            "a previous execution's traffic must not reach the current run"
+        );
+
+        previous.close().await.unwrap();
+        current.close().await.unwrap();
+    }
+
+    /// A client attaching to a running robot knows an endpoint and nothing else -
+    /// not even which execution is on the other end. The probe is what turns the
+    /// endpoint into that execution, and it must report the router's own identity,
+    /// not a fresh one.
+    #[cfg(feature = "router")]
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_probe_reports_the_execution_of_the_router_behind_an_endpoint() {
+        let (_dir, endpoint) = crate::test_support::socket_endpoint("phoxal-probe-");
+        let execution = ExecutionId::mint();
+        let router = crate::router::Router::open(execution, std::slice::from_ref(&endpoint), None)
+            .await
+            .expect("the router binds its endpoint");
+
+        let probed = Bus::probe_routers(&endpoint)
+            .await
+            .expect("a running router must be reachable");
+        assert_eq!(
+            probed,
+            vec![execution],
+            "the probe must report exactly the router that is there"
+        );
+
+        // The probe owns its whole session: a bus opened afterwards on the same
+        // endpoint is unaffected by it having come and gone.
+        let bus = Bus::open(BusConfig {
+            execution,
+            participant: "after-probe".to_string(),
+            connect_endpoints: vec![endpoint.clone()],
+        })
+        .await
+        .expect("the probe must leave the endpoint usable");
+        assert_eq!(
+            Bus::probe_routers(&endpoint)
+                .await
+                .expect("probing again while a bus is open must work"),
+            vec![execution],
+            "a probe must not disturb - or be disturbed by - an existing session"
+        );
+
+        bus.close().await.unwrap();
+        router.close().await.unwrap();
+    }
+
+    /// Nothing behind the endpoint has to fail promptly and say so: a client
+    /// deciding "there is no robot here" cannot wait out a connect-retry budget.
+    #[cfg(feature = "router")]
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_probe_of_a_dead_endpoint_fails_without_waiting_out_a_retry_budget() {
+        let (dir, endpoint) = crate::test_support::socket_endpoint("phoxal-probe-dead-");
+        drop(dir);
+
+        let started = std::time::Instant::now();
+        let probed = Bus::probe_routers(&endpoint).await;
+        let error = probed.expect_err("an endpoint with nothing behind it is not connectable");
+        assert!(
+            error.to_string().contains("Unable to connect"),
+            "the failure must name the unreachable endpoint: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the probe must not spend the shared connect-retry budget, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A router that is not a Phoxal router answers the probe with a session id
+    /// that is not an execution. Reporting that as "no robot here" would be wrong
+    /// in the one direction that matters - something *is* listening on that
+    /// endpoint - so the probe errors and names the id it could not read.
+    ///
+    /// The foreign router is spun in-process with a deliberately narrow Zenoh id:
+    /// `zenoh::open` accepts short ids, while an execution is pinned to the full
+    /// 32-hex width, so `abc` is a legal session id that is not a legal execution.
+    #[cfg(feature = "router")]
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_probe_of_a_router_that_is_not_a_phoxal_execution_fails_naming_the_id() {
+        let (_dir, endpoint) = crate::test_support::socket_endpoint("phoxal-probe-foreign-");
+
+        let mut config = zenoh::Config::default();
+        let endpoints =
+            serde_json::to_string(std::slice::from_ref(&endpoint)).expect("endpoints serialize");
+        for (key, value) in [
+            // Narrow on purpose: a legal `ZenohId`, never a legal `ExecutionId`.
+            ("id", "\"abc\""),
+            ("mode", "\"router\""),
+            ("listen/endpoints", endpoints.as_str()),
+            ("listen/timeout_ms", "0"),
+            ("listen/exit_on_failure", "true"),
+            ("scouting/delay", "0"),
+            ("scouting/multicast/enabled", "false"),
+        ] {
+            config.insert_json5(key, value).expect("router config key");
+        }
+        let foreign = zenoh::open(config)
+            .await
+            .expect("a plain zenoh router binds the endpoint");
+
+        let error = Bus::probe_routers(&endpoint)
+            .await
+            .expect_err("a router whose id is not an execution is not a phoxal robot");
+        let message = error.to_string();
+        assert!(
+            message.contains("abc"),
+            "the failure must name the id it could not read: {message}"
+        );
+        assert!(
+            message.contains("phoxal execution"),
+            "the failure must say what the id failed to be: {message}"
+        );
+
+        foreign.close().await.expect("close the foreign router");
     }
 }

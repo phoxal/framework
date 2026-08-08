@@ -2188,8 +2188,10 @@ dependencies = [
  "clap",
  "const_format",
  "jsonschema",
+ "libc",
  "phoxal-api",
  "phoxal-bus",
+ "phoxal-fixture",
  "phoxal-macros",
  "phoxal-manifest",
  "phoxal-model",
@@ -2242,7 +2244,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
 ]
 
 [[package]]
@@ -2251,7 +2252,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
  "tokio",
  "tracing",
 ]
@@ -2262,7 +2262,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
 ]
 
 [[package]]
@@ -2271,7 +2270,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
 ]
 
 [[package]]
@@ -2280,7 +2278,15 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
+]
+
+[[package]]
+name = "phoxal-fixture"
+version = "0.55.0"
+dependencies = [
+ "phoxal-manifest",
+ "phoxal-model",
+ "tempfile",
 ]
 
 [[package]]
@@ -2317,6 +2323,7 @@ dependencies = [
 name = "phoxal-model"
 version = "0.55.0"
 dependencies = [
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -2343,7 +2350,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "tempfile",
  "tracing",
 ]
 
@@ -2354,7 +2360,6 @@ dependencies = [
  "anyhow",
  "nalgebra",
  "phoxal",
- "tempfile",
 ]
 
 [[package]]
@@ -2363,7 +2368,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "tempfile",
 ]
 
 [[package]]
@@ -2372,7 +2376,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
 ]
 
 [[package]]
@@ -2381,7 +2384,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
 ]
 
 [[package]]
@@ -2390,8 +2392,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
- "tokio",
  "tracing",
 ]
 
@@ -2411,19 +2411,13 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
 name = "phoxal-service-perception"
 version = "0.55.0"
 dependencies = [
- "anyhow",
  "phoxal",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -2449,8 +2443,6 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -4492,6 +4484,8 @@ dependencies = [
  "object",
  "phoxal",
  "phoxal-manifest",
+ "phoxal-model",
+ "phoxal-runtime-contract",
  "serde",
  "serde_json",
  "tempfile",

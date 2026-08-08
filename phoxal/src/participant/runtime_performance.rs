@@ -8,7 +8,8 @@ use phoxal_bus::{
     RuntimeMetricSnapshot,
 };
 
-use crate::participant::spec::StepSchedule;
+use crate::participant::duration_nanos;
+use crate::participant::scheduler::StepSchedule;
 
 const ROLLUP_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_TOPIC_ROWS: usize = 256;
@@ -66,16 +67,17 @@ impl RuntimePerformance {
         }
     }
 
+    /// Start recording the step released for `target`. `None` for a participant
+    /// with no cadence: there is no step window to record into.
     pub(crate) fn begin_step(
         &mut self,
         target: RobotInstant,
         fired_at: RobotInstant,
         missed_ticks: u32,
     ) -> Option<StepObservation> {
-        let lateness = step_lateness(target, fired_at);
         self.step
-            .as_mut()
-            .map(|step| step.begin(Instant::now(), lateness, missed_ticks))
+            .as_ref()
+            .map(|_| StepObservation::begin(target, fired_at, missed_ticks))
     }
 
     /// Drop cadence/history derived from the previous world history.
@@ -92,13 +94,12 @@ impl RuntimePerformance {
     pub(crate) fn take_rollup(&mut self, bus: &Bus) -> Option<api::supervisor::telemetry::Rollup> {
         let now = Instant::now();
         let elapsed = self.take_elapsed(now)?;
-        let window_ns = nanos(elapsed);
-        let (topics, overflow) = bounded_topics(bus.take_runtime_metrics(), elapsed);
+        let topics = TopicRows::from_snapshots(bus.take_runtime_metrics(), elapsed);
         Some(api::supervisor::telemetry::Rollup {
-            window_ns,
+            window_ns: duration_nanos(elapsed),
             step: self.step.as_mut().map(StepWindow::take),
-            topics,
-            overflow,
+            topics: topics.rows,
+            overflow: topics.overflow,
         })
     }
 
@@ -121,17 +122,26 @@ impl RuntimePerformance {
     }
 }
 
-/// How late the released tick was, in robot time. A cross-timeline pair is not
-/// lateness at all - the world was replaced - so it reports zero rather than an
-/// invented number.
-fn step_lateness(target: RobotInstant, fired_at: RobotInstant) -> Duration {
-    fired_at.duration_since(target).unwrap_or_default()
-}
-
+/// One step being measured, from release to return.
 pub(crate) struct StepObservation {
     started: Instant,
     lateness: Duration,
     missed_ticks: u32,
+}
+
+impl StepObservation {
+    /// Start measuring a step that was due at `target` and actually released at
+    /// `fired_at`.
+    ///
+    /// A cross-timeline pair is not lateness at all - the world was replaced -
+    /// so it records zero rather than an invented number.
+    fn begin(target: RobotInstant, fired_at: RobotInstant, missed_ticks: u32) -> Self {
+        StepObservation {
+            started: Instant::now(),
+            lateness: fired_at.duration_since(target).unwrap_or_default(),
+            missed_ticks,
+        }
+    }
 }
 
 struct StepWindow {
@@ -161,23 +171,10 @@ impl StepWindow {
         }
     }
 
-    fn begin(
-        &mut self,
-        started: Instant,
-        lateness: Duration,
-        missed_ticks: u32,
-    ) -> StepObservation {
-        StepObservation {
-            started,
-            lateness,
-            missed_ticks,
-        }
-    }
-
     fn finish(&mut self, observation: StepObservation, finished: Instant, success: bool) {
         let duration = finished.saturating_duration_since(observation.started);
-        let duration_ns = nanos(duration);
-        let lateness_ns = nanos(observation.lateness);
+        let duration_ns = duration_nanos(duration);
+        let lateness_ns = duration_nanos(observation.lateness);
         if success {
             self.completed = self.completed.saturating_add(1);
         } else {
@@ -200,7 +197,7 @@ impl StepWindow {
     fn take(&mut self) -> api::supervisor::RuntimeStep {
         let attempts = self.completed.saturating_add(self.errors);
         let body = api::supervisor::RuntimeStep {
-            target_period_ns: nanos(self.target_period),
+            target_period_ns: duration_nanos(self.target_period),
             completed: self.completed,
             errors: self.errors,
             mean_duration_ns: mean(self.duration_total_ns, attempts),
@@ -222,88 +219,118 @@ impl StepWindow {
     }
 }
 
-fn bounded_topics(
-    rows: Vec<RuntimeMetricSnapshot>,
-    elapsed: Duration,
-) -> (
-    Vec<api::supervisor::RuntimeTopic>,
-    Option<api::supervisor::RuntimeTopic>,
-) {
-    let mut converted = Vec::with_capacity(rows.len().min(MAX_TOPIC_ROWS));
-    let mut omitted = Vec::new();
-    for row in rows {
-        let row = topic_row(row, elapsed);
-        if converted.len() < MAX_TOPIC_ROWS && row.topic.len() <= MAX_TOPIC_BYTES {
-            converted.push(row);
-        } else {
-            omitted.push(row);
-        }
-    }
-    if omitted.is_empty() {
-        return (converted, None);
-    }
-    let mut overflow = api::supervisor::RuntimeTopic {
-        topic: String::new(),
-        direction: api::supervisor::RuntimeDirection::Mixed,
-        buffer_kind: api::supervisor::RuntimeBufferKind::Mixed,
-        count: 0,
-        rate_hz: 0.0,
-        drops: 0,
-        latest_overwrites: 0,
-        bounded_evictions: 0,
-        capacity: 0,
-        current_depth: 0,
-        high_water_depth: 0,
-        decode_errors: 0,
-        timeline_filtered: 0,
-        overflowed_rows: u32::try_from(omitted.len()).unwrap_or(u32::MAX),
-    };
-    for row in omitted {
-        overflow.count = overflow.count.saturating_add(row.count);
-        overflow.drops = overflow.drops.saturating_add(row.drops);
-        overflow.latest_overwrites = overflow
-            .latest_overwrites
-            .saturating_add(row.latest_overwrites);
-        overflow.bounded_evictions = overflow
-            .bounded_evictions
-            .saturating_add(row.bounded_evictions);
-        overflow.capacity = overflow.capacity.saturating_add(row.capacity);
-        overflow.current_depth = overflow.current_depth.saturating_add(row.current_depth);
-        overflow.high_water_depth = overflow
-            .high_water_depth
-            .saturating_add(row.high_water_depth);
-        overflow.decode_errors = overflow.decode_errors.saturating_add(row.decode_errors);
-        overflow.timeline_filtered = overflow
-            .timeline_filtered
-            .saturating_add(row.timeline_filtered);
-    }
-    overflow.rate_hz = rate(overflow.count, elapsed);
-    (converted, Some(overflow))
+/// The per-topic section of one rollup, bounded for the wire.
+///
+/// One value rather than a pair, because the rows and the overflow row are one
+/// answer: a row that does not fit is not dropped, it is folded into the
+/// overflow row, so reading `rows` without `overflow` understates what the
+/// window measured.
+struct TopicRows {
+    rows: Vec<api::supervisor::RuntimeTopic>,
+    overflow: Option<api::supervisor::RuntimeTopic>,
 }
 
-fn topic_row(row: RuntimeMetricSnapshot, elapsed: Duration) -> api::supervisor::RuntimeTopic {
-    api::supervisor::RuntimeTopic {
-        topic: row.key.topic,
-        direction: match row.key.direction {
-            RuntimeDirection::Publish => api::supervisor::RuntimeDirection::Publish,
-            RuntimeDirection::Subscribe => api::supervisor::RuntimeDirection::Subscribe,
-        },
-        buffer_kind: match row.key.buffer_kind {
-            RuntimeBufferKind::Outbound => api::supervisor::RuntimeBufferKind::Outbound,
-            RuntimeBufferKind::Latest => api::supervisor::RuntimeBufferKind::Latest,
-            RuntimeBufferKind::Subscriber => api::supervisor::RuntimeBufferKind::Subscriber,
-        },
-        count: row.count,
-        rate_hz: rate(row.count, elapsed),
-        drops: row.drops,
-        latest_overwrites: row.latest_overwrites,
-        bounded_evictions: row.bounded_evictions,
-        capacity: row.capacity,
-        current_depth: row.current_depth,
-        high_water_depth: row.high_water_depth,
-        decode_errors: row.decode_errors,
-        timeline_filtered: row.timeline_filtered,
-        overflowed_rows: 0,
+impl TopicRows {
+    /// Convert the window's snapshots, keeping at most [`MAX_TOPIC_ROWS`] rows
+    /// of at most [`MAX_TOPIC_BYTES`] of topic identity each. Everything that
+    /// does not fit is summed into a single overflow row, so an oversized or
+    /// unbounded topic set costs a bounded number of bytes without hiding the
+    /// traffic it carried.
+    fn from_snapshots(snapshots: Vec<RuntimeMetricSnapshot>, elapsed: Duration) -> Self {
+        let mut rows = Vec::with_capacity(snapshots.len().min(MAX_TOPIC_ROWS));
+        let mut omitted = Vec::new();
+        for snapshot in snapshots {
+            let row = Self::wire_row(snapshot, elapsed);
+            if rows.len() < MAX_TOPIC_ROWS && row.topic.len() <= MAX_TOPIC_BYTES {
+                rows.push(row);
+            } else {
+                omitted.push(row);
+            }
+        }
+        if omitted.is_empty() {
+            return TopicRows {
+                rows,
+                overflow: None,
+            };
+        }
+        let mut overflow = api::supervisor::RuntimeTopic {
+            // The overflow row is not one topic, one direction or one buffer, so
+            // it names none of them: `Mixed` exists on the wire for exactly this
+            // row and nothing measures it.
+            topic: String::new(),
+            direction: api::supervisor::RuntimeDirection::Mixed,
+            buffer_kind: api::supervisor::RuntimeBufferKind::Mixed,
+            count: 0,
+            rate_hz: 0.0,
+            drops: 0,
+            latest_overwrites: 0,
+            bounded_evictions: 0,
+            capacity: 0,
+            current_depth: 0,
+            high_water_depth: 0,
+            decode_errors: 0,
+            timeline_filtered: 0,
+            overflowed_rows: u32::try_from(omitted.len()).unwrap_or(u32::MAX),
+        };
+        for row in omitted {
+            overflow.count = overflow.count.saturating_add(row.count);
+            overflow.drops = overflow.drops.saturating_add(row.drops);
+            overflow.latest_overwrites = overflow
+                .latest_overwrites
+                .saturating_add(row.latest_overwrites);
+            overflow.bounded_evictions = overflow
+                .bounded_evictions
+                .saturating_add(row.bounded_evictions);
+            overflow.capacity = overflow.capacity.saturating_add(row.capacity);
+            overflow.current_depth = overflow.current_depth.saturating_add(row.current_depth);
+            overflow.high_water_depth = overflow
+                .high_water_depth
+                .saturating_add(row.high_water_depth);
+            overflow.decode_errors = overflow.decode_errors.saturating_add(row.decode_errors);
+            overflow.timeline_filtered = overflow
+                .timeline_filtered
+                .saturating_add(row.timeline_filtered);
+        }
+        overflow.rate_hz = rate(overflow.count, elapsed);
+        TopicRows {
+            rows,
+            overflow: Some(overflow),
+        }
+    }
+
+    /// One internal snapshot as the wire row a supervisor reads.
+    ///
+    /// `phoxal-bus` owns the internal accounting vocabulary and `phoxal-api`
+    /// owns the serialized enums, so this pairing is the only place the two
+    /// meet. `phoxal-api`'s own `runtime_metric_parity` tests are what keep a
+    /// variant from being added on one side and nowhere else.
+    fn wire_row(
+        snapshot: RuntimeMetricSnapshot,
+        elapsed: Duration,
+    ) -> api::supervisor::RuntimeTopic {
+        api::supervisor::RuntimeTopic {
+            topic: snapshot.key.topic,
+            direction: match snapshot.key.direction {
+                RuntimeDirection::Publish => api::supervisor::RuntimeDirection::Publish,
+                RuntimeDirection::Subscribe => api::supervisor::RuntimeDirection::Subscribe,
+            },
+            buffer_kind: match snapshot.key.buffer_kind {
+                RuntimeBufferKind::Outbound => api::supervisor::RuntimeBufferKind::Outbound,
+                RuntimeBufferKind::Latest => api::supervisor::RuntimeBufferKind::Latest,
+                RuntimeBufferKind::Subscriber => api::supervisor::RuntimeBufferKind::Subscriber,
+            },
+            count: snapshot.count,
+            rate_hz: rate(snapshot.count, elapsed),
+            drops: snapshot.drops,
+            latest_overwrites: snapshot.latest_overwrites,
+            bounded_evictions: snapshot.bounded_evictions,
+            capacity: snapshot.capacity,
+            current_depth: snapshot.current_depth,
+            high_water_depth: snapshot.high_water_depth,
+            decode_errors: snapshot.decode_errors,
+            timeline_filtered: snapshot.timeline_filtered,
+            overflowed_rows: 0,
+        }
     }
 }
 
@@ -312,10 +339,6 @@ fn rate(count: u64, elapsed: Duration) -> f32 {
         return 0.0;
     }
     (count as f64 / elapsed.as_secs_f64()) as f32
-}
-
-fn nanos(duration: Duration) -> u64 {
-    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn mean(total: u128, count: u64) -> u64 {
@@ -352,12 +375,12 @@ mod tests {
 
     #[test]
     fn topic_rows_are_deterministic_and_cap_at_256_plus_overflow() {
-        let rows = (0..260).map(row).collect();
-        let (topics, overflow) = bounded_topics(rows, Duration::from_secs(1));
-        assert_eq!(topics.len(), MAX_TOPIC_ROWS);
-        assert_eq!(topics.first().unwrap().topic, "v0.1/test/000");
-        assert_eq!(topics.last().unwrap().topic, "v0.1/test/255");
-        let overflow = overflow.expect("four rows should overflow");
+        let snapshots = (0..260).map(row).collect();
+        let topics = TopicRows::from_snapshots(snapshots, Duration::from_secs(1));
+        assert_eq!(topics.rows.len(), MAX_TOPIC_ROWS);
+        assert_eq!(topics.rows.first().unwrap().topic, "v0.1/test/000");
+        assert_eq!(topics.rows.last().unwrap().topic, "v0.1/test/255");
+        let overflow = topics.overflow.expect("four rows should overflow");
         assert_eq!(overflow.overflowed_rows, 4);
         assert_eq!(overflow.count, 4);
     }
@@ -366,9 +389,9 @@ mod tests {
     fn oversized_topic_identity_is_disclosed_in_overflow_not_put_on_wire() {
         let mut oversized = row(0);
         oversized.key.topic = "x".repeat(MAX_TOPIC_BYTES + 1);
-        let (topics, overflow) = bounded_topics(vec![oversized], Duration::from_secs(1));
-        assert!(topics.is_empty());
-        assert_eq!(overflow.unwrap().overflowed_rows, 1);
+        let topics = TopicRows::from_snapshots(vec![oversized], Duration::from_secs(1));
+        assert!(topics.rows.is_empty());
+        assert_eq!(topics.overflow.unwrap().overflowed_rows, 1);
     }
 
     #[test]
@@ -457,10 +480,18 @@ mod tests {
         let period = Duration::from_millis(10);
         let mut window = StepWindow::new(period);
         let start = Instant::now();
-        let first = window.begin(start, Duration::from_millis(2), 0);
+        let first = StepObservation {
+            started: start,
+            lateness: Duration::from_millis(2),
+            missed_ticks: 0,
+        };
         window.finish(first, start + Duration::from_millis(4), true);
         let second_start = start + Duration::from_millis(25);
-        let second = window.begin(second_start, Duration::from_millis(5), 2);
+        let second = StepObservation {
+            started: second_start,
+            lateness: Duration::from_millis(5),
+            missed_ticks: 2,
+        };
         window.finish(second, second_start + Duration::from_millis(12), false);
 
         let sample = window.take();

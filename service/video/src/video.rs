@@ -1,28 +1,29 @@
 //! `video` - operator preview stream lifecycle service.
 //!
-//! The train-selected video contract exposes a compact `video/open` query plus a
-//! per-stream `state` topic. This participant enumerates the robot's camera
-//! capabilities, answers `open` requests (resolving the requested capability and
-//! validating dimensions against the native sensor size), subscribes to the
-//! matching raw camera frames, and publishes `video/stream/<id>/state` snapshots.
+//! The video contract exposes a compact `video/open` query plus a per-stream
+//! `state` topic. This participant enumerates the robot's camera capabilities,
+//! answers `open` requests (resolving the requested capability and validating
+//! dimensions against the native sensor size), subscribes to the matching raw
+//! camera frames, and publishes `video/stream/<id>/state` snapshots.
 //!
-//! The default backend is intentionally pixel-free: it publishes the stream's
-//! lifecycle `phase` (`Starting` → `Active` → `Stopped`) and a monotonic
-//! `frames_seen` counter (incremented per received source frame while active)
-//! without linking a codec or encoding any pixels. A real H.264 backend belongs
-//! behind the optional `h264` feature in a follow-up, not in the default
-//! dependency set.
+//! The backend is pixel-free: it publishes the stream's lifecycle `phase`
+//! (`Starting` -> `Active` -> `Stopped`) and a monotonic `frames_seen` counter,
+//! incremented per received source frame while active, without linking a codec
+//! or encoding any pixels.
 
 use anyhow::{Result, anyhow};
 use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::model::Robot;
-use phoxal::model::component::CapabilityRef;
 use phoxal::model::component::capability::Capability;
+use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
+
+use api::video::stream::{StreamPhase, StreamState};
 
 const CAMERA_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// One camera capability the operator can preview.
 #[derive(Clone)]
 struct VideoSource {
     capability: CapabilityRef,
@@ -61,43 +62,151 @@ impl VideoSource {
         api::topic::owner().video().stream(&self.stream_id).state()
     }
 
-    fn capability_key(&self) -> String {
-        self.capability.to_string()
+    /// Whether an `open` request naming `requested` selects this source.
+    ///
+    /// Three spellings are accepted for the same source: the dotted capability
+    /// reference (`front_camera.rgb`), the stream id (`front_camera_rgb`), and
+    /// the bare capability id (`rgb`). The bare id is ambiguous across two
+    /// cameras declaring the same capability id - the first source in the
+    /// robot's ordering wins - but narrowing the accepted set would reject
+    /// requests that resolve today.
+    fn accepts(&self, requested: &str) -> bool {
+        self.capability.to_string() == requested
+            || self.stream_id == requested
+            || self.capability.capability_id == requested
     }
-}
 
-use api::video::stream::{StreamPhase, StreamState};
-
-pub struct Api {
-    cameras: Vec<Subscriber<api::component::camera::Frame>>,
-    states: Vec<StatePublisher<StreamState>>,
-}
-
-pub struct VideoState {
-    // Runtime-private state.
-    sources: Vec<VideoSource>,
-    active: Vec<bool>,
-    phase: Vec<StreamPhase>,
-    frames_seen: Vec<u64>,
-    last_frame: Vec<Option<TimeWindow>>,
-}
-
-impl VideoState {
-    /// Publish the current `StreamState` for `index`.
-    async fn publish_state(&mut self, api: &Api, index: usize, step: StepContext) -> Result<()> {
-        api.states[index].publish(
-            step.token(),
-            StreamState {
-                phase: self.phase[index],
-                frames_seen: self.frames_seen[index],
-            },
-        )?;
+    fn validate_requested_dimensions(&self, request: &api::video::OpenRequest) -> QueryResult<()> {
+        if request
+            .width_px
+            .is_some_and(|width| width > self.native_width_px)
+            || request
+                .height_px
+                .is_some_and(|height| height > self.native_height_px)
+        {
+            return Err(QueryFailure::invalid_argument(
+                "video/open dimensions must not exceed the native camera size",
+            ));
+        }
         Ok(())
     }
 }
 
+/// The handles bound to one preview stream.
+struct StreamChannel {
+    camera: Subscriber<api::component::camera::Frame>,
+    state: StatePublisher<StreamState>,
+}
+
+/// What the participant latches about one preview stream between steps.
+struct Stream {
+    source: VideoSource,
+    open: bool,
+    phase: StreamPhase,
+    frames_seen: u64,
+    /// When the newest source frame was captured, as honestly as the camera
+    /// driver could say. Absent until the first frame arrives, and absent
+    /// whenever the driver could not translate its device clock into robot
+    /// time.
+    last_frame: Option<TimeWindow>,
+}
+
+impl Stream {
+    fn new(source: VideoSource) -> Self {
+        Self {
+            source,
+            open: false,
+            phase: StreamPhase::Stopped,
+            frames_seen: 0,
+            last_frame: None,
+        }
+    }
+
+    fn published_state(&self) -> StreamState {
+        StreamState {
+            phase: self.phase,
+            frames_seen: self.frames_seen,
+        }
+    }
+
+    /// The phase an open stream is in at `now`.
+    ///
+    /// A stream is `Active` only while some instant the newest capture admits
+    /// is within the staleness bound and none of them is in `now`'s future. A
+    /// capture the driver could not translate into robot time, or one from a
+    /// world that has been replaced, is never fresh - the cross-timeline
+    /// comparison has no answer, and the fail-closed reading is `Starting`.
+    fn phase_at(&self, now: RobotInstant) -> StreamPhase {
+        let fresh = self.last_frame.is_some_and(|captured_at| {
+            captured_at
+                .possibly_fresh_within(now, CAMERA_STALE)
+                .unwrap_or(false)
+        });
+        if fresh {
+            StreamPhase::Active
+        } else {
+            StreamPhase::Starting
+        }
+    }
+}
+
+pub(crate) struct Api {
+    streams: Vec<StreamChannel>,
+}
+
+pub(crate) struct VideoState {
+    streams: Vec<Stream>,
+}
+
+impl VideoState {
+    /// Open the stream an `open` request selects, and name it back.
+    ///
+    /// (Re)opening a closed stream restarts its lifecycle: the next step
+    /// republishes the `Starting` -> `Active` transition from a fresh frame
+    /// count.
+    fn open(&mut self, request: &api::video::OpenRequest) -> QueryResult<api::video::OpenResponse> {
+        let stream = self.resolve_open(request)?;
+        if !stream.open {
+            stream.phase = StreamPhase::Stopped;
+            stream.frames_seen = 0;
+        }
+        stream.open = true;
+        Ok(api::video::OpenResponse {
+            stream_id: stream.source.stream_id.clone(),
+        })
+    }
+
+    fn resolve_open(&mut self, request: &api::video::OpenRequest) -> QueryResult<&mut Stream> {
+        if self.streams.is_empty() {
+            return Err(QueryFailure::unavailable("no camera sources are available"));
+        }
+
+        let requested = request.capability.trim();
+        if requested.is_empty() {
+            return Err(QueryFailure::invalid_argument(
+                "video/open capability must not be empty",
+            ));
+        }
+        if request.width_px == Some(0) || request.height_px == Some(0) {
+            return Err(QueryFailure::invalid_argument(
+                "video/open dimensions must be non-zero when provided",
+            ));
+        }
+
+        let stream = self
+            .streams
+            .iter_mut()
+            .find(|stream| stream.source.accepts(requested))
+            .ok_or_else(|| {
+                QueryFailure::not_found(format!("unknown camera capability '{requested}'"))
+            })?;
+        stream.source.validate_requested_dimensions(request)?;
+        Ok(stream)
+    }
+}
+
 #[phoxal::service(state = VideoState, api = Api)]
-pub struct Video;
+pub(crate) struct Video;
 
 impl Participant for Video {
     async fn setup(
@@ -105,27 +214,21 @@ impl Participant for Video {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let sources = build_video_sources(ctx.robot()?)?;
+        let sources = video_sources(ctx.robot()?)?;
 
-        let mut cameras = Vec::with_capacity(sources.len());
-        let mut states = Vec::with_capacity(sources.len());
-        for source in &sources {
-            cameras.push(ctx.subscriber(source.camera_topic(), 32).await?);
-            states.push(ctx.state_publisher(source.state_topic()).await?);
+        let mut streams = Vec::with_capacity(sources.len());
+        let mut channels = Vec::with_capacity(sources.len());
+        for source in sources {
+            channels.push(StreamChannel {
+                camera: ctx.subscriber(source.camera_topic(), 32).await?,
+                state: ctx.state_publisher(source.state_topic()).await?,
+            });
+            streams.push(Stream::new(source));
         }
         ctx.query(api::topic::owner().video().open(), Self::open)
             .await?;
 
-        Ok((
-            VideoState {
-                active: vec![false; sources.len()],
-                phase: vec![StreamPhase::Stopped; sources.len()],
-                frames_seen: vec![0; sources.len()],
-                last_frame: vec![None; sources.len()],
-                sources,
-            },
-            Api { cameras, states },
-        ))
+        Ok((VideoState { streams }, Api { streams: channels }))
     }
 
     async fn reset(
@@ -134,15 +237,15 @@ impl Participant for Video {
         _api: &Self::Api,
         state: &mut Self::State,
     ) -> Result<()> {
-        for (active, phase) in state.active.iter().zip(&mut state.phase) {
-            *phase = if *active {
+        for stream in &mut state.streams {
+            stream.phase = if stream.open {
                 StreamPhase::Starting
             } else {
                 StreamPhase::Stopped
             };
+            stream.frames_seen = 0;
+            stream.last_frame = None;
         }
-        state.frames_seen.fill(0);
-        state.last_frame.fill(None);
         Ok(())
     }
 
@@ -153,34 +256,32 @@ impl Participant for Video {
         step: StepContext,
         state: &mut Self::State,
     ) -> Result<()> {
-        for index in 0..api.cameras.len() {
+        for (stream, channel) in state.streams.iter_mut().zip(&api.streams) {
             let mut saw_frame = false;
-            while let Some(observed) = api.cameras[index].try_recv() {
-                let captured_at = observed.metadata.produced_at;
-                if !state.active[index] {
-                    state.last_frame[index] = captured_at;
-                    continue;
+            while let Some(observed) = channel.camera.try_recv() {
+                stream.last_frame = observed.metadata.produced_at;
+                if stream.open {
+                    stream.frames_seen = stream.frames_seen.saturating_add(1);
+                    saw_frame = true;
                 }
-                state.frames_seen[index] = state.frames_seen[index].saturating_add(1);
-                state.last_frame[index] = captured_at;
-                saw_frame = true;
             }
             if saw_frame {
-                state.publish_state(api, index, step).await?;
+                channel
+                    .state
+                    .publish(&step.token, stream.published_state())?;
             }
         }
 
-        for index in 0..state.sources.len() {
-            if state.active[index] {
-                let next = if frame_is_fresh(state.last_frame[index], step.now()) {
-                    StreamPhase::Active
-                } else {
-                    StreamPhase::Starting
-                };
-                if state.phase[index] != next {
-                    state.phase[index] = next;
-                    state.publish_state(api, index, step).await?;
-                }
+        for (stream, channel) in state.streams.iter_mut().zip(&api.streams) {
+            if !stream.open {
+                continue;
+            }
+            let next = stream.phase_at(step.now());
+            if stream.phase != next {
+                stream.phase = next;
+                channel
+                    .state
+                    .publish(&step.token, stream.published_state())?;
             }
         }
 
@@ -195,36 +296,19 @@ impl Video {
         request: api::video::OpenRequest,
         state: &mut VideoState,
     ) -> QueryResult<api::video::OpenResponse> {
-        open_stream(
-            &state.sources,
-            &mut state.active,
-            &mut state.phase,
-            &mut state.frames_seen,
-            request,
-        )
+        state.open(&request)
     }
 }
 
-/// Whether the newest camera capture is recent enough to call the stream
-/// active. A capture the driver could not translate into robot time, or one
-/// from a replaced world, is never fresh.
-fn frame_is_fresh(captured_at: Option<TimeWindow>, now: RobotInstant) -> bool {
-    captured_at.is_some_and(|captured_at| {
-        captured_at
-            .possibly_fresh_within(now, CAMERA_STALE)
-            .unwrap_or(false)
-    })
-}
-
-fn build_video_sources(robot: &Robot) -> Result<Vec<VideoSource>> {
+/// Every camera capability the robot declares, in the model's own order.
+fn video_sources(robot: &Robot) -> Result<Vec<VideoSource>> {
     robot
-        .camera_capabilities()?
+        .capability_refs(|capability| matches!(capability, Capability::Camera(_)))
         .into_iter()
         .map(|capability| {
-            let Capability::Camera(camera) = robot.capability(&capability)? else {
+            let Some(Capability::Camera(camera)) = robot.capability(&capability) else {
                 return Err(anyhow!(
-                    "capability '{}' must reference a camera for video preview",
-                    capability
+                    "capability '{capability}' must reference a camera for video preview"
                 ));
             };
             Ok(VideoSource::new(
@@ -236,138 +320,13 @@ fn build_video_sources(robot: &Robot) -> Result<Vec<VideoSource>> {
         .collect()
 }
 
-fn open_stream(
-    sources: &[VideoSource],
-    active: &mut [bool],
-    phase: &mut [StreamPhase],
-    frames_seen: &mut [u64],
-    request: api::video::OpenRequest,
-) -> QueryResult<api::video::OpenResponse> {
-    let index = resolve_open(&request, sources)?;
-    // (Re)opening a stream restarts its lifecycle: the next step republishes the
-    // `Starting` → `Active` transition from a fresh frame count.
-    if !active[index] {
-        phase[index] = StreamPhase::Stopped;
-        frames_seen[index] = 0;
-    }
-    active[index] = true;
-    Ok(api::video::OpenResponse {
-        stream_id: sources[index].stream_id.clone(),
-    })
-}
-
-fn resolve_open(request: &api::video::OpenRequest, sources: &[VideoSource]) -> QueryResult<usize> {
-    if sources.is_empty() {
-        return Err(QueryFailure::unavailable("no camera sources are available"));
-    }
-
-    let requested = request.capability.trim();
-    if requested.is_empty() {
-        return Err(QueryFailure::invalid_argument(
-            "video/open capability must not be empty",
-        ));
-    }
-    if request.width_px == Some(0) || request.height_px == Some(0) {
-        return Err(QueryFailure::invalid_argument(
-            "video/open dimensions must be non-zero when provided",
-        ));
-    }
-
-    let index = sources
-        .iter()
-        .position(|source| {
-            source.capability_key() == requested
-                || source.stream_id == requested
-                || source.capability.capability_id == requested
-        })
-        .ok_or_else(|| {
-            QueryFailure::not_found(format!("unknown camera capability '{requested}'"))
-        })?;
-
-    validate_requested_dimensions(request, &sources[index])?;
-    Ok(index)
-}
-
-fn validate_requested_dimensions(
-    request: &api::video::OpenRequest,
-    source: &VideoSource,
-) -> QueryResult<()> {
-    if request
-        .width_px
-        .is_some_and(|width| width > source.native_width_px)
-        || request
-            .height_px
-            .is_some_and(|height| height > source.native_height_px)
-    {
-        return Err(QueryFailure::invalid_argument(
-            "video/open dimensions must not exceed the native camera size",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
 
     use phoxal::bus::QueryCode;
+    use phoxal::model::RobotBuilder;
 
     use super::*;
-
-    /// Stage a finalized bundle from the checked-in authored fixtures and take
-    /// its canonical model.
-    ///
-    /// Finalization belongs to `phoxal-cli`; the two edits it makes to the
-    /// authored document (pin the resolved clock, resolve the structure path
-    /// into `assets/`) are small enough to reproduce here, so this crate reads
-    /// a real bundle without any bundle being checked in.
-    fn fixture() -> Robot {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture");
-        let project = fixture.join("robot/rgbd-imu-diff-drive");
-        let bundle = tempfile::tempdir().expect("a staging directory");
-        let assets = bundle.path().join("assets");
-
-        std::fs::create_dir_all(assets.join("robot")).unwrap();
-        std::fs::copy(
-            project.join("structure.urdf"),
-            assets.join("robot/structure.urdf"),
-        )
-        .unwrap();
-        for component_type in ["camera_rgbd_640x480", "drive_motor", "imu", "range_tof"] {
-            let source = fixture.join("component").join(component_type);
-            let staged = assets.join("components").join(component_type);
-            std::fs::create_dir_all(&staged).unwrap();
-            for document in ["component.yaml", "simulation.yaml", "structure.urdf"] {
-                std::fs::copy(source.join(document), staged.join(document)).unwrap();
-            }
-            for mesh in std::fs::read_dir(source.join("meshes"))
-                .into_iter()
-                .flatten()
-            {
-                let mesh = mesh.unwrap();
-                std::fs::create_dir_all(staged.join("meshes")).unwrap();
-                std::fs::copy(mesh.path(), staged.join("meshes").join(mesh.file_name())).unwrap();
-            }
-        }
-        std::fs::write(
-            bundle.path().join("robot.yaml"),
-            std::fs::read_to_string(project.join("robot.yaml"))
-                .unwrap()
-                .replacen(
-                    "schema: phoxal/robot/v0",
-                    "schema: phoxal/robot/v0\nclock: real",
-                    1,
-                )
-                .replacen(
-                    "structure: structure.urdf",
-                    "structure: robot/structure.urdf",
-                    1,
-                ),
-        )
-        .unwrap();
-        phoxal::bundle::FinalizedBundle::load(bundle.path())
-            .expect("the staged bundle must load")
-            .into_robot()
-    }
 
     fn request(capability: &str) -> api::video::OpenRequest {
         api::video::OpenRequest {
@@ -378,18 +337,42 @@ mod tests {
     }
 
     fn source() -> VideoSource {
-        VideoSource::new(CapabilityRef::new("front_camera", "rgb"), 640, 480)
+        VideoSource::new(
+            "front_camera.rgb"
+                .parse::<CapabilityRef>()
+                .expect("a normalized capability reference"),
+            640,
+            480,
+        )
+    }
+
+    fn state_with(sources: Vec<VideoSource>) -> VideoState {
+        VideoState {
+            streams: sources.into_iter().map(Stream::new).collect(),
+        }
     }
 
     #[test]
-    fn build_sources_from_robot_enumerates_camera_topics() {
-        let robot = fixture();
-        let sources = build_video_sources(&robot).unwrap();
+    fn sources_from_robot_enumerate_camera_topics() {
+        // Three cameras and one depth sensor on one component: the depth
+        // capability is what proves the enumeration selects cameras only.
+        let robot = RobotBuilder::new("rover")
+            .component_type("rgbd", |rgbd| {
+                rgbd.camera("left_mono", "left_mono_link")
+                    .camera("rgb", "rgb_link")
+                    .camera("right_mono", "right_mono_link")
+                    .depth("depth", "stereo_center_link")
+            })
+            .component("front_camera", "rgbd")
+            .build()
+            .expect("a valid robot");
+
+        let sources = video_sources(&robot).unwrap();
 
         assert_eq!(sources.len(), 3);
         let rgb = sources
             .iter()
-            .find(|source| source.capability_key() == "front_camera.rgb")
+            .find(|source| source.capability.to_string() == "front_camera.rgb")
             .unwrap();
         assert_eq!(rgb.stream_id, "front_camera_rgb");
         assert_eq!(
@@ -403,47 +386,66 @@ mod tests {
     }
 
     #[test]
-    fn open_stream_activates_matching_source_and_returns_stream_id() {
-        let sources = vec![source()];
-        let mut active = vec![false];
-        let mut phase = vec![StreamPhase::Stopped];
-        let mut frames_seen = vec![0];
+    fn open_activates_matching_source_and_returns_stream_id() {
+        let mut state = state_with(vec![source()]);
 
-        let response = open_stream(
-            &sources,
-            &mut active,
-            &mut phase,
-            &mut frames_seen,
-            request("front_camera.rgb"),
-        )
-        .unwrap();
+        let response = state.open(&request("front_camera.rgb")).unwrap();
 
         assert_eq!(response.stream_id, "front_camera_rgb");
-        assert_eq!(active, vec![true]);
-        assert_eq!(phase, vec![StreamPhase::Stopped]);
-        assert_eq!(frames_seen, vec![0]);
+        let stream = &state.streams[0];
+        assert!(stream.open);
+        assert_eq!(stream.phase, StreamPhase::Stopped);
+        assert_eq!(stream.frames_seen, 0);
+    }
+
+    /// All three spellings resolve, and all three must keep resolving.
+    #[test]
+    fn open_accepts_the_reference_the_stream_id_and_the_bare_capability_id() {
+        for spelling in ["front_camera.rgb", "front_camera_rgb", "rgb"] {
+            let mut state = state_with(vec![source()]);
+            assert_eq!(
+                state.open(&request(spelling)).unwrap().stream_id,
+                "front_camera_rgb",
+                "{spelling}"
+            );
+        }
     }
 
     #[test]
-    fn resolve_open_rejects_unknown_and_empty_sources() {
-        let unknown = resolve_open(&request("rear_camera.rgb"), &[source()]).unwrap_err();
+    fn open_rejects_unknown_and_empty_sources() {
+        let unknown = state_with(vec![source()])
+            .open(&request("rear_camera.rgb"))
+            .unwrap_err();
         assert_eq!(unknown.code, QueryCode::NotFound);
 
-        let unavailable = resolve_open(&request("front_camera.rgb"), &[]).unwrap_err();
+        let unavailable = state_with(Vec::new())
+            .open(&request("front_camera.rgb"))
+            .unwrap_err();
         assert_eq!(unavailable.code, QueryCode::Unavailable);
     }
 
     #[test]
-    fn resolve_open_rejects_zero_dimensions() {
-        let err = resolve_open(
-            &api::video::OpenRequest {
+    fn open_rejects_zero_dimensions() {
+        let err = state_with(vec![source()])
+            .open(&api::video::OpenRequest {
                 capability: "front_camera.rgb".to_string(),
                 width_px: Some(0),
                 height_px: Some(240),
-            },
-            &[source()],
-        )
-        .unwrap_err();
+            })
+            .unwrap_err();
+
+        assert_eq!(err.code, QueryCode::InvalidArgument);
+    }
+
+    #[test]
+    fn open_rejects_dimensions_above_the_native_camera_size() {
+        let err = state_with(vec![source()])
+            .open(&api::video::OpenRequest {
+                capability: "front_camera.rgb".to_string(),
+                width_px: Some(1920),
+                height_px: None,
+            })
+            .unwrap_err();
 
         assert_eq!(err.code, QueryCode::InvalidArgument);
     }

@@ -1,39 +1,31 @@
 //! Exact authored document schemas.
 //!
-//! Each document kind owns its version independently. `robot.yaml` v1 can
-//! therefore be introduced without forcing `component.yaml` or
-//! `simulation.yaml` to advance. Runtime code should use
-//! canonical runtime model; only schema-aware tools, fixtures, and migration
-//! code should import these modules.
+//! Each document kind owns its version independently, so `robot.yaml` v1 can be
+//! introduced without forcing `component.yaml` or `simulation.yaml` to advance.
+//! A new version is a new DTO beside the existing one, with its own explicit
+//! conversion into the same canonical builder input; that normalized input is
+//! crate-internal so a source version can be added without changing what
+//! `phoxal-model` exposes.
 //!
-//! A second version is added only to the document kind that changes:
+//! Runtime code reads the canonical runtime model. These modules are for
+//! schema-aware tools, fixtures and the compiler itself.
 //!
-//! ```text
-//! source/robot/v0/Manifest --explicit normalization--\
-//!                                              +--> model::Robot
-//! source/robot/v1/Manifest --explicit normalization--/
+//! Every document kind is reached the same way, through associated functions on
+//! its `Manifest`: `parse` for exact text, `load` for a path, `write_to_dir` to
+//! write it back. All of them validate.
 //!
-//! source/component/v0/Manifest --------------------^
-//! ```
-//!
-//! The v0 and v1 robot DTOs stay separately nameable, and each gets an
-//! explicit conversion into the same canonical builder input. That normalized
-//! builder input is intentionally crate-internal: a future source version is
-//! implemented inside `phoxal-manifest`. Component and simulation
-//! documents remain on v0 until their own grammars change. A public
-//! multi-version dispatcher belongs inside that one document-kind module only
-//! after the second version actually exists.
+//! `document` and `strict_yaml` are the shared mechanics behind that, and are
+//! private: the vocabulary they own is named through this module, which is its
+//! one canonical path.
+
+mod document;
+mod strict_yaml;
 
 pub mod component;
 pub mod robot;
 pub mod simulation;
 
-pub(crate) fn is_valid_token(value: &str) -> bool {
-    let value = value.trim();
-    !value.is_empty()
-        && value.chars().all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '_' | '-')
-        })
-}
+pub use document::{ComposeError, DocumentKind, Origin, SourceError, Violations};
+pub use strict_yaml::{ReservedMarker, StrictYamlError};
+
+pub(crate) use document::document_path;

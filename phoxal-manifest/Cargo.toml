@@ -16,8 +16,7 @@ name = "phoxal_manifest"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = { workspace = true }
-phoxal-model = { workspace = true }
+phoxal-model = { workspace = true, features = ["schemars"] }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -30,5 +29,8 @@ urdf-rs = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+# Only the tests reach for a catch-all error type; every public entry point in
+# this crate returns a typed one.
+anyhow = { workspace = true }
 jsonschema = { workspace = true, default-features = false }
 tempfile = { workspace = true }

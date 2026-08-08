@@ -3,13 +3,12 @@
 //! A scheduled participant that subscribes to `odometry/state` and republishes
 //! `localize/state`, the localization estimate consumed by downstream runtimes
 //! such as `map`, `explore`, and `follow`.
-//! This first version is transparent: the odometry pose is treated directly as
-//! the map-frame pose, and confidence decays linearly to zero as the latest
-//! odometry sample ages past the staleness window.
+//! The estimate is transparent: map-frame and odometry-frame are the same
+//! frame, so the odometry pose is the map-frame pose, and confidence decays
+//! linearly to zero as the latest odometry sample ages past the staleness
+//! window.
 //! Until the first odometry fix arrives it publishes nothing, so downstream
 //! runtimes never mistake a fabricated origin pose for a real estimate.
-//! It does not implement ORB-SLAM3, visual-inertial localization, or GNSS
-//! anchoring; map-frame and odometry-frame are assumed identical.
 
 use std::time::Duration;
 
@@ -18,18 +17,18 @@ use phoxal::prelude::*;
 
 const LOCALIZE_STALE: Duration = Duration::from_secs(1);
 
-pub struct Api {
+pub(crate) struct Api {
     odometry: Subscriber<api::odometry::State>,
     state: StatePublisher<api::localize::LocalizationState>,
 }
 
-pub struct LocalizeState {
+pub(crate) struct LocalizeState {
     // Runtime-private typed state (not handles).
-    last_odometry: Option<(api::odometry::State, RobotInstant)>,
+    last_odometry: Option<Timed<api::odometry::State>>,
 }
 
 #[phoxal::service(state = LocalizeState, api = Api)]
-pub struct Localize;
+pub(crate) struct Localize;
 
 impl Participant for Localize {
     async fn setup(
@@ -71,52 +70,34 @@ impl Participant for Localize {
     ) -> Result<()> {
         while let Some(observed) = api.odometry.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_odometry = Some((observed.body, at));
+                state.last_odometry = Some(Timed::new(observed.body, at));
             }
         }
 
+        // Publish only from a real, finite, fresh odometry sample, so consumers
+        // never see a fabricated origin. Each gate hands the next one the value
+        // it proved, rather than re-deriving the proof.
+        let Some(odometry) = state.last_odometry.as_ref() else {
+            return Ok(());
+        };
         let now = step.now();
-        if !odometry_is_usable(state.last_odometry.as_ref(), now)? {
+        // A sample from a replaced world, from this step's future, or older than
+        // the window is not usable; `fresh_within` answers all three and fails
+        // closed across timelines.
+        if !odometry.fresh_within(now, LOCALIZE_STALE) {
             return Ok(());
         }
+        if !odometry_is_finite(&odometry.body) {
+            anyhow::bail!("odometry sample contains a non-finite value");
+        }
 
-        // The input gate proves a real, finite, fresh odometry sample exists;
-        // publish nothing otherwise so consumers never see a fabricated origin.
-        let (odometry, produced_at) = state
-            .last_odometry
-            .as_ref()
-            .expect("usable odometry requires a sample");
-
-        let age = now
-            .duration_since(*produced_at)
-            .expect("a usable sample is on this step's timeline");
+        // Freshness already established that `at` is on this step's timeline and
+        // at or before `now`, so this subtraction cannot fail.
+        let age = now.duration_since(odometry.at)?;
         let confidence = confidence_for(age);
         api.state
-            .publish(step.token(), localization_from(odometry, confidence))?;
+            .publish(&step.token, localization_from(&odometry.body, confidence))?;
         Ok(())
-    }
-}
-
-fn odometry_is_usable(
-    sample: Option<&(api::odometry::State, RobotInstant)>,
-    now: RobotInstant,
-) -> Result<bool> {
-    match sample {
-        None => Ok(false),
-        // A sample from a replaced world, from this step's future, or older
-        // than the window is not usable. The checked predicate answers all
-        // three, and a cross-timeline comparison can never silently pass.
-        Some((_, produced_at))
-            if !TimeWindow::exact(*produced_at)
-                .possibly_fresh_within(now, LOCALIZE_STALE)
-                .unwrap_or(false) =>
-        {
-            Ok(false)
-        }
-        Some((odometry, _)) if !odometry_is_finite(odometry) => {
-            anyhow::bail!("odometry sample contains a non-finite value")
-        }
-        Some(_) => Ok(true),
     }
 }
 
@@ -148,9 +129,18 @@ fn localization_from(
 #[cfg(test)]
 mod tests {
     use phoxal::api;
-    use phoxal::bus::{RobotInstant, TimelineId};
 
-    use super::{Duration, LOCALIZE_STALE, confidence_for, localization_from, odometry_is_usable};
+    use super::{Duration, LOCALIZE_STALE, confidence_for, localization_from, odometry_is_finite};
+
+    fn state(x_m: f64) -> api::odometry::State {
+        api::odometry::State {
+            x_m,
+            y_m: 0.0,
+            yaw_rad: 0.0,
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+        }
+    }
 
     #[test]
     fn confidence_decays_with_age() {
@@ -181,39 +171,38 @@ mod tests {
         assert_eq!(localization.confidence, 0.42);
     }
 
+    /// Every field is checked, so a non-finite value anywhere in the sample
+    /// stops the estimate rather than propagating into a published pose.
     #[test]
-    fn odometry_gate_rejects_unavailable_stale_future_and_invalid_samples() {
-        let state = |x_m| api::odometry::State {
-            x_m,
-            y_m: 0.0,
-            yaw_rad: 0.0,
-            linear_x_mps: 0.0,
-            angular_z_radps: 0.0,
-        };
-        let line = TimelineId::mint();
-        let replaced = TimelineId::mint();
-        let stale_ns = u64::try_from(LOCALIZE_STALE.as_nanos()).unwrap();
-        let now = RobotInstant::new(line, stale_ns + 10);
-        let at = |ticks| RobotInstant::new(line, ticks);
+    fn a_non_finite_field_anywhere_makes_the_sample_unusable() {
+        assert!(odometry_is_finite(&state(0.0)));
 
-        assert!(!odometry_is_usable(None, now).unwrap());
-        assert!(odometry_is_usable(Some(&(state(0.0), at(10))), now).unwrap());
-        assert!(
-            !odometry_is_usable(Some(&(state(0.0), at(9))), now).unwrap(),
-            "a sample older than the window is not usable"
-        );
-        assert!(
-            !odometry_is_usable(Some(&(state(0.0), at(now.ticks() + 1))), now).unwrap(),
-            "a sample from this step's future is not usable"
-        );
-        assert!(
-            !odometry_is_usable(
-                Some(&(state(0.0), RobotInstant::new(replaced, now.ticks()))),
-                now
-            )
-            .unwrap(),
-            "a sample from a replaced world is incomparable, never usable"
-        );
-        assert!(odometry_is_usable(Some(&(state(f64::NAN), at(now.ticks()))), now).is_err());
+        for broken in [
+            api::odometry::State {
+                x_m: f64::NAN,
+                ..state(0.0)
+            },
+            api::odometry::State {
+                y_m: f64::INFINITY,
+                ..state(0.0)
+            },
+            api::odometry::State {
+                yaw_rad: f64::NEG_INFINITY,
+                ..state(0.0)
+            },
+            api::odometry::State {
+                linear_x_mps: f32::NAN,
+                ..state(0.0)
+            },
+            api::odometry::State {
+                angular_z_radps: f32::INFINITY,
+                ..state(0.0)
+            },
+        ] {
+            assert!(
+                !odometry_is_finite(&broken),
+                "{broken:?} must not be finite"
+            );
+        }
     }
 }

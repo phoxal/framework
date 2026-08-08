@@ -3,7 +3,6 @@
 //! scheduled step).
 
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
@@ -17,6 +16,7 @@ use crate::bus::{
 use crate::model::Robot;
 use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
+use crate::participant::runner::inputs::ParticipantBundleInputs;
 use phoxal_bus::{Bus, TimelineAuthority, WorldClockPublisher};
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
@@ -24,8 +24,11 @@ pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 /// The sole IO-construction point, handed to `Participant::setup`.
 pub struct SetupContext<R: Participant> {
     bus: Bus,
-    robot: Option<Arc<Robot>>,
-    assets: Option<ParticipantAssetResolver>,
+    /// The finalized bundle this participant was launched against, if it was
+    /// launched with one. Model and assets travel together because they are two
+    /// views of the same load: there is no launch that binds one without the
+    /// other.
+    bundle: Option<ParticipantBundleInputs>,
     component_instance: Option<String>,
     managed_tasks: ManagedTasks,
     timeline_retentions: Vec<TimelineRetention>,
@@ -36,14 +39,12 @@ pub struct SetupContext<R: Participant> {
 impl<R: Participant> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
-        robot: Option<Arc<Robot>>,
-        assets: Option<ParticipantAssetResolver>,
+        bundle: Option<ParticipantBundleInputs>,
         component_instance: Option<String>,
     ) -> Self {
         SetupContext {
             bus,
-            robot,
-            assets,
+            bundle,
             component_instance,
             managed_tasks: ManagedTasks::default(),
             timeline_retentions: Vec::new(),
@@ -116,44 +117,26 @@ impl<R: Participant> SetupContext<R> {
         std::mem::take(&mut self.timeline_retentions)
     }
 
-    pub(crate) fn register_query(&mut self, registration: QueryRegistration<R>) {
-        self.queries.push(registration);
-    }
-
-    pub(crate) fn query_registrations(&self) -> &[QueryRegistration<R>] {
-        &self.queries
-    }
-
     pub(crate) fn take_query_registrations(&mut self) -> Vec<QueryRegistration<R>> {
         std::mem::take(&mut self.queries)
     }
 
-    /// The bound `robot.components` instance, if any. In-crate accessor for the
-    /// driver/simulator `component()` builders (`participant::api`).
-    pub(crate) fn component_instance(&self) -> Option<&str> {
-        self.component_instance.as_deref()
-    }
-
-    /// The resolved robot model, if bound. In-crate accessor for
-    /// [`SetupContext::robot`](super::api::SetupContext::robot).
-    pub(crate) fn robot_ref(&self) -> Option<&Robot> {
-        self.robot.as_deref()
-    }
-
     /// The immutable canonical model loaded from the finalized bundle.
     pub fn robot(&self) -> crate::Result<&Robot> {
-        self.robot_ref().ok_or_else(|| {
+        let bundle = self.bundle.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "no robot model is bound (this participant was launched without a bundle root)"
             )
-        })
+        })?;
+        Ok(&bundle.robot)
     }
 
     /// The validated assets this participant's runtime bundle declares.
     pub fn assets(&self) -> crate::Result<&ParticipantAssetResolver> {
-        self.assets.as_ref().ok_or_else(|| {
+        let bundle = self.bundle.as_ref().ok_or_else(|| {
             anyhow::anyhow!("no bundle assets are bound (this participant has no bundle root)")
-        })
+        })?;
+        Ok(&bundle.assets)
     }
 }
 
@@ -199,7 +182,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         let handle = Latest::new(&self.bus, &topic).await?;
         let retained = handle.clone();
         self.register_timeline_retention(move |timeline| {
-            retained.__retain_timeline(timeline);
+            retained.retain_timeline(timeline);
         });
         Ok(handle)
     }
@@ -212,7 +195,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         let handle = Subscriber::new(&self.bus, &topic, depth).await?;
         let retained = handle.clone();
         self.register_timeline_retention(move |timeline| {
-            retained.__retain_timeline(timeline);
+            retained.retain_timeline(timeline);
         });
         Ok(handle)
     }
@@ -251,37 +234,39 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     {
         let topic = topic.key().to_string();
         if self
-            .query_registrations()
+            .queries
             .iter()
             .any(|registration| registration.topic() == topic)
         {
             anyhow::bail!("duplicate query binding for '{topic}'");
         }
-        self.register_query(QueryRegistration::new(topic, handler));
+        self.queries.push(QueryRegistration::new(topic, handler));
         Ok(())
     }
 }
 
 impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
     /// The compiled component instance bound to this driver or simulator.
-    pub fn component(&self) -> crate::Result<&crate::model::ComponentInstance> {
-        let id = self.component_instance().ok_or_else(|| {
+    pub fn component(&self) -> crate::Result<&crate::model::robot::ComponentInstance> {
+        let id = self.component_instance.as_deref().ok_or_else(|| {
             anyhow::anyhow!("no component instance is bound for this participant launch")
         })?;
-        Ok(self.robot()?.component_instance(id)?)
+        self.robot()?.component_instance(id).ok_or_else(|| {
+            anyhow::anyhow!("the bound component instance '{id}' is not in the robot model")
+        })
     }
 }
 
 impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
     pub fn timeline_authority(&self, timeline: TimelineId) -> crate::Result<TimelineAuthority> {
-        Ok(TimelineAuthority::__mint(timeline)?)
+        Ok(TimelineAuthority::mint(timeline)?)
     }
 
     pub async fn world_clock_publisher<B: WorldClockContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<WorldClockPublisher<B>> {
-        Ok(WorldClockPublisher::__mint(self.bus.clone(), &topic)?)
+        Ok(WorldClockPublisher::mint(self.bus.clone(), &topic)?)
     }
 }
 
@@ -291,58 +276,41 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
 /// The [`StepToken`] is what a [`StatePublisher`](crate::bus::StatePublisher)
 /// requires, and the runner is the only minter on the documented surface - so
 /// a participant publishes state at the instant it actually reached, or not at
-/// all (#952 section D; `phoxal-bus`'s docs state exactly how strong that is).
+/// all (`phoxal-bus`'s docs state exactly how strong that is).
+///
+/// The fields are public because there is nothing here to protect: this is a
+/// per-step `Copy` carrier the runner fills once and hands over, and the
+/// guarantee lives in the [`StepToken`] itself rather than in any invariant
+/// between these four values.
 #[derive(Clone, Copy, Debug)]
 pub struct StepContext {
-    token: StepToken,
-    step_index: u64,
-    dt: Duration,
-    missed_ticks: u32,
+    /// The capability to publish state at this step's instant.
+    pub token: StepToken,
+    /// Monotonic step counter within the timeline.
+    pub step_index: u64,
+    /// Robot time since the previous step.
+    pub dt: Duration,
+    /// Ticks collapsed into this step after an overrun.
+    pub missed_ticks: u32,
 }
 
 /// Context for `Participant::reset`: the runner observed a different timeline and is
 /// about to begin releasing steps for that world history.
+///
+/// Public fields for the same reason as [`StepContext`]: two opaque identities
+/// the runner fills once, with nothing to keep consistent between them.
+/// Timelines have no generation order, so "previous" and "new" are roles in this
+/// one transition, not a relation the type could enforce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResetContext {
-    previous_timeline: TimelineId,
-    new_timeline: TimelineId,
-}
-
-impl ResetContext {
-    pub(crate) fn new(previous_timeline: TimelineId, new_timeline: TimelineId) -> Self {
-        Self {
-            previous_timeline,
-            new_timeline,
-        }
-    }
-
     /// The world history whose derived state must be discarded.
-    pub fn previous_timeline(&self) -> TimelineId {
-        self.previous_timeline
-    }
-
+    pub previous_timeline: TimelineId,
     /// The newly active world history.
-    pub fn new_timeline(&self) -> TimelineId {
-        self.new_timeline
-    }
+    pub new_timeline: TimelineId,
 }
 
 impl StepContext {
-    pub(crate) fn new(token: StepToken, step_index: u64, dt: Duration, missed_ticks: u32) -> Self {
-        StepContext {
-            token,
-            step_index,
-            dt,
-            missed_ticks,
-        }
-    }
-
-    /// The capability to publish state at this step's instant.
-    pub fn token(&self) -> &StepToken {
-        &self.token
-    }
-
-    /// The robot instant this step reached.
+    /// The robot instant this step reached, as the token records it.
     pub fn now(&self) -> RobotInstant {
         crate::bus::StepStamp::instant(&self.token)
     }
@@ -350,20 +318,5 @@ impl StepContext {
     /// The world history this step belongs to.
     pub fn timeline(&self) -> TimelineId {
         self.now().timeline()
-    }
-
-    /// Monotonic step counter within the timeline.
-    pub fn step_index(&self) -> u64 {
-        self.step_index
-    }
-
-    /// Robot time since the previous step.
-    pub fn dt(&self) -> Duration {
-        self.dt
-    }
-
-    /// Ticks collapsed into this step after an overrun (D34).
-    pub fn missed_ticks(&self) -> u32 {
-        self.missed_ticks
     }
 }

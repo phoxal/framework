@@ -1,12 +1,15 @@
 //! Depth capability: publishes `component::depth::Frame` from the Webots
-//! `RangeFinder` device. Moved from the monolith's `DepthSpec`
-//! (main.rs:593-598), `NativeDepth` (main.rs:1416-1463), and the
-//! `meters_to_u16_mm` helper (main.rs:1553-1559).
+//! `RangeFinder` device.
+//!
+//! Webots reports metres as floats; the contract carries unsigned millimetres
+//! with zero reserved for "no return", so the conversion below is where a
+//! non-finite or non-positive reading becomes that reserved value rather than
+//! a plausible-looking distance.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
 
-use super::{SampledSpec, is_due};
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 #[derive(Clone, Debug)]
 pub(crate) struct DepthSpec {
@@ -22,29 +25,26 @@ pub(crate) struct NativeDepth {
 
 impl NativeDepth {
     pub(crate) fn new(webots: &webots_rs::Webots, spec: &DepthSpec) -> Result<Self> {
-        let sensor = webots
-            .range_finder(spec.sampled.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        sensor
-            .enable(spec.sampled.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+        let sensor = webots.range_finder(spec.sampled.reference.to_string())?;
+        sensor.enable(spec.sampled.sampling_period_ms)?;
         Ok(Self {
             sensor,
             spec: spec.clone(),
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::depth::Frame>> {
-        if !is_due(step_index, self.spec.sampled.publish_every_steps) {
-            return Ok(None);
-        }
+impl SimulatedSensor for NativeDepth {
+    type Sample = api::component::depth::Frame;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.sampled.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
         let samples_mm = self
             .sensor
-            .get_range_image()
-            .map_err(|error| anyhow!(error))?
+            .get_range_image()?
             .into_iter()
             .map(meters_to_u16_mm)
             .collect();

@@ -1,0 +1,697 @@
+{
+  "$defs": {
+    "ActuatorType": {
+      "enum": [
+        "velocity",
+        "position",
+        "torque"
+      ],
+      "type": "string"
+    },
+    "CameraProjection": {
+      "enum": [
+        "planar",
+        "cylindrical",
+        "spherical"
+      ],
+      "type": "string"
+    },
+    "Capability": {
+      "description": "The simulator parameters for one capability: the noise, resolutions and\nsampling a world model needs on top of the physical (URDF) and component\nfacts, which it never restates.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "acceleration_radps2": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "actuator_type": {
+              "$ref": "#/$defs/ActuatorType",
+              "default": "velocity"
+            },
+            "control_pid": {
+              "default": null,
+              "items": {
+                "format": "double",
+                "type": "number"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "motor",
+              "type": "string"
+            },
+            "sampling_period_torque_hz": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "encoder",
+              "type": "string"
+            },
+            "noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "accelerometer",
+              "type": "string"
+            },
+            "lookup_table": {
+              "default": null,
+              "items": {
+                "items": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "gyroscope",
+              "type": "string"
+            },
+            "lookup_table": {
+              "default": null,
+              "items": {
+                "items": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "magnetometer",
+              "type": "string"
+            },
+            "lookup_table": {
+              "default": null,
+              "items": {
+                "items": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "imu",
+              "type": "string"
+            },
+            "noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "accuracy": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "gnss",
+              "type": "string"
+            },
+            "noise_correlation": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "speed_noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "speed_resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "ambient_occlusion_radius": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "anti_aliasing": {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "bloom_threshold": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "exposure": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "far": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "camera",
+              "type": "string"
+            },
+            "motion_blur": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "near": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "noise_mask_url": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "projection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CameraProjection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "depth",
+              "type": "string"
+            },
+            "motion_blur": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "range",
+              "type": "string"
+            },
+            "noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "lidar",
+              "type": "string"
+            },
+            "noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "mmwave",
+              "type": "string"
+            },
+            "lookup_table": {
+              "default": null,
+              "items": {
+                "items": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "noise": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "resolution": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "aperture": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "microphone",
+              "type": "string"
+            },
+            "sampling_period_hz": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "sampling_period_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "speaker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "battery",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "led",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "emergency_stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "The simulated properties of one component-local link.",
+      "properties": {
+        "contact_material": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Editor schema for an authored Phoxal simulation.yaml document.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Exact top-level `simulation.yaml` v0 document.",
+      "properties": {
+        "capabilities": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Capability"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "links": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Link"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "schema": {
+          "const": "phoxal/simulation/v0",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Phoxal simulation manifest (phoxal/simulation/v0)"
+}

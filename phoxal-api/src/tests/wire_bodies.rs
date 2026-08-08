@@ -1,0 +1,410 @@
+//! The wire bodies themselves: that a body is its plain serde encoding, that it
+//! survives the codec the bus uses, and that a foreign payload is rejected
+//! rather than silently reinterpreted.
+
+use super::{instant, round_trip};
+use crate::v0_1 as api;
+
+#[test]
+fn body_serializes_as_plain_payload_without_version_tag() {
+    let target = api::drive::Target {
+        linear_x_mps: 1.0,
+        angular_z_radps: 0.5,
+        curvature_limit_radpm: None,
+    };
+    // MessagePack-as-JSON projection: the wire body is the plain struct, with no
+    // `v`/`data` envelope around it.
+    let json = serde_json::to_value(&target).unwrap();
+    assert_eq!(json["linear_x_mps"], 1.0);
+    assert!(
+        json.get("v").is_none(),
+        "wire body must not carry a version tag"
+    );
+    assert!(json.get("data").is_none());
+}
+
+#[test]
+fn body_round_trips_through_messagepack() {
+    let state = api::drive::State {
+        target: api::drive::Target {
+            linear_x_mps: 0.3,
+            angular_z_radps: -0.2,
+            curvature_limit_radpm: None,
+        },
+        limited_target: api::drive::Target {
+            linear_x_mps: 0.3,
+            angular_z_radps: -0.2,
+            curvature_limit_radpm: None,
+        },
+        actuator_authority: api::drive::ActuatorAuthority::Active,
+        stop_reason: None,
+    };
+    let bytes = rmp_serde::to_vec_named(&state).unwrap();
+    let decoded: api::drive::State = rmp_serde::from_slice(&bytes).unwrap();
+    assert_eq!(state, decoded);
+}
+
+#[test]
+fn navigation_and_safety_wire_shapes_are_golden() {
+    let navigation = api::navigation::Result {
+        request_id: api::navigation::RequestId {
+            value: "nav-1".to_string(),
+        },
+        outcome: api::navigation::Outcome::Failed(api::navigation::FailureReason::Blocked),
+    };
+    assert_eq!(
+        serde_json::to_value(&navigation).unwrap(),
+        serde_json::json!({
+            "request_id": {"value": "nav-1"},
+            "outcome": {"Failed": "blocked"}
+        })
+    );
+    round_trip(&navigation);
+
+    let constraint = api::safety::Constraint {
+        reason: api::safety::ConstraintReason::ObstacleProximity,
+        source: api::safety::ConstraintSource {
+            kind: api::safety::ConstraintSourceKind::Range,
+            participant_id: "safety".to_string(),
+            component_id: Some("front".to_string()),
+            capability_id: Some("range".to_string()),
+        },
+        stop: true,
+        max_linear_speed_mps: None,
+        max_angular_speed_radps: None,
+        observed_value: Some(0.1),
+        valid_from: instant(100),
+        expires_at: instant(400),
+    };
+    let safety = api::safety::MotionConstraints {
+        sequence: 3,
+        stop: true,
+        max_linear_speed_mps: None,
+        max_angular_speed_radps: None,
+        constraints: vec![constraint],
+        expires_at: instant(400),
+    };
+    let safety_json = serde_json::to_value(&safety).unwrap();
+    assert_eq!(
+        safety_json["constraints"][0]["reason"],
+        "obstacle_proximity"
+    );
+    assert_eq!(safety_json["constraints"][0]["source"]["kind"], "range");
+    round_trip(&safety);
+}
+
+#[test]
+fn navigation_and_safety_reject_malformed_payloads() {
+    let wrong = rmp_serde::to_vec_named(&api::motion::ManualCommand {
+        linear_x_mps: 0.1,
+        angular_z_radps: 0.2,
+    })
+    .unwrap();
+    assert!(rmp_serde::from_slice::<api::navigation::Request>(&wrong).is_err());
+    assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&wrong).is_err());
+}
+
+#[test]
+fn domain_bodies_round_trip_through_messagepack() {
+    round_trip(&api::joint::JointState {
+        position_rad: 1.0,
+        velocity_radps: 0.2,
+        effort_nm: Some(0.3),
+    });
+    round_trip(&api::frame::Tree {
+        transforms: vec![api::frame::FrameTransform {
+            parent_frame_id: "map".to_string(),
+            child_frame_id: "base_link".to_string(),
+            translation_m: [1.0, 2.0, 0.0],
+            rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0],
+            stamp: Some(instant(10)),
+        }],
+    });
+    round_trip(&api::power::State {
+        status: api::power::Status::Idle,
+        detail: None,
+    });
+    round_trip(&api::motion::State {
+        manual_observed_age_ns: Some(10),
+        autonomous_candidate_age_ns: None,
+        safety_constraints_age_ns: Some(5),
+        selected_source: Some(api::motion::Source::Manual),
+        final_target: api::motion::Target {
+            linear_x_mps: 0.1,
+            angular_z_radps: 0.2,
+            curvature_limit_radpm: None,
+        },
+        zero_reason: None,
+        safety_runtime: api::motion::SafetyRuntime::Present,
+        component_estop_blocked: false,
+        active_safety_constraints: Vec::new(),
+    });
+    round_trip(&api::safety::MotionConstraints {
+        sequence: 1,
+        stop: true,
+        max_linear_speed_mps: Some(0.0),
+        max_angular_speed_radps: Some(0.0),
+        constraints: vec![api::safety::Constraint {
+            reason: api::safety::ConstraintReason::ObstacleProximity,
+            source: api::safety::ConstraintSource {
+                kind: api::safety::ConstraintSourceKind::Range,
+                participant_id: "front-range".to_string(),
+                component_id: Some("front-range".to_string()),
+                capability_id: Some("range".to_string()),
+            },
+            stop: true,
+            max_linear_speed_mps: Some(0.0),
+            max_angular_speed_radps: Some(0.0),
+            observed_value: Some(0.1),
+            valid_from: instant(10),
+            expires_at: instant(310),
+        }],
+        expires_at: instant(310),
+    });
+    round_trip(&api::logs::Event {
+        seq: 7,
+        time: api::logs::Timestamp {
+            unix_seconds: 1_800_000_000,
+            nanos: 123,
+        },
+        level: api::logs::Level::Info,
+        target: "phoxal.runtime".to_string(),
+        message: "runtime ready".to_string(),
+        fields: [(
+            "participant".to_string(),
+            api::logs::LogValue::String("drive".to_string()),
+        )]
+        .into_iter()
+        .collect(),
+        dropped: 2,
+        truncated: 3,
+    });
+    round_trip(&api::navigation::Path {
+        poses: vec![api::navigation::Pose {
+            x_m: 1.0,
+            y_m: 2.0,
+            yaw_rad: None,
+        }],
+        map_revision: Some(3),
+    });
+    round_trip(&api::navigation::State::Running(
+        api::navigation::RequestId {
+            value: "request-1".to_string(),
+        },
+    ));
+    round_trip(&api::perception::Detections {
+        detections: vec![api::perception::Detection {
+            class_id: "crate".to_string(),
+            confidence: 0.8,
+            position_m: [1.0, 2.0, 3.0],
+            frame_id: "camera_link".to_string(),
+            track_id: Some(6),
+        }],
+        stamp: Some(instant(7)),
+    });
+    round_trip(&api::video::stream::StreamState {
+        phase: api::video::stream::StreamPhase::Active,
+        frames_seen: 12,
+    });
+}
+
+/// `truncated` is `#[serde(default)]`, so a publisher that does not write the
+/// field decodes as "nothing was truncated" rather than failing the whole
+/// record.
+#[test]
+fn logs_event_defaults_truncation_for_publishers_without_the_field() {
+    #[derive(serde::Serialize)]
+    struct EventWithoutTruncation {
+        seq: u64,
+        time: api::logs::Timestamp,
+        level: api::logs::Level,
+        target: String,
+        message: String,
+        fields: std::collections::BTreeMap<String, api::logs::LogValue>,
+        dropped: u32,
+    }
+
+    let bytes = rmp_serde::to_vec_named(&EventWithoutTruncation {
+        seq: 1,
+        time: api::logs::Timestamp {
+            unix_seconds: 2,
+            nanos: 3,
+        },
+        level: api::logs::Level::Info,
+        target: "publisher".to_string(),
+        message: "no truncation field".to_string(),
+        fields: std::collections::BTreeMap::new(),
+        dropped: 4,
+    })
+    .expect("encode event without the truncation field");
+    let decoded: api::logs::Event =
+        rmp_serde::from_slice(&bytes).expect("decode additive event field");
+    assert_eq!(decoded.dropped, 4);
+    assert_eq!(decoded.truncated, 0);
+}
+
+#[test]
+fn retained_tool_contracts_round_trip_through_messagepack() {
+    round_trip(&api::supervisor::log::SnapshotRequest {});
+    let cursor = api::supervisor::Cursor {
+        generation: "opaque-generation".to_string(),
+        sequence: 9,
+    };
+    let record = api::supervisor::log::Record {
+        sequence: 9,
+        participant_id: "drive".to_string(),
+        source_sequence: 41,
+        time: api::supervisor::log::Timestamp {
+            unix_seconds: 1_800_000_000,
+            nanos: 123,
+        },
+        level: api::supervisor::log::Level::Info,
+        target: "drive".to_string(),
+        message: "target accepted".to_string(),
+        fields: [(
+            "speed".to_string(),
+            api::supervisor::log::LogValue::F64(0.4),
+        )]
+        .into_iter()
+        .collect(),
+        dropped: 0,
+        truncated: 0,
+    };
+    round_trip(&api::supervisor::log::Snapshot {
+        cursor: cursor.clone(),
+        ingest_dropped: 2,
+        records: vec![record.clone()],
+    });
+    round_trip(&api::supervisor::log::Follow {
+        cursor: cursor.clone(),
+        ingest_dropped: 2,
+        record,
+    });
+
+    let topic = api::supervisor::RuntimeTopic {
+        topic: "v0.1/drive/state".to_string(),
+        direction: api::supervisor::RuntimeDirection::Subscribe,
+        buffer_kind: api::supervisor::RuntimeBufferKind::Latest,
+        count: 42,
+        rate_hz: 41.5,
+        drops: 0,
+        latest_overwrites: 41,
+        bounded_evictions: 0,
+        capacity: 1,
+        current_depth: 1,
+        high_water_depth: 1,
+        decode_errors: 0,
+        timeline_filtered: 0,
+        overflowed_rows: 0,
+    };
+    let step = api::supervisor::RuntimeStep {
+        target_period_ns: 20_000_000,
+        completed: 49,
+        errors: 1,
+        mean_duration_ns: 2_000_000,
+        max_duration_ns: 4_000_000,
+        mean_lateness_ns: 10_000,
+        max_lateness_ns: 100_000,
+        missed_ticks: 0,
+        overruns: 0,
+    };
+    round_trip(&api::supervisor::telemetry::Rollup {
+        window_ns: 1_000_000_000,
+        step: Some(step.clone()),
+        topics: vec![topic.clone()],
+        overflow: None,
+    });
+    round_trip(&api::supervisor::telemetry::SnapshotRequest {
+        participant_id: Some("drive".to_string()),
+        limit: 64,
+        before_sequence: None,
+    });
+    let runtime_record = api::supervisor::telemetry::Record {
+        sequence: 10,
+        participant_id: "drive".to_string(),
+        truncated: 0,
+        window_ns: 1_000_000_000,
+        step: Some(step),
+        topics: vec![topic],
+        overflow: None,
+    };
+    round_trip(&api::supervisor::telemetry::Snapshot {
+        cursor: cursor.clone(),
+        records: vec![runtime_record.clone()],
+        capacity_evictions: 0,
+        next_before_sequence: None,
+    });
+    round_trip(&api::supervisor::telemetry::Follow {
+        cursor,
+        record: runtime_record,
+    });
+}
+
+#[test]
+fn runtime_rollup_rejects_malformed_payloads() {
+    let corrupt = [0xc1u8, 0xc1, 0xc1];
+    assert!(rmp_serde::from_slice::<api::supervisor::telemetry::Rollup>(&corrupt).is_err());
+
+    let wrong_shape = rmp_serde::to_vec_named(&api::supervisor::log::SnapshotRequest {}).unwrap();
+    assert!(rmp_serde::from_slice::<api::supervisor::telemetry::Rollup>(&wrong_shape).is_err());
+}
+
+/// The clock body is the step counter and nothing else: its timeline and
+/// instant ride in the envelope, stamped by the world authority.
+#[test]
+fn simulation_clock_body_carries_only_the_step_counter() {
+    let clock = api::simulation::Clock { step: 100 };
+    assert_eq!(
+        serde_json::to_value(&clock).unwrap(),
+        serde_json::json!({ "step": 100_u64 })
+    );
+    round_trip(&clock);
+}
+
+#[test]
+fn component_capability_bodies_round_trip_through_messagepack() {
+    let imu = api::component::imu::Sample {
+        orientation: Some([1.0, 0.0, 0.0, 0.0]),
+        angular_velocity_radps: [0.1, 0.2, 0.3],
+        linear_acceleration_mps2: [1.0, 2.0, 9.81],
+        covariance: Some([0.0; 9]),
+        noise_density: Some([0.01, 0.02, 0.03]),
+        sensor_frame_id: Some("imu_link".to_string()),
+        health: api::component::imu::SensorHealth::Degraded,
+        bias: Some(api::component::imu::Bias {
+            angular_velocity_radps: [0.001, 0.002, 0.003],
+            linear_acceleration_mps2: [0.01, 0.02, 0.03],
+        }),
+    };
+    let bytes = rmp_serde::to_vec_named(&imu).unwrap();
+    let decoded: api::component::imu::Sample = rmp_serde::from_slice(&bytes).unwrap();
+    assert_eq!(imu, decoded);
+
+    let frame = api::component::camera::Frame {
+        width: 640,
+        height: 480,
+        encoding: api::component::camera::Encoding::Rgb8,
+        intrinsics: Some(api::component::camera::Intrinsics {
+            fx: 500.0,
+            fy: 501.0,
+            cx: 320.0,
+            cy: 240.0,
+        }),
+        distortion: Some(api::component::camera::Distortion {
+            model: "plumb_bob".to_string(),
+            coefficients: vec![0.1, 0.2, 0.3],
+        }),
+        exposure: Some(api::component::camera::ExposureTiming {
+            exposure_start_ns: Some(100),
+            exposure_duration_ns: Some(200),
+        }),
+        calibration: Some(api::component::camera::CalibrationIdentity {
+            id: "front".to_string(),
+            version: "v0.1".to_string(),
+        }),
+        data: vec![1, 2, 3, 4],
+    };
+    let bytes = rmp_serde::to_vec_named(&frame).unwrap();
+    let decoded: api::component::camera::Frame = rmp_serde::from_slice(&bytes).unwrap();
+    assert_eq!(frame, decoded);
+}

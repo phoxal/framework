@@ -1,19 +1,18 @@
-//! Encoder capability: publishes `component::encoder::Sample` from the
-//! Webots `PositionSensor` device. Moved from the monolith's `EncoderSpec`
-//! (main.rs:563-569), `NativeEncoder` (main.rs:1142-1187), and the
-//! joint/actuator position + velocity helpers (main.rs:1502-1518).
+//! Encoder capability: publishes `component::encoder::Sample` from the Webots
+//! `PositionSensor` device.
+//!
+//! Webots reports the joint's own angle. The contract carries the actuator's,
+//! so both position and the velocity differentiated from it are scaled by the
+//! declared gear ratio.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
-use phoxal::model::component::CapabilityRef;
 
-use super::is_due;
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 #[derive(Clone, Debug)]
 pub(crate) struct EncoderSpec {
-    pub(crate) reference: CapabilityRef,
-    pub(crate) publish_every_steps: u64,
-    pub(crate) sampling_period_ms: i32,
+    pub(crate) sampled: SampledSpec,
     pub(crate) gear_ratio: f64,
 }
 
@@ -25,38 +24,35 @@ pub(crate) struct NativeEncoder {
 
 impl NativeEncoder {
     pub(crate) fn new(webots: &webots_rs::Webots, spec: &EncoderSpec) -> Result<Self> {
-        let sensor = webots
-            .position_sensor(spec.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        sensor
-            .enable(spec.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+        let sensor = webots.position_sensor(spec.sampled.reference.to_string())?;
+        sensor.enable(spec.sampled.sampling_period_ms)?;
         Ok(Self {
             sensor,
             spec: spec.clone(),
             last: None,
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &mut self,
-        step_index: u64,
-        time_ns: u64,
-    ) -> Result<Option<api::component::encoder::Sample>> {
-        if !is_due(step_index, self.spec.publish_every_steps) {
-            return Ok(None);
-        }
-        let position_rad = joint_to_actuator_position(
-            self.sensor.value().map_err(|error| anyhow!(error))?,
-            self.spec.gear_ratio,
-        );
+impl SimulatedSensor for NativeEncoder {
+    type Sample = api::component::encoder::Sample;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.sampled.schedule
+    }
+
+    /// Webots exposes no joint velocity, so it is differentiated across the
+    /// window between two published readings. The first reading has no window
+    /// to differentiate over and reports zero.
+    fn read(&mut self, step: SensorStep) -> Result<Option<Self::Sample>> {
+        let position_rad = joint_to_actuator_position(self.sensor.value()?, self.spec.gear_ratio);
         let velocity_radps = self
             .last
             .map(|(last_position, last_time)| {
-                velocity_radps(position_rad, last_position, time_ns, last_time)
+                velocity_radps(position_rad, last_position, step.time_ns, last_time)
             })
             .unwrap_or(0.0);
-        self.last = Some((position_rad, time_ns));
+        self.last = Some((position_rad, step.time_ns));
         Ok(Some(api::component::encoder::Sample {
             position_rad,
             velocity_radps: velocity_radps as f32,

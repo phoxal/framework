@@ -45,9 +45,8 @@ jobs:
           tool: cargo-audit
 
       - name: Audit Cargo.lock against RUSTSEC advisories
-        # Yanked crates are a hard failure. The lockfile refresh that raised the
-        # MSRV floor cleared the last yanked transitives (spin, stabby, via
-        # zenoh 1.9), so the `--no-yanked` class exemption and the exact
-        # allowlist that policed it are both gone. If a dependency ever
-        # reintroduces a yanked version, this fails, which is the point.
+        # Yanked crates are a hard failure: the lockfile carries none, so there
+        # is no `--no-yanked` class exemption and no allowlist policing one. If
+        # a dependency ever reintroduces a yanked version, this fails, which is
+        # the point.
         run: cargo audit --deny warnings

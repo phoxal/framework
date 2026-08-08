@@ -3,34 +3,34 @@
 //! Manual and autonomous candidates are freshness checked, finite-value checked,
 //! and clamped to the robot-authored motion limits. Motion aggregates every
 //! per-component emergency-stop state before publishing `drive/target`, and the
-//! redesigned safety service contributes typed world-aware constraints.
-//! Autonomous candidates require fresh constraints; direct manual control may
-//! recover without that experimental provider, while still obeying e-stop, the
-//! manual lease, finite-value, and robot-limit gates.
+//! safety service contributes typed world-aware constraints. Autonomous
+//! candidates require fresh constraints; direct manual control may recover
+//! without that provider, while still obeying e-stop, the manual lease,
+//! finite-value, and robot-limit gates.
 //!
-//! # Emergency stop has no privileged path (#952 section A)
+//! # Emergency stop has no privileged path
 //!
-//! There is no software emergency-stop contract and no bespoke latch for one.
 //! Every emergency stop is a manifest-declared `emergency_stop` component that
 //! publishes state like any other component: zero declared components means
 //! zero subscriptions (so a robot without e-stop hardware still supports direct
 //! teleoperation), and a configured-but-silent publisher fails closed exactly
-//! like any other configured input. The only thing that remains specific to
-//! e-stop is *value aggregation* - an engage observed during a cycle wins even
-//! if a release follows in the same cycle - which is ordinary domain logic, not
+//! like any other configured input. The only thing specific to e-stop is *value
+//! aggregation* - an engage observed during a cycle wins even if a release
+//! follows in the same cycle - which is ordinary domain logic, not
 //! communication semantics.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use phoxal::api;
-use phoxal::model::Robot;
 use phoxal::model::component::capability::Capability;
+use phoxal::model::identity::CapabilityRef;
 use phoxal::model::robot::MotionLimits;
 use phoxal::prelude::*;
 
 use crate::arbitration::{
-    MANUAL_HOLD, MANUAL_SILENCE, Timed, arbitrate, candidate_age_ns, manual_observed_age_ns,
+    Arbitration, MANUAL_HOLD, MANUAL_SILENCE, candidate_age_ns, manual_observed_age_ns,
     safety_is_usable,
 };
 
@@ -38,10 +38,10 @@ use crate::arbitration::{
 /// this window fails closed, exactly like any other configured input.
 const COMPONENT_ESTOP_STALE: Duration = Duration::from_secs(1);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EmergencyStopBinding {
-    component_id: String,
-    capability_id: String,
+/// One declared emergency stop and the subscription carrying its state.
+struct BoundEmergencyStop {
+    reference: CapabilityRef,
+    state: Subscriber<api::component::emergency_stop::State>,
 }
 
 /// Aggregated emergency-stop state across every declared component.
@@ -51,36 +51,39 @@ struct EmergencyStopBinding {
 /// so a missing or stale sample blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EmergencyStopLatch {
-    component_state: Vec<Option<(bool, RobotInstant)>>,
+    /// The newest engaged/released report per declared e-stop. Keying on the
+    /// capability rather than on a subscriber position means a report can never
+    /// be attributed to a different e-stop than the one that published it.
+    component_state: BTreeMap<CapabilityRef, Option<Timed<bool>>>,
     engage_seen_this_cycle: bool,
 }
 
 impl EmergencyStopLatch {
-    fn new(component_count: usize) -> Self {
+    fn new(references: impl IntoIterator<Item = CapabilityRef>) -> Self {
         Self {
-            component_state: vec![None; component_count],
+            component_state: references
+                .into_iter()
+                .map(|reference| (reference, None))
+                .collect(),
             engage_seen_this_cycle: false,
         }
     }
 
-    fn set_component(&mut self, index: usize, engaged: bool, at: RobotInstant) {
+    fn set_component(&mut self, reference: &CapabilityRef, engaged: bool, at: RobotInstant) {
         self.engage_seen_this_cycle |= engaged;
-        if let Some(current) = self.component_state.get_mut(index) {
-            *current = Some((engaged, at));
+        if let Some(current) = self.component_state.get_mut(reference) {
+            *current = Some(Timed::new(engaged, at));
         }
     }
 
     /// Whether any declared component blocks motion: engaged, never heard from,
     /// or silent past the staleness window.
     fn components_blocked(&self, now: RobotInstant) -> bool {
-        self.component_state.iter().any(|sample| {
-            let Some((engaged, at)) = sample else {
+        self.component_state.values().any(|sample| {
+            let Some(sample) = sample else {
                 return true;
             };
-            *engaged
-                || !TimeWindow::exact(*at)
-                    .possibly_fresh_within(now, COMPONENT_ESTOP_STALE)
-                    .unwrap_or(false)
+            sample.body || !sample.fresh_within(now, COMPONENT_ESTOP_STALE)
         })
     }
 
@@ -94,20 +97,22 @@ impl EmergencyStopLatch {
 
     fn reset_timeline(&mut self) {
         // Component samples describe the replaced simulated world.
-        self.component_state.fill(None);
+        for sample in self.component_state.values_mut() {
+            *sample = None;
+        }
     }
 }
 
-pub struct Api {
+pub(crate) struct Api {
     manual: Subscriber<api::motion::ManualCommand>,
     autonomous: Subscriber<api::navigation::Candidate>,
-    component_estops: Vec<Subscriber<api::component::emergency_stop::State>>,
+    component_estops: Vec<BoundEmergencyStop>,
     safety_constraints: Subscriber<api::safety::MotionConstraints>,
     drive: CommandPublisher<api::drive::Target>,
     state: StatePublisher<api::motion::State>,
 }
 
-pub struct MotionState {
+pub(crate) struct MotionState {
     limits: MotionLimits,
     manual: Lease<api::motion::ManualCommand>,
     manual_observed_at: Option<LocalInstant>,
@@ -117,7 +122,7 @@ pub struct MotionState {
 }
 
 #[phoxal::service(state = MotionState, api = Api)]
-pub struct Motion;
+pub(crate) struct Motion;
 
 impl Participant for Motion {
     async fn setup(
@@ -126,21 +131,24 @@ impl Participant for Motion {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
-        let limits = robot.motion_limits().validate()?;
-        let estop_bindings = emergency_stop_bindings(robot)?;
+        let limits = robot.motion().limits().validate()?;
+        let estops =
+            robot.capability_refs(|capability| matches!(capability, Capability::EmergencyStop(_)));
 
-        let mut component_estops = Vec::with_capacity(estop_bindings.len());
-        for binding in &estop_bindings {
-            component_estops.push(
-                ctx.subscriber(
-                    api::topic::client()
-                        .component(&binding.component_id)
-                        .emergency_stop(&binding.capability_id)
-                        .state(),
-                    32,
-                )
-                .await?,
-            );
+        let mut component_estops = Vec::with_capacity(estops.len());
+        for reference in &estops {
+            component_estops.push(BoundEmergencyStop {
+                reference: reference.clone(),
+                state: ctx
+                    .subscriber(
+                        api::topic::client()
+                            .component(&reference.component_id)
+                            .emergency_stop(&reference.capability_id)
+                            .state(),
+                        32,
+                    )
+                    .await?,
+            });
         }
 
         Ok((
@@ -149,7 +157,7 @@ impl Participant for Motion {
                 manual: Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
                 manual_observed_at: None,
                 last_autonomous: None,
-                estop: EmergencyStopLatch::new(estop_bindings.len()),
+                estop: EmergencyStopLatch::new(estops),
                 last_safety_constraints: None,
             },
             Api {
@@ -230,25 +238,21 @@ impl Participant for Motion {
         }
         while let Some(observed) = api.autonomous.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_autonomous = Some(Timed {
-                    body: observed.body,
-                    at,
-                });
+                state.last_autonomous = Some(Timed::new(observed.body, at));
             }
         }
-        for (index, subscriber) in api.component_estops.iter().enumerate() {
-            while let Some(observed) = subscriber.try_recv() {
+        for bound in &api.component_estops {
+            while let Some(observed) = bound.state.try_recv() {
                 if let Some(at) = observed.metadata.produced_exactly_at() {
-                    state.estop.set_component(index, observed.body.engaged, at);
+                    state
+                        .estop
+                        .set_component(&bound.reference, observed.body.engaged, at);
                 }
             }
         }
         while let Some(observed) = api.safety_constraints.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_safety_constraints = Some(Timed {
-                    body: observed.body,
-                    at,
-                });
+                state.last_safety_constraints = Some(Timed::new(observed.body, at));
             }
         }
 
@@ -265,7 +269,7 @@ impl Participant for Motion {
         if manual.is_none() {
             state.manual_observed_at = None;
         }
-        let arbitration = arbitrate(
+        let arbitration = Arbitration::decide(
             manual.as_ref(),
             state.last_autonomous.as_ref(),
             state.estop.engaged(now),
@@ -277,7 +281,7 @@ impl Participant for Motion {
 
         api.drive.send(arbitration.selected.clone())?;
         api.state.publish(
-            step.token(),
+            &step.token,
             api::motion::State {
                 manual_observed_age_ns: manual_observed_age_ns(state.manual_observed_at, host_now),
                 autonomous_candidate_age_ns: candidate_age_ns(state.last_autonomous.as_ref(), now),
@@ -314,28 +318,6 @@ fn state_target(target: &api::drive::Target) -> api::motion::Target {
     }
 }
 
-fn emergency_stop_bindings(robot: &Robot) -> Result<Vec<EmergencyStopBinding>> {
-    let mut bindings = Vec::new();
-    for component_id in robot.component_ids() {
-        let component = robot.component_for_instance(component_id)?;
-        bindings.extend(
-            component
-                .capabilities()
-                .filter(|(_, capability)| matches!(capability, Capability::EmergencyStop(_)))
-                .map(|(capability_id, _)| EmergencyStopBinding {
-                    component_id: component_id.to_string(),
-                    capability_id: capability_id.to_string(),
-                }),
-        );
-    }
-    bindings.sort_by(|left, right| {
-        left.component_id
-            .cmp(&right.component_id)
-            .then_with(|| left.capability_id.cmp(&right.capability_id))
-    });
-    Ok(bindings)
-}
-
 #[cfg(test)]
 mod tests {
     use phoxal::bus::{ProducerId, TimelineId};
@@ -354,6 +336,16 @@ mod tests {
 
     fn at(ticks: u64) -> RobotInstant {
         RobotInstant::new(line(), ticks)
+    }
+
+    fn estop(index: u8) -> CapabilityRef {
+        format!("estop{index}.stop")
+            .parse()
+            .expect("a test e-stop reference is well formed")
+    }
+
+    fn latch(count: u8) -> EmergencyStopLatch {
+        EmergencyStopLatch::new((0..count).map(estop))
     }
 
     #[test]
@@ -425,35 +417,35 @@ mod tests {
 
     #[test]
     fn component_estops_latch_independently_and_release_together() {
-        let mut latch = EmergencyStopLatch::new(2);
+        let mut latch = latch(2);
         let now = at(1_000);
         assert!(
             latch.engaged(now),
             "configured component e-stops must publish before motion"
         );
-        latch.set_component(0, false, now);
-        latch.set_component(1, false, now);
+        latch.set_component(&estop(0), false, now);
+        latch.set_component(&estop(1), false, now);
         latch.finish_cycle();
         assert!(!latch.engaged(now));
 
-        latch.set_component(1, true, now);
+        latch.set_component(&estop(1), true, now);
         latch.finish_cycle();
         assert!(latch.engaged(now));
-        latch.set_component(1, false, now);
+        latch.set_component(&estop(1), false, now);
         latch.finish_cycle();
         assert!(!latch.engaged(now));
     }
 
-    /// Preserved value aggregation: an engage observed during a cycle wins even
-    /// if a release follows in the same cycle. This is domain logic, not a
-    /// privileged communication path - it is exercised with two component
-    /// samples, since there is no software e-stop any more.
+    /// Value aggregation: an engage observed during a cycle wins even if a
+    /// release follows in the same cycle. This is domain logic, not a
+    /// privileged communication path, so it is exercised through an ordinary
+    /// component sample.
     #[test]
     fn engage_then_release_in_one_cycle_still_forces_a_stop_cycle() {
-        let mut latch = EmergencyStopLatch::new(1);
+        let mut latch = latch(1);
         let now = at(1_000);
-        latch.set_component(0, true, now);
-        latch.set_component(0, false, now);
+        latch.set_component(&estop(0), true, now);
+        latch.set_component(&estop(0), false, now);
         assert!(latch.engaged(now));
         latch.finish_cycle();
         assert!(!latch.engaged(now));
@@ -461,7 +453,7 @@ mod tests {
 
     #[test]
     fn a_robot_without_component_estops_starts_ready_for_manual_control() {
-        let latch = EmergencyStopLatch::new(0);
+        let latch = latch(0);
         assert!(
             !latch.engaged(at(1_000)),
             "zero declared components means zero subscriptions, so direct teleoperation is valid"
@@ -472,34 +464,38 @@ mod tests {
     fn missing_stale_future_and_replaced_timeline_component_estops_fail_closed() {
         let stale_ns = u64::try_from(COMPONENT_ESTOP_STALE.as_nanos()).unwrap();
         let now = at(stale_ns + 10);
-        let mut latch = EmergencyStopLatch::new(1);
+        let mut latch = latch(1);
         assert!(
             latch.components_blocked(now),
             "a missing sample fails closed"
         );
 
-        latch.set_component(0, false, at(9));
+        latch.set_component(&estop(0), false, at(9));
         assert!(latch.components_blocked(now), "a stale sample fails closed");
-        latch.set_component(0, false, at(now.ticks() + 1));
+        latch.set_component(&estop(0), false, at(now.ticks() + 1));
         assert!(
             latch.components_blocked(now),
             "a sample from this step's future fails closed"
         );
-        latch.set_component(0, false, RobotInstant::new(TimelineId::mint(), now.ticks()));
+        latch.set_component(
+            &estop(0),
+            false,
+            RobotInstant::new(TimelineId::mint(), now.ticks()),
+        );
         assert!(
             latch.components_blocked(now),
             "a sample from a replaced world is incomparable, so it fails closed"
         );
-        latch.set_component(0, false, now);
+        latch.set_component(&estop(0), false, now);
         latch.finish_cycle();
         assert!(!latch.components_blocked(now));
     }
 
     #[test]
     fn a_replaced_timeline_clears_component_samples_so_they_must_republish() {
-        let mut latch = EmergencyStopLatch::new(1);
+        let mut latch = latch(1);
         let now = at(1_000);
-        latch.set_component(0, false, now);
+        latch.set_component(&estop(0), false, now);
         latch.finish_cycle();
         assert!(!latch.engaged(now));
 

@@ -87,3 +87,9 @@ robot:
         range:
         - mapping
         - traversability
+    gnss:
+      component: gnss
+      mount_link: gnss_mount
+      roles:
+        gnss:
+        - localization

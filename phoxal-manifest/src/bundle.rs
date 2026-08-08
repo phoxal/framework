@@ -28,6 +28,7 @@ use std::path::{Component, Path, PathBuf};
 
 use phoxal_model::{AssetId, ParticipantAssetResolver, Robot};
 
+use crate::source::SourceError;
 use crate::{CompileError, ParticipantDeclarations, ResolvedSources, referenced_asset_ids, source};
 
 /// The finalized robot document, at the bundle root.
@@ -58,11 +59,11 @@ pub enum BundleError {
         path.display()
     )]
     UnresolvedExtends { path: PathBuf },
-    #[error("invalid finalized robot document {}: {source:#}", path.display())]
+    #[error("invalid finalized robot document {}: {source}", path.display())]
     Manifest {
         path: PathBuf,
         #[source]
-        source: anyhow::Error,
+        source: SourceError,
     },
     #[error(transparent)]
     Compile(#[from] CompileError),
@@ -110,24 +111,19 @@ impl FinalizedBundle {
                 path: robot_manifest.clone(),
                 source,
             })?;
-        if declares_extends(&text) {
-            return Err(BundleError::UnresolvedExtends {
-                path: robot_manifest,
-            });
-        }
-        let source::robot::Manifest::V0(manifest) = source::robot::parse_from_string(&text)
-            .map_err(|source| BundleError::Manifest {
-                path: robot_manifest.clone(),
-                source,
-            })?;
-        manifest
-            .validate()
-            .map_err(|errors| BundleError::Manifest {
-                path: robot_manifest.clone(),
-                source: source::robot::validation_error(
-                    &robot_manifest.display().to_string(),
-                    errors,
-                ),
+        // A finalized bundle carries one fully resolved document, so the
+        // parser's own refusal to resolve `extends` from text is exactly the
+        // condition the bundle contract forbids - it is renamed here, not
+        // re-detected.
+        let source::robot::Manifest::V0(manifest) =
+            source::robot::Manifest::parse(&text).map_err(|source| match source {
+                SourceError::UnresolvableExtends { .. } => BundleError::UnresolvedExtends {
+                    path: robot_manifest.clone(),
+                },
+                source => BundleError::Manifest {
+                    path: robot_manifest.clone(),
+                    source,
+                },
             })?;
 
         let resolved = ResolvedSources {
@@ -151,10 +147,7 @@ impl FinalizedBundle {
             .ids()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-        for id in referenced_asset_ids(&robot).map_err(|source| CompileError::CanonicalModel {
-            path: resolved.robot_manifest.clone(),
-            source,
-        })? {
+        for id in referenced_asset_ids(&robot) {
             if !declared.contains(&id) {
                 return Err(BundleError::MissingAsset { id });
             }
@@ -213,22 +206,13 @@ impl FinalizedBundle {
     }
 }
 
-/// Whether a finalized document still carries a non-empty `extends`.
-///
-/// This runs before the typed parse so the diagnostic names the real problem:
-/// the DTO's own `extends` rejection would otherwise report it as a parser
-/// misuse.
-fn declares_extends(text: &str) -> bool {
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(text) else {
-        return false;
-    };
-    value
-        .get("extends")
-        .and_then(serde_yaml::Value::as_sequence)
-        .is_some_and(|parents| !parents.is_empty())
-}
-
 /// Why a requested bundle path was refused before any filesystem access.
+///
+/// A domain condition, not an aggregate failure: [`BundleError`] is this
+/// module's failure type, and every variant here is instead a normal outcome of
+/// serving a request an operator got wrong. It reaches callers as the payload
+/// of [`BundleFile::InvalidPath`] far more often than as an `Err`, so the noun
+/// reads better than a second `*Error` beside the real one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum InvalidBundlePath {

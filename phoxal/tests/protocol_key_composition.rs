@@ -1,11 +1,11 @@
-//! The composed form of a protocol key, proven end to end across two slices.
+//! The composed form of a protocol key, proven end to end.
 //!
 //! `phoxal_api_tree!`'s protocol mode emits *relative* keys whose leading
 //! segment is the protocol name, and the bus session mounts everything under
-//! `phoxal/<execution-id>`. Each half is unit tested in its own crate; nothing
-//! previously pinned the two together, so a change to either root convention
-//! could drift the composed key that the macro rustdoc advertises. This test
-//! opens a real in-process session and asserts the final key.
+//! `phoxal/<execution-id>`. Each half is unit tested in its own crate, and
+//! neither can see the composed key that the macro rustdoc advertises, so a
+//! change to either root convention would drift it silently. This test opens a
+//! real in-process session and asserts the final key.
 
 use phoxal_bus::{Bus, BusConfig, ContractBody};
 use phoxal_macros::phoxal_api_tree;

@@ -1,11 +1,11 @@
-//! The single API layer (D60/D61/D1).
+//! The single API layer: the versioned contract tree every participant speaks.
 //!
-//! This crate is the versioned API contract tree. It depends only on the
+//! It depends only on the
 //! [`phoxal-bus`](phoxal_bus) ABI floor (the contract primitive traits and the
 //! typed-topic builders) and the [`phoxal-macros`](phoxal_macros) proc-macros; it
 //! does **not** depend on the `phoxal` engine. Normal participants import the
 //! train-selected facade with `use phoxal::api`; concrete modules such as
-//! `phoxal_api::v0_1` remain available to compatibility adapters.
+//! `phoxal_api::v0_1` are available to compatibility adapters.
 //!
 //! # Concrete API revisions
 //!
@@ -15,7 +15,10 @@
 //! - a zero-variant marker `enum Api {}` implementing [`ApiVersion`], whose
 //!   [`ApiVersion::ID`] is the concrete wire identity (for example `"v0.1"`);
 //! - the version-local wire bodies, one `pub mod` per contract node holding plain
-//!   serde structs/enums and their [`ContractBody`] impls;
+//!   serde structs/enums and their [`ContractBody`] impls. A body is bound to
+//!   exactly one [`ApiVersion`] and one contract topic; handles, `SetupContext`
+//!   builders, and the `Service`/`Driver` derive assertions all key off its
+//!   `Api`/`TOPIC`;
 //! - an api-local `topic` builder rooted at `topic::client()`.
 //!
 //! From 1.0, published concrete revisions are immutable. Before 1.0 the
@@ -26,15 +29,13 @@
 //! with its own identity. Exactly one `latest` alias is selected for each
 //! framework train.
 //!
-//! [`Api`]: v0_1::Api
-//!
 //! # Train-selected revision and per-contract identity
 //!
 //! A participant creates typed bus handles during
 //! `phoxal::Participant::setup`. Official participants
 //! name contract types through the complete train-selected facade. Embedded
 //! participant metadata carries `{id, config_schema}`.
-//! Across the graph, compatibility is **name identity** (D1) - two participants
+//! Across the graph, compatibility is **name identity** - two participants
 //! interoperate on a contract iff they use the exact same version-qualified name
 //! (`v0.1::drive::Target`), which is real on the wire because the revision
 //! is folded into the key ([`ContractBody::TOPIC`]). From 1.0 onward a stable
@@ -45,7 +46,7 @@
 //! # Plain serde wire bodies, provenance in metadata
 //!
 //! A wire body is just its serde encoding - there is no `{"v":…}` envelope or any
-//! other version tag inside the payload (D62). Identity lives entirely in the
+//! other version tag inside the payload. Identity lives entirely in the
 //! Zenoh key (the version-qualified [`ContractBody::TOPIC`]); the bus metadata
 //! alongside the encoded body carries only provenance (source + logical time) and
 //! the codec that produced the bytes - never schema/family/version. Keeping
@@ -59,9 +60,9 @@
 //! never written by hand: the version, then the `/`-joined node path plus the
 //! topic leaf, with each dynamic node contributing a `{var}` placeholder, e.g.
 //! `v0.1/component/{instance}/motor/{capability}/command`. A fully static path
-//! has a literal key (`v0.1/drive/state`). Folding the revision into the key
-//! (D1) is what makes two differently-versioned contracts physically distinct
-//! Zenoh keys, so they cannot collide.
+//! has a literal key (`v0.1/drive/state`). Folding the revision into the key is
+//! what makes two differently-versioned contracts physically distinct Zenoh
+//! keys, so they cannot collide.
 //!
 //! # The api-local topic builder
 //!
@@ -89,25 +90,15 @@
 //! brand the same way. The owner chain makes that ownership explicit; a
 //! participant acquires the topics of its OWN node through it and everything it
 //! consumes through the client chain.
+//!
+//! [`ApiVersion`]: phoxal_bus::ApiVersion
+//! [`ApiVersion::ID`]: phoxal_bus::ApiVersion::ID
+//! [`ContractBody`]: phoxal_bus::ContractBody
+//! [`ContractBody::TOPIC`]: phoxal_bus::ContractBody::TOPIC
 
 use phoxal_macros::phoxal_api_tree;
 
-/// The contract primitive traits, re-exported from the `phoxal-bus` crate (the
-/// ABI floor) so they stay addressable at `phoxal_api::ApiVersion` /
-/// `phoxal_api::ContractBody`.
-///
-/// - [`ApiVersion`] is the marker trait identifying one API version (D60),
-///   implemented only by the zero-variant `enum Api {}` that [`phoxal_api_tree!`]
-///   generates inside each revision module; its `ID` is the concrete dotted
-///   wire identity (for example `"v0.1"`).
-/// - [`ContractBody`] is a version-local wire body (D61): a plain serde type
-///   bound to exactly one [`ApiVersion`] and one contract topic. Every body
-///   declared inside a [`phoxal_api_tree!`] node gets a generated impl; handles,
-///   `SetupContext` builders, and the `Service`/`Driver` derive assertions key
-///   off its `Api`/`TOPIC`. `TOPIC` is version-qualified (D1) and is the
-///   compatibility key; its serde encoding is the wire payload, with no version
-///   envelope (D62).
-pub use phoxal_bus::{ApiVersion, ContractBody};
+mod behavior;
 
 phoxal_api_tree! {
     version v0_1 {
@@ -378,7 +369,13 @@ phoxal_api_tree! {
         }
 
         navigation {
-            #[derive(Eq)]
+            /// A caller-chosen identifier for one navigation request.
+            ///
+            /// `Ord` is derived so a consumer can key an ordered map on the
+            /// identity itself rather than on a copy of its inner `String`,
+            /// which is what keeps the newtype meaningful past the point where
+            /// requests are tracked. The derives add no bytes to the wire.
+            #[derive(Eq, PartialOrd, Ord)]
             struct RequestId {
                 value: String,
             }
@@ -527,11 +524,6 @@ phoxal_api_tree! {
             topic self: diagnostic Event;
         }
 
-
-
-
-
-
         perception {
             /// A single detected object: class, confidence, and pose in a frame.
             struct Detection {
@@ -616,8 +608,8 @@ phoxal_api_tree! {
             topic clock: world_clock Clock;
         }
 
-        // Per-instance component capabilities (D17/D38: framework participant / driver
-        // territory). `component(instance)` selects a manifest-declared component;
+        // Per-instance component capabilities: framework participant / driver
+        // territory. `component(instance)` selects a manifest-declared component;
         // each child `kind(capability)` is a self-contained node whose key is
         // `component/{instance}/<kind>/{capability}/<leaf>`. Nodes duplicate any
         // types they share by design - the node path disambiguates, so the names
@@ -1030,7 +1022,7 @@ phoxal_api_tree! {
         // Contracts the supervisor itself answers. The node is part of the
         // wire key, so a reader can tell from the key alone that the supervisor
         // is the authority - and a stale participant sitting on an old key
-        // physically cannot answer one of these (organization#978).
+        // physically cannot answer one of these.
         supervisor {
             /// Opaque identity for one supervisor collector together with a
             /// position in its completed follow stream. A snapshot cursor
@@ -1117,9 +1109,6 @@ phoxal_api_tree! {
                 overflowed_rows: u32,
             }
 
-
-
-
             telemetry {
                 /// Runner-originated portable performance rollup. The runner
                 /// publishes at most one per host-monotonic grid interval;
@@ -1186,78 +1175,80 @@ phoxal_api_tree! {
                 topic snapshot: query SnapshotRequest => Snapshot;
                 topic follow: diagnostic Follow;
             }
-                log {
-                    /// Requests the supervisor's complete current bounded log snapshot. The
-                    /// first protocol version intentionally has no pagination or
-                    /// filtering surface.
-                    struct SnapshotRequest {}
 
-                    /// Wall-clock timestamp copied from one participant-originated
-                    /// structured `v0.1::logs` event.
-                    struct Timestamp {
-                        unix_seconds: i64,
-                        nanos: u32,
-                    }
+            log {
+                /// Requests the supervisor's complete current bounded log snapshot. The
+                /// first protocol version intentionally has no pagination or
+                /// filtering surface.
+                struct SnapshotRequest {}
 
-                    #[derive(Copy, Eq)]
-                    #[serde(rename_all = "snake_case")]
-                    enum Level {
-                        Error,
-                        Warn,
-                        Info,
-                        Debug,
-                        Trace,
-                    }
-
-                    #[serde(untagged)]
-                    enum LogValue {
-                        Bool(bool),
-                        I64(i64),
-                        U64(u64),
-                        F64(f64),
-                        String(String),
-                    }
-
-                    /// One retained participant log. `sequence` is assigned by
-                    /// the supervisor at ingest and is independent of the producer's
-                    /// `source_sequence`.
-                    struct Record {
-                        sequence: u64,
-                        participant_id: String,
-                        source_sequence: u64,
-                        time: Timestamp,
-                        level: Level,
-                        target: String,
-                        message: String,
-                        fields: ::std::collections::BTreeMap<String, LogValue>,
-                        dropped: u32,
-                        truncated: u32,
-                    }
-
-                    /// The complete bounded log state at `cursor`.
-                    struct Snapshot {
-                        cursor: crate::v0_1::supervisor::Cursor,
-                        /// Cumulative structured log samples evicted from
-                        /// the supervisor's bounded ingest subscriber in this process.
-                        /// An increase is observable, unrecoverable source loss;
-                        /// it is distinct from producer-side `Record::dropped`.
-                        ingest_dropped: u64,
-                        records: Vec<Record>,
-                    }
-
-                    /// One live record following the snapshot query. A consumer
-                    /// must re-query when the generation changes or the sequence is
-                    /// not exactly one after its installed cursor.
-                    struct Follow {
-                        cursor: crate::v0_1::supervisor::Cursor,
-                        /// Current cumulative the supervisor's log collector ingest loss counter.
-                        ingest_dropped: u64,
-                        record: Record,
-                    }
-
-                    topic snapshot: query SnapshotRequest => Snapshot;
-                    topic follow: diagnostic Follow;
+                /// Wall-clock timestamp copied from one participant-originated
+                /// structured `v0.1::logs` event.
+                struct Timestamp {
+                    unix_seconds: i64,
+                    nanos: u32,
                 }
+
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum Level {
+                    Error,
+                    Warn,
+                    Info,
+                    Debug,
+                    Trace,
+                }
+
+                #[serde(untagged)]
+                enum LogValue {
+                    Bool(bool),
+                    I64(i64),
+                    U64(u64),
+                    F64(f64),
+                    String(String),
+                }
+
+                /// One retained participant log. `sequence` is assigned by
+                /// the supervisor at ingest and is independent of the producer's
+                /// `source_sequence`.
+                struct Record {
+                    sequence: u64,
+                    participant_id: String,
+                    source_sequence: u64,
+                    time: Timestamp,
+                    level: Level,
+                    target: String,
+                    message: String,
+                    fields: ::std::collections::BTreeMap<String, LogValue>,
+                    dropped: u32,
+                    truncated: u32,
+                }
+
+                /// The complete bounded log state at `cursor`.
+                struct Snapshot {
+                    cursor: crate::v0_1::supervisor::Cursor,
+                    /// Cumulative structured log samples evicted from
+                    /// the supervisor's bounded ingest subscriber in this process.
+                    /// An increase is observable, unrecoverable source loss;
+                    /// it is distinct from producer-side `Record::dropped`.
+                    ingest_dropped: u64,
+                    records: Vec<Record>,
+                }
+
+                /// One live record following the snapshot query. A consumer
+                /// must re-query when the generation changes or the sequence is
+                /// not exactly one after its installed cursor.
+                struct Follow {
+                    cursor: crate::v0_1::supervisor::Cursor,
+                    /// Current cumulative the supervisor's log collector ingest loss counter.
+                    ingest_dropped: u64,
+                    record: Record,
+                }
+
+                topic snapshot: query SnapshotRequest => Snapshot;
+                topic follow: diagnostic Follow;
+            }
+
             asset {
                 /// Fetch a stored asset by path.
                 struct GetRequest {

@@ -1,12 +1,11 @@
-//! Time-windowed, capacity-bounded ring buffer used to hold each dynamic
-//! frame's recent transform samples for nearest-instant lookup.
+//! Time-windowed, capacity-bounded ring buffer holding one dynamic frame's
+//! recent transform samples for nearest-instant lookup.
 //!
-//! The buffer is **timeline-scoped** (#952): every entry is a
-//! [`RobotInstant`], and a sample from a different world history replaces the
-//! buffer's contents rather than being compared against them. Keying on a bare
-//! nanosecond counter is exactly the mistake this train deletes - after a
-//! simulation reset, instants from the replaced world are not "old", they are
-//! incomparable.
+//! The buffer is **timeline-scoped**: every entry is a [`RobotInstant`], and a
+//! sample from a different world history replaces the buffer's contents rather
+//! than being compared against them. After a simulation reset, instants from
+//! the replaced world are not "old", they are incomparable - which is why the
+//! entries cannot be keyed on a bare nanosecond counter.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -30,8 +29,8 @@ impl<T> RingBuffer<T> {
     }
 
     /// Buffer `value` at `at`. A sample from a different timeline discards the
-    /// retained history first: the buffered instants describe a world that no
-    /// longer exists.
+    /// retained history first: the buffered instants describe a world that has
+    /// been replaced.
     pub(crate) fn push(&mut self, at: RobotInstant, value: T) {
         if self.max_entries == 0 {
             return;
@@ -57,16 +56,6 @@ impl<T> RingBuffer<T> {
 
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn entries(&self) -> &VecDeque<(RobotInstant, T)> {
-        &self.entries
     }
 }
 
@@ -96,5 +85,56 @@ impl<T: Clone> RingBuffer<T> {
             .iter()
             .min_by_key(|(entry_at, _)| entry_at.ticks().abs_diff(at.ticks()))
             .map(|(entry_at, value)| (*entry_at, value.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One fixed timeline, so the buffered instants read like the tick counters
+    /// these cases care about.
+    fn at(ticks: u64) -> RobotInstant {
+        RobotInstant::new(
+            phoxal::bus::TimelineId::from_raw(1).expect("test timeline must be nonzero"),
+            ticks,
+        )
+    }
+
+    #[test]
+    fn entries_outside_the_time_window_or_the_cap_are_evicted() {
+        let mut buffer = RingBuffer::new(Duration::from_nanos(5), 3);
+
+        for ticks in 0..10 {
+            buffer.push(at(ticks), ticks);
+        }
+
+        assert_eq!(buffer.entries.len(), 3);
+        assert_eq!(buffer.entries.front().unwrap().0, at(7));
+        assert_eq!(buffer.entries.back().unwrap().0, at(9));
+    }
+
+    /// A replaced world discards the retained history rather than comparing
+    /// against it: instants from the previous timeline are not "old", they are
+    /// incomparable.
+    #[test]
+    fn a_sample_from_a_replaced_world_discards_the_history() {
+        let replaced = phoxal::bus::TimelineId::mint();
+        let mut buffer = RingBuffer::new(Duration::from_secs(1), 8);
+        buffer.push(RobotInstant::new(replaced, 100), 1_u64);
+        assert_eq!(buffer.entries.len(), 1);
+        assert_eq!(
+            buffer.nearest(at(100)),
+            None,
+            "a lookup on the current timeline must not resolve against a replaced world"
+        );
+
+        buffer.push(at(10), 2);
+        assert_eq!(
+            buffer.entries.len(),
+            1,
+            "the replaced world's samples are discarded, not aged out"
+        );
+        assert_eq!(buffer.nearest(at(10)), Some((at(10), 2)));
     }
 }

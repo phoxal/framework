@@ -1,20 +1,27 @@
-//! Robot-model-derived frame configuration: builds the static transform map,
-//! the child-to-parent joint metadata, and the list of dynamically tracked
-//! joints from the robot's link/joint structure.
+//! Robot-model-derived frame configuration: the static transform map, the
+//! child-to-parent joint metadata, and the list of dynamically tracked joints,
+//! all built from the robot's flattened link and joint structure.
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, bail};
-use nalgebra::{Isometry3, Translation3, UnitQuaternion};
+use anyhow::{Context, Result, bail};
+use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
 use phoxal::api;
 use phoxal::model::Robot;
-use phoxal::model::component::capability::namespaced_structure_id;
+use phoxal::model::identity::{ComponentInstanceId, JointId, LinkId};
 use phoxal::model::structure::{Joint, JointKind, Pose, Structure};
+
+use crate::transform;
+
+/// The joint this service synthesizes to attach a mounted component's root link
+/// to the robot link it is mounted on. The robot structure carries no joint for
+/// that attachment, because the mount is declared on the instance instead.
+const MOUNT_ATTACH_JOINT: &str = "mount_attach";
 
 #[derive(Clone)]
 pub(crate) struct FrameConfig {
-    pub(crate) static_transforms: BTreeMap<String, api::frame::FrameTransform>,
-    pub(crate) parent_by_child: BTreeMap<String, (String, JointMeta)>,
+    pub(crate) static_transforms: BTreeMap<LinkId, api::frame::FrameTransform>,
+    pub(crate) parent_by_child: BTreeMap<LinkId, (LinkId, JointMeta)>,
     pub(crate) dynamic_joints: Vec<DynamicJoint>,
 }
 
@@ -22,24 +29,29 @@ impl FrameConfig {
     pub(crate) fn from_robot(robot: &Robot) -> Result<Self> {
         let mut config = Self::from_structure(robot.structure())?;
         for instance in robot.components() {
-            let component = robot.component_for_instance(instance.id())?;
-            let component_root =
-                namespaced_structure_id(instance.id(), component.structure().root_link().name());
+            let component = robot
+                .component_for_instance(instance.id().as_str())
+                .with_context(|| {
+                    format!(
+                        "robot mounts '{}' but declares no such component type",
+                        instance.id()
+                    )
+                })?;
             config.add_joint(
-                instance.mount_link().to_string(),
-                component_root,
+                instance.mount_link().clone(),
+                component.structure().root_link().namespaced(instance.id()),
                 JointMeta {
-                    joint_id: namespaced_structure_id(instance.id(), "mount_attach"),
-                    joint_type: FrameJointType::Fixed,
+                    joint_id: JointId::new(MOUNT_ATTACH_JOINT).namespaced(instance.id()),
+                    kind: JointKind::Fixed,
                     origin: Isometry3::identity(),
                     axis_xyz: [0.0; 3],
                 },
             )?;
             for joint in component.structure().joints() {
                 config.add_joint(
-                    namespaced_structure_id(instance.id(), joint.parent()),
-                    namespaced_structure_id(instance.id(), joint.child()),
-                    JointMeta::from_namespaced_joint(joint, instance.id())?,
+                    joint.parent().namespaced(instance.id()),
+                    joint.child().namespaced(instance.id()),
+                    JointMeta::from_joint(joint)?.namespaced(instance.id()),
                 )?;
             }
         }
@@ -47,139 +59,150 @@ impl FrameConfig {
     }
 
     pub(crate) fn from_structure(structure: &Structure) -> Result<Self> {
-        let mut static_transforms = BTreeMap::new();
-        let mut parent_by_child = BTreeMap::new();
-        let mut dynamic_joints = Vec::new();
-
+        let mut config = Self {
+            static_transforms: BTreeMap::new(),
+            parent_by_child: BTreeMap::new(),
+            dynamic_joints: Vec::new(),
+        };
         for joint in structure.joints() {
-            let parent_frame_id = joint.parent().to_string();
-            let child_frame_id = joint.child().to_string();
-            let meta = JointMeta::from_joint(joint)?;
-
-            add_joint(
-                &mut static_transforms,
-                &mut parent_by_child,
-                &mut dynamic_joints,
-                parent_frame_id,
-                child_frame_id,
-                meta,
+            config.add_joint(
+                joint.parent().clone(),
+                joint.child().clone(),
+                JointMeta::from_joint(joint)?,
             )?;
         }
-
-        Ok(Self {
-            static_transforms,
-            parent_by_child,
-            dynamic_joints,
-        })
+        Ok(config)
     }
 
+    /// Record one parent-to-child edge.
+    ///
+    /// A frame with two parents, or a joint id used twice, would make the tree
+    /// walk ambiguous, so both are refused here rather than resolved by
+    /// iteration order later.
     fn add_joint(
         &mut self,
-        parent_frame_id: String,
-        child_frame_id: String,
+        parent_frame_id: LinkId,
+        child_frame_id: LinkId,
         meta: JointMeta,
     ) -> Result<()> {
-        add_joint(
-            &mut self.static_transforms,
-            &mut self.parent_by_child,
-            &mut self.dynamic_joints,
-            parent_frame_id,
-            child_frame_id,
-            meta,
-        )
+        if self.parent_by_child.contains_key(&child_frame_id) {
+            bail!("frame '{child_frame_id}' has more than one parent");
+        }
+        if self
+            .parent_by_child
+            .values()
+            .any(|(_, existing)| existing.joint_id == meta.joint_id)
+        {
+            bail!("frame joint '{}' is not unique", meta.joint_id);
+        }
+        if meta.kind == JointKind::Fixed {
+            self.static_transforms.insert(
+                child_frame_id.clone(),
+                transform::transform_from_isometry(
+                    &parent_frame_id,
+                    &child_frame_id,
+                    meta.origin,
+                    None,
+                ),
+            );
+        } else {
+            self.dynamic_joints.push(DynamicJoint {
+                joint_id: meta.joint_id.clone(),
+                child_frame_id: child_frame_id.clone(),
+            });
+        }
+        self.parent_by_child
+            .insert(child_frame_id, (parent_frame_id, meta));
+        Ok(())
     }
 }
 
-fn add_joint(
-    static_transforms: &mut BTreeMap<String, api::frame::FrameTransform>,
-    parent_by_child: &mut BTreeMap<String, (String, JointMeta)>,
-    dynamic_joints: &mut Vec<DynamicJoint>,
-    parent_frame_id: String,
-    child_frame_id: String,
-    meta: JointMeta,
-) -> Result<()> {
-    if parent_by_child.contains_key(&child_frame_id) {
-        bail!("frame '{child_frame_id}' has more than one parent");
-    }
-    if parent_by_child
-        .values()
-        .any(|(_, existing)| existing.joint_id == meta.joint_id)
-    {
-        bail!("frame joint '{}' is not unique", meta.joint_id);
-    }
-    parent_by_child.insert(
-        child_frame_id.clone(),
-        (parent_frame_id.clone(), meta.clone()),
-    );
-    if meta.joint_type == FrameJointType::Fixed {
-        static_transforms.insert(
-            child_frame_id.clone(),
-            super::transform::transform_from_isometry(
-                parent_frame_id,
-                child_frame_id,
-                meta.origin,
-                None,
-            ),
-        );
-    } else {
-        dynamic_joints.push(DynamicJoint {
-            joint_id: meta.joint_id.clone(),
-            child_frame_id,
-        });
-    }
-    Ok(())
-}
-
+/// A joint whose transform is republished from live joint state rather than
+/// fixed by the structure.
 #[derive(Clone, Debug)]
 pub(crate) struct DynamicJoint {
-    pub(crate) joint_id: String,
-    pub(crate) child_frame_id: String,
+    pub(crate) joint_id: JointId,
+    pub(crate) child_frame_id: LinkId,
 }
 
+/// What the transform tree needs to know about one joint to fold joint state
+/// into a child-to-parent transform.
 #[derive(Clone, Debug)]
 pub(crate) struct JointMeta {
-    pub(crate) joint_id: String,
-    pub(crate) joint_type: FrameJointType,
+    pub(crate) joint_id: JointId,
+    pub(crate) kind: JointKind,
     pub(crate) origin: Isometry3<f64>,
     pub(crate) axis_xyz: [f64; 3],
 }
 
 impl JointMeta {
     fn from_joint(joint: &Joint) -> Result<Self> {
+        match joint.kind() {
+            JointKind::Fixed
+            | JointKind::Revolute
+            | JointKind::Continuous
+            | JointKind::Prismatic => {}
+            kind @ (JointKind::Floating | JointKind::Planar | JointKind::Spherical) => {
+                bail!("unsupported frame joint type {kind:?}")
+            }
+        }
         Ok(Self {
-            joint_id: joint.name().to_string(),
-            joint_type: FrameJointType::from_canonical(joint.kind())?,
+            joint_id: joint.name().clone(),
+            kind: joint.kind(),
             origin: pose_to_isometry(joint.origin()),
             axis_xyz: joint.axis(),
         })
     }
 
-    fn from_namespaced_joint(joint: &Joint, component_id: &str) -> Result<Self> {
-        let mut meta = Self::from_joint(joint)?;
-        meta.joint_id = namespaced_structure_id(component_id, joint.name());
-        Ok(meta)
+    /// The same joint as the robot's flattened structure names it, under the
+    /// component instance that mounts it.
+    fn namespaced(mut self, component_id: &ComponentInstanceId) -> Self {
+        self.joint_id = self.joint_id.namespaced(component_id);
+        self
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FrameJointType {
-    Fixed,
-    Revolute,
-    Continuous,
-    Prismatic,
-}
-
-impl FrameJointType {
-    fn from_canonical(joint_type: JointKind) -> Result<Self> {
-        match joint_type {
-            JointKind::Fixed => Ok(Self::Fixed),
-            JointKind::Revolute => Ok(Self::Revolute),
-            JointKind::Continuous => Ok(Self::Continuous),
-            JointKind::Prismatic => Ok(Self::Prismatic),
-            JointKind::Floating | JointKind::Planar | JointKind::Spherical => {
-                bail!("unsupported frame joint type {joint_type:?}")
+    /// The child-to-parent transform this joint produces at `state`.
+    ///
+    /// Absent when a movable joint's axis is degenerate, which leaves its
+    /// direction of motion - and therefore the transform - undefined.
+    pub(crate) fn transform(&self, state: &api::joint::JointState) -> Option<Isometry3<f64>> {
+        match self.kind {
+            JointKind::Fixed => Some(self.origin),
+            JointKind::Revolute | JointKind::Continuous => {
+                let axis = self.axis()?;
+                Some(
+                    self.origin
+                        * Isometry3::from_parts(
+                            Translation3::identity(),
+                            UnitQuaternion::from_axis_angle(&axis, state.position_rad),
+                        ),
+                )
             }
+            JointKind::Prismatic => {
+                let axis = self.axis()?.into_inner();
+                Some(
+                    self.origin
+                        * Isometry3::from_parts(
+                            Translation3::new(
+                                axis.x * state.position_rad,
+                                axis.y * state.position_rad,
+                                axis.z * state.position_rad,
+                            ),
+                            UnitQuaternion::identity(),
+                        ),
+                )
+            }
+            // Refused by `from_joint`, so no configured joint is ever one of
+            // these; the arm keeps the match exhaustive over the real kinds.
+            JointKind::Floating | JointKind::Planar | JointKind::Spherical => None,
         }
+    }
+
+    fn axis(&self) -> Option<Unit<Vector3<f64>>> {
+        Unit::try_new(
+            Vector3::new(self.axis_xyz[0], self.axis_xyz[1], self.axis_xyz[2]),
+            f64::EPSILON,
+        )
     }
 }
 
@@ -195,70 +218,38 @@ fn pose_to_isometry(pose: Pose) -> Isometry3<f64> {
 #[cfg(test)]
 mod tests {
     use super::FrameConfig;
-    use phoxal::model::Robot;
-    use phoxal::model::component::CapabilityRef;
-
-    /// Stage a finalized bundle from the checked-in authored fixtures and take
-    /// its canonical model.
-    ///
-    /// Finalization belongs to `phoxal-cli`; the two edits it makes to the
-    /// authored document (pin the resolved clock, resolve the structure path
-    /// into `assets/`) are small enough to reproduce here, so this crate reads
-    /// a real bundle without any bundle being checked in.
-    fn fixture() -> Robot {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture");
-        let project = fixture.join("robot/rgbd-imu-diff-drive");
-        let bundle = tempfile::tempdir().expect("a staging directory");
-        let assets = bundle.path().join("assets");
-
-        std::fs::create_dir_all(assets.join("robot")).unwrap();
-        std::fs::copy(
-            project.join("structure.urdf"),
-            assets.join("robot/structure.urdf"),
-        )
-        .unwrap();
-        for component_type in ["camera_rgbd_640x480", "drive_motor", "imu", "range_tof"] {
-            let source = fixture.join("component").join(component_type);
-            let staged = assets.join("components").join(component_type);
-            std::fs::create_dir_all(&staged).unwrap();
-            for document in ["component.yaml", "simulation.yaml", "structure.urdf"] {
-                std::fs::copy(source.join(document), staged.join(document)).unwrap();
-            }
-            for mesh in std::fs::read_dir(source.join("meshes"))
-                .into_iter()
-                .flatten()
-            {
-                let mesh = mesh.unwrap();
-                std::fs::create_dir_all(staged.join("meshes")).unwrap();
-                std::fs::copy(mesh.path(), staged.join("meshes").join(mesh.file_name())).unwrap();
-            }
-        }
-        std::fs::write(
-            bundle.path().join("robot.yaml"),
-            std::fs::read_to_string(project.join("robot.yaml"))
-                .unwrap()
-                .replacen(
-                    "schema: phoxal/robot/v0",
-                    "schema: phoxal/robot/v0\nclock: real",
-                    1,
-                )
-                .replacen(
-                    "structure: structure.urdf",
-                    "structure: robot/structure.urdf",
-                    1,
-                ),
-        )
-        .unwrap();
-        phoxal::bundle::FinalizedBundle::load(bundle.path())
-            .expect("the staged bundle must load")
-            .into_robot()
-    }
+    use phoxal::model::RobotBuilder;
+    use phoxal::model::builder::Joint;
+    use phoxal::model::identity::CapabilityRef;
+    use phoxal::model::structure::JointKind;
 
     #[test]
     fn composes_component_frames_and_namespaced_dynamic_joints() {
-        let robot = fixture();
+        // A wheel whose rotor turns on a continuous joint, and a camera whose
+        // lens is fixed to its body: the two cases the composition splits on.
+        let robot = RobotBuilder::new("rover")
+            .component_type("drive_motor", |motor| {
+                motor
+                    .joint(Joint {
+                        name: "motor_joint",
+                        kind: JointKind::Continuous,
+                        parent: "mount",
+                        child: "rotor_link",
+                        ..Joint::default()
+                    })
+                    .motor("motor", "motor_joint")
+            })
+            .component_type("rgbd", |camera| camera.camera("rgb", "rgb_link"))
+            .component_with("front_left_drive", "drive_motor", |mounted| {
+                mounted.mounted_on("front_left_wheel_mount")
+            })
+            .component("front_camera", "rgbd")
+            .build()
+            .expect("a valid robot");
+
         let config = FrameConfig::from_robot(&robot).unwrap();
 
+        // The mount attachment the robot structure carries no joint for.
         assert_eq!(
             config
                 .parent_by_child
@@ -271,7 +262,7 @@ mod tests {
                 && joint.child_frame_id == "front_left_drive__rotor_link"
         }));
         let sensor_frame = robot
-            .link_target_frame(&CapabilityRef::new("front_camera", "rgb"))
+            .link_target_frame(&"front_camera.rgb".parse::<CapabilityRef>().unwrap())
             .unwrap();
         assert_eq!(sensor_frame, "front_camera__rgb_link");
         assert!(config.parent_by_child.contains_key(&sensor_frame));

@@ -1,6 +1,6 @@
 name: release-plz
 
-# Publishing a train is now two ordinary publications, in order:
+# Publishing a train is two ordinary publications, in order:
 #
 #   1. release-plz publishes the seven library crates to crates.io.
 #   2. This workflow packages every executable with `cargo package` and adds the
@@ -9,7 +9,7 @@ name: release-plz
 #
 # There is no cross-target build matrix, no per-runtime archive, no suite.json,
 # and no mutable draft-release asset choreography: robots compile the source
-# packages themselves (organization#951). A train is bounded by how long it
+# packages themselves. A train is bounded by how long it
 # takes to package source, not by how long it takes to compile 26 binaries for
 # five targets.
 #
@@ -100,9 +100,9 @@ jobs:
             done
             # Package from the PREPARED RELEASE COMMIT, never from current main
             # and never from the tag. The tag is created wherever HEAD happened
-            # to be when release-plz ran - `v0.41.2` points at 3433a6c, three
-            # commits past its own release commit - so only the release commit
-            # identifies the source these versions describe.
+            # to be when release-plz ran, which can be several commits past the
+            # release commit, so only the release commit identifies the source
+            # these versions describe.
             # Match the SUBJECT, not the message. `--grep` searches the whole
             # commit body and returns the newest hit, so any later commit that
             # merely mentions this release in its body would win and be packaged
@@ -110,7 +110,8 @@ jobs:
             release_subject="chore(release): release $tag"
             source=""
             while read -r sha subject; do
-              # GitHub squash-merges append " (#123)" to the subject.
+              # GitHub squash-merges append the parenthesized pull-request
+              # number to the subject.
               if [[ "$subject" == "$release_subject" ]] \
                 || [[ "$subject" =~ ^"$release_subject"\ \(#[0-9]+\)$ ]]; then
                 source="$sha"
@@ -164,7 +165,7 @@ jobs:
               echo "tag $tag already exists; refusing to republish" >&2
               exit 1
             }
-            # Every publishable package matters now, not just the four
+            # Every publishable package matters, executables as much as
             # libraries: an executable changed after the release commit would
             # be published under a version that does not describe it. Markdown
             # is NOT excluded - `phoxal/README.md` and the changelogs are

@@ -19,9 +19,5 @@ phoxal = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 
-[dev-dependencies]
-serde_json = { workspace = true }
-tokio = { workspace = true }
-
 [lints]
 workspace = true

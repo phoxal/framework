@@ -10,10 +10,10 @@ error[E0599]: the method `component` exists for mutable reference `&mut phoxal::
    = note: the following trait bounds were not satisfied:
            `PrivilegedBrain: phoxal::__private::surface::ComponentBoundSurface`
 note: the trait `phoxal::__private::surface::ComponentBoundSurface` must be implemented
-  --> src/lib.rs
+  --> src/participant/surface.rs
    |
-   |         pub trait ComponentBoundSurface: sealing::Sealed {}
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | pub trait ComponentBoundSurface: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0599]: the method `timeline_authority` exists for mutable reference `&mut phoxal::SetupContext<PrivilegedBrain>`, but its trait bounds were not satisfied
   --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:17:30
@@ -27,10 +27,10 @@ error[E0599]: the method `timeline_authority` exists for mutable reference `&mut
    = note: the following trait bounds were not satisfied:
            `PrivilegedBrain: phoxal::__private::surface::WorldAuthoritySurface`
 note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be implemented
-  --> src/lib.rs
+  --> src/participant/surface.rs
    |
-   |         pub trait WorldAuthoritySurface: sealing::Sealed {}
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | pub trait WorldAuthoritySurface: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0599]: the method `world_clock_publisher` exists for mutable reference `&mut phoxal::SetupContext<PrivilegedBrain>`, but its trait bounds were not satisfied
   --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:19:14
@@ -48,7 +48,7 @@ error[E0599]: the method `world_clock_publisher` exists for mutable reference `&
    = note: the following trait bounds were not satisfied:
            `PrivilegedBrain: phoxal::__private::surface::WorldAuthoritySurface`
 note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be implemented
-  --> src/lib.rs
+  --> src/participant/surface.rs
    |
-   |         pub trait WorldAuthoritySurface: sealing::Sealed {}
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | pub trait WorldAuthoritySurface: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

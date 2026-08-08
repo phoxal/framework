@@ -10,10 +10,10 @@ error[E0599]: the method `timeline_authority` exists for mutable reference `&mut
    = note: the following trait bounds were not satisfied:
            `NotASimulator: phoxal::__private::surface::WorldAuthoritySurface`
 note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be implemented
-  --> src/lib.rs
+  --> src/participant/surface.rs
    |
-   |         pub trait WorldAuthoritySurface: sealing::Sealed {}
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | pub trait WorldAuthoritySurface: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0599]: the method `world_clock_publisher` exists for mutable reference `&mut phoxal::SetupContext<NotASimulator>`, but its trait bounds were not satisfied
   --> tests/trybuild/fail/non_simulator_cannot_mint_world_clock.rs:15:14
@@ -31,7 +31,7 @@ error[E0599]: the method `world_clock_publisher` exists for mutable reference `&
    = note: the following trait bounds were not satisfied:
            `NotASimulator: phoxal::__private::surface::WorldAuthoritySurface`
 note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be implemented
-  --> src/lib.rs
+  --> src/participant/surface.rs
    |
-   |         pub trait WorldAuthoritySurface: sealing::Sealed {}
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | pub trait WorldAuthoritySurface: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

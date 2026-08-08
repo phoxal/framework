@@ -1,22 +1,25 @@
 //! Versioned authored `robot.yaml` documents.
 //!
-//! The parser deliberately enforces a strict source contract: DTO structs deny
-//! unknown fields, `serde_yaml` rejects duplicate mapping keys and does not
-//! coerce YAML-1.1-only booleans (`yes`, `no`, `on`, `off`) into typed boolean
-//! fields, and the strict YAML reader additionally rejects anchors, aliases, merge
+//! The parser enforces a strict source contract: DTO structs deny unknown
+//! fields, `serde_yaml` rejects duplicate mapping keys and does not coerce
+//! YAML-1.1-only booleans (`yes`, `no`, `on`, `off`) into typed boolean fields,
+//! and the strict YAML reader additionally rejects anchors, aliases, merge
 //! keys, explicit tags, and multi-document streams.
+//!
+//! A leaf document may compose ordered parents through `extends`. Parents are
+//! resolved relative to the leaf's own directory, which is why composition only
+//! exists on [`Manifest::load`]: text handed to [`Manifest::parse`] has no
+//! directory to resolve against.
 
 pub mod v0;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-mod strict_yaml;
-
-const ROBOT_FILE: &str = "robot.yaml";
+use crate::source::document::{ComposeError, Document, DocumentKind, Origin, SourceError};
+use crate::source::{document_path, strict_yaml};
 
 /// A versioned authored `robot.yaml` document; the schema tag selects the variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -26,143 +29,180 @@ pub enum Manifest {
     V0(v0::Manifest),
 }
 
-pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
-    let path = path.as_ref();
-    let manifest = parse_from_dir(path)?;
-    let location = path.join(ROBOT_FILE);
-    let Manifest::V0(body) = &manifest;
-    body.validate()
-        .map_err(|errors| validation_error(&location.display().to_string(), errors))?;
-    Ok(manifest)
-}
+impl Document for Manifest {
+    const KIND: DocumentKind = DocumentKind::Robot;
 
-pub fn read_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
-    let path = path.as_ref();
-    let manifest = parse_from_path(path)?;
-    let Manifest::V0(body) = &manifest;
-    body.validate()
-        .map_err(|errors| validation_error(&path.display().to_string(), errors))?;
-    Ok(manifest)
-}
-
-pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
-    parse_from_path(path.as_ref().join(ROBOT_FILE))
-}
-
-/// Read one leaf document and compose its ordered direct parents.
-///
-/// Parent maps merge recursively in declaration order. Sequences and scalar
-/// values replace earlier values. Nested composition is rejected so the leaf
-/// remains the single deterministic authority for parent order.
-pub fn parse_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
-    let leaf_path = path.as_ref().canonicalize().with_context(|| {
-        format!(
-            "failed to resolve robot document {}",
-            path.as_ref().display()
-        )
-    })?;
-    let root = leaf_path
-        .parent()
-        .context("robot document must have a parent directory")?
-        .to_path_buf();
-    let mut leaf = read_yaml_value(&leaf_path)?;
-    let parents = take_extends(&mut leaf, &leaf_path)?;
-    let mut seen = BTreeSet::new();
-    let mut composed = serde_yaml::Value::Mapping(Default::default());
-
-    for relative in parents {
-        if relative.is_absolute() {
-            bail!(
-                "robot extends path must be relative: {}",
-                relative.display()
-            );
-        }
-        let parent_path = root.join(&relative).canonicalize().with_context(|| {
-            format!(
-                "failed to resolve robot parent {} declared by {}",
-                relative.display(),
-                leaf_path.display()
-            )
-        })?;
-        if !parent_path.starts_with(&root) {
-            bail!(
-                "robot parent {} escapes robot directory {}",
-                relative.display(),
-                root.display()
-            );
-        }
-        if parent_path == leaf_path {
-            bail!(
-                "robot document cannot extend itself: {}",
-                relative.display()
-            );
-        }
-        if !seen.insert(parent_path.clone()) {
-            bail!("duplicate robot parent: {}", relative.display());
-        }
-
-        let mut parent = read_yaml_value(&parent_path)?;
-        if !take_extends(&mut parent, &parent_path)?.is_empty() {
-            bail!(
-                "robot parent {} declares nested extends; list every parent directly in {}",
-                parent_path.display(),
-                leaf_path.display()
-            );
-        }
-        deep_merge(&mut composed, parent);
+    fn check(&self) -> Result<(), super::Violations> {
+        let Self::V0(body) = self;
+        body.validate().map_err(super::Violations::Robot)
     }
-    deep_merge(&mut composed, leaf);
 
-    serde_yaml::from_value(composed).with_context(|| {
-        format!(
-            "failed to parse composed robot document {}",
-            leaf_path.display()
-        )
+    fn precheck(text: &str, origin: &Origin) -> Result<(), SourceError> {
+        strict_yaml::check(text).map_err(|source| SourceError::StrictYaml {
+            kind: Self::KIND,
+            origin: origin.clone(),
+            source,
+        })
+    }
+}
+
+impl Manifest {
+    /// Parse and validate one complete robot document from its exact text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::UnresolvableExtends`] when the text declares
+    /// parents, which only [`Manifest::load`] can resolve, plus whatever the
+    /// strict parse and the document's own rules reject.
+    pub fn parse(text: &str) -> Result<Self, SourceError> {
+        let manifest = Self::read_text(text, Origin::Text)?;
+        let Self::V0(body) = &manifest;
+        if !body.extends.is_empty() {
+            return Err(SourceError::UnresolvableExtends {
+                kind: Self::KIND,
+                origin: Origin::Text,
+            });
+        }
+        Ok(manifest)
+    }
+
+    /// Read, compose and validate the robot document at `path`, which is either
+    /// the document file itself or the directory that holds it.
+    ///
+    /// Declared parents are deep-merged in declaration order and the leaf wins;
+    /// sequence and scalar values replace earlier values. Nested composition is
+    /// refused so the leaf stays the single deterministic authority for parent
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Read`], [`SourceError::StrictYaml`],
+    /// [`SourceError::Compose`], [`SourceError::Parse`] or
+    /// [`SourceError::Invalid`], in the order those stages run.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, SourceError> {
+        let leaf = document_path(path.as_ref(), Self::KIND);
+        let leaf = leaf.canonicalize().map_err(|source| SourceError::Read {
+            kind: Self::KIND,
+            path: leaf.clone(),
+            source,
+        })?;
+        let composed = compose(&leaf)?;
+        let origin = Origin::File(leaf);
+        let manifest: Self =
+            serde_yaml::from_value(composed).map_err(|source| SourceError::Parse {
+                kind: Self::KIND,
+                origin: origin.clone(),
+                source,
+            })?;
+        manifest
+            .check()
+            .map_err(|violations| SourceError::Invalid { origin, violations })?;
+        Ok(manifest)
+    }
+
+    /// Write the document into `directory` as `robot.yaml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError::Write`] when the directory or file cannot be
+    /// written.
+    pub fn write_to_dir(&self, directory: impl AsRef<Path>) -> Result<(), SourceError> {
+        self.write_dir(directory.as_ref())
+    }
+}
+
+/// Merge every direct parent of `leaf`, in declaration order, under the leaf.
+fn compose(leaf: &Path) -> Result<serde_yaml::Value, SourceError> {
+    let root = leaf
+        .parent()
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .map_err(|source| SourceError::Read {
+            kind: DocumentKind::Robot,
+            path: leaf.to_path_buf(),
+            source,
+        })?;
+
+    let compose = || -> Result<serde_yaml::Value, ComposeError> {
+        let mut document = read_value(leaf)?;
+        let parents = take_extends(&mut document, leaf)?;
+        let mut seen = BTreeSet::new();
+        let mut composed = serde_yaml::Value::Mapping(serde_yaml::Mapping::default());
+
+        for relative in parents {
+            if relative.is_absolute() {
+                return Err(ComposeError::AbsoluteParent { path: relative });
+            }
+            let parent = root.join(&relative).canonicalize().map_err(|source| {
+                ComposeError::UnresolvedParent {
+                    path: relative.clone(),
+                    source,
+                }
+            })?;
+            if !parent.starts_with(&root) {
+                return Err(ComposeError::EscapingParent {
+                    path: relative,
+                    root: root.clone(),
+                });
+            }
+            if parent == leaf {
+                return Err(ComposeError::SelfParent { path: relative });
+            }
+            if !seen.insert(parent.clone()) {
+                return Err(ComposeError::DuplicateParent { path: relative });
+            }
+
+            let mut value = read_value(&parent)?;
+            if !take_extends(&mut value, &parent)?.is_empty() {
+                return Err(ComposeError::NestedExtends { path: parent });
+            }
+            deep_merge(&mut composed, value);
+        }
+        deep_merge(&mut composed, document);
+        Ok(composed)
+    };
+
+    compose().map_err(|source| SourceError::Compose {
+        kind: DocumentKind::Robot,
+        leaf: leaf.to_path_buf(),
+        source,
     })
 }
 
-pub fn parse_from_string(text: &str) -> Result<Manifest> {
-    strict_yaml::check(text).context("failed to parse robot document")?;
-    let manifest: Manifest =
-        serde_yaml::from_str(text).context("failed to parse robot document")?;
-    let Manifest::V0(body) = &manifest;
-    if !body.extends.is_empty() {
-        bail!(
-            "robot extends requires a file path; use \
-             source::robot::read_from_path or source::robot::read_from_dir"
-        );
-    }
-    Ok(manifest)
+/// Read one document as an untyped YAML value, after the strict-subset check.
+///
+/// Composition happens before the typed parse, so a parent that is not a robot
+/// document on its own - a fragment carrying only `robot.motion_limits`, say -
+/// still composes.
+fn read_value(path: &Path) -> Result<serde_yaml::Value, ComposeError> {
+    let text = std::fs::read_to_string(path).map_err(|source| ComposeError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    strict_yaml::check(&text).map_err(|source| ComposeError::StrictYaml {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_yaml::from_str(&text).map_err(|source| ComposeError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
-pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("failed to create robot directory {}", path.display()))?;
-    let destination = path.join(ROBOT_FILE);
-    std::fs::write(&destination, serde_yaml::to_string(manifest)?)
-        .with_context(|| format!("failed to write robot document {}", destination.display()))
-}
-
-fn read_yaml_value(path: &Path) -> Result<serde_yaml::Value> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read robot document {}", path.display()))?;
-    strict_yaml::check(&text)
-        .with_context(|| format!("failed to parse robot document {}", path.display()))?;
-    serde_yaml::from_str(&text)
-        .with_context(|| format!("failed to parse robot document {}", path.display()))
-}
-
-fn take_extends(value: &mut serde_yaml::Value, path: &Path) -> Result<Vec<PathBuf>> {
+fn take_extends(value: &mut serde_yaml::Value, path: &Path) -> Result<Vec<PathBuf>, ComposeError> {
     let serde_yaml::Value::Mapping(map) = value else {
-        bail!("robot document {} must be a mapping", path.display());
+        return Err(ComposeError::NotAMapping {
+            path: path.to_path_buf(),
+        });
     };
     let key = serde_yaml::Value::String("extends".to_string());
     let Some(raw) = map.remove(&key) else {
         return Ok(Vec::new());
     };
-    serde_yaml::from_value(raw)
-        .with_context(|| format!("invalid extends list in {}", path.display()))
+    serde_yaml::from_value(raw).map_err(|source| ComposeError::MalformedExtends {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn deep_merge(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
@@ -181,20 +221,9 @@ fn deep_merge(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
     }
 }
 
-pub(crate) fn validation_error(location: &str, errors: Vec<v0::ValidationError>) -> anyhow::Error {
-    anyhow::anyhow!(
-        "invalid robot document {location}:\n{}",
-        errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_from_string, read_from_dir};
+    use super::Manifest;
 
     const COMPOSED_LEAF: &str = r#"
 schema: phoxal/robot/v0
@@ -234,8 +263,7 @@ robot:
       mount_link: base_link
 "#,
         )?;
-        let manifest = read_from_dir(dir.path())?;
-        let super::Manifest::V0(manifest) = manifest;
+        let Manifest::V0(manifest) = Manifest::load(dir.path())?;
         assert!(manifest.extends.is_empty());
         assert_eq!(manifest.robot.motion_limits.max_linear_speed_mps, 0.5);
         Ok(())
@@ -243,8 +271,8 @@ robot:
 
     #[test]
     fn string_parser_requires_the_exact_schema() {
-        assert!(parse_from_string("schema: phoxal/robot/v1\n").is_err());
-        assert!(parse_from_string("robot: {}\n").is_err());
+        assert!(Manifest::parse("schema: phoxal/robot/v1\n").is_err());
+        assert!(Manifest::parse("robot: {}\n").is_err());
     }
 
     /// The schema tag alone selects the variant: a structurally valid body
@@ -254,14 +282,14 @@ robot:
     fn future_schema_tag_fails_on_the_variant_not_the_body() -> anyhow::Result<()> {
         let valid_body_future_tag =
             COMPOSED_LEAF.replacen("schema: phoxal/robot/v0", "schema: phoxal/robot/v1", 1);
-        let error = parse_from_string(&valid_body_future_tag)
+        let error = Manifest::parse(&valid_body_future_tag)
             .expect_err("a valid body under an unknown schema tag must still fail");
         assert!(
-            format!("{error:#}").contains("phoxal/robot/v1"),
-            "got: {error:#}"
+            error.to_string().contains("phoxal/robot/v1"),
+            "got: {error}"
         );
 
-        let manifest = parse_from_string(
+        let manifest = Manifest::parse(
             COMPOSED_LEAF
                 .replacen("extends: [base.robot.yaml, host.robot.yaml]\n", "", 1)
                 .as_str(),
@@ -283,19 +311,23 @@ robot:
         )?;
         std::fs::write(dir.path().join("host.robot.yaml"), "{}\n")?;
         std::fs::write(dir.path().join("robot.yaml"), COMPOSED_LEAF)?;
-        let error = read_from_dir(dir.path()).expect_err("nested extends must fail");
-        assert!(format!("{error:#}").contains("declares nested extends"));
+        let error = Manifest::load(dir.path()).expect_err("nested extends must fail");
+        assert!(
+            error.to_string().contains("declares nested extends"),
+            "{error}"
+        );
         Ok(())
     }
 
+    /// Parents name paths, so they only exist relative to a document on disk.
     #[test]
-    fn string_parser_rejects_unresolvable_extends() {
+    fn parsing_text_that_declares_parents_is_refused() {
         let error =
-            parse_from_string(COMPOSED_LEAF).expect_err("string parsing cannot resolve parents");
-        assert!(format!("{error:#}").contains(
-            "robot extends requires a file path; use \
-                 source::robot::read_from_path or source::robot::read_from_dir"
-        ));
+            Manifest::parse(COMPOSED_LEAF).expect_err("text parsing cannot resolve parents");
+        assert!(
+            matches!(error, super::SourceError::UnresolvableExtends { .. }),
+            "{error}"
+        );
     }
 
     #[test]
@@ -312,16 +344,22 @@ robot:
                 "base.robot.yaml, base.robot.yaml",
             ),
         )?;
-        let duplicate = read_from_dir(&robot_dir).expect_err("duplicate parent must fail");
-        assert!(format!("{duplicate:#}").contains("duplicate robot parent"));
+        let duplicate = Manifest::load(&robot_dir).expect_err("duplicate parent must fail");
+        assert!(
+            duplicate.to_string().contains("duplicate parent"),
+            "{duplicate}"
+        );
 
         std::fs::write(
             robot_dir.join("robot.yaml"),
             COMPOSED_LEAF.replace("base.robot.yaml, host.robot.yaml", "../outside.robot.yaml"),
         )?;
         std::fs::write(temp.path().join("outside.robot.yaml"), "{}\n")?;
-        let escaping = read_from_dir(&robot_dir).expect_err("escaping parent must fail");
-        assert!(format!("{escaping:#}").contains("escapes robot directory"));
+        let escaping = Manifest::load(&robot_dir).expect_err("escaping parent must fail");
+        assert!(
+            escaping.to_string().contains("escapes directory"),
+            "{escaping}"
+        );
         Ok(())
     }
 }

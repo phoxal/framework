@@ -1,5 +1,5 @@
 // The four time types are non-interchangeable and carry no cross-type ordering
-// or arithmetic (#952 section C). Comparison and age across timelines are
+// or arithmetic. Comparison and age across timelines are
 // *checked* operations, so the compiler must reject every shortcut that would
 // silently produce a wrong number.
 

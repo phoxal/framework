@@ -25,7 +25,7 @@
 //! - **One train-selected API facade.** Official participants import
 //!   `phoxal::api`, which names the complete concrete revision selected by the
 //!   locked framework train. Contract identity is realized on the wire by the
-//!   revision-qualified key (D1).
+//!   revision-qualified key.
 //! - **Participants are authored, not wired.** A role attribute declares
 //!   identity and associated `Config`/`State`/`Api` types; a direct
 //!   [`Participant`] implementation owns lifecycle
@@ -137,6 +137,8 @@
 //! - [`model`] - immutable canonical runtime robot facts, loaded from the
 //!   finalized bundle by [`bundle`]; the document readers live in
 //!   `phoxal-manifest`.
+//! - [`geometry`] and [`SampleSchedule`] - the small shared arithmetic every
+//!   official participant would otherwise reimplement.
 //! - The **official service set** ships alongside this crate in the workspace
 //!   `service/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
 //!   participants authored on exactly this surface, useful as reference reading.
@@ -150,26 +152,31 @@
 #[cfg(test)]
 extern crate self as phoxal;
 
-pub mod bundle;
-pub mod model;
+pub mod geometry;
 mod participant;
+mod sample_schedule;
 
 /// The concrete framework API revision selected by this release train.
 pub use phoxal_api::latest as api;
 
 /// Typed contract and handle vocabulary for normal participant authoring.
 ///
-/// This module deliberately excludes the raw session-owning bus types
-/// (`Bus`, `BusConfig`, `BusHealth`, `IncomingQuery`, `ServerQueryable`), and
-/// also [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
-/// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher): both are world-
-/// clock-authority types only a `#[phoxal::simulator]` ever legitimately
-/// names, so keeping them off the surface an ordinary participant browses
-/// closes the accidental route - see
-/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority)'s docs for the exact
-/// strength of that claim. Checked participants build IO through
-/// [`SetupContext`] and the api-local topic builders. Simulator world
-/// authority is exposed only by its role-gated context methods.
+/// This is the bus surface a checked participant browses: the contract traits,
+/// the codec, the [`BusMetadata`](bus::BusMetadata) attachment, the four
+/// non-interchangeable time types, the body-typed handles, and side-branded
+/// [`Topic`](bus::Topic) values. Participants build their IO through
+/// [`SetupContext`] and the api-local topic builders, so the session-owning
+/// types (`Bus`, `BusConfig`, `BusHealth`, `IncomingQuery`, `ServerQueryable`)
+/// have no place here.
+///
+/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
+/// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) are absent for a
+/// stronger reason: they are world-clock authority, which only a
+/// `#[phoxal::simulator]` may hold. A simulator reaches them through its
+/// role-gated [`SetupContext`] methods and nowhere else, so keeping them off
+/// the browsable surface leaves exactly one route to them. See
+/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority)'s own docs for how
+/// strong that guarantee is.
 pub mod bus {
     pub use phoxal_bus::{
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
@@ -178,80 +185,53 @@ pub mod bus {
         LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
         Observed, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure,
         QueryResult, Result, RobotInstant, ServeQuery, StateContract, StatePublisher, StepStamp,
-        StepToken, Subscribe, Subscriber, TimeWindow, TimelineId, TimelineMismatch, Topic,
+        StepToken, Subscribe, Subscriber, TimeWindow, Timed, TimelineId, TimelineMismatch, Topic,
         TopicKind, TopicRole, WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
-        encoding_string,
     };
+}
 
-    /// Bus-ABI golden bindings against the train-selected API tree.
-    ///
-    /// The pure bus mechanics (encoding-string parsing, the codec fast-reject
-    /// in `decode_sample`, codec round-trips, key-root validation) are unit
-    /// tested in the `phoxal-bus` crate against a hand-written `ContractBody`.
-    /// These pin the *engine-level* binding: that the `phoxal_api_tree!`
-    /// generated `ContractBody`/`ApiVersion` impls for `v0_1` flow through the
-    /// re-exported wire slots above exactly as published, and that `TOPIC` is
-    /// version-qualified (D1).
-    #[cfg(test)]
-    mod tests {
-        use super::{
-            BusMetadata, CodecId, ContractBody, ProducerId, RobotInstant, TimeWindow, TimelineId,
-            encoding_string,
-        };
-        use crate::api;
+/// Reading the finalized runtime bundle a participant was launched against.
+///
+/// A participant normally never touches this module: the runner loads the
+/// bundle named by `PHOXAL_BUNDLE_ROOT` and binds the model and assets onto
+/// [`SetupContext`]. It is public because the same loader is the one a host
+/// tool embedding the framework uses to inspect a bundle it did not launch.
+///
+/// Whole-bundle serving (`BundleResolver`, which reaches `bin/`) is a
+/// supervisor capability, so it stays in `phoxal_manifest::bundle` where the
+/// supervisor already looks.
+pub mod bundle {
+    pub use phoxal_manifest::bundle::{BundleError, FinalizedBundle};
+}
 
-        #[test]
-        fn encoding_string_carries_only_the_codec() {
-            let enc = encoding_string(CodecId::MessagePack);
-            assert_eq!(enc, "phoxal/v0;codec=1");
-        }
-
-        #[test]
-        fn contract_body_topic_is_version_qualified_on_the_real_tree() {
-            // D1: the revision is folded into the wire key, so a real v0.1
-            // contract publishes on a key that cannot collide with a
-            // hypothetical v0.2 contract of the same leaf name.
-            assert_eq!(
-                <api::drive::Target as ContractBody>::TOPIC,
-                "v0.1/drive/target"
-            );
-            assert_eq!(
-                <api::supervisor::asset::GetRequest as ContractBody>::TOPIC,
-                "v0.1/supervisor/asset/get"
-            );
-        }
-
-        #[test]
-        fn bus_metadata_for_a_real_body_round_trips() {
-            let timeline = TimelineId::mint();
-            let meta = BusMetadata {
-                codec: CodecId::MessagePack.as_u8(),
-                producer: ProducerId::try_from(1).expect("a test producer is nonzero"),
-                sequence: 9,
-                produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
-                participant: "tester".to_string(),
-            };
-            assert_eq!(BusMetadata::decode(&meta.encode()).unwrap(), meta);
-
-            // A command or diagnostic expresses no robot time, and that absence
-            // round trips as absence rather than as a zero instant.
-            let timeless = BusMetadata {
-                produced_at: None,
-                ..meta
-            };
-            let decoded = BusMetadata::decode(&timeless.encode()).unwrap();
-            assert_eq!(decoded, timeless);
-            assert_eq!(decoded.produced_exactly_at(), None);
-        }
-    }
+/// The canonical runtime robot model a [`bundle::FinalizedBundle`] yields.
+///
+/// This mirrors `phoxal-model`'s own facade one-for-one and adds nothing: the
+/// names below are the canonical ones, and everything else is reached through
+/// the module that owns it ([`model::builder`], [`model::component`],
+/// [`model::identity`], [`model::robot`], [`model::simulation`],
+/// [`model::structure`]). Asset resolution is the exception - [`AssetId`],
+/// [`AssetError`] and [`ParticipantAssetResolver`] are what a participant
+/// actually holds, so they sit on this crate's root next to the rest of the
+/// authoring surface.
+///
+/// [`model::RobotBuilder`] composes a model in memory rather than loading one.
+/// A launched participant never needs it - the runner hands it an already-built
+/// [`model::Robot`] - but a test or a tool that has no bundle does.
+pub mod model {
+    pub use phoxal_model::{
+        Clock, IdentifierKind, JointOwner, KinematicScalarField, LinkRole, ModelError,
+        MotionLimitField, PoseOwner, Robot, RobotBuilder, RobotIdentity, StructureError, builder,
+        component, identity, robot, simulation, structure,
+    };
 }
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
 /// `Result<T>` via the [`prelude`].
 pub use anyhow::Result;
 
-/// Derive participant config identity from a `Config` struct (schema
-/// materialization is a later slice).
+/// Derive a participant config's compile-time JSON Schema from a `Config`
+/// struct.
 pub use phoxal_macros::Config;
 
 /// Link a participant state struct to its `Config`/`Api` types as a checked
@@ -279,15 +259,19 @@ pub use phoxal_macros::step;
 ///
 /// This is the default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
-pub use participant::run;
-pub use participant::{Participant, ResetContext, SetupContext, StepContext};
+pub use participant::runner::run;
+
+pub use participant::api::Participant;
+pub use participant::context::{ResetContext, SetupContext, StepContext};
+pub use participant::managed::ManagedTaskPolicy;
 pub use phoxal_model::{AssetError, AssetId, ParticipantAssetResolver};
+pub use sample_schedule::SampleSchedule;
 
 /// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
 pub mod tokio {
     #[doc(inline)]
-    pub use crate::participant::run_async as run;
+    pub use crate::participant::runner::run_async as run;
 }
 
 /// Everything a participant author imports with `use phoxal::prelude::*;`.
@@ -296,15 +280,28 @@ pub mod prelude {
     pub use crate::bus::{
         CaptureStamp, CommandPublisher, DiagnosticPublisher, Latest, Lease, LeaseDecision,
         LocalInstant, MeasurementPublisher, Observed, ProducerFence, Querier, QueryError,
-        QueryResult, RobotInstant, StatePublisher, Subscriber, TimeWindow, TimelineId,
+        QueryResult, RobotInstant, StatePublisher, Subscriber, TimeWindow, Timed, TimelineId,
     };
-    pub use crate::participant::{
-        ManagedTaskPolicy, Participant, ResetContext, SetupContext, StepContext,
+    pub use crate::{
+        AssetId, ManagedTaskPolicy, Participant, ParticipantAssetResolver, ResetContext,
+        SetupContext, StepContext,
     };
-    pub use crate::{AssetId, ParticipantAssetResolver};
 }
 
-/// Macro/runtime linkage that is intentionally absent from the authoring API.
+/// The macro ABI: the exact set of items the code `phoxal-macros` generates
+/// has to be able to name inside a participant's own crate.
+///
+/// This is not public API. Nothing here carries a stability guarantee, nothing
+/// here is documented for authors, and the only code allowed to name any of it
+/// is a `#[phoxal::service]` / `driver` / `simulator` / `brain` / `step` /
+/// `#[derive(phoxal::Config)]` expansion. Every item is listed explicitly and
+/// individually below: a glob re-export here would silently publish the whole
+/// participant engine as public API, so the list is the boundary.
+///
+/// A participant author reaches the same concepts through the crate root, the
+/// [`prelude`], and [`bus`]. If something an author needs is only reachable
+/// from here, that is a missing facade entry, not a licence to import this
+/// module.
 #[doc(hidden)]
 pub mod __private {
     /// The one compatibility declaration a participant binary carries.
@@ -318,7 +315,7 @@ pub mod __private {
     /// version file, and no framework-SemVer floor. The document's own version
     /// is the tag on `ParticipantMetadata` itself, so it needs no entry here.
     pub mod compatibility {
-        use phoxal_runtime_contract::{
+        use phoxal_runtime_contract::version::{
             BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema,
         };
 
@@ -338,34 +335,48 @@ pub mod __private {
         pub use phoxal_runtime_contract::participant_metadata_json;
     }
 
-    pub use crate::participant::api::__meta;
+    /// Const-eval plumbing for the embedded metadata static: `ConstSchema`,
+    /// `bytes_of`, and the hygienic `concatcp` re-export.
+    pub use crate::participant::api::meta;
+
+    /// The launch policy each role attribute assigns to `ParticipantSpec`.
     pub use crate::participant::launch::{
         ClockedParticipantLaunch, ParticipantLaunchPolicy, SimulatorParticipantLaunch,
     };
-    pub use crate::participant::runner::{run_with_bus, run_with_bus_clock};
-    pub mod surface {
-        /// The sealing boundary for macro-emitted setup capabilities.
-        #[doc(hidden)]
-        pub mod sealing {
-            pub trait Sealed {}
-        }
 
-        #[doc(hidden)]
-        pub trait TypedIoSurface: sealing::Sealed {}
+    /// The capability marker traits a role attribute implements for its marker.
+    pub use crate::participant::surface;
 
-        #[doc(hidden)]
-        pub trait ComponentBoundSurface: sealing::Sealed {}
+    /// The traits a role attribute and `#[derive(phoxal::Config)]` implement.
+    pub use crate::participant::api::{ParticipantConfig, ParticipantSpec};
 
-        #[doc(hidden)]
-        #[diagnostic::on_unimplemented(
-            message = "`{Self}` has a clockless launch policy and cannot own a scheduled step",
-            label = "scheduled steps are available only on services and drivers"
-        )]
-        pub trait SchedulableSurface {}
+    /// The authoring kind a role attribute records in `ParticipantSpec::KIND`.
+    pub use phoxal_runtime_contract::metadata::ParticipantKind;
 
-        #[doc(hidden)]
-        pub trait WorldAuthoritySurface: sealing::Sealed {}
-    }
-    pub use crate::participant::*;
-    pub use surface::SchedulableSurface;
+    /// The cadence `#[phoxal::step(hz = …)]` returns from
+    /// `Participant::__step_schedule`.
+    pub use crate::participant::scheduler::StepSchedule;
+
+    /// Driving a participant on a bus the caller already owns.
+    ///
+    /// These are not part of the macro ABI. They are the only way to run a
+    /// participant against an in-process bus without going through process
+    /// launch, which is what the framework's own integration tests and the
+    /// official participants' tests need. They are here rather than behind a
+    /// `cfg(test)` gate because a participant crate's tests are a separate
+    /// compilation unit that has no way to enable this crate's test cfg.
+    pub use crate::participant::clock::ClockSource;
+    pub use crate::participant::runner::run_with_bus;
+    pub use phoxal_runtime_contract::launch::ParticipantLaunch;
+    pub use phoxal_runtime_contract::origin::ExecutionOrigin;
+
+    /// Injecting a clock the caller drives, for the same in-process runs.
+    ///
+    /// Behind the `test-harness` feature, which a downstream crate enables as a
+    /// **dev**-dependency: a participant that could reach a clock it controls in
+    /// its shipped binary could stamp instants it never reached.
+    #[cfg(feature = "test-harness")]
+    pub use crate::participant::clock::test::TestClock;
+    #[cfg(feature = "test-harness")]
+    pub use crate::participant::runner::run_with_bus_clock;
 }

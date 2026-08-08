@@ -1,7 +1,7 @@
 //! `frame` - maintain the robot transform tree and serve frame lookups.
 //!
 //! A scheduled participant with a serialized query handler. It builds the link
-//! tree from the robot model (D33): fixed joints become static transforms, while
+//! tree from the robot model: fixed joints become static transforms, while
 //! movable joints (revolute, continuous, prismatic) are tracked dynamically.
 //! It subscribes to the per-joint `joint/<id>/state` topic for each movable joint
 //! and folds each sample into the joint origin to produce a child-to-parent
@@ -16,33 +16,41 @@
 use anyhow::Result;
 use nalgebra::Isometry3;
 use phoxal::api;
+use phoxal::model::identity::LinkId;
 use phoxal::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{DynamicJoint, FrameConfig, JointMeta};
 use crate::ring_buffer::RingBuffer;
 use crate::transform;
-use crate::transform::{joint_transform, lookup_transform, sorted_transforms};
 
 const BUFFER_WINDOW: std::time::Duration = std::time::Duration::from_nanos(5_000_000_000);
 const BUFFER_MAX_ENTRIES: usize = 16_384;
 
-pub struct Api {
-    joints: Vec<Subscriber<api::joint::JointState>>,
+/// One dynamically tracked joint: the subscription carrying its state, beside
+/// the frame the folded transform is buffered under.
+struct TrackedJoint {
+    joint: DynamicJoint,
+    states: Subscriber<api::joint::JointState>,
+}
+
+pub(crate) struct Api {
+    joints: Vec<TrackedJoint>,
     tree: StatePublisher<api::frame::Tree>,
     static_pub: StatePublisher<api::frame::StaticTransforms>,
 }
 
-pub struct FrameState {
-    pub(crate) static_transforms: BTreeMap<String, api::frame::FrameTransform>,
-    pub(crate) parent_by_child: BTreeMap<String, (String, JointMeta)>,
-    dynamic_joints: Vec<DynamicJoint>,
-    pub(crate) buffers: BTreeMap<String, RingBuffer<Isometry3<f64>>>,
+/// The transform tree: the fixed edges, the parent and joint each frame hangs
+/// from, and the recent samples for every dynamically tracked edge.
+pub(crate) struct FrameState {
+    static_transforms: BTreeMap<LinkId, api::frame::FrameTransform>,
+    parent_by_child: BTreeMap<LinkId, (LinkId, JointMeta)>,
+    buffers: BTreeMap<LinkId, RingBuffer<Isometry3<f64>>>,
     published_static: bool,
 }
 
 #[phoxal::service(state = FrameState, api = Api)]
-pub struct Frame;
+pub(crate) struct Frame;
 
 impl Participant for Frame {
     async fn setup(
@@ -54,15 +62,18 @@ impl Participant for Frame {
 
         let mut joints = Vec::with_capacity(config.dynamic_joints.len());
         let mut buffers = BTreeMap::new();
-        for dynamic in &config.dynamic_joints {
-            joints.push(
-                ctx.subscriber(api::topic::client().joint(&dynamic.joint_id).state(), 32)
-                    .await?,
-            );
+        for dynamic in config.dynamic_joints {
+            let states = ctx
+                .subscriber(api::topic::client().joint(&dynamic.joint_id).state(), 32)
+                .await?;
             buffers.insert(
                 dynamic.child_frame_id.clone(),
                 RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES),
             );
+            joints.push(TrackedJoint {
+                joint: dynamic,
+                states,
+            });
         }
 
         // Frame OWNS the `frame` node (tree, static transforms, and the
@@ -81,7 +92,6 @@ impl Participant for Frame {
             FrameState {
                 static_transforms: config.static_transforms,
                 parent_by_child: config.parent_by_child,
-                dynamic_joints: config.dynamic_joints,
                 buffers,
                 published_static: false,
             },
@@ -115,20 +125,21 @@ impl Participant for Frame {
         step: StepContext,
         state: &mut Self::State,
     ) -> Result<()> {
-        for (subscriber, dynamic) in api.joints.iter().zip(&state.dynamic_joints) {
-            while let Some(observed) = subscriber.try_recv() {
+        for tracked in &api.joints {
+            while let Some(observed) = tracked.states.try_recv() {
                 let Some(at) = observed.metadata.produced_exactly_at() else {
                     continue;
                 };
-                let Some((_, meta)) = state.parent_by_child.get(&dynamic.child_frame_id) else {
+                let Some((_, meta)) = state.parent_by_child.get(&tracked.joint.child_frame_id)
+                else {
                     continue;
                 };
-                let Some(transform) = joint_transform(meta, &observed.body) else {
+                let Some(transform) = meta.transform(&observed.body) else {
                     continue;
                 };
                 state
                     .buffers
-                    .entry(dynamic.child_frame_id.clone())
+                    .entry(tracked.joint.child_frame_id.clone())
                     .or_insert_with(|| RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES))
                     .push(at, transform);
             }
@@ -136,16 +147,18 @@ impl Participant for Frame {
 
         if !state.published_static {
             api.static_pub.publish(
-                step.token(),
+                &step.token,
                 api::frame::StaticTransforms {
-                    transforms: sorted_transforms(state.static_transforms.values().cloned()),
+                    transforms: transform::sorted_transforms(
+                        state.static_transforms.values().cloned(),
+                    ),
                 },
             )?;
             state.published_static = true;
         }
 
         api.tree.publish(
-            step.token(),
+            &step.token,
             api::frame::Tree {
                 transforms: state.tree_transforms(),
             },
@@ -162,7 +175,7 @@ impl Frame {
         state: &mut FrameState,
     ) -> QueryResult<api::frame::LookupResponse> {
         Ok(api::frame::LookupResponse {
-            transform: lookup_transform(state, &request),
+            transform: state.lookup(&request),
         })
     }
 }
@@ -174,24 +187,176 @@ impl FrameState {
             let (stamp, transform) = buffer.latest()?;
             let (parent_frame_id, _) = self.parent_by_child.get(child_frame_id)?;
             Some(transform::transform_from_isometry(
-                parent_frame_id.clone(),
-                child_frame_id.clone(),
+                parent_frame_id,
+                child_frame_id,
                 transform,
                 Some(stamp),
             ))
         });
-        sorted_transforms(static_transforms.chain(dynamic_transforms))
+        transform::sorted_transforms(static_transforms.chain(dynamic_transforms))
+    }
+
+    /// The transform between the two requested frames, composed through their
+    /// lowest common ancestor.
+    ///
+    /// Absent when either frame is unknown to this tree, when they share no
+    /// ancestor, or when a dynamic edge on the path has no sample near the
+    /// requested instant.
+    fn lookup(&self, request: &api::frame::LookupRequest) -> Option<api::frame::FrameTransform> {
+        let target = self.known_frame(&request.target_frame_id)?;
+        let source = self.known_frame(&request.source_frame_id)?;
+
+        if target == source {
+            return Some(transform::transform_from_isometry(
+                target,
+                source,
+                Isometry3::identity(),
+                None,
+            ));
+        }
+
+        let ancestor = self.common_ancestor(target, source)?;
+        let (target_stamp, ancestor_to_target) =
+            self.compose_from_ancestor(ancestor, target, request.at)?;
+        let (source_stamp, ancestor_to_source) =
+            self.compose_from_ancestor(ancestor, source, request.at)?;
+
+        // The composed transform is only as fresh as its stalest edge; both edges
+        // came from the same timeline (`nearest` rejects any other), so comparing
+        // ticks is well-defined here.
+        let stamp = target_stamp
+            .into_iter()
+            .chain(source_stamp)
+            .max_by_key(|instant| instant.ticks());
+        Some(transform::transform_from_isometry(
+            target,
+            source,
+            ancestor_to_target.inverse() * ancestor_to_source,
+            stamp,
+        ))
+    }
+
+    /// The tree's own identity for `frame_id`, if it knows the frame at all.
+    ///
+    /// Returning the identity rather than a `bool` is what lets the composed
+    /// response name frames the tree owns instead of echoing request text back.
+    /// The root frame is never a key, only a parent, so the parent scan is not
+    /// redundant with the keyed lookups.
+    fn known_frame(&self, frame_id: &str) -> Option<&LinkId> {
+        self.static_transforms
+            .get_key_value(frame_id)
+            .map(|(id, _)| id)
+            .or_else(|| self.buffers.get_key_value(frame_id).map(|(id, _)| id))
+            .or_else(|| {
+                self.parent_by_child
+                    .get_key_value(frame_id)
+                    .map(|(id, _)| id)
+            })
+            .or_else(|| {
+                self.parent_by_child
+                    .values()
+                    .map(|(parent_frame_id, _)| parent_frame_id)
+                    .find(|parent_frame_id| parent_frame_id.as_str() == frame_id)
+            })
+    }
+
+    /// The lowest frame that is an ancestor of both, or `None` when the two
+    /// frames sit in disconnected parts of the tree.
+    fn common_ancestor<'a>(&'a self, target: &'a LinkId, source: &'a LinkId) -> Option<&'a LinkId> {
+        let target_ancestors = self.ancestors(target);
+        let mut seen = BTreeSet::new();
+        let mut current = source;
+        loop {
+            // Revisiting a frame means the parent chain closed on itself, so
+            // there is no ancestor to find and the walk would not terminate.
+            if !seen.insert(current) {
+                return None;
+            }
+            if target_ancestors.contains(current) {
+                return Some(current);
+            }
+            let (parent, _) = self.parent_by_child.get(current)?;
+            current = parent;
+        }
+    }
+
+    fn ancestors<'a>(&'a self, frame_id: &'a LinkId) -> BTreeSet<&'a LinkId> {
+        let mut ancestors = BTreeSet::new();
+        let mut current = frame_id;
+        loop {
+            if !ancestors.insert(current) {
+                return ancestors;
+            }
+            let Some((parent, _)) = self.parent_by_child.get(current) else {
+                return ancestors;
+            };
+            current = parent;
+        }
+    }
+
+    /// Compose every edge from `ancestor` down to `descendant`, with the stamp
+    /// of the stalest edge on the path.
+    fn compose_from_ancestor<'a>(
+        &'a self,
+        ancestor: &LinkId,
+        descendant: &'a LinkId,
+        at: Option<RobotInstant>,
+    ) -> Option<(Option<RobotInstant>, Isometry3<f64>)> {
+        let mut child_to_parent_edges = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut current = descendant;
+
+        while current != ancestor {
+            if !seen.insert(current) {
+                return None;
+            }
+            let (parent, _) = self.parent_by_child.get(current)?;
+            child_to_parent_edges.push(self.edge_transform(current, at)?);
+            current = parent;
+        }
+
+        let mut stamp = None;
+        let mut transform = Isometry3::identity();
+        for (edge_stamp, edge) in child_to_parent_edges.into_iter().rev() {
+            // The composed transform is only as fresh as its stalest edge, so the
+            // latest edge instant is the honest stamp. Edges on different
+            // timelines cannot be composed at all, so `max_by_key` on ticks is
+            // safe: `nearest` already rejected any foreign-timeline edge.
+            stamp = stamp
+                .into_iter()
+                .chain(edge_stamp)
+                .max_by_key(|instant| instant.ticks());
+            transform *= edge;
+        }
+        Some((stamp, transform))
+    }
+
+    /// The single child-to-parent edge above `child_frame_id`. A static edge
+    /// carries no stamp: it is configuration, not observation.
+    fn edge_transform(
+        &self,
+        child_frame_id: &LinkId,
+        at: Option<RobotInstant>,
+    ) -> Option<(Option<RobotInstant>, Isometry3<f64>)> {
+        if let Some(edge) = self.static_transforms.get(child_frame_id) {
+            return Some((None, transform::isometry_from_transform(edge)));
+        }
+        let buffer = self.buffers.get(child_frame_id)?;
+        let (stamp, transform) = match at {
+            Some(at) => buffer.nearest(at)?,
+            None => buffer.latest()?,
+        };
+        Some((Some(stamp), transform))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use nalgebra::{Quaternion, UnitQuaternion};
-    use phoxal::api;
+    use phoxal::model::structure::JointKind;
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
     use super::*;
-    use crate::config::FrameJointType;
 
     /// One fixed timeline for the frame tests, so the buffered instants read
     /// like the tick counters these cases care about.
@@ -207,270 +372,174 @@ mod tests {
 
     fn config_with_joint(
         name: &str,
-        kind: &str,
+        kind: JointKind,
         child: &str,
         rpy: [f64; 3],
         axis: [f64; 3],
     ) -> FrameConfig {
-        let joint_type = match kind {
-            "fixed" => FrameJointType::Fixed,
-            "continuous" => FrameJointType::Continuous,
-            other => panic!("unsupported test joint kind {other}"),
-        };
+        let child = LinkId::new(child);
+        let parent = LinkId::new("base_link");
         let origin = Isometry3::from_parts(
             nalgebra::Translation3::identity(),
             UnitQuaternion::from_euler_angles(rpy[0], rpy[1], rpy[2]),
         );
         let meta = JointMeta {
-            joint_id: name.to_string(),
-            joint_type,
+            joint_id: phoxal::model::identity::JointId::new(name),
+            kind,
             origin,
             axis_xyz: axis,
         };
-        let static_transforms = if joint_type == FrameJointType::Fixed {
+        let static_transforms = if kind == JointKind::Fixed {
             BTreeMap::from([(
-                child.to_string(),
-                transform::transform_from_isometry(
-                    "base_link".to_string(),
-                    child.to_string(),
-                    origin,
-                    None,
-                ),
+                child.clone(),
+                transform::transform_from_isometry(&parent, &child, origin, None),
             )])
         } else {
             BTreeMap::new()
         };
-        let dynamic_joints = if joint_type == FrameJointType::Fixed {
+        let dynamic_joints = if kind == JointKind::Fixed {
             Vec::new()
         } else {
             vec![DynamicJoint {
-                joint_id: name.to_string(),
-                child_frame_id: child.to_string(),
+                joint_id: meta.joint_id.clone(),
+                child_frame_id: child.clone(),
             }]
         };
         FrameConfig {
             static_transforms,
-            parent_by_child: BTreeMap::from([(child.to_string(), ("base_link".to_string(), meta))]),
+            parent_by_child: BTreeMap::from([(child, (parent, meta))]),
             dynamic_joints,
         }
     }
 
+    fn state_from_config(
+        config: &FrameConfig,
+        buffers: BTreeMap<LinkId, RingBuffer<Isometry3<f64>>>,
+    ) -> FrameState {
+        FrameState {
+            static_transforms: config.static_transforms.clone(),
+            parent_by_child: config.parent_by_child.clone(),
+            buffers,
+            published_static: false,
+        }
+    }
+
+    fn single_dynamic_config() -> FrameConfig {
+        config_with_joint(
+            "wheel_joint",
+            JointKind::Continuous,
+            "wheel_link",
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        )
+    }
+
+    /// A wheel-link buffer holding `positions_rad` at successive tick stamps.
+    fn wheel_buffer(config: &FrameConfig, samples: &[(u64, f64)]) -> RingBuffer<Isometry3<f64>> {
+        let (_, meta) = config
+            .parent_by_child
+            .get("wheel_link")
+            .expect("wheel metadata");
+        let mut buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
+        for (ticks, position_rad) in samples {
+            buffer.push(
+                at(*ticks),
+                meta.transform(&joint_state(*position_rad))
+                    .expect("joint transform"),
+            );
+        }
+        buffer
+    }
+
+    fn wheel_state(config: &FrameConfig, samples: &[(u64, f64)]) -> FrameState {
+        state_from_config(
+            config,
+            BTreeMap::from([(LinkId::new("wheel_link"), wheel_buffer(config, samples))]),
+        )
+    }
+
+    fn request(source: &str, at: Option<RobotInstant>) -> api::frame::LookupRequest {
+        api::frame::LookupRequest {
+            target_frame_id: "base_link".to_string(),
+            source_frame_id: source.to_string(),
+            at,
+        }
+    }
+
     #[test]
-    fn static_chain_lookup_composes_yaw() -> Result<()> {
+    fn static_chain_lookup_composes_yaw() {
         let config = config_with_joint(
             "arm_mount",
-            "fixed",
+            JointKind::Fixed,
             "arm_link",
             [0.0, 0.0, FRAC_PI_2],
             [0.0, 0.0, 0.0],
         );
         let state = state_from_config(&config, BTreeMap::new());
 
-        let transform = lookup_transform(
-            &state,
-            &api::frame::LookupRequest {
-                target_frame_id: "base_link".to_string(),
-                source_frame_id: "arm_link".to_string(),
-                at: Some(at(0)),
-            },
-        )
-        .expect("static lookup should resolve");
+        let transform = state
+            .lookup(&request("arm_link", Some(at(0))))
+            .expect("static lookup should resolve");
 
         assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
         assert_eq!(transform.stamp, None);
-        Ok(())
     }
 
     #[test]
-    fn dynamic_joint_lookup_uses_nearest_sample() -> Result<()> {
-        let config = single_dynamic_config()?;
-        let wheel = "wheel_link".to_string();
-        let (_, meta) = config.parent_by_child.get(&wheel).expect("wheel metadata");
-        let mut buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
-        buffer.push(
-            at(100),
-            joint_transform(meta, &joint_state(FRAC_PI_4)).expect("joint transform"),
-        );
-        buffer.push(
-            at(200),
-            joint_transform(meta, &joint_state(FRAC_PI_2)).expect("joint transform"),
-        );
+    fn dynamic_joint_lookup_uses_nearest_sample() {
+        let config = single_dynamic_config();
+        let state = wheel_state(&config, &[(100, FRAC_PI_4), (200, FRAC_PI_2)]);
 
-        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
-        let transform = lookup_transform(
-            &state,
-            &api::frame::LookupRequest {
-                target_frame_id: "base_link".to_string(),
-                source_frame_id: wheel,
-                at: Some(at(175)),
-            },
-        )
-        .expect("dynamic lookup should resolve");
+        let transform = state
+            .lookup(&request("wheel_link", Some(at(175))))
+            .expect("dynamic lookup should resolve");
 
         assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
         assert_eq!(transform.stamp, Some(at(200)));
-        Ok(())
     }
 
     #[test]
-    fn lookup_returns_none_for_unknown_or_out_of_range_frames() -> Result<()> {
-        let config = single_dynamic_config()?;
-        let wheel = "wheel_link".to_string();
-        let (_, meta) = config.parent_by_child.get(&wheel).expect("wheel metadata");
-        let mut buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
-        buffer.push(
-            at(100),
-            joint_transform(meta, &joint_state(0.0)).expect("joint transform"),
-        );
-        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+    fn lookup_returns_none_for_unknown_or_out_of_range_frames() {
+        let config = single_dynamic_config();
+        let state = wheel_state(&config, &[(100, 0.0)]);
 
+        assert!(state.lookup(&request("missing", Some(at(100)))).is_none());
         assert!(
-            lookup_transform(
-                &state,
-                &api::frame::LookupRequest {
-                    target_frame_id: "base_link".to_string(),
-                    source_frame_id: "missing".to_string(),
-                    at: Some(at(100)),
-                },
-            )
-            .is_none()
-        );
-        assert!(
-            lookup_transform(
-                &state,
-                &api::frame::LookupRequest {
-                    target_frame_id: "base_link".to_string(),
-                    source_frame_id: wheel,
-                    at: Some(
+            state
+                .lookup(&request(
+                    "wheel_link",
+                    Some(
                         at(100).saturating_add(BUFFER_WINDOW + std::time::Duration::from_nanos(1))
-                    ),
-                },
-            )
-            .is_none()
+                    )
+                ))
+                .is_none()
         );
-        Ok(())
     }
 
     #[test]
-    fn lookup_at_or_after_newest_sample_uses_latest_within_tolerance() -> Result<()> {
-        let config = single_dynamic_config()?;
-        let wheel = "wheel_link".to_string();
-        let (_, meta) = config.parent_by_child.get(&wheel).expect("wheel metadata");
-        let mut buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
-        buffer.push(
-            at(100),
-            joint_transform(meta, &joint_state(FRAC_PI_4)).expect("joint transform"),
-        );
-        buffer.push(
-            at(200),
-            joint_transform(meta, &joint_state(FRAC_PI_2)).expect("joint transform"),
-        );
-        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+    fn lookup_at_or_after_newest_sample_uses_latest_within_tolerance() {
+        let config = single_dynamic_config();
+        let state = wheel_state(&config, &[(100, FRAC_PI_4), (200, FRAC_PI_2)]);
 
-        let transform = lookup_transform(
-            &state,
-            &api::frame::LookupRequest {
-                target_frame_id: "base_link".to_string(),
-                source_frame_id: wheel,
-                at: Some(at(250)),
-            },
-        )
-        .expect("latest within tolerance should resolve");
+        let transform = state
+            .lookup(&request("wheel_link", Some(at(250))))
+            .expect("latest within tolerance should resolve");
 
         assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
         assert_eq!(transform.stamp, Some(at(200)));
-        Ok(())
     }
 
     #[test]
-    fn latest_lookup_uses_newest_dynamic_sample() -> Result<()> {
-        let config = single_dynamic_config()?;
-        let wheel = "wheel_link".to_string();
-        let (_, meta) = config.parent_by_child.get(&wheel).expect("wheel metadata");
-        let mut buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
-        buffer.push(
-            at(100),
-            joint_transform(meta, &joint_state(FRAC_PI_4)).expect("joint transform"),
-        );
-        buffer.push(
-            at(200),
-            joint_transform(meta, &joint_state(FRAC_PI_2)).expect("joint transform"),
-        );
-        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+    fn latest_lookup_uses_newest_dynamic_sample() {
+        let config = single_dynamic_config();
+        let state = wheel_state(&config, &[(100, FRAC_PI_4), (200, FRAC_PI_2)]);
 
-        let transform = lookup_transform(
-            &state,
-            &api::frame::LookupRequest {
-                target_frame_id: "base_link".to_string(),
-                source_frame_id: wheel,
-                at: None,
-            },
-        )
-        .expect("latest lookup should resolve");
+        let transform = state
+            .lookup(&request("wheel_link", None))
+            .expect("latest lookup should resolve");
 
         assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
         assert_eq!(transform.stamp, Some(at(200)));
-        Ok(())
-    }
-
-    #[test]
-    fn ring_buffer_evicts_entries_outside_time_window_and_cap() {
-        let mut buffer = RingBuffer::new(std::time::Duration::from_nanos(5), 3);
-
-        for ticks in 0..10 {
-            buffer.push(at(ticks), ticks);
-        }
-
-        assert_eq!(buffer.len(), 3);
-        assert_eq!(buffer.entries().front().unwrap().0, at(7));
-        assert_eq!(buffer.entries().back().unwrap().0, at(9));
-    }
-
-    /// A replaced world discards the retained history rather than comparing
-    /// against it: instants from the previous timeline are not "old", they are
-    /// incomparable (#952 - the `frame` acceptance criterion).
-    #[test]
-    fn ring_buffer_is_timeline_scoped_across_a_reset() {
-        let replaced = phoxal::bus::TimelineId::mint();
-        let mut buffer = RingBuffer::new(std::time::Duration::from_secs(1), 8);
-        buffer.push(RobotInstant::new(replaced, 100), 1_u64);
-        assert_eq!(buffer.len(), 1);
-        assert_eq!(
-            buffer.nearest(at(100)),
-            None,
-            "a lookup on the current timeline must not resolve against a replaced world"
-        );
-
-        buffer.push(at(10), 2);
-        assert_eq!(
-            buffer.len(),
-            1,
-            "the replaced world's samples are discarded, not aged out"
-        );
-        assert_eq!(buffer.nearest(at(10)), Some((at(10), 2)));
-    }
-
-    fn state_from_config(
-        config: &FrameConfig,
-        dynamics: BTreeMap<String, RingBuffer<Isometry3<f64>>>,
-    ) -> FrameState {
-        FrameState {
-            static_transforms: config.static_transforms.clone(),
-            parent_by_child: config.parent_by_child.clone(),
-            dynamic_joints: config.dynamic_joints.clone(),
-            buffers: dynamics,
-            published_static: false,
-        }
-    }
-
-    fn single_dynamic_config() -> Result<FrameConfig> {
-        Ok(config_with_joint(
-            "wheel_joint",
-            "continuous",
-            "wheel_link",
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ))
     }
 
     fn joint_state(position_rad: f64) -> api::joint::JointState {
@@ -489,13 +558,9 @@ mod tests {
             rotation_xyzw[2],
         ));
         let (_, _, yaw) = rotation.euler_angles();
-        assert_close(yaw, expected_yaw);
-    }
-
-    fn assert_close(actual: f64, expected: f64) {
         assert!(
-            (actual - expected).abs() <= EPSILON,
-            "expected {expected}, got {actual}"
+            (yaw - expected_yaw).abs() <= EPSILON,
+            "expected {expected_yaw}, got {yaw}"
         );
     }
 }
