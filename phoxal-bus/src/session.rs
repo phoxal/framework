@@ -841,7 +841,14 @@ pub(crate) fn producer_from_zid(zid: ZenohId) -> Result<ProducerId> {
 /// value with parsing/conversion only. A producer is a bus-session concern, so
 /// its random mint belongs here beside the code that pins it into Zenoh.
 fn mint_producer_id() -> Result<ProducerId> {
-    ProducerId::try_from(u128::from(ExecutionId::mint()))
+    let mut bytes = [0_u8; ProducerId::LEN / 2];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| BusError::Transport(format!("failed to mint producer id: {error}")))?;
+    let mut value = u128::from_be_bytes(bytes);
+    if value >> 124 == 0 {
+        value |= 1 << 124;
+    }
+    ProducerId::try_from(value)
         .map_err(|error| BusError::Transport(format!("failed to mint producer id: {error}")))
 }
 
