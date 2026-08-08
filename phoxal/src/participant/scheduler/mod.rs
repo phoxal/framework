@@ -93,10 +93,6 @@ pub(crate) struct SchedulerTick {
 /// Async methods (no `async_trait`): the runner awaits `wait_until` directly
 /// inside its own `tokio::select!`, so boxing the future would be pure
 /// overhead.
-#[expect(
-    async_fn_in_trait,
-    reason = "the runner awaits `wait_until` directly, as the doc comment above states"
-)]
 pub(crate) trait StepScheduler: Send + Sync + 'static {
     /// Wait until the tick logically due at `target` should release, collapsing
     /// any overrun, and report what actually happened.
