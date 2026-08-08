@@ -17,11 +17,10 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true }
 anyhow = { workspace = true }
-tracing = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+phoxal-bus = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true
