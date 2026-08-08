@@ -19,8 +19,10 @@ The reader has no source-parser or catalog dependency. A participant selects
 one typed `ParticipantId` record before opening its bus and receives one
 validated `ParticipantRuntimeInputs` value. Assets are logical and digest
 checked from the same owned file descriptor that is returned or consumed. On
-Unix, every path component is opened with `openat` and `O_NOFOLLOW`. Targets
-without a robust native no-follow traversal currently return
-`UnsupportedSecureOpen`; they never downgrade to an `lstat`/open best-effort
+Unix, the root directory is pinned first; layout enumeration and every path
+component are then descriptor-relative, using `fstatat`/`openat` with
+`O_NOFOLLOW`. Targets without a robust native no-follow traversal currently
+return `UnsupportedSecureOpen`; they never downgrade to an `lstat`/open
+best-effort
 check. Binaries are never reachable through `ParticipantAssets`, and no trusted
 asset pathname API is exposed.
