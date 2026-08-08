@@ -180,7 +180,9 @@ phoxal_api_tree! {
             struct LookupRequest {
                 target_frame_id: String,
                 source_frame_id: String,
-                /// The instant to resolve at. Absent asks for the latest.
+                /// The instant to resolve at. The frame service returns the
+                /// latest dynamic sample at or before this instant and never a
+                /// future sample. Absent asks for the greatest retained time.
                 at: Option<::phoxal_bus::RobotInstant>,
             }
 

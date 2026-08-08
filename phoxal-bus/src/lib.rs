@@ -86,7 +86,7 @@ pub use runtime_metrics::{
 pub use server::{IncomingQuery, ServerQueryable};
 pub use session::{Bus, BusConfig, BusHealth};
 pub use time::{
-    CaptureStamp, LocalInstant, RetiredTimelines, RobotInstant, TimeWindow, Timed,
+    CaptureStamp, LocalInstant, RetiredTimelines, RobotInstant, RobotTimeError, TimeWindow, Timed,
     TimelineMismatch, WallTimestamp,
 };
 pub use topic::{AskQuery, Publish, ServeQuery, Subscribe, Topic, TopicKind, WildcardPublish};

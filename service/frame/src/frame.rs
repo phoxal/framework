@@ -9,8 +9,9 @@
 //! Each step it publishes the latest combined tree on `frame/tree`, and emits the
 //! static transforms once on `frame/static_transforms`.
 //! The `frame/lookup` handler composes the transform between any two known frames through their
-//! lowest common ancestor; it returns no transform for unknown frames or for
-//! timestamps outside a dynamic frame's buffered window.
+//! lowest common ancestor; a timestamped lookup resolves the latest dynamic
+//! samples at or before the requested instant and returns no transform for
+//! unknown frames or timestamps outside a dynamic frame's buffered window.
 //! Floating, planar, and spherical joints are not supported and fail setup.
 
 use anyhow::Result;
@@ -222,12 +223,12 @@ impl FrameState {
             self.compose_from_ancestor(ancestor, source, request.at)?;
 
         // The composed transform is only as fresh as its stalest edge; both edges
-        // came from the same timeline (`nearest` rejects any other), so comparing
+        // came from the same timeline (`at_or_before` rejects any other), so comparing
         // ticks is well-defined here.
         let stamp = target_stamp
             .into_iter()
             .chain(source_stamp)
-            .max_by_key(|instant| instant.ticks());
+            .min_by_key(|instant| instant.ticks());
         Some(transform::transform_from_isometry(
             target,
             source,
@@ -319,13 +320,13 @@ impl FrameState {
         let mut transform = Isometry3::identity();
         for (edge_stamp, edge) in child_to_parent_edges.into_iter().rev() {
             // The composed transform is only as fresh as its stalest edge, so the
-            // latest edge instant is the honest stamp. Edges on different
-            // timelines cannot be composed at all, so `max_by_key` on ticks is
-            // safe: `nearest` already rejected any foreign-timeline edge.
+            // oldest edge instant is the honest stamp. Edges on different
+            // timelines cannot be composed at all, so `min_by_key` on ticks is
+            // safe: `at_or_before` already rejected any foreign-timeline edge.
             stamp = stamp
                 .into_iter()
                 .chain(edge_stamp)
-                .max_by_key(|instant| instant.ticks());
+                .min_by_key(|instant| instant.ticks());
             transform *= edge;
         }
         Some((stamp, transform))
@@ -343,7 +344,7 @@ impl FrameState {
         }
         let buffer = self.buffers.get(child_frame_id)?;
         let (stamp, transform) = match at {
-            Some(at) => buffer.nearest(at)?,
+            Some(at) => buffer.at_or_before(at)?,
             None => buffer.latest()?,
         };
         Some((Some(stamp), transform))
@@ -442,10 +443,12 @@ mod tests {
             .expect("wheel metadata");
         let mut buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
         for (ticks, position_rad) in samples {
-            buffer.push(
-                at(*ticks),
-                meta.transform(&joint_state(*position_rad))
-                    .expect("joint transform"),
+            assert!(
+                buffer.push(
+                    at(*ticks),
+                    meta.transform(&joint_state(*position_rad))
+                        .expect("joint transform"),
+                )
             );
         }
         buffer
@@ -486,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_joint_lookup_uses_nearest_sample() {
+    fn dynamic_joint_lookup_uses_latest_sample_at_or_before_request() {
         let config = single_dynamic_config();
         let state = wheel_state(&config, &[(100, FRAC_PI_4), (200, FRAC_PI_2)]);
 
@@ -494,8 +497,81 @@ mod tests {
             .lookup(&request("wheel_link", Some(at(175))))
             .expect("dynamic lookup should resolve");
 
+        assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_4);
+        assert_eq!(transform.stamp, Some(at(100)));
+    }
+
+    #[test]
+    fn out_of_order_dynamic_samples_do_not_change_the_greatest_time_latest() {
+        let config = single_dynamic_config();
+        let state = wheel_state(&config, &[(200, FRAC_PI_2), (100, FRAC_PI_4)]);
+
+        let transform = state
+            .lookup(&request("wheel_link", None))
+            .expect("latest lookup should resolve");
+
         assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
         assert_eq!(transform.stamp, Some(at(200)));
+    }
+
+    #[test]
+    fn composed_lookup_stamp_is_the_stalest_dynamic_edge() {
+        let base = LinkId::new("base_link");
+        let middle = LinkId::new("middle_link");
+        let tip = LinkId::new("tool_link");
+        let middle_meta = JointMeta {
+            joint_id: phoxal::model::identity::JointId::new("middle_joint"),
+            kind: JointKind::Continuous,
+            origin: Isometry3::identity(),
+            axis_xyz: [0.0, 0.0, 1.0],
+        };
+        let tip_meta = JointMeta {
+            joint_id: phoxal::model::identity::JointId::new("tool_joint"),
+            kind: JointKind::Continuous,
+            origin: Isometry3::identity(),
+            axis_xyz: [0.0, 0.0, 1.0],
+        };
+
+        let mut middle_buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
+        assert!(
+            middle_buffer.push(
+                at(100),
+                middle_meta
+                    .transform(&joint_state(0.0))
+                    .expect("middle joint transform"),
+            )
+        );
+        let mut tip_buffer = RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES);
+        assert!(
+            tip_buffer.push(
+                at(200),
+                tip_meta
+                    .transform(&joint_state(0.0))
+                    .expect("tip joint transform"),
+            )
+        );
+
+        let state = FrameState {
+            static_transforms: BTreeMap::new(),
+            parent_by_child: BTreeMap::from([
+                (middle.clone(), (base, middle_meta)),
+                (tip.clone(), (middle, tip_meta)),
+            ]),
+            buffers: BTreeMap::from([
+                (LinkId::new("middle_link"), middle_buffer),
+                (tip, tip_buffer),
+            ]),
+            published_static: false,
+        };
+
+        let transform = state
+            .lookup(&request("tool_link", Some(at(200))))
+            .expect("a dynamic chain lookup should resolve");
+        assert_eq!(
+            transform.stamp,
+            Some(at(100)),
+            "a composed transform is only as fresh as its oldest dynamic edge"
+        );
     }
 
     #[test]

@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use phoxal_runtime_contract::identity::ProducerId;
 
-use crate::time::{LocalInstant, RobotInstant, TimelineMismatch};
+use crate::time::{LocalInstant, RobotInstant, RobotTimeError};
 
 /// Why a command was not accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -376,7 +376,7 @@ impl<B> Lease<B> {
                 self.held = None;
                 None
             }
-            Err(TimelineMismatch { .. }) => {
+            Err(RobotTimeError::TimelineMismatch(_)) => {
                 tracing::info!(
                     target: LEASE_TRACE_TARGET,
                     input,
@@ -386,6 +386,20 @@ impl<B> Lease<B> {
                     step = %step,
                     decision = "timeline_replaced",
                     "the world was replaced under the held command, so it was dropped"
+                );
+                self.held = None;
+                None
+            }
+            Err(RobotTimeError::Reversed { .. }) => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input,
+                    producer = %producer,
+                    sequence,
+                    observation,
+                    step = %step,
+                    decision = "time_reversed",
+                    "the logical clock moved backwards under the held command, so it was dropped"
                 );
                 self.held = None;
                 None
@@ -609,5 +623,20 @@ mod tests {
         lease.offer(producer, 1, start, "go");
         assert_eq!(lease.live(start, step(first_line, 0)), Some(&"go"));
         assert_eq!(lease.live(start, step(second_line, 0)), None);
+    }
+
+    #[test]
+    fn a_decreasing_step_on_one_timeline_drops_the_held_command() {
+        let producer = producer(13);
+        let line = TimelineId::mint();
+        let start = LocalInstant::from_boot_ns(0);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
+        lease.offer(producer, 1, start, "go");
+
+        assert_eq!(lease.live(start, step(line, 100)), Some(&"go"));
+        // A same-timeline regression is not a fresh zero-age sample. It is a
+        // broken logical clock, so the receiver drops the command fail-closed.
+        assert_eq!(lease.live(start, step(line, 99)), None);
+        assert_eq!(lease.live(start, step(line, 101)), None);
     }
 }

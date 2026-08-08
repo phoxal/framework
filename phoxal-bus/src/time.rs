@@ -152,6 +152,32 @@ pub struct RobotInstant {
     ticks: u64,
 }
 
+/// A checked robot-time operation failed because its operands either belong
+/// to different timelines or appear in the wrong direction.
+///
+/// Timeline identities are equality-only, so a mismatch remains distinct from
+/// an ordering error. Callers that need to fail closed on a replaced world can
+/// therefore handle [`RobotTimeError::TimelineMismatch`] without confusing it
+/// with a producer that supplied a future or reversed instant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RobotTimeError {
+    /// The operands belong to different world histories and cannot be ordered.
+    #[error(transparent)]
+    TimelineMismatch(#[from] TimelineMismatch),
+    /// The receiver instant precedes its reference instant, so the requested
+    /// subtraction or window bounds run in the wrong direction. The field
+    /// names are deliberately neutral: for `duration_since`, `receiver` is
+    /// `self` and `reference` is the argument; for a window they are the first
+    /// and second supplied bounds.
+    #[error("robot time is reversed: receiver {receiver} precedes reference {reference}")]
+    Reversed {
+        /// The instant on the receiving/first-operand side of the operation.
+        receiver: RobotInstant,
+        /// The instant on the reference/second-operand side of the operation.
+        reference: RobotInstant,
+    },
+}
+
 impl RobotInstant {
     /// Build an instant on `timeline`.
     ///
@@ -188,14 +214,18 @@ impl RobotInstant {
 
     /// How long after `earlier` this instant is, on the same timeline.
     ///
-    /// Saturates at zero when `earlier` is later, so a caller never sees a
-    /// wrapped duration; use [`checked_cmp`](Self::checked_cmp) when the
-    /// direction itself matters.
-    pub fn duration_since(self, earlier: RobotInstant) -> Result<Duration, TimelineMismatch> {
+    /// A future `earlier` instant is a producer/order error, not a zero-length
+    /// age. The error remains distinct from [`TimelineMismatch`], which means
+    /// the operands came from incomparable world histories.
+    pub fn duration_since(self, earlier: RobotInstant) -> Result<Duration, RobotTimeError> {
         self.same_timeline(earlier)?;
-        Ok(Duration::from_nanos(
-            self.ticks.saturating_sub(earlier.ticks),
-        ))
+        if self.ticks < earlier.ticks {
+            return Err(RobotTimeError::Reversed {
+                receiver: self,
+                reference: earlier,
+            });
+        }
+        Ok(Duration::from_nanos(self.ticks - earlier.ticks))
     }
 
     /// This instant advanced by `delta`, saturating at the end of the timeline.
@@ -234,7 +264,7 @@ impl fmt::Display for RobotInstant {
 /// clock is honestly wider. Consumers never hand-pick a bound - they ask the
 /// named predicates below, each of which answers conservatively for the
 /// question it is named after.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct TimeWindow {
     timeline: TimelineId,
     earliest_ticks: u64,
@@ -253,15 +283,21 @@ impl TimeWindow {
 
     /// A window spanning `[earliest, latest]`.
     ///
-    /// The bounds must share a timeline; a reversed pair is normalized rather
-    /// than rejected, because an estimator that produced one has a bug the
-    /// consumer cannot fix and a wider honest window is the safe reading.
-    pub fn bounded(earliest: RobotInstant, latest: RobotInstant) -> Result<Self, TimelineMismatch> {
+    /// The bounds must share a timeline and be ordered as named. A reversed
+    /// pair is rejected: widening a producer bug into an apparently honest
+    /// window would hide invalid temporal provenance from every consumer.
+    pub fn bounded(earliest: RobotInstant, latest: RobotInstant) -> Result<Self, RobotTimeError> {
         earliest.same_timeline(latest)?;
+        if earliest.ticks() > latest.ticks() {
+            return Err(RobotTimeError::Reversed {
+                receiver: earliest,
+                reference: latest,
+            });
+        }
         Ok(TimeWindow {
             timeline: earliest.timeline(),
-            earliest_ticks: earliest.ticks().min(latest.ticks()),
-            latest_ticks: earliest.ticks().max(latest.ticks()),
+            earliest_ticks: earliest.ticks(),
+            latest_ticks: latest.ticks(),
         })
     }
 
@@ -312,7 +348,10 @@ impl TimeWindow {
         self,
         reference: RobotInstant,
         bound: Duration,
-    ) -> Result<bool, TimelineMismatch> {
+    ) -> Result<bool, RobotTimeError> {
+        if reference.checked_cmp(self.latest())? == std::cmp::Ordering::Less {
+            return Ok(false);
+        }
         Ok(reference.duration_since(self.latest())? > bound)
     }
 
@@ -330,11 +369,32 @@ impl TimeWindow {
         self,
         reference: RobotInstant,
         bound: Duration,
-    ) -> Result<bool, TimelineMismatch> {
+    ) -> Result<bool, RobotTimeError> {
         if self.latest().checked_cmp(reference)? == std::cmp::Ordering::Greater {
             return Ok(false);
         }
         Ok(reference.duration_since(self.latest())? <= bound)
+    }
+}
+
+impl<'de> Deserialize<'de> for TimeWindow {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawTimeWindow {
+            timeline: TimelineId,
+            earliest_ticks: u64,
+            latest_ticks: u64,
+        }
+
+        let raw = RawTimeWindow::deserialize(deserializer)?;
+        TimeWindow::bounded(
+            RobotInstant::new(raw.timeline, raw.earliest_ticks),
+            RobotInstant::new(raw.timeline, raw.latest_ticks),
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
@@ -575,16 +635,34 @@ mod tests {
                 right: timeline(11)
             })
         );
-        assert!(left.duration_since(right).is_err());
-        assert!(right.duration_since(left).is_err());
+        assert_eq!(
+            left.duration_since(right),
+            Err(RobotTimeError::TimelineMismatch(TimelineMismatch {
+                left: timeline(11),
+                right: timeline(12),
+            }))
+        );
+        assert_eq!(
+            right.duration_since(left),
+            Err(RobotTimeError::TimelineMismatch(TimelineMismatch {
+                left: timeline(12),
+                right: timeline(11),
+            }))
+        );
     }
 
     #[test]
-    fn same_timeline_age_is_exact_and_saturates_on_a_future_reference() {
+    fn same_timeline_age_is_exact_and_rejects_a_future_reference() {
         let earlier = instant(7, 100);
         let later = instant(7, 350);
         assert_eq!(later.duration_since(earlier), Ok(Duration::from_nanos(250)));
-        assert_eq!(earlier.duration_since(later), Ok(Duration::ZERO));
+        assert_eq!(
+            earlier.duration_since(later),
+            Err(RobotTimeError::Reversed {
+                receiver: earlier,
+                reference: later,
+            })
+        );
         assert_eq!(later.checked_cmp(earlier), Ok(std::cmp::Ordering::Greater));
     }
 
@@ -602,11 +680,46 @@ mod tests {
     }
 
     #[test]
-    fn bounded_normalizes_reversed_bounds_and_rejects_mixed_timelines() {
-        let reversed = TimeWindow::bounded(instant(3, 600), instant(3, 400)).unwrap();
-        assert_eq!(reversed.earliest(), instant(3, 400));
-        assert_eq!(reversed.latest(), instant(3, 600));
-        assert!(TimeWindow::bounded(instant(3, 400), instant(4, 600)).is_err());
+    fn bounded_rejects_reversed_bounds_and_mixed_timelines_distinctly() {
+        assert_eq!(
+            TimeWindow::bounded(instant(3, 600), instant(3, 400)),
+            Err(RobotTimeError::Reversed {
+                receiver: instant(3, 600),
+                reference: instant(3, 400),
+            })
+        );
+        assert_eq!(
+            TimeWindow::bounded(instant(3, 400), instant(4, 600)),
+            Err(RobotTimeError::TimelineMismatch(TimelineMismatch {
+                left: timeline(3),
+                right: timeline(4),
+            }))
+        );
+    }
+
+    #[test]
+    fn time_window_deserialization_rejects_reversed_bounds() {
+        let json = serde_json::json!({
+            "timeline": 3,
+            "earliest_ticks": 600,
+            "latest_ticks": 400,
+        });
+        assert!(serde_json::from_value::<TimeWindow>(json).is_err());
+
+        #[derive(Serialize)]
+        struct RawTimeWindow {
+            timeline: TimelineId,
+            earliest_ticks: u64,
+            latest_ticks: u64,
+        }
+
+        let bytes = rmp_serde::to_vec_named(&RawTimeWindow {
+            timeline: timeline(3),
+            earliest_ticks: 600,
+            latest_ticks: 400,
+        })
+        .expect("malformed test fixture should encode");
+        assert!(rmp_serde::from_slice::<TimeWindow>(&bytes).is_err());
     }
 
     #[test]
