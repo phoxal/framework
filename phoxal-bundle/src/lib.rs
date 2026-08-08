@@ -580,6 +580,71 @@ impl fmt::Display for BundlePath {
     }
 }
 
+/// A bundle root pinned to one directory object for the lifetime of a load.
+///
+/// The path is retained only for diagnostics and compatibility with the
+/// public `root()` accessor. All trusted file opens use the descriptor on Unix;
+/// they never re-resolve this path after acquisition.
+#[derive(Clone)]
+struct BundleRoot {
+    path: PathBuf,
+    #[cfg(unix)]
+    fd: Arc<std::os::fd::OwnedFd>,
+}
+
+impl fmt::Debug for BundleRoot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BundleRoot")
+            .field("path", &self.path)
+            .finish()
+    }
+}
+
+impl BundleRoot {
+    fn open(requested: &Path) -> Result<Self, BundleError> {
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::fd::FromRawFd;
+
+            let requested_c =
+                CString::new(requested.as_os_str().as_encoded_bytes()).map_err(|_| {
+                    BundleError::UnsupportedEntry {
+                        path: requested.to_path_buf(),
+                    }
+                })?;
+            let fd = unsafe {
+                // SAFETY: the CString is NUL-free. O_NOFOLLOW applies to the
+                // requested root itself, and O_DIRECTORY prevents pinning a
+                // non-directory object.
+                libc::open(
+                    requested_c.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(root_open_error(requested));
+            }
+            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+            Ok(Self {
+                path: requested.to_path_buf(),
+                fd: Arc::new(fd),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Err(BundleError::UnsupportedSecureOpen {
+                path: requested.to_path_buf(),
+            })
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl Serialize for BundlePath {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
@@ -855,12 +920,12 @@ pub enum BundleError {
 /// Participant-readable, digest-checked asset access.
 #[derive(Clone, Debug)]
 pub struct ParticipantAssets {
-    root: PathBuf,
+    root: BundleRoot,
     entries: BTreeMap<AssetId, AssetRecord>,
 }
 
 impl ParticipantAssets {
-    fn new(root: PathBuf, index: &AssetIndex) -> Self {
+    fn new(root: BundleRoot, index: &AssetIndex) -> Self {
         Self {
             root,
             entries: index
@@ -883,7 +948,7 @@ impl ParticipantAssets {
             .entries
             .get(id)
             .ok_or_else(|| BundleError::UndeclaredAsset { id: id.clone() })?;
-        let path = entry.path.filesystem_path(&self.root);
+        let path = entry.path.filesystem_path(self.root.path());
         let mut file = open_bundle_file(&self.root, &entry.path)?;
         let bytes = read_and_verify(&mut file, &path, entry.digest, Some(entry.size_bytes))?;
         Ok(bytes)
@@ -897,7 +962,7 @@ impl ParticipantAssets {
             .entries
             .get(id)
             .ok_or_else(|| BundleError::UndeclaredAsset { id: id.clone() })?;
-        let path = entry.path.filesystem_path(&self.root);
+        let path = entry.path.filesystem_path(self.root.path());
         let mut verification = open_bundle_file(&self.root, &entry.path)?;
         let mut reader = verification
             .try_clone()
@@ -924,7 +989,7 @@ pub struct ParticipantRuntimeInputs {
 /// A loaded, integrity-checked runtime bundle.
 #[derive(Clone, Debug)]
 pub struct RuntimeBundle {
-    root: PathBuf,
+    root: BundleRoot,
     document: RuntimeDocument,
     assets: ParticipantAssets,
 }
@@ -933,23 +998,8 @@ impl RuntimeBundle {
     /// Open and validate one installed bundle.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, BundleError> {
         let requested = root.as_ref();
-        if let Ok(metadata) = std::fs::symlink_metadata(requested)
-            && metadata.file_type().is_symlink()
-        {
-            return Err(BundleError::ForbiddenSymlink {
-                path: requested.to_path_buf(),
-            });
-        }
-        let root = requested
-            .canonicalize()
-            .map_err(|source| BundleError::Root {
-                path: requested.to_path_buf(),
-                source,
-            })?;
-        if !root.is_dir() {
-            return Err(BundleError::NotDirectory(root));
-        }
-        let runtime_path = root.join(RUNTIME_FILE);
+        let root = BundleRoot::open(requested)?;
+        let runtime_path = root.path().join(RUNTIME_FILE);
         let mut runtime_file = open_bundle_file(&root, &BundlePath::new(RUNTIME_FILE)?).map_err(
             |error| match error {
                 BundleError::ReadFile { path, source } => {
@@ -979,10 +1029,13 @@ impl RuntimeBundle {
         })
     }
 
-    /// The canonical installed root.
+    /// The requested installed root path, retained for diagnostics.
+    ///
+    /// Runtime access is pinned to the directory descriptor acquired during
+    /// [`Self::open`]; callers must not use this path as a trust boundary.
     #[must_use]
     pub fn root(&self) -> &Path {
-        &self.root
+        self.root.path()
     }
 
     /// The validated persisted document.
@@ -1050,6 +1103,19 @@ impl BundleWriter {
         assets: &BTreeMap<AssetId, Vec<u8>>,
         binaries: &BTreeMap<BundlePath, Vec<u8>>,
     ) -> Result<RuntimeBundle, BundleError> {
+        Self::write_inner(root, document, assets, binaries, publish_staging_root)
+    }
+
+    fn write_inner<F>(
+        root: impl AsRef<Path>,
+        document: &RuntimeDocument,
+        assets: &BTreeMap<AssetId, Vec<u8>>,
+        binaries: &BTreeMap<BundlePath, Vec<u8>>,
+        publish: F,
+    ) -> Result<RuntimeBundle, BundleError>
+    where
+        F: FnOnce(&Path, &Path) -> Result<(), BundleError>,
+    {
         document.validate()?;
         let expected_assets = &document.runtime().assets;
         let supplied_assets = AssetIndex::from_bytes(assets)?;
@@ -1104,7 +1170,7 @@ impl BundleWriter {
             let _ = std::fs::remove_dir_all(&root);
             return Err(error);
         }
-        if let Err(error) = publish_staging_root(&root, &publish_target) {
+        if let Err(error) = publish(&root, &publish_target) {
             let _ = std::fs::remove_dir_all(&root);
             return Err(error);
         }
@@ -1284,6 +1350,12 @@ fn ensure_staging_ancestors(root: &Path, path: &Path) -> Result<(), BundleError>
     ensure_staging_directory(root, parent)
 }
 
+/// Publish the staged directory after the caller's advisory target check.
+///
+/// Another writer may create the target after `reject_existing_target` returns,
+/// so this remains the security boundary and must use a kernel no-replace
+/// primitive. It must never be changed to `std::fs::rename`, which replaces an
+/// existing directory on POSIX and reintroduces the publication race.
 fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
     let target_path = target.to_path_buf();
     let staged = std::ffi::CString::new(staged.as_os_str().as_encoded_bytes()).map_err(|_| {
@@ -1356,33 +1428,35 @@ fn map_no_replace_result(result: libc::c_long, target: PathBuf) -> Result<(), Bu
     }
 }
 
-fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BundleEntryKind {
+    Directory,
+    File,
+    Symlink,
+    Unsupported,
+}
+
+#[cfg(unix)]
+fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleError> {
+    use std::os::fd::AsRawFd;
+
+    let root_path = root.path();
+    let root_fd = duplicate_directory(root.fd.as_raw_fd(), root_path)?;
     let allowed = [RUNTIME_FILE, ASSETS_DIR, BIN_DIR];
-    for entry in std::fs::read_dir(root).map_err(|source| BundleError::ReadFile {
-        path: root.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| BundleError::ReadFile {
-            path: root.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        let metadata =
-            std::fs::symlink_metadata(&path).map_err(|source| BundleError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
-        if metadata.file_type().is_symlink() {
+    for name in list_directory(root_fd.as_raw_fd(), root_path)? {
+        let path = root_path.join(&name);
+        let kind = entry_kind(root_fd.as_raw_fd(), &name, &path)?;
+        if kind == BundleEntryKind::Symlink {
             return Err(BundleError::ForbiddenSymlink { path });
         }
-        let name = entry.file_name();
         let name = name
             .to_str()
             .ok_or_else(|| BundleError::UnsupportedEntry { path: path.clone() })?;
         if !allowed.contains(&name) {
             return Err(BundleError::UnexpectedFile { path });
         }
-        if name != RUNTIME_FILE && !metadata.is_dir() {
+        if name != RUNTIME_FILE && kind != BundleEntryKind::Directory {
             return Err(BundleError::UnsupportedEntry { path });
         }
     }
@@ -1396,12 +1470,12 @@ fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
     let mut actual_asset_directories = BTreeSet::new();
     collect_files(
         root,
-        &root.join(ASSETS_DIR),
+        ASSETS_DIR,
         &mut actual_assets,
         &mut actual_asset_directories,
     )?;
     reject_unindexed_directories(
-        root,
+        root_path,
         &actual_asset_directories,
         &expected_assets.keys().cloned().collect::<BTreeSet<_>>(),
     )?;
@@ -1411,7 +1485,7 @@ fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
             .next()
         {
             return Err(BundleError::UnexpectedFile {
-                path: root.join(path.as_str()),
+                path: root_path.join(path.as_str()),
             });
         }
         if let Some(path) = expected_assets
@@ -1422,7 +1496,7 @@ fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
             .next()
         {
             return Err(BundleError::MissingFile {
-                path: root.join(path.as_str()),
+                path: root_path.join(path.as_str()),
             });
         }
     }
@@ -1436,20 +1510,20 @@ fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
     let mut actual_binary_directories = BTreeSet::new();
     collect_files(
         root,
-        &root.join(BIN_DIR),
+        BIN_DIR,
         &mut actual_binaries,
         &mut actual_binary_directories,
     )?;
-    reject_unindexed_directories(root, &actual_binary_directories, &expected_binaries)?;
+    reject_unindexed_directories(root_path, &actual_binary_directories, &expected_binaries)?;
     if actual_binaries != expected_binaries {
         if let Some(path) = actual_binaries.difference(&expected_binaries).next() {
             return Err(BundleError::UnexpectedFile {
-                path: root.join(path.as_str()),
+                path: root_path.join(path.as_str()),
             });
         }
         if let Some(path) = expected_binaries.difference(&actual_binaries).next() {
             return Err(BundleError::MissingFile {
-                path: root.join(path.as_str()),
+                path: root_path.join(path.as_str()),
             });
         }
     }
@@ -1459,89 +1533,276 @@ fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
     Ok(())
 }
 
+#[cfg(not(unix))]
+fn validate_layout(root: &BundleRoot, _runtime: &Runtime) -> Result<(), BundleError> {
+    Err(BundleError::UnsupportedSecureOpen {
+        path: root.path().to_path_buf(),
+    })
+}
+
+#[cfg(unix)]
 fn collect_files(
-    root: &Path,
-    directory: &Path,
+    root: &BundleRoot,
+    relative_directory: &str,
     paths: &mut BTreeSet<BundlePath>,
     directories: &mut BTreeSet<BundlePath>,
 ) -> Result<(), BundleError> {
-    let directory_metadata = match std::fs::symlink_metadata(directory) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(source) => {
-            return Err(BundleError::ReadFile {
-                path: directory.to_path_buf(),
-                source,
-            });
-        }
+    use std::os::fd::AsRawFd;
+
+    let directory_path = root.path().join(relative_directory);
+    let Some(directory_fd) = open_relative_directory(root, relative_directory, &directory_path)?
+    else {
+        return Ok(());
     };
-    if directory_metadata.file_type().is_symlink() {
-        return Err(BundleError::ForbiddenSymlink {
-            path: directory.to_path_buf(),
-        });
-    }
-    if !directory_metadata.is_dir() {
-        return Err(BundleError::UnsupportedEntry {
-            path: directory.to_path_buf(),
-        });
-    }
-    let relative_directory =
-        directory
-            .strip_prefix(root)
-            .map_err(|_| BundleError::UnsupportedEntry {
-                path: directory.to_path_buf(),
-            })?;
-    if !relative_directory.as_os_str().is_empty() {
-        let relative = relative_directory
-            .to_str()
-            .ok_or_else(|| BundleError::UnsupportedEntry {
-                path: directory.to_path_buf(),
-            })?
-            .replace(std::path::MAIN_SEPARATOR, "/");
-        directories.insert(BundlePath::new(relative)?);
-    }
-    for entry in std::fs::read_dir(directory).map_err(|source| BundleError::ReadFile {
-        path: directory.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| BundleError::ReadFile {
-            path: directory.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        let metadata =
-            std::fs::symlink_metadata(&path).map_err(|source| BundleError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
-        if metadata.file_type().is_symlink() {
-            return Err(BundleError::ForbiddenSymlink { path });
-        }
-        if metadata.is_dir() {
-            collect_files(root, &path, paths, directories)?;
-        } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| BundleError::UnsupportedEntry { path: path.clone() })?;
-            let mut valid = true;
-            for component in relative.components() {
-                if !matches!(component, Component::Normal(_)) {
-                    valid = false;
-                }
+    collect_files_at(
+        directory_fd.as_raw_fd(),
+        &directory_path,
+        relative_directory,
+        paths,
+        directories,
+    )
+}
+
+#[cfg(unix)]
+fn collect_files_at(
+    directory_fd: libc::c_int,
+    directory_path: &Path,
+    relative_directory: &str,
+    paths: &mut BTreeSet<BundlePath>,
+    directories: &mut BTreeSet<BundlePath>,
+) -> Result<(), BundleError> {
+    use std::os::fd::AsRawFd;
+
+    for name in list_directory(directory_fd, directory_path)? {
+        let path = directory_path.join(&name);
+        let relative = relative_path(relative_directory, &name, &path)?;
+        match entry_kind(directory_fd, &name, &path)? {
+            BundleEntryKind::Symlink => return Err(BundleError::ForbiddenSymlink { path }),
+            BundleEntryKind::Directory => {
+                directories.insert(BundlePath::new(relative.clone())?);
+                let child = open_directory_child(directory_fd, &name, &path)?;
+                collect_files_at(child.as_raw_fd(), &path, &relative, paths, directories)?;
             }
-            if !valid {
-                return Err(BundleError::UnsupportedEntry { path });
+            BundleEntryKind::File => {
+                paths.insert(BundlePath::new(relative)?);
             }
-            let relative = relative
-                .to_str()
-                .ok_or_else(|| BundleError::UnsupportedEntry { path: path.clone() })?
-                .replace(std::path::MAIN_SEPARATOR, "/");
-            paths.insert(BundlePath::new(relative)?);
-        } else {
-            return Err(BundleError::UnsupportedEntry { path });
+            BundleEntryKind::Unsupported => return Err(BundleError::UnsupportedEntry { path }),
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn relative_path(parent: &str, name: &std::ffi::OsStr, path: &Path) -> Result<String, BundleError> {
+    let name = name.to_str().ok_or_else(|| BundleError::UnsupportedEntry {
+        path: path.to_path_buf(),
+    })?;
+    Ok(if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    })
+}
+
+#[cfg(unix)]
+fn duplicate_directory(fd: libc::c_int, path: &Path) -> Result<std::os::fd::OwnedFd, BundleError> {
+    use std::os::fd::FromRawFd;
+
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return Err(BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) })
+}
+
+#[cfg(unix)]
+fn open_relative_directory(
+    root: &BundleRoot,
+    relative: &str,
+    path: &Path,
+) -> Result<Option<std::os::fd::OwnedFd>, BundleError> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    let mut parent = duplicate_directory(root.fd.as_raw_fd(), root.path())?;
+    for component in relative.split('/') {
+        let component = CString::new(component).map_err(|_| BundleError::UnsupportedEntry {
+            path: path.to_path_buf(),
+        })?;
+        let child = unsafe {
+            // SAFETY: parent is an owned directory descriptor and component
+            // is one NUL-free relative name. O_NOFOLLOW prevents a directory
+            // substitution from redirecting the walk.
+            libc::openat(
+                parent.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if child < 0 {
+            let source = std::io::Error::last_os_error();
+            if source.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            if source.raw_os_error() == Some(libc::ELOOP) {
+                return Err(BundleError::ForbiddenSymlink {
+                    path: path.to_path_buf(),
+                });
+            }
+            return Err(BundleError::ReadFile {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+        parent = unsafe { OwnedFd::from_raw_fd(child) };
+    }
+    Ok(Some(parent))
+}
+
+#[cfg(unix)]
+fn open_directory_child(
+    parent: libc::c_int,
+    name: &std::ffi::OsStr,
+    path: &Path,
+) -> Result<std::os::fd::OwnedFd, BundleError> {
+    use std::ffi::CString;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = CString::new(name.as_bytes()).map_err(|_| BundleError::UnsupportedEntry {
+        path: path.to_path_buf(),
+    })?;
+    let child = unsafe {
+        // SAFETY: parent is a directory descriptor and name is a NUL-free
+        // single component. O_NOFOLLOW prevents a substituted child directory.
+        libc::openat(
+            parent,
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if child < 0 {
+        let source = std::io::Error::last_os_error();
+        if source.raw_os_error() == Some(libc::ELOOP) {
+            return Err(BundleError::ForbiddenSymlink {
+                path: path.to_path_buf(),
+            });
+        }
+        return Err(BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(child) })
+}
+
+#[cfg(unix)]
+fn entry_kind(
+    parent: libc::c_int,
+    name: &std::ffi::OsStr,
+    path: &Path,
+) -> Result<BundleEntryKind, BundleError> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = CString::new(name.as_bytes()).map_err(|_| BundleError::UnsupportedEntry {
+        path: path.to_path_buf(),
+    })?;
+    let mut metadata = MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        // SAFETY: metadata points to writable storage and name is a NUL-free
+        // relative entry. AT_SYMLINK_NOFOLLOW classifies the entry itself.
+        libc::fstatat(
+            parent,
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result < 0 {
+        return Err(BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let metadata = unsafe { metadata.assume_init() };
+    let mode = metadata.st_mode & libc::S_IFMT;
+    if mode == libc::S_IFLNK {
+        Ok(BundleEntryKind::Symlink)
+    } else if mode == libc::S_IFDIR {
+        Ok(BundleEntryKind::Directory)
+    } else if mode == libc::S_IFREG {
+        Ok(BundleEntryKind::File)
+    } else {
+        Ok(BundleEntryKind::Unsupported)
+    }
+}
+
+#[cfg(unix)]
+fn list_directory(fd: libc::c_int, path: &Path) -> Result<Vec<std::ffi::OsString>, BundleError> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStringExt;
+
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return Err(BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    let directory = unsafe { libc::fdopendir(duplicate) };
+    if directory.is_null() {
+        let source = std::io::Error::last_os_error();
+        unsafe { libc::close(duplicate) };
+        return Err(BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+
+    let mut names = Vec::new();
+    loop {
+        reset_errno();
+        let entry = unsafe { libc::readdir(directory) };
+        if entry.is_null() {
+            let source = std::io::Error::last_os_error();
+            if source.raw_os_error().is_some_and(|error| error != 0) {
+                unsafe { libc::closedir(directory) };
+                return Err(BundleError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if name.to_bytes() != b"." && name.to_bytes() != b".." {
+            names.push(std::ffi::OsString::from_vec(name.to_bytes().to_vec()));
+        }
+    }
+    if unsafe { libc::closedir(directory) } != 0 {
+        return Err(BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    Ok(names)
+}
+
+#[cfg(unix)]
+fn reset_errno() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        *libc::__errno_location() = 0;
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        *libc::__error() = 0;
+    }
 }
 
 fn reject_unindexed_directories(
@@ -1565,21 +1826,21 @@ fn reject_unindexed_directories(
     Ok(())
 }
 
-fn verify_binary(root: &Path, binary: &BinaryReference) -> Result<(), BundleError> {
+fn verify_binary(root: &BundleRoot, binary: &BinaryReference) -> Result<(), BundleError> {
     verify_digest_and_size(root, &binary.path, binary.digest, None)
 }
 
-fn verify_file(root: &Path, entry: &AssetRecord) -> Result<(), BundleError> {
+fn verify_file(root: &BundleRoot, entry: &AssetRecord) -> Result<(), BundleError> {
     verify_digest_and_size(root, &entry.path, entry.digest, Some(entry.size_bytes))
 }
 
 fn verify_digest_and_size(
-    root: &Path,
+    root: &BundleRoot,
     bundle_path: &BundlePath,
     expected: Sha256Digest,
     expected_size: Option<u64>,
 ) -> Result<(), BundleError> {
-    let path = bundle_path.filesystem_path(root);
+    let path = bundle_path.filesystem_path(root.path());
     let file = open_bundle_file(root, bundle_path)?;
     let mut reader = file.try_clone().map_err(|source| BundleError::ReadFile {
         path: path.clone(),
@@ -1631,28 +1892,19 @@ fn read_and_verify(
     Ok(bytes)
 }
 
-fn open_bundle_file(root: &Path, path: &BundlePath) -> Result<std::fs::File, BundleError> {
-    let filesystem_path = path.filesystem_path(root);
+fn open_bundle_file(root: &BundleRoot, path: &BundlePath) -> Result<std::fs::File, BundleError> {
+    let filesystem_path = path.filesystem_path(root.path());
     #[cfg(unix)]
     {
         use std::ffi::CString;
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-        let root_c = CString::new(root.as_os_str().as_encoded_bytes()).map_err(|_| {
-            BundleError::UnsupportedEntry {
-                path: filesystem_path.clone(),
-            }
-        })?;
-        let root_fd = unsafe {
-            // SAFETY: the CString is NUL-free and points at the requested
-            // directory. O_NOFOLLOW prevents a substituted root symlink.
-            libc::open(
-                root_c.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
+        let root_fd = unsafe { libc::dup(root.fd.as_raw_fd()) };
         if root_fd < 0 {
-            return Err(io_error_for_path(&filesystem_path));
+            return Err(BundleError::ReadFile {
+                path: filesystem_path,
+                source: std::io::Error::last_os_error(),
+            });
         }
         let mut parent = unsafe { OwnedFd::from_raw_fd(root_fd) };
         let components = path.0.split('/').collect::<Vec<_>>();
@@ -1686,6 +1938,23 @@ fn open_bundle_file(root: &Path, path: &BundlePath) -> Result<std::fs::File, Bun
         Err(BundleError::UnsupportedSecureOpen {
             path: filesystem_path,
         })
+    }
+}
+
+#[cfg(unix)]
+fn root_open_error(path: &Path) -> BundleError {
+    let source = std::io::Error::last_os_error();
+    if source.raw_os_error() == Some(libc::ENOTDIR) {
+        BundleError::NotDirectory(path.to_path_buf())
+    } else if source.raw_os_error() == Some(libc::ELOOP) {
+        BundleError::ForbiddenSymlink {
+            path: path.to_path_buf(),
+        }
+    } else {
+        BundleError::Root {
+            path: path.to_path_buf(),
+            source,
+        }
     }
 }
 
@@ -2145,6 +2414,77 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pinned_root_cannot_be_redirected_by_root_symlink_substitution() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
+        let moved = parent.path().join("bundle-original");
+        let outside = parent.path().join("outside");
+        let bundle_path = BundlePath::new("assets/asset").expect("bundle path");
+        std::fs::create_dir_all(root.join(ASSETS_DIR)).expect("bundle assets");
+        std::fs::create_dir_all(outside.join(ASSETS_DIR)).expect("outside assets");
+        std::fs::write(root.join("assets/asset"), b"pinned").expect("pinned asset");
+        std::fs::write(outside.join("assets/asset"), b"redirected").expect("outside asset");
+
+        let pinned = BundleRoot::open(&root).expect("pin bundle root");
+        std::fs::rename(&root, &moved).expect("move original bundle");
+        std::os::unix::fs::symlink(&outside, &root).expect("substitute root symlink");
+
+        let mut file = open_bundle_file(&pinned, &bundle_path).expect("open pinned asset");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read pinned asset");
+        assert_eq!(bytes, b"pinned");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn layout_validation_stays_on_pinned_tree_after_root_substitution() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
+        let moved = parent.path().join("bundle-original");
+        let outside = parent.path().join("outside");
+        let (document, assets, binaries) = document();
+        let loaded =
+            BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        drop(loaded);
+        std::fs::write(root.join(ASSETS_DIR).join("unexpected"), b"extra")
+            .expect("extra original file");
+
+        // Build a pathname replacement containing the expected files but not
+        // the extra file. A pathname-based validator would accept this tree;
+        // the pinned descriptor must continue to observe the original.
+        let RuntimeDocument::V0(runtime) = &document;
+        std::fs::create_dir_all(outside.join(ASSETS_DIR).join("robot")).expect("outside assets");
+        std::fs::create_dir_all(outside.join(BIN_DIR)).expect("outside binaries");
+        std::fs::write(
+            outside.join(RUNTIME_FILE),
+            serde_json::to_vec_pretty(&document).expect("runtime json"),
+        )
+        .expect("outside runtime");
+        for (id, bytes) in &assets {
+            std::fs::write(
+                outside
+                    .join(ASSETS_DIR)
+                    .join(id.as_str().split('/').collect::<PathBuf>()),
+                bytes,
+            )
+            .expect("outside asset");
+        }
+        for (path, bytes) in &binaries {
+            std::fs::write(path.filesystem_path(&outside), bytes).expect("outside binary");
+        }
+
+        let pinned = BundleRoot::open(&root).expect("pin original root");
+        std::fs::rename(&root, &moved).expect("move original root");
+        std::os::unix::fs::symlink(&outside, &root).expect("substitute root symlink");
+
+        assert!(matches!(
+            validate_layout(&pinned, runtime),
+            Err(BundleError::UnexpectedFile { path }) if path.ends_with("assets/unexpected")
+        ));
+    }
+
     #[test]
     fn unindexed_empty_directories_are_rejected() {
         let parent = tempfile::tempdir().expect("bundle parent");
@@ -2187,6 +2527,134 @@ mod tests {
         assert!(!target.join("new").exists(), "target was never replaced");
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn no_replace_publication_closes_the_preflight_race_for_all_target_types() {
+        for target_kind in ["directory", "file", "symlink"] {
+            let parent = tempfile::tempdir().expect("publication parent");
+            let staged = parent.path().join(".bundle.staging");
+            let target = parent.path().join("bundle");
+            std::fs::create_dir(&staged).expect("staging directory");
+            std::fs::write(staged.join("new"), b"new bundle").expect("staged marker");
+
+            // Model the real writer sequence: the advisory preflight observes
+            // an absent target, then a concurrent actor creates it immediately
+            // before the no-replace publish syscall.
+            assert!(matches!(reject_existing_target(&target), Ok(())));
+            match target_kind {
+                "directory" => {
+                    std::fs::create_dir(&target).expect("concurrent directory");
+                    std::fs::write(target.join("sentinel"), b"directory")
+                        .expect("directory sentinel");
+                }
+                "file" => std::fs::write(&target, b"file").expect("concurrent file"),
+                "symlink" => {
+                    let outside = parent.path().join("outside");
+                    std::fs::write(&outside, b"outside").expect("outside target");
+                    std::os::unix::fs::symlink(&outside, &target).expect("concurrent symlink");
+                }
+                _ => unreachable!(),
+            }
+
+            assert!(matches!(
+                publish_staging_root(&staged, &target),
+                Err(BundleError::TargetExists(path)) if path == target
+            ));
+            assert!(
+                staged.exists(),
+                "failed publication retains staging for cleanup"
+            );
+            assert!(!target.join("new").exists(), "target was never replaced");
+            match target_kind {
+                "directory" => assert_eq!(
+                    std::fs::read(target.join("sentinel")).expect("sentinel remains"),
+                    b"directory"
+                ),
+                "file" => assert_eq!(std::fs::read(&target).expect("file remains"), b"file"),
+                "symlink" => assert!(
+                    std::fs::symlink_metadata(&target)
+                        .expect("symlink remains")
+                        .file_type()
+                        .is_symlink()
+                ),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn writer_tail_race_removes_staging_without_touching_new_targets() {
+        for target_kind in ["directory", "file", "symlink"] {
+            let parent = tempfile::tempdir().expect("bundle parent");
+            let root = parent.path().join("bundle");
+            let target = root
+                .parent()
+                .expect("bundle parent path")
+                .canonicalize()
+                .expect("canonical bundle parent")
+                .join("bundle");
+            let (document, assets, binaries) = document();
+            let observed_staging = std::cell::RefCell::new(None);
+
+            let result = BundleWriter::write_inner(
+                &root,
+                &document,
+                &assets,
+                &binaries,
+                |staged, target| {
+                    *observed_staging.borrow_mut() = Some(staged.to_path_buf());
+                    match target_kind {
+                        "directory" => {
+                            std::fs::create_dir(target).expect("concurrent directory");
+                            std::fs::write(target.join("sentinel"), b"directory")
+                                .expect("directory sentinel");
+                        }
+                        "file" => std::fs::write(target, b"file").expect("concurrent file"),
+                        "symlink" => {
+                            let outside = parent.path().join("outside");
+                            std::fs::write(&outside, b"outside").expect("outside target");
+                            std::os::unix::fs::symlink(&outside, target)
+                                .expect("concurrent symlink");
+                        }
+                        _ => unreachable!(),
+                    }
+                    publish_staging_root(staged, target)
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(BundleError::TargetExists(path)) if path == target
+            ));
+            let staging = observed_staging
+                .into_inner()
+                .expect("writer reached publication tail");
+            assert!(
+                !staging.exists(),
+                "writer removes failed task-owned staging"
+            );
+            assert!(
+                !target.join("runtime.json").exists(),
+                "target was never replaced"
+            );
+            match target_kind {
+                "directory" => assert_eq!(
+                    std::fs::read(target.join("sentinel")).expect("sentinel remains"),
+                    b"directory"
+                ),
+                "file" => assert_eq!(std::fs::read(&target).expect("file remains"), b"file"),
+                "symlink" => assert!(
+                    std::fs::symlink_metadata(&target)
+                        .expect("symlink remains")
+                        .file_type()
+                        .is_symlink()
+                ),
+                _ => unreachable!(),
+            }
+        }
+    }
+
     #[cfg(not(unix))]
     #[test]
     fn unsupported_platforms_fail_closed_for_asset_open() {
@@ -2196,7 +2664,7 @@ mod tests {
         std::fs::write(&path, b"asset").expect("asset file");
         let bundle_path = BundlePath::new("assets/asset").expect("bundle path");
         assert!(matches!(
-            open_bundle_file(root.path(), &bundle_path),
+            BundleRoot::open(root.path()),
             Err(BundleError::UnsupportedSecureOpen { .. })
         ));
     }
