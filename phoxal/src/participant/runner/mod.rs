@@ -68,11 +68,14 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     // `Participant::__retain_embedded_metadata`'s docs.
     R::__retain_embedded_metadata();
 
+    init_tracing();
+    // Install the process signal handlers before launch parsing, bus open, or
+    // setup can await. A supervisor's SIGTERM during startup must become the
+    // same teardown request as one received by the steady-state loop.
+    let shutdown = shutdown_signal();
     let launch = R::LaunchPolicy::from_cli(R::ID)?;
 
-    init_tracing();
-
-    run_with::<R, _>(launch, shutdown_signal()).await
+    run_with::<R, _>(launch, shutdown).await
 }
 
 /// Run a participant against an explicit launch and shutdown trigger, on a bus
@@ -424,7 +427,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             managed_tasks,
             grace_ms: launch.shutdown_grace_ms,
         };
-        let queries =
+        let mut queries =
             match QuerySurface::declare(bus, query_registrations, &mut managed_tasks).await {
                 Ok(queries) => queries,
                 Err(error) => {
@@ -434,18 +437,64 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     return combine(Err(error), report);
                 }
             };
-        let liveliness = match bus.declare_participant_liveliness().await {
-            Ok(token) => token,
-            Err(error) => {
-                if let Some(queries) = queries {
+
+        // Setup and query declaration may have started tasks whose failure is
+        // already ready to observe. Drain those completions before acquiring
+        // the Ready/liveliness token so a failed critical task can never pass
+        // through a transient "ready" state.
+        if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
+            if let Some(queries) = queries.take() {
+                queries.close();
+            }
+            let report = wind_down(managed_tasks)
+                .run(&participant, &api, &mut state)
+                .await;
+            return combine(Err(exit.into()), report);
+        }
+        // Ready acquisition is itself a lifecycle boundary. Race the bus
+        // declaration against already-supervised task completion so a
+        // Critical setup/query failure cannot win the await and briefly make
+        // an unhealthy participant visible.
+        let liveliness = tokio::select! {
+            biased;
+            exit = managed_tasks.next_unexpected_exit() => {
+                if let Some(queries) = queries.take() {
                     queries.close();
                 }
                 let report = wind_down(managed_tasks)
                     .run(&participant, &api, &mut state)
                     .await;
-                return combine(Err(error.into()), report);
+                return combine(Err(exit.into()), report);
             }
+            result = bus.declare_participant_liveliness() => match result {
+                Ok(token) => token,
+                Err(error) => {
+                    if let Some(queries) = queries.take() {
+                        queries.close();
+                    }
+                    let report = wind_down(managed_tasks)
+                        .run(&participant, &api, &mut state)
+                        .await;
+                    return combine(Err(error.into()), report);
+                }
+            },
         };
+
+        // Do not accept the token merely because its await won the race. Give
+        // task completions that became ready during declaration a scheduling
+        // turn, drain them, and revoke the just-acquired token before any
+        // Ready announcement or Runner is returned.
+        tokio::task::yield_now().await;
+        if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
+            drop(liveliness);
+            if let Some(queries) = queries.take() {
+                queries.close();
+            }
+            let report = wind_down(managed_tasks)
+                .run(&participant, &api, &mut state)
+                .await;
+            return combine(Err(exit.into()), report);
+        }
 
         tracing::info!(
             target: "phoxal.runtime",
@@ -937,5 +986,40 @@ mod tests {
         );
 
         assert!(LoopExit::ShutdownRequested.into_result().is_ok());
+    }
+
+    /// A Critical task that fails while the bus-side Ready declaration is
+    /// awaiting must win the boundary race, so no Ready token is accepted.
+    #[tokio::test(start_paused = true)]
+    async fn ready_declaration_race_prefers_a_task_failure() {
+        let (trigger, triggered) = tokio::sync::oneshot::channel();
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn(
+            "declaration-race",
+            ManagedTaskPolicy::Critical,
+            async move {
+                triggered.await.expect("the declaration triggers the task");
+                Err::<(), _>(anyhow::anyhow!(
+                    "setup task failed during Ready declaration"
+                ))
+            },
+        );
+
+        let declaration = async move {
+            trigger.send(()).expect("the task is still supervised");
+            tokio::task::yield_now().await;
+            Ok::<(), ()>(())
+        };
+        let failure = tokio::select! {
+            biased;
+            exit = tasks.next_unexpected_exit() => Some(exit),
+            _ = declaration => None,
+        };
+        let failure = failure.expect("task failure must preempt Ready acquisition");
+        assert_eq!(failure.name, "declaration-race");
+        assert_eq!(
+            failure.error_message.as_deref(),
+            Some("setup task failed during Ready declaration")
+        );
     }
 }
