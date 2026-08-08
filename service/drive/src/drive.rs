@@ -8,8 +8,8 @@
 //! It also publishes `drive/state` as one active/stopped decision carrying the
 //! requested target and, when active, the limited target.
 //! The per-side motor bindings and wheel geometry are built from the robot
-//! model. Unsupported kinematics make the service explicitly inactive rather
-//! than failing static startup.
+//! model. Unsupported kinematics and motor command modes fail setup rather
+//! than entering a runtime inactive state.
 //! `drive/target` is internal actuation, not an observation: it carries no
 //! production timestamp. Its liveness is therefore a **receiver-owned lease** -
 //! `drive` stamps its own observation, rejects a non-increasing sequence from
@@ -24,6 +24,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use phoxal::api;
 use phoxal::model::Robot;
+use phoxal::model::component::capability::MotorCommand;
 use phoxal::model::identity::CapabilityRef;
 use phoxal::model::robot::{BodyTwist, DifferentialDrive, KinematicConfig, MotionLimits};
 use phoxal::prelude::*;
@@ -80,7 +81,13 @@ impl MotorBinding {
         references
             .iter()
             .map(|reference| {
-                let (_motor, direction_sign) = robot.require_motor(reference)?;
+                let (motor, direction_sign) = robot.require_motor(reference)?;
+                if motor.command != MotorCommand::Velocity {
+                    bail!(
+                        "robot.kinematic.{field} actuator '{reference}' uses {:?} command mode; stock drive requires velocity motors",
+                        motor.command
+                    );
+                }
                 Ok(MotorBinding {
                     reference: reference.clone(),
                     direction_sign,
@@ -135,7 +142,7 @@ impl BoundMotor {
 
 /// Typed drive config built from the robot model.
 struct DriveConfig {
-    kinematics: Option<DifferentialDrive>,
+    kinematics: DifferentialDrive,
     limits: MotionLimits,
     left: Vec<MotorBinding>,
     right: Vec<MotorBinding>,
@@ -152,15 +159,13 @@ impl DriveConfig {
             ..
         } = robot.motion().kinematic()
         else {
-            return Ok(Self {
-                kinematics: None,
-                limits,
-                left: Vec::new(),
-                right: Vec::new(),
-            });
+            bail!(
+                "stock drive requires differential kinematics, found {:?}",
+                robot.motion().kinematic().kind()
+            );
         };
         Ok(DriveConfig {
-            kinematics: Some(DifferentialDrive::new(*wheel_radius_m, *wheel_base_m).validate()?),
+            kinematics: DifferentialDrive::new(*wheel_radius_m, *wheel_base_m).validate()?,
             limits,
             left: MotorBinding::resolve(robot, left_actuators, "left_actuators")?,
             right: MotorBinding::resolve(robot, right_actuators, "right_actuators")?,
@@ -176,10 +181,9 @@ pub(crate) struct Api {
 }
 
 pub(crate) struct DriveState {
-    /// `None` when the robot is not a differential drive. The service is then
-    /// permanently inactive, which is a state it publishes rather than a
-    /// startup failure.
-    kinematics: Option<DifferentialDrive>,
+    /// Validated differential-drive geometry. Unsupported topology is rejected
+    /// by setup before the participant can enter its step loop.
+    kinematics: DifferentialDrive,
     limits: MotionLimits,
     target: Lease<api::drive::Target>,
 }
@@ -201,12 +205,7 @@ impl DriveState {
         let stopped = |target, reason| (api::drive::State::Stopped { target, reason }, (0.0, 0.0));
 
         let limits = self.limits;
-        let Some(kinematics) = self.kinematics else {
-            return stopped(
-                api::drive::Target::stopped(),
-                api::drive::StopReason::Inactive,
-            );
-        };
+        let kinematics = self.kinematics;
         let Some(target) = self.target.live(host_now, now).cloned() else {
             return stopped(
                 api::drive::Target::stopped(),
@@ -240,7 +239,11 @@ impl DriveState {
     }
 }
 
-#[phoxal::service(state = DriveState, api = Api)]
+#[phoxal::service(
+    state = DriveState,
+    api = Api,
+    requirement = phoxal::__private::compatibility::STOCK_DRIVE_REQUIREMENT
+)]
 pub(crate) struct Drive;
 
 impl Participant for Drive {
@@ -362,7 +365,7 @@ mod tests {
 
     const KINEMATICS: DifferentialDrive = DifferentialDrive::new(0.1, 0.4);
 
-    fn drive_state(kinematics: Option<DifferentialDrive>) -> DriveState {
+    fn drive_state(kinematics: DifferentialDrive) -> DriveState {
         DriveState {
             kinematics,
             limits: LIMITS,
@@ -410,7 +413,7 @@ mod tests {
 
         assert_eq!(config.left.len(), 2);
         assert_eq!(config.right.len(), 2);
-        assert_eq!(config.kinematics.unwrap().wheel_radius_m, 0.1);
+        assert_eq!(config.kinematics.wheel_radius_m, 0.1);
         // Each binding resolves to a concrete dynamic motor topic.
         let topic = config.left[0].topic();
         assert!(topic.key().starts_with("v0.2/component/"));
@@ -441,7 +444,7 @@ mod tests {
     fn a_decision_reports_raw_requested_and_limited_targets() {
         let requested = api::drive::Target::try_new(5.0, -5.0).unwrap();
         let (host_now, now) = instants();
-        let mut state = drive_state(Some(KINEMATICS));
+        let mut state = drive_state(KINEMATICS);
         state
             .target
             .offer(producer(1), 1, host_now, requested.clone());
@@ -466,7 +469,7 @@ mod tests {
     #[test]
     fn nothing_live_stops_the_wheels_rather_than_carrying_the_last_command() {
         let (host_now, now) = instants();
-        let (published, wheels) = drive_state(Some(KINEMATICS)).decide(host_now, now);
+        let (published, wheels) = drive_state(KINEMATICS).decide(host_now, now);
 
         assert!(matches!(
             published,
@@ -478,21 +481,12 @@ mod tests {
         assert_eq!(wheels, (0.0, 0.0));
     }
 
-    /// A robot the service has no kinematics for is inactive, not broken: it
-    /// keeps publishing a stopped state instead of failing startup.
+    /// A robot the service has no supported kinematics for fails setup before
+    /// the participant can enter its step loop.
     #[test]
-    fn unsupported_kinematics_publish_an_inactive_state() {
-        let (host_now, now) = instants();
-        let (published, wheels) = drive_state(None).decide(host_now, now);
-
-        assert!(matches!(
-            published,
-            api::drive::State::Stopped {
-                target,
-                reason: api::drive::StopReason::Inactive,
-            } if target == api::drive::Target::stopped()
-        ));
-        assert_eq!(wheels, (0.0, 0.0));
+    fn unsupported_kinematics_fail_setup_instead_of_entering_an_inactive_state() {
+        let robot = RobotBuilder::new("rover").build().expect("minimal robot");
+        assert!(DriveConfig::from_robot(&robot).is_err());
     }
 
     /// A target the wheels cannot carry stops them, and still reports the raw
@@ -501,7 +495,7 @@ mod tests {
     fn a_wheel_command_the_motors_cannot_carry_stops_the_wheels() {
         let requested = api::drive::Target::try_new(0.6, 0.0).unwrap();
         let (host_now, now) = instants();
-        let mut state = drive_state(Some(DifferentialDrive::new(f64::MIN_POSITIVE, 0.4)));
+        let mut state = drive_state(DifferentialDrive::new(f64::MIN_POSITIVE, 0.4));
         state
             .target
             .offer(producer(1), 1, host_now, requested.clone());

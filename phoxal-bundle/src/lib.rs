@@ -20,11 +20,14 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use phoxal_model::identity::ComponentInstanceId;
+use phoxal_model::component::capability::MotorCommand;
+use phoxal_model::identity::{CapabilityRef, ComponentInstanceId};
 use phoxal_model::{AssetId, Clock, Robot};
 use phoxal_runtime_contract::identity::{ParticipantId, ParticipantIdError};
 use phoxal_runtime_contract::launch::ClockMode;
-use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantSchemas};
+use phoxal_runtime_contract::metadata::{
+    ParticipantKind, ParticipantRequirement, ParticipantSchemas,
+};
 use phoxal_runtime_contract::version::RobotApi;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -270,6 +273,9 @@ impl RuntimeParticipant {
                 error: error.to_string(),
             });
         }
+        self.binary
+            .compatibility
+            .validate_requirement(&self.id, robot)?;
         self.binary.build.validate()?;
         Ok(())
     }
@@ -361,7 +367,77 @@ pub struct BinaryCompatibility {
     pub kind: ParticipantKind,
     pub api: RobotApi,
     pub schemas: ParticipantSchemas,
+    /// Optional for compatibility with existing `phoxal/runtime-bundle/v0`
+    /// documents. `None` means no additional static topology requirement.
+    #[serde(default)]
+    pub requirement: Option<ParticipantRequirement>,
     pub config_schema: serde_json::Value,
+}
+
+impl BinaryCompatibility {
+    /// Validate the one topology requirement this binary declared against the
+    /// already-canonical robot. This is deliberately a closed match over the
+    /// requirement enum, not a package-name lookup or a generic service
+    /// registry.
+    fn validate_requirement(
+        &self,
+        participant: &ParticipantId,
+        robot: &Robot,
+    ) -> Result<(), DocumentError> {
+        let Some(requirement) = self.requirement else {
+            return Ok(());
+        };
+        match requirement {
+            ParticipantRequirement::DifferentialDriveVelocity => {
+                let phoxal_model::robot::KinematicConfig::Differential {
+                    left_actuators,
+                    right_actuators,
+                    ..
+                } = robot.motion().kinematic()
+                else {
+                    return Err(DocumentError::RequirementKinematicsMismatch {
+                        participant: participant.clone(),
+                        requirement,
+                        actual: robot.motion().kinematic().kind(),
+                    });
+                };
+                validate_drive_side(participant, "left_actuators", left_actuators, robot)?;
+                validate_drive_side(participant, "right_actuators", right_actuators, robot)
+            }
+        }
+    }
+}
+
+fn validate_drive_side(
+    participant: &ParticipantId,
+    side: &'static str,
+    actuators: &[CapabilityRef],
+    robot: &Robot,
+) -> Result<(), DocumentError> {
+    if actuators.is_empty() {
+        return Err(DocumentError::RequirementActuatorListEmpty {
+            participant: participant.clone(),
+            side,
+        });
+    }
+    for reference in actuators {
+        let (motor, _) = robot.require_motor(reference).map_err(|error| {
+            DocumentError::RequirementActuatorInvalid {
+                participant: participant.clone(),
+                actuator: reference.clone(),
+                error: error.to_string(),
+            }
+        })?;
+        if motor.command != MotorCommand::Velocity {
+            return Err(DocumentError::RequirementMotorModeMismatch {
+                participant: participant.clone(),
+                actuator: reference.clone(),
+                expected: MotorCommand::Velocity,
+                actual: motor.command,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// A normalized reference to optional router configuration.
@@ -639,6 +715,36 @@ pub enum DocumentError {
         participant: ParticipantId,
         robot: Clock,
         participant_clock: ClockMode,
+    },
+    #[error(
+        "participant '{participant}' requires {requirement:?}, but the robot uses {actual} kinematics"
+    )]
+    RequirementKinematicsMismatch {
+        participant: ParticipantId,
+        requirement: ParticipantRequirement,
+        actual: phoxal_model::robot::KinematicKind,
+    },
+    #[error("participant '{participant}' requires at least one {side} actuator")]
+    RequirementActuatorListEmpty {
+        participant: ParticipantId,
+        side: &'static str,
+    },
+    #[error(
+        "participant '{participant}' requirement could not resolve actuator '{actuator}': {error}"
+    )]
+    RequirementActuatorInvalid {
+        participant: ParticipantId,
+        actuator: CapabilityRef,
+        error: String,
+    },
+    #[error(
+        "participant '{participant}' actuator '{actuator}' is configured for {actual:?}, but the binary requires {expected:?}"
+    )]
+    RequirementMotorModeMismatch {
+        participant: ParticipantId,
+        actuator: CapabilityRef,
+        expected: MotorCommand,
+        actual: MotorCommand,
     },
     #[error("build fact '{field}' is empty or contains control characters: '{value}'")]
     EmptyBuildFact { field: &'static str, value: String },
@@ -1621,6 +1727,9 @@ fn path_contains_symlink(path: &Path) -> bool {
 mod tests {
     use super::*;
     use phoxal_model::RobotBuilder;
+    use phoxal_model::builder::Kinematics;
+    use phoxal_model::component::capability::{Capability, Motor, MotorCommand, StructuralTarget};
+    use phoxal_model::identity::JointId;
     use phoxal_runtime_contract::metadata::ParticipantKind;
     use phoxal_runtime_contract::version::{
         BusAbi, ComponentSchema, LaunchAbi, RobotSchema, SimulationSchema,
@@ -1662,6 +1771,7 @@ mod tests {
                     component: ComponentSchema::V0,
                     simulation: SimulationSchema::V0,
                 },
+                requirement: None,
                 config_schema: serde_json::json!({"type":"null"}),
             },
             &binary_bytes,
@@ -1689,6 +1799,153 @@ mod tests {
         (document, assets, binaries)
     }
 
+    fn motor_robot(left: MotorCommand, right: MotorCommand) -> Robot {
+        let motor_type = |command| {
+            move |motor: phoxal_model::builder::ComponentTypeBuilder| {
+                motor.capability(
+                    "spin",
+                    Capability::Motor(Motor {
+                        target: StructuralTarget::Joint {
+                            id: JointId::new("axle"),
+                        },
+                        command,
+                        gear_ratio: 1.0,
+                        max_torque_nm: None,
+                        max_velocity_radps: None,
+                    }),
+                )
+            }
+        };
+        RobotBuilder::new("rover")
+            .component_type("left_motor", motor_type(left))
+            .component_type("right_motor", motor_type(right))
+            .component("left_drive", "left_motor")
+            .component("right_drive", "right_motor")
+            .kinematics(Kinematics::Differential {
+                left_actuators: &["left_drive.spin"],
+                right_actuators: &["right_drive.spin"],
+                left_encoders: &[],
+                right_encoders: &[],
+                wheel_radius_m: 0.1,
+                wheel_base_m: 0.4,
+            })
+            .build()
+            .expect("differential test robot is valid")
+    }
+
+    fn topology_robot(kind: phoxal_model::robot::KinematicKind) -> Robot {
+        match kind {
+            phoxal_model::robot::KinematicKind::Differential => {
+                motor_robot(MotorCommand::Velocity, MotorCommand::Velocity)
+            }
+            phoxal_model::robot::KinematicKind::Mecanum => RobotBuilder::new("rover")
+                .component_type("motor", |motor| motor.motor("spin", "axle"))
+                .component("front_left", "motor")
+                .component("front_right", "motor")
+                .component("rear_left", "motor")
+                .component("rear_right", "motor")
+                .kinematics(Kinematics::Mecanum {
+                    front_left_actuator: "front_left.spin",
+                    front_right_actuator: "front_right.spin",
+                    rear_left_actuator: "rear_left.spin",
+                    rear_right_actuator: "rear_right.spin",
+                    wheel_radius_m: 0.1,
+                    wheel_base_m: 0.4,
+                    track_m: 0.3,
+                })
+                .build()
+                .expect("mecanum test robot is valid"),
+            phoxal_model::robot::KinematicKind::Ackermann => RobotBuilder::new("rover")
+                .component_type("motor", |motor| motor.motor("spin", "axle"))
+                .component("drive", "motor")
+                .kinematics(Kinematics::Ackermann {
+                    steering_actuator: "drive.spin",
+                    drive_actuator: "drive.spin",
+                    steering_encoder: None,
+                    drive_encoder: None,
+                    wheel_base_m: 0.4,
+                    track_m: 0.3,
+                    max_steering_angle_rad: 0.6,
+                })
+                .build()
+                .expect("ackermann test robot is valid"),
+            phoxal_model::robot::KinematicKind::Omnidirectional => RobotBuilder::new("rover")
+                .kinematics(Kinematics::Omnidirectional {
+                    actuators: &[],
+                    encoders: &[],
+                })
+                .build()
+                .expect("omnidirectional test robot is valid"),
+        }
+    }
+
+    fn requirement_document(robot: Robot) -> StagedBytes {
+        let (document, assets, binaries) = document();
+        let RuntimeDocument::V0(mut runtime) = document;
+        runtime.robot = robot;
+        runtime.participants[0].binary.compatibility.requirement =
+            Some(ParticipantRequirement::DifferentialDriveVelocity);
+        let document = RuntimeDocument::new(runtime).expect("requirement document is valid");
+        (document, assets, binaries)
+    }
+
+    #[test]
+    fn stock_drive_requirement_accepts_differential_velocity_motors() {
+        let (document, _, _) =
+            requirement_document(motor_robot(MotorCommand::Velocity, MotorCommand::Velocity));
+        assert!(document.validate().is_ok());
+    }
+
+    #[test]
+    fn stock_drive_requirement_rejects_non_differential_topologies() {
+        for kind in [
+            phoxal_model::robot::KinematicKind::Mecanum,
+            phoxal_model::robot::KinematicKind::Omnidirectional,
+            phoxal_model::robot::KinematicKind::Ackermann,
+        ] {
+            let (document, _, _) = {
+                let (base, assets, binaries) = document();
+                let RuntimeDocument::V0(mut runtime) = base;
+                runtime.robot = topology_robot(kind);
+                runtime.participants[0].binary.compatibility.requirement =
+                    Some(ParticipantRequirement::DifferentialDriveVelocity);
+                (RuntimeDocument::V0(runtime), assets, binaries)
+            };
+            assert!(matches!(
+                document.validate(),
+                Err(DocumentError::RequirementKinematicsMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn stock_drive_requirement_rejects_each_nonvelocity_drive_side() {
+        for (left, right, actuator) in [
+            (
+                MotorCommand::Position,
+                MotorCommand::Velocity,
+                "left_drive.spin",
+            ),
+            (
+                MotorCommand::Velocity,
+                MotorCommand::Torque,
+                "right_drive.spin",
+            ),
+        ] {
+            let (base, _, _) = document();
+            let RuntimeDocument::V0(mut runtime) = base;
+            runtime.robot = motor_robot(left, right);
+            runtime.participants[0].binary.compatibility.requirement =
+                Some(ParticipantRequirement::DifferentialDriveVelocity);
+            let document = RuntimeDocument::V0(runtime);
+            assert!(matches!(
+                document.validate(),
+                Err(DocumentError::RequirementMotorModeMismatch { actuator: ref found, .. })
+                    if found.to_string() == actuator
+            ));
+        }
+    }
+
     #[test]
     fn paths_and_digests_are_strict() {
         for (value, valid) in [
@@ -1712,6 +1969,11 @@ mod tests {
         let (document, _, _) = document();
         let value = serde_json::to_value(&document).expect("document serializes");
         assert_eq!(value["schema"], RUNTIME_SCHEMA);
+        assert_eq!(
+            value["participants"][0]["binary"]["compatibility"]["requirement"],
+            serde_json::Value::Null,
+            "legacy-compatible documents omit static requirements"
+        );
         assert!(value.get("robot_id").is_none());
         let text = serde_json::to_string(&document).expect("document serializes");
         assert_eq!(text.matches("\"id\":\"rover\"").count(), 1);
@@ -1736,6 +1998,24 @@ mod tests {
         assert!(
             serde_json::from_value::<RuntimeDocument>(duplicate).is_err(),
             "direct runtime.json decoding must validate the participant graph"
+        );
+    }
+
+    #[test]
+    fn runtime_json_without_requirement_remains_legacy_compatible() {
+        let (document, _, _) = document();
+        let mut value = serde_json::to_value(&document).expect("document serializes");
+        value["participants"][0]["binary"]["compatibility"]
+            .as_object_mut()
+            .expect("compatibility is an object")
+            .remove("requirement");
+
+        let decoded = serde_json::from_value::<RuntimeDocument>(value)
+            .expect("v0 runtime documents without the additive field remain readable");
+        let RuntimeDocument::V0(runtime) = decoded;
+        assert_eq!(
+            runtime.participants[0].binary.compatibility.requirement,
+            None
         );
     }
 

@@ -186,6 +186,18 @@ where
         .ok_or_else(|| serde::de::Error::custom("control target scalar must be finite"))
 }
 
+/// Reject non-finite v0.2 motor command scalars during wire deserialization.
+pub(crate) fn deserialize_finite_motor_scalar<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .is_finite()
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("motor command scalar must be finite"))
+}
+
 phoxal_api_tree! {
     version v0_1 {
         drive {
@@ -1347,6 +1359,15 @@ phoxal_api_tree! {
         drive {
             remove ActuatorAuthority;
 
+            #[serde(rename_all = "snake_case")]
+            replace enum StopReason {
+                TargetStale,
+                TargetNotFinite,
+                ActuatorCommandNotFinite,
+                EmergencyStop,
+                Fault,
+            }
+
             /// A finite requested or limited planar velocity in the current
             /// control wire revision.
             #[serde(deny_unknown_fields)]
@@ -1396,6 +1417,18 @@ phoxal_api_tree! {
                 safety_runtime: SafetyRuntime,
                 component_estop_blocked: bool,
                 active_safety_constraints: Vec<super::safety::Constraint>,
+            }
+        }
+
+        component(instance) {
+            motor(capability) {
+                /// A per-actuator command in the current control revision.
+                replace enum Command {
+                    Position(#[serde(deserialize_with = "crate::deserialize_finite_motor_scalar")] f32),
+                    Velocity(#[serde(deserialize_with = "crate::deserialize_finite_motor_scalar")] f32),
+                    Torque(#[serde(deserialize_with = "crate::deserialize_finite_motor_scalar")] f32),
+                    Stop,
+                }
             }
         }
     }

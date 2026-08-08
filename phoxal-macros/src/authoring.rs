@@ -262,9 +262,9 @@ impl ParticipantKind {
     /// The `(...)` keys this role accepts, for the unknown-key diagnostic.
     fn accepted_keys(self) -> &'static str {
         if self.accepts_config() {
-            "id, config, state, or api"
+            "id, config, state, api, or requirement"
         } else {
-            "state or api"
+            "state, api, or requirement"
         }
     }
 
@@ -424,6 +424,7 @@ struct ParticipantArgs {
     config: Option<Type>,
     state: Option<Type>,
     api: Option<Type>,
+    requirement: Option<Expr>,
 }
 
 impl ParticipantArgs {
@@ -462,6 +463,10 @@ impl ParticipantArgs {
             } else if meta.path.is_ident("api") {
                 let value: Type = meta.value()?.parse()?;
                 args.api = Some(value);
+                Ok(())
+            } else if meta.path.is_ident("requirement") {
+                let value: Expr = meta.value()?.parse()?;
+                args.requirement = Some(value);
                 Ok(())
             } else {
                 Err(meta.error(format!(
@@ -550,6 +555,9 @@ pub fn expand_participant(
     let config_ty: Type = args.config.unwrap_or_else(|| syn::parse_quote!(()));
     let state_ty: Type = args.state.unwrap_or_else(|| syn::parse_quote!(()));
     let api_ty: Type = args.api.unwrap_or_else(|| syn::parse_quote!(()));
+    let requirement = args
+        .requirement
+        .unwrap_or_else(|| syn::parse_quote!(::phoxal::__private::compatibility::NO_REQUIREMENT));
 
     let phoxal = quote!(::phoxal);
     let artifact_kind = kind.artifact_kind(&phoxal);
@@ -629,6 +637,7 @@ pub fn expand_participant(
                 simulation = #phoxal::__private::compatibility::SIMULATION,
                 id = #id,
                 kind = #artifact_kind,
+                requirement = #requirement,
                 config_schema =
                     <#config_ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON,
             );
@@ -955,11 +964,35 @@ mod tests {
                 "the embedded record must name compatibility::{constant}: {expanded}"
             );
         }
+        assert!(
+            expanded.contains("compatibility :: NO_REQUIREMENT"),
+            "participants without a topology declaration must emit the explicit none requirement: {expanded}"
+        );
         // The embedded document is the only compatibility artifact, and a
         // framework SemVer is deliberately not part of it.
         assert!(
             !expanded.contains("CARGO_PKG_VERSION") && !expanded.contains("framework_version"),
             "no framework version may reach the embedded record: {expanded}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_participant_requirement_reaches_the_metadata_writer() {
+        let expanded = compact_tokens(
+            expand_participant(
+                quote! {
+                    requirement = ::phoxal::__private::compatibility::STOCK_DRIVE_REQUIREMENT
+                },
+                quote! { struct Probe; },
+                ParticipantKind::Service,
+            )
+            .expect("an explicit requirement expands"),
+        );
+        assert!(
+            expanded.contains(
+                "requirement = :: phoxal :: __private :: compatibility :: STOCK_DRIVE_REQUIREMENT"
+            ),
+            "the declared requirement must be passed to the metadata writer: {expanded}"
         );
     }
 

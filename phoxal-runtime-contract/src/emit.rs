@@ -18,7 +18,7 @@
 
 use serde::Serialize;
 
-use crate::metadata::{ParticipantKind, ParticipantSchemas};
+use crate::metadata::{ParticipantKind, ParticipantRequirement, ParticipantSchemas};
 use crate::version::RobotApi;
 
 /// `const_format::concatcp!`, made reachable as `$crate::emit::concatcp!`.
@@ -48,6 +48,7 @@ pub enum ParticipantMetadataRecord<'a> {
         schemas: ParticipantSchemas,
         id: &'a str,
         kind: ParticipantKind,
+        requirement: Option<ParticipantRequirement>,
         config_schema: serde_json::Value,
     },
 }
@@ -76,6 +77,7 @@ macro_rules! participant_metadata_json {
         simulation = $simulation:expr,
         id = $id:expr,
         kind = $kind:expr,
+        requirement = $requirement:expr,
         config_schema = $config_schema:expr $(,)?
     ) => {{
         // `concatcp!` takes constants, not method calls, so each identity
@@ -87,6 +89,14 @@ macro_rules! participant_metadata_json {
         const __PHOXAL_COMPONENT: &str = $component.as_str();
         const __PHOXAL_SIMULATION: &str = $simulation.as_str();
         const __PHOXAL_KIND: &str = $kind.as_str();
+        const __PHOXAL_REQUIREMENT: &str = match $requirement {
+            Some(requirement) => match requirement {
+                $crate::metadata::ParticipantRequirement::DifferentialDriveVelocity => {
+                    "\"differential_drive_velocity\""
+                }
+            },
+            None => "null",
+        };
 
         $crate::emit::concatcp!(
             "{\"schema\":\"phoxal/participant-metadata/v0\",\"api\":\"",
@@ -105,7 +115,9 @@ macro_rules! participant_metadata_json {
             $id,
             "\",\"kind\":\"",
             __PHOXAL_KIND,
-            "\",\"config_schema\":",
+            "\",\"requirement\":",
+            __PHOXAL_REQUIREMENT,
+            ",\"config_schema\":",
             $config_schema,
             "}"
         )
@@ -129,6 +141,7 @@ mod tests {
         simulation = SimulationSchema::V0,
         id = "drive",
         kind = ParticipantKind::Service,
+        requirement = None,
         config_schema = CONFIG_SCHEMA,
     );
 
@@ -144,6 +157,7 @@ mod tests {
             },
             id: "drive",
             kind: ParticipantKind::Service,
+            requirement: None,
             config_schema: serde_json::json!({"type": "null"}),
         }
     }
@@ -163,6 +177,7 @@ mod tests {
             schemas,
             id,
             kind,
+            requirement,
             config_schema,
         } = ParticipantMetadata::from_bytes(EMBEDDED.as_bytes())
             .expect("the writer's own output must satisfy the parser");
@@ -175,6 +190,7 @@ mod tests {
         assert_eq!(schemas.simulation, SimulationSchema::V0);
         assert_eq!(id, "drive");
         assert_eq!(kind, ParticipantKind::Service);
+        assert_eq!(requirement, None);
         assert_eq!(config_schema, serde_json::json!({"type": "null"}));
     }
 
