@@ -578,6 +578,7 @@ pub fn expand_participant(
 
         impl #phoxal::__private::ParticipantSpec for #struct_name {
             const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
+            const REQUIREMENT: Option<#phoxal::__private::ParticipantRequirement> = #requirement;
             const ID: &'static str = #id;
             // The train-selected facade revision, spliced from the framework
             // path rather than named by the author: a participant does not get
@@ -619,9 +620,7 @@ pub fn expand_participant(
                 api = #phoxal::__private::compatibility::API,
                 bus = #phoxal::__private::compatibility::BUS,
                 launch = #phoxal::__private::compatibility::LAUNCH,
-                robot = #phoxal::__private::compatibility::ROBOT,
-                component = #phoxal::__private::compatibility::COMPONENT,
-                simulation = #phoxal::__private::compatibility::SIMULATION,
+                runtime = #phoxal::__private::compatibility::RUNTIME,
                 id = #id,
                 kind = #artifact_kind,
                 requirement = #requirement,
@@ -942,7 +941,7 @@ mod tests {
             )
             .expect("expands"),
         );
-        for constant in ["API", "BUS", "LAUNCH", "ROBOT", "COMPONENT", "SIMULATION"] {
+        for constant in ["API", "BUS", "LAUNCH", "RUNTIME"] {
             assert!(
                 expanded.contains(&format!("compatibility :: {constant}")),
                 "the embedded record must name compatibility::{constant}: {expanded}"

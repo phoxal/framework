@@ -13,7 +13,7 @@ There is no crate-root facade here: each contract is a module and each public ty
   participant process parsing is strict Clap argv in `phoxal`.
 - `origin` - the boot-anchored origin of one real execution.
 
-Compatibility between a `phoxal-cli` and a built participant is declared in one place: the `ParticipantMetadata` document each binary embeds at compile time, carrying the API revision and the five document schemas it speaks (bus, launch, robot, component, simulation).
+Compatibility between a `phoxal-cli` and a built participant is declared in one place: the `ParticipantMetadata` document each binary embeds at compile time, carrying the API revision and the three process-boundary schemas it speaks (bus, launch, runtime).
 There is no Cargo package-metadata table, no version file, and no framework-SemVer floor anywhere in the contract.
 
 `ParticipantId` is the validated topology role selected from a persisted

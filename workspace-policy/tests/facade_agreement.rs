@@ -1,20 +1,15 @@
-//! Where the authoring crate and the runtime crate must agree.
-//!
-//! `phoxal-manifest` authors documents and `phoxal` consumes them, and the two
-//! do not depend on each other. Nothing inside either crate can prove they
-//! still describe the same grammar, so this crate - which depends on both -
-//! feeds one what the other declares.
+//! Where the runtime facade and process-contract crate must agree.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-/// The declared document identities and `phoxal-manifest`'s own
-/// `#[serde(tag = "schema")]` variants are one contract owned by two crates.
-/// A serde rename takes a literal, so the only way to pin the two together is
-/// to feed the manifest compiler a real document whose tag is written from the
-/// identity enum.
+/// The runtime compatibility identities are one contract owned by the facade
+/// and the embedded participant metadata writer. Keeping this assertion here
+/// prevents a facade constant from drifting away from its wire enum.
 #[test]
-fn the_facade_manifest_schemas_match_the_documents_phoxal_manifest_accepts() -> Result<()> {
+fn the_facade_runtime_schemas_match_the_process_contract() -> Result<()> {
     use phoxal::__private::compatibility as compat;
+    use phoxal_runtime_contract::metadata::ParticipantSchemas;
+    use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RuntimeSchema};
 
     // Serialized, not `as_str`: what a peer writes on the wire is what
     // `phoxal-manifest` has to accept.
@@ -24,30 +19,17 @@ fn the_facade_manifest_schemas_match_the_documents_phoxal_manifest_accepts() -> 
         )?)?)
     }
 
-    phoxal_manifest::source::robot::Manifest::parse(&format!(
-        r#"schema: {}
-robot:
-  id: rover
-  kinematic: {{ kind: omnidirectional, actuators: [drive.motor], encoders: [] }}
-  motion_limits: {{ max_linear_speed_mps: 0.5, max_angular_speed_radps: 1.0 }}
-  components:
-    drive:
-      component: drive
-      mount_link: base_link
-"#,
-        tag(compat::ROBOT)?
-    ))
-    .context("phoxal-manifest must accept the robot grammar the facade declares")?;
-    phoxal_manifest::source::component::Manifest::parse(&format!(
-        "schema: {}\ncapabilities: {{}}\n",
-        tag(compat::COMPONENT)?
-    ))
-    .context("phoxal-manifest must accept the component grammar the facade declares")?;
-    phoxal_manifest::source::simulation::Manifest::parse(&format!(
-        "schema: {}\ncapabilities: {{}}\n",
-        tag(compat::SIMULATION)?
-    ))
-    .context("phoxal-manifest must accept the simulation grammar the facade declares")?;
+    let schemas = ParticipantSchemas {
+        bus: compat::BUS,
+        launch: compat::LAUNCH,
+        runtime: compat::RUNTIME,
+    };
+    assert_eq!(schemas.bus, BusAbi::V0);
+    assert_eq!(schemas.launch, LaunchAbi::V0);
+    assert_eq!(schemas.runtime, RuntimeSchema::V0);
+    assert_eq!(tag(compat::BUS)?, compat::BUS.as_str());
+    assert_eq!(tag(compat::LAUNCH)?, compat::LAUNCH.as_str());
+    assert_eq!(tag(compat::RUNTIME)?, compat::RUNTIME.as_str());
     Ok(())
 }
 

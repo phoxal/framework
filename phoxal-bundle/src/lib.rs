@@ -23,12 +23,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use phoxal_model::component::capability::MotorCommand;
 use phoxal_model::identity::{CapabilityRef, ComponentInstanceId};
 use phoxal_model::{AssetId, Clock, Robot};
+pub use phoxal_runtime_contract::identity::ParticipantArtifactId;
 use phoxal_runtime_contract::identity::{ParticipantId, ParticipantIdError};
-use phoxal_runtime_contract::launch::ClockMode;
-use phoxal_runtime_contract::metadata::{
-    ParticipantKind, ParticipantRequirement, ParticipantSchemas,
-};
-use phoxal_runtime_contract::version::RobotApi;
+use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -40,6 +37,31 @@ pub const RUNTIME_FILE: &str = "runtime.json";
 pub const ASSETS_DIR: &str = "assets";
 /// The supervisor-only binary directory.
 pub const BIN_DIR: &str = "bin";
+
+/// The scheduler policy persisted for one runtime participant instance.
+///
+/// This belongs to the compiled runtime bundle because it is a runtime
+/// selection fact, not a process-contract/launch parser type.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticipantClock {
+    /// Follow the host's boot-anchored real clock.
+    Real,
+    /// Follow the simulation world clock supplied by the runtime.
+    Simulation,
+    /// Do not schedule robot-time steps.
+    Clockless,
+}
+
+impl fmt::Display for ParticipantClock {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Real => "real",
+            Self::Simulation => "simulation",
+            Self::Clockless => "clockless",
+        })
+    }
+}
 
 /// A schema-tagged persisted runtime document.
 #[derive(Clone, Debug, Serialize)]
@@ -99,6 +121,12 @@ impl RuntimeDocument {
         &self.runtime().participants
     }
 
+    /// The reusable executable artifacts selected by participant instances.
+    #[must_use]
+    pub fn artifacts(&self) -> &BTreeMap<ParticipantArtifactId, BinaryReference> {
+        &self.runtime().artifacts
+    }
+
     /// Validate all typed invariants without touching the filesystem.
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.runtime().validate()
@@ -133,7 +161,11 @@ pub struct Runtime {
     /// The complete canonical model. Its `id` is the sole persisted RobotId;
     /// there is no namespace or duplicate top-level identity field.
     pub robot: Robot,
-    /// The exact processes the executor must launch, in final persisted form.
+    /// The reusable staged executables and their embedded compatibility
+    /// contracts. Multiple participant instances may point to one entry.
+    pub artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
+    /// The exact process instances the executor must launch, in final
+    /// persisted form.
     pub participants: Vec<RuntimeParticipant>,
     /// The participant-readable asset index and integrity facts.
     pub assets: AssetIndex,
@@ -147,6 +179,7 @@ impl<'de> Deserialize<'de> for Runtime {
         #[serde(deny_unknown_fields)]
         struct Wire {
             robot: Robot,
+            artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
             participants: Vec<RuntimeParticipant>,
             assets: AssetIndex,
             router: Option<RuntimeRouterConfig>,
@@ -155,6 +188,7 @@ impl<'de> Deserialize<'de> for Runtime {
         let wire = Wire::deserialize(deserializer)?;
         let runtime = Self {
             robot: wire.robot,
+            artifacts: wire.artifacts,
             participants: wire.participants,
             assets: wire.assets,
             router: wire.router,
@@ -168,17 +202,26 @@ impl Runtime {
     /// Validate the complete in-memory runtime document.
     pub fn validate(&self) -> Result<(), DocumentError> {
         let mut ids = BTreeSet::new();
-        let mut binary_paths = BTreeSet::new();
+        let mut artifact_paths = BTreeSet::new();
+        for (id, artifact) in &self.artifacts {
+            artifact.validate(id)?;
+            if !artifact_paths.insert(artifact.path.clone()) {
+                return Err(DocumentError::DuplicateBinary {
+                    path: artifact.path.clone(),
+                });
+            }
+        }
         for participant in &self.participants {
-            participant.validate(&self.robot)?;
+            let artifact = self.artifacts.get(&participant.artifact).ok_or_else(|| {
+                DocumentError::UnknownArtifact {
+                    participant: participant.id.clone(),
+                    artifact: participant.artifact.clone(),
+                }
+            })?;
+            participant.validate(&self.robot, artifact)?;
             if !ids.insert(participant.id.clone()) {
                 return Err(DocumentError::DuplicateParticipant {
                     id: participant.id.clone(),
-                });
-            }
-            if !binary_paths.insert(participant.binary.path.clone()) {
-                return Err(DocumentError::DuplicateBinary {
-                    path: participant.binary.path.clone(),
                 });
             }
         }
@@ -196,10 +239,8 @@ impl Runtime {
 pub struct RuntimeParticipant {
     /// The topology identity selected by the process launch.
     pub id: ParticipantId,
-    /// The role embedded in the selected binary.
-    pub kind: ParticipantKind,
-    /// The staged binary and the facts the builder read from it.
-    pub binary: BinaryReference,
+    /// The reusable artifact selected for this instance.
+    pub artifact: ParticipantArtifactId,
     /// Whether startup of this participant is required for the execution.
     pub startup: StartupRequirement,
     /// The already-compiled participant configuration. `None` means JSON
@@ -208,29 +249,16 @@ pub struct RuntimeParticipant {
     /// An optional typed component-instance binding for a driver/simulator.
     pub binding: Option<ComponentBinding>,
     /// The scheduler policy selected at build time.
-    pub clock: ClockMode,
+    pub clock: ParticipantClock,
 }
 
 impl RuntimeParticipant {
     /// Validate participant facts against the compiled robot.
-    pub fn validate(&self, robot: &Robot) -> Result<(), DocumentError> {
-        if self.binary.compatibility.participant_id != self.id {
-            return Err(DocumentError::BinaryParticipantMismatch {
-                participant: self.id.clone(),
-                binary: self.binary.compatibility.participant_id.clone(),
-            });
-        }
-        if self.binary.compatibility.kind != self.kind {
-            return Err(DocumentError::BinaryKindMismatch {
-                participant: self.id.clone(),
-                declared: self.kind,
-                binary: self.binary.compatibility.kind,
-            });
-        }
-        if !self.binary.path.starts_with_directory(BIN_DIR) {
-            return Err(DocumentError::BinaryOutsideBin {
-                participant: self.id.clone(),
-                path: self.binary.path.clone(),
+    pub fn validate(&self, robot: &Robot, artifact: &BinaryReference) -> Result<(), DocumentError> {
+        if !artifact.path.starts_with_directory(BIN_DIR) {
+            return Err(DocumentError::ArtifactOutsideBin {
+                artifact: self.artifact.clone(),
+                path: artifact.path.clone(),
             });
         }
         if let Some(binding) = &self.binding
@@ -244,14 +272,14 @@ impl RuntimeParticipant {
             });
         }
         match (robot.clock(), self.clock) {
-            (Clock::Real, ClockMode::Simulation) => {
+            (Clock::Real, ParticipantClock::Simulation) => {
                 return Err(DocumentError::ClockMismatch {
                     participant: self.id.clone(),
                     robot: Clock::Real,
                     participant_clock: self.clock,
                 });
             }
-            (Clock::Simulated, ClockMode::Real) => {
+            (Clock::Simulated, ParticipantClock::Real) => {
                 return Err(DocumentError::ClockMismatch {
                     participant: self.id.clone(),
                     robot: Clock::Simulated,
@@ -262,10 +290,12 @@ impl RuntimeParticipant {
         }
         let null = serde_json::Value::Null;
         let config = self.config.as_ref().unwrap_or(&null);
-        let validator = jsonschema::validator_for(&self.binary.compatibility.config_schema)
-            .map_err(|error| DocumentError::InvalidConfigSchema {
-                participant: self.id.clone(),
-                error: error.to_string(),
+        let validator =
+            jsonschema::validator_for(&artifact.contract.config_schema).map_err(|error| {
+                DocumentError::InvalidConfigSchema {
+                    participant: self.id.clone(),
+                    error: error.to_string(),
+                }
             })?;
         if let Err(error) = validator.validate(config) {
             return Err(DocumentError::InvalidConfig {
@@ -273,10 +303,7 @@ impl RuntimeParticipant {
                 error: error.to_string(),
             });
         }
-        self.binary
-            .compatibility
-            .validate_requirement(&self.id, robot)?;
-        self.binary.build.validate()?;
+        validate_requirement(&artifact.contract, &self.id, robot)?;
         Ok(())
     }
 }
@@ -298,7 +325,7 @@ pub struct StartupRequirement {
     pub ready: bool,
 }
 
-/// A staged executable and the compatibility facts read by build tooling.
+/// A staged reusable executable and its canonical artifact contract.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryReference {
@@ -309,7 +336,7 @@ pub struct BinaryReference {
     /// The build/artifact facts needed to explain this binary.
     pub build: BuildFacts,
     /// The embedded process-contract facts the binary declared.
-    pub compatibility: BinaryCompatibility,
+    pub contract: ParticipantContract,
 }
 
 impl BinaryReference {
@@ -317,14 +344,14 @@ impl BinaryReference {
     pub fn from_bytes(
         path: BundlePath,
         build: BuildFacts,
-        compatibility: BinaryCompatibility,
+        contract: ParticipantContract,
         bytes: &[u8],
     ) -> Self {
         Self {
             path,
             digest: Sha256Digest::of(bytes),
             build,
-            compatibility,
+            contract,
         }
     }
 }
@@ -359,51 +386,51 @@ impl BuildFacts {
     }
 }
 
-/// Compatibility facts read from a participant binary's embedded metadata.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BinaryCompatibility {
-    pub participant_id: ParticipantId,
-    pub kind: ParticipantKind,
-    pub api: RobotApi,
-    pub schemas: ParticipantSchemas,
-    /// Optional for compatibility with existing `phoxal/runtime-bundle/v0`
-    /// documents. `None` means no additional static topology requirement.
-    #[serde(default)]
-    pub requirement: Option<ParticipantRequirement>,
-    pub config_schema: serde_json::Value,
+impl BinaryReference {
+    fn validate(&self, id: &ParticipantArtifactId) -> Result<(), DocumentError> {
+        if self.contract.id != *id {
+            return Err(DocumentError::ArtifactContractMismatch {
+                artifact: id.clone(),
+                contract: self.contract.id.clone(),
+            });
+        }
+        if !self.path.starts_with_directory(BIN_DIR) {
+            return Err(DocumentError::ArtifactOutsideBin {
+                artifact: id.clone(),
+                path: self.path.clone(),
+            });
+        }
+        self.build.validate()
+    }
 }
 
-impl BinaryCompatibility {
-    /// Validate the one topology requirement this binary declared against the
-    /// already-canonical robot. This is deliberately a closed match over the
-    /// requirement enum, not a package-name lookup or a generic service
-    /// registry.
-    fn validate_requirement(
-        &self,
-        participant: &ParticipantId,
-        robot: &Robot,
-    ) -> Result<(), DocumentError> {
-        let Some(requirement) = self.requirement else {
-            return Ok(());
-        };
-        match requirement {
-            ParticipantRequirement::DifferentialDriveVelocity => {
-                let phoxal_model::robot::KinematicConfig::Differential {
-                    left_actuators,
-                    right_actuators,
-                    ..
-                } = robot.motion().kinematic()
-                else {
-                    return Err(DocumentError::RequirementKinematicsMismatch {
-                        participant: participant.clone(),
-                        requirement,
-                        actual: robot.motion().kinematic().kind(),
-                    });
-                };
-                validate_drive_side(participant, "left_actuators", left_actuators, robot)?;
-                validate_drive_side(participant, "right_actuators", right_actuators, robot)
-            }
+/// Validate one artifact's static topology requirement against the canonical
+/// robot. Instance identity is used only for a useful diagnostic; it never
+/// participates in artifact-contract matching.
+fn validate_requirement(
+    contract: &ParticipantContract,
+    participant: &ParticipantId,
+    robot: &Robot,
+) -> Result<(), DocumentError> {
+    let Some(requirement) = contract.requirement else {
+        return Ok(());
+    };
+    match requirement {
+        ParticipantRequirement::DifferentialDriveVelocity => {
+            let phoxal_model::robot::KinematicConfig::Differential {
+                left_actuators,
+                right_actuators,
+                ..
+            } = robot.motion().kinematic()
+            else {
+                return Err(DocumentError::RequirementKinematicsMismatch {
+                    participant: participant.clone(),
+                    requirement,
+                    actual: robot.motion().kinematic().kind(),
+                });
+            };
+            validate_drive_side(participant, "left_actuators", left_actuators, robot)?;
+            validate_drive_side(participant, "right_actuators", right_actuators, robot)
         }
     }
 }
@@ -766,20 +793,19 @@ pub enum DocumentError {
     DuplicateParticipant { id: ParticipantId },
     #[error("duplicate participant binary path '{path}'")]
     DuplicateBinary { path: BundlePath },
-    #[error("participant '{participant}' binary metadata names '{binary}'")]
-    BinaryParticipantMismatch {
+    #[error("participant '{participant}' references unknown artifact '{artifact}'")]
+    UnknownArtifact {
         participant: ParticipantId,
-        binary: ParticipantId,
+        artifact: ParticipantArtifactId,
     },
-    #[error("participant '{participant}' declares kind {declared:?}, binary declares {binary:?}")]
-    BinaryKindMismatch {
-        participant: ParticipantId,
-        declared: ParticipantKind,
-        binary: ParticipantKind,
+    #[error("artifact '{artifact}' contract names '{contract}'")]
+    ArtifactContractMismatch {
+        artifact: ParticipantArtifactId,
+        contract: ParticipantArtifactId,
     },
-    #[error("participant '{participant}' binary path is outside bin/: {path}")]
-    BinaryOutsideBin {
-        participant: ParticipantId,
+    #[error("artifact '{artifact}' path is outside bin/: {path}")]
+    ArtifactOutsideBin {
+        artifact: ParticipantArtifactId,
         path: BundlePath,
     },
     #[error("participant '{participant}' binds unknown component instance '{component_instance}'")]
@@ -793,7 +819,7 @@ pub enum DocumentError {
     ClockMismatch {
         participant: ParticipantId,
         robot: Clock,
-        participant_clock: ClockMode,
+        participant_clock: ParticipantClock,
     },
     #[error(
         "participant '{participant}' requires {requirement:?}, but the robot uses {actual} kinematics"
@@ -862,6 +888,11 @@ pub enum DocumentError {
 pub enum SelectionError {
     #[error("runtime bundle has no participant '{requested}'")]
     Unknown { requested: ParticipantId },
+    #[error("participant '{participant}' references missing artifact '{artifact}'")]
+    MissingArtifact {
+        participant: ParticipantId,
+        artifact: ParticipantArtifactId,
+    },
     #[error("participant id is invalid: {0}")]
     InvalidId(#[from] ParticipantIdError),
 }
@@ -997,6 +1028,8 @@ impl ParticipantAssets {
 pub struct ParticipantRuntimeInputs {
     pub robot: Arc<Robot>,
     pub participant: RuntimeParticipant,
+    /// The reusable artifact selected by `participant.artifact`.
+    pub artifact: BinaryReference,
     pub assets: ParticipantAssets,
 }
 
@@ -1076,6 +1109,12 @@ impl RuntimeBundle {
         self.document.participants()
     }
 
+    /// The reusable executable artifacts retained by this bundle.
+    #[must_use]
+    pub fn artifacts(&self) -> &BTreeMap<ParticipantArtifactId, BinaryReference> {
+        self.document.artifacts()
+    }
+
     /// Participant-readable digest-checked assets.
     #[must_use]
     pub const fn assets(&self) -> &ParticipantAssets {
@@ -1093,9 +1132,19 @@ impl RuntimeBundle {
         &self,
         id: &ParticipantId,
     ) -> Result<ParticipantRuntimeInputs, SelectionError> {
+        let participant = self.participant(id)?.clone();
+        let artifact = self
+            .artifacts()
+            .get(&participant.artifact)
+            .cloned()
+            .ok_or_else(|| SelectionError::MissingArtifact {
+                participant: participant.id.clone(),
+                artifact: participant.artifact.clone(),
+            })?;
         Ok(ParticipantRuntimeInputs {
             robot: Arc::new(self.robot().clone()),
-            participant: self.participant(id)?.clone(),
+            participant,
+            artifact,
             assets: self.assets.clone(),
         })
     }
@@ -1138,26 +1187,25 @@ impl BundleWriter {
         }
 
         let expected_binaries = document
-            .participants()
-            .iter()
-            .map(|participant| participant.binary.path.clone())
+            .artifacts()
+            .values()
+            .map(|artifact| artifact.path.clone())
             .collect::<BTreeSet<_>>();
         let supplied_binaries = binaries.keys().cloned().collect::<BTreeSet<_>>();
         if expected_binaries != supplied_binaries {
             return Err(BundleError::Document(DocumentError::BinaryIndexMismatch));
         }
-        for participant in document.participants() {
-            let bytes =
-                binaries
-                    .get(&participant.binary.path)
-                    .ok_or_else(|| BundleError::MissingFile {
-                        path: participant.binary.path.filesystem_path(root.as_ref()),
-                    })?;
+        for artifact in document.artifacts().values() {
+            let bytes = binaries
+                .get(&artifact.path)
+                .ok_or_else(|| BundleError::MissingFile {
+                    path: artifact.path.filesystem_path(root.as_ref()),
+                })?;
             let digest = Sha256Digest::of(bytes);
-            if digest != participant.binary.digest {
+            if digest != artifact.digest {
                 return Err(BundleError::Integrity {
-                    path: participant.binary.path.filesystem_path(root.as_ref()),
-                    expected: participant.binary.digest,
+                    path: artifact.path.filesystem_path(root.as_ref()),
+                    expected: artifact.digest,
                     actual: digest,
                 });
             }
@@ -1516,9 +1564,9 @@ fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleErr
     }
 
     let expected_binaries = runtime
-        .participants
-        .iter()
-        .map(|participant| participant.binary.path.clone())
+        .artifacts
+        .values()
+        .map(|artifact| artifact.path.clone())
         .collect::<BTreeSet<_>>();
     let mut actual_binaries = BTreeSet::new();
     let mut actual_binary_directories = BTreeSet::new();
@@ -1541,8 +1589,8 @@ fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleErr
             });
         }
     }
-    for participant in &runtime.participants {
-        verify_binary(root, &participant.binary)?;
+    for artifact in runtime.artifacts.values() {
+        verify_binary(root, artifact)?;
     }
     Ok(())
 }
@@ -2013,10 +2061,10 @@ mod tests {
     use phoxal_model::builder::Kinematics;
     use phoxal_model::component::capability::{Capability, Motor, MotorCommand, StructuralTarget};
     use phoxal_model::identity::JointId;
-    use phoxal_runtime_contract::metadata::ParticipantKind;
-    use phoxal_runtime_contract::version::{
-        BusAbi, ComponentSchema, LaunchAbi, RobotSchema, SimulationSchema,
+    use phoxal_runtime_contract::metadata::{
+        ParticipantContract, ParticipantKind, ParticipantSchemas,
     };
+    use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
 
     type StagedBytes = (
         RuntimeDocument,
@@ -2036,6 +2084,7 @@ mod tests {
         let binary_bytes = b"not an executable in the unit test".to_vec();
         let mut binaries = BTreeMap::new();
         binaries.insert(binary_path, binary_bytes.clone());
+        let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
         let binary = BinaryReference::from_bytes(
             BundlePath::new("bin/drive").expect("binary path"),
             BuildFacts {
@@ -2043,16 +2092,14 @@ mod tests {
                 target: "host".to_string(),
                 profile: "debug".to_string(),
             },
-            BinaryCompatibility {
-                participant_id: ParticipantId::new("drive").expect("participant id"),
+            ParticipantContract {
+                id: artifact_id.clone(),
                 kind: ParticipantKind::Service,
                 api: RobotApi::V0_2,
                 schemas: ParticipantSchemas {
                     bus: BusAbi::V0,
                     launch: LaunchAbi::V0,
-                    robot: RobotSchema::V0,
-                    component: ComponentSchema::V0,
-                    simulation: SimulationSchema::V0,
+                    runtime: RuntimeSchema::V0,
                 },
                 requirement: None,
                 config_schema: serde_json::json!({"type":"null"}),
@@ -2061,19 +2108,21 @@ mod tests {
         );
         let participant = RuntimeParticipant {
             id: ParticipantId::new("drive").expect("participant id"),
-            kind: ParticipantKind::Service,
-            binary,
+            artifact: artifact_id.clone(),
             startup: StartupRequirement {
                 required: true,
                 ready: true,
             },
             config: None,
             binding: None,
-            clock: ClockMode::Real,
+            clock: ParticipantClock::Real,
         };
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(artifact_id, binary);
         let index = AssetIndex::from_bytes(&assets).expect("asset index");
         let document = RuntimeDocument::new(Runtime {
             robot,
+            artifacts,
             participants: vec![participant],
             assets: index,
             router: None,
@@ -2166,8 +2215,13 @@ mod tests {
         let (document, assets, binaries) = document();
         let RuntimeDocument::V0(mut runtime) = document;
         runtime.robot = robot;
-        runtime.participants[0].binary.compatibility.requirement =
-            Some(ParticipantRequirement::DifferentialDriveVelocity);
+        runtime
+            .artifacts
+            .values_mut()
+            .next()
+            .unwrap()
+            .contract
+            .requirement = Some(ParticipantRequirement::DifferentialDriveVelocity);
         let document = RuntimeDocument::new(runtime).expect("requirement document is valid");
         (document, assets, binaries)
     }
@@ -2190,8 +2244,13 @@ mod tests {
                 let (base, assets, binaries) = document();
                 let RuntimeDocument::V0(mut runtime) = base;
                 runtime.robot = topology_robot(kind);
-                runtime.participants[0].binary.compatibility.requirement =
-                    Some(ParticipantRequirement::DifferentialDriveVelocity);
+                runtime
+                    .artifacts
+                    .values_mut()
+                    .next()
+                    .unwrap()
+                    .contract
+                    .requirement = Some(ParticipantRequirement::DifferentialDriveVelocity);
                 (RuntimeDocument::V0(runtime), assets, binaries)
             };
             assert!(matches!(
@@ -2218,8 +2277,13 @@ mod tests {
             let (base, _, _) = document();
             let RuntimeDocument::V0(mut runtime) = base;
             runtime.robot = motor_robot(left, right);
-            runtime.participants[0].binary.compatibility.requirement =
-                Some(ParticipantRequirement::DifferentialDriveVelocity);
+            runtime
+                .artifacts
+                .values_mut()
+                .next()
+                .unwrap()
+                .contract
+                .requirement = Some(ParticipantRequirement::DifferentialDriveVelocity);
             let document = RuntimeDocument::V0(runtime);
             assert!(matches!(
                 document.validate(),
@@ -2257,7 +2321,7 @@ mod tests {
         let value = serde_json::to_value(&document).expect("document serializes");
         assert_eq!(value["schema"], RUNTIME_SCHEMA);
         assert_eq!(
-            value["participants"][0]["binary"]["compatibility"]["requirement"],
+            value["artifacts"]["drive"]["contract"]["requirement"],
             serde_json::Value::Null,
             "legacy-compatible documents omit static requirements"
         );
@@ -2289,10 +2353,38 @@ mod tests {
     }
 
     #[test]
+    fn multiple_participant_instances_may_share_one_artifact() {
+        let (document, _, _) = document();
+        let RuntimeDocument::V0(mut runtime) = document;
+        let artifact = runtime.participants[0].artifact.clone();
+        runtime.participants.push(RuntimeParticipant {
+            id: ParticipantId::new("drive-rear").expect("participant id"),
+            artifact: artifact.clone(),
+            startup: StartupRequirement {
+                required: true,
+                ready: true,
+            },
+            config: None,
+            binding: None,
+            clock: ParticipantClock::Real,
+        });
+
+        let document = RuntimeDocument::new(runtime).expect("shared artifact is valid");
+        assert_eq!(document.artifacts().len(), 1);
+        assert_eq!(document.participants().len(), 2);
+        assert!(
+            document
+                .participants()
+                .iter()
+                .all(|participant| participant.artifact == artifact)
+        );
+    }
+
+    #[test]
     fn runtime_json_without_requirement_remains_legacy_compatible() {
         let (document, _, _) = document();
         let mut value = serde_json::to_value(&document).expect("document serializes");
-        value["participants"][0]["binary"]["compatibility"]
+        value["artifacts"]["drive"]["contract"]
             .as_object_mut()
             .expect("compatibility is an object")
             .remove("requirement");
@@ -2301,7 +2393,9 @@ mod tests {
             .expect("v0 runtime documents without the additive field remain readable");
         let RuntimeDocument::V0(runtime) = decoded;
         assert_eq!(
-            runtime.participants[0].binary.compatibility.requirement,
+            runtime.artifacts[&ParticipantArtifactId::new("drive").unwrap()]
+                .contract
+                .requirement,
             None
         );
     }

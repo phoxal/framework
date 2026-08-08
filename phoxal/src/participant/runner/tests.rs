@@ -14,9 +14,9 @@ use crate::participant::managed::{
     ManagedTaskExit, ManagedTaskFailure, ManagedTaskPolicy, ManagedTasks,
 };
 use crate::participant::scheduler::AnyStepScheduler;
+use phoxal_bundle::ParticipantClock;
 use phoxal_bus::{BusConfig, BusOwner};
 use phoxal_runtime_contract::identity::ParticipantId;
-use phoxal_runtime_contract::launch::ClockMode;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -221,7 +221,7 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
     .await
     .expect("open in-process bus");
     let (scheduler, clock_handle) = AnyStepScheduler::for_clock_mode(
-        ClockMode::Real,
+        ParticipantClock::Real,
         None,
         Some(RobotInstant::new(
             TimelineId::from_raw(1).expect("valid timeline"),
@@ -250,7 +250,7 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
                 clock: RunnerClock::Delegated(clock),
                 scheduler,
                 schedule: None,
-                clock_mode: ClockMode::Real,
+                clock_mode: ParticipantClock::Real,
                 tasks: RunnerTasks {
                     simulation_clock: None,
                     bus_log: bus_log_task,

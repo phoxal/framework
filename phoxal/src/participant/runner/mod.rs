@@ -22,7 +22,7 @@ use crate::participant::launch::SupervisedLaunch;
 #[cfg(feature = "test-harness")]
 use crate::testing::TestHarness;
 #[cfg(feature = "test-harness")]
-use phoxal_runtime_contract::launch::ClockMode;
+use phoxal_bundle::ParticipantClock;
 
 pub(crate) mod event_loop;
 pub(crate) mod executable;
@@ -156,7 +156,7 @@ where
     let query_reply_delay = harness.query_reply_delay;
     let clock = RealClock::new(harness.execution_origin)?;
     let config = inputs::participant_config::<R::Config>(None)?;
-    startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
+    startup::validate_clock_inputs::<R, _>(ParticipantClock::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(
         PreparedRun::<R, RealClock> {
@@ -166,7 +166,7 @@ where
             shutdown_grace: harness.shutdown_grace,
             bundle: None,
             config,
-            clock_mode: ClockMode::Real,
+            clock_mode: ParticipantClock::Real,
             clock: Some(clock),
             query_reply_delay,
         },
@@ -194,7 +194,7 @@ where
     bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
     let config = inputs::participant_config::<R::Config>(None)?;
-    startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
+    startup::validate_clock_inputs::<R, _>(ParticipantClock::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(
         PreparedRun::<R, C> {
@@ -204,7 +204,7 @@ where
             shutdown_grace: harness.shutdown_grace,
             bundle: None,
             config,
-            clock_mode: ClockMode::Real,
+            clock_mode: ParticipantClock::Real,
             clock: Some(clock),
             query_reply_delay,
         },

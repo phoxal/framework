@@ -205,10 +205,10 @@ pub mod bus {
 /// tool embedding the framework to inspect a bundle it did not launch.
 pub mod bundle {
     pub use phoxal_bundle::{
-        AssetIndex, AssetRecord, BinaryCompatibility, BinaryReference, BuildFacts, BundleError,
-        BundlePath, BundlePathError, BundleWriter, ComponentBinding, DocumentError,
-        ParticipantAssets, ParticipantRuntimeInputs, Runtime, RuntimeBundle, RuntimeDocument,
-        RuntimeParticipant, RuntimeRouterConfig, Sha256Digest, StartupRequirement,
+        AssetIndex, AssetRecord, BinaryReference, BuildFacts, BundleError, BundlePath,
+        BundlePathError, BundleWriter, ComponentBinding, DocumentError, ParticipantArtifactId,
+        ParticipantAssets, ParticipantClock, ParticipantRuntimeInputs, Runtime, RuntimeBundle,
+        RuntimeDocument, RuntimeParticipant, RuntimeRouterConfig, Sha256Digest, StartupRequirement,
     };
 }
 
@@ -329,9 +329,7 @@ pub mod __private {
     /// inferred from package names or a service registry.
     pub mod compatibility {
         use phoxal_runtime_contract::metadata::ParticipantRequirement;
-        use phoxal_runtime_contract::version::{
-            BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema,
-        };
+        use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
 
         /// The train-selected API revision (`phoxal::api`).
         pub const API: RobotApi = RobotApi::V0_2;
@@ -339,12 +337,8 @@ pub mod __private {
         pub const BUS: BusAbi = BusAbi::V0;
         /// The process launch compatibility identity.
         pub const LAUNCH: LaunchAbi = LaunchAbi::V0;
-        /// The authored robot document grammar.
-        pub const ROBOT: RobotSchema = RobotSchema::V0;
-        /// The authored component document grammar.
-        pub const COMPONENT: ComponentSchema = ComponentSchema::V0;
-        /// The authored simulation document grammar.
-        pub const SIMULATION: SimulationSchema = SimulationSchema::V0;
+        /// The compiled runtime document grammar.
+        pub const RUNTIME: RuntimeSchema = RuntimeSchema::V0;
         /// The default declaration for participants without a static topology
         /// requirement.
         pub const NO_REQUIREMENT: Option<ParticipantRequirement> = None;
@@ -368,7 +362,7 @@ pub mod __private {
     pub use crate::participant::spec::ParticipantSpec;
 
     /// The authoring kind a role attribute records in `ParticipantSpec::KIND`.
-    pub use phoxal_runtime_contract::metadata::ParticipantKind;
+    pub use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantRequirement};
 
     /// The cadence `#[phoxal::step(hz = …)]` returns from
     /// `Participant::__step_schedule`.

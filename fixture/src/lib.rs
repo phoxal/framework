@@ -14,19 +14,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use phoxal_bundle::{
-    AssetIndex, BinaryCompatibility, BinaryReference, BuildFacts, BundlePath, BundleWriter,
-    ComponentBinding, Runtime, RuntimeBundle, RuntimeDocument, RuntimeParticipant,
+    AssetIndex, BinaryReference, BuildFacts, BundlePath, BundleWriter, ComponentBinding,
+    ParticipantClock, Runtime, RuntimeBundle, RuntimeDocument, RuntimeParticipant,
     StartupRequirement,
 };
 use phoxal_manifest::{SourceSet, source};
 use phoxal_model::identity::ComponentInstanceId;
 use phoxal_model::{Clock, Robot};
-use phoxal_runtime_contract::identity::ParticipantId;
-use phoxal_runtime_contract::launch::ClockMode;
-use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantSchemas};
-use phoxal_runtime_contract::version::{
-    BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema,
-};
+use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
+use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind, ParticipantSchemas};
+use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
 use tempfile::TempDir;
 
 fn authored_root() -> &'static Path {
@@ -78,54 +75,58 @@ pub fn staged_bundle() -> StagedBundle {
     let asset_index = AssetIndex::from_bytes(&assets).expect("fixture asset index");
 
     let clock = match robot.clock() {
-        Clock::Real => ClockMode::Real,
-        Clock::Simulated => ClockMode::Simulation,
+        Clock::Real => ParticipantClock::Real,
+        Clock::Simulated => ParticipantClock::Simulation,
     };
     let mut participants = Vec::new();
+    let mut artifacts = BTreeMap::new();
     let mut binaries = BTreeMap::new();
     let mut stage_participant =
-        |rendered_id: String,
+        |artifact_name: String,
+         participant_name: String,
          kind: ParticipantKind,
          config: Option<serde_json::Value>,
          component_instance: Option<ComponentInstanceId>| {
-            let participant_id = ParticipantId::new(rendered_id)
-                .expect("the compiler emitted a normalized participant id");
-            let bytes = format!("fixture binary {}", participant_id.as_str()).into_bytes();
-            let binary_path =
-                BundlePath::new(format!("bin/{}", participant_id.as_str())).expect("binary path");
-            let config_schema = if config.is_some() {
-                serde_json::json!({})
-            } else {
-                serde_json::json!({"type": "null"})
-            };
-            let binary = BinaryReference::from_bytes(
-                binary_path.clone(),
-                BuildFacts {
-                    package: format!("fixture-{}", participant_id.as_str()),
-                    target: "host".to_string(),
-                    profile: "debug".to_string(),
-                },
-                BinaryCompatibility {
-                    participant_id: participant_id.clone(),
-                    kind,
-                    api: RobotApi::V0_2,
-                    schemas: ParticipantSchemas {
-                        bus: BusAbi::V0,
-                        launch: LaunchAbi::V0,
-                        robot: RobotSchema::V0,
-                        component: ComponentSchema::V0,
-                        simulation: SimulationSchema::V0,
+            let artifact_id = ParticipantArtifactId::new(artifact_name)
+                .expect("the compiler emitted a normalized artifact id");
+            let participant_id = ParticipantId::new(participant_name)
+                .expect("the assembler emitted a normalized participant id");
+            if !artifacts.contains_key(&artifact_id) {
+                let bytes = format!("fixture binary {}", artifact_id.as_str()).into_bytes();
+                let binary_path =
+                    BundlePath::new(format!("bin/{}", artifact_id.as_str())).expect("binary path");
+                let config_schema = if config.is_some() {
+                    serde_json::json!({})
+                } else {
+                    serde_json::json!({"type": "null"})
+                };
+                let binary = BinaryReference::from_bytes(
+                    binary_path.clone(),
+                    BuildFacts {
+                        package: format!("fixture-{}", artifact_id.as_str()),
+                        target: "host".to_string(),
+                        profile: "debug".to_string(),
                     },
-                    requirement: None,
-                    config_schema,
-                },
-                &bytes,
-            );
-            binaries.insert(binary_path, bytes);
+                    ParticipantContract {
+                        id: artifact_id.clone(),
+                        kind,
+                        api: RobotApi::V0_2,
+                        schemas: ParticipantSchemas {
+                            bus: BusAbi::V0,
+                            launch: LaunchAbi::V0,
+                            runtime: RuntimeSchema::V0,
+                        },
+                        requirement: None,
+                        config_schema,
+                    },
+                    &bytes,
+                );
+                binaries.insert(binary_path, bytes);
+                artifacts.insert(artifact_id.clone(), binary);
+            }
             participants.push(RuntimeParticipant {
                 id: participant_id,
-                kind,
-                binary,
+                artifact: artifact_id,
                 startup: StartupRequirement {
                     required: true,
                     ready: true,
@@ -137,39 +138,43 @@ pub fn staged_bundle() -> StagedBundle {
             });
         };
     for service in services {
-        stage_participant(service.id, ParticipantKind::Service, service.config, None);
+        stage_participant(
+            service.id.clone(),
+            service.id,
+            ParticipantKind::Service,
+            service.config,
+            None,
+        );
     }
     for driver in drivers {
         let instance = robot
             .component_instance(driver.component_instance.as_str())
             .expect("a compiled driver must bind a canonical component instance");
-        let rendered_id = format!("{}-{}", instance.component_type(), instance.id());
+        let artifact = instance.component_type().to_string();
         stage_participant(
-            rendered_id,
+            artifact.clone(),
+            format!("{artifact}-{}", instance.id()),
             ParticipantKind::Driver,
             Some(serde_json::to_value(driver.config).expect("driver config is serializable")),
             Some(driver.component_instance),
         );
     }
-    // Simulator membership is a canonical Robot fact. The tooling assembler
-    // selects simulator processes from it here; the source compiler does not
-    // invent a process declaration for every component with simulation.yaml.
-    for instance in robot.components() {
-        if robot
+    if robot.components().any(|instance| {
+        robot
             .simulation_for_instance(instance.id().as_str())
             .is_some()
-        {
-            let rendered_id = format!("{}-{}", instance.component_type(), instance.id());
-            stage_participant(
-                rendered_id,
-                ParticipantKind::Simulator,
-                None,
-                Some(instance.id().clone()),
-            );
-        }
+    }) {
+        stage_participant(
+            "webots-controller".to_string(),
+            "webots-controller".to_string(),
+            ParticipantKind::Simulator,
+            None,
+            None,
+        );
     }
     let document = RuntimeDocument::new(Runtime {
         robot,
+        artifacts,
         participants,
         assets: asset_index,
         router: None,
