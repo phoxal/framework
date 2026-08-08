@@ -694,6 +694,10 @@ pub enum BundleError {
     NotDirectory(PathBuf),
     #[error("bundle target already exists: {0}")]
     TargetExists(PathBuf),
+    #[error("secure no-follow opening is unsupported for bundle file {path}")]
+    UnsupportedSecureOpen { path: PathBuf },
+    #[error("atomic no-replace publication is unsupported for bundle target {path}")]
+    UnsupportedAtomicPublish { path: PathBuf },
     #[error("failed to read runtime document {}: {source}", path.display())]
     ReadDocument {
         path: PathBuf,
@@ -1175,10 +1179,75 @@ fn ensure_staging_ancestors(root: &Path, path: &Path) -> Result<(), BundleError>
 }
 
 fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
-    std::fs::rename(staged, target).map_err(|source| BundleError::ReadFile {
-        path: target.to_path_buf(),
-        source,
-    })
+    let target_path = target.to_path_buf();
+    let staged = std::ffi::CString::new(staged.as_os_str().as_encoded_bytes()).map_err(|_| {
+        BundleError::UnsupportedEntry {
+            path: staged.to_path_buf(),
+        }
+    })?;
+    let target = std::ffi::CString::new(target.as_os_str().as_encoded_bytes()).map_err(|_| {
+        BundleError::UnsupportedEntry {
+            path: target.to_path_buf(),
+        }
+    })?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let result = unsafe {
+            // SAFETY: both paths are NUL-free C strings. renameat2 performs
+            // the destination existence check and rename as one syscall.
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                staged.as_ptr(),
+                libc::AT_FDCWD,
+                target.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        map_no_replace_result(result, target_path)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let result = unsafe {
+            // SAFETY: both paths are NUL-free C strings. renameatx_np with
+            // RENAME_EXCL performs the destination existence check and rename
+            // as one kernel operation.
+            libc::renameatx_np(
+                libc::AT_FDCWD,
+                staged.as_ptr(),
+                libc::AT_FDCWD,
+                target.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        };
+        map_no_replace_result(result as libc::c_long, target_path)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = staged;
+        Err(BundleError::UnsupportedAtomicPublish { path: target_path })
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn map_no_replace_result(result: libc::c_long, target: PathBuf) -> Result<(), BundleError> {
+    if result == 0 {
+        return Ok(());
+    }
+    let source = std::io::Error::last_os_error();
+    match source.raw_os_error() {
+        Some(libc::EEXIST) => Err(BundleError::TargetExists(target)),
+        Some(libc::ENOSYS | libc::EINVAL | libc::ENOTSUP) => {
+            Err(BundleError::UnsupportedAtomicPublish { path: target })
+        }
+        _ => Err(BundleError::ReadFile {
+            path: target,
+            source,
+        }),
+    }
 }
 
 fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
@@ -1505,30 +1574,11 @@ fn open_bundle_file(root: &Path, path: &BundlePath) -> Result<std::fs::File, Bun
     }
     #[cfg(not(unix))]
     {
-        // Windows and other supported platforms do not expose a portable
-        // std-only openat/O_NOFOLLOW equivalent. RuntimeBundle has already
-        // rejected symlinks during layout validation; immediately checking
-        // metadata before this open is the documented best-effort fence.
-        let metadata = std::fs::symlink_metadata(&filesystem_path).map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                BundleError::MissingFile {
-                    path: filesystem_path.clone(),
-                }
-            } else {
-                BundleError::ReadFile {
-                    path: filesystem_path.clone(),
-                    source,
-                }
-            }
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(BundleError::ForbiddenSymlink {
-                path: filesystem_path,
-            });
-        }
-        std::fs::File::open(&filesystem_path).map_err(|source| BundleError::ReadFile {
+        // No std-only API can bind every component to a no-follow directory
+        // handle on these targets. Refuse the access rather than converting an
+        // lstat/open check into a false security guarantee.
+        Err(BundleError::UnsupportedSecureOpen {
             path: filesystem_path,
-            source,
         })
     }
 }
@@ -1825,6 +1875,49 @@ mod tests {
         assert!(matches!(
             RuntimeBundle::open(&root),
             Err(BundleError::UnindexedDirectory { .. })
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn no_replace_publication_preserves_target_created_after_staging() {
+        let parent = tempfile::tempdir().expect("publication parent");
+        let staged = parent.path().join(".bundle.staging");
+        let target = parent.path().join("bundle");
+        std::fs::create_dir(&staged).expect("staging directory");
+        std::fs::write(staged.join("new"), b"new bundle").expect("staged marker");
+
+        // This target is created after staging, standing in for a concurrent
+        // publisher winning the check-to-publish race.
+        std::fs::create_dir(&target).expect("concurrent target");
+        std::fs::write(target.join("sentinel"), b"existing bundle").expect("target sentinel");
+
+        assert!(matches!(
+            publish_staging_root(&staged, &target),
+            Err(BundleError::TargetExists(path)) if path == target
+        ));
+        assert_eq!(
+            std::fs::read(target.join("sentinel")).expect("sentinel remains"),
+            b"existing bundle"
+        );
+        assert!(
+            staged.exists(),
+            "failed publication retains staging for cleanup"
+        );
+        assert!(!target.join("new").exists(), "target was never replaced");
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn unsupported_platforms_fail_closed_for_asset_open() {
+        let root = tempfile::tempdir().expect("bundle root");
+        let path = root.path().join(ASSETS_DIR).join("asset");
+        std::fs::create_dir_all(path.parent().expect("asset parent")).expect("asset directory");
+        std::fs::write(&path, b"asset").expect("asset file");
+        let bundle_path = BundlePath::new("assets/asset").expect("bundle path");
+        assert!(matches!(
+            open_bundle_file(root.path(), &bundle_path),
+            Err(BundleError::UnsupportedSecureOpen { .. })
         ));
     }
 
