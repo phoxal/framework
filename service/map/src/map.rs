@@ -251,6 +251,7 @@ impl Map {
     async fn submap(
         &self,
         _api: &Api,
+        _query: QueryContext,
         request: api::map::SubmapRequest,
         state: &mut MapState,
     ) -> QueryResult<api::map::SubmapResponse> {

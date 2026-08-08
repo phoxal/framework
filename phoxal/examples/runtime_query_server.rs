@@ -37,6 +37,7 @@ impl AssetStore {
     async fn get(
         &self,
         _api: &Api,
+        _query: QueryContext,
         request: api::supervisor::asset::GetRequest,
         state: &mut AssetStoreState,
     ) -> QueryResult<api::supervisor::asset::GetResponse> {

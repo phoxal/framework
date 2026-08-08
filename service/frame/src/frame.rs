@@ -162,6 +162,7 @@ impl Frame {
     async fn lookup(
         &self,
         _api: &Api,
+        _query: QueryContext,
         request: api::frame::LookupRequest,
         state: &mut FrameState,
     ) -> QueryResult<api::frame::LookupResponse> {

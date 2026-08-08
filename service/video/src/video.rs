@@ -110,6 +110,7 @@ impl Video {
     async fn open(
         &self,
         _api: &Api,
+        _query: QueryContext,
         request: api::video::OpenRequest,
         state: &mut VideoState,
     ) -> QueryResult<api::video::OpenOutcome> {

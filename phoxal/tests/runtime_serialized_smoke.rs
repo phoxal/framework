@@ -55,6 +55,7 @@ impl SerializedSmoke {
     async fn query(
         &self,
         _api: &(),
+        _query: QueryContext,
         _request: api::supervisor::asset::GetRequest,
         state: &mut SmokeState,
     ) -> QueryResult<api::supervisor::asset::GetResponse> {

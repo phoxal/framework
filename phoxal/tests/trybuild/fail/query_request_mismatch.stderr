@@ -7,13 +7,14 @@ error[E0631]: type mismatch in function arguments
 22 | /     async fn get(
 23 | |         &self,
 24 | |         _api: &Api,
-25 | |         _request: api::map::SubmapRequest,
-26 | |         _state: &mut (),
-27 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
+25 | |         _query: QueryContext,
+26 | |         _request: api::map::SubmapRequest,
+27 | |         _state: &mut (),
+28 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
    | |_________________________________________________________- found signature defined here
    |
-   = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, GetRequest, &'a mut ())) -> _`
-              found function signature `fn((&BadRequest, &Api, SubmapRequest, &mut ())) -> _`
+   = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, phoxal::QueryContext, GetRequest, &'a mut ())) -> _`
+              found function signature `fn((&BadRequest, &Api, phoxal::QueryContext, SubmapRequest, &mut ())) -> _`
 note: required by a bound in `phoxal::SetupContext::<R>::query`
   --> src/participant/context.rs
    |
@@ -24,14 +25,15 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    |  ____________^
    | |                 &'a R,
    | |                 &'a R::Api,
+   | |                 QueryContext,
    | |                 Req,
    | |                 &'a mut R::State,
    | |             ) -> crate::bus::QueryResult<Resp>
    | |______________________________________________^ required by this bound in `SetupContext::<R>::query`
 help: consider wrapping the function in a closure
    |
-15 |         ctx.query(api::topic::owner().supervisor().asset().get(), |arg0: (&'a BadRequest, &'a Api, GetRequest, &'a mut ())| Self::get(/* (&BadRequest, &Api, SubmapRequest, &mut ()) */))
-   |                                                                   +++++++++++++++++++++++++++++++++++++++++++++++++++++++++          +++++++++++++++++++++++++++++++++++++++++++++++++++
+15 |         ctx.query(api::topic::owner().supervisor().asset().get(), |arg0: (&'a BadRequest, &'a Api, phoxal::QueryContext, GetRequest, &'a mut ())| Self::get(/* (&BadRequest, &Api, phoxal::QueryContext, SubmapRequest, &mut ()) */))
+   |                                                                   +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++          +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 error[E0631]: type mismatch in function arguments
   --> tests/trybuild/fail/query_request_mismatch.rs:15:9
@@ -42,13 +44,14 @@ error[E0631]: type mismatch in function arguments
 22 | /     async fn get(
 23 | |         &self,
 24 | |         _api: &Api,
-25 | |         _request: api::map::SubmapRequest,
-26 | |         _state: &mut (),
-27 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
+25 | |         _query: QueryContext,
+26 | |         _request: api::map::SubmapRequest,
+27 | |         _state: &mut (),
+28 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
    | |_________________________________________________________- found signature defined here
    |
-   = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, GetRequest, &'a mut ())) -> _`
-              found function signature `fn((&BadRequest, &Api, SubmapRequest, &mut ())) -> _`
+   = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, phoxal::QueryContext, GetRequest, &'a mut ())) -> _`
+              found function signature `fn((&BadRequest, &Api, phoxal::QueryContext, SubmapRequest, &mut ())) -> _`
 note: required by a bound in `phoxal::SetupContext::<R>::query`
   --> src/participant/context.rs
    |
@@ -59,6 +62,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    |  ____________^
    | |                 &'a R,
    | |                 &'a R::Api,
+   | |                 QueryContext,
    | |                 Req,
    | |                 &'a mut R::State,
    | |             ) -> crate::bus::QueryResult<Resp>
@@ -73,13 +77,14 @@ error[E0631]: type mismatch in function arguments
 22 | /     async fn get(
 23 | |         &self,
 24 | |         _api: &Api,
-25 | |         _request: api::map::SubmapRequest,
-26 | |         _state: &mut (),
-27 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
+25 | |         _query: QueryContext,
+26 | |         _request: api::map::SubmapRequest,
+27 | |         _state: &mut (),
+28 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
    | |_________________________________________________________- found signature defined here
    |
-   = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, GetRequest, &'a mut ())) -> _`
-              found function signature `fn((&BadRequest, &Api, SubmapRequest, &mut ())) -> _`
+   = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, phoxal::QueryContext, GetRequest, &'a mut ())) -> _`
+              found function signature `fn((&BadRequest, &Api, phoxal::QueryContext, SubmapRequest, &mut ())) -> _`
 note: required by a bound in `phoxal::SetupContext::<R>::query`
   --> src/participant/context.rs
    |
@@ -90,6 +95,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    |  ____________^
    | |                 &'a R,
    | |                 &'a R::Api,
+   | |                 QueryContext,
    | |                 Req,
    | |                 &'a mut R::State,
    | |             ) -> crate::bus::QueryResult<Resp>

@@ -52,8 +52,6 @@ fn every_command_topic_is_classified() {
         ("v0.2::motion::ManualCommand", "leased"),
         ("v0.2::drive::Target", "internal actuation"),
         ("v0.2::component::motor::Command", "internal actuation"),
-        ("v0.2::power::Command", "one-shot"),
-        ("v0.2::navigation::Request", "one-shot"),
         ("v0.2::component::led::Command", "one-shot"),
     ];
 

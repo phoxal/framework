@@ -20,7 +20,7 @@ use std::ops::AsyncFn;
 use std::pin::Pin;
 
 use crate::bus::{Codec, ContractBody, MessagePack, QueryFailure};
-use crate::participant::context::{ResetContext, SetupContext, StepContext};
+use crate::participant::context::{QueryContext, ResetContext, SetupContext, StepContext};
 use crate::participant::scheduler::StepSchedule;
 
 /// Const-eval plumbing the participant attribute macros
@@ -353,6 +353,7 @@ impl<R: Participant> QueryRegistration<R> {
         H: for<'a> AsyncFn(
                 &'a R,
                 &'a R::Api,
+                QueryContext,
                 Req,
                 &'a mut R::State,
             ) -> crate::bus::QueryResult<Resp>
@@ -377,11 +378,12 @@ impl<R: Participant> QueryRegistration<R> {
         &self,
         participant: &R,
         api: &R::Api,
+        query_context: QueryContext,
         state: &mut R::State,
         request: Vec<u8>,
     ) -> ServerOutcome {
         self.handler
-            .dispatch(participant, api, state, request)
+            .dispatch(participant, api, query_context, state, request)
             .await
     }
 }
@@ -391,6 +393,7 @@ trait ErasedQueryHandler<R: Participant>: Send + Sync {
         &'a self,
         participant: &'a R,
         api: &'a R::Api,
+        query_context: QueryContext,
         state: &'a mut R::State,
         request: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = ServerOutcome> + 'a>>;
@@ -406,7 +409,13 @@ where
     R: Participant,
     Req: ContractBody,
     Resp: ContractBody,
-    H: for<'a> AsyncFn(&'a R, &'a R::Api, Req, &'a mut R::State) -> crate::bus::QueryResult<Resp>
+    H: for<'a> AsyncFn(
+            &'a R,
+            &'a R::Api,
+            QueryContext,
+            Req,
+            &'a mut R::State,
+        ) -> crate::bus::QueryResult<Resp>
         + Send
         + Sync
         + 'static,
@@ -415,6 +424,7 @@ where
         &'a self,
         participant: &'a R,
         api: &'a R::Api,
+        query_context: QueryContext,
         state: &'a mut R::State,
         request: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = ServerOutcome> + 'a>> {
@@ -425,7 +435,7 @@ where
                     Req::TOPIC
                 ))
             })?;
-            let response = (self.handler)(participant, api, request, state).await?;
+            let response = (self.handler)(participant, api, query_context, request, state).await?;
             let payload = MessagePack::encode(&response).map_err(|error| {
                 QueryFailure::internal(format!(
                     "encode query response for '{}': {error}",
@@ -478,6 +488,7 @@ mod tests {
     #[derive(Default)]
     struct QueryState {
         calls: Vec<String>,
+        requesters: Vec<phoxal_bus::ProducerId>,
     }
 
     #[phoxal::service(id = "query-test", state = QueryState, api = Api)]
@@ -497,10 +508,12 @@ mod tests {
         async fn get(
             &self,
             _api: &Api,
+            query: QueryContext,
             request: api::supervisor::asset::GetRequest,
             state: &mut QueryState,
         ) -> QueryResult<api::supervisor::asset::GetResponse> {
             state.calls.push(request.path.clone());
+            state.requesters.push(query.producer());
             if request.path == "ok" {
                 Ok(api::supervisor::asset::GetResponse::Found {
                     bytes: vec![1, 2, 3],
@@ -520,13 +533,21 @@ mod tests {
         let participant = QueryParticipant;
         let api = Api;
         let mut state = QueryState::default();
+        let first_producer = phoxal_bus::ProducerId::mint();
+        let second_producer = phoxal_bus::ProducerId::mint();
 
         let first = MessagePack::encode(&api::supervisor::asset::GetRequest {
             path: "ok".to_string(),
         })
         .unwrap();
         let reply = registration
-            .dispatch(&participant, &api, &mut state, first)
+            .dispatch(
+                &participant,
+                &api,
+                QueryContext::new(first_producer),
+                &mut state,
+                first,
+            )
             .await
             .unwrap();
         let response: api::supervisor::asset::GetResponse =
@@ -541,10 +562,17 @@ mod tests {
         })
         .unwrap();
         let failure = registration
-            .dispatch(&participant, &api, &mut state, second)
+            .dispatch(
+                &participant,
+                &api,
+                QueryContext::new(second_producer),
+                &mut state,
+                second,
+            )
             .await
             .unwrap_err();
         assert_eq!(failure.code, QueryCode::NotFound);
         assert_eq!(state.calls, ["ok", "missing"]);
+        assert_eq!(state.requesters, [first_producer, second_producer]);
     }
 }

@@ -2447,15 +2447,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-service-power"
-version = "0.55.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "tokio",
-]
-
-[[package]]
 name = "phoxal-service-safety"
 version = "0.55.0"
 dependencies = [

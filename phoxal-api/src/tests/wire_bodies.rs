@@ -5,6 +5,10 @@
 use super::{instant, round_trip};
 use crate::{v0_1 as legacy, v0_2 as api};
 
+fn producer(value: u128) -> phoxal_bus::ProducerId {
+    phoxal_bus::ProducerId::try_from((1_u128 << 124) | value).expect("canonical producer")
+}
+
 #[test]
 fn historic_v0_1_control_bodies_round_trip_without_shape_translation() {
     let target = legacy::drive::Target {
@@ -379,6 +383,10 @@ fn current_perception_detection_rejects_nonfinite_and_wrong_shape_values() {
 #[test]
 fn navigation_and_safety_wire_shapes_are_golden() {
     let navigation = api::navigation::Result {
+        operation_id: api::navigation::NavigationOperationId {
+            producer: producer(90),
+            sequence: 4,
+        },
         request_id: api::navigation::RequestId {
             value: "nav-1".to_string(),
         },
@@ -387,6 +395,10 @@ fn navigation_and_safety_wire_shapes_are_golden() {
     assert_eq!(
         serde_json::to_value(&navigation).unwrap(),
         serde_json::json!({
+            "operation_id": {
+                "producer": serde_json::to_value(producer(90)).unwrap(),
+                "sequence": 4
+            },
             "request_id": {"value": "nav-1"},
             "outcome": {"Failed": "blocked"}
         })
@@ -432,7 +444,7 @@ fn navigation_and_safety_reject_malformed_payloads() {
         angular_z_radps: 0.2,
     })
     .unwrap();
-    assert!(rmp_serde::from_slice::<api::navigation::Request>(&wrong).is_err());
+    assert!(rmp_serde::from_slice::<api::navigation::StartRequest>(&wrong).is_err());
     assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&wrong).is_err());
 }
 
@@ -520,8 +532,8 @@ fn domain_bodies_round_trip_through_messagepack() {
             stamp: Some(instant(10)),
         }],
     });
-    round_trip(&api::power::State {
-        status: api::power::Status::Idle,
+    round_trip(&legacy::power::State {
+        status: legacy::power::Status::Idle,
         detail: None,
     });
     for decision in [
@@ -590,8 +602,9 @@ fn domain_bodies_round_trip_through_messagepack() {
         map_revision: Some(3),
     });
     round_trip(&api::navigation::State::Running(
-        api::navigation::RequestId {
-            value: "request-1".to_string(),
+        api::navigation::NavigationOperationId {
+            producer: producer(91),
+            sequence: 1,
         },
     ));
     round_trip(&legacy::perception::Detections {

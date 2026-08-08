@@ -21,6 +21,30 @@ use phoxal_bus::{BusHandle, TimelineAuthority, WorldClockPublisher};
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 
+/// Trusted requester provenance for one admitted query.
+///
+/// The runner constructs this only after decoding and validating the bus
+/// metadata attachment.  Request bodies therefore never need to carry a
+/// caller identity field that could disagree with the source session.  The
+/// transport's participant/topology label deliberately stays inside the
+/// framework boundary; handlers receive only the producer identity that is
+/// authoritative for requester ownership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryContext {
+    producer: phoxal_bus::ProducerId,
+}
+
+impl QueryContext {
+    pub(crate) fn new(producer: phoxal_bus::ProducerId) -> Self {
+        Self { producer }
+    }
+
+    /// The exact producer/session that sent this query.
+    pub fn producer(&self) -> phoxal_bus::ProducerId {
+        self.producer
+    }
+}
+
 /// The sole IO-construction point, handed to `Participant::setup`.
 pub struct SetupContext<R: Participant> {
     bus: BusHandle,
@@ -37,6 +61,20 @@ pub struct SetupContext<R: Participant> {
 }
 
 impl<R: Participant> SetupContext<R> {
+    /// The producer identity of this participant's unique bus owner.
+    pub fn producer(&self) -> phoxal_bus::ProducerId {
+        self.bus.producer()
+    }
+
+    /// Subscribe to the execution-scoped exact Ready source set.  The
+    /// returned stream is bounded and must be retained in the participant API
+    /// so its observer remains alive for the participant lifetime.
+    pub async fn participant_ready_events(
+        &self,
+    ) -> crate::Result<phoxal_bus::ParticipantReadyEvents> {
+        Ok(self.bus.participant_ready_events().await?)
+    }
+
     pub(crate) fn new(
         bus: BusHandle,
         bundle: Option<ParticipantBundleInputs>,
@@ -232,6 +270,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         H: for<'a> std::ops::AsyncFn(
                 &'a R,
                 &'a R::Api,
+                QueryContext,
                 Req,
                 &'a mut R::State,
             ) -> crate::bus::QueryResult<Resp>

@@ -3,6 +3,7 @@
 
 use crate::bus::QueryFailure;
 use crate::participant::api::{Participant, QueryRegistration};
+use crate::participant::context::QueryContext;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::{BusHandle, IncomingQuery};
 use tokio::sync::mpsc;
@@ -127,6 +128,7 @@ impl<R: Participant> QuerySurface<R> {
                 .await;
             return;
         }
+        let query_context = QueryContext::new(metadata.producer);
         let body = match incoming.request_bytes() {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -136,7 +138,10 @@ impl<R: Participant> QuerySurface<R> {
                 return;
             }
         };
-        match registration.dispatch(participant, api, state, body).await {
+        match registration
+            .dispatch(participant, api, query_context, state, body)
+            .await
+        {
             Ok(reply) => {
                 let _ = incoming.reply(bus, reply.payload).await;
             }

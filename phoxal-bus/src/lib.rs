@@ -71,10 +71,13 @@ pub use handle::publisher::{
 pub use handle::querier::{DEFAULT_QUERY_TIMEOUT, Querier};
 pub use handle::stamp::{StepStamp, StepToken, TimelineAuthority, WorldStepToken};
 pub use handle::subscriber::{Latest, Observed, Subscriber};
-pub use lease::{LEASE_TRACE_TARGET, Lease, LeaseDecision, LeaseRejection, ProducerFence};
+pub use lease::{
+    ExclusiveProducerLease, FixedSourceLease, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection,
+    MAX_READY_PRODUCERS,
+};
 pub use liveliness::{
     KeyLivelinessObserver, LivelinessStatus, ParticipantLivelinessEvent, ParticipantLivelinessKey,
-    ParticipantLivelinessObserver, ParticipantLivelinessToken,
+    ParticipantLivelinessObserver, ParticipantLivelinessToken, ParticipantReadyEvents,
 };
 pub use metadata::{BusMetadata, SourceAttribution, SourceLabel, SourceLabelError};
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
