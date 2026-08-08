@@ -17,12 +17,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use phoxal_model::component::capability::MotorCommand;
-use phoxal_model::identity::{CapabilityRef, ComponentInstanceId};
-use phoxal_model::{AssetId, Clock, Robot};
+use phoxal_model::identity::CapabilityRef;
+use phoxal_model::{AssetId, Robot};
 pub use phoxal_runtime_contract::identity::ParticipantArtifactId;
 use phoxal_runtime_contract::identity::ParticipantId;
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
@@ -35,6 +34,17 @@ mod asset;
 pub use asset::ParticipantAssets;
 mod reader;
 pub use reader::{ParticipantBundle, ParticipantRuntimeInputs, RuntimeBundle};
+mod error;
+pub use error::{BundleError, DocumentError, SelectionError};
+mod writer;
+pub use writer::BundleWriter;
+mod fs;
+use fs::{BundleRoot, read_runtime_document, require_layout_directories};
+mod artifact;
+pub use artifact::BinaryReference;
+mod participant;
+pub use participant::RuntimeParticipant;
+mod document;
 
 /// The only schema tag currently readable by this framework train.
 pub const RUNTIME_SCHEMA: &str = "phoxal/runtime-bundle/v0";
@@ -272,221 +282,10 @@ impl Runtime {
     }
 }
 
-/// One exact process entry in the final runtime graph.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeParticipant {
-    /// The topology identity selected by the process launch.
-    id: ParticipantId,
-    /// The reusable artifact selected for this instance.
-    artifact: ParticipantArtifactId,
-    /// The already-compiled participant configuration. `None` means JSON
-    /// `null`, not a request to consult authored configuration.
-    config: Option<serde_json::Value>,
-    /// An optional typed component-instance binding for a driver/simulator.
-    component: Option<ComponentInstanceId>,
-    /// The scheduler policy selected at build time.
-    clock: ParticipantClock,
-}
-
-impl RuntimeParticipant {
-    /// Construct one final participant instance selected by build tooling.
-    #[must_use]
-    pub fn new(
-        id: ParticipantId,
-        artifact: ParticipantArtifactId,
-        config: Option<serde_json::Value>,
-        component: Option<ComponentInstanceId>,
-        clock: ParticipantClock,
-    ) -> Self {
-        Self {
-            id,
-            artifact,
-            config,
-            component,
-            clock,
-        }
-    }
-
-    /// The persisted participant instance identity.
-    #[must_use]
-    pub const fn id(&self) -> &ParticipantId {
-        &self.id
-    }
-
-    /// The reusable artifact selected for this instance.
-    #[must_use]
-    pub const fn artifact(&self) -> &ParticipantArtifactId {
-        &self.artifact
-    }
-
-    /// The compiled participant configuration, if any.
-    #[must_use]
-    pub fn config(&self) -> Option<&serde_json::Value> {
-        self.config.as_ref()
-    }
-
-    /// The canonical component instance bound to this participant, if any.
-    #[must_use]
-    pub const fn component(&self) -> Option<&ComponentInstanceId> {
-        self.component.as_ref()
-    }
-
-    /// The scheduler policy selected for this participant.
-    #[must_use]
-    pub const fn clock(&self) -> ParticipantClock {
-        self.clock
-    }
-
-    /// Validate participant facts against the compiled robot.
-    pub fn validate(&self, robot: &Robot, artifact: &BinaryReference) -> Result<(), DocumentError> {
-        if !artifact.path.starts_with_directory(BIN_DIR) {
-            return Err(DocumentError::ArtifactOutsideBin {
-                artifact: self.artifact.clone(),
-                path: artifact.path.clone(),
-            });
-        }
-        if let Some(component) = &self.component
-            && robot.component_instance(component.as_str()).is_none()
-        {
-            return Err(DocumentError::UnknownComponent {
-                participant: self.id.clone(),
-                component_instance: component.clone(),
-            });
-        }
-        match (robot.clock(), self.clock) {
-            (Clock::Real, ParticipantClock::Simulation) => {
-                return Err(DocumentError::ClockMismatch {
-                    participant: self.id.clone(),
-                    robot: Clock::Real,
-                    participant_clock: self.clock,
-                });
-            }
-            (Clock::Simulated, ParticipantClock::Real) => {
-                return Err(DocumentError::ClockMismatch {
-                    participant: self.id.clone(),
-                    robot: Clock::Simulated,
-                    participant_clock: self.clock,
-                });
-            }
-            _ => {}
-        }
-        let null = serde_json::Value::Null;
-        let config = self.config.as_ref().unwrap_or(&null);
-        let validator =
-            jsonschema::validator_for(&artifact.contract.config_schema).map_err(|error| {
-                DocumentError::InvalidConfigSchema {
-                    participant: self.id.clone(),
-                    error: error.to_string(),
-                }
-            })?;
-        if let Err(error) = validator.validate(config) {
-            return Err(DocumentError::InvalidConfig {
-                participant: self.id.clone(),
-                error: error.to_string(),
-            });
-        }
-        validate_requirement(&artifact.contract, &self.id, robot)?;
-        Ok(())
-    }
-}
-
-/// A staged reusable executable and its canonical artifact contract.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BinaryReference {
-    /// A normalized bundle-relative path under `bin/`.
-    path: BundlePath,
-    /// The exact bytes staged at `path`.
-    digest: Sha256Digest,
-    /// The exact byte length staged at `path`.
-    size_bytes: u64,
-    /// The embedded process-contract facts the binary declared.
-    contract: ParticipantContract,
-}
-
-impl BinaryReference {
-    /// Construct a reference for an already-built executable.
-    ///
-    /// The bytes are hashed from the source file rather than accepted from an
-    /// in-memory copy: the same executable is what the writer later stages.
-    pub fn from_file(
-        path: BundlePath,
-        contract: ParticipantContract,
-        source: impl AsRef<Path>,
-    ) -> Result<Self, BundleError> {
-        let source = source.as_ref();
-        let file = std::fs::File::open(source).map_err(|source_error| BundleError::ReadFile {
-            path: source.to_path_buf(),
-            source: source_error,
-        })?;
-        let size_bytes = file
-            .metadata()
-            .map_err(|source_error| BundleError::ReadFile {
-                path: source.to_path_buf(),
-                source: source_error,
-            })?
-            .len();
-        Ok(Self {
-            path,
-            digest: Sha256Digest::from_reader(file).map_err(|source_error| {
-                BundleError::ReadFile {
-                    path: source.to_path_buf(),
-                    source: source_error,
-                }
-            })?,
-            size_bytes,
-            contract,
-        })
-    }
-
-    /// The normalized bundle-relative binary path.
-    #[must_use]
-    pub const fn path(&self) -> &BundlePath {
-        &self.path
-    }
-
-    /// The digest of the exact staged binary bytes.
-    #[must_use]
-    pub const fn digest(&self) -> Sha256Digest {
-        self.digest
-    }
-
-    /// The exact byte length of the staged executable.
-    #[must_use]
-    pub const fn size_bytes(&self) -> u64 {
-        self.size_bytes
-    }
-
-    /// The embedded process contract declared by this artifact.
-    #[must_use]
-    pub const fn contract(&self) -> &ParticipantContract {
-        &self.contract
-    }
-}
-
-impl BinaryReference {
-    fn validate(&self, id: &ParticipantArtifactId) -> Result<(), DocumentError> {
-        if self.contract.id != *id {
-            return Err(DocumentError::ArtifactContractMismatch {
-                artifact: id.clone(),
-                contract: self.contract.id.clone(),
-            });
-        }
-        if !self.path.starts_with_directory(BIN_DIR) {
-            return Err(DocumentError::ArtifactOutsideBin {
-                artifact: id.clone(),
-                path: self.path.clone(),
-            });
-        }
-        Ok(())
-    }
-}
-
 /// Validate one artifact's static topology requirement against the canonical
 /// robot. Instance identity is used only for a useful diagnostic; it never
 /// participates in artifact-contract matching.
-fn validate_requirement(
+pub(crate) fn validate_requirement(
     contract: &ParticipantContract,
     participant: &ParticipantId,
     robot: &Robot,
@@ -682,373 +481,7 @@ impl AssetRecord {
     }
 }
 
-/// A bundle root pinned to one directory object for the lifetime of a load.
-///
-/// The path is retained only for diagnostics and compatibility with the
-/// public `root()` accessor. All trusted file opens use the descriptor on Unix;
-/// they never re-resolve this path after acquisition.
-#[derive(Clone)]
-pub(crate) struct BundleRoot {
-    path: PathBuf,
-    #[cfg(unix)]
-    fd: Arc<std::os::fd::OwnedFd>,
-}
-
-impl fmt::Debug for BundleRoot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("BundleRoot")
-            .field("path", &self.path)
-            .finish()
-    }
-}
-
-impl BundleRoot {
-    pub(crate) fn open(requested: &Path) -> Result<Self, BundleError> {
-        #[cfg(unix)]
-        {
-            use std::ffi::CString;
-            use std::os::fd::FromRawFd;
-
-            let requested_c =
-                CString::new(requested.as_os_str().as_encoded_bytes()).map_err(|_| {
-                    BundleError::UnsupportedEntry {
-                        path: requested.to_path_buf(),
-                    }
-                })?;
-            let fd = unsafe {
-                // SAFETY: the CString is NUL-free. O_NOFOLLOW applies to the
-                // requested root itself, and O_DIRECTORY prevents pinning a
-                // non-directory object.
-                libc::open(
-                    requested_c.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if fd < 0 {
-                return Err(root_open_error(requested));
-            }
-            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-            Ok(Self {
-                path: requested.to_path_buf(),
-                fd: Arc::new(fd),
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            Err(BundleError::UnsupportedSecureOpen {
-                path: requested.to_path_buf(),
-            })
-        }
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-pub(crate) fn read_runtime_document(root: &BundleRoot) -> Result<RuntimeDocument, BundleError> {
-    let runtime_path = root.path().join(RUNTIME_FILE);
-    let mut runtime_file =
-        open_bundle_file(root, &BundlePath::new(RUNTIME_FILE)?).map_err(|error| match error {
-            BundleError::ReadFile { path, source } => BundleError::ReadDocument { path, source },
-            BundleError::MissingFile { path } => BundleError::ReadDocument {
-                path,
-                source: std::io::Error::new(std::io::ErrorKind::NotFound, RUNTIME_FILE),
-            },
-            other => other,
-        })?;
-    let mut bytes = Vec::new();
-    runtime_file
-        .read_to_end(&mut bytes)
-        .map_err(|source| BundleError::ReadDocument {
-            path: runtime_path,
-            source,
-        })?;
-    serde_json::from_slice(&bytes).map_err(BundleError::from)
-}
-
-#[cfg(unix)]
-pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), BundleError> {
-    for directory in [ASSETS_DIR, BIN_DIR] {
-        let path = root.path().join(directory);
-        if open_relative_directory(root, directory, &path)?.is_none() {
-            return Err(BundleError::MissingFile { path });
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: root.path().to_path_buf(),
-    })
-}
-
-/// Why a persisted runtime document is not a valid execution plan.
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum DocumentError {
-    #[error("duplicate participant id '{id}'")]
-    DuplicateParticipant { id: ParticipantId },
-    #[error("duplicate participant binary path '{path}'")]
-    DuplicateBinary { path: BundlePath },
-    #[error("participant '{participant}' references unknown artifact '{artifact}'")]
-    UnknownArtifact {
-        participant: ParticipantId,
-        artifact: ParticipantArtifactId,
-    },
-    #[error("artifact '{artifact}' contract names '{contract}'")]
-    ArtifactContractMismatch {
-        artifact: ParticipantArtifactId,
-        contract: ParticipantArtifactId,
-    },
-    #[error("artifact '{artifact}' path is outside bin/: {path}")]
-    ArtifactOutsideBin {
-        artifact: ParticipantArtifactId,
-        path: BundlePath,
-    },
-    #[error("participant '{participant}' names unknown component instance '{component_instance}'")]
-    UnknownComponent {
-        participant: ParticipantId,
-        component_instance: ComponentInstanceId,
-    },
-    #[error(
-        "participant '{participant}' clock {participant_clock:?} conflicts with robot clock {robot:?}"
-    )]
-    ClockMismatch {
-        participant: ParticipantId,
-        robot: Clock,
-        participant_clock: ParticipantClock,
-    },
-    #[error(
-        "participant '{participant}' requires {requirement:?}, but the robot uses {actual} kinematics"
-    )]
-    RequirementKinematicsMismatch {
-        participant: ParticipantId,
-        requirement: ParticipantRequirement,
-        actual: phoxal_model::robot::KinematicKind,
-    },
-    #[error("participant '{participant}' requires at least one {side} actuator")]
-    RequirementActuatorListEmpty {
-        participant: ParticipantId,
-        side: &'static str,
-    },
-    #[error(
-        "participant '{participant}' requirement could not resolve actuator '{actuator}': {error}"
-    )]
-    RequirementActuatorInvalid {
-        participant: ParticipantId,
-        actuator: CapabilityRef,
-        error: String,
-    },
-    #[error(
-        "participant '{participant}' actuator '{actuator}' is configured for {actual:?}, but the binary requires {expected:?}"
-    )]
-    RequirementMotorModeMismatch {
-        participant: ParticipantId,
-        actuator: CapabilityRef,
-        expected: MotorCommand,
-        actual: MotorCommand,
-    },
-    #[error("participant '{participant}' has an invalid config schema: {error}")]
-    InvalidConfigSchema {
-        participant: ParticipantId,
-        error: String,
-    },
-    #[error("participant '{participant}' config does not match its binary schema: {error}")]
-    InvalidConfig {
-        participant: ParticipantId,
-        error: String,
-    },
-    #[error("asset id '{id}' is persisted at the wrong path '{path}'", id = id.as_str())]
-    AssetPathMismatch { id: AssetId, path: BundlePath },
-    #[error("asset path is outside assets/: {path}")]
-    AssetOutsideAssets { path: BundlePath },
-    #[error("duplicate asset id '{id}'", id = id.as_str())]
-    DuplicateAssetId { id: AssetId },
-    #[error("duplicate asset path '{path}'")]
-    DuplicateAssetPath { path: BundlePath },
-    #[error("router config is outside assets/: {path}")]
-    RouterOutsideAssets { path: BundlePath },
-    #[error("router config is not present in the asset index: {path}")]
-    RouterMissingAsset { path: BundlePath },
-    #[error("supplied asset bytes do not match the persisted asset index")]
-    AssetIndexMismatch,
-    #[error("supplied binary bytes do not match the persisted participant set")]
-    BinaryIndexMismatch,
-    #[error("bundle path is not valid: {0}")]
-    Path(#[from] BundlePathError),
-}
-
-/// Why an exact participant selection failed.
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum SelectionError {
-    #[error("runtime bundle has no participant '{requested}'")]
-    Unknown { requested: ParticipantId },
-    #[error("participant '{participant}' references missing artifact '{artifact}'")]
-    MissingArtifact {
-        participant: ParticipantId,
-        artifact: ParticipantArtifactId,
-    },
-}
-
-/// Why reading or validating a bundle failed.
-#[derive(Debug, thiserror::Error)]
-pub enum BundleError {
-    #[error("failed to resolve bundle root {}: {source}", path.display())]
-    Root {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("bundle root is not a directory: {0}")]
-    NotDirectory(PathBuf),
-    #[error("bundle target already exists: {0}")]
-    TargetExists(PathBuf),
-    #[error("secure no-follow opening is unsupported for bundle file {path}")]
-    UnsupportedSecureOpen { path: PathBuf },
-    #[error("atomic no-replace publication is unsupported for bundle target {path}")]
-    UnsupportedAtomicPublish { path: PathBuf },
-    #[error("failed to read runtime document {}: {source}", path.display())]
-    ReadDocument {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("runtime document is not valid JSON: {0}")]
-    DocumentJson(#[from] serde_json::Error),
-    #[error(transparent)]
-    Document(#[from] DocumentError),
-    #[error("bundle contains forbidden symlink {path}")]
-    ForbiddenSymlink { path: PathBuf },
-    #[error("bundle contains unsupported filesystem entry {path}")]
-    UnsupportedEntry { path: PathBuf },
-    #[error("bundle executable is not executable: {path}")]
-    NotExecutable { path: PathBuf },
-    #[error("bundle contains unexpected file {path}")]
-    UnexpectedFile { path: PathBuf },
-    #[error("bundle contains unindexed directory {path}")]
-    UnindexedDirectory { path: PathBuf },
-    #[error("bundle is missing required file {path}")]
-    MissingFile { path: PathBuf },
-    #[error("failed to read bundle file {path}: {source}", path = path.display())]
-    ReadFile {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("bundle file {path} changed after indexing: expected {expected}, found {actual}")]
-    Integrity {
-        path: PathBuf,
-        expected: Sha256Digest,
-        actual: Sha256Digest,
-    },
-    #[error("bundle file {path} has size {actual}, expected {expected}")]
-    Size {
-        path: PathBuf,
-        expected: u64,
-        actual: u64,
-    },
-    #[error("asset '{id}' is not declared by runtime.json", id = id.as_str())]
-    UndeclaredAsset { id: AssetId },
-    #[error(transparent)]
-    Path(#[from] BundlePathError),
-    #[error(transparent)]
-    Digest(#[from] DigestError),
-    #[error(transparent)]
-    Selection(#[from] SelectionError),
-}
-
-/// A build-tool-facing writer for the explicit final assembly boundary.
-pub struct BundleWriter;
-
-impl BundleWriter {
-    /// Write a document and the exact staged bytes it references.
-    ///
-    /// The caller supplies the final `RuntimeDocument`; this method never
-    /// discovers participants, consults a catalog, or derives launch policy.
-    /// It writes only `runtime.json`, `assets/`, and `bin/`, then reopens the
-    /// result through the same reader the executor uses.
-    pub fn write(
-        root: impl AsRef<Path>,
-        document: &RuntimeDocument,
-        assets: &BTreeMap<AssetId, Vec<u8>>,
-        binaries: &BTreeMap<BundlePath, PathBuf>,
-    ) -> Result<RuntimeBundle, BundleError> {
-        Self::write_inner(root, document, assets, binaries, publish_staging_root)
-    }
-
-    fn write_inner<F>(
-        root: impl AsRef<Path>,
-        document: &RuntimeDocument,
-        assets: &BTreeMap<AssetId, Vec<u8>>,
-        binaries: &BTreeMap<BundlePath, PathBuf>,
-        publish: F,
-    ) -> Result<RuntimeBundle, BundleError>
-    where
-        F: FnOnce(&Path, &Path) -> Result<(), BundleError>,
-    {
-        let expected_assets = &document.runtime().assets;
-        let supplied_assets = AssetIndex::from_bytes(assets)?;
-        if supplied_assets.entries != expected_assets.entries {
-            return Err(BundleError::Document(DocumentError::AssetIndexMismatch));
-        }
-
-        let expected_binaries = document
-            .artifacts()
-            .values()
-            .map(|artifact| artifact.path.clone())
-            .collect::<BTreeSet<_>>();
-        let supplied_binaries = binaries.keys().cloned().collect::<BTreeSet<_>>();
-        if expected_binaries != supplied_binaries {
-            return Err(BundleError::Document(DocumentError::BinaryIndexMismatch));
-        }
-        let requested_root = root.as_ref();
-        let publish_target = prepare_publish_parent(requested_root)?;
-        reject_existing_target(&publish_target)?;
-        let root = create_staging_root(&publish_target)?;
-        let staged = (|| {
-            ensure_staging_directory(&root, &root.join(ASSETS_DIR))?;
-            ensure_staging_directory(&root, &root.join(BIN_DIR))?;
-            for (id, bytes) in assets {
-                let path = root
-                    .join(ASSETS_DIR)
-                    .join(id.as_str().split('/').collect::<PathBuf>());
-                write_new_file(&root, &path, bytes)?;
-            }
-            for (path, source) in binaries {
-                let artifact = document
-                    .artifacts()
-                    .values()
-                    .find(|artifact| artifact.path == *path)
-                    .ok_or_else(|| BundleError::MissingFile {
-                        path: path.filesystem_path(&root),
-                    })?;
-                copy_executable_source(
-                    &root,
-                    source,
-                    &path.filesystem_path(&root),
-                    artifact.digest,
-                    artifact.size_bytes,
-                )?;
-            }
-            let json = serde_json::to_vec_pretty(document)?;
-            write_new_file(&root, &root.join(RUNTIME_FILE), &json)
-        })();
-        if let Err(error) = staged {
-            let _ = std::fs::remove_dir_all(&root);
-            return Err(error);
-        }
-        if let Err(error) = publish(&root, &publish_target) {
-            let _ = std::fs::remove_dir_all(&root);
-            return Err(error);
-        }
-        RuntimeBundle::open_verified(&publish_target)
-    }
-}
-
-fn write_new_file(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BundleError> {
+pub(crate) fn write_new_file(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BundleError> {
     ensure_staging_ancestors(root, path)?;
     let parent = path.parent().ok_or_else(|| BundleError::ReadFile {
         path: path.to_path_buf(),
@@ -1067,7 +500,7 @@ fn write_new_file(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BundleEr
     })
 }
 
-fn copy_executable_source(
+pub(crate) fn copy_executable_source(
     root: &Path,
     source: &Path,
     destination: &Path,
@@ -1162,7 +595,7 @@ fn copy_executable_source(
     Ok(())
 }
 
-fn prepare_publish_parent(root: &Path) -> Result<PathBuf, BundleError> {
+pub(crate) fn prepare_publish_parent(root: &Path) -> Result<PathBuf, BundleError> {
     let parent = root.parent().unwrap_or_else(|| Path::new("."));
     // A host may intentionally expose its temporary directory through a
     // compatibility symlink (for example macOS `/var`). Resolve that parent
@@ -1188,7 +621,7 @@ fn prepare_publish_parent(root: &Path) -> Result<PathBuf, BundleError> {
     Ok(canonical_parent.join(name))
 }
 
-fn reject_existing_target(root: &Path) -> Result<(), BundleError> {
+pub(crate) fn reject_existing_target(root: &Path) -> Result<(), BundleError> {
     match std::fs::symlink_metadata(root) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(BundleError::ForbiddenSymlink {
             path: root.to_path_buf(),
@@ -1237,7 +670,7 @@ fn find_symlink(directory: &Path) -> Result<Option<PathBuf>, BundleError> {
     Ok(None)
 }
 
-fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError> {
+pub(crate) fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError> {
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     let name = target
         .file_name()
@@ -1271,7 +704,7 @@ fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError> {
     })
 }
 
-fn ensure_staging_directory(root: &Path, directory: &Path) -> Result<(), BundleError> {
+pub(crate) fn ensure_staging_directory(root: &Path, directory: &Path) -> Result<(), BundleError> {
     let relative = directory
         .strip_prefix(root)
         .map_err(|_| BundleError::UnsupportedEntry {
@@ -1321,7 +754,7 @@ fn ensure_staging_ancestors(root: &Path, path: &Path) -> Result<(), BundleError>
 /// so this remains the security boundary and must use a kernel no-replace
 /// primitive. It must never be changed to `std::fs::rename`, which replaces an
 /// existing directory on POSIX and reintroduces the publication race.
-fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
+pub(crate) fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
     let target_path = target.to_path_buf();
     let staged = std::ffi::CString::new(staged.as_os_str().as_encoded_bytes()).map_err(|_| {
         BundleError::UnsupportedEntry {

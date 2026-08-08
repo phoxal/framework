@@ -1,0 +1,112 @@
+//! Final participant-instance records.
+
+use phoxal_model::identity::ComponentInstanceId;
+use phoxal_model::{Clock, Robot};
+use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
+use serde::{Deserialize, Serialize};
+
+use crate::{BinaryReference, DocumentError, ParticipantClock, validate_requirement};
+
+/// One exact process entry in the final runtime graph.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeParticipant {
+    pub(crate) id: ParticipantId,
+    pub(crate) artifact: ParticipantArtifactId,
+    pub(crate) config: Option<serde_json::Value>,
+    pub(crate) component: Option<ComponentInstanceId>,
+    pub(crate) clock: ParticipantClock,
+}
+
+impl RuntimeParticipant {
+    #[must_use]
+    pub fn new(
+        id: ParticipantId,
+        artifact: ParticipantArtifactId,
+        config: Option<serde_json::Value>,
+        component: Option<ComponentInstanceId>,
+        clock: ParticipantClock,
+    ) -> Self {
+        Self {
+            id,
+            artifact,
+            config,
+            component,
+            clock,
+        }
+    }
+    #[must_use]
+    pub const fn id(&self) -> &ParticipantId {
+        &self.id
+    }
+    #[must_use]
+    pub const fn artifact(&self) -> &ParticipantArtifactId {
+        &self.artifact
+    }
+    #[must_use]
+    pub fn config(&self) -> Option<&serde_json::Value> {
+        self.config.as_ref()
+    }
+    #[must_use]
+    pub const fn component(&self) -> Option<&ComponentInstanceId> {
+        self.component.as_ref()
+    }
+    #[must_use]
+    pub const fn clock(&self) -> ParticipantClock {
+        self.clock
+    }
+
+    pub(crate) fn validate(
+        &self,
+        robot: &Robot,
+        artifact: &BinaryReference,
+    ) -> Result<(), DocumentError> {
+        if !artifact.path().starts_with_directory(crate::BIN_DIR) {
+            return Err(DocumentError::ArtifactOutsideBin {
+                artifact: self.artifact.clone(),
+                path: artifact.path().clone(),
+            });
+        }
+        if let Some(component) = &self.component
+            && robot.component_instance(component.as_str()).is_none()
+        {
+            return Err(DocumentError::UnknownComponent {
+                participant: self.id.clone(),
+                component_instance: component.clone(),
+            });
+        }
+        match (robot.clock(), self.clock) {
+            (Clock::Real, ParticipantClock::Simulation) => {
+                return Err(DocumentError::ClockMismatch {
+                    participant: self.id.clone(),
+                    robot: Clock::Real,
+                    participant_clock: self.clock,
+                });
+            }
+            (Clock::Simulated, ParticipantClock::Real) => {
+                return Err(DocumentError::ClockMismatch {
+                    participant: self.id.clone(),
+                    robot: Clock::Simulated,
+                    participant_clock: self.clock,
+                });
+            }
+            _ => {}
+        }
+        let null = serde_json::Value::Null;
+        let config = self.config.as_ref().unwrap_or(&null);
+        let validator =
+            jsonschema::validator_for(&artifact.contract().config_schema).map_err(|error| {
+                DocumentError::InvalidConfigSchema {
+                    participant: self.id.clone(),
+                    error: error.to_string(),
+                }
+            })?;
+        if let Err(error) = validator.validate(config) {
+            return Err(DocumentError::InvalidConfig {
+                participant: self.id.clone(),
+                error: error.to_string(),
+            });
+        }
+        validate_requirement(artifact.contract(), &self.id, robot)
+    }
+}
