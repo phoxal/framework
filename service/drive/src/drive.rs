@@ -121,22 +121,202 @@ impl MotorBinding {
 /// The two are one record rather than two vectors read at the same index,
 /// because a command paired with another motor's direction sign would turn a
 /// wheel the wrong way with nothing to report.
-struct BoundMotor {
-    binding: MotorBinding,
-    publisher: CommandPublisher<api::component::motor::Command>,
+/// The production sink is [`CommandPublisher`]. An in-process bus cannot
+/// deterministically fail only one publisher: all cloned publishers share one
+/// private `BusHandle` outbound queue, so saturation or close fails every motor
+/// handle together. Keeping this narrow send seam in production lets the
+/// `Drive` command and shutdown paths be exercised with a deterministic sink
+/// while preserving the exact publisher call and error contract.
+trait MotorCommandSink {
+    fn send(&self, command: api::component::motor::Command) -> Result<()>;
 }
 
-impl BoundMotor {
+impl MotorCommandSink for CommandPublisher<api::component::motor::Command> {
+    fn send(&self, command: api::component::motor::Command) -> Result<()> {
+        Ok(CommandPublisher::send(self, command)?)
+    }
+}
+
+struct BoundMotor<P = CommandPublisher<api::component::motor::Command>> {
+    binding: MotorBinding,
+    publisher: P,
+}
+
+/// The operation being fanned out to the configured actuators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FanoutOperation {
+    Command,
+    Stop,
+}
+
+impl std::fmt::Display for FanoutOperation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Command => "command",
+            Self::Stop => "stop",
+        })
+    }
+}
+
+/// One actuator failure retained while the remaining fanout is attempted.
+#[derive(Debug)]
+struct FanoutFailure {
+    reference: CapabilityRef,
+    operation: FanoutOperation,
+    error: anyhow::Error,
+}
+
+/// Aggregate failure for one actuator fanout.
+#[derive(Debug)]
+struct FanoutError {
+    failures: Vec<FanoutFailure>,
+}
+
+impl std::fmt::Display for FanoutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} actuator fanout failure(s): ",
+            self.failures.len()
+        )?;
+        for (index, failure) in self.failures.iter().enumerate() {
+            if index != 0 {
+                formatter.write_str(", ")?;
+            }
+            write!(
+                formatter,
+                "{} {} ({})",
+                failure.operation, failure.reference, failure.error
+            )?;
+        }
+        Ok(())
+    }
+}
+
+trait FanoutTarget {
+    fn capability_ref(&self) -> &CapabilityRef;
+}
+
+impl<P> FanoutTarget for BoundMotor<P> {
+    fn capability_ref(&self) -> &CapabilityRef {
+        &self.binding.reference
+    }
+}
+
+/// Attempt every target and retain the exact target and operation for each
+/// failure. The caller gets one aggregate only after the full pass completes.
+fn fanout<'a, T, I, F>(
+    targets: I,
+    operation: FanoutOperation,
+    mut operation_fn: F,
+) -> std::result::Result<(), FanoutError>
+where
+    T: FanoutTarget + 'a,
+    I: IntoIterator<Item = &'a T>,
+    F: FnMut(&T) -> Result<()>,
+{
+    let mut failures = Vec::new();
+    for target in targets {
+        if let Err(error) = operation_fn(target) {
+            failures.push(FanoutFailure {
+                reference: target.capability_ref().clone(),
+                operation,
+                error,
+            });
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(FanoutError { failures })
+    }
+}
+
+impl std::error::Error for FanoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.failures
+            .first()
+            .map(|failure| failure.error.as_ref() as &(dyn std::error::Error + 'static))
+    }
+}
+
+fn combine_fanouts(
+    results: impl IntoIterator<Item = std::result::Result<(), FanoutError>>,
+) -> Result<()> {
+    let failures = results
+        .into_iter()
+        .filter_map(std::result::Result::err)
+        .flat_map(|error| error.failures)
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::Error::new(FanoutError { failures }))
+    }
+}
+
+/// The exact command orchestration used by [`Drive::step`]. Both sides are
+/// evaluated before their failures are combined, and the injected operation
+/// closures keep this production path directly testable without a live bus.
+fn command_fanout<'a, T, LI, RI, LF, RF>(
+    left: LI,
+    right: RI,
+    left_operation: LF,
+    right_operation: RF,
+) -> Result<()>
+where
+    T: FanoutTarget + 'a,
+    LI: IntoIterator<Item = &'a T>,
+    RI: IntoIterator<Item = &'a T>,
+    LF: FnMut(&T) -> Result<()>,
+    RF: FnMut(&T) -> Result<()>,
+{
+    combine_fanouts([
+        fanout(left, FanoutOperation::Command, left_operation),
+        fanout(right, FanoutOperation::Command, right_operation),
+    ])
+}
+
+/// The command-and-state ordering used by [`Drive::step`]. State is published
+/// only after every actuator command has been attempted successfully.
+fn command_then_publish<'a, T, LI, RI, LF, RF, PF>(
+    left: LI,
+    right: RI,
+    left_operation: LF,
+    right_operation: RF,
+    publish: PF,
+) -> Result<()>
+where
+    T: FanoutTarget + 'a,
+    LI: IntoIterator<Item = &'a T>,
+    RI: IntoIterator<Item = &'a T>,
+    LF: FnMut(&T) -> Result<()>,
+    RF: FnMut(&T) -> Result<()>,
+    PF: FnOnce() -> Result<()>,
+{
+    command_fanout(left, right, left_operation, right_operation)?;
+    publish()
+}
+
+/// The exact stop orchestration used by [`Drive::shutdown`].
+fn stop_fanout<'a, T, I, F>(targets: I, operation: F) -> Result<()>
+where
+    T: FanoutTarget + 'a,
+    I: IntoIterator<Item = &'a T>,
+    F: FnMut(&T) -> Result<()>,
+{
+    fanout(targets, FanoutOperation::Stop, operation).map_err(anyhow::Error::new)
+}
+
+impl<P: MotorCommandSink> BoundMotor<P> {
     /// Command this wheel at `wheel_radps`.
     fn drive(&self, wheel_radps: f64) -> Result<()> {
-        Ok(self.publisher.send(self.binding.command(wheel_radps))?)
+        self.publisher.send(self.binding.command(wheel_radps))
     }
 
-    /// Best-effort park. A motor command expresses no robot time, so this needs
-    /// no instant - which is exactly why `Stop` stays callable outside a step,
-    /// as it must.
-    fn park(&self) {
-        let _ = self.publisher.send(api::component::motor::Command::Stop);
+    /// Stop this wheel, preserving the same failure path as a live command.
+    fn stop(&self) -> Result<()> {
+        self.publisher.send(api::component::motor::Command::Stop)
     }
 }
 
@@ -319,41 +499,286 @@ impl Participant for Drive {
         }
 
         let (published, (left, right)) = state.decide(host_now, now);
-        for motor in &api.left_motors {
-            motor.drive(left)?;
-        }
-        for motor in &api.right_motors {
-            motor.drive(right)?;
-        }
-
-        api.state.publish(&step.token, published)?;
+        // Evaluate both side fanouts before combining their errors: a failed
+        // left motor must never prevent a right-side command from being tried.
+        command_then_publish(
+            &api.left_motors,
+            &api.right_motors,
+            |motor| motor.drive(left),
+            |motor| motor.drive(right),
+            || Ok(api.state.publish(&step.token, published)?),
+        )?;
         Ok(())
     }
 
     async fn shutdown(&self, api: &Self::Api, _state: &mut Self::State) -> Result<()> {
-        for motor in api.left_motors.iter().chain(&api.right_motors) {
-            motor.park();
-        }
-        Ok(())
+        stop_fanout(api.left_motors.iter().chain(&api.right_motors), |motor| {
+            motor.stop()
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use phoxal::api;
     use phoxal::bus::{Lease, LeaseDecision, LocalInstant, ProducerId, RobotInstant, TimelineId};
     use phoxal::model::RobotBuilder;
     use phoxal::model::builder::Kinematics;
 
     use super::{
-        DifferentialDrive, DriveConfig, DriveState, DriveTargetKinematics, Duration, MotionLimits,
-        TARGET_HOLD, TARGET_SILENCE,
+        BoundMotor, DifferentialDrive, DriveConfig, DriveState, DriveTargetKinematics, Duration,
+        FanoutOperation, FanoutTarget, MotionLimits, MotorBinding, MotorCommandSink, TARGET_HOLD,
+        TARGET_SILENCE, command_fanout, command_then_publish, fanout, stop_fanout,
     };
+
+    #[derive(Debug)]
+    struct InjectedError(&'static str);
+
+    impl std::fmt::Display for InjectedError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for InjectedError {}
+
+    struct TestSink {
+        attempts: std::rc::Rc<RefCell<Vec<api::component::motor::Command>>>,
+        fails: bool,
+    }
+
+    impl MotorCommandSink for TestSink {
+        fn send(&self, command: api::component::motor::Command) -> anyhow::Result<()> {
+            self.attempts.borrow_mut().push(command);
+            if self.fails {
+                Err(anyhow::Error::new(InjectedError(
+                    "injected publisher failure",
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct TestTarget {
+        reference: super::CapabilityRef,
+    }
+
+    impl FanoutTarget for TestTarget {
+        fn capability_ref(&self) -> &super::CapabilityRef {
+            &self.reference
+        }
+    }
+
+    fn targets(names: &[&str]) -> Vec<TestTarget> {
+        names
+            .iter()
+            .map(|name| TestTarget {
+                reference: name.parse().expect("a normalized capability reference"),
+            })
+            .collect()
+    }
+
+    fn bound_test_motors(
+        names: &[&str],
+        failing_index: usize,
+    ) -> (
+        Vec<BoundMotor<TestSink>>,
+        std::rc::Rc<RefCell<Vec<api::component::motor::Command>>>,
+    ) {
+        let attempts = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let motors = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| BoundMotor {
+                binding: MotorBinding {
+                    reference: name.parse().expect("a normalized capability reference"),
+                    direction_sign: 1,
+                },
+                publisher: TestSink {
+                    attempts: attempts.clone(),
+                    fails: index == failing_index,
+                },
+            })
+            .collect();
+        (motors, attempts)
+    }
 
     /// A distinct test producer. Nothing mints a producer in production - a
     /// session's identity is the session - so tests name theirs explicitly.
     fn producer(value: u128) -> ProducerId {
         ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
+    }
+
+    #[test]
+    fn production_command_fanout_attempts_every_target_after_first_failure() {
+        let targets = targets(&["left_front.motor", "left_rear.motor", "right_front.motor"]);
+        let invoked = RefCell::new(Vec::new());
+
+        let error = command_fanout(
+            &targets[..1],
+            &targets[1..],
+            |target| {
+                invoked.borrow_mut().push(target.reference.to_string());
+                Err(anyhow::Error::new(InjectedError(
+                    "injected first-target failure",
+                )))
+            },
+            |target| {
+                invoked.borrow_mut().push(target.reference.to_string());
+                Ok(())
+            },
+        )
+        .expect_err("the injected first failure must be returned");
+        let aggregate = error
+            .downcast_ref::<super::FanoutError>()
+            .expect("production command orchestration returns the aggregate");
+
+        assert_eq!(
+            invoked.into_inner(),
+            ["left_front.motor", "left_rear.motor", "right_front.motor"]
+        );
+        assert_eq!(aggregate.failures.len(), 1);
+        assert_eq!(
+            aggregate.failures[0].reference.to_string(),
+            "left_front.motor"
+        );
+        assert_eq!(aggregate.failures[0].operation, FanoutOperation::Command);
+        assert!(
+            aggregate.failures[0]
+                .error
+                .downcast_ref::<InjectedError>()
+                .is_some()
+        );
+        assert!(std::error::Error::source(aggregate).is_some());
+    }
+
+    #[test]
+    fn production_bound_motors_attempt_all_commands_and_skip_state_after_failure() {
+        let (motors, attempts) = bound_test_motors(
+            &["left_front.motor", "left_rear.motor", "right_front.motor"],
+            0,
+        );
+        let published = std::cell::Cell::new(false);
+
+        let error = command_then_publish(
+            &motors[..1],
+            &motors[1..],
+            |motor| motor.drive(1.0),
+            |motor| motor.drive(1.0),
+            || {
+                published.set(true);
+                Ok(())
+            },
+        )
+        .expect_err("a failing bound motor must fault the command step");
+        let aggregate = error
+            .downcast_ref::<super::FanoutError>()
+            .expect("the production step seam returns the aggregate");
+
+        assert_eq!(attempts.borrow().len(), 3);
+        assert!(!published.get(), "state must follow successful fanout only");
+        assert_eq!(aggregate.failures.len(), 1);
+        assert_eq!(
+            aggregate.failures[0].reference.to_string(),
+            "left_front.motor"
+        );
+        assert!(
+            aggregate.failures[0]
+                .error
+                .downcast_ref::<InjectedError>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn production_bound_motors_attempt_all_shutdown_stops_and_propagate() {
+        let (motors, attempts) = bound_test_motors(
+            &["left_front.motor", "left_rear.motor", "right_front.motor"],
+            0,
+        );
+
+        let error = stop_fanout(motors.iter(), |motor| motor.stop())
+            .expect_err("a failing stop must be retained by shutdown");
+        let aggregate = error
+            .downcast_ref::<super::FanoutError>()
+            .expect("shutdown seam returns the aggregate");
+
+        assert_eq!(attempts.borrow().len(), 3);
+        assert_eq!(aggregate.failures.len(), 1);
+        assert_eq!(aggregate.failures[0].operation, FanoutOperation::Stop);
+        assert!(error.to_string().contains("left_front.motor"));
+    }
+
+    #[test]
+    fn actuator_fanout_retains_every_failure_reference_and_operation() {
+        let targets = targets(&["left_front.motor", "left_rear.motor", "right_front.motor"]);
+
+        let error = fanout(&targets, FanoutOperation::Command, |target| {
+            if target.reference.to_string() != "left_rear.motor" {
+                return Err(anyhow::Error::new(InjectedError("injected failure")));
+            }
+            Ok(())
+        })
+        .expect_err("two injected failures must be aggregated");
+
+        assert_eq!(
+            error
+                .failures
+                .iter()
+                .map(|failure| failure.reference.to_string())
+                .collect::<Vec<_>>(),
+            ["left_front.motor", "right_front.motor"]
+        );
+        assert!(
+            error
+                .failures
+                .iter()
+                .all(|failure| failure.operation == FanoutOperation::Command)
+        );
+        assert!(
+            error
+                .failures
+                .iter()
+                .all(|failure| failure.error.downcast_ref::<InjectedError>().is_some())
+        );
+        let display = error.to_string();
+        assert!(display.contains("left_front.motor"));
+        assert!(display.contains("right_front.motor"));
+        assert!(display.contains("command"));
+    }
+
+    #[test]
+    fn stop_fanout_attempts_all_targets_and_propagates_failures() {
+        let targets = targets(&["left_front.motor", "right_front.motor"]);
+        let mut invoked = Vec::new();
+
+        let error = stop_fanout(&targets, |target| {
+            invoked.push(target.reference.to_string());
+            Err(anyhow::Error::new(InjectedError("injected stop failure")))
+        })
+        .expect_err("stop failures must be propagated");
+        let aggregate = error
+            .downcast_ref::<super::FanoutError>()
+            .expect("production shutdown orchestration returns the aggregate");
+
+        assert_eq!(invoked, ["left_front.motor", "right_front.motor"]);
+        assert_eq!(aggregate.failures.len(), 2);
+        assert!(
+            aggregate
+                .failures
+                .iter()
+                .all(|failure| failure.operation == FanoutOperation::Stop)
+        );
+        assert!(
+            aggregate
+                .failures
+                .iter()
+                .all(|failure| failure.error.downcast_ref::<InjectedError>().is_some())
+        );
+        assert!(error.to_string().contains("stop"));
     }
 
     const LIMITS: MotionLimits = MotionLimits {
