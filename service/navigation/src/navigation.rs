@@ -644,8 +644,7 @@ mod tests {
         let runner_clock = clock.clone();
         let runner = run_with_bus_clock::<Navigation, _, _>(
             &bus,
-            ParticipantLaunch::local("navigation-1", "robot")
-                .with_execution_origin(ExecutionOrigin::mint()),
+            ParticipantLaunch::local("navigation-1").with_execution_origin(ExecutionOrigin::mint()),
             runner_clock,
             async { tokio::time::sleep(Duration::from_millis(900)).await },
         );

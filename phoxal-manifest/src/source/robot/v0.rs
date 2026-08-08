@@ -92,8 +92,6 @@ pub const RESERVED_BRAIN_ID: &str = "brain";
 pub struct RobotSection {
     /// The robot identifier.
     pub id: String,
-    /// The bus namespace.
-    pub namespace: String,
     /// Path to the URDF structure file, relative to the robot root.
     #[serde(default = "default_structure_path")]
     pub structure: PathBuf,
@@ -344,7 +342,6 @@ pub struct NoParameters {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     EmptyRobotId,
-    EmptyRobotNamespace,
     EmptyRouterConfigPath,
     AbsoluteRouterConfigPath {
         path: PathBuf,
@@ -431,9 +428,6 @@ impl Manifest {
         if self.robot.id.trim().is_empty() {
             errors.push(ValidationError::EmptyRobotId);
         }
-        if self.robot.namespace.trim().is_empty() {
-            errors.push(ValidationError::EmptyRobotNamespace);
-        }
     }
 
     fn validate_reserved_identities(&self, errors: &mut Vec<ValidationError>) {
@@ -459,7 +453,6 @@ impl fmt::Display for ValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyRobotId => formatter.write_str("robot.id must not be empty"),
-            Self::EmptyRobotNamespace => formatter.write_str("robot.namespace must not be empty"),
             Self::EmptyRouterConfigPath => formatter.write_str("router.config must not be empty"),
             Self::AbsoluteRouterConfigPath { path } => write!(
                 formatter,
@@ -566,7 +559,6 @@ mod tests {
 schema: phoxal/robot/v0
 robot:
   id: test-bot
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -585,7 +577,6 @@ robot:
 schema: phoxal/robot/v0
 robot:
   id: rover
-  namespace: dev
   structure: structure.urdf
   motion_limits:
     max_linear_speed_mps: 0.6
@@ -617,7 +608,6 @@ router:
         let Manifest::V0(robot) = manifest.clone();
 
         assert_eq!(robot.robot.id, "rover");
-        assert_eq!(robot.robot.namespace, "dev");
         assert_eq!(robot.robot.structure, PathBuf::from("structure.urdf"));
         let service = robot
             .services
@@ -650,7 +640,6 @@ router:
 schema: phoxal/robot/v0
 robot:
   id: test-bot
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -806,7 +795,6 @@ schema: phoxal/robot/v0
 robot:
   identity:
     id: test-bot
-    namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -827,13 +815,38 @@ robot:
     }
 
     #[test]
-    fn robot_section_rejects_motion_wrapper() {
+    fn robot_section_rejects_namespace() {
         let error = Manifest::parse(
             r#"
 schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+  components: {}
+"#,
+        )
+        .expect_err("robot.namespace is not part of the robot identity grammar");
+
+        assert!(
+            format!("{error:#}").contains("unknown field `namespace`"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn robot_section_rejects_motion_wrapper() {
+        let error = Manifest::parse(
+            r#"
+schema: phoxal/robot/v0
+robot:
+  id: test-bot
   motion:
     kinematic:
       kind: omnidirectional
@@ -887,7 +900,6 @@ robot:
 version: legacy
 robot:
   id: test-bot
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -928,7 +940,6 @@ robot:
 schema: phoxal/robot/v0
 robot:
   id: test-bot
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -957,7 +968,6 @@ robot:
 schema: phoxal/robot/v0
 robot:
   id: test-bot
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -1017,7 +1027,6 @@ robot:
 schema: phoxal/robot/v0
 robot:
   id: ""
-  namespace: dev
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0

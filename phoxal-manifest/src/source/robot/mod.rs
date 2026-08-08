@@ -230,7 +230,6 @@ schema: phoxal/robot/v0
 extends: [base.robot.yaml, host.robot.yaml]
 robot:
   id: rover
-  namespace: dev
   kinematic: { kind: omnidirectional, actuators: [drive.motor], encoders: [] }
   motion_limits: { max_linear_speed_mps: 0.5, max_angular_speed_radps: 1.0 }
   components:
@@ -253,7 +252,6 @@ schema: phoxal/robot/v0
 extends: [base.robot.yaml]
 robot:
   id: rover
-  namespace: dev
   kinematic: { kind: omnidirectional, actuators: [drive.motor], encoders: [] }
   motion_limits:
     max_angular_speed_radps: 1.0

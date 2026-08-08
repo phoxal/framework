@@ -208,7 +208,6 @@ mod tests {
 schema: phoxal/robot/v0
 robot:
   id: schema-bot
-  namespace: dev
   kinematic:
     kind: ackermann
     steering_actuator: steering.motor
@@ -275,7 +274,6 @@ capabilities:
 schema: phoxal/robot/v0
 robot:
   id: ""
-  namespace: dev
   kinematic: { kind: omnidirectional, actuators: [], encoders: [] }
   motion_limits: { max_linear_speed_mps: 1.0, max_angular_speed_radps: 1.0 }
 "#;

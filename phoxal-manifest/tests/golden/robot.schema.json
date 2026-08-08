@@ -772,10 +772,6 @@
           "$ref": "#/$defs/MotionLimits",
           "description": "Manifest-wide planar speed limits. Both `motion` and `drive` enforce these\nindependently so an arbitration defect cannot bypass the actuator\nbackstop."
         },
-        "namespace": {
-          "description": "The bus namespace.",
-          "type": "string"
-        },
         "structure": {
           "default": "structure.urdf",
           "description": "Path to the URDF structure file, relative to the robot root.",
@@ -784,7 +780,6 @@
       },
       "required": [
         "id",
-        "namespace",
         "kinematic",
         "motion_limits"
       ],

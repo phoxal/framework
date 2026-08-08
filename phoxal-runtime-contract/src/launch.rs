@@ -16,7 +16,6 @@ pub mod env {
     pub const PARTICIPANT_ID: &str = "PHOXAL_PARTICIPANT_ID";
     pub const EXECUTION_ID: &str = "PHOXAL_EXECUTION_ID";
     pub const EXECUTION_ORIGIN: &str = "PHOXAL_EXECUTION_ORIGIN";
-    pub const ROBOT_ID: &str = "PHOXAL_ROBOT_ID";
     pub const BUNDLE_ROOT: &str = "PHOXAL_BUNDLE_ROOT";
     pub const COMPONENT_INSTANCE: &str = "PHOXAL_COMPONENT_INSTANCE";
     pub const CONNECT: &str = "PHOXAL_CONNECT";
@@ -27,7 +26,6 @@ pub mod env {
         PARTICIPANT_ID,
         EXECUTION_ID,
         EXECUTION_ORIGIN,
-        ROBOT_ID,
         BUNDLE_ROOT,
         COMPONENT_INSTANCE,
         CONNECT,
@@ -44,7 +42,6 @@ pub struct ParticipantLaunch {
     pub execution: ExecutionId,
     #[serde(default, with = "origin_serde")]
     pub execution_origin: Option<ExecutionOrigin>,
-    pub robot_id: String,
     #[serde(default)]
     pub bus: BusProfile,
     #[serde(default)]
@@ -64,12 +61,11 @@ const fn default_grace() -> u64 {
 }
 
 impl ParticipantLaunch {
-    pub fn local(participant_id: impl Into<String>, robot_id: impl Into<String>) -> Self {
+    pub fn local(participant_id: impl Into<String>) -> Self {
         Self {
             participant_id: participant_id.into(),
             execution: ExecutionId::mint(),
             execution_origin: None,
-            robot_id: robot_id.into(),
             bus: BusProfile::default(),
             clock: ClockMode::Real,
             config: None,
@@ -94,7 +90,6 @@ impl ParticipantLaunch {
         let mut values = vec![
             (env::PARTICIPANT_ID, self.participant_id.clone()),
             (env::EXECUTION_ID, self.execution.to_string()),
-            (env::ROBOT_ID, self.robot_id.clone()),
             (env::CONNECT, self.bus.connect_endpoints.join(",")),
             (env::CLOCK, self.clock.to_string()),
         ];
@@ -115,7 +110,7 @@ impl ParticipantLaunch {
 
     /// Decode values obtained from CLI flags or environment variables.
     pub fn decode(values: LaunchEnv) -> Result<Self, LaunchError> {
-        let mut launch = Self::local(values.participant_id, values.robot_id);
+        let mut launch = Self::local(values.participant_id);
         if let Some(value) = nonempty(values.execution_id) {
             launch.execution = ExecutionId::parse(&value)
                 .map_err(|source| LaunchError::ExecutionId { value, source })?;
@@ -162,7 +157,6 @@ pub struct LaunchEnv {
     pub participant_id: String,
     pub execution_id: Option<String>,
     pub execution_origin: Option<String>,
-    pub robot_id: String,
     pub bundle_root: Option<PathBuf>,
     pub component_instance: Option<String>,
     pub connect: Option<String>,
@@ -249,7 +243,7 @@ mod tests {
         let launch = ParticipantLaunch {
             bundle_root: Some(PathBuf::from("/bundle")),
             execution_origin: Some(ExecutionOrigin::mint()),
-            ..ParticipantLaunch::local("drive", "robot")
+            ..ParticipantLaunch::local("drive")
         };
         let encoded = launch.encode_env().unwrap();
         assert!(

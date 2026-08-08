@@ -2,7 +2,6 @@
 schema: phoxal/robot/v0
 robot:
   id: hello-rover
-  namespace: dev
   structure: structure.urdf
   motion_limits:
     max_linear_speed_mps: 0.6

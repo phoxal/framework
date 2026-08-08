@@ -149,12 +149,6 @@ token_identifier!(
 );
 
 token_identifier!(
-    /// The namespace every runtime identity of this robot is scoped by.
-    RobotNamespace,
-    IdentifierKind::RobotNamespace
-);
-
-token_identifier!(
     /// The identity of a component *type* - one authored component definition.
     ComponentTypeId,
     IdentifierKind::ComponentType

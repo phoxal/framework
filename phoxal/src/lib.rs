@@ -221,8 +221,8 @@ pub mod bundle {
 pub mod model {
     pub use phoxal_model::{
         Clock, IdentifierKind, JointOwner, KinematicScalarField, LinkRole, ModelError,
-        MotionLimitField, PoseOwner, Robot, RobotBuilder, RobotIdentity, StructureError, builder,
-        component, identity, robot, simulation, structure,
+        MotionLimitField, PoseOwner, Robot, RobotBuilder, StructureError, builder, component,
+        identity, robot, simulation, structure,
     };
 }
 

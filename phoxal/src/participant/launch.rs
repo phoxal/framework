@@ -43,10 +43,6 @@ struct CommonLaunchCli {
     )]
     execution_origin: Option<String>,
 
-    /// Robot this participant belongs to. Defaults to `robot` for local runs.
-    #[arg(long, env = env::ROBOT_ID, hide_env_values = true, value_name = "ID")]
-    robot_id: Option<String>,
-
     /// Root directory containing the resolved robot model.
     #[arg(
         long,
@@ -121,11 +117,7 @@ struct SimulatorLaunchCli {
 }
 
 impl CommonLaunchCli {
-    fn into_launch(
-        self,
-        default_participant_id: &'static str,
-        default_robot_id: &'static str,
-    ) -> crate::Result<ParticipantLaunch> {
+    fn into_launch(self, default_participant_id: &'static str) -> crate::Result<ParticipantLaunch> {
         ParticipantLaunch::decode(LaunchEnv {
             participant_id: self
                 .participant_id
@@ -133,10 +125,6 @@ impl CommonLaunchCli {
                 .unwrap_or_else(|| default_participant_id.to_string()),
             execution_id: self.execution_id,
             execution_origin: self.execution_origin,
-            robot_id: self
-                .robot_id
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| default_robot_id.to_string()),
             bundle_root: self.bundle_root,
             component_instance: self.component_instance,
             connect: self.connect,
@@ -147,24 +135,16 @@ impl CommonLaunchCli {
     }
 }
 
-fn command_for<C: CommandFactory>(
-    default_participant_id: &'static str,
-    default_robot_id: &'static str,
-) -> clap::Command {
-    C::command()
-        .mut_arg("participant_id", |arg| {
-            arg.default_value(default_participant_id)
-        })
-        .mut_arg("robot_id", |arg| arg.default_value(default_robot_id))
+fn command_for<C: CommandFactory>(default_participant_id: &'static str) -> clap::Command {
+    C::command().mut_arg("participant_id", |arg| {
+        arg.default_value(default_participant_id)
+    })
 }
 
 /// Type-level launch contract emitted by the participant macros.
 #[doc(hidden)]
 pub trait ParticipantLaunchPolicy: Send + Sync + 'static {
-    fn from_cli(
-        default_participant_id: &'static str,
-        default_robot_id: &'static str,
-    ) -> crate::Result<ParticipantLaunch>;
+    fn from_cli(default_participant_id: &'static str) -> crate::Result<ParticipantLaunch>;
 
     fn clock_mode(launch: &ParticipantLaunch) -> ClockMode;
 }
@@ -174,16 +154,10 @@ pub trait ParticipantLaunchPolicy: Send + Sync + 'static {
 pub struct ClockedParticipantLaunch;
 
 impl ParticipantLaunchPolicy for ClockedParticipantLaunch {
-    fn from_cli(
-        default_participant_id: &'static str,
-        default_robot_id: &'static str,
-    ) -> crate::Result<ParticipantLaunch> {
-        let matches =
-            command_for::<ClockedLaunchCli>(default_participant_id, default_robot_id).get_matches();
+    fn from_cli(default_participant_id: &'static str) -> crate::Result<ParticipantLaunch> {
+        let matches = command_for::<ClockedLaunchCli>(default_participant_id).get_matches();
         let cli = ClockedLaunchCli::from_arg_matches(&matches)?;
-        let mut launch = cli
-            .common
-            .into_launch(default_participant_id, default_robot_id)?;
+        let mut launch = cli.common.into_launch(default_participant_id)?;
         launch.clock = cli.clock;
         Ok(launch)
     }
@@ -198,15 +172,10 @@ impl ParticipantLaunchPolicy for ClockedParticipantLaunch {
 pub struct SimulatorParticipantLaunch;
 
 impl ParticipantLaunchPolicy for SimulatorParticipantLaunch {
-    fn from_cli(
-        default_participant_id: &'static str,
-        default_robot_id: &'static str,
-    ) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<SimulatorLaunchCli>(default_participant_id, default_robot_id)
-            .get_matches();
+    fn from_cli(default_participant_id: &'static str) -> crate::Result<ParticipantLaunch> {
+        let matches = command_for::<SimulatorLaunchCli>(default_participant_id).get_matches();
         let cli = SimulatorLaunchCli::from_arg_matches(&matches)?;
-        cli.common
-            .into_launch(default_participant_id, default_robot_id)
+        cli.common.into_launch(default_participant_id)
     }
 
     fn clock_mode(_launch: &ParticipantLaunch) -> ClockMode {
@@ -242,21 +211,21 @@ mod tests {
     }
 
     fn parse_clocked_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<ClockedLaunchCli>("default-id", "robot")
+        let matches = command_for::<ClockedLaunchCli>("default-id")
             .try_get_matches_from(args)
             .map_err(anyhow::Error::from)?;
         let cli = ClockedLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
-        let mut launch = cli.common.into_launch("default-id", "robot")?;
+        let mut launch = cli.common.into_launch("default-id")?;
         launch.clock = cli.clock;
         Ok(launch)
     }
 
     fn parse_simulator_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<SimulatorLaunchCli>("default-id", "robot")
+        let matches = command_for::<SimulatorLaunchCli>("default-id")
             .try_get_matches_from(args)
             .map_err(anyhow::Error::from)?;
         let cli = SimulatorLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
-        cli.common.into_launch("default-id", "robot")
+        cli.common.into_launch("default-id")
     }
 
     #[test]
@@ -265,7 +234,6 @@ mod tests {
         clear_env();
         let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "default-id");
-        assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.bundle_root, None);
         assert_eq!(launch.config, None);
         assert!(launch.bus.connect_endpoints.is_empty());
@@ -283,7 +251,6 @@ mod tests {
             std::env::set_var(env::PARTICIPANT_ID, "tof-3");
             std::env::set_var(env::EXECUTION_ID, execution.to_string());
             std::env::set_var(env::EXECUTION_ORIGIN, origin.encode());
-            std::env::set_var(env::ROBOT_ID, "robot-a");
             std::env::set_var(env::BUNDLE_ROOT, "/robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "tof_front");
             std::env::set_var(env::CONNECT, "tcp/127.0.0.1:7447, tcp/127.0.0.1:7448");
@@ -294,7 +261,6 @@ mod tests {
         assert_eq!(launch.participant_id, "tof-3");
         assert_eq!(launch.execution, execution);
         assert_eq!(launch.execution_origin, Some(origin));
-        assert_eq!(launch.robot_id, "robot-a");
         assert_eq!(
             launch.bundle_root.as_deref(),
             Some(std::path::Path::new("/robot"))
@@ -321,7 +287,6 @@ mod tests {
         unsafe {
             std::env::set_var(env::PARTICIPANT_ID, "env-participant");
             std::env::set_var(env::EXECUTION_ID, ExecutionId::mint().to_string());
-            std::env::set_var(env::ROBOT_ID, "env-robot");
             std::env::set_var(env::BUNDLE_ROOT, "/env-robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "env-component");
             std::env::set_var(env::CONNECT, "tcp/env:7447");
@@ -335,8 +300,6 @@ mod tests {
             "flag-participant",
             "--execution-id",
             &flag_execution.to_string(),
-            "--robot-id",
-            "flag-robot",
             "--bundle-root",
             "/flag-robot",
             "--component-instance",
@@ -352,7 +315,6 @@ mod tests {
 
         assert_eq!(launch.participant_id, "flag-participant");
         assert_eq!(launch.execution, flag_execution);
-        assert_eq!(launch.robot_id, "flag-robot");
         assert_eq!(
             launch.bundle_root.as_deref(),
             Some(std::path::Path::new("/flag-robot"))
@@ -375,7 +337,7 @@ mod tests {
             std::env::remove_var(env::CONFIG);
             std::env::set_var(env::CLOCK, "wallclock");
         }
-        let err = command_for::<ClockedLaunchCli>("default-id", "robot")
+        let err = command_for::<ClockedLaunchCli>("default-id")
             .try_get_matches_from(["participant-bin"])
             .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
@@ -390,7 +352,7 @@ mod tests {
         unsafe { std::env::set_var(env::CONFIG, r#"{"secret":"do-not-print"}"#) };
 
         let mut help = Vec::new();
-        command_for::<ClockedLaunchCli>("default-id", "robot")
+        command_for::<ClockedLaunchCli>("default-id")
             .write_long_help(&mut help)
             .unwrap();
         let help = String::from_utf8(help).unwrap();
@@ -399,7 +361,6 @@ mod tests {
             ("--participant-id", env::PARTICIPANT_ID),
             ("--execution-id", env::EXECUTION_ID),
             ("--execution-origin", env::EXECUTION_ORIGIN),
-            ("--robot-id", env::ROBOT_ID),
             ("--bundle-root", env::BUNDLE_ROOT),
             ("--component-instance", env::COMPONENT_INSTANCE),
             ("--connect", env::CONNECT),
@@ -457,8 +418,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_launch_record_round_trips_its_identities_and_origin_through_json() {
-        let launch = ParticipantLaunch::local("drive", "robot")
-            .with_execution_origin(ExecutionOrigin::mint());
+        let launch =
+            ParticipantLaunch::local("drive").with_execution_origin(ExecutionOrigin::mint());
         let encoded = serde_json::to_string(&launch).unwrap();
         let decoded: ParticipantLaunch = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, launch);
@@ -481,7 +442,7 @@ mod tests {
         assert_eq!(launch.clock, ClockMode::Real);
 
         let mut help = Vec::new();
-        command_for::<SimulatorLaunchCli>("default-id", "robot")
+        command_for::<SimulatorLaunchCli>("default-id")
             .write_long_help(&mut help)
             .unwrap();
         let help = String::from_utf8(help).unwrap();
@@ -492,13 +453,13 @@ mod tests {
             vec!["simulator-bin", "--clock", "simulation"],
             vec!["simulator-bin", "--simulation"],
         ] {
-            let error = command_for::<SimulatorLaunchCli>("default-id", "robot")
+            let error = command_for::<SimulatorLaunchCli>("default-id")
                 .try_get_matches_from(arguments)
                 .unwrap_err();
             assert_eq!(error.kind(), ErrorKind::UnknownArgument);
         }
 
-        let mut programmatic = ParticipantLaunch::local("simulator", "robot");
+        let mut programmatic = ParticipantLaunch::local("simulator");
         programmatic.clock = ClockMode::Simulation;
         assert_eq!(
             SimulatorParticipantLaunch::clock_mode(&programmatic),

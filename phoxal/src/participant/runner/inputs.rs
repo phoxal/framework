@@ -101,7 +101,7 @@ mod tests {
         let inputs = ParticipantBundleInputs::for_launch(Some(bundle.path()))
             .expect("the staged bundle loads")
             .expect("a root binds the bundle");
-        assert_eq!(inputs.robot.identity().id().as_str(), "rgbd-imu-diff-drive");
+        assert_eq!(inputs.robot.id().as_str(), "rgbd-imu-diff-drive");
         assert!(
             inputs
                 .assets

@@ -126,13 +126,7 @@ fn a_finalized_bundle_loads_without_any_compiled_model_document() {
     let bundle = FinalizedBundle::load(staged.path()).expect("the staged bundle must load");
     let robot = bundle.robot();
 
-    assert_eq!(
-        (
-            robot.identity().id().as_str(),
-            robot.identity().namespace().as_str()
-        ),
-        ("rgbd-imu-diff-drive", "dev")
-    );
+    assert_eq!(robot.id().as_str(), "rgbd-imu-diff-drive");
     assert_eq!(robot.clock(), phoxal_model::Clock::Real);
     // Naming the instances rather than counting them states what the authored
     // document declares, so adding or renaming one fails here describing the

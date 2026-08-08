@@ -70,7 +70,7 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     // `Participant::__retain_embedded_metadata`'s docs.
     R::__retain_embedded_metadata();
 
-    let launch = R::LaunchPolicy::from_cli(R::ID, "robot")?;
+    let launch = R::LaunchPolicy::from_cli(R::ID)?;
 
     init_tracing();
 
