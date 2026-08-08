@@ -177,7 +177,7 @@ pub(crate) fn combine<T>(primary: crate::Result<T>, teardown: TeardownReport) ->
 /// one deadline, so a stuck task cannot buy itself extra time after a slow hook,
 /// and a hook that hangs cannot hold the process open. Every exit after
 /// `Participant::setup` succeeds - normal completion, a loop fault, a failed
-/// server or liveliness declaration - goes through here, so none of them can
+/// server or Ready declaration - goes through here, so none of them can
 /// bypass the hook or detach tasks before the bus closes.
 pub(crate) struct Teardown {
     pub(crate) managed_tasks: ManagedTasks,
