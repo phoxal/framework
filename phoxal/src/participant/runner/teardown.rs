@@ -5,10 +5,26 @@ use std::time::Duration;
 use crate::participant::api::Participant;
 use crate::participant::managed::ManagedTasks;
 
-/// Reserve a scheduler turn at the end of the shared grace budget so a
-/// cooperative managed task can observe the cancellation request even when
-/// the shutdown hook consumed nearly all of the budget.
-const TASK_CANCELLATION_DRAIN: Duration = Duration::from_millis(1);
+/// One absolute teardown deadline shared by the participant hook, managed
+/// tasks, and bus close. Keeping the instant private prevents lifecycle code
+/// from accidentally starting a fresh budget for a child stage.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ShutdownDeadline(tokio::time::Instant);
+
+impl ShutdownDeadline {
+    pub(crate) fn from_now(grace: Duration) -> Self {
+        Self(tokio::time::Instant::now() + grace)
+    }
+
+    pub(crate) fn instant(self) -> tokio::time::Instant {
+        self.0
+    }
+
+    pub(crate) fn remaining(self) -> Duration {
+        self.0
+            .saturating_duration_since(tokio::time::Instant::now())
+    }
+}
 
 /// Evidence collected after the primary participant exit has been selected.
 ///
@@ -23,6 +39,7 @@ pub(crate) struct TeardownReport {
     pub(crate) unjoined_error: Option<anyhow::Error>,
     pub(crate) task_errors: Vec<anyhow::Error>,
     pub(crate) bus_close_error: Option<anyhow::Error>,
+    pub(crate) bus_close_report: Option<phoxal_bus::BusCloseReport>,
 }
 
 impl TeardownReport {
@@ -33,6 +50,10 @@ impl TeardownReport {
             && self.unjoined_error.is_none()
             && self.task_errors.is_empty()
             && self.bus_close_error.is_none()
+            && self
+                .bus_close_report
+                .as_ref()
+                .is_none_or(phoxal_bus::BusCloseReport::is_clean)
     }
 }
 
@@ -61,6 +82,11 @@ impl std::fmt::Display for TeardownReport {
         }
         if let Some(error) = &self.bus_close_error {
             item("bus-close", error)?;
+        }
+        if let Some(report) = &self.bus_close_report
+            && !report.is_clean()
+        {
+            item("bus-close-report", report)?;
         }
         if first {
             formatter.write_str("clean")
@@ -155,7 +181,7 @@ pub(crate) fn combine<T>(primary: crate::Result<T>, teardown: TeardownReport) ->
 /// bypass the hook or detach tasks before the bus closes.
 pub(crate) struct Teardown {
     pub(crate) managed_tasks: ManagedTasks,
-    pub(crate) grace_ms: u64,
+    pub(crate) deadline: ShutdownDeadline,
 }
 
 impl Teardown {
@@ -170,10 +196,8 @@ impl Teardown {
     {
         let Teardown {
             mut managed_tasks,
-            grace_ms,
+            deadline,
         } = self;
-
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(grace_ms);
         let mut report = TeardownReport::default();
 
         // Bound the shutdown hook by the grace deadline: a hook that
@@ -181,9 +205,7 @@ impl Teardown {
         // bus close deterministically rather than leak the process. On timeout we
         // retain structured timeout evidence and move on; the hook's future is
         // dropped (cancelled at the next await).
-        let reserved = TASK_CANCELLATION_DRAIN.min(Duration::from_millis(grace_ms));
-        let shutdown_deadline = deadline - reserved;
-        let remaining = shutdown_deadline.saturating_duration_since(tokio::time::Instant::now());
+        let remaining = deadline.remaining();
         match tokio::time::timeout(remaining, participant.shutdown(api, state)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
@@ -198,14 +220,7 @@ impl Teardown {
         // only after the hook returns or times out do we cancel and join the
         // runner-owned tasks, on the same deadline the hook consumed part of.
         managed_tasks.cancel();
-        // Give Tokio one scheduling turn to deliver cancellation even when the
-        // hook consumed the entire grace budget. `join_until` remains bounded;
-        // this only makes the cancellation request observable to cooperative
-        // tasks before their join evidence is collected.
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
-        }
-        let task_report = managed_tasks.join_until(deadline).await;
+        let task_report = managed_tasks.join_until(deadline.instant()).await;
         report.unjoined_tasks = task_report.unjoined;
         if !report.unjoined_tasks.is_empty() {
             report.unjoined_error = Some(anyhow::anyhow!(
@@ -227,32 +242,46 @@ impl Teardown {
 /// original error remains the primary source while any join failures are
 /// attached as structured teardown evidence.
 pub(crate) async fn abandon_setup(
-    managed_tasks: ManagedTasks,
+    mut managed_tasks: ManagedTasks,
     error: anyhow::Error,
-    grace_ms: u64,
+    deadline: ShutdownDeadline,
 ) -> anyhow::Error {
-    let unjoined = managed_tasks
-        .shutdown_within(Duration::from_millis(grace_ms))
-        .await;
-    if unjoined.unjoined.is_empty() && unjoined.failures.is_empty() {
+    managed_tasks.cancel();
+    let report = task_report(managed_tasks.join_until(deadline.instant()).await);
+    if report.is_clean() {
         error
     } else {
-        let unjoined_error = (!unjoined.unjoined.is_empty()).then(|| {
-            anyhow::anyhow!(
-                "managed tasks remained unjoined after bounded reaping: {:?}",
-                unjoined.unjoined
-            )
-        });
         TerminalError {
             primary: Some(error),
-            teardown: TeardownReport {
-                unjoined_tasks: unjoined.unjoined,
-                unjoined_error,
-                task_errors: unjoined.failures,
-                ..TeardownReport::default()
-            },
+            teardown: report,
         }
         .into()
+    }
+}
+
+/// Cancel setup-owned work after a stop arrives before setup produced State/Api.
+/// There is no participant shutdown hook to call yet, but task cleanup evidence
+/// still participates in the terminal result.
+pub(crate) async fn abandon_startup(
+    mut managed_tasks: ManagedTasks,
+    deadline: ShutdownDeadline,
+) -> TeardownReport {
+    managed_tasks.cancel();
+    task_report(managed_tasks.join_until(deadline.instant()).await)
+}
+
+fn task_report(shutdown: crate::participant::managed::ManagedTaskShutdown) -> TeardownReport {
+    let unjoined_error = (!shutdown.unjoined.is_empty()).then(|| {
+        anyhow::anyhow!(
+            "managed tasks remained unjoined after bounded reaping: {:?}",
+            shutdown.unjoined
+        )
+    });
+    TeardownReport {
+        unjoined_tasks: shutdown.unjoined,
+        unjoined_error,
+        task_errors: shutdown.failures,
+        ..TeardownReport::default()
     }
 }
 
@@ -357,7 +386,7 @@ mod tests {
         let began = std::time::Instant::now();
         Teardown {
             managed_tasks: ManagedTasks::default(),
-            grace_ms: 150,
+            deadline: ShutdownDeadline::from_now(Duration::from_millis(150)),
         }
         .run(&HangingShutdown, &(), &mut state)
         .await;
@@ -385,7 +414,7 @@ mod tests {
         // Returns at all, rather than propagating: teardown has no error path.
         let report = Teardown {
             managed_tasks,
-            grace_ms: 5_000,
+            deadline: ShutdownDeadline::from_now(Duration::from_secs(5)),
         }
         .run(&FailingShutdown, &(), &mut state)
         .await;
@@ -416,7 +445,7 @@ mod tests {
         let returned = abandon_setup(
             managed,
             anyhow::anyhow!("the serial port was not there"),
-            5_000,
+            ShutdownDeadline::from_now(Duration::from_secs(5)),
         )
         .await;
 
@@ -441,7 +470,7 @@ mod tests {
         let began = std::time::Instant::now();
         let report = Teardown {
             managed_tasks,
-            grace_ms: 150,
+            deadline: ShutdownDeadline::from_now(Duration::from_millis(150)),
         }
         .run(&HangingShutdown, &(), &mut state)
         .await;

@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+#[cfg(test)]
 use std::time::Duration;
 
 use tokio::task::{Id, JoinError, JoinSet};
@@ -180,12 +181,10 @@ impl ManagedTasks {
         self.join_set.abort_all();
     }
 
-    /// Cancel every remaining managed task and join them within `grace`.
-    /// Returns unjoined task names and any non-cancellation join failures.
+    #[cfg(test)]
     pub(crate) async fn shutdown_within(mut self, grace: Duration) -> ManagedTaskShutdown {
         self.cancel();
-        let deadline = Instant::now() + grace;
-        self.join_until(deadline).await
+        self.join_until(Instant::now() + grace).await
     }
 
     /// Join remaining tasks until the shared shutdown deadline is exhausted.
@@ -213,30 +212,13 @@ impl ManagedTasks {
             }
         }
 
-        // The primary grace phase may have elapsed while a task was still
-        // running. Abort those tasks explicitly and give the JoinSet a second,
-        // bounded phase to reap their JoinHandles. This keeps ownership
-        // explicit: a JoinSet is never relied on as the only cleanup action.
+        // The shared deadline is authoritative. Abort tasks that are still
+        // running, but do not create a second reap budget after it expires.
+        // Dropping the JoinSet then drops the remaining handles; their names
+        // stay in the report as explicit evidence that they were not joined.
         if !self.info.is_empty() {
             self.join_set.abort_all();
-            let reap_deadline = Instant::now() + Duration::from_millis(50);
-            loop {
-                self.drain_ready(&mut failures);
-                if self.info.is_empty() {
-                    break;
-                }
-                let remaining = reap_deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                match tokio::time::timeout(remaining, self.join_set.join_next_with_id()).await {
-                    Ok(Some(result)) => self.forget_finished(result, &mut failures),
-                    Ok(None) | Err(_) => {
-                        self.drain_ready(&mut failures);
-                        break;
-                    }
-                }
-            }
+            self.drain_ready(&mut failures);
         }
 
         let mut unjoined: Vec<_> = self.info.into_values().map(|info| info.name).collect();
@@ -490,11 +472,10 @@ mod tests {
         );
     }
 
-    /// A task that misses the primary grace deadline is explicitly aborted and
-    /// then reaped by the bounded second phase once its short synchronous
-    /// section returns.
+    /// A task that misses the shared grace deadline is explicitly aborted but
+    /// not awaited under a second budget; its name is retained as evidence.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_timed_out_task_is_reaped_after_explicit_abort() {
+    async fn a_timed_out_task_is_reported_after_explicit_abort() {
         let started = Arc::new(AtomicBool::new(false));
         let running = Arc::clone(&started);
         let mut tasks = ManagedTasks::default();
@@ -508,11 +489,8 @@ mod tests {
 
         let began = std::time::Instant::now();
         let report = tasks.shutdown_within(Duration::from_millis(1)).await;
-        assert!(
-            report.unjoined.is_empty(),
-            "the second phase must reap the task"
-        );
-        assert!(began.elapsed() < Duration::from_secs(1));
+        assert_eq!(report.unjoined, vec!["short-block".to_string()]);
+        assert!(began.elapsed() < Duration::from_millis(100));
     }
 
     /// A task inside a synchronous section cannot observe cancellation, so it

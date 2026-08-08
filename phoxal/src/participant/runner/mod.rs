@@ -50,7 +50,9 @@ pub(crate) mod teardown;
 use inputs::{ParticipantBundleInputs, participant_config};
 use query::QuerySurface;
 use signal::shutdown_signal;
-use teardown::{Teardown, TeardownReport, abandon_setup, combine};
+use teardown::{
+    ShutdownDeadline, Teardown, TeardownReport, abandon_setup, abandon_startup, combine,
+};
 
 /// How often the runner wakes for work that is not a step: publishing the
 /// runtime-performance rollup, and re-checking clock discipline.
@@ -170,6 +172,9 @@ where
 {
     init_tracing();
     let mut shutdown = ShutdownController::new(shutdown);
+    // Convert the Clap millisecond field once at the process boundary. The
+    // remainder of the lifecycle carries a typed duration.
+    let shutdown_grace = Duration::from_millis(launch.shutdown_grace_ms);
 
     // Validate and select the persisted participant before opening the bus.
     // A malformed runtime document or unknown topology id is a local startup
@@ -240,7 +245,7 @@ where
         &bus,
         Some(owner),
         &launch.participant_id,
-        launch.shutdown_grace_ms,
+        shutdown_grace,
         Some(bundle),
         config,
         clock_mode,
@@ -350,7 +355,7 @@ where
         bus,
         None,
         &harness.participant_id,
-        harness.shutdown_grace_ms,
+        Duration::from_millis(harness.shutdown_grace_ms),
         None,
         config,
         ClockMode::Real,
@@ -386,7 +391,7 @@ where
         bus,
         None,
         &harness.participant_id,
-        harness.shutdown_grace_ms,
+        Duration::from_millis(harness.shutdown_grace_ms),
         None,
         config,
         ClockMode::Real,
@@ -404,7 +409,7 @@ async fn run_inner<R, C, S>(
     bus: &BusHandle,
     owner: Option<BusOwner>,
     participant_id: &ParticipantId,
-    shutdown_grace_ms: u64,
+    shutdown_grace: Duration,
     bundle: Option<ParticipantBundleInputs>,
     config: R::Config,
     clock_mode: ClockMode,
@@ -423,7 +428,7 @@ where
         bus,
         owner,
         participant_id,
-        shutdown_grace_ms,
+        shutdown_grace,
         bundle,
         config,
         clock_mode,
@@ -444,7 +449,7 @@ async fn run_lifecycle<R, C, S>(
     bus: &BusHandle,
     mut owner: Option<BusOwner>,
     participant_id: &ParticipantId,
-    shutdown_grace_ms: u64,
+    shutdown_grace: Duration,
     bundle: Option<ParticipantBundleInputs>,
     config: R::Config,
     clock_mode: ClockMode,
@@ -472,12 +477,24 @@ where
         // every deadline it owns is measured against a number it cannot
         // defend. This is ordinary failure, so the supervisor's restart and
         // start-limit policy decides what happens next.
-        return close_owner_with_result(Err(ClockDisciplineLost { reason }.into()), owner).await;
+        return close_owner_with_result(
+            Err(ClockDisciplineLost { reason }.into()),
+            owner,
+            ShutdownDeadline::from_now(shutdown_grace),
+        )
+        .await;
     }
     let (scheduler, clock_handle) =
         match AnyStepScheduler::for_clock_mode(clock_mode, schedule, reading.instant()) {
             Ok(value) => value,
-            Err(error) => return close_owner_with_result(Err(error), owner).await,
+            Err(error) => {
+                return close_owner_with_result(
+                    Err(error),
+                    owner,
+                    ShutdownDeadline::from_now(shutdown_grace),
+                )
+                .await;
+            }
         };
     let effective_clock = match &scheduler {
         AnyStepScheduler::Simulation(simulation) => {
@@ -490,7 +507,7 @@ where
         bus,
         &mut owner,
         participant_id,
-        shutdown_grace_ms,
+        shutdown_grace,
         shutdown,
         bundle,
         config,
@@ -505,41 +522,34 @@ where
     )
     .await
     {
-        Ok(StartOutcome::Ready(runner)) => runner.run(shutdown).await,
-        Ok(StartOutcome::Shutdown) => close_owner_with_result(Ok(()), owner).await,
-        Err(error) => close_owner_with_result(Err(error), owner).await,
+        StartOutcome::Ready(runner) => runner.run(shutdown).await,
+        StartOutcome::Terminal { result, deadline } => {
+            close_owner_with_result(result, owner, deadline).await
+        }
     }
 }
 
 async fn close_owner_with_result<T>(
     primary: crate::Result<T>,
     owner: Option<BusOwner>,
+    deadline: ShutdownDeadline,
 ) -> crate::Result<T> {
     let Some(owner) = owner else {
         return primary;
     };
-    let close_error = match owner.close().await {
-        Ok(close)
-            if close.unjoined_workers == 0
-                && close.transport_errors.is_empty()
-                && close.timed_out.is_empty() =>
-        {
-            None
-        }
-        Ok(close) => Some(anyhow::anyhow!(
-            "bus close evidence: {} transport failures, {} unjoined workers, timed out stages: {:?}",
-            close.transport_errors.len(),
-            close.unjoined_workers,
-            close.timed_out,
-        )),
-        Err(error) => Some(error.into()),
-    };
-    match close_error {
-        None => primary,
-        Some(error) => teardown::combine(
+    match owner.close_until(deadline.instant()).await {
+        Ok(close) if close.is_clean() => primary,
+        Ok(close) => teardown::combine(
             primary,
             teardown::TeardownReport {
-                bus_close_error: Some(error),
+                bus_close_report: Some(close),
+                ..teardown::TeardownReport::default()
+            },
+        ),
+        Err(error) => teardown::combine(
+            primary,
+            teardown::TeardownReport {
+                bus_close_error: Some(error.into()),
                 ..teardown::TeardownReport::default()
             },
         ),
@@ -670,7 +680,7 @@ struct Runner<R: Participant, C: ClockSource> {
     /// shutdown work starts, so observers never see Ready while resources are
     /// being unwound.
     ready: Option<ParticipantReadyToken>,
-    shutdown_grace_ms: u64,
+    shutdown_grace: Duration,
 }
 
 /// Framework tasks that must be registered before setup can declare Ready.
@@ -683,14 +693,42 @@ struct RunnerTasks {
 
 enum StartOutcome<T> {
     Ready(T),
-    Shutdown,
+    Terminal {
+        result: crate::Result<()>,
+        deadline: ShutdownDeadline,
+    },
 }
 
-fn startup_shutdown<T>(report: TeardownReport) -> crate::Result<StartOutcome<T>> {
-    match combine(Ok(()), report) {
-        Ok(()) => Ok(StartOutcome::Shutdown),
-        Err(error) => Err(error),
+fn startup_terminal<T>(
+    primary: crate::Result<()>,
+    report: TeardownReport,
+    deadline: ShutdownDeadline,
+) -> StartOutcome<T> {
+    StartOutcome::Terminal {
+        result: combine(primary, report),
+        deadline,
     }
+}
+
+async fn startup_teardown<T, R>(
+    managed_tasks: ManagedTasks,
+    participant: &R,
+    api: &R::Api,
+    state: &mut R::State,
+    shutdown_grace: Duration,
+    primary: crate::Result<()>,
+) -> StartOutcome<T>
+where
+    R: Participant,
+{
+    let deadline = ShutdownDeadline::from_now(shutdown_grace);
+    let report = Teardown {
+        managed_tasks,
+        deadline,
+    }
+    .run(participant, api, state)
+    .await;
+    startup_terminal(primary, report, deadline)
 }
 
 impl<R: Participant, C: ClockSource> Runner<R, C> {
@@ -708,7 +746,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         bus: &BusHandle,
         owner: &mut Option<BusOwner>,
         participant_id: &ParticipantId,
-        shutdown_grace_ms: u64,
+        shutdown_grace: Duration,
         shutdown: &mut ShutdownController<S>,
         bundle: Option<ParticipantBundleInputs>,
         config: R::Config,
@@ -717,7 +755,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         schedule: Option<StepSchedule>,
         clock_mode: ClockMode,
         tasks: RunnerTasks,
-    ) -> crate::Result<StartOutcome<Self>>
+    ) -> StartOutcome<Self>
     where
         S: Future<Output = ()>,
     {
@@ -744,27 +782,20 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         let (mut state, api) = match tokio::select! {
             biased;
             _ = shutdown.wait() => {
-                let cleanup = ctx
-                    .take_managed_tasks()
-                    .shutdown_within(Duration::from_millis(shutdown_grace_ms))
-                    .await;
-                if !cleanup.unjoined.is_empty() || !cleanup.failures.is_empty() {
-                    tracing::warn!(
-                        target: "phoxal.runtime",
-                        unjoined = ?cleanup.unjoined,
-                        failures = cleanup.failures.len(),
-                        "setup cancellation left cleanup evidence"
-                    );
-                }
-                return Ok(StartOutcome::Shutdown);
+                let deadline = ShutdownDeadline::from_now(shutdown_grace);
+                let report = abandon_startup(ctx.take_managed_tasks(), deadline).await;
+                return startup_terminal(Ok(()), report, deadline);
             }
             result = setup => result,
         } {
             Ok(pair) => pair,
             Err(error) => {
-                return Err(
-                    abandon_setup(ctx.take_managed_tasks(), error, shutdown_grace_ms).await,
-                );
+                let deadline = ShutdownDeadline::from_now(shutdown_grace);
+                let error = abandon_setup(ctx.take_managed_tasks(), error, deadline).await;
+                return StartOutcome::Terminal {
+                    result: Err(error),
+                    deadline,
+                };
             }
         };
         // From here on the runner - not `SetupContext` - owns watching the tasks
@@ -774,26 +805,31 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         let timeline_retentions = ctx.take_timeline_retentions();
         let query_registrations = ctx.take_query_registrations();
 
-        let wind_down = |managed_tasks| Teardown {
-            managed_tasks,
-            grace_ms: shutdown_grace_ms,
-        };
         let mut queries = match tokio::select! {
             biased;
             _ = shutdown.wait() => {
-                let report = wind_down(managed_tasks)
-                    .run(&participant, &api, &mut state)
-                    .await;
-                return startup_shutdown(report);
+                return startup_teardown(
+                    managed_tasks,
+                    &participant,
+                    &api,
+                    &mut state,
+                    shutdown_grace,
+                    Ok(()),
+                ).await;
             }
             result = QuerySurface::declare(bus, query_registrations, &mut managed_tasks) => result,
         } {
             Ok(queries) => queries,
             Err(error) => {
-                let report = wind_down(managed_tasks)
-                    .run(&participant, &api, &mut state)
-                    .await;
-                return combine(Err(error), report);
+                return startup_teardown(
+                    managed_tasks,
+                    &participant,
+                    &api,
+                    &mut state,
+                    shutdown_grace,
+                    Err(error),
+                )
+                .await;
             }
         };
 
@@ -805,19 +841,29 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             if let Some(queries) = queries.take() {
                 queries.close();
             }
-            let report = wind_down(managed_tasks)
-                .run(&participant, &api, &mut state)
-                .await;
-            return combine(Err(exit.into()), report);
+            return startup_teardown(
+                managed_tasks,
+                &participant,
+                &api,
+                &mut state,
+                shutdown_grace,
+                Err(exit.into()),
+            )
+            .await;
         }
         if shutdown.is_requested() {
             if let Some(queries) = queries.take() {
                 queries.close();
             }
-            let report = wind_down(managed_tasks)
-                .run(&participant, &api, &mut state)
-                .await;
-            return startup_shutdown(report);
+            return startup_teardown(
+                managed_tasks,
+                &participant,
+                &api,
+                &mut state,
+                shutdown_grace,
+                Ok(()),
+            )
+            .await;
         }
         // Ready acquisition is itself a lifecycle boundary. Race the bus
         // declaration against already-supervised task completion so a
@@ -831,10 +877,14 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                         if let Some(queries) = queries.take() {
                             queries.close();
                         }
-                        let report = wind_down(managed_tasks)
-                            .run(&participant, &api, &mut state)
-                            .await;
-                        return startup_shutdown(report);
+                        return startup_teardown(
+                            managed_tasks,
+                            &participant,
+                            &api,
+                            &mut state,
+                            shutdown_grace,
+                            Ok(()),
+                        ).await;
                     }
                     _ = tokio::task::yield_now() => {}
                 }
@@ -846,19 +896,27 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     if let Some(queries) = queries.take() {
                         queries.close();
                     }
-                    let report = wind_down(managed_tasks)
-                        .run(&participant, &api, &mut state)
-                        .await;
-                    return startup_shutdown(report);
+                    return startup_teardown(
+                        managed_tasks,
+                        &participant,
+                        &api,
+                        &mut state,
+                        shutdown_grace,
+                        Ok(()),
+                    ).await;
                 }
                 exit = managed_tasks.next_unexpected_exit() => {
                     if let Some(queries) = queries.take() {
                         queries.close();
                     }
-                    let report = wind_down(managed_tasks)
-                        .run(&participant, &api, &mut state)
-                        .await;
-                    return combine(Err(exit.into()), report);
+                    return startup_teardown(
+                        managed_tasks,
+                        &participant,
+                        &api,
+                        &mut state,
+                        shutdown_grace,
+                        Err(exit.into()),
+                    ).await;
                 }
                 result = owner.declare_participant_ready() => match result {
                     Ok(token) => token,
@@ -866,10 +924,14 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                         if let Some(queries) = queries.take() {
                             queries.close();
                         }
-                        let report = wind_down(managed_tasks)
-                            .run(&participant, &api, &mut state)
-                            .await;
-                        return combine(Err(error.into()), report);
+                        return startup_teardown(
+                            managed_tasks,
+                            &participant,
+                            &api,
+                            &mut state,
+                            shutdown_grace,
+                            Err(error.into()),
+                        ).await;
                     }
                 },
             }),
@@ -885,20 +947,30 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             if let Some(queries) = queries.take() {
                 queries.close();
             }
-            let report = wind_down(managed_tasks)
-                .run(&participant, &api, &mut state)
-                .await;
-            return startup_shutdown(report);
+            return startup_teardown(
+                managed_tasks,
+                &participant,
+                &api,
+                &mut state,
+                shutdown_grace,
+                Ok(()),
+            )
+            .await;
         }
         if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
             drop(ready);
             if let Some(queries) = queries.take() {
                 queries.close();
             }
-            let report = wind_down(managed_tasks)
-                .run(&participant, &api, &mut state)
-                .await;
-            return combine(Err(exit.into()), report);
+            return startup_teardown(
+                managed_tasks,
+                &participant,
+                &api,
+                &mut state,
+                shutdown_grace,
+                Err(exit.into()),
+            )
+            .await;
         }
 
         tracing::info!(
@@ -907,7 +979,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             participant = %participant_id,
             "runtime ready"
         );
-        Ok(StartOutcome::Ready(Runner {
+        StartOutcome::Ready(Runner {
             participant,
             api,
             state,
@@ -926,8 +998,8 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             runtime_performance: RuntimePerformance::new(schedule),
             managed_tasks,
             ready,
-            shutdown_grace_ms,
-        }))
+            shutdown_grace,
+        })
     }
 
     /// Drive the participant until it stops, then wind it down. The teardown
@@ -952,7 +1024,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             managed_tasks,
             owner,
             ready,
-            shutdown_grace_ms,
+            shutdown_grace,
             ..
         } = self;
 
@@ -966,26 +1038,17 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         if let Some(queries) = queries {
             queries.close();
         }
+        let deadline = ShutdownDeadline::from_now(shutdown_grace);
         let mut report = Teardown {
             managed_tasks,
-            grace_ms: shutdown_grace_ms,
+            deadline,
         }
         .run(&participant, &api, &mut state)
         .await;
         if let Some(owner) = owner {
-            match owner.close().await {
-                Ok(close)
-                    if close.unjoined_workers == 0
-                        && close.transport_errors.is_empty()
-                        && close.timed_out.is_empty() => {}
-                Ok(close) => {
-                    report.bus_close_error = Some(anyhow::anyhow!(
-                        "bus close evidence: {} transport failures, {} unjoined workers, timed out stages: {:?}",
-                        close.transport_errors.len(),
-                        close.unjoined_workers,
-                        close.timed_out,
-                    ));
-                }
+            match owner.close_until(deadline.instant()).await {
+                Ok(close) if close.is_clean() => {}
+                Ok(close) => report.bus_close_report = Some(close),
                 Err(error) => report.bus_close_error = Some(error.into()),
             }
         }
@@ -1531,7 +1594,7 @@ mod tests {
             &bus,
             &mut owner,
             &participant_id,
-            100,
+            Duration::from_millis(100),
             &mut shutdown,
             None,
             (),
@@ -1544,9 +1607,11 @@ mod tests {
                 bus_log: bus_log_task,
             },
         )
-        .await
-        .expect("startup cancellation should be clean");
-        assert!(matches!(result, StartOutcome::Shutdown));
+        .await;
+        let StartOutcome::Terminal { result, deadline } = result else {
+            panic!("shutdown during setup must terminate before Ready");
+        };
+        result.expect("startup cancellation should be clean");
         assert!(
             owner.is_some(),
             "startup cleanup must leave close ownership intact"
@@ -1555,7 +1620,7 @@ mod tests {
         owner
             .take()
             .expect("owner retained for cleanup")
-            .close()
+            .close_until(deadline.instant())
             .await
             .expect("bus close after cancelled setup");
     }

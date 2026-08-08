@@ -639,6 +639,28 @@ pub struct BusCloseReport {
     pub timed_out: Vec<BusCloseTimeout>,
 }
 
+impl BusCloseReport {
+    /// Whether every close stage completed without transport or worker
+    /// evidence. The report remains available even when this is false.
+    pub fn is_clean(&self) -> bool {
+        self.transport_error_count == 0 && self.unjoined_workers == 0 && self.timed_out.is_empty()
+    }
+}
+
+impl std::fmt::Display for BusCloseReport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} transport failures ({} retained, {} truncated), {} unjoined workers, timed out stages: {:?}",
+            self.transport_error_count,
+            self.transport_errors.len(),
+            self.transport_errors_truncated,
+            self.unjoined_workers,
+            self.timed_out,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BusCloseTimeout {
     Drain,
@@ -651,11 +673,24 @@ const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_millis(250);
 const CLOSE_OPERATIONS_TIMEOUT: Duration = Duration::from_millis(250);
 const CLOSE_WORKER_TIMEOUT: Duration = Duration::from_millis(250);
-const CLOSE_REAP_TIMEOUT: Duration = Duration::from_millis(25);
 
 impl BusOwner {
     /// Flush accepted work, join owned workers, and close the session.
     pub async fn close(self) -> Result<BusCloseReport> {
+        // The lifecycle runner uses `close_until` with its supervised grace.
+        // Keep this standalone convenience compatible with the historical
+        // per-stage caps rather than imposing a new one-second process limit.
+        self.close_until(tokio::time::Instant::now() + Duration::from_secs(60 * 60))
+            .await
+    }
+
+    /// Close the owner without exceeding `deadline`.
+    ///
+    /// Every stage consumes the same absolute budget. Once it is exhausted we
+    /// still perform the state transitions (stop admission, take handles and
+    /// abort workers), but do not wait for more asynchronous progress. The
+    /// returned report records each stage that could not complete in time.
+    pub async fn close_until(self, deadline: tokio::time::Instant) -> Result<BusCloseReport> {
         // Stop accepting new samples first so the drain set is finite, then signal
         // the drain task. `notify_one` stores a permit even if the drain task has
         // not yet registered as a waiter, so the shutdown signal is never lost (a
@@ -668,7 +703,9 @@ impl BusOwner {
         self.inner.shutdown.notify_one();
         let operations = self.inner.in_flight.load(Ordering::Acquire);
         let operations_timed_out = if operations > 0 {
-            tokio::time::timeout(CLOSE_OPERATIONS_TIMEOUT, async {
+            let timeout = CLOSE_OPERATIONS_TIMEOUT
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+            tokio::time::timeout(timeout, async {
                 loop {
                     // Register before checking the counter: an admitted
                     // operation may finish between the check and await, and
@@ -688,14 +725,13 @@ impl BusOwner {
         };
         let handle = lock(&self.inner.drain).take();
         let mut timed_out = Vec::new();
-        if let Some(mut handle) = handle
-            && tokio::time::timeout(CLOSE_DRAIN_TIMEOUT, &mut handle)
-                .await
-                .is_err()
-        {
-            handle.abort();
-            let _ = tokio::time::timeout(CLOSE_REAP_TIMEOUT, &mut handle).await;
-            timed_out.push(BusCloseTimeout::Drain);
+        if let Some(mut handle) = handle {
+            let timeout = CLOSE_DRAIN_TIMEOUT
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+            if tokio::time::timeout(timeout, &mut handle).await.is_err() {
+                handle.abort();
+                timed_out.push(BusCloseTimeout::Drain);
+            }
         }
         let transport = std::mem::take(&mut *lock(&self.inner.transport_errors));
         let mut report = BusCloseReport {
@@ -710,19 +746,30 @@ impl BusOwner {
                 self.inner.in_flight.load(Ordering::Acquire),
             ));
         }
-        let session_result =
-            match tokio::time::timeout(CLOSE_SESSION_TIMEOUT, self.inner.session.close()).await {
-                Ok(result) => result.map_err(|e| BusError::Transport(e.to_string())),
-                Err(_) => {
-                    report.timed_out.push(BusCloseTimeout::Session);
-                    Ok(())
-                }
-            };
+        let session_result = match tokio::time::timeout(
+            CLOSE_SESSION_TIMEOUT
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+            self.inner.session.close(),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|e| BusError::Transport(e.to_string())),
+            Err(_) => {
+                report.timed_out.push(BusCloseTimeout::Session);
+                Ok(())
+            }
+        };
         let workers = std::mem::take(&mut *lock(&self.inner.workers));
         let mut timed_out_workers = 0;
         for worker in workers {
             let mut worker = worker;
-            match tokio::time::timeout(CLOSE_WORKER_TIMEOUT, &mut worker).await {
+            match tokio::time::timeout(
+                CLOSE_WORKER_TIMEOUT
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+                &mut worker,
+            )
+            .await
+            {
                 Ok(result) => {
                     if result.is_err() {
                         report.unjoined_workers = report.unjoined_workers.saturating_add(1);
@@ -730,8 +777,8 @@ impl BusOwner {
                 }
                 Err(_) => {
                     timed_out_workers += 1;
+                    report.unjoined_workers = report.unjoined_workers.saturating_add(1);
                     worker.abort();
-                    let _ = tokio::time::timeout(CLOSE_REAP_TIMEOUT, &mut worker).await;
                 }
             }
         }
@@ -1244,6 +1291,29 @@ mod tests {
         bus.register_worker(stuck).expect("worker is admitted");
         let report = owner.close().await.unwrap();
         assert!(report.timed_out.contains(&BusCloseTimeout::Workers(1)));
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn close_until_expired_deadline_is_fail_closed_with_evidence() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            ParticipantId::new("expired-close").unwrap(),
+        ))
+        .await
+        .unwrap();
+        let stuck = tokio::spawn(std::future::pending::<()>());
+        bus.register_worker(stuck).expect("worker is admitted");
+
+        let began = std::time::Instant::now();
+        let report = owner
+            .close_until(tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        assert!(began.elapsed() < Duration::from_millis(100));
+        assert_eq!(report.unjoined_workers, 1);
+        assert!(report.timed_out.contains(&BusCloseTimeout::Workers(1)));
+        assert!(!report.is_clean());
     }
 
     #[serial]
