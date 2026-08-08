@@ -118,6 +118,7 @@ pub fn staged_bundle() -> StagedBundle {
                     component: ComponentSchema::V0,
                     simulation: SimulationSchema::V0,
                 },
+                requirement: None,
                 config_schema: serde_json::json!({"type": "null"}),
             },
             &bytes,

@@ -45,7 +45,7 @@
 //!         }
 //!         component(instance) {                    // literal "component" + var {instance}
 //!             motor(capability) {                  // literal "motor" + var {capability}
-//!                 enum Command { Velocity(f32), Torque(f32), Stop }
+//!                 enum Command { Position(f32), Velocity(f32), Torque(f32), Stop }
 //!                 topic command: command Command;
 //!                 // path   api::v0_1::component::motor::Command
 //!                 // key    v0.1/component/{instance}/motor/{capability}/command

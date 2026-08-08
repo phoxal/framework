@@ -305,7 +305,7 @@ pub mod prelude {
 /// module.
 #[doc(hidden)]
 pub mod __private {
-    /// The one compatibility declaration a participant binary carries.
+    /// The compatibility declaration a participant binary carries.
     ///
     /// Every constant here is a value of the version enum that owns the
     /// contract it names, so a train can only ever say one thing about each and
@@ -315,7 +315,10 @@ pub mod __private {
     /// compatibility artifact - there is no Cargo package-metadata table, no
     /// version file, and no framework-SemVer floor. The document's own version
     /// is the tag on `ParticipantMetadata` itself, so it needs no entry here.
+    /// Topology requirements are a closed typed declaration; they are not
+    /// inferred from package names or a service registry.
     pub mod compatibility {
+        use phoxal_runtime_contract::metadata::ParticipantRequirement;
         use phoxal_runtime_contract::version::{
             BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema,
         };
@@ -332,6 +335,13 @@ pub mod __private {
         pub const COMPONENT: ComponentSchema = ComponentSchema::V0;
         /// The authored simulation document grammar.
         pub const SIMULATION: SimulationSchema = SimulationSchema::V0;
+        /// The default declaration for participants without a static topology
+        /// requirement.
+        pub const NO_REQUIREMENT: Option<ParticipantRequirement> = None;
+        /// The stock differential-drive participant's declared topology and
+        /// motor-command requirement.
+        pub const STOCK_DRIVE_REQUIREMENT: Option<ParticipantRequirement> =
+            Some(ParticipantRequirement::DifferentialDriveVelocity);
 
         pub use phoxal_runtime_contract::participant_metadata_json;
     }

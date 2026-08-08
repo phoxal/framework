@@ -119,6 +119,7 @@ fn main() -> phoxal::Result<()> {
             },
             id: "brain",
             kind: ParticipantKind::Brain,
+            requirement: None,
             config_schema: serde_json::json!({"type": "null"}),
         })?,
         "unexpected root brain metadata in the linked section"

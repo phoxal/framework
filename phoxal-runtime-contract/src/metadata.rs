@@ -58,6 +58,30 @@ impl ParticipantKind {
     }
 }
 
+/// The one topology requirement a participant binary may currently declare.
+///
+/// This is intentionally a closed, narrow enum rather than a generic dispatch
+/// table keyed by package or participant id. A binary that declares
+/// [`Self::DifferentialDriveVelocity`] can only run in a runtime document whose
+/// robot has differential kinematics and velocity-command motors on every
+/// configured drive side actuator.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParticipantRequirement {
+    /// The stock `drive` service's topology and motor-command contract.
+    DifferentialDriveVelocity,
+}
+
+impl ParticipantRequirement {
+    /// The canonical wire token, identical to the serde rename.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DifferentialDriveVelocity => "differential_drive_velocity",
+        }
+    }
+}
+
 /// The record every participant binary embeds in its `.phoxal_meta` /
 /// `__DATA,__phoxal_meta` section at compile time.
 ///
@@ -73,6 +97,10 @@ pub enum ParticipantMetadata {
         schemas: ParticipantSchemas,
         id: String,
         kind: ParticipantKind,
+        /// The optional static topology contract. Absent means that this
+        /// legacy-compatible metadata record has no additional requirement.
+        #[serde(default)]
+        requirement: Option<ParticipantRequirement>,
         config_schema: serde_json::Value,
     },
 }
@@ -115,6 +143,7 @@ mod tests {
             schemas,
             id,
             kind,
+            requirement,
             config_schema,
         } = ParticipantMetadata::from_bytes(&record(
             r#""id":"drive","kind":"service","config_schema":{"type":"null"}"#,
@@ -129,6 +158,7 @@ mod tests {
         assert_eq!(schemas.simulation, SimulationSchema::V0);
         assert_eq!(id, "drive");
         assert_eq!(kind, ParticipantKind::Service);
+        assert_eq!(requirement, None);
         assert_eq!(config_schema, serde_json::json!({"type": "null"}));
     }
 
@@ -274,5 +304,33 @@ mod tests {
     fn a_record_missing_a_participant_schema_is_rejected() {
         let bytes = br#"{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"phoxal/robot/v0","component":"phoxal/component/v0"},"id":"drive","kind":"service","config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
+    }
+
+    #[test]
+    fn an_unknown_requirement_is_rejected() {
+        let bytes = record(
+            r#""id":"drive","kind":"service","requirement":"drive_everything","config_schema":null"#,
+        );
+        assert!(ParticipantMetadata::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn requirement_tokens_round_trip() {
+        let requirement = ParticipantRequirement::DifferentialDriveVelocity;
+        let json = serde_json::to_string(&requirement).expect("requirement serializes");
+        assert_eq!(json, format!("\"{}\"", requirement.as_str()));
+        assert_eq!(
+            serde_json::from_str::<ParticipantRequirement>(&json).expect("requirement parses"),
+            requirement
+        );
+    }
+
+    #[test]
+    fn a_valid_record_without_requirement_remains_legacy_compatible() {
+        let ParticipantMetadata::V0 { requirement, .. } = ParticipantMetadata::from_bytes(&record(
+            r#""id":"drive","kind":"service","config_schema":null"#,
+        ))
+        .expect("v0 metadata without the additive field remains readable");
+        assert_eq!(requirement, None);
     }
 }

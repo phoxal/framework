@@ -153,6 +153,21 @@ fn old_target_extra_field_is_not_a_valid_wire_target() {
 }
 
 #[test]
+fn motor_commands_reject_nonfinite_values_during_deserialization() {
+    for command in [
+        api::component::motor::Command::Position(f32::NAN),
+        api::component::motor::Command::Velocity(f32::INFINITY),
+        api::component::motor::Command::Torque(f32::NEG_INFINITY),
+    ] {
+        let bytes = rmp_serde::to_vec_named(&command).expect("messagepack encodes the payload");
+        assert!(
+            rmp_serde::from_slice::<api::component::motor::Command>(&bytes).is_err(),
+            "non-finite motor command must fail at the wire boundary"
+        );
+    }
+}
+
+#[test]
 fn video_open_source_is_canonical_and_validated_during_deserialization() {
     let request = api::video::OpenRequest {
         source: crate::VideoSourceRef::parse("front_camera.rgb").unwrap(),
