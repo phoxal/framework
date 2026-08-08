@@ -100,6 +100,7 @@ fn main() -> phoxal::Result<()> {
 "#,
     )?;
     use phoxal::__private::compatibility as compat;
+    use phoxal_runtime_contract::emit::ParticipantContractRecord;
     use phoxal_runtime_contract::emit::ParticipantMetadataRecord;
     use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantSchemas};
 
@@ -109,18 +110,18 @@ fn main() -> phoxal::Result<()> {
     assert_eq!(
         meta,
         serde_json::to_value(ParticipantMetadataRecord::V0 {
-            api: compat::API,
-            schemas: ParticipantSchemas {
-                bus: compat::BUS,
-                launch: compat::LAUNCH,
-                robot: compat::ROBOT,
-                component: compat::COMPONENT,
-                simulation: compat::SIMULATION,
+            contract: ParticipantContractRecord {
+                api: compat::API,
+                schemas: ParticipantSchemas {
+                    bus: compat::BUS,
+                    launch: compat::LAUNCH,
+                    runtime: compat::RUNTIME,
+                },
+                id: "brain",
+                kind: ParticipantKind::Brain,
+                requirement: None,
+                config_schema: serde_json::json!({"type": "null"}),
             },
-            id: "brain",
-            kind: ParticipantKind::Brain,
-            requirement: None,
-            config_schema: serde_json::json!({"type": "null"}),
         })?,
         "unexpected root brain metadata in the linked section"
     );
@@ -168,18 +169,16 @@ fn main() -> phoxal::Result<()> {
     use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantMetadata};
 
     let bytes = serde_json::to_vec(&meta)?;
-    let ParticipantMetadata::V0 {
-        api, schemas, kind, ..
-    } = ParticipantMetadata::from_bytes(&bytes)
+    let metadata = ParticipantMetadata::from_bytes(&bytes)
         .context("the linked record must parse as the tagged v0 document")?;
-    assert_eq!(api, compat::API);
-    assert_eq!(schemas.bus, compat::BUS);
-    assert_eq!(schemas.launch, compat::LAUNCH);
-    assert_eq!(schemas.robot, compat::ROBOT);
-    assert_eq!(schemas.component, compat::COMPONENT);
-    assert_eq!(schemas.simulation, compat::SIMULATION);
-    assert_eq!(kind, ParticipantKind::Service);
-    assert_ne!(kind, ParticipantKind::Brain);
+    let contract = metadata.contract();
+    assert_eq!(contract.api, compat::API);
+    assert_eq!(contract.schemas.bus, compat::BUS);
+    assert_eq!(contract.schemas.launch, compat::LAUNCH);
+    assert_eq!(contract.schemas.runtime, compat::RUNTIME);
+    assert_eq!(contract.kind, ParticipantKind::Service);
+    assert_ne!(contract.kind, ParticipantKind::Brain);
+    assert_eq!(contract.id.as_str(), "tagged-meta-probe");
     Ok(())
 }
 

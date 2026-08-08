@@ -162,7 +162,7 @@ impl<R: Participant> SetupContext<R> {
                 "no robot model is bound (this participant was launched without a bundle root)"
             )
         })?;
-        Ok(&runtime.robot)
+        Ok(runtime.robot())
     }
 
     /// The validated assets this participant's runtime bundle declares.
@@ -170,7 +170,7 @@ impl<R: Participant> SetupContext<R> {
         let runtime = self.runtime.as_ref().ok_or_else(|| {
             anyhow::anyhow!("no bundle assets are bound (this participant has no bundle root)")
         })?;
-        Ok(&runtime.assets)
+        Ok(runtime.assets())
     }
 }
 
@@ -292,8 +292,7 @@ impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
         let id = self
             .runtime
             .as_ref()
-            .and_then(|runtime| runtime.participant.binding.as_ref())
-            .map(|binding| &binding.component_instance)
+            .and_then(|runtime| runtime.participant().component())
             .ok_or_else(|| {
                 anyhow::anyhow!("no component instance is bound for this participant record")
             })?;

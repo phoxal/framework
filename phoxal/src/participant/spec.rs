@@ -9,6 +9,10 @@ pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The authoring kind that produced this artifact, as the framework-owned
     /// value the embedded metadata record declares.
     const KIND: phoxal_runtime_contract::metadata::ParticipantKind;
+    /// The optional static topology requirement embedded in the artifact
+    /// contract.
+    #[doc(hidden)]
+    const REQUIREMENT: Option<phoxal_runtime_contract::metadata::ParticipantRequirement>;
     /// The participant id (`id = "…"`, default derived from the crate's
     /// `CARGO_PKG_NAME`; see `#[phoxal::service]`'s docs).
     const ID: &'static str;

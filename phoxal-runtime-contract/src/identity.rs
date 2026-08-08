@@ -43,11 +43,12 @@ fn is_participant_token(value: &str) -> bool {
         })
 }
 
-/// The stable topology identity of one participant record.
+/// The identity of one participant instance in a compiled runtime topology.
 ///
-/// This is deliberately distinct from [`ProducerId`]. A participant id names
-/// a role in a compiled robot topology; a producer id names one transport
-/// session incarnation and is minted only after a process opens its bus.
+/// This is deliberately distinct from [`ParticipantArtifactId`]: an instance
+/// is the thing the supervisor launches, while an artifact is the reusable
+/// compiled role/executable selected by that instance. It is also distinct
+/// from [`ProducerId`], which names one transport session incarnation.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ParticipantId(String);
 
@@ -115,10 +116,87 @@ impl<'de> Deserialize<'de> for ParticipantId {
     }
 }
 
-/// A participant id that is empty or contains a non-canonical token.
+/// Why a [`ParticipantId`] is not a valid instance token.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("participant id must be a non-empty lowercase token, got '{0}'")]
 pub struct ParticipantIdError(String);
+
+/// The stable identity of a reusable compiled participant artifact.
+///
+/// The artifact id is the compile-time role identity embedded in the binary.
+/// Multiple [`ParticipantId`] instance records may point at the same artifact
+/// when one executable is mounted more than once in a runtime topology.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ParticipantArtifactId(String);
+
+impl ParticipantArtifactId {
+    /// Validate and construct an artifact id.
+    pub fn new(value: impl Into<String>) -> Result<Self, ParticipantArtifactIdError> {
+        let value = value.into();
+        if is_participant_token(&value) {
+            Ok(Self(value))
+        } else {
+            Err(ParticipantArtifactIdError(value))
+        }
+    }
+
+    /// The canonical wire token.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ParticipantArtifactId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for ParticipantArtifactId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::str::FromStr for ParticipantArtifactId {
+    type Err = ParticipantArtifactIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<String> for ParticipantArtifactId {
+    type Error = ParticipantArtifactIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ParticipantArtifactId> for String {
+    fn from(value: ParticipantArtifactId) -> Self {
+        value.0
+    }
+}
+
+impl Serialize for ParticipantArtifactId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ParticipantArtifactId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Why a [`ParticipantArtifactId`] is empty or contains a non-canonical token.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("participant artifact id must be a non-empty lowercase token, got '{0}'")]
+pub struct ParticipantArtifactIdError(String);
 
 /// Bytes in a full-width session identity.
 const ZID_BYTES: usize = 16;

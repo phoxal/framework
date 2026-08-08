@@ -48,6 +48,7 @@ tracing-subscriber = { workspace = true }
 # never-published crate so the eight consumers cannot drift on what that
 # robot is; a versionless dev-dependency is stripped on publish.
 phoxal-fixture = { workspace = true }
+phoxal-bundle = { workspace = true }
 jsonschema = { workspace = true }
 # Test-only: raising SIGINT/SIGTERM at the test process is the only honest way to
 # prove the runner's shutdown trigger covers the signal a supervisor stops with.

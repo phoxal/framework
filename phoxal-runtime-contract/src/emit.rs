@@ -35,6 +35,19 @@ pub use const_format::concatcp;
 
 /// The serialize side of the embedded metadata document.
 ///
+/// The serialized form of one [`ParticipantContract`](crate::metadata::ParticipantContract)
+/// while its artifact id is still a const string in a role-macro expansion.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParticipantContractRecord<'a> {
+    pub api: RobotApi,
+    pub schemas: ParticipantSchemas,
+    pub id: &'a str,
+    pub kind: ParticipantKind,
+    pub requirement: Option<ParticipantRequirement>,
+    pub config_schema: serde_json::Value,
+}
+
 /// Its variants and renames mirror
 /// [`ParticipantMetadata`](crate::metadata::ParticipantMetadata) exactly - that
 /// is the point: a record written through this type is, by construction, a
@@ -44,12 +57,8 @@ pub use const_format::concatcp;
 pub enum ParticipantMetadataRecord<'a> {
     #[serde(rename = "phoxal/participant-metadata/v0")]
     V0 {
-        api: RobotApi,
-        schemas: ParticipantSchemas,
-        id: &'a str,
-        kind: ParticipantKind,
-        requirement: Option<ParticipantRequirement>,
-        config_schema: serde_json::Value,
+        #[serde(flatten)]
+        contract: ParticipantContractRecord<'a>,
     },
 }
 
@@ -72,9 +81,7 @@ macro_rules! participant_metadata_json {
         api = $api:expr,
         bus = $bus:expr,
         launch = $launch:expr,
-        robot = $robot:expr,
-        component = $component:expr,
-        simulation = $simulation:expr,
+        runtime = $runtime:expr,
         id = $id:expr,
         kind = $kind:expr,
         requirement = $requirement:expr,
@@ -85,9 +92,7 @@ macro_rules! participant_metadata_json {
         const __PHOXAL_API: &str = $api.as_str();
         const __PHOXAL_BUS: &str = $bus.as_str();
         const __LAUNCH_ABI: &str = $launch.as_str();
-        const __PHOXAL_ROBOT: &str = $robot.as_str();
-        const __PHOXAL_COMPONENT: &str = $component.as_str();
-        const __PHOXAL_SIMULATION: &str = $simulation.as_str();
+        const __PHOXAL_RUNTIME: &str = $runtime.as_str();
         const __PHOXAL_KIND: &str = $kind.as_str();
         const __PHOXAL_REQUIREMENT: &str = match $requirement {
             Some(requirement) => match requirement {
@@ -105,12 +110,8 @@ macro_rules! participant_metadata_json {
             __PHOXAL_BUS,
             "\",\"launch\":\"",
             __LAUNCH_ABI,
-            "\",\"robot\":\"",
-            __PHOXAL_ROBOT,
-            "\",\"component\":\"",
-            __PHOXAL_COMPONENT,
-            "\",\"simulation\":\"",
-            __PHOXAL_SIMULATION,
+            "\",\"runtime\":\"",
+            __PHOXAL_RUNTIME,
             "\"},\"id\":\"",
             $id,
             "\",\"kind\":\"",
@@ -128,7 +129,7 @@ macro_rules! participant_metadata_json {
 mod tests {
     use super::*;
     use crate::metadata::ParticipantMetadata;
-    use crate::version::{BusAbi, ComponentSchema, LaunchAbi, RobotSchema, SimulationSchema};
+    use crate::version::{BusAbi, LaunchAbi, RuntimeSchema};
 
     const CONFIG_SCHEMA: &str = r#"{"type":"null"}"#;
 
@@ -136,9 +137,7 @@ mod tests {
         api = RobotApi::V0_2,
         bus = BusAbi::V0,
         launch = LaunchAbi::V0,
-        robot = RobotSchema::V0,
-        component = ComponentSchema::V0,
-        simulation = SimulationSchema::V0,
+        runtime = RuntimeSchema::V0,
         id = "drive",
         kind = ParticipantKind::Service,
         requirement = None,
@@ -147,18 +146,18 @@ mod tests {
 
     fn typed_record() -> ParticipantMetadataRecord<'static> {
         ParticipantMetadataRecord::V0 {
-            api: RobotApi::V0_2,
-            schemas: ParticipantSchemas {
-                bus: BusAbi::V0,
-                launch: LaunchAbi::V0,
-                robot: RobotSchema::V0,
-                component: ComponentSchema::V0,
-                simulation: SimulationSchema::V0,
+            contract: ParticipantContractRecord {
+                api: RobotApi::V0_2,
+                schemas: ParticipantSchemas {
+                    bus: BusAbi::V0,
+                    launch: LaunchAbi::V0,
+                    runtime: RuntimeSchema::V0,
+                },
+                id: "drive",
+                kind: ParticipantKind::Service,
+                requirement: None,
+                config_schema: serde_json::json!({"type": "null"}),
             },
-            id: "drive",
-            kind: ParticipantKind::Service,
-            requirement: None,
-            config_schema: serde_json::json!({"type": "null"}),
         }
     }
 
@@ -172,26 +171,18 @@ mod tests {
 
     #[test]
     fn an_emitted_record_parses_back_into_every_typed_identity() {
-        let ParticipantMetadata::V0 {
-            api,
-            schemas,
-            id,
-            kind,
-            requirement,
-            config_schema,
-        } = ParticipantMetadata::from_bytes(EMBEDDED.as_bytes())
+        let metadata = ParticipantMetadata::from_bytes(EMBEDDED.as_bytes())
             .expect("the writer's own output must satisfy the parser");
+        let contract = metadata.contract();
 
-        assert_eq!(api, RobotApi::V0_2);
-        assert_eq!(schemas.bus, BusAbi::V0);
-        assert_eq!(schemas.launch, LaunchAbi::V0);
-        assert_eq!(schemas.robot, RobotSchema::V0);
-        assert_eq!(schemas.component, ComponentSchema::V0);
-        assert_eq!(schemas.simulation, SimulationSchema::V0);
-        assert_eq!(id, "drive");
-        assert_eq!(kind, ParticipantKind::Service);
-        assert_eq!(requirement, None);
-        assert_eq!(config_schema, serde_json::json!({"type": "null"}));
+        assert_eq!(contract.api, RobotApi::V0_2);
+        assert_eq!(contract.schemas.bus, BusAbi::V0);
+        assert_eq!(contract.schemas.launch, LaunchAbi::V0);
+        assert_eq!(contract.schemas.runtime, RuntimeSchema::V0);
+        assert_eq!(contract.id.as_str(), "drive");
+        assert_eq!(contract.kind, ParticipantKind::Service);
+        assert_eq!(contract.requirement, None);
+        assert_eq!(contract.config_schema, serde_json::json!({"type": "null"}));
     }
 
     /// The embedded section is read as a whole document, so the const writer

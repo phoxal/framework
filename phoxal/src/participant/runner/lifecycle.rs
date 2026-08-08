@@ -16,10 +16,10 @@ use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTas
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::SimulationClockHandle;
 use crate::participant::scheduler::{AnyStepScheduler, StepSchedule};
+use phoxal_bundle::ParticipantClock;
 use phoxal_bundle::ParticipantRuntimeInputs;
 use phoxal_bus::{BusHandle, BusOwner, ParticipantReadyToken};
 use phoxal_runtime_contract::identity::ParticipantId;
-use phoxal_runtime_contract::launch::ClockMode;
 
 use super::ShutdownController;
 use super::query::QuerySurface;
@@ -157,7 +157,7 @@ pub(crate) struct StartInputs<R: Participant, C: ClockSource> {
     pub(crate) clock: RunnerClock<C>,
     pub(crate) scheduler: AnyStepScheduler,
     pub(crate) schedule: Option<StepSchedule>,
-    pub(crate) clock_mode: ClockMode,
+    pub(crate) clock_mode: ParticipantClock,
     pub(crate) tasks: RunnerTasks,
 }
 
@@ -229,7 +229,7 @@ where
     } = prepared;
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
     let schedule = R::__step_schedule();
-    let now = if clock_mode == ClockMode::Real {
+    let now = if clock_mode == ParticipantClock::Real {
         let reading =
             clock
                 .as_ref()
@@ -332,7 +332,7 @@ pub(crate) struct Runner<R: Participant, C: ClockSource> {
     pub(crate) clock: RunnerClock<C>,
     pub(crate) scheduler: AnyStepScheduler,
     pub(crate) schedule: Option<StepSchedule>,
-    pub(crate) clock_mode: ClockMode,
+    pub(crate) clock_mode: ParticipantClock,
     pub(crate) timeline_retentions: Vec<TimelineRetention>,
     pub(crate) queries: Option<QuerySurface<R>>,
     pub(crate) runtime_performance_publisher: RuntimePerformancePublisher,

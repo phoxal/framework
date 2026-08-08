@@ -9,7 +9,7 @@ use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
-use phoxal_runtime_contract::launch::ClockMode;
+use phoxal_bundle::ParticipantClock;
 
 use super::ShutdownController;
 use super::lifecycle::{LoopExit, Runner};
@@ -113,7 +113,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     let faulted = LocalInstant::clock_faulted()
                         .then_some(TimeUnsynchronized::ClockFault)
                         .or_else(|| match (period, self.clock_mode) {
-                            (None, ClockMode::Real) => match self.clock.read() {
+                            (None, ParticipantClock::Real) => match self.clock.read() {
                                 ClockReading::Unsynchronized(reason) => Some(reason),
                                 ClockReading::Synchronized(_) => None,
                             },

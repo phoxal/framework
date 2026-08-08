@@ -12,8 +12,9 @@
 //! ([`crate::metadata::ParticipantMetadata`]) has to name all of them at once
 //! and this crate is below `phoxal-bus`, `phoxal-api`, and `phoxal-manifest`
 //! in the graph. `phoxal-api` pins [`RobotApi`] to the revision its contract tree
-//! actually speaks, and `workspace-policy` pins the three document identities
-//! to the grammars `phoxal-manifest` accepts.
+//! actually speaks, and the runtime bundle pins [`RuntimeSchema`] to the
+//! compiled document grammar it persists. Authored source grammars are not
+//! participant-binary compatibility claims.
 
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +80,8 @@ version_identity! {
     ///
     /// Namespaced, unlike the bare `v0.1` that appears as a bus key segment:
     /// the key segment is addressing inside an already-Phoxal keyspace, while
-    /// this is an identity declared alongside four others.
+    /// this is an identity declared alongside the other process-boundary
+    /// identities.
     RobotApi {
         /// Spelled `V0_1`, not `V01`: the revision has two components and the
         /// separator is part of the identity.
@@ -98,23 +100,11 @@ version_identity! {
 }
 
 version_identity! {
-    /// The authored robot document grammar (`robot.yaml`).
-    RobotSchema {
-        V0 = "phoxal/robot/v0",
-    }
-}
-
-version_identity! {
-    /// The authored component document grammar (`component.yaml`).
-    ComponentSchema {
-        V0 = "phoxal/component/v0",
-    }
-}
-
-version_identity! {
-    /// The authored simulation document grammar (`simulation.yaml`).
-    SimulationSchema {
-        V0 = "phoxal/simulation/v0",
+    /// The compiled runtime document grammar consumed by participants and
+    /// supervisors. This is deliberately distinct from authored robot,
+    /// component, and simulation source schemas.
+    RuntimeSchema {
+        V0 = "phoxal/runtime-bundle/v0",
     }
 }
 
@@ -144,9 +134,7 @@ mod tests {
         assert_round_trip!(RobotApi::V0_1);
         assert_round_trip!(RobotApi::V0_2);
         assert_round_trip!(LaunchAbi::V0);
-        assert_round_trip!(RobotSchema::V0);
-        assert_round_trip!(ComponentSchema::V0);
-        assert_round_trip!(SimulationSchema::V0);
+        assert_round_trip!(RuntimeSchema::V0);
     }
 
     #[test]
@@ -155,9 +143,7 @@ mod tests {
         assert_eq!(RobotApi::V0_1.as_str(), "phoxal/robot-api/v0.1");
         assert_eq!(RobotApi::V0_2.as_str(), "phoxal/robot-api/v0.2");
         assert_eq!(LaunchAbi::V0.as_str(), "phoxal/participant-launch/v0");
-        assert_eq!(RobotSchema::V0.as_str(), "phoxal/robot/v0");
-        assert_eq!(ComponentSchema::V0.as_str(), "phoxal/component/v0");
-        assert_eq!(SimulationSchema::V0.as_str(), "phoxal/simulation/v0");
+        assert_eq!(RuntimeSchema::V0.as_str(), "phoxal/runtime-bundle/v0");
     }
 
     #[test]
@@ -169,10 +155,10 @@ mod tests {
         assert!(message.contains("phoxal/bus-abi/v0"), "{message}");
     }
 
-    /// Each document grammar is its own type, so a record can never compare
-    /// one grammar's version against another's.
+    /// Each process-boundary grammar is its own type, so a record can never
+    /// compare one contract version against another's.
     #[test]
     fn identities_of_different_kinds_are_different_types() {
-        assert_ne!(RobotSchema::V0.as_str(), ComponentSchema::V0.as_str());
+        assert_ne!(BusAbi::V0.as_str(), RuntimeSchema::V0.as_str());
     }
 }

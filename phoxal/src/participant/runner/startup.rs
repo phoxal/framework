@@ -15,10 +15,11 @@ use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::config::ParticipantConfig;
 use crate::participant::launch::SupervisedLaunch;
 use crate::participant::scheduler::AnyStepScheduler;
+use phoxal_bundle::ParticipantClock;
 use phoxal_bundle::ParticipantRuntimeInputs;
 use phoxal_bus::{BusConfig, BusHandle, BusOwner};
-use phoxal_runtime_contract::identity::ParticipantId;
-use phoxal_runtime_contract::launch::ClockMode;
+use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
+use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantSchemas};
 use phoxal_runtime_contract::origin::ExecutionOrigin;
 
 use super::ShutdownController;
@@ -38,7 +39,7 @@ pub(crate) struct PreparedRun<R: Participant, C: ClockSource> {
     pub(crate) shutdown_grace: Duration,
     pub(crate) bundle: Option<ParticipantRuntimeInputs>,
     pub(crate) config: R::Config,
-    pub(crate) clock_mode: ClockMode,
+    pub(crate) clock_mode: ParticipantClock,
     pub(crate) clock: Option<C>,
     pub(crate) query_reply_delay: Option<Duration>,
 }
@@ -98,7 +99,7 @@ pub(crate) fn validate_launch<R>(
     ParticipantRuntimeInputs,
     R::Config,
     Option<RealClock>,
-    ClockMode,
+    ParticipantClock,
 )>
 where
     R: Participant,
@@ -107,22 +108,27 @@ where
     // session exists. A malformed bundle therefore has no producer or wire
     // side effects to clean up.
     let bundle = participant_inputs_for_launch(&launch.bundle_root, &launch.participant_id)?;
-    if launch.participant_id.as_str() != R::ID {
+    let compiled_artifact_id = ParticipantArtifactId::new(R::ID).map_err(|error| {
+        anyhow::anyhow!(
+            "binary '{}' carries an invalid compiled artifact id: {error}",
+            R::ID
+        )
+    })?;
+    if bundle.artifact().contract().id != compiled_artifact_id {
         anyhow::bail!(
-            "supervised participant id '{}' does not match this binary's compiled id '{}'",
-            launch.participant_id,
+            "selected artifact '{}' does not match this binary's compiled artifact id '{}'",
+            bundle.artifact().contract().id,
             R::ID
         );
     }
-    if bundle.participant.kind != R::KIND {
+    if bundle.artifact().contract().kind != R::KIND {
         anyhow::bail!(
-            "runtime participant '{}' has kind {:?}, but this binary declares {:?}",
-            launch.participant_id,
-            bundle.participant.kind,
+            "selected artifact '{}' has kind {:?}, but this binary declares {:?}",
+            bundle.artifact().contract().id,
+            bundle.artifact().contract().kind,
             R::KIND
         );
     }
-    verify_current_executable(bundle.participant.binary.digest)?;
     let process_config_schema: serde_json::Value = serde_json::from_str(R::Config::SCHEMA_JSON)
         .map_err(|error| {
             anyhow::anyhow!(
@@ -130,17 +136,30 @@ where
                 R::ID
             )
         })?;
-    if process_config_schema != bundle.participant.binary.compatibility.config_schema {
+    let expected_contract = ParticipantContract {
+        id: compiled_artifact_id,
+        kind: R::KIND,
+        api: crate::__private::compatibility::API,
+        schemas: ParticipantSchemas {
+            bus: crate::__private::compatibility::BUS,
+            launch: crate::__private::compatibility::LAUNCH,
+            runtime: crate::__private::compatibility::RUNTIME,
+        },
+        requirement: R::REQUIREMENT,
+        config_schema: process_config_schema,
+    };
+    if bundle.artifact().contract() != &expected_contract {
         anyhow::bail!(
-            "runtime config schema for participant '{}' does not match this binary",
-            launch.participant_id
+            "selected artifact '{}' contract does not match this binary's compiled participant contract",
+            bundle.artifact().contract().id
         );
     }
+    verify_current_executable(bundle.artifact().digest())?;
     // Deserialize the selected config while the process is still local. A
     // custom `Deserialize` implementation may reject a value that its JSON
     // Schema accepts; that must not become a transport-visible startup error.
-    let clock_mode = bundle.participant.clock;
-    let config = participant_config::<R::Config>(bundle.participant.config.as_ref())?;
+    let clock_mode = bundle.participant().clock();
+    let config = participant_config::<R::Config>(bundle.participant().config())?;
     let clock = clock_for_mode(clock_mode, launch.execution_origin)?;
     validate_clock_inputs::<R, _>(clock_mode, clock.as_ref())?;
     Ok((bundle, config, clock, clock_mode))
@@ -151,10 +170,10 @@ where
 /// timestamps come from the live world clock, while clockless participants do
 /// not produce robot-time steps at all.
 pub(crate) fn clock_for_mode(
-    clock_mode: ClockMode,
+    clock_mode: ParticipantClock,
     execution_origin: Option<ExecutionOrigin>,
 ) -> crate::Result<Option<RealClock>> {
-    if clock_mode == ClockMode::Real {
+    if clock_mode == ParticipantClock::Real {
         let origin = execution_origin.ok_or(TimeUnsynchronized::MissingOrigin)?;
         Ok(Some(RealClock::new(origin)?))
     } else {
@@ -166,14 +185,14 @@ pub(crate) fn clock_for_mode(
 /// supervised transport is opened. The lifecycle repeats construction after
 /// the bus connects so it retains the live scheduler handle.
 pub(crate) fn validate_clock_inputs<R, C>(
-    clock_mode: ClockMode,
+    clock_mode: ParticipantClock,
     clock: Option<&C>,
 ) -> crate::Result<()>
 where
     R: Participant,
     C: ClockSource,
 {
-    let now = if clock_mode == ClockMode::Real {
+    let now = if clock_mode == ParticipantClock::Real {
         let reading = clock
             .map(ClockSource::read)
             .unwrap_or(ClockReading::Unsynchronized(
@@ -199,29 +218,29 @@ mod tests {
     fn execution_origin_is_required_only_for_real_clock_mode() {
         let origin = ExecutionOrigin::mint();
 
-        let missing_real = clock_for_mode(ClockMode::Real, None)
+        let missing_real = clock_for_mode(ParticipantClock::Real, None)
             .expect_err("real mode without an origin must fail before bus startup");
         assert!(matches!(
             missing_real.downcast_ref::<TimeUnsynchronized>(),
             Some(TimeUnsynchronized::MissingOrigin)
         ));
         assert!(
-            clock_for_mode(ClockMode::Real, Some(origin))
+            clock_for_mode(ParticipantClock::Real, Some(origin))
                 .expect("a current-host real origin is valid")
                 .is_some()
         );
         assert!(
-            clock_for_mode(ClockMode::Simulation, None)
+            clock_for_mode(ParticipantClock::Simulation, None)
                 .expect("simulation mode does not need a host origin")
                 .is_none()
         );
         assert!(
-            clock_for_mode(ClockMode::Simulation, Some(origin))
+            clock_for_mode(ParticipantClock::Simulation, Some(origin))
                 .expect("simulation mode ignores a supplied host origin")
                 .is_none()
         );
         assert!(
-            clock_for_mode(ClockMode::Clockless, None)
+            clock_for_mode(ParticipantClock::Clockless, None)
                 .expect("clockless mode does not need a host origin")
                 .is_none()
         );

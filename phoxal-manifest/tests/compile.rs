@@ -90,6 +90,22 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
 }
 
 #[test]
+fn router_configuration_is_preserved_as_a_compiled_asset_fact() {
+    let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
+    let compiled = sources(&root).compile().expect("fixture must compile");
+    let router = compiled.router().expect("fixture router fact");
+    assert_eq!(router.asset.as_str(), "robot/router.json5");
+    assert_eq!(
+        compiled
+            .assets()
+            .iter()
+            .find(|(id, _)| *id == &router.asset)
+            .map(|(_, bytes)| bytes),
+        Some(b"{}\n".as_slice())
+    );
+}
+
+#[test]
 fn missing_canonical_mesh_is_rejected_at_compile_time() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
@@ -192,6 +208,7 @@ fn staged_project(temp: &Path, extra_top_level: &str) {
         temp.join("structure.urdf"),
     )
     .unwrap();
+    std::fs::copy(source_root.join("router.json5"), temp.join("router.json5")).unwrap();
 }
 
 #[test]
@@ -220,10 +237,29 @@ fn an_authored_behaviors_directory_is_never_read() {
     );
     assert!(
         compiled
-            .participants()
+            .services()
             .iter()
-            .all(|participant| participant.id != "behavior"),
-        "no behavior participant may be declared"
+            .all(|service| service.id.as_str() != "behavior"),
+        "no behavior service may be declared"
+    );
+}
+
+#[test]
+fn declared_services_are_emitted_as_source_facts() {
+    let temp = tempfile::tempdir().unwrap();
+    staged_project(
+        temp.path(),
+        "\nservices:\n  localize:\n    config:\n      rate_hz: 10\n",
+    );
+
+    let compiled = sources(temp.path())
+        .compile()
+        .expect("a declared source service must compile");
+    assert_eq!(compiled.services().len(), 1);
+    assert_eq!(compiled.services()[0].id.as_str(), "localize");
+    assert_eq!(
+        compiled.services()[0].config,
+        Some(serde_json::json!({"rate_hz": 10}))
     );
 }
 
@@ -245,49 +281,44 @@ fn a_service_claiming_the_reserved_brain_identity_fails_compilation() {
 }
 
 #[test]
-fn one_component_can_have_distinct_driver_and_simulator_participants() {
+fn a_service_identity_must_be_a_runtime_artifact_token() {
+    let temp = tempfile::tempdir().unwrap();
+    staged_project(temp.path(), "");
+    let mut sources = sources(temp.path());
+    staged_project(temp.path(), "\nservices:\n  Bad Service: {}\n");
+    sources.project_root = temp.path().to_path_buf();
+    sources.robot_manifest = temp.path().join("robot.yaml");
+
+    let error = sources.compile().unwrap_err();
+    assert!(matches!(error, CompileError::Document { .. }), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("services.Bad Service"), "{message}");
+    assert!(message.contains("lowercase ASCII"), "{message}");
+}
+
+#[test]
+fn driver_facts_are_source_owned_and_simulation_stays_on_the_robot() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
-    let temp = tempfile::tempdir().unwrap();
-    let yaml = std::fs::read_to_string(source_root.join("robot.yaml"))
-        .unwrap()
-        .replacen(
-            "      mount_link: front_left_wheel_mount\n",
-            "      mount_link: front_left_wheel_mount\n\
-             \x20\x20\x20\x20\x20\x20driver:\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20connection:\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type: can\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20bus: 0\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20node_id: 1\n",
-            1,
-        );
-    std::fs::write(temp.path().join("robot.yaml"), yaml).unwrap();
-    std::fs::copy(
-        source_root.join("structure.urdf"),
-        temp.path().join("structure.urdf"),
-    )
-    .unwrap();
-
-    let compiled = sources(temp.path())
+    let compiled = sources(&source_root)
         .compile()
         .expect("driver plus simulator must compile");
-    let matching = compiled
-        .participants()
-        .iter()
-        .filter(|participant| {
-            participant.id == "drive_motor"
-                && participant.component_instance.as_deref() == Some("front_left_drive")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(matching.len(), 2);
+    assert_eq!(compiled.drivers().len(), 4);
     assert!(
-        matching
+        compiled
+            .drivers()
             .iter()
-            .any(|participant| { participant.kind == phoxal_manifest::ParticipantKind::Driver })
+            .all(|driver| driver.implementation.as_str() == "drive_motor")
+    );
+    assert_eq!(
+        compiled.drivers()[0].component_instance.as_str(),
+        "front_left_drive"
     );
     assert!(
-        matching
-            .iter()
-            .any(|participant| { participant.kind == phoxal_manifest::ParticipantKind::Simulator })
+        compiled
+            .robot()
+            .simulation_for_instance("front_left_drive")
+            .is_some(),
+        "simulation membership belongs to the canonical robot"
     );
 }

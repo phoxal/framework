@@ -19,8 +19,10 @@ use tokio::time::Instant;
 /// What completion a managed task promises to the participant runner.
 ///
 /// Cancellation and joining are owned by the runner. Outside teardown, every
-/// task completion is observed as a lifecycle event: a [`Critical`] task must
-/// remain alive, while a [`Finite`] task is allowed to complete successfully.
+/// task completion is observed as a lifecycle event: a
+/// [`Critical`](ManagedTaskPolicy::Critical) task must remain alive, while a
+/// [`Finite`](ManagedTaskPolicy::Finite) task is allowed to complete
+/// successfully.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ManagedTaskPolicy {
     /// A long-lived task whose unsolicited completion is a participant fault.
