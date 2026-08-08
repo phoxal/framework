@@ -333,7 +333,6 @@ impl Participant for Safety {
                             .component(&reference.component_id)
                             .range(&reference.capability_id)
                             .sample(),
-                        32,
                     )
                     .await?,
             });
@@ -348,7 +347,6 @@ impl Participant for Safety {
                             .component(&reference.component_id)
                             .battery(&reference.capability_id)
                             .state(),
-                        32,
                     )
                     .await?,
             });
@@ -360,14 +358,12 @@ impl Participant for Safety {
             },
             Api {
                 localization: ctx
-                    .subscriber(api::topic::client().localize().state(), 32)
+                    .subscriber(api::topic::client().localize().state())
                     .await?,
                 map: ctx
-                    .subscriber(api::topic::client().map().revision(), 32)
+                    .subscriber(api::topic::client().map().revision())
                     .await?,
-                drive: ctx
-                    .subscriber(api::topic::client().drive().state(), 32)
-                    .await?,
+                drive: ctx.subscriber(api::topic::client().drive().state()).await?,
                 batteries,
                 ranges,
                 constraints: ctx

@@ -19,9 +19,11 @@ mod kw {
     syn::custom_keyword!(version);
     syn::custom_keyword!(topic);
     syn::custom_keyword!(command);
+    syn::custom_keyword!(stream);
     syn::custom_keyword!(state);
     syn::custom_keyword!(measurement);
     syn::custom_keyword!(diagnostic);
+    syn::custom_keyword!(event);
     syn::custom_keyword!(query);
     syn::custom_keyword!(world_clock);
 }
@@ -301,8 +303,9 @@ impl Parse for TopicDef {
             TopicLeaf::Named(input.parse()?)
         };
         input.parse::<Token![:]>()?;
-        // Every topic declares a role. `command`, `state`, `measurement`, and
-        // `diagnostic` carry a single pub/sub body and differ by role; `query`
+        // Every topic declares a role. `command`, `stream`, `state`, `event`,
+        // `measurement`, and `diagnostic` carry a single pub/sub body and differ
+        // by role; `query`
         // carries request/response. The role rides alongside the kind and
         // selects the side brand in the generated builders: a `command` leaf is
         // `Publish` on the public builder and `Subscribe` on the owner builder;
@@ -311,10 +314,18 @@ impl Parse for TopicDef {
             input.parse::<kw::command>()?;
             let body: Ident = input.parse()?;
             (TopicKind::PubSub(body), TopicRole::Command)
+        } else if input.peek(kw::stream) {
+            input.parse::<kw::stream>()?;
+            let body: Ident = input.parse()?;
+            (TopicKind::PubSub(body), TopicRole::Stream)
         } else if input.peek(kw::state) {
             input.parse::<kw::state>()?;
             let body: Ident = input.parse()?;
             (TopicKind::PubSub(body), TopicRole::State)
+        } else if input.peek(kw::event) {
+            input.parse::<kw::event>()?;
+            let body: Ident = input.parse()?;
+            (TopicKind::PubSub(body), TopicRole::Event)
         } else if input.peek(kw::measurement) {
             input.parse::<kw::measurement>()?;
             let body: Ident = input.parse()?;
@@ -338,7 +349,7 @@ impl Parse for TopicDef {
             (TopicKind::PubSub(body), TopicRole::WorldClock)
         } else {
             return Err(input.error(
-                "expected a topic role: `command <Body>`, `state <Body>`, \
+                "expected a topic role: `command <Body>`, `stream <Body>`, `state <Body>`, `event <Body>`, \
                  `measurement <Body>`, `diagnostic <Body>`, `world_clock <Body>` \
                  (framework-reserved), or `query <Req> => <Resp>`",
             ));

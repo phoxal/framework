@@ -91,16 +91,16 @@ impl Participant for Perception {
 
         let mut cameras = Vec::with_capacity(camera_sources.len());
         for source in &camera_sources {
-            cameras.push(ctx.subscriber(source.camera_topic(), 32).await?);
+            cameras.push(ctx.subscriber(source.camera_topic()).await?);
         }
 
         let mut depths = Vec::with_capacity(depth_sources.len());
         for source in &depth_sources {
-            depths.push(ctx.subscriber(source.depth_topic(), 32).await?);
+            depths.push(ctx.subscriber(source.depth_topic()).await?);
         }
 
         let localization = ctx
-            .subscriber(api::topic::client().localize().state(), 32)
+            .subscriber(api::topic::client().localize().state())
             .await?;
         // Perception OWNS the `perception` node (detections + state telemetry)
         // -> owner builder; sensor frames and `localize/state` are

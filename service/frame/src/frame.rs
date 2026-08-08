@@ -65,7 +65,7 @@ impl Participant for Frame {
         let mut buffers = BTreeMap::new();
         for dynamic in config.dynamic_joints {
             let states = ctx
-                .subscriber(api::topic::client().joint(&dynamic.joint_id).state(), 32)
+                .subscriber(api::topic::client().joint(&dynamic.joint_id).state())
                 .await?;
             buffers.insert(
                 dynamic.child_frame_id.clone(),

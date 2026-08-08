@@ -70,14 +70,17 @@ pub(super) struct TopicDef {
     pub(super) leaf: TopicLeaf,
     pub(super) kind: TopicKind,
     /// The semantic and temporal role declared by the topic's role keyword.
-    /// `command`, `state`, `measurement`, and `diagnostic` all produce a
+    /// `command`, `stream`, `state`, `event`, `measurement`, and `diagnostic` all produce a
     /// [`TopicKind::PubSub`] on the wire, while `query` produces a
     /// [`TopicKind::Query`]. The role selects the SIDE BRAND in the generated
     /// builders: per (role, side) a leaf returns `Publish` / `Subscribe` /
     /// `AskQuery` / `ServeQuery`, so the public (client) and owner builders
     /// return different branded topics. It is also emitted as
     /// `ContractBody::ROLE` plus the matching temporal-role marker impl, which
-    /// is what fixes the robot time a publisher of the body can express.
+    /// is what fixes the robot time a publisher of the body can express. `event`
+    /// intentionally maps to public `TopicRole::State`/`StateContract` while its
+    /// delivery family is `Stream`: it is owner-published state in time, but every
+    /// event is retained in order rather than overwritten as a latest snapshot.
     pub(super) role: TopicRole,
 }
 
@@ -132,7 +135,9 @@ impl TopicLeaf {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TopicRole {
     Command,
+    Stream,
     State,
+    Event,
     Measurement,
     Diagnostic,
     Query,
@@ -144,10 +149,27 @@ impl TopicRole {
     pub(super) fn bus_variant(self) -> TokenStream {
         match self {
             TopicRole::Command => quote! { ::phoxal_bus::TopicRole::Command },
-            TopicRole::State | TopicRole::WorldClock => quote! { ::phoxal_bus::TopicRole::State },
+            TopicRole::Stream => quote! { ::phoxal_bus::TopicRole::Stream },
+            TopicRole::State | TopicRole::Event | TopicRole::WorldClock => {
+                quote! { ::phoxal_bus::TopicRole::State }
+            }
             TopicRole::Measurement => quote! { ::phoxal_bus::TopicRole::Measurement },
             TopicRole::Diagnostic => quote! { ::phoxal_bus::TopicRole::Diagnostic },
             TopicRole::Query => quote! { ::phoxal_bus::TopicRole::Query },
+        }
+    }
+
+    /// The transport semantic family independent of temporal stamping.
+    pub(super) fn bus_delivery(self) -> TokenStream {
+        match self {
+            TopicRole::Command => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
+            TopicRole::Stream => quote! { ::phoxal_bus::DeliveryFamily::Stream },
+            TopicRole::State | TopicRole::WorldClock | TopicRole::Diagnostic => {
+                quote! { ::phoxal_bus::DeliveryFamily::State }
+            }
+            TopicRole::Event => quote! { ::phoxal_bus::DeliveryFamily::Stream },
+            TopicRole::Measurement => quote! { ::phoxal_bus::DeliveryFamily::Sample },
+            TopicRole::Query => quote! { ::phoxal_bus::DeliveryFamily::Query },
         }
     }
 
@@ -157,7 +179,8 @@ impl TopicRole {
     pub(super) fn marker_trait(self) -> Option<TokenStream> {
         match self {
             TopicRole::Command => Some(quote! { ::phoxal_bus::CommandContract }),
-            TopicRole::State => Some(quote! { ::phoxal_bus::StateContract }),
+            TopicRole::Stream => Some(quote! { ::phoxal_bus::StreamContract }),
+            TopicRole::State | TopicRole::Event => Some(quote! { ::phoxal_bus::StateContract }),
             TopicRole::Measurement => Some(quote! { ::phoxal_bus::MeasurementContract }),
             TopicRole::Diagnostic => Some(quote! { ::phoxal_bus::DiagnosticContract }),
             TopicRole::WorldClock => Some(quote! { ::phoxal_bus::WorldClockContract }),
@@ -168,7 +191,7 @@ impl TopicRole {
     /// Whether the owning participant publishes this role (as opposed to
     /// subscribing it).
     pub(super) fn owner_publishes(self) -> bool {
-        !matches!(self, TopicRole::Command)
+        !matches!(self, TopicRole::Command | TopicRole::Stream)
     }
 }
 

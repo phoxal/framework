@@ -1,9 +1,13 @@
 //! The contract manifest: the tree's own `#[cfg(test)]` enumeration of every
 //! contract it declares.
 //!
-//! `phoxal-api`'s curation tests read it to assert that each command topic is
-//! deliberately classified and each wire key composes as intended, so it is
+//! `phoxal-api`'s curation tests read it to assert that each command and stream
+//! topic is deliberately classified and each wire key composes as intended, so it is
 //! emitted only into test builds and never becomes public API surface.
+//!
+//! The manifest records the public temporal role. An `event` declaration is
+//! therefore listed as `State`; its separate ordered-delivery guarantee is
+//! asserted through the generated `ContractBody::DELIVERY` constant.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -22,8 +26,8 @@ struct ManifestContract {
     family: String,
     /// Tree-qualified wire key, e.g. `"v0.1/drive/target"`.
     topic: String,
-    /// The declared role, so a check can enumerate every command topic without
-    /// parsing names.
+    /// The declared role, so a check can enumerate every command or stream
+    /// topic without parsing names.
     role: TopicRole,
 }
 

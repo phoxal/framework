@@ -8,22 +8,98 @@
 //!
 //! Provenance is [`ProducerId`] plus a per-producer sequence, and the
 //! production instant is an explicit `Option<`[`TimeWindow`]`>` - a sample that
-//! expresses no robot time carries `None`, never a sentinel. The participant id
-//! rides alongside as a diagnostic label; it is never identity, and no
-//! admissibility decision reads it.
+//! expresses no robot time carries `None`, never a sentinel. A compiled
+//! participant id rides alongside the producer as topology attribution;
+//! external sources may carry only a bounded diagnostic label. Neither is the
+//! transport identity, and no admissibility decision reads either field.
 //!
 //! Receiver-side observation time is deliberately absent: it is process-local
 //! and receiver-specific, so it belongs on
 //! [`Observed`](crate::handle::subscriber::Observed), never on the wire.
 
-use phoxal_runtime_contract::identity::ProducerId;
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 use serde::{Deserialize, Serialize};
 
-use crate::abi::{CodecId, truncate_utf8};
+use crate::abi::CodecId;
 use crate::time::{RobotInstant, TimeWindow};
 
 const MAX_METADATA_BYTES: usize = 4 * 1024;
 pub(crate) const MAX_SOURCE_PARTICIPANT_BYTES: usize = 512;
+
+/// Bounded, non-authoritative source text for an external producer.
+///
+/// A label is useful in diagnostics and traces, but it is never used for
+/// routing, authority, or Ready admission. Participant topology identity is
+/// carried by [`ParticipantId`] instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct SourceLabel(String);
+
+impl SourceLabel {
+    /// Construct a bounded diagnostic label.
+    pub fn new(value: impl Into<String>) -> Result<Self, SourceLabelError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > MAX_SOURCE_PARTICIPANT_BYTES {
+            return Err(SourceLabelError(value));
+        }
+        Ok(Self(value))
+    }
+
+    /// The diagnostic text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SourceLabel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceLabel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A label that is empty or exceeds the diagnostic wire budget.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "source label must be non-empty and at most {MAX_SOURCE_PARTICIPANT_BYTES} bytes, got {0:?}"
+)]
+pub struct SourceLabelError(String);
+
+/// Provenance attribution for a bus session.
+///
+/// Every attribution carries a producer at the envelope level. Only compiled
+/// participants receive a topology [`ParticipantId`]; attached/operator
+/// sessions remain external and may carry a bounded diagnostic label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceAttribution {
+    /// A compiled participant process.
+    Participant(ParticipantId),
+    /// An off-graph producer whose label is diagnostic only.
+    External { label: Option<SourceLabel> },
+}
+
+impl SourceAttribution {
+    /// The topology participant, if this is a compiled participant source.
+    pub fn participant(&self) -> Option<&ParticipantId> {
+        match self {
+            Self::Participant(participant) => Some(participant),
+            Self::External { .. } => None,
+        }
+    }
+
+    /// The optional external diagnostic label.
+    pub fn label(&self) -> Option<&SourceLabel> {
+        match self {
+            Self::Participant(_) => None,
+            Self::External { label } => label.as_ref(),
+        }
+    }
+}
 
 /// Per-sample metadata carried in the Zenoh attachment (MessagePack-encoded).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,9 +114,12 @@ pub struct BusMetadata {
     /// When this sample's content was produced in robot time, if it expresses
     /// robot time at all. Commands and diagnostics carry `None`.
     pub produced_at: Option<TimeWindow>,
-    /// The producing participant id - a diagnostic label only (never identity,
-    /// never an admissibility input).
-    pub participant: String,
+    /// The producing participant id, when this producer belongs to the
+    /// compiled topology. It is not the transport identity; that is always
+    /// [`producer`](Self::producer).
+    pub participant: Option<ParticipantId>,
+    /// Optional bounded diagnostic text for an external producer.
+    pub source_label: Option<SourceLabel>,
 }
 
 impl BusMetadata {
@@ -52,11 +131,7 @@ impl BusMetadata {
     /// *reporting* a sample, and panicking there would turn a lost attachment
     /// into a lost process.
     pub fn encode(&self) -> std::result::Result<Vec<u8>, rmp_serde::encode::Error> {
-        let mut bounded = self.clone();
-        if bounded.participant.len() > MAX_SOURCE_PARTICIPANT_BYTES {
-            bounded.participant = truncate_utf8(&bounded.participant, MAX_SOURCE_PARTICIPANT_BYTES);
-        }
-        let encoded = rmp_serde::to_vec_named(&bounded)?;
+        let encoded = rmp_serde::to_vec_named(self)?;
         debug_assert!(encoded.len() <= MAX_METADATA_BYTES);
         Ok(encoded)
     }
@@ -99,7 +174,8 @@ mod tests {
             producer: producer(1),
             sequence: 7,
             produced_at,
-            participant: "unit".to_string(),
+            participant: Some(ParticipantId::new("unit").expect("test participant")),
+            source_label: None,
         }
     }
 
@@ -150,12 +226,11 @@ mod tests {
     }
 
     #[test]
-    fn an_over_long_participant_label_is_truncated_at_a_char_boundary() {
+    fn an_over_long_external_label_is_rejected_at_construction() {
         let mut long = metadata(None);
-        long.participant = "\u{e9}".repeat(MAX_SOURCE_PARTICIPANT_BYTES);
-        let decoded = BusMetadata::decode(&encoded(&long)).unwrap();
-        assert!(decoded.participant.len() <= MAX_SOURCE_PARTICIPANT_BYTES);
-        assert!(decoded.participant.chars().all(|c| c == '\u{e9}'));
+        assert!(SourceLabel::new("\u{e9}".repeat(MAX_SOURCE_PARTICIPANT_BYTES)).is_err());
+        long.source_label = Some(SourceLabel::new("diagnostic").expect("label"));
+        assert!(BusMetadata::decode(&encoded(&long)).is_ok());
     }
 
     /// The attachment is a bounded wire value at both ends: an encoder that
@@ -164,11 +239,11 @@ mod tests {
     #[test]
     fn the_attachment_stays_inside_its_wire_limit_in_both_directions() {
         let mut oversized = metadata(None);
-        oversized.participant = "\u{e9}".repeat(10_000);
+        oversized.source_label = Some(SourceLabel::new("diagnostic").expect("label"));
         let bytes = encoded(&oversized);
         assert!(bytes.len() <= MAX_METADATA_BYTES);
         let decoded = BusMetadata::decode(&bytes).expect("bounded metadata decodes");
-        assert!(decoded.participant.len() <= MAX_SOURCE_PARTICIPANT_BYTES);
+        assert!(decoded.source_label.is_some());
 
         let error = BusMetadata::decode(&vec![0_u8; MAX_METADATA_BYTES + 1]).unwrap_err();
         assert!(error.to_string().contains("4096-byte limit"));

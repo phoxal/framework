@@ -56,16 +56,16 @@ mod test_support;
 /// [`RobotInstant::timeline`](time::RobotInstant::timeline)), so a caller
 /// working against the bus should not have to reach for a second crate to name
 /// what the bus hands it.
-pub use phoxal_runtime_contract::identity::{ExecutionId, ProducerId, TimelineId};
+pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
-    ApiVersion, CommandContract, ContractBody, DiagnosticContract, MeasurementContract,
-    StateContract, TopicRole, WorldClockContract,
+    ApiVersion, CommandContract, ContractBody, DeliveryFamily, DiagnosticContract,
+    MeasurementContract, StateContract, StreamContract, TopicRole, WorldClockContract,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{
-    CommandPublisher, DiagnosticPublisher, MeasurementPublisher, StatePublisher,
+    CommandPublisher, DiagnosticPublisher, MeasurementPublisher, StatePublisher, StreamPublisher,
     WorldClockPublisher,
 };
 pub use handle::querier::{DEFAULT_QUERY_TIMEOUT, Querier};
@@ -76,7 +76,7 @@ pub use liveliness::{
     KeyLivelinessObserver, LivelinessStatus, ParticipantLivelinessEvent, ParticipantLivelinessKey,
     ParticipantLivelinessObserver, ParticipantLivelinessToken,
 };
-pub use metadata::BusMetadata;
+pub use metadata::{BusMetadata, SourceAttribution, SourceLabel, SourceLabelError};
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
 #[cfg(feature = "router")]
 pub use router::{Router, RouterWatch};
@@ -84,7 +84,7 @@ pub use runtime_metrics::{
     RuntimeBufferKind, RuntimeDirection, RuntimeMetricKey, RuntimeMetricSnapshot,
 };
 pub use server::{IncomingQuery, ServerQueryable};
-pub use session::{Bus, BusConfig, BusHealth};
+pub use session::{BusCloseReport, BusCloseTimeout, BusConfig, BusHandle, BusHealth, BusOwner};
 pub use time::{
     CaptureStamp, LocalInstant, RetiredTimelines, RobotInstant, RobotTimeError, TimeWindow, Timed,
     TimelineMismatch, WallTimestamp,

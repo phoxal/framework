@@ -3,18 +3,17 @@
 //! - [`ExecutionId`] names one supervised run. It scopes participants, bus
 //!   traffic, and authority, and it is the bus session root, so traffic from a
 //!   previous execution cannot physically be observed as current.
-//! - [`ProducerId`] names one publishing session. It is not minted: a session
-//!   *is* its producer, so the identity is read back from the id the transport
-//!   assigned the session.
+//! - [`ProducerId`] names one publishing session. It is minted by the unique
+//!   bus owner before opening the transport and pinned as the Zenoh session id.
 //! - [`TimelineId`] names one world history. A simulation reset or a replay
 //!   branch creates a new timeline within the same execution.
 //!
 //! `ExecutionId` and `ProducerId` are both Zenoh session identities and share
-//! one text form: lowercase hexadecimal with no leading zeros, at most 16
-//! bytes wide, which is exactly how Zenoh renders a session id. Minting an
-//! execution forces the most significant nibble nonzero, so an execution
-//! always renders at the full [`ExecutionId::LEN`] characters and the router
-//! session it pins renders character for character the same.
+//! one text form: exactly 32 lowercase hexadecimal characters with a non-zero
+//! leading nibble. That is the full 16-byte session value, so neither identity
+//! can be silently shortened or normalized at a transport boundary. Minting
+//! an execution or producer repairs only a zero most-significant nibble, so
+//! every non-zero leading digit remains reachable.
 //!
 //! All three are opaque. They compare only for equality and carry no
 //! generation order, no embedded host or path, and no secret.
@@ -127,7 +126,7 @@ const ZID_BYTES: usize = 16;
 /// Rendered width of a full-width session identity.
 const ZID_HEX_LEN: usize = ZID_BYTES * 2;
 
-/// The repair applied to a minted execution whose draw came up with a zero most
+/// The repair applied to a minted identity whose draw came up with a zero most
 /// significant nibble, so its rendering never loses a leading nibble and
 /// therefore never renders narrower than [`ZID_HEX_LEN`]. A draw that is already
 /// nonzero up there is left alone, so every one of the fifteen nonzero leading
@@ -243,35 +242,45 @@ impl<'de> Deserialize<'de> for ExecutionId {
     }
 }
 
-/// One publishing session.
+/// One bus-session incarnation.
 ///
-/// Nothing mints one. A session's producer identity *is* the identity the
-/// transport gave that session, read back after the session opens, so a
-/// reopened session is a different producer by construction and a process that
-/// never opened a session has no producer to speak of.
-///
-/// Because it is fresh per session incarnation, repeated ad hoc invocations
-/// never collide under strict per-producer sequence rejection, and a restarted
-/// participant is structurally a different producer.
+/// The unique bus owner mints this identity and pins it into the Zenoh client
+/// configuration before opening the session. The id is then read back and
+/// compared byte-for-byte; a transport that ignores or rewrites the requested
+/// id cannot publish under a mismatched provenance. Reopening therefore always
+/// creates a new producer, while every cloneable handle for one owner shares
+/// exactly one producer and sequence allocator.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProducerId(u128);
 
 impl ProducerId {
+    /// The rendered width of a canonical producer id.
+    pub const LEN: usize = ZID_HEX_LEN;
+
+    /// Mint a fresh, canonical producer identity.
+    pub fn mint() -> Self {
+        let mut bytes = [0_u8; ZID_BYTES];
+        #[expect(
+            clippy::expect_used,
+            reason = "a producer is the source identity for every publication; without a host randomness source there is no safe fallback identity"
+        )]
+        getrandom::fill(&mut bytes).expect("the host must provide randomness");
+        let mut value = u128::from_be_bytes(bytes);
+        if value >> 124 == 0 {
+            value |= CANONICAL_TOP_NIBBLE;
+        }
+        Self(value)
+    }
+
     /// Parse a rendered producer identity.
     ///
-    /// This is the transport's own text form, so it accepts what the transport
-    /// emits: 1 to [`ExecutionId::LEN`] lowercase hexadecimal characters with
-    /// no leading zero. Unlike an execution, a producer is not minted here and
-    /// is not pinned to the full width.
+    /// Only the canonical full-width lowercase hexadecimal form is accepted,
+    /// with a non-zero leading nibble.
     pub fn parse(value: &str) -> Result<Self, IdentityError> {
-        if value.is_empty()
-            || value.len() > ZID_HEX_LEN
-            || value.starts_with('0')
-            || !value.bytes().all(is_lowercase_hex)
-        {
+        if value.len() != ZID_HEX_LEN || !value.bytes().all(is_lowercase_hex) {
             return Err(IdentityError(format!(
-                "a producer id is 1 to {ZID_HEX_LEN} lowercase hexadecimal characters \
-                 with no leading zero, got '{value}'"
+                "a producer id is exactly {ZID_HEX_LEN} lowercase hexadecimal characters \
+                 and is not zero, got '{value}'"
             )));
         }
         let value = u128::from_str_radix(value, 16)
@@ -284,8 +293,10 @@ impl TryFrom<u128> for ProducerId {
     type Error = IdentityError;
 
     fn try_from(value: u128) -> Result<Self, IdentityError> {
-        if value == 0 {
-            return Err(IdentityError("a producer id is never zero".to_string()));
+        if value >> 124 == 0 {
+            return Err(IdentityError(
+                "a producer id must have a non-zero leading nibble".to_string(),
+            ));
         }
         Ok(ProducerId(value))
     }
@@ -299,7 +310,7 @@ impl From<ProducerId> for u128 {
 
 impl fmt::Display for ProducerId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{:x}", self.0)
+        write!(formatter, "{:032x}", self.0)
     }
 }
 
@@ -500,12 +511,10 @@ mod tests {
     }
 
     #[test]
-    fn a_producer_carries_the_transport_text_form_and_is_never_minted() {
-        // A session identity may be narrower than the canonical execution
-        // width, so a producer accepts what the transport actually renders.
-        let narrow = ProducerId::try_from(1).unwrap();
-        assert_eq!(narrow.to_string(), "1");
-        assert_eq!(ProducerId::parse("1"), Ok(narrow));
+    fn a_producer_is_minted_in_the_canonical_transport_form() {
+        let minted = ProducerId::mint();
+        assert_eq!(minted.to_string().len(), ProducerId::LEN);
+        assert_eq!(ProducerId::parse(&minted.to_string()), Ok(minted));
 
         let wide = ProducerId::try_from(u128::MAX).unwrap();
         assert_eq!(wide.to_string(), "f".repeat(ZID_HEX_LEN));
@@ -516,15 +525,16 @@ mod tests {
         assert!(ProducerId::parse("01").is_err());
         assert!(ProducerId::parse("AB").is_err());
         assert!(ProducerId::parse(&"f".repeat(ZID_HEX_LEN + 1)).is_err());
+        assert!(ProducerId::parse(&format!("0{}", "f".repeat(ZID_HEX_LEN - 1))).is_err());
     }
 
     #[test]
     fn producer_ids_round_trip_through_the_wire_encoding() {
-        let producer = ProducerId::try_from(0x0123_4567_89ab_cdef).unwrap();
+        let producer = ProducerId::try_from((1_u128 << 124) | 0x0123_4567_89ab_cdef).unwrap();
         let encoded = rmp_serde::to_vec_named(&producer).unwrap();
         let decoded: ProducerId = rmp_serde::from_slice(&encoded).unwrap();
         assert_eq!(decoded, producer);
-        assert_ne!(producer, ProducerId::try_from(1).unwrap());
+        assert_ne!(producer, ProducerId::try_from((1_u128 << 124) | 1).unwrap());
     }
 
     #[test]

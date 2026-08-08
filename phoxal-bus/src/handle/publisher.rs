@@ -9,19 +9,19 @@ use std::marker::PhantomData;
 use crate::abi::{Codec, MessagePack};
 use crate::contract::{
     CommandContract, ContractBody, DiagnosticContract, MeasurementContract, StateContract,
-    WorldClockContract,
+    StreamContract, WorldClockContract,
 };
-use crate::error::{MetadataProblem, Result};
+use crate::error::{BusError, MetadataProblem, Result};
 use crate::handle::stamp::StepStamp;
 use crate::runtime_metrics::RuntimeMetricHandle;
-use crate::session::{Bus, OUTBOUND_CAPACITY};
+use crate::session::{BusHandle, OUTBOUND_CAPACITY};
 use crate::time::{CaptureStamp, TimeWindow};
 use crate::topic::{Publish, Topic};
 
 /// The shared publish path: encode, build provenance, enqueue. Private, so the
 /// only public way to reach it is through a role-bounded publisher.
 struct Outbox<B> {
-    bus: Bus,
+    bus: BusHandle,
     key: String,
     metric: RuntimeMetricHandle,
     _body: PhantomData<fn() -> B>,
@@ -45,10 +45,10 @@ impl<B> Clone for Outbox<B> {
 }
 
 impl<B: ContractBody> Outbox<B> {
-    fn new(bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
+    fn new(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
         let topic_key = topic.publish_key()?;
         let metric = bus
-            .runtime_metrics()
+            .runtime_metrics()?
             .register_outbound(topic_key, OUTBOUND_CAPACITY);
         let key = bus.full_key(topic_key);
         Ok(Outbox {
@@ -104,7 +104,7 @@ macro_rules! role_publisher {
             /// [`crate::handle::stamp`]'s module docs for the full statement of
             /// what that does and does not close.
             #[doc(hidden)]
-            pub fn new(bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
+            pub fn new(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
                 Ok($name(Outbox::new(bus, topic)?))
             }
         }
@@ -139,6 +139,12 @@ role_publisher!(
     "Sends a command.\n\nA command is a request, not an observation: it \
      expresses no robot time. The owning service stamps its own observation and \
      applies the result at a logical step."
+);
+
+role_publisher!(
+    StreamPublisher,
+    StreamContract,
+    "Publishes ordered stream chunks.\n\nThe bounded bus queue reports saturation as a typed error and close as `Closed`; a chunk is never silently discarded."
 );
 
 role_publisher!(
@@ -180,7 +186,7 @@ impl<B: WorldClockContract> WorldClockPublisher<B> {
     /// [`crate::handle::stamp`]'s module docs for why it must nonetheless be
     /// `pub`.
     #[doc(hidden)]
-    pub fn mint(bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
+    pub fn mint(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
         Ok(WorldClockPublisher(Outbox::new(bus, topic)?))
     }
 
@@ -204,6 +210,16 @@ impl<B: CommandContract> CommandPublisher<B> {
     }
 }
 
+impl<B: StreamContract> StreamPublisher<B> {
+    /// Send one ordered stream chunk without blocking the step loop.
+    pub fn send(&self, body: B) -> Result<()> {
+        self.0.emit(None, body).map_err(|error| match error {
+            BusError::Saturated { topic, .. } => BusError::WouldBlock { topic },
+            error => error,
+        })
+    }
+}
+
 impl<B: DiagnosticContract> DiagnosticPublisher<B> {
     /// Publish `body`.
     pub fn publish(&self, body: B) -> Result<()> {
@@ -214,10 +230,33 @@ impl<B: DiagnosticContract> DiagnosticPublisher<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::{ApiVersion, DeliveryFamily, StreamContract, TopicRole};
     use crate::error::BusError;
-    use crate::session::BusConfig;
+    use crate::session::{BusConfig, BusOwner, OUTBOUND_MAX_BYTES};
     use crate::test_support::{Target, step};
+    use crate::topic::Topic;
     use serial_test::serial;
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct StreamChunk(Vec<u8>);
+
+    enum StreamApi {}
+
+    impl ApiVersion for StreamApi {
+        const ID: &'static str = "stream-test";
+    }
+
+    impl ContractBody for StreamChunk {
+        type Api = StreamApi;
+        const NAME: &'static str = "stream-test::Chunk";
+        const VERSION: &'static str = "stream-test";
+        const CONTRACT: &'static str = "Chunk";
+        const TOPIC: &'static str = "stream-test/chunk";
+        const ROLE: TopicRole = TopicRole::Stream;
+        const DELIVERY: DeliveryFamily = DeliveryFamily::Stream;
+    }
+
+    impl StreamContract for StreamChunk {}
 
     /// A publish after close is a real loss, and the caller has to be able to
     /// see it: silently succeeding would let a participant believe it had
@@ -225,10 +264,15 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn publishing_on_a_closed_bus_reports_the_loss() {
-        let bus = Bus::open(BusConfig::in_process("closed")).await.unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("closed")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
 
         let error = publisher
             .publish(
@@ -240,5 +284,23 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, BusError::Closed));
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn stream_saturation_is_reported_as_would_block() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("stream-would-block")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
+        let topic = Topic::<Publish<StreamChunk>>::new_static(StreamChunk::TOPIC);
+        let publisher = StreamPublisher::<StreamChunk>::new(bus.clone(), &topic).unwrap();
+        let error = publisher
+            .send(StreamChunk(vec![0; OUTBOUND_MAX_BYTES + 1]))
+            .expect_err("an oversized stream chunk must not be accepted");
+        assert!(matches!(error, BusError::WouldBlock { .. }));
+        owner.close().await.unwrap();
     }
 }

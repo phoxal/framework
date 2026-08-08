@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
 use crate::participant::lock;
-use phoxal_bus::{Bus, DiagnosticPublisher};
+use phoxal_bus::{BusHandle, DiagnosticPublisher};
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Metadata};
@@ -338,12 +338,12 @@ pub(crate) fn new_state_from_env() -> Arc<BusLogState> {
     state
 }
 
-pub(crate) fn attach(bus: Bus, participant_id: &str) -> (BusLogGuard, BusLogTask) {
+pub(crate) fn attach(bus: BusHandle, participant_id: &str) -> (BusLogGuard, BusLogTask) {
     attach_with_capacity(bus, participant_id, DEFAULT_BUFFER_CAPACITY)
 }
 
 fn attach_with_capacity(
-    bus: Bus,
+    bus: BusHandle,
     participant_id: &str,
     capacity: usize,
 ) -> (BusLogGuard, BusLogTask) {
@@ -388,7 +388,7 @@ impl Drop for BusLogGuard {
 /// new records from entering the queue.
 pub(crate) struct BusLogTask {
     state: Arc<BusLogState>,
-    bus: Bus,
+    bus: BusHandle,
     participant_id: String,
     receiver: mpsc::Receiver<LogRecord>,
 }
@@ -401,7 +401,7 @@ impl BusLogTask {
 
 async fn drain_loop(
     state: Arc<BusLogState>,
-    bus: Bus,
+    bus: BusHandle,
     participant_id: String,
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
@@ -556,8 +556,10 @@ mod tests {
         let token = state.install_sender(sender);
         let subscriber = tracing_subscriber::registry().with(BusLogLayer::new(Arc::clone(&state)));
 
-        let first = ProducerId::try_from(1).expect("a test producer is nonzero");
-        let second = ProducerId::try_from(2).expect("a test producer is nonzero");
+        let first =
+            ProducerId::try_from((1_u128 << 124) | 1).expect("a test producer is canonical");
+        let second =
+            ProducerId::try_from((1_u128 << 124) | 2).expect("a test producer is canonical");
         let silence = Duration::from_millis(150);
         let start = LocalInstant::from_boot_ns(0);
         let step = RobotInstant::new(TimelineId::mint(), 0);

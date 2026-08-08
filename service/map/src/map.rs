@@ -111,7 +111,7 @@ impl Participant for Map {
             },
             Api {
                 localize: ctx
-                    .subscriber(api::topic::client().localize().state(), 32)
+                    .subscriber(api::topic::client().localize().state())
                     .await?,
                 // Map OWNS the `map` node (its revision telemetry and the
                 // `map/submap` query it serves below) -> owner builder;

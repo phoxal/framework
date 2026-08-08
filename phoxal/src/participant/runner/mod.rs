@@ -28,7 +28,7 @@ use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTas
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{AnyStepScheduler, SchedulerTick, StepSchedule, StepScheduler};
-use phoxal_bus::{Bus, BusConfig, ParticipantLivelinessToken};
+use phoxal_bus::{BusConfig, BusHandle, BusOwner, ParticipantLivelinessToken};
 use phoxal_runtime_contract::launch::{ClockMode, ParticipantLaunch};
 
 pub(crate) mod inputs;
@@ -106,23 +106,20 @@ where
             "connecting to the bus"
         );
     }
-    let bus = Bus::open(BusConfig {
-        execution: launch.execution,
-        participant: launch.participant_id.clone(),
-        connect_endpoints: launch.bus.connect_endpoints.clone(),
-    })
+    let participant_id = phoxal_bus::ParticipantId::new(launch.participant_id.clone())
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        launch.execution,
+        participant_id,
+        launch.bus.connect_endpoints.clone(),
+    ))
     .await?;
 
     let clock = match launch.execution_origin {
         Some(origin) => RealClock::new(origin),
         None => RealClock::without_origin(),
     };
-    let result = run_with_bus_inner::<R, RealClock, S>(&bus, launch, bundle, clock, shutdown).await;
-
-    match bus.close().await {
-        Ok(()) => result,
-        Err(error) => teardown::add_bus_close_error(result, error.into()),
-    }
+    run_with_bus_inner::<R, RealClock, S>(&bus, Some(owner), launch, bundle, clock, shutdown).await
 }
 
 /// Run a participant on a **caller-owned** bus, against an explicit launch and
@@ -137,7 +134,7 @@ where
 /// per-participant source attribution still requires a bus per participant. The
 /// `launch` here drives config, robot-model, and component-instance resolution.
 pub async fn run_with_bus<R, S>(
-    bus: &Bus,
+    bus: &BusHandle,
     launch: ParticipantLaunch,
     shutdown: S,
 ) -> crate::Result<()>
@@ -151,7 +148,7 @@ where
         Some(origin) => RealClock::new(origin),
         None => RealClock::without_origin(),
     };
-    run_with_bus_inner::<R, RealClock, S>(bus, launch, bundle, clock, shutdown).await
+    run_with_bus_inner::<R, RealClock, S>(bus, None, launch, bundle, clock, shutdown).await
 }
 
 /// Deterministic clock-injection seam for clock-selectable checked participants.
@@ -163,7 +160,7 @@ where
 #[cfg(feature = "test-harness")]
 #[doc(hidden)]
 pub async fn run_with_bus_clock<R, C, S>(
-    bus: &Bus,
+    bus: &BusHandle,
     launch: ParticipantLaunch,
     clock: C,
     shutdown: S,
@@ -176,11 +173,12 @@ where
 {
     let bundle =
         ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref(), &launch.participant_id)?;
-    run_with_bus_inner::<R, C, S>(bus, launch, bundle, clock, shutdown).await
+    run_with_bus_inner::<R, C, S>(bus, None, launch, bundle, clock, shutdown).await
 }
 
 async fn run_with_bus_inner<R, C, S>(
-    bus: &Bus,
+    bus: &BusHandle,
+    owner: Option<BusOwner>,
     launch: ParticipantLaunch,
     bundle: Option<ParticipantBundleInputs>,
     clock: C,
@@ -195,13 +193,15 @@ where
 
     let participant_id = launch.participant_id.clone();
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), &participant_id);
-    let result = run_lifecycle::<R, C, S>(bus, launch, bundle, clock, shutdown, bus_log_task).await;
+    let result =
+        run_lifecycle::<R, C, S>(bus, owner, launch, bundle, clock, shutdown, bus_log_task).await;
     bus_logs.shutdown();
     result
 }
 
 async fn run_lifecycle<R, C, S>(
-    bus: &Bus,
+    bus: &BusHandle,
+    mut owner: Option<BusOwner>,
     launch: ParticipantLaunch,
     bundle: Option<ParticipantBundleInputs>,
     clock: C,
@@ -232,10 +232,13 @@ where
         // every deadline it owns is measured against a number it cannot
         // defend. This is ordinary failure, so the supervisor's restart and
         // start-limit policy decides what happens next.
-        return Err(ClockDisciplineLost { reason }.into());
+        return close_owner_with_result(Err(ClockDisciplineLost { reason }.into()), owner).await;
     }
     let (scheduler, clock_handle) =
-        AnyStepScheduler::for_clock_mode(clock_mode, schedule, reading.instant())?;
+        match AnyStepScheduler::for_clock_mode(clock_mode, schedule, reading.instant()) {
+            Ok(value) => value,
+            Err(error) => return close_owner_with_result(Err(error), owner).await,
+        };
     let effective_clock = match &scheduler {
         AnyStepScheduler::Simulation(simulation) => {
             RunnerClock::Simulation(simulation.simulation_clock())
@@ -245,6 +248,7 @@ where
     // Subscribe before setup so the simulation clock can advance while setup runs.
     match Runner::<R, C>::start(
         bus,
+        &mut owner,
         &launch,
         bundle,
         effective_clock,
@@ -259,7 +263,42 @@ where
     .await
     {
         Ok(runner) => runner.run(shutdown).await,
-        Err(error) => Err(error),
+        Err(error) => close_owner_with_result(Err(error), owner).await,
+    }
+}
+
+async fn close_owner_with_result<T>(
+    primary: crate::Result<T>,
+    owner: Option<BusOwner>,
+) -> crate::Result<T> {
+    let Some(owner) = owner else {
+        return primary;
+    };
+    let close_error = match owner.close().await {
+        Ok(close)
+            if close.unjoined_workers == 0
+                && close.transport_errors.is_empty()
+                && close.timed_out.is_empty() =>
+        {
+            None
+        }
+        Ok(close) => Some(anyhow::anyhow!(
+            "bus close evidence: {} transport failures, {} unjoined workers, timed out stages: {:?}",
+            close.transport_errors.len(),
+            close.unjoined_workers,
+            close.timed_out,
+        )),
+        Err(error) => Some(error.into()),
+    };
+    match close_error {
+        None => primary,
+        Some(error) => teardown::combine(
+            primary,
+            teardown::TeardownReport {
+                bus_close_error: Some(error),
+                ..teardown::TeardownReport::default()
+            },
+        ),
     }
 }
 
@@ -370,7 +409,10 @@ struct Runner<R: Participant, C: ClockSource> {
     participant: R,
     api: R::Api,
     state: R::State,
-    bus: Bus,
+    bus: BusHandle,
+    /// The unique session owner for supervised runs. Caller-owned embedding
+    /// uses `None` and therefore cannot assert participant Ready.
+    owner: Option<BusOwner>,
     clock: RunnerClock<C>,
     scheduler: AnyStepScheduler,
     schedule: Option<StepSchedule>,
@@ -383,7 +425,7 @@ struct Runner<R: Participant, C: ClockSource> {
     /// The participant's Ready/liveliness lease. It is revoked before any
     /// shutdown work starts, so observers never see Ready while resources are
     /// being unwound.
-    liveliness: ParticipantLivelinessToken,
+    liveliness: Option<ParticipantLivelinessToken>,
     shutdown_grace_ms: u64,
 }
 
@@ -407,7 +449,8 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         reason = "startup keeps the validated bundle, scheduler, clock, launch, and framework tasks explicit"
     )]
     async fn start(
-        bus: &Bus,
+        bus: &BusHandle,
+        owner: &mut Option<BusOwner>,
         launch: &ParticipantLaunch,
         bundle: Option<ParticipantBundleInputs>,
         clock: RunnerClock<C>,
@@ -497,29 +540,32 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // declaration against already-supervised task completion so a
         // Critical setup/query failure cannot win the await and briefly make
         // an unhealthy participant visible.
-        let liveliness = tokio::select! {
-            biased;
-            exit = managed_tasks.next_unexpected_exit() => {
-                if let Some(queries) = queries.take() {
-                    queries.close();
-                }
-                let report = wind_down(managed_tasks)
-                    .run(&participant, &api, &mut state)
-                    .await;
-                return combine(Err(exit.into()), report);
-            }
-            result = bus.declare_participant_liveliness() => match result {
-                Ok(token) => token,
-                Err(error) => {
+        let liveliness = match owner.as_ref() {
+            None => None,
+            Some(owner) => Some(tokio::select! {
+                biased;
+                exit = managed_tasks.next_unexpected_exit() => {
                     if let Some(queries) = queries.take() {
                         queries.close();
                     }
                     let report = wind_down(managed_tasks)
                         .run(&participant, &api, &mut state)
                         .await;
-                    return combine(Err(error.into()), report);
+                    return combine(Err(exit.into()), report);
                 }
-            },
+                result = owner.declare_participant_ready() => match result {
+                    Ok(token) => token,
+                    Err(error) => {
+                        if let Some(queries) = queries.take() {
+                            queries.close();
+                        }
+                        let report = wind_down(managed_tasks)
+                            .run(&participant, &api, &mut state)
+                            .await;
+                        return combine(Err(error.into()), report);
+                    }
+                },
+            }),
         };
 
         // Do not accept the token merely because its await won the race. Give
@@ -549,6 +595,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             api,
             state,
             bus: bus.clone(),
+            owner: owner.take(),
             clock,
             scheduler,
             schedule,
@@ -586,6 +633,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             mut state,
             queries,
             managed_tasks,
+            owner,
             liveliness,
             shutdown_grace_ms,
             ..
@@ -601,12 +649,30 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         if let Some(queries) = queries {
             queries.close();
         }
-        Teardown {
+        let mut report = Teardown {
             managed_tasks,
             grace_ms: shutdown_grace_ms,
         }
         .run(&participant, &api, &mut state)
-        .await
+        .await;
+        if let Some(owner) = owner {
+            match owner.close().await {
+                Ok(close)
+                    if close.unjoined_workers == 0
+                        && close.transport_errors.is_empty()
+                        && close.timed_out.is_empty() => {}
+                Ok(close) => {
+                    report.bus_close_error = Some(anyhow::anyhow!(
+                        "bus close evidence: {} transport failures, {} unjoined workers, timed out stages: {:?}",
+                        close.transport_errors.len(),
+                        close.unjoined_workers,
+                        close.timed_out,
+                    ));
+                }
+                Err(error) => report.bus_close_error = Some(error.into()),
+            }
+        }
+        report
     }
 
     async fn main_loop<S>(&mut self, mut shutdown: Pin<&mut S>) -> LoopExit
@@ -852,9 +918,9 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
 /// sender keepalive (see its docs), so the watch channel itself would not close
 /// even if this task stopped, but a stopped task means logical time simply never
 /// advances again.
-async fn simulation_clock_feed(bus: Bus, handle: SimulationClockHandle) -> crate::Result<()> {
+async fn simulation_clock_feed(bus: BusHandle, handle: SimulationClockHandle) -> crate::Result<()> {
     let topic = api::topic::client().simulation().clock();
-    let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
+    let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),
     };

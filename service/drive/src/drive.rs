@@ -256,9 +256,7 @@ impl Participant for Drive {
 
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner builder.
-        let target = ctx
-            .subscriber(api::topic::owner().drive().target(), 32)
-            .await?;
+        let target = ctx.subscriber(api::topic::owner().drive().target()).await?;
         let state = ctx
             .state_publisher(api::topic::owner().drive().state())
             .await?;
@@ -355,7 +353,7 @@ mod tests {
     /// A distinct test producer. Nothing mints a producer in production - a
     /// session's identity is the session - so tests name theirs explicitly.
     fn producer(value: u128) -> ProducerId {
-        ProducerId::try_from(value).expect("a test producer is nonzero")
+        ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
     }
 
     const LIMITS: MotionLimits = MotionLimits {

@@ -8,7 +8,7 @@
 //! ([`BusError::Transport`] and [`KeyProblem::NotAKeyExpression`]) carry
 //! Zenoh's own message and are named so that is visible at the use site.
 
-use phoxal_runtime_contract::identity::IdentityError;
+use phoxal_runtime_contract::identity::{IdentityError, ProducerId};
 
 use crate::abi::{CodecError, EncodingError};
 use crate::topic::WildcardPublish;
@@ -41,6 +41,16 @@ pub enum BusError {
     /// a replay from the same producer.
     #[error("this session's sample sequence is exhausted")]
     SequenceExhausted,
+
+    /// Zenoh did not honor the producer identity pinned by the unique bus
+    /// owner. Continuing would make provenance and Ready attribution lie.
+    #[error("bus session identity mismatch: expected producer {expected}, observed {observed}")]
+    SessionIdentityMismatch {
+        /// Identity minted by the owner and written to the config.
+        expected: ProducerId,
+        /// Identity read back from the opened Zenoh session.
+        observed: ProducerId,
+    },
 
     /// A codec failure encoding or decoding a body.
     #[error(transparent)]
@@ -75,6 +85,15 @@ pub enum BusError {
         topic: String,
         /// Which of the queue's two bounds was hit.
         bound: OutboundBound,
+    },
+
+    /// A stream publisher would have to block to preserve its ordered bounded
+    /// queue. The chunk was not accepted and the caller must retry or handle
+    /// the loss explicitly.
+    #[error("stream would block on '{topic}'")]
+    WouldBlock {
+        /// The version-qualified topic key.
+        topic: String,
     },
 
     /// A Zenoh session id is not a legal Phoxal identity. Something is

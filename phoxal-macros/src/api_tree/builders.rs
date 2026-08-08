@@ -14,14 +14,16 @@ use super::model::{MaterializedTree, Node, TopicDef, TopicKind, TopicLeaf};
 
 /// Which side a generated builder tree brands its leaves with.
 ///
-/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. A `command` leaf
-///   yields `Topic<Publish<B>>` (the client sends commands), a `state` leaf
-///   yields `Topic<Subscribe<B>>` (the client observes state), and a `query`
+/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. A `command` or
+///   `stream` leaf yields `Topic<Publish<B>>` (the client sends intent/chunks),
+///   a `state` or `event` leaf yields `Topic<Subscribe<B>>` (the client observes
+///   state/events), and a `query`
 ///   leaf yields `Topic<AskQuery<Req, Resp>>` (the client calls).
 /// - [`Side::Owner`] - the `topic::owner()...` tree. The brands flip:
-///   `command` -> `Subscribe` (the owner reads its control input), `state` ->
-///   `Publish` (the owner emits telemetry), `query` -> `ServeQuery` (the owner
-///   serves).
+///   `command`/`stream` -> `Subscribe` (the owner reads its control input),
+///   `state`/`event` -> `Publish` (the owner emits telemetry/events),
+///   `query` -> `ServeQuery`
+///   (the owner serves).
 #[derive(Clone, Copy)]
 enum Side {
     Client,
@@ -328,7 +330,7 @@ impl TopicDef {
     /// The brand is picked from `(role, side)`:
     ///
     /// - `command`: client publishes (`Publish`), owner subscribes (`Subscribe`).
-    /// - `state` / `measurement` / `diagnostic`: client subscribes (`Subscribe`),
+    /// - `state` / `event` / `measurement` / `diagnostic`: client subscribes (`Subscribe`),
     ///   owner publishes (`Publish`).
     /// - `query`: client asks (`AskQuery`), owner serves (`ServeQuery`).
     fn builder_leaf_kind(&self, path: &[NodeSeg], side: Side) -> TokenStream {

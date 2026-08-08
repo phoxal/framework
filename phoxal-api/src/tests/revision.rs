@@ -1,6 +1,6 @@
 //! The revision the train selects, and the curated inventory of what it declares.
 
-use phoxal_bus::{ApiVersion, TopicRole};
+use phoxal_bus::{ApiVersion, ContractBody, DeliveryFamily, TopicRole};
 
 use crate::v0_1 as api;
 
@@ -27,7 +27,8 @@ fn the_declared_api_identity_namespaces_the_train_selected_revision() {
 }
 
 /// Every command topic is classified as one-shot, leased, or internal
-/// actuation in the inventory below.
+/// actuation in the inventory below. Stream topics have their own semantic
+/// family and are checked separately.
 ///
 /// This pins the written classification to the api tree itself: adding a
 /// command topic without deciding what kind of command it is fails here, which
@@ -54,7 +55,6 @@ fn every_command_topic_is_classified() {
         ("v0.2::power::Command", "one-shot"),
         ("v0.2::navigation::Request", "one-shot"),
         ("v0.2::component::led::Command", "one-shot"),
-        ("v0.2::component::speaker::Chunk", "one-shot"),
     ];
 
     let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
@@ -70,6 +70,45 @@ fn every_command_topic_is_classified() {
         declared, classified,
         "every command topic must have a classification"
     );
+}
+
+#[test]
+fn every_stream_topic_is_classified() {
+    let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .flat_map(|version| version.contracts.iter())
+        .filter(|contract| contract.role == TopicRole::Stream)
+        .map(|contract| contract.family)
+        .collect();
+
+    let classified = ["v0.2::component::speaker::Chunk"]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(
+        declared, classified,
+        "every stream topic must be classified"
+    );
+}
+
+#[test]
+fn speaker_chunk_changes_from_command_to_stream_only_in_v0_2() {
+    type V1 = crate::v0_1::component::speaker::Chunk;
+    type V2 = crate::v0_2::component::speaker::Chunk;
+    assert_eq!(<V1 as ContractBody>::ROLE, TopicRole::Command);
+    assert_eq!(<V1 as ContractBody>::DELIVERY, DeliveryFamily::Setpoint);
+    assert_eq!(<V2 as ContractBody>::ROLE, TopicRole::Stream);
+    assert_eq!(<V2 as ContractBody>::DELIVERY, DeliveryFamily::Stream);
+}
+
+#[test]
+fn navigation_result_is_an_owner_event_with_ordered_delivery_only_in_v0_2() {
+    type V1 = crate::v0_1::navigation::Result;
+    type V2 = crate::v0_2::navigation::Result;
+    assert_eq!(<V1 as ContractBody>::ROLE, TopicRole::State);
+    assert_eq!(<V1 as ContractBody>::DELIVERY, DeliveryFamily::State);
+    assert_eq!(<V2 as ContractBody>::ROLE, TopicRole::State);
+    assert_eq!(<V2 as ContractBody>::DELIVERY, DeliveryFamily::Stream);
 }
 
 #[test]
@@ -92,17 +131,6 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .expect("drive::State should be in the generated manifest");
     assert_eq!(drive_state.topic, "v0.1/drive/state");
 
-    let current = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .find(|version| version.name == "v0.2")
-        .expect("v0.2 should be in the generated manifest");
-    let current_drive_state = current
-        .contracts
-        .iter()
-        .find(|contract| contract.family == "v0.2::drive::State")
-        .expect("drive::State should be in the v0.2 manifest");
-    assert_eq!(current_drive_state.topic, "v0.2/drive/state");
-
     // A contract under two dynamic nodes carries both placeholders in the key
     // the manifest reports, exactly as `ContractBody::TOPIC` does.
     let battery_state = version
@@ -122,4 +150,15 @@ fn generated_contract_manifest_lists_contract_shapes() {
             .any(|contract| contract.family == "v0.1::simulation::Clock"),
         "v0.1::simulation::Clock should be in the v0.1 manifest entry"
     );
+
+    let current = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|version| version.name == "v0.2")
+        .expect("v0.2 should be in the generated manifest");
+    let current_drive_state = current
+        .contracts
+        .iter()
+        .find(|contract| contract.family == "v0.2::drive::State")
+        .expect("drive::State should be in the v0.2 manifest");
+    assert_eq!(current_drive_state.topic, "v0.2/drive/state");
 }

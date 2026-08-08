@@ -24,7 +24,7 @@ use crate::session::{apply_phoxal_transport_policy, client_config, zenoh_id_for}
 ///
 /// The router owns no keys, publishes nothing, and subscribes to nothing. It
 /// routes, and it stays alive until dropped or [`Router::close`]d. Participants,
-/// including the supervisor's own [`crate::Bus`], reach it as ordinary clients
+/// including the supervisor's own [`crate::BusHandle`], reach it as ordinary clients
 /// over the endpoints it listens on.
 #[derive(Debug)]
 pub struct Router {
@@ -204,7 +204,7 @@ mod tests {
     use crate::contract::ContractBody;
     use crate::handle::publisher::StatePublisher;
     use crate::handle::subscriber::Latest;
-    use crate::session::{Bus, BusConfig};
+    use crate::session::{BusConfig, BusOwner};
     use crate::test_support::{Target, socket_endpoint, step};
     use crate::topic::{Publish, Subscribe, Topic};
 
@@ -374,16 +374,19 @@ mod tests {
             .await
             .expect("the embedded router binds its endpoint");
 
-        let client = |participant: &str| BusConfig {
-            execution,
-            participant: participant.to_string(),
-            connect_endpoints: vec![endpoint.clone()],
+        let client = |participant: &str| {
+            BusConfig::for_participant(
+                execution,
+                phoxal_runtime_contract::identity::ParticipantId::new(participant)
+                    .expect("test participant id"),
+                vec![endpoint.clone()],
+            )
         };
 
-        let publishing = Bus::open(client("publisher"))
+        let (publishing_owner, publishing) = BusOwner::open(client("publisher"))
             .await
             .expect("publisher dials the embedded router");
-        let subscribing = Bus::open(client("subscriber"))
+        let (subscribing_owner, subscribing) = BusOwner::open(client("subscriber"))
             .await
             .expect("subscriber dials the embedded router");
         assert_ne!(
@@ -431,8 +434,8 @@ mod tests {
             "provenance must survive the hop through the router"
         );
 
-        publishing.close().await.unwrap();
-        subscribing.close().await.unwrap();
+        publishing_owner.close().await.unwrap();
+        subscribing_owner.close().await.unwrap();
         router.close().await.unwrap();
     }
 
@@ -462,15 +465,16 @@ mod tests {
         );
 
         // Reported is not the same as reachable - dial the port we were told.
-        let bus = Bus::open(BusConfig {
+        let (owner, _bus) = BusOwner::open(BusConfig::for_participant(
             execution,
-            participant: "client".to_string(),
-            connect_endpoints: vec![tcp.clone()],
-        })
+            phoxal_runtime_contract::identity::ParticipantId::new("client")
+                .expect("test participant id"),
+            vec![tcp.clone()],
+        ))
         .await
         .expect("the reported endpoint must be the one that actually accepts");
 
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
         router.close().await.unwrap();
     }
 

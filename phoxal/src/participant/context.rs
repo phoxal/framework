@@ -11,19 +11,19 @@ use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
     DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
     Publish, Querier, RobotInstant, ServeQuery, StateContract, StatePublisher, StepToken,
-    Subscribe, Subscriber, TimelineId, Topic, WorldClockContract,
+    StreamContract, StreamPublisher, Subscribe, Subscriber, TimelineId, Topic, WorldClockContract,
 };
 use crate::model::Robot;
 use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::managed::{ManagedTaskOutput, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runner::inputs::ParticipantBundleInputs;
-use phoxal_bus::{Bus, TimelineAuthority, WorldClockPublisher};
+use phoxal_bus::{BusHandle, TimelineAuthority, WorldClockPublisher};
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 
 /// The sole IO-construction point, handed to `Participant::setup`.
 pub struct SetupContext<R: Participant> {
-    bus: Bus,
+    bus: BusHandle,
     /// The finalized bundle this participant was launched against, if it was
     /// launched with one. Model and assets travel together because they are two
     /// views of the same load: there is no launch that binds one without the
@@ -38,7 +38,7 @@ pub struct SetupContext<R: Participant> {
 
 impl<R: Participant> SetupContext<R> {
     pub(crate) fn new(
-        bus: Bus,
+        bus: BusHandle,
         bundle: Option<ParticipantBundleInputs>,
         component_instance: Option<String>,
     ) -> Self {
@@ -169,6 +169,13 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(CommandPublisher::new(self.bus.clone(), &topic)?)
     }
 
+    pub async fn stream_publisher<B: StreamContract<Api = R::ContractApi>>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<StreamPublisher<B>> {
+        Ok(StreamPublisher::new(self.bus.clone(), &topic)?)
+    }
+
     pub async fn diagnostic_publisher<B: DiagnosticContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
@@ -191,9 +198,8 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     pub async fn subscriber<B: ContractBody<Api = R::ContractApi>>(
         &mut self,
         topic: Topic<Subscribe<B>>,
-        depth: usize,
     ) -> crate::Result<Subscriber<B>> {
-        let handle = Subscriber::new(&self.bus, &topic, depth).await?;
+        let handle = Subscriber::new(&self.bus, &topic).await?;
         let retained = handle.clone();
         self.register_timeline_retention(move |timeline| {
             retained.retain_timeline(timeline);
