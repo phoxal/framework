@@ -183,8 +183,8 @@ pub mod bus {
     pub use phoxal_bus::{
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
         CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
-        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, ExecutionId,
-        FixedSourceLease, LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LocalInstant,
+        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, FixedSourceLease,
+        LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LocalInstant,
         MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack, Observed,
         ParticipantId, ParticipantReadyEvent, ParticipantReadyEvents, ParticipantReadyStatus,
         ParticipantSourceIdentity, ProducerId, Publish, Querier, QueryCode, QueryError,
