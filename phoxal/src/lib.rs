@@ -184,9 +184,10 @@ pub mod bus {
         DiagnosticPublisher, ExecutionId, LEASE_TRACE_TARGET, Latest, Lease, LeaseDecision,
         LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
         Observed, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure,
-        QueryResult, Result, RobotInstant, ServeQuery, StateContract, StatePublisher, StepStamp,
-        StepToken, Subscribe, Subscriber, TimeWindow, Timed, TimelineId, TimelineMismatch, Topic,
-        TopicKind, TopicRole, WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
+        QueryResult, Result, RobotInstant, RobotTimeError, ServeQuery, StateContract,
+        StatePublisher, StepStamp, StepToken, Subscribe, Subscriber, TimeWindow, Timed, TimelineId,
+        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
+        WorldClockContract, WorldStepToken,
     };
 }
 
