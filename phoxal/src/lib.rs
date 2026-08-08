@@ -65,7 +65,7 @@
 //!     }
 //!
 //!     #[phoxal::step(hz = 50)]
-//!     async fn step(
+//!     fn step(
 //!         &self,
 //!         api: &Self::Api,
 //!         _step: StepContext,

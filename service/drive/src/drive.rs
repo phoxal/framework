@@ -297,23 +297,13 @@ impl Participant for Drive {
         ))
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.target.clear();
         Ok(())
     }
 
     #[phoxal::step(hz = 50)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         let now = step.now();
         // Without the host clock there is no silence deadline to measure, so
         // this step decides nothing: it renews no lease and applies no

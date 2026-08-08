@@ -13,7 +13,7 @@ impl Participant for ScheduledSimulator {
     }
 
     #[phoxal::step(hz = 10)]
-    async fn step(
+    fn step(
         &self,
         _api: &Self::Api,
         _step: StepContext,

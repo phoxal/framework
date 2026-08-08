@@ -12,20 +12,21 @@ use anyhow::Result;
 use phoxal::api;
 use phoxal::prelude::*;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct Api {
     commands: Subscriber<api::power::Command>,
+    command_tx: mpsc::Sender<api::power::Command>,
     state: StatePublisher<api::power::State>,
 }
 
 pub(crate) struct PowerState {
     latched: api::power::State,
-    /// Absent on a host with no systemd. That is the whole of the "cannot act"
-    /// case: every command is then answered `Idle` with the reason, never
-    /// silently dropped.
+    results: mpsc::Receiver<(api::power::Command, ExecutorOutcome)>,
+    #[cfg(test)]
     executor: Option<Box<dyn PowerExecutor>>,
 }
 
@@ -40,12 +41,27 @@ impl Participant for Power {
     ) -> Result<(Self::State, Self::Api)> {
         let executor =
             SystemdExecutor::detect().map(|executor| Box::new(executor) as Box<dyn PowerExecutor>);
+        let (command_tx, mut command_rx) = mpsc::channel(32);
+        let (result_tx, result_rx) = mpsc::channel(32);
+        ctx.spawn_managed("power-command-executor", async move {
+            while let Some(command) = command_rx.recv().await {
+                let outcome = match executor.as_deref() {
+                    Some(executor) => executor.submit(command).await,
+                    None => ExecutorOutcome::Unavailable,
+                };
+                if result_tx.send((command, outcome)).await.is_err() {
+                    break;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        });
         Ok((
-            PowerState::new(executor),
+            PowerState::runtime(result_rx),
             Api {
                 commands: ctx
                     .subscriber(api::topic::owner().power().command(), 32)
                     .await?,
+                command_tx,
                 state: ctx
                     .state_publisher(api::topic::owner().power().state())
                     .await?,
@@ -54,14 +70,14 @@ impl Participant for Power {
     }
 
     #[phoxal::step(hz = 1)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         while let Some(received) = api.commands.try_recv() {
-            state.apply(received.body).await;
+            api.command_tx
+                .try_send(received.body)
+                .map_err(|error| anyhow::anyhow!("power command executor unavailable: {error}"))?;
+        }
+        while let Ok((command, outcome)) = state.results.try_recv() {
+            state.latch(command, outcome);
         }
         api.state.publish(&step.token, state.latched.clone())?;
         Ok(())
@@ -69,21 +85,38 @@ impl Participant for Power {
 }
 
 impl PowerState {
-    fn new(executor: Option<Box<dyn PowerExecutor>>) -> Self {
+    fn runtime(results: mpsc::Receiver<(api::power::Command, ExecutorOutcome)>) -> Self {
         Self {
             latched: idle_state(None),
+            results,
+            #[cfg(test)]
+            executor: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn new(executor: Option<Box<dyn PowerExecutor>>) -> Self {
+        let (_sender, results) = mpsc::channel(1);
+        Self {
+            latched: idle_state(None),
+            results,
             executor,
         }
     }
 
     /// Run `command` on the host and latch the state the next step publishes.
+    #[cfg(test)]
     async fn apply(&mut self, command: api::power::Command) {
         let Some(executor) = self.executor.as_deref() else {
             self.latched = idle_state(Some("systemd host integration is unavailable".to_string()));
             return;
         };
+        self.latch(command, executor.submit(command).await);
+    }
+
+    fn latch(&mut self, command: api::power::Command, outcome: ExecutorOutcome) {
         let facts = CommandFacts::of(command);
-        self.latched = match executor.submit(command).await {
+        self.latched = match outcome {
             ExecutorOutcome::Accepted => api::power::State {
                 status: facts.accepted,
                 detail: Some(format!("systemd accepted {}", facts.label)),
@@ -92,6 +125,9 @@ impl PowerState {
                 status: api::power::Status::Failed,
                 detail: Some(detail),
             },
+            ExecutorOutcome::Unavailable => {
+                idle_state(Some("systemd host integration is unavailable".to_string()))
+            }
         };
     }
 }
@@ -117,6 +153,7 @@ trait PowerExecutor: Send + Sync {
 enum ExecutorOutcome {
     Accepted,
     Failed(String),
+    Unavailable,
 }
 
 /// What one command is called at each boundary it crosses, resolved by a single

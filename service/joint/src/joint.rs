@@ -137,12 +137,7 @@ impl Participant for Joint {
     }
 
     #[phoxal::step(hz = 50)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        _state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, _state: &mut Self::State) -> Result<()> {
         let now = step.now();
         let mut latest_by_joint = BTreeMap::new();
 

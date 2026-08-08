@@ -5,6 +5,133 @@ use std::time::Duration;
 use crate::participant::api::Participant;
 use crate::participant::managed::ManagedTasks;
 
+/// Reserve a scheduler turn at the end of the shared grace budget so a
+/// cooperative managed task can observe the cancellation request even when
+/// the shutdown hook consumed nearly all of the budget.
+const TASK_CANCELLATION_DRAIN: Duration = Duration::from_millis(1);
+
+/// Evidence collected after the primary participant exit has been selected.
+///
+/// Cleanup is part of the terminal contract, not a best-effort logging side
+/// channel: a clean run with failed cleanup is a failure, and a primary fault
+/// carries this report alongside it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct TeardownReport {
+    pub(crate) shutdown_error: Option<String>,
+    pub(crate) shutdown_timed_out: bool,
+    pub(crate) unjoined_tasks: Vec<String>,
+    pub(crate) task_errors: Vec<String>,
+    pub(crate) bus_close_error: Option<String>,
+}
+
+impl TeardownReport {
+    pub(crate) fn is_clean(&self) -> bool {
+        self.shutdown_error.is_none()
+            && !self.shutdown_timed_out
+            && self.unjoined_tasks.is_empty()
+            && self.task_errors.is_empty()
+            && self.bus_close_error.is_none()
+    }
+}
+
+impl std::fmt::Display for TeardownReport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut first = true;
+        let mut item = |label: &str, detail: &dyn std::fmt::Display| -> std::fmt::Result {
+            if !first {
+                write!(formatter, "; ")?;
+            }
+            first = false;
+            write!(formatter, "{label}={detail}")
+        };
+        if let Some(error) = &self.shutdown_error {
+            item("shutdown", error)?;
+        }
+        if self.shutdown_timed_out {
+            item("shutdown-timeout", &"true")?;
+        }
+        if !self.unjoined_tasks.is_empty() {
+            item("unjoined-tasks", &format_args!("{:?}", self.unjoined_tasks))?;
+        }
+        if !self.task_errors.is_empty() {
+            item("task-errors", &format_args!("{:?}", self.task_errors))?;
+        }
+        if let Some(error) = &self.bus_close_error {
+            item("bus-close", error)?;
+        }
+        if first {
+            formatter.write_str("clean")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// The returned failure retains both the original runtime error and every
+/// cleanup failure that followed it. `primary` remains the error source so
+/// callers can still downcast the original fault through the error chain.
+#[derive(Debug)]
+pub(crate) struct TerminalError {
+    pub(crate) primary: Option<anyhow::Error>,
+    pub(crate) teardown: TeardownReport,
+}
+
+impl std::fmt::Display for TerminalError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.primary {
+            Some(primary) => write!(formatter, "{primary}; teardown: {}", self.teardown),
+            None => write!(formatter, "teardown failed: {}", self.teardown),
+        }
+    }
+}
+
+impl std::error::Error for TerminalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.primary.as_deref().map(|error| error as _)
+    }
+}
+
+pub(crate) fn combine<T>(primary: crate::Result<T>, teardown: TeardownReport) -> crate::Result<T> {
+    if teardown.is_clean() {
+        return primary;
+    }
+    Err(TerminalError {
+        primary: primary.err(),
+        teardown,
+    }
+    .into())
+}
+
+pub(crate) fn add_bus_close_error(
+    result: crate::Result<()>,
+    error: anyhow::Error,
+) -> crate::Result<()> {
+    match result {
+        Ok(()) => Err(TerminalError {
+            primary: None,
+            teardown: TeardownReport {
+                bus_close_error: Some(error.to_string()),
+                ..TeardownReport::default()
+            },
+        }
+        .into()),
+        Err(existing) => match existing.downcast::<TerminalError>() {
+            Ok(mut terminal) => {
+                terminal.teardown.bus_close_error = Some(error.to_string());
+                Err(terminal.into())
+            }
+            Err(primary) => Err(TerminalError {
+                primary: Some(primary),
+                teardown: TeardownReport {
+                    bus_close_error: Some(error.to_string()),
+                    ..TeardownReport::default()
+                },
+            }
+            .into()),
+        },
+    }
+}
+
 /// The shutdown sequence and the single grace budget that bounds it.
 ///
 /// One type because the sequence and the deadline are inseparable: the
@@ -20,7 +147,12 @@ pub(crate) struct Teardown {
 }
 
 impl Teardown {
-    pub(crate) async fn run<R>(self, participant: &R, api: &R::Api, state: &mut R::State)
+    pub(crate) async fn run<R>(
+        self,
+        participant: &R,
+        api: &R::Api,
+        state: &mut R::State,
+    ) -> TeardownReport
     where
         R: Participant,
     {
@@ -30,31 +162,42 @@ impl Teardown {
         } = self;
 
         let deadline = tokio::time::Instant::now() + Duration::from_millis(grace_ms);
-        managed_tasks.cancel();
+        let mut report = TeardownReport::default();
 
         // Bound the shutdown hook by the grace deadline: a hook that
         // parks/flushes hardware can hang, but the runner must still proceed to
         // bus close deterministically rather than leak the process. On timeout we
-        // log and move on; the hook's task is dropped (cancelled at the next await).
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        // retain structured timeout evidence and move on; the hook's future is
+        // dropped (cancelled at the next await).
+        let reserved = TASK_CANCELLATION_DRAIN.min(Duration::from_millis(grace_ms));
+        let shutdown_deadline = deadline - reserved;
+        let remaining = shutdown_deadline.saturating_duration_since(tokio::time::Instant::now());
         match tokio::time::timeout(remaining, participant.shutdown(api, state)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                tracing::warn!(target: "phoxal.runtime", error = %error, "shutdown hook returned error");
+                report.shutdown_error = Some(error.to_string());
             }
             Err(_elapsed) => {
-                tracing::warn!(
-                    target: "phoxal.runtime",
-                    grace_ms,
-                    "shutdown hook exceeded the grace deadline; proceeding to bus close"
-                );
+                report.shutdown_timed_out = true;
             }
         }
 
-        // Join managed tasks before the bus closes, on the same deadline the
-        // hook already consumed part of.
-        log_unjoined_managed_tasks(managed_tasks.join_until(deadline).await, grace_ms);
+        // Keep required I/O alive while the participant parks its hardware;
+        // only after the hook returns or times out do we cancel and join the
+        // runner-owned tasks, on the same deadline the hook consumed part of.
+        managed_tasks.cancel();
+        // Give Tokio one scheduling turn to deliver cancellation even when the
+        // hook consumed the entire grace budget. `join_until` remains bounded;
+        // this only makes the cancellation request observable to cooperative
+        // tasks before their join evidence is collected.
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        let task_report = managed_tasks.join_until(deadline).await;
+        report.unjoined_tasks = task_report.unjoined;
+        report.task_errors = task_report.failures;
         tracing::info!(target: "phoxal.runtime", id = R::ID, "runtime stopped");
+        report
     }
 }
 
@@ -63,8 +206,8 @@ impl Teardown {
 ///
 /// The participant never reached the run loop, so nothing else will cancel
 /// those tasks. Cleanup must not mask why setup failed, which is why the
-/// original error is returned unchanged rather than replaced by anything that
-/// goes wrong while joining.
+/// original error remains the primary source while any join failures are
+/// attached as structured teardown evidence.
 pub(crate) async fn abandon_setup(
     managed_tasks: ManagedTasks,
     error: anyhow::Error,
@@ -73,18 +216,18 @@ pub(crate) async fn abandon_setup(
     let unjoined = managed_tasks
         .shutdown_within(Duration::from_millis(grace_ms))
         .await;
-    log_unjoined_managed_tasks(unjoined, grace_ms);
-    error
-}
-
-fn log_unjoined_managed_tasks(unjoined: Vec<String>, grace_ms: u64) {
-    if !unjoined.is_empty() {
-        tracing::warn!(
-            target: "phoxal.runtime",
-            tasks = ?unjoined,
-            grace_ms,
-            "managed tasks were still running at the shutdown grace deadline"
-        );
+    if unjoined.unjoined.is_empty() && unjoined.failures.is_empty() {
+        error
+    } else {
+        TerminalError {
+            primary: Some(error),
+            teardown: TeardownReport {
+                unjoined_tasks: unjoined.unjoined,
+                task_errors: unjoined.failures,
+                ..TeardownReport::default()
+            },
+        }
+        .into()
     }
 }
 
@@ -131,8 +274,8 @@ mod tests {
         }
     }
 
-    /// A hook that fails. Teardown must log it and keep going: the bus still has
-    /// to close, and the participant's own failure is what gets reported.
+    /// A hook that fails. Teardown records it and keeps going: the bus still has
+    /// to close, and the participant's own failure remains the primary result.
     #[phoxal::service(id = "failing-shutdown", state = HookTrace)]
     struct FailingShutdown;
 
@@ -161,7 +304,7 @@ mod tests {
         let running = Arc::clone(&started);
 
         let mut managed = ManagedTasks::default();
-        managed.spawn(name, ManagedTaskPolicy::FaultOnExit, async move {
+        managed.spawn(name, ManagedTaskPolicy::Critical, async move {
             struct OnCancel(Arc<AtomicBool>);
             impl Drop for OnCancel {
                 fn drop(&mut self) {
@@ -214,7 +357,7 @@ mod tests {
         let mut state = trace.clone();
 
         // Returns at all, rather than propagating: teardown has no error path.
-        Teardown {
+        let report = Teardown {
             managed_tasks,
             grace_ms: 5_000,
         }
@@ -225,6 +368,11 @@ mod tests {
         assert!(
             cancelled.load(Ordering::Relaxed),
             "the work after the failing hook must still happen"
+        );
+        assert_eq!(
+            report.shutdown_error.as_deref(),
+            Some("could not park the wheels"),
+            "cleanup failures must remain structured evidence"
         );
     }
 
@@ -261,7 +409,7 @@ mod tests {
 
         let mut state = HookTrace::default();
         let began = std::time::Instant::now();
-        Teardown {
+        let report = Teardown {
             managed_tasks,
             grace_ms: 150,
         }
@@ -270,12 +418,38 @@ mod tests {
         let elapsed = began.elapsed();
 
         assert!(
-            cancelled.load(Ordering::Relaxed),
-            "managed tasks must be cancelled even when the hook consumed the grace"
+            cancelled.load(Ordering::Relaxed)
+                || report.unjoined_tasks == vec!["sensor-loop".to_string()],
+            "a task that cannot observe cancellation before the shared deadline must be reported"
         );
         assert!(
             elapsed < Duration::from_millis(700),
             "one deadline covers the hook and the joining, took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn cleanup_failure_changes_a_clean_terminal_result_without_losing_primary_fault() {
+        let clean = combine::<()>(
+            Ok(()),
+            TeardownReport {
+                shutdown_error: Some("park failed".to_string()),
+                ..TeardownReport::default()
+            },
+        )
+        .expect_err("cleanup failure must fail an otherwise clean run");
+        assert!(format!("{clean}").contains("shutdown=park failed"));
+
+        let primary = anyhow::anyhow!("step failed");
+        let combined = combine::<()>(
+            Err(primary),
+            TeardownReport {
+                unjoined_tasks: vec!["sensor-loop".to_string()],
+                ..TeardownReport::default()
+            },
+        )
+        .expect_err("cleanup evidence must remain attached to a primary fault");
+        assert!(format!("{combined}").contains("step failed"));
+        assert!(format!("{combined}").contains("sensor-loop"));
     }
 }

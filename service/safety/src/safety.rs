@@ -6,7 +6,9 @@
 //! or retired-timeline product as a stop. Manual recovery can operate without that
 //! product, while any valid protective stop or limit still applies.
 
-use anyhow::{Context, Result, bail};
+#[cfg(test)]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -293,7 +295,6 @@ impl WorldInputs {
 pub(crate) struct Api {
     localization: Subscriber<api::localize::LocalizationState>,
     map: Subscriber<api::map::Revision>,
-    map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
     drive: Subscriber<api::drive::State>,
     batteries: Vec<BoundInput<api::component::battery::State>>,
     ranges: Vec<BoundInput<api::component::range::Sample>>,
@@ -363,7 +364,6 @@ impl Participant for Safety {
                 map: ctx
                     .subscriber(api::topic::client().map().revision(), 32)
                     .await?,
-                map_submap: ctx.querier(api::topic::client().map().submap()).await?,
                 drive: ctx
                     .subscriber(api::topic::client().drive().state(), 32)
                     .await?,
@@ -379,24 +379,14 @@ impl Participant for Safety {
         ))
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.inputs.clear();
         state.sequence = 0;
         Ok(())
     }
 
     #[phoxal::step(hz = 10)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         retain_newest_stamped(&mut state.inputs.localization, &api.localization);
         retain_newest_stamped(&mut state.inputs.map, &api.map);
         retain_newest_stamped(&mut state.inputs.drive, &api.drive);
@@ -411,29 +401,11 @@ impl Participant for Safety {
             }
         }
 
-        state.inputs.drivable_space = if let Some(localization) =
-            usable(state.inputs.localization.as_ref(), step.now(), INPUT_STALE)
-        {
-            let radius = 0.20;
-            let response = api
-                .map_submap
-                .query(api::map::SubmapRequest {
-                    min_x_m: localization.x_m - radius,
-                    min_y_m: localization.y_m - radius,
-                    max_x_m: localization.x_m + radius,
-                    max_y_m: localization.y_m + radius,
-                })
-                .await;
-            match response {
-                Ok(response) => Some(Timed::new(
-                    submap_has_drivable_space(&response)?,
-                    step.now(),
-                )),
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+        // The map query is intentionally not performed from this synchronous
+        // transition. Query admission and its snapshot handoff belong to the
+        // managed-I/O/BusOwner follow-up; until that boundary exists, the
+        // absence of a world-model result remains a typed fail-closed stop.
+        state.inputs.drivable_space = None;
 
         state.sequence = state.sequence.saturating_add(1);
         let motion = state.inputs.assess(state.sequence, step.now())?;
@@ -474,6 +446,7 @@ fn usable<T>(sample: Option<&Timed<T>>, now: RobotInstant, stale: Duration) -> O
         .map(|sample| &sample.body)
 }
 
+#[cfg(test)]
 fn submap_has_drivable_space(response: &api::map::SubmapResponse) -> Result<bool> {
     let expected = usize::try_from(response.width)
         .ok()

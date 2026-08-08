@@ -265,9 +265,15 @@ pub trait ParticipantSpec: Sized + Send + Sync + 'static {
 ///
 /// One runner task owns `State` and serializes step, query, reset, and
 /// shutdown access. `Api` is separate and shared immutably with behavior.
+///
+/// `setup` and `shutdown` are asynchronous because they acquire and release
+/// external resources. Scheduled `step` and timeline `reset` transitions are
+/// deliberately synchronous: they consume the snapshots and bounded queues
+/// already admitted by setup-owned tasks, so an external dependency cannot
+/// hold the runner's scheduler hostage.
 #[expect(
     async_fn_in_trait,
-    reason = "the runner awaits these directly and is the only caller, so the trait needs no `Send` bound and boxing the futures would be pure overhead"
+    reason = "setup and shutdown are awaited directly by the runner; scheduled state transitions remain synchronous"
 )]
 pub trait Participant: ParticipantSpec {
     /// Build initial mutable state and bus-facing handles.
@@ -278,7 +284,7 @@ pub trait Participant: ParticipantSpec {
     ) -> crate::Result<(Self::State, Self::Api)>;
 
     /// Run one scheduled step.
-    async fn step(
+    fn step(
         &self,
         _api: &Self::Api,
         _step: StepContext,
@@ -288,7 +294,7 @@ pub trait Participant: ParticipantSpec {
     }
 
     /// Reset state derived from a replaced simulation timeline.
-    async fn reset(
+    fn reset(
         &self,
         _ctx: ResetContext,
         _api: &Self::Api,

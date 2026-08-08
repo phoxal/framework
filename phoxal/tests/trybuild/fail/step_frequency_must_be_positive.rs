@@ -13,7 +13,7 @@ impl Participant for BadStepFrequency {
     }
 
     #[phoxal::step(hz = 0)]
-    async fn step(
+    fn step(
         &self,
         _api: &Self::Api,
         _step: StepContext,

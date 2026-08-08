@@ -15,7 +15,7 @@ use crate::bus::{
 };
 use crate::model::Robot;
 use crate::participant::api::{Participant, QueryRegistration};
-use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
+use crate::participant::managed::{ManagedTaskOutput, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runner::inputs::ParticipantBundleInputs;
 use phoxal_bus::{Bus, TimelineAuthority, WorldClockPublisher};
 
@@ -55,37 +55,37 @@ impl<R: Participant> SetupContext<R> {
 
     /// Spawn a runner-owned, long-lived background task (sensor polling loop,
     /// serial/USB reader, async IO pump) under the default
-    /// [`ManagedTaskPolicy::FaultOnExit`] policy.
+    /// [`ManagedTaskPolicy::Critical`] policy.
     ///
     /// This is the framework-tracked alternative to a raw `tokio::spawn`:
     /// **checked participants must not `tokio::spawn` long-lived work**, because
     /// the runner cannot observe, cancel, or join a detached task. A managed
     /// task, by contrast, is watched for the rest of the participant's
-    /// lifetime - if it panics or returns while `FaultOnExit` applies, the
+    /// lifetime - if it panics or returns while `Critical` applies, the
     /// runner treats that as a runtime fault (participant marked `Failed`,
     /// lose the participant Liveliness token) exactly as it would a `Participant::step` bug it
-    /// cannot recover from. At shutdown the runner cancels every managed task
-    /// as the shutdown sequence starts and joins it within the same
-    /// runner-enforced grace budget as `Participant::shutdown`, before the bus
-    /// closes.
+    /// cannot recover from. After `Participant::shutdown` has had the required
+    /// I/O available, the runner cancels every managed task and joins it within
+    /// the same runner-enforced grace budget, before the bus closes.
     ///
     /// `name` is a short diagnostic label (e.g. `"serial-reader"`) surfaced in
     /// runner logs on fault or on an unjoined-at-shutdown report; it does not
     /// need to be unique. Use [`Self::spawn_managed_with`] for setup-time work
-    /// that is expected to finish on its own ([`ManagedTaskPolicy::AllowExit`]).
+    /// that is expected to finish on its own ([`ManagedTaskPolicy::Finite`]).
     pub fn spawn_managed<F>(&mut self, name: impl Into<String>, future: F)
     where
-        F: std::future::Future<Output = ()> + Send + 'static,
+        F: std::future::Future + Send + 'static,
+        F::Output: ManagedTaskOutput,
     {
-        self.spawn_managed_with(name, ManagedTaskPolicy::FaultOnExit, future);
+        self.spawn_managed_with(name, ManagedTaskPolicy::Critical, future);
     }
 
     /// [`Self::spawn_managed`] with an explicit [`ManagedTaskPolicy`].
     ///
-    /// Use [`ManagedTaskPolicy::AllowExit`] for setup-time-only work (a
+    /// Use [`ManagedTaskPolicy::Finite`] for setup-time-only work (a
     /// background warm-up, a best-effort cache prime) whose completion should
     /// never fault the participant; anything meant to run for the participant's
-    /// whole lifetime should keep the [`ManagedTaskPolicy::FaultOnExit`]
+    /// whole lifetime should keep the [`ManagedTaskPolicy::Critical`]
     /// default from [`Self::spawn_managed`].
     pub fn spawn_managed_with<F>(
         &mut self,
@@ -93,7 +93,8 @@ impl<R: Participant> SetupContext<R> {
         policy: ManagedTaskPolicy,
         future: F,
     ) where
-        F: std::future::Future<Output = ()> + Send + 'static,
+        F: std::future::Future + Send + 'static,
+        F::Output: ManagedTaskOutput,
     {
         self.managed_tasks.spawn(name, policy, future);
     }

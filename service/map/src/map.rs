@@ -123,12 +123,7 @@ impl Participant for Map {
         ))
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         let (width, height, resolution_m) =
             (state.grid.width, state.grid.height, state.grid.resolution_m);
         state.grid = Grid::empty(width, height, resolution_m);
@@ -139,12 +134,7 @@ impl Participant for Map {
     }
 
     #[phoxal::step(hz = 5)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         while let Some(observed) = api.localize.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
                 state.last_localization = Some(Timed::new(observed.body, at));

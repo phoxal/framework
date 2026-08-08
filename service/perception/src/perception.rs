@@ -101,12 +101,7 @@ impl Participant for Perception {
         ))
     }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.latest_cameras.fill(None);
         state.latest_depths.fill(None);
         state.latest_localization = None;
@@ -116,12 +111,7 @@ impl Participant for Perception {
     }
 
     #[phoxal::step(hz = 10)]
-    async fn step(
-        &self,
-        api: &Self::Api,
-        step: StepContext,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         state.drain_inputs(api);
 
         let now = step.now();

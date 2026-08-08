@@ -101,15 +101,10 @@ impl Participant for WebotsControllerSimulator {
         let runtime =
             ControllerRuntime::new(ctx.timeline_authority(TimelineId::mint())?, backend.clone());
         let loop_api = api.clone();
-        ctx.spawn_managed("webots-step-loop", async move {
-            if let Err(error) = runtime.run(loop_api).await {
-                tracing::error!(
-                    target: "simulator_webots_controller",
-                    error = %error,
-                    "external Webots step loop stopped"
-                );
-            }
-        });
+        ctx.spawn_managed(
+            "webots-step-loop",
+            async move { runtime.run(loop_api).await },
+        );
 
         Ok((WebotsControllerState { backend }, api))
     }
