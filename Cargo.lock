@@ -2244,6 +2244,8 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-bus",
+ "tokio",
 ]
 
 [[package]]
@@ -2252,8 +2254,8 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-bus",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2262,6 +2264,8 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-bus",
+ "tokio",
 ]
 
 [[package]]
@@ -2270,6 +2274,8 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-bus",
+ "tokio",
 ]
 
 [[package]]
@@ -2278,6 +2284,8 @@ version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-bus",
+ "tokio",
 ]
 
 [[package]]

@@ -18,5 +18,9 @@ path = "src/main.rs"
 phoxal = { workspace = true }
 anyhow = { workspace = true }
 
+[dev-dependencies]
+phoxal-bus = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
 [lints]
 workspace = true
