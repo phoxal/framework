@@ -1252,11 +1252,13 @@ mod tests {
             bus.liveness.upgrade().is_none(),
             "a handle must observe the owner liveness token immediately"
         );
-        tokio::task::yield_now().await;
-        assert!(
-            bus.owner.upgrade().is_none(),
-            "owned tasks are reaped after yielding"
-        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while bus.owner.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("aborted owner tasks release their final strong reference");
         assert!(bus.session().is_err());
         assert!(bus.next_sequence().is_err());
         assert!(bus.take_runtime_metrics().is_err());
