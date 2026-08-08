@@ -265,7 +265,10 @@ pub trait ParticipantSpec: Sized + Send + Sync + 'static {
 ///
 /// One runner task owns `State` and serializes step, query, reset, and
 /// shutdown access. `Api` is separate and shared immutably with behavior.
-#[allow(async_fn_in_trait)]
+#[expect(
+    async_fn_in_trait,
+    reason = "the runner awaits these directly and is the only caller, so the trait needs no `Send` bound and boxing the futures would be pure overhead"
+)]
 pub trait Participant: ParticipantSpec {
     /// Build initial mutable state and bus-facing handles.
     async fn setup(

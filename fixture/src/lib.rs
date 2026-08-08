@@ -62,6 +62,10 @@ fn authored_root() -> &'static Path {
 /// missing or malformed fixture is a broken checkout rather than a condition a
 /// caller could do anything about.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "every input is a document committed beside this crate, so a failure here is a broken checkout and the panic is the report"
+)]
 pub fn staged_bundle() -> TempDir {
     let fixture = authored_root();
     let project = fixture.join("robot/rgbd-imu-diff-drive");
@@ -126,6 +130,10 @@ pub fn staged_bundle() -> TempDir {
 /// Panics if the staged fixture does not load, which means the fixture
 /// documents and the compiler have gone out of step.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "the fixture documents and the compiler that reads them are both committed here, so a load failure is a broken checkout and the panic is the report"
+)]
 pub fn robot() -> Robot {
     let bundle = staged_bundle();
     FinalizedBundle::load(bundle.path())

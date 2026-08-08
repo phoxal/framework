@@ -84,6 +84,12 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// The workspace panic gate exempts `#[test]` functions, but not a helper
+    /// they share, so this one says so for itself.
+    #[expect(
+        clippy::expect_used,
+        reason = "test support: a handler that will not install is the test's own failure to report"
+    )]
     async fn resolves_on(signal: libc::c_int) {
         let mut signals = TerminationSignals::register().expect("both handlers install");
         // SAFETY: `raise` only enqueues a signal for this process and touches no
