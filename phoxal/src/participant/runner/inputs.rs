@@ -64,7 +64,7 @@ mod tests {
     fn an_absent_config_is_json_null_not_a_missing_value() {
         #[derive(Debug, serde::Deserialize)]
         struct Required {
-            #[allow(dead_code)]
+            #[expect(dead_code, reason = "the field exists to make the config required")]
             port: String,
         }
 

@@ -157,6 +157,28 @@ phoxal-fixture = { path = "fixture" }
 [workspace.lints.rust]
 unused = "warn"
 
+# The panic and stub rules, enforced rather than reviewed.
+#
+# A participant is a long-lived process supervising hardware: a panic takes the
+# whole robot process down, so a failure that a caller could act on must be a
+# typed error and not a `.unwrap()`. Denied at the workspace root rather than
+# per crate so a new member inherits the gate by writing `[lints] workspace =
+# true`, which every member already does.
+#
+# Where a type-level or bootstrap invariant genuinely proves a call cannot fail,
+# the exception is a localized `#[expect(clippy::expect_used, reason = "...")]`
+# on the item that carries the invariant. A crate-level `allow` is not an
+# acceptable form of it: it removes the gate for every future line of that crate
+# too.
+#
+# Tests are exempt through `clippy.toml`, which is where clippy takes that
+# switch; a test that cannot get its fixture has nothing to report but a panic.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+
 # Profiles are Cargo's stock `dev` and `release`, unmodified.
 # A `[profile]` table here would apply only to workspace builds - `cargo install`
 # builds each registry package as its own root and never reads it - so tuning it

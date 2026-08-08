@@ -7,7 +7,14 @@
 //! is an integration test here rather than a unit test in `phoxal-macros`:
 //! that crate's own tests assert on expanded token text and cannot
 //! const-evaluate the schema the expansion builds.
-#![allow(dead_code)]
+// `dead_code`: the config types below exist to be expanded and asserted on, not
+// to be read.
+//
+// The panic lints: this target is test code end to end, which the workspace
+// gate exempts through `clippy.toml`. That exemption only reaches code
+// lexically inside a `#[test]` function, so the assertion helpers the tests
+// share would trip a gate that was never meant to cover them.
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{BTreeMap, HashMap};
 

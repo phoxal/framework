@@ -7,6 +7,12 @@
 //! the layout is proven by producing it, not by comparing against a frozen
 //! copy of it.
 
+// This target is test code end to end, which the workspace panic gate exempts
+// through `clippy.toml`. That exemption only reaches code lexically inside a
+// `#[test]` function, so the staging helpers the tests share would trip a gate
+// that was never meant to cover them.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
