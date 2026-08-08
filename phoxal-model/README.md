@@ -1,11 +1,10 @@
 # phoxal-model
 
 The canonical, validated Phoxal robot model.
-Authored and finalized project documents belong to `phoxal-manifest`, which is
-also where the finalized-bundle loader that builds a `Robot` lives; this crate
-contains only the runtime semantic types.
+Authored project documents belong to `phoxal-manifest`; persisted runtime
+documents and their loader belong to `phoxal-bundle`. This crate contains only
+the runtime semantic types and logical asset identities.
 
-The model has no persisted wire form: there is exactly one representation of a
-robot, built in memory from the finalized bundle's documents.
-`ParticipantAssetResolver` is the participant-facing fence over
-`<bundle>/assets`.
+The model owns no bundle filesystem layout or participant asset resolver.
+`phoxal-bundle` owns the schema-tagged runtime wire form and digest-checked
+access to `<bundle>/assets`.

@@ -135,8 +135,8 @@
 //!   the four non-interchangeable time types, body-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
 //! - [`model`] - immutable canonical runtime robot facts, loaded from the
-//!   finalized bundle by [`bundle`]; the document readers live in
-//!   `phoxal-manifest`.
+//!   finalized `runtime.json` by [`bundle`]; authored document readers live in
+//!   `phoxal-manifest`, which is a build/source dependency only.
 //! - [`geometry`] and [`SampleSchedule`] - the small shared arithmetic every
 //!   official participant would otherwise reimplement.
 //! - The **official service set** ships alongside this crate in the workspace
@@ -194,27 +194,29 @@ pub mod bus {
 /// Reading the finalized runtime bundle a participant was launched against.
 ///
 /// A participant normally never touches this module: the runner loads the
-/// bundle named by `PHOXAL_BUNDLE_ROOT` and binds the model and assets onto
-/// [`SetupContext`]. It is public because the same loader is the one a host
-/// tool embedding the framework uses to inspect a bundle it did not launch.
-///
-/// Whole-bundle serving (`BundleResolver`, which reaches `bin/`) is a
-/// supervisor capability, so it stays in `phoxal_manifest::bundle` where the
-/// supervisor already looks.
+/// bundle named by `PHOXAL_BUNDLE_ROOT`, selects the exact persisted
+/// `ParticipantId`, and binds the validated model and assets onto
+/// [`SetupContext`]. It is public because the same loader is useful to a host
+/// tool embedding the framework to inspect a bundle it did not launch.
 pub mod bundle {
-    pub use phoxal_manifest::bundle::{BundleError, FinalizedBundle};
+    pub use phoxal_bundle::{
+        AssetIndex, AssetRecord, BinaryCompatibility, BinaryReference, BuildFacts, BundleError,
+        BundlePath, BundlePathError, BundleWriter, ComponentBinding, DocumentError,
+        ParticipantAssets, ParticipantRuntimeInputs, Runtime, RuntimeBundle, RuntimeDocument,
+        RuntimeParticipant, RuntimeRouterConfig, Sha256Digest, StartupRequirement,
+    };
 }
 
-/// The canonical runtime robot model a [`bundle::FinalizedBundle`] yields.
+/// The canonical runtime robot model a [`bundle::RuntimeBundle`] yields.
 ///
 /// This mirrors `phoxal-model`'s own facade one-for-one and adds nothing: the
 /// names below are the canonical ones, and everything else is reached through
 /// the module that owns it ([`model::builder`], [`model::component`],
 /// [`model::identity`], [`model::robot`], [`model::simulation`],
-/// [`model::structure`]). Asset resolution is the exception - [`AssetId`],
-/// [`AssetError`] and [`ParticipantAssetResolver`] are what a participant
-/// actually holds, so they sit on this crate's root next to the rest of the
-/// authoring surface.
+/// [`model::structure`]). [`AssetId`] is the logical identity shared by source
+/// compilation and the bundle index. Participant asset access is the
+/// bundle-owned, digest-checked [`ParticipantAssetResolver`] capability below;
+/// source compilation does not cross this runtime boundary.
 ///
 /// [`model::RobotBuilder`] composes a model in memory rather than loading one.
 /// A launched participant never needs it - the runner hands it an already-built
@@ -266,7 +268,8 @@ pub use participant::api::Participant;
 pub use participant::context::{ResetContext, SetupContext, StepContext};
 pub use participant::managed::ManagedTaskPolicy;
 pub use phoxal_api::VideoSourceRef;
-pub use phoxal_model::{AssetError, AssetId, ParticipantAssetResolver};
+pub use phoxal_bundle::ParticipantAssets as ParticipantAssetResolver;
+pub use phoxal_model::AssetId;
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
 /// Async host runner entrypoint for custom Tokio mains

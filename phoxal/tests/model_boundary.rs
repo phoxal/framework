@@ -1,10 +1,10 @@
-use phoxal::bundle::FinalizedBundle;
+use phoxal::bundle::RuntimeBundle;
 use phoxal_fixture::staged_bundle;
 
 #[test]
 fn canonical_robot_serves_runtime_and_simulator_consumers() -> anyhow::Result<()> {
     let staged = staged_bundle();
-    let bundle = FinalizedBundle::load(staged.path())?;
+    let bundle = RuntimeBundle::open(staged.path())?;
     let robot = bundle.robot();
     assert_eq!(robot.id().as_str(), "rgbd-imu-diff-drive");
     assert_eq!(robot.clock(), phoxal::model::Clock::Real);

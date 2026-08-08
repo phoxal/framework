@@ -88,6 +88,12 @@ where
 {
     init_tracing();
 
+    // Validate and select the persisted participant before opening the bus.
+    // A malformed runtime document or unknown topology id is a local startup
+    // failure, never a bus-visible participant.
+    let bundle =
+        ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref(), &launch.participant_id)?;
+
     if !launch.bus.connect_endpoints.is_empty() {
         // One line, not a per-attempt one: a participant racing a router that
         // has not opened its listener yet can take several seconds to connect
@@ -107,7 +113,11 @@ where
     })
     .await?;
 
-    let result = run_with_bus::<R, S>(&bus, launch, shutdown).await;
+    let clock = match launch.execution_origin {
+        Some(origin) => RealClock::new(origin),
+        None => RealClock::without_origin(),
+    };
+    let result = run_with_bus_inner::<R, RealClock, S>(&bus, launch, bundle, clock, shutdown).await;
 
     match bus.close().await {
         Ok(()) => result,
@@ -135,11 +145,13 @@ where
     R: Participant,
     S: Future<Output = ()>,
 {
+    let bundle =
+        ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref(), &launch.participant_id)?;
     let clock = match launch.execution_origin {
         Some(origin) => RealClock::new(origin),
         None => RealClock::without_origin(),
     };
-    run_with_bus_inner::<R, RealClock, S>(bus, launch, clock, shutdown).await
+    run_with_bus_inner::<R, RealClock, S>(bus, launch, bundle, clock, shutdown).await
 }
 
 /// Deterministic clock-injection seam for clock-selectable checked participants.
@@ -162,12 +174,15 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
-    run_with_bus_inner::<R, C, S>(bus, launch, clock, shutdown).await
+    let bundle =
+        ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref(), &launch.participant_id)?;
+    run_with_bus_inner::<R, C, S>(bus, launch, bundle, clock, shutdown).await
 }
 
 async fn run_with_bus_inner<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
+    bundle: Option<ParticipantBundleInputs>,
     clock: C,
     shutdown: S,
 ) -> crate::Result<()>
@@ -180,7 +195,7 @@ where
 
     let participant_id = launch.participant_id.clone();
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), &participant_id);
-    let result = run_lifecycle::<R, C, S>(bus, launch, clock, shutdown, bus_log_task).await;
+    let result = run_lifecycle::<R, C, S>(bus, launch, bundle, clock, shutdown, bus_log_task).await;
     bus_logs.shutdown();
     result
 }
@@ -188,6 +203,7 @@ where
 async fn run_lifecycle<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
+    bundle: Option<ParticipantBundleInputs>,
     clock: C,
     shutdown: S,
     bus_log_task: BusLogTask,
@@ -198,7 +214,13 @@ where
     S: Future<Output = ()>,
 {
     let schedule = R::__step_schedule();
-    let clock_mode = R::LaunchPolicy::clock_mode(&launch);
+    // A loaded runtime record is authoritative for its scheduler policy. The
+    // launch clock remains the local/no-bundle fallback until the separate
+    // launch-contract migration removes that legacy field.
+    let clock_mode = bundle.as_ref().map_or_else(
+        || R::LaunchPolicy::clock_mode(&launch),
+        |bundle| bundle.participant.clock,
+    );
     let reading = clock.read();
     if clock_mode == ClockMode::Real
         && let ClockReading::Unsynchronized(reason) = reading
@@ -224,6 +246,7 @@ where
     match Runner::<R, C>::start(
         bus,
         &launch,
+        bundle,
         effective_clock,
         scheduler,
         schedule,
@@ -379,20 +402,39 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
     /// Every failure after `setup` succeeds still runs the full teardown, so a
     /// server or liveliness declaration that fails cannot bypass the
     /// participant's hardware-safety hook.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "startup keeps the validated bundle, scheduler, clock, launch, and framework tasks explicit"
+    )]
     async fn start(
         bus: &Bus,
         launch: &ParticipantLaunch,
+        bundle: Option<ParticipantBundleInputs>,
         clock: RunnerClock<C>,
         scheduler: AnyStepScheduler,
         schedule: Option<StepSchedule>,
         clock_mode: ClockMode,
         tasks: RunnerTasks,
     ) -> crate::Result<Self> {
-        let config: R::Config = participant_config(launch.config.as_ref())?;
-        let bundle = ParticipantBundleInputs::for_launch(launch.bundle_root.as_deref())?;
+        // Once a runtime bundle is present, its selected record is the sole
+        // authority: `None` means JSON null/absent and must not be replaced by
+        // a launch override. The launch fields remain the no-bundle fallback
+        // until the separate launch-contract migration removes them.
+        let config_value = match bundle.as_ref() {
+            Some(bundle) => bundle.participant.config.as_ref(),
+            None => launch.config.as_ref(),
+        };
+        let config: R::Config = participant_config(config_value)?;
+        let component_instance = match bundle.as_ref() {
+            Some(bundle) => bundle
+                .participant
+                .binding
+                .as_ref()
+                .map(|binding| binding.component_instance.to_string()),
+            None => launch.component_instance.clone(),
+        };
 
-        let mut ctx =
-            SetupContext::<R>::new(bus.clone(), bundle, launch.component_instance.clone());
+        let mut ctx = SetupContext::<R>::new(bus.clone(), bundle, component_instance);
         ctx.spawn_managed_with(
             "bus-log-drain",
             ManagedTaskPolicy::Finite,

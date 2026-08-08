@@ -1,0 +1,32 @@
+[package]
+name = "phoxal-bundle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+description = "Phoxal persisted runtime bundle schema, writer, reader, and integrity fence."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[lib]
+name = "phoxal_bundle"
+path = "src/lib.rs"
+
+[dependencies]
+libc = { workspace = true }
+jsonschema = { workspace = true }
+phoxal-model = { workspace = true }
+phoxal-runtime-contract = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

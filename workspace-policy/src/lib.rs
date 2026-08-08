@@ -27,10 +27,11 @@ pub mod comment_reference;
 /// `the_library_crate_list_matches_the_workspace_members` fails when a library
 /// crate is added to the workspace without being added here, because a missing
 /// entry would silently turn that crate into a grammar violation.
-pub const LIBRARY_CRATE_DIRS: [&str; 7] = [
+pub const LIBRARY_CRATE_DIRS: [&str; 8] = [
     "phoxal",
     "phoxal-api",
     "phoxal-bus",
+    "phoxal-bundle",
     "phoxal-macros",
     "phoxal-manifest",
     "phoxal-model",

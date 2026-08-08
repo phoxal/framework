@@ -20,6 +20,7 @@ members = [
     "phoxal",
     "phoxal-api",
     "phoxal-bus",
+    "phoxal-bundle",
     "phoxal-model",
     "phoxal-manifest",
     "phoxal-runtime-contract",
@@ -54,6 +55,7 @@ default-members = [
     "phoxal",
     "phoxal-api",
     "phoxal-bus",
+    "phoxal-bundle",
     "phoxal-model",
     "phoxal-manifest",
     "phoxal-runtime-contract",
@@ -94,6 +96,7 @@ proc-macro2 = "1.0"
 quote = "1.0"
 rmp-serde = "1.3.1"
 schemars = "1.2.1"
+sha2 = "0.10.9"
 jsonschema = { version = "0.46.6", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_derive_internals = "0.29.1"
@@ -145,6 +148,7 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 phoxal = { path = "phoxal", version = "=0.55.0" }
 phoxal-api = { path = "phoxal-api", version = "=0.55.0" }
 phoxal-bus = { path = "phoxal-bus", version = "=0.55.0" }
+phoxal-bundle = { path = "phoxal-bundle", version = "=0.55.0" }
 phoxal-model = { path = "phoxal-model", version = "=0.55.0" }
 phoxal-manifest = { path = "phoxal-manifest", version = "=0.55.0" }
 phoxal-runtime-contract = { path = "phoxal-runtime-contract", version = "=0.55.0" }

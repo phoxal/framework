@@ -1,7 +1,7 @@
 //! Canonical immutable runtime robot model.
 //!
-//! The model is constructed from finalized sources at load time; it has no
-//! persisted wire form of its own.
+//! The model is constructed by source/build tooling or decoded from the
+//! validated runtime bundle; its wire shape is owned by `phoxal-bundle`.
 //!
 //! # Paths
 //!
@@ -31,7 +31,7 @@ pub mod structure;
 #[doc(hidden)]
 pub mod compiler;
 
-pub use asset::{AssetError, AssetId, ParticipantAssetResolver};
+pub use asset::AssetId;
 pub use builder::RobotBuilder;
 pub use error::{
     IdentifierKind, JointOwner, KinematicScalarField, LinkRole, ModelError, MotionLimitField,
