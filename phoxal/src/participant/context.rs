@@ -96,7 +96,7 @@ impl<R: Participant> SetupContext<R> {
     /// task, by contrast, is watched for the rest of the participant's
     /// lifetime - if it panics or returns while `Critical` applies, the
     /// runner treats that as a runtime fault (participant marked `Failed`,
-    /// lose the participant Liveliness token) exactly as it would a `Participant::step` bug it
+    /// revoke the participant Ready token) exactly as it would a `Participant::step` bug it
     /// cannot recover from. After `Participant::shutdown` has had the required
     /// I/O available, the runner cancels every managed task and joins it within
     /// the same runner-enforced grace budget, before the bus closes.
