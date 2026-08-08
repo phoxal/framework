@@ -8,16 +8,15 @@ use std::time::Duration;
 
 use phoxal_runtime_contract::identity::TimelineId;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 use zenoh::key_expr::OwnedKeyExpr;
 
-use crate::contract::ContractBody;
+use crate::contract::{ContractBody, DeliveryFamily};
 use crate::error::{BusError, Result};
 use crate::handle::decode_sample;
 use crate::lock::lock;
 use crate::metadata::BusMetadata;
 use crate::runtime_metrics::RuntimeMetricHandle;
-use crate::session::Bus;
+use crate::session::BusHandle;
 use crate::time::{LocalInstant, RetiredTimelines, TimeWindow};
 use crate::topic::{Subscribe, Topic};
 
@@ -26,6 +25,42 @@ use crate::topic::{Subscribe, Topic};
 /// ordinary capacity, and active-timeline data always has its own independent
 /// storage.
 const PENDING_TIMELINE_CAPACITY: usize = 4;
+
+/// Why a receive path stopped producing values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReceiveTerminal {
+    /// The owner closed the session or the underlying subscription ended.
+    Closed,
+    /// The transport reported a terminal failure.
+    Transport(String),
+}
+
+struct TerminalState {
+    value: Mutex<Option<ReceiveTerminal>>,
+    notify: Notify,
+}
+
+impl TerminalState {
+    fn new() -> Self {
+        Self {
+            value: Mutex::new(None),
+            notify: Notify::new(),
+        }
+    }
+
+    fn set(&self, terminal: ReceiveTerminal) {
+        let mut value = lock(&self.value);
+        if value.is_none() {
+            *value = Some(terminal);
+            drop(value);
+            self.notify.notify_waiters();
+        }
+    }
+
+    fn get(&self) -> Option<ReceiveTerminal> {
+        lock(&self.value).clone()
+    }
+}
 
 /// A decoded inbound sample: the body, its provenance, and when this receiver
 /// observed it.
@@ -73,6 +108,7 @@ impl<B> Observed<B> {
 pub struct Latest<B> {
     state: Arc<Mutex<LatestState<B>>>,
     metric: RuntimeMetricHandle,
+    terminal: Arc<TerminalState>,
     _guard: Arc<SubscriptionGuard>,
 }
 
@@ -179,7 +215,7 @@ impl<B> LatestState<B> {
 // Manual, unbounded on `B` (mirrors `Outbox`'s reasoning). `state` is already
 // `Arc`-shared; `_guard` is `Arc<SubscriptionGuard>` (below) so cloning shares
 // the one background decode task rather than starting a second one - the task
-// aborts only when the *last* clone drops. `latest()` only ever reads the
+// requests cooperative cancellation only when the *last* clone drops. `latest()` only ever reads the
 // shared slot (`&self`), so every clone always observes the same freshest
 // sample: safe to hand to a concurrent reader.
 impl<B> Clone for Latest<B> {
@@ -187,6 +223,7 @@ impl<B> Clone for Latest<B> {
         Latest {
             state: Arc::clone(&self.state),
             metric: self.metric.clone(),
+            terminal: Arc::clone(&self.terminal),
             _guard: Arc::clone(&self._guard),
         }
     }
@@ -199,7 +236,7 @@ impl<B: ContractBody> Latest<B> {
     /// `pub` only because the generated api tree and the runner live in other
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
-    pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
         let state = Arc::new(Mutex::new(LatestState {
             active_timeline: None,
             observed: None,
@@ -207,7 +244,8 @@ impl<B: ContractBody> Latest<B> {
             retired_timelines: RetiredTimelines::default(),
         }));
         let store = Arc::clone(&state);
-        let metric = bus.runtime_metrics().register_latest(topic.key());
+        let metric = bus.runtime_metrics()?.register_latest(topic.key());
+        let terminal = Arc::new(TerminalState::new());
         let observe = metric.clone();
         let topic_owned = topic.key().to_string();
         let guard = spawn_subscription::<B, _>(
@@ -237,29 +275,34 @@ impl<B: ContractBody> Latest<B> {
                 }
             },
             metric.clone(),
+            Arc::clone(&terminal),
         )
         .await?;
         Ok(Latest {
             state,
             metric,
+            terminal,
             _guard: Arc::new(guard),
         })
     }
 
     /// The most recent sample with its provenance and observation stamp, or
     /// `None` if nothing has arrived yet.
-    pub fn observed(&self) -> Option<Observed<B>> {
-        let observed = lock(&self.state).observed.clone();
-        observed.map(|observed| Observed {
-            body: observed.body.clone(),
-            metadata: observed.metadata.clone(),
-            observed_at: observed.observed_at,
-        })
+    pub fn observed(&self) -> Option<Arc<Observed<B>>> {
+        lock(&self.state).observed.clone()
     }
 
     /// The most recent decoded body, for consumers that need no provenance.
-    pub fn latest(&self) -> Option<B> {
-        self.observed().map(|observed| observed.body)
+    pub fn latest(&self) -> Option<B>
+    where
+        B: Clone,
+    {
+        self.observed().map(|observed| observed.body.clone())
+    }
+
+    /// The receive path's terminal evidence, if it has ended.
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.terminal.get()
     }
 
     /// Install a timeline barrier: discard a retained value from another
@@ -307,6 +350,7 @@ impl<B: ContractBody> Latest<B> {
 /// fan-out.
 pub struct Subscriber<B> {
     ring: Arc<Ring<B>>,
+    terminal: Arc<TerminalState>,
     _guard: Arc<SubscriptionGuard>,
 }
 
@@ -317,6 +361,7 @@ impl<B> Clone for Subscriber<B> {
     fn clone(&self) -> Self {
         Subscriber {
             ring: Arc::clone(&self.ring),
+            terminal: Arc::clone(&self.terminal),
             _guard: Arc::clone(&self._guard),
         }
     }
@@ -329,12 +374,16 @@ impl<B: ContractBody> Subscriber<B> {
     /// `pub` only because the generated api tree and the runner live in other
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
-    pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>, depth: usize) -> Result<Self> {
-        let depth = depth.max(1);
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        // Buffering is a contract property, not a tuning knob each caller can
+        // guess at. State and setpoint observations retain one newest value;
+        // ordered samples and streams use the bounded sample window.
+        let depth = delivery_capacity(B::DELIVERY);
         let metric = bus
-            .runtime_metrics()
+            .runtime_metrics()?
             .register_subscriber(topic.key(), depth);
-        let ring = Arc::new(Ring::new(depth, metric.clone()));
+        let terminal = Arc::new(TerminalState::new());
+        let ring = Arc::new(Ring::new(depth, metric.clone(), Arc::clone(&terminal)));
         let push = Arc::clone(&ring);
         let drops = bus.clone();
         let topic_owned = topic.key().to_string();
@@ -359,10 +408,12 @@ impl<B: ContractBody> Subscriber<B> {
                 }
             },
             metric.clone(),
+            Arc::clone(&terminal),
         )
         .await?;
         Ok(Subscriber {
             ring,
+            terminal,
             _guard: Arc::new(guard),
         })
     }
@@ -373,7 +424,7 @@ impl<B: ContractBody> Subscriber<B> {
     /// exactly this caller. If this `Subscriber` was cloned, every clone
     /// competes for the same queue (see the [type docs](Self)).
     pub async fn recv(&self) -> Result<Observed<B>> {
-        let (observed, _current_depth) = self.ring.recv().await;
+        let (observed, _current_depth) = self.ring.recv().await?;
         Ok(observed)
     }
 
@@ -385,6 +436,11 @@ impl<B: ContractBody> Subscriber<B> {
         self.ring
             .try_pop()
             .map(|(observed, _current_depth)| observed)
+    }
+
+    /// The receive path's terminal evidence, if it has ended.
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.terminal.get()
     }
 
     /// Cumulative samples evicted from this subscriber's bounded ring.
@@ -408,12 +464,22 @@ impl<B: ContractBody> Subscriber<B> {
     }
 }
 
+const DEFAULT_ORDERED_CAPACITY: usize = 32;
+
+const fn delivery_capacity(family: DeliveryFamily) -> usize {
+    match family {
+        DeliveryFamily::State | DeliveryFamily::Setpoint | DeliveryFamily::Query => 1,
+        DeliveryFamily::Sample | DeliveryFamily::Stream => DEFAULT_ORDERED_CAPACITY,
+    }
+}
+
 struct Ring<B> {
     state: Mutex<RingState<B>>,
     notify: Notify,
     cap: usize,
     dropped: AtomicU64,
     metric: RuntimeMetricHandle,
+    terminal: Arc<TerminalState>,
 }
 
 struct RingState<B> {
@@ -435,7 +501,7 @@ struct RingPush {
 }
 
 impl<B> Ring<B> {
-    fn new(cap: usize, metric: RuntimeMetricHandle) -> Self {
+    fn new(cap: usize, metric: RuntimeMetricHandle, terminal: Arc<TerminalState>) -> Self {
         Ring {
             state: Mutex::new(RingState {
                 active_timeline: None,
@@ -447,6 +513,7 @@ impl<B> Ring<B> {
             cap,
             dropped: AtomicU64::new(0),
             metric,
+            terminal,
         }
     }
 
@@ -586,28 +653,44 @@ impl<B> Ring<B> {
         }
     }
 
-    async fn recv(&self) -> (Observed<B>, usize) {
+    async fn recv(&self) -> Result<(Observed<B>, usize)> {
         loop {
             // Register the waiter *before* checking, so a push between the check
             // and the await is not missed (tokio::sync::Notify semantics).
             let notified = self.notify.notified();
+            let terminal = self.terminal.notify.notified();
             // Hold the std mutex only to pop; never across the await below.
             if let Some(item) = self.try_pop() {
-                return item;
+                return Ok(item);
             }
-            notified.await;
+            if let Some(terminal) = self.terminal.get() {
+                return Err(terminal_error(terminal));
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = terminal => {}
+            }
         }
     }
 }
 
-/// Keeps a subscription's background task alive; aborts it on drop.
+fn terminal_error(terminal: ReceiveTerminal) -> BusError {
+    match terminal {
+        ReceiveTerminal::Closed => BusError::Closed,
+        ReceiveTerminal::Transport(error) => BusError::Transport(error),
+    }
+}
+
+/// A cancellation capability for one owner-registered subscription worker.
+/// Dropping it wakes the worker; the owner keeps the task join handle and
+/// explicitly joins it during close.
 struct SubscriptionGuard {
-    task: JoinHandle<()>,
+    cancel: Arc<Notify>,
 }
 
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
-        self.task.abort();
+        self.cancel.notify_one();
     }
 }
 
@@ -618,10 +701,11 @@ impl Drop for SubscriptionGuard {
 /// decode cost land inside the measured age rather than outside it. Decode
 /// failures are counted + logged, never silently accepted.
 async fn spawn_subscription<B, F>(
-    bus: &Bus,
+    bus: &BusHandle,
     topic_key: &str,
     mut on_sample: F,
     metric: RuntimeMetricHandle,
+    terminal: Arc<TerminalState>,
 ) -> Result<SubscriptionGuard>
 where
     B: ContractBody,
@@ -631,16 +715,39 @@ where
     let key_expr = OwnedKeyExpr::new(full_key.clone())
         .map_err(|e| BusError::not_a_key_expression(&full_key, e))?;
     let subscriber = bus
-        .session()
+        .session()?
         .declare_subscriber(key_expr)
         .await
         .map_err(|e| BusError::Transport(e.to_string()))?;
 
     let topic_owned = topic_key.to_string();
     let health_bus = bus.clone();
+    let shutdown_bus = bus.clone();
+    let cancel = Arc::new(Notify::new());
+    let cancel_task = Arc::clone(&cancel);
+    let terminal_task = Arc::clone(&terminal);
 
     let task = tokio::spawn(async move {
-        while let Ok(sample) = subscriber.recv_async().await {
+        loop {
+            let shutdown = shutdown_bus.wait_for_shutdown();
+            let sample = tokio::select! {
+                biased;
+                _ = cancel_task.notified() => {
+                    terminal_task.set(ReceiveTerminal::Closed);
+                    break;
+                }
+                _ = shutdown => {
+                    terminal_task.set(ReceiveTerminal::Closed);
+                    break;
+                }
+                result = subscriber.recv_async() => match result {
+                    Ok(sample) => sample,
+                    Err(error) => {
+                        terminal_task.set(ReceiveTerminal::Transport(error.to_string()));
+                        break;
+                    }
+                }
+            };
             // The observation stamp is the receiver's own evidence of when
             // this arrived, and every freshness decision downstream is
             // measured from it. A sample that cannot be stamped is dropped:
@@ -675,7 +782,14 @@ where
         }
     });
 
-    Ok(SubscriptionGuard { task })
+    if let Err(task) = bus.register_worker(task) {
+        // Close won the registration race. Its shutdown notification is
+        // already published, so the worker exits cooperatively and this setup
+        // path joins it before returning the typed terminal error.
+        let _ = task.await;
+        return Err(BusError::Closed);
+    }
+    Ok(SubscriptionGuard { cancel })
 }
 
 #[cfg(test)]
@@ -686,13 +800,36 @@ mod tests {
     use serial_test::serial;
 
     use crate::abi::CodecId;
-    use crate::contract::ContractBody;
+    use crate::contract::{ApiVersion, ContractBody, DeliveryFamily, StateContract, TopicRole};
     use crate::handle::publisher::{CommandPublisher, StatePublisher};
     use crate::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
-    use crate::session::BusConfig;
+    use crate::session::{BusConfig, BusOwner};
     use crate::test_support::{Manual, Target, producer, step, timeline};
     use crate::time::RobotInstant;
-    use crate::topic::Publish;
+    use crate::topic::{Publish, Subscribe};
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct NonCloneBody {
+        bytes: Vec<u8>,
+    }
+
+    enum NonCloneApi {}
+
+    impl ApiVersion for NonCloneApi {
+        const ID: &'static str = "nonclone";
+    }
+
+    impl ContractBody for NonCloneBody {
+        type Api = NonCloneApi;
+        const NAME: &'static str = "nonclone::state::Body";
+        const VERSION: &'static str = "nonclone";
+        const CONTRACT: &'static str = "state::Body";
+        const TOPIC: &'static str = "nonclone/state";
+        const ROLE: TopicRole = TopicRole::State;
+        const DELIVERY: DeliveryFamily = DeliveryFamily::State;
+    }
+
+    impl StateContract for NonCloneBody {}
 
     fn observed(body: u8, line: Option<u64>) -> Observed<u8> {
         Observed {
@@ -703,7 +840,11 @@ mod tests {
                 sequence: u64::from(body),
                 produced_at: line
                     .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
-                participant: "test".to_string(),
+                participant: Some(
+                    phoxal_runtime_contract::identity::ParticipantId::new("test")
+                        .expect("test participant"),
+                ),
+                source_label: None,
             },
             observed_at: LocalInstant::try_now().expect("test host clock"),
         }
@@ -713,7 +854,7 @@ mod tests {
     fn ring_counts_each_drop_oldest_eviction_cumulatively() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 1);
-        let ring = Ring::new(1, metric);
+        let ring = Ring::new(1, metric, Arc::new(TerminalState::new()));
         let first = ring.push(observed(1, None));
         assert!(first.accepted);
         assert!(!first.evicted);
@@ -735,11 +876,63 @@ mod tests {
         assert_eq!(row.high_water_depth, 1);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_terminal_receive_wakes_a_waiter_without_abort() {
+        let metrics = RuntimeMetrics::default();
+        let metric = metrics.register_subscriber("v0.1/test/state", 1);
+        let terminal = Arc::new(TerminalState::new());
+        let ring = Arc::new(Ring::<u8>::new(1, metric, Arc::clone(&terminal)));
+        let waiting = {
+            let ring = Arc::clone(&ring);
+            tokio::spawn(async move { ring.recv().await })
+        };
+
+        tokio::task::yield_now().await;
+        terminal.set(ReceiveTerminal::Closed);
+        let result = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("terminal evidence must wake the receive waiter")
+            .expect("the receive task must join");
+        assert!(matches!(result, Err(BusError::Closed)));
+    }
+
+    #[test]
+    fn contract_families_choose_owned_buffer_semantics() {
+        assert_eq!(delivery_capacity(DeliveryFamily::State), 1);
+        assert_eq!(delivery_capacity(DeliveryFamily::Setpoint), 1);
+        assert_eq!(delivery_capacity(DeliveryFamily::Query), 1);
+        assert_eq!(
+            delivery_capacity(DeliveryFamily::Sample),
+            DEFAULT_ORDERED_CAPACITY
+        );
+        assert_eq!(
+            delivery_capacity(DeliveryFamily::Stream),
+            DEFAULT_ORDERED_CAPACITY
+        );
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retained_state_does_not_require_a_cloneable_body() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("nonclone")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
+        let topic = Topic::<Subscribe<NonCloneBody>>::new_static(NonCloneBody::TOPIC);
+        let latest = Latest::<NonCloneBody>::new(&bus, &topic)
+            .await
+            .expect("a non-Clone body still has a retained-state subscription");
+        assert!(latest.observed().is_none());
+        owner.close().await.unwrap();
+    }
+
     #[test]
     fn a_sample_expressing_no_robot_time_survives_every_timeline_barrier() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/command", 4);
-        let ring = Ring::new(4, metric);
+        let ring = Ring::new(4, metric, Arc::new(TerminalState::new()));
         ring.retain_timeline(timeline(1));
         assert!(ring.push(observed(1, None)).accepted);
         // A reset does not discard a command: it belongs to no world history.
@@ -820,7 +1013,12 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_publisher_to_latest_round_trip() {
-        let bus = Bus::open(BusConfig::in_process("rt")).await.unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("rt")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
 
@@ -860,22 +1058,23 @@ mod tests {
             "every subscription stamps its own observation instant"
         );
 
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timeline_barrier_preserves_new_timeline_samples_and_rejects_late_old_samples() {
-        let bus = Bus::open(BusConfig::in_process("timeline-barrier"))
-            .await
-            .unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("timeline-barrier")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
         let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
-        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic, 1)
-            .await
-            .unwrap();
+        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic).await.unwrap();
 
         let old_timeline = timeline(6);
         publisher
@@ -963,7 +1162,7 @@ mod tests {
             subscriber.try_recv().is_none(),
             "late samples from a replaced timeline must be rejected"
         );
-        let metrics = bus.take_runtime_metrics();
+        let metrics = bus.take_runtime_metrics().unwrap();
         assert_eq!(
             metrics
                 .iter()
@@ -986,7 +1185,7 @@ mod tests {
             "quarantine churn and retired samples must not inflate bus health"
         );
 
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 
     /// A command expresses no robot time, so its envelope carries none - and a
@@ -994,13 +1193,16 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_command_carries_no_production_instant_and_survives_a_reset() {
-        let bus = Bus::open(BusConfig::in_process("commands")).await.unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("commands")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let pub_topic = Topic::<Publish<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
         let commands = CommandPublisher::<Manual>::new(bus.clone(), &pub_topic).unwrap();
-        let subscriber = Subscriber::<Manual>::new(&bus, &sub_topic, 4)
-            .await
-            .unwrap();
+        let subscriber = Subscriber::<Manual>::new(&bus, &sub_topic).await.unwrap();
         subscriber.retain_timeline(timeline(1));
 
         commands.send(Manual { linear_x_mps: 0.4 }).unwrap();
@@ -1015,14 +1217,14 @@ mod tests {
         assert_eq!(observed.metadata.produced_at, None);
         assert_eq!(observed.timeline(), None);
 
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 
     #[test]
     fn subscriber_activation_is_safe_when_replacement_ingress_races_the_clock() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 4);
-        let ring = Arc::new(Ring::new(4, metric));
+        let ring = Arc::new(Ring::new(4, metric, Arc::new(TerminalState::new())));
         assert!(ring.push(observed(1, Some(1))).accepted);
         ring.retain_timeline(timeline(1));
         assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(1));

@@ -37,7 +37,7 @@ impl Participant for Localize {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let odometry = ctx
-            .subscriber(api::topic::client().odometry().state(), 32)
+            .subscriber(api::topic::client().odometry().state())
             .await?;
         let state = ctx
             .state_publisher(api::topic::owner().localize().state())

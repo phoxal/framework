@@ -12,19 +12,22 @@
 //! `ZenohId` is foreign to this crate and the Phoxal identities are foreign to
 //! Zenoh's, so neither side can carry the conversion.
 
-use std::sync::Arc;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
-use phoxal_runtime_contract::identity::{ExecutionId, ProducerId};
+use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, ProducerId};
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::config::ZenohId;
 use zenoh::key_expr::OwnedKeyExpr;
 
+use crate::abi::truncate_utf8;
 use crate::error::{BusError, KeyProblem, OutboundBound, Result, SessionIdRole};
 use crate::lock::lock;
-use crate::metadata::{BusMetadata, MAX_SOURCE_PARTICIPANT_BYTES};
+use crate::metadata::{BusMetadata, MAX_SOURCE_PARTICIPANT_BYTES, SourceAttribution, SourceLabel};
 use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
 use crate::time::TimeWindow;
 
@@ -41,7 +44,7 @@ pub(crate) const OUTBOUND_CAPACITY: usize = 1024;
 /// Byte bound of the outbound queue. The queue is bounded in samples AND bytes,
 /// because either alone lets a conforming publisher exhaust the other. A publish
 /// that would exceed it is dropped + counted rather than blocking.
-const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Connection inputs for opening a bus session.
 ///
@@ -55,9 +58,13 @@ pub struct BusConfig {
     /// replayed recording, a second checkout of the same project - physically
     /// cannot be observed as current.
     pub execution: ExecutionId,
-    /// The participant id (`ParticipantLaunch.participant_id`, never the static
-    /// participant/artifact id). A diagnostic label, never identity.
-    pub participant: String,
+    /// The compiled participant identity, when this is a participant session.
+    /// External/operator sessions leave this absent and may provide only a
+    /// diagnostic label.
+    pub participant: Option<ParticipantId>,
+    /// A bounded diagnostic label for an external producer. It never affects
+    /// routing, authority, or Ready admission.
+    pub diagnostic_label: Option<SourceLabel>,
     /// Zenoh connect endpoints. Empty = in-process (local sim / tests).
     pub connect_endpoints: Vec<String>,
 }
@@ -65,11 +72,45 @@ pub struct BusConfig {
 impl BusConfig {
     /// An in-process config (no endpoints, multicast off) for local sim + tests,
     /// on a freshly minted execution.
-    pub fn in_process(participant: impl Into<String>) -> Self {
+    pub fn in_process(participant: ParticipantId) -> Self {
         BusConfig {
             execution: ExecutionId::mint(),
-            participant: participant.into(),
+            participant: Some(participant),
+            diagnostic_label: None,
             connect_endpoints: Vec::new(),
+        }
+    }
+
+    /// Build an in-process external client with an optional diagnostic label.
+    pub fn external_in_process(label: Option<SourceLabel>) -> Self {
+        BusConfig {
+            execution: ExecutionId::mint(),
+            participant: None,
+            diagnostic_label: label,
+            connect_endpoints: Vec::new(),
+        }
+    }
+
+    /// Build a participant bus configuration.
+    pub fn for_participant(
+        execution: ExecutionId,
+        participant: ParticipantId,
+        connect_endpoints: Vec<String>,
+    ) -> Self {
+        BusConfig {
+            execution,
+            participant: Some(participant),
+            diagnostic_label: None,
+            connect_endpoints,
+        }
+    }
+
+    pub(crate) fn attribution(&self) -> SourceAttribution {
+        match (&self.participant, &self.diagnostic_label) {
+            (Some(participant), _) => SourceAttribution::Participant(participant.clone()),
+            (None, label) => SourceAttribution::External {
+                label: label.clone(),
+            },
         }
     }
 }
@@ -98,48 +139,145 @@ struct Outbound {
 
 struct BusInner {
     session: zenoh::Session,
-    root: String,
-    execution: ExecutionId,
-    participant: String,
-    producer: ProducerId,
-    seq: AtomicU64,
+    identity: Arc<BusIdentity>,
     outbound: mpsc::Sender<Outbound>,
     queued_bytes: AtomicUsize,
+    admission: std::sync::Mutex<()>,
     closing: AtomicBool,
     shutdown: Notify,
     drain: std::sync::Mutex<Option<JoinHandle<()>>>,
-    health: BusHealth,
-    runtime_metrics: RuntimeMetrics,
+    workers: std::sync::Mutex<Vec<JoinHandle<()>>>,
+    transport_errors: std::sync::Mutex<TransportErrors>,
+    in_flight: AtomicUsize,
+    in_flight_notify: Notify,
 }
 
-/// A Zenoh session bound to one execution's key root, with a non-blocking
-/// publish path and health counters. Cloning shares the underlying session,
-/// queue, producer identity, and sequence allocator.
+struct BusIdentity {
+    root: String,
+    execution: ExecutionId,
+    attribution: SourceAttribution,
+    producer: ProducerId,
+    seq: AtomicU64,
+    health: BusHealth,
+    runtime_metrics: Arc<RuntimeMetrics>,
+}
+
+#[derive(Default)]
+struct TransportErrors {
+    entries: Vec<String>,
+    count: usize,
+    truncated: usize,
+}
+
+/// The unique lifetime owner for one execution-scoped Zenoh session.
+///
+/// `BusOwner` is deliberately not `Clone`: it is the only value that can
+/// initiate terminal close, owns the outbound and subscription workers, and
+/// contains the producer identity pinned to this session incarnation.
+pub struct BusOwner {
+    inner: Arc<BusInner>,
+    liveness: Arc<AtomicBool>,
+}
+
+/// A cloneable use handle for one [`BusOwner`]. Handles share the owner's
+/// producer and sequence allocator but cannot close the transport or declare a
+/// participant Ready lease.
 #[derive(Clone)]
-pub struct Bus {
+pub struct BusHandle {
+    identity: Arc<BusIdentity>,
+    owner: Weak<BusInner>,
+    liveness: Weak<AtomicBool>,
+}
+
+pub(crate) struct SessionLease {
+    session: zenoh::Session,
+    _operation: OperationLease,
+}
+
+pub(crate) struct RuntimeMetricsLease {
+    metrics: Arc<RuntimeMetrics>,
+    _operation: OperationLease,
+}
+
+impl Deref for RuntimeMetricsLease {
+    type Target = RuntimeMetrics;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metrics
+    }
+}
+
+impl Deref for SessionLease {
+    type Target = zenoh::Session;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+struct OperationLease {
     inner: Arc<BusInner>,
 }
 
-impl std::fmt::Debug for Bus {
+impl Drop for OperationLease {
+    fn drop(&mut self) {
+        self.inner.in_flight.fetch_sub(1, Ordering::AcqRel);
+        self.inner.in_flight_notify.notify_waiters();
+    }
+}
+
+impl std::fmt::Debug for BusOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Bus")
-            .field("root", &self.inner.root)
-            .field("participant", &self.inner.participant)
+        f.debug_struct("BusOwner")
+            .field("root", &self.inner.identity.root)
+            .field("producer", &self.inner.identity.producer)
             .finish_non_exhaustive()
     }
 }
 
-impl Bus {
+impl std::fmt::Debug for BusHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BusHandle")
+            .field("root", &self.identity.root)
+            .field("producer", &self.identity.producer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for BusOwner {
+    fn drop(&mut self) {
+        // Drop is the synchronous safety net. No cloneable handle owns the
+        // inner Arc, so aborting every owned task here releases the Zenoh
+        // session as soon as the unique owner goes away.
+        self.liveness.store(false, Ordering::Release);
+        let _admission = lock(&self.inner.admission);
+        self.inner.closing.store(true, Ordering::Release);
+        drop(_admission);
+        self.inner.shutdown.notify_waiters();
+        self.inner.shutdown.notify_one();
+        if let Some(drain) = lock(&self.inner.drain).take() {
+            drain.abort();
+        }
+        for worker in std::mem::take(&mut *lock(&self.inner.workers)) {
+            worker.abort();
+        }
+    }
+}
+
+impl BusOwner {
     /// Open a session, compose its execution-scoped key root, adopt the
     /// producer identity Zenoh assigned the session, and start the outbound
     /// drain task.
-    pub async fn open(config: BusConfig) -> Result<Self> {
-        if config.participant.is_empty() {
-            return Err(BusError::invalid_key("", KeyProblem::Empty));
-        }
-        if config.participant.len() > MAX_SOURCE_PARTICIPANT_BYTES {
+    pub async fn open(config: BusConfig) -> Result<(Self, BusHandle)> {
+        if let Some(source) = config
+            .participant
+            .as_ref()
+            .map(ParticipantId::as_str)
+            .or_else(|| config.diagnostic_label.as_ref().map(SourceLabel::as_str))
+            && source.len() > MAX_SOURCE_PARTICIPANT_BYTES
+        {
             return Err(BusError::invalid_key(
-                &config.participant,
+                source,
                 KeyProblem::TooLong {
                     limit: MAX_SOURCE_PARTICIPANT_BYTES,
                 },
@@ -153,35 +291,64 @@ impl Bus {
         // Validate the composed root resolves to a legal Zenoh key.
         OwnedKeyExpr::new(root.clone()).map_err(|e| BusError::not_a_key_expression(&root, e))?;
 
-        let session = zenoh::open(zenoh_config(&config.connect_endpoints)?)
+        let producer = ProducerId::mint();
+        let session = zenoh::open(zenoh_config(&config.connect_endpoints, producer)?)
             .await
             .map_err(|e| BusError::Transport(e.to_string()))?;
-        // The producer is the session, so it exists only once the session does.
-        // Everything that carries provenance is built below this line.
-        let producer = producer_from_zid(session.zid())?;
+        let observed = match producer_from_zid(session.zid()) {
+            Ok(observed) => observed,
+            Err(error) => {
+                let _ = session.close().await;
+                return Err(error);
+            }
+        };
+        if observed != producer {
+            let _ = session.close().await;
+            return Err(BusError::SessionIdentityMismatch {
+                expected: producer,
+                observed,
+            });
+        }
 
         let (tx, rx) = mpsc::channel::<Outbound>(OUTBOUND_CAPACITY);
         let drain_session = session.clone();
         let inner = Arc::new(BusInner {
             session,
-            root,
-            execution: config.execution,
-            participant: config.participant,
-            producer,
-            seq: AtomicU64::new(0),
+            identity: Arc::new(BusIdentity {
+                root,
+                execution: config.execution,
+                attribution: config.attribution(),
+                producer,
+                seq: AtomicU64::new(0),
+                health: BusHealth::default(),
+                runtime_metrics: Arc::new(RuntimeMetrics::default()),
+            }),
             outbound: tx,
             queued_bytes: AtomicUsize::new(0),
+            admission: std::sync::Mutex::new(()),
             closing: AtomicBool::new(false),
             shutdown: Notify::new(),
             drain: std::sync::Mutex::new(None),
-            health: BusHealth::default(),
-            runtime_metrics: RuntimeMetrics::default(),
+            workers: std::sync::Mutex::new(Vec::new()),
+            transport_errors: std::sync::Mutex::new(TransportErrors::default()),
+            in_flight: AtomicUsize::new(0),
+            in_flight_notify: Notify::new(),
         });
 
-        let drain = tokio::spawn(drain_loop(drain_session, rx, Arc::clone(&inner)));
+        let drain = tokio::spawn(drain_loop(drain_session, rx, Arc::downgrade(&inner)));
         *lock(&inner.drain) = Some(drain);
 
-        Ok(Bus { inner })
+        let liveness = Arc::new(AtomicBool::new(true));
+        let owner = BusOwner {
+            inner: Arc::clone(&inner),
+            liveness: Arc::clone(&liveness),
+        };
+        let handle = BusHandle {
+            identity: Arc::clone(&inner.identity),
+            owner: Arc::downgrade(&inner),
+            liveness: Arc::downgrade(&liveness),
+        };
+        Ok((owner, handle))
     }
 
     /// The executions whose routers a session at `endpoint` is *directly*
@@ -189,7 +356,7 @@ impl Bus {
     ///
     /// This opens and closes its own short-lived session rather than taking a
     /// `&self`, because it answers the question that has to be settled *before*
-    /// a [`Bus`] can exist: a bus is execution-scoped, and the execution is
+    /// a [`BusOwner`] can exist: a bus is execution-scoped, and the execution is
     /// what this reports. The session is independent of any other in the
     /// process - opening and closing it disturbs nothing.
     ///
@@ -213,20 +380,50 @@ impl Bus {
             .map_err(|error| BusError::Transport(error.to_string()))?;
         zids.into_iter().map(execution_from_zid).collect()
     }
+}
+
+impl BusHandle {
+    fn live_inner(&self) -> Result<Arc<BusInner>> {
+        let liveness = self.liveness.upgrade().ok_or(BusError::Closed)?;
+        if !liveness.load(Ordering::Acquire) {
+            return Err(BusError::Closed);
+        }
+        let inner = self.owner.upgrade().ok_or(BusError::Closed)?;
+        if inner.closing.load(Ordering::Acquire) {
+            return Err(BusError::Closed);
+        }
+        Ok(inner)
+    }
+
+    fn admit_operation(&self) -> Result<OperationLease> {
+        let inner = self.live_inner()?;
+        let _admission = lock(&inner.admission);
+        if inner.closing.load(Ordering::Acquire) {
+            return Err(BusError::Closed);
+        }
+        inner.in_flight.fetch_add(1, Ordering::AcqRel);
+        drop(_admission);
+        Ok(OperationLease { inner })
+    }
 
     /// The composed key root (`phoxal/<execution-id>`).
     pub fn root(&self) -> &str {
-        &self.inner.root
+        &self.identity.root
     }
 
     /// The supervised run this session belongs to.
     pub fn execution(&self) -> ExecutionId {
-        self.inner.execution
+        self.identity.execution
     }
 
-    /// The participant id carried as a diagnostic label in sample metadata.
-    pub fn participant(&self) -> &str {
-        &self.inner.participant
+    /// The compiled participant attribution, if this session belongs to one.
+    pub fn participant(&self) -> Option<&ParticipantId> {
+        self.identity.attribution.participant()
+    }
+
+    /// The complete source attribution for this session.
+    pub fn attribution(&self) -> &SourceAttribution {
+        &self.identity.attribution
     }
 
     /// This session's producer identity - the id Zenoh assigned the session.
@@ -236,57 +433,117 @@ impl Bus {
     /// exactly the intended reading, because the second session's sequence
     /// starts at zero again.
     pub fn producer(&self) -> ProducerId {
-        self.inner.producer
+        self.identity.producer
     }
 
     /// Build the provenance for one outbound sample: this producer, its next
     /// sequence, and the production instant the caller's temporal role permits.
     pub(crate) fn metadata(&self, produced_at: Option<TimeWindow>) -> Result<BusMetadata> {
+        self.live_inner()?;
         Ok(BusMetadata {
             codec: crate::abi::CodecId::MessagePack.as_u8(),
-            producer: self.inner.producer,
+            producer: self.identity.producer,
             sequence: self.next_sequence()?,
             produced_at,
-            participant: self.inner.participant.clone(),
+            participant: self.identity.attribution.participant().cloned(),
+            source_label: self.identity.attribution.label().cloned(),
         })
     }
 
     /// Live health counters.
     pub fn health(&self) -> &BusHealth {
-        &self.inner.health
+        &self.identity.health
     }
 
     /// Drain this session's queue-pressure counters for one rollup window.
     ///
     /// Interval counters reset; declared rows and depth gauges persist. See
     /// [`crate::runtime_metrics`] for what a row means and what it does not.
-    pub fn take_runtime_metrics(&self) -> Vec<RuntimeMetricSnapshot> {
-        self.inner.runtime_metrics.take()
+    pub fn take_runtime_metrics(&self) -> Result<Vec<RuntimeMetricSnapshot>> {
+        let operation = self.admit_operation()?;
+        let inner = Arc::clone(&operation.inner);
+        let snapshots = inner.identity.runtime_metrics.take();
+        drop(operation);
+        Ok(snapshots)
     }
 
-    pub(crate) fn runtime_metrics(&self) -> &RuntimeMetrics {
-        &self.inner.runtime_metrics
+    pub(crate) fn runtime_metrics(&self) -> Result<RuntimeMetricsLease> {
+        let operation = self.admit_operation()?;
+        Ok(RuntimeMetricsLease {
+            metrics: Arc::clone(&self.identity.runtime_metrics),
+            _operation: operation,
+        })
+    }
+
+    pub(crate) fn register_worker(
+        &self,
+        worker: JoinHandle<()>,
+    ) -> std::result::Result<(), JoinHandle<()>> {
+        // Worker registration participates in the same admission gate as
+        // publishing and close. If close won first, the caller gets the join
+        // handle back and must await it; no task is detached merely because
+        // setup raced terminal shutdown.
+        let inner = match self.live_inner() {
+            Ok(inner) => inner,
+            Err(_) => return Err(worker),
+        };
+        let _admission = lock(&inner.admission);
+        if inner.closing.load(Ordering::Acquire) {
+            return Err(worker);
+        }
+        lock(&inner.workers).push(worker);
+        Ok(())
+    }
+
+    /// Wait until the owner has closed admission. The double check around the
+    /// notification registration makes this reliable even when close wins
+    /// before a worker reaches its first poll.
+    pub(crate) async fn wait_for_shutdown(&self) {
+        loop {
+            if self.owner.upgrade().is_none() {
+                return;
+            }
+            if let Some(inner) = self.owner.upgrade()
+                && inner.closing.load(Ordering::Acquire)
+            {
+                return;
+            }
+            let inner = match self.owner.upgrade() {
+                Some(inner) => inner,
+                None => return,
+            };
+            let notified = inner.shutdown.notified();
+            if inner.closing.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     /// The underlying Zenoh session (for subscriber/queryable declaration).
-    pub fn session(&self) -> &zenoh::Session {
-        &self.inner.session
+    pub(crate) fn session(&self) -> Result<SessionLease> {
+        let operation = self.admit_operation()?;
+        Ok(SessionLease {
+            session: operation.inner.session.clone(),
+            _operation: operation,
+        })
     }
 
     /// Compose a full bus key from a version-qualified topic key.
     pub fn full_key(&self, topic_key: &str) -> String {
-        format!("{}/{}", self.inner.root, topic_key)
+        format!("{}/{}", self.identity.root, topic_key)
     }
 
     /// Allocate the next sequence number for this session's producer.
     ///
     /// One session has exactly one producer and exactly one allocator, so every
-    /// sample published under this identity - from any clone of this `Bus`, on
+    /// sample published under this identity - from any clone of this handle, on
     /// any topic - draws from the same strictly increasing stream. Two counters
     /// behind one identity would each start at zero and the second would be
     /// rejected downstream as a replay.
     pub fn next_sequence(&self) -> Result<u64> {
-        allocate_sequence(&self.inner.seq)
+        self.live_inner()?;
+        allocate_sequence(&self.identity.seq)
     }
 
     /// Non-blocking enqueue onto the outbound queue. A full queue (samples or
@@ -300,7 +557,12 @@ impl Bus {
         payload: Vec<u8>,
         metric: RuntimeMetricHandle,
     ) -> Result<()> {
-        if self.inner.closing.load(Ordering::Acquire) {
+        // Admission and close share one short critical section. This is the
+        // linearization point: a sender either reserves/enqueues before close
+        // takes the lock, or observes `Closed` after it.
+        let inner = self.live_inner()?;
+        let _admission = lock(&inner.admission);
+        if inner.closing.load(Ordering::Acquire) {
             return Err(BusError::Closed);
         }
         let bytes = key.len() + encoding.len() + attachment.len() + payload.len();
@@ -309,7 +571,7 @@ impl Bus {
         // drain. A CAS loop makes the limit a global invariant across cloned
         // Bus publishers; add-then-check would let concurrent callers each
         // observe an individually valid pre-add value and collectively exceed it.
-        if !reserve_outbound_bytes(&self.inner.queued_bytes, bytes) {
+        if !reserve_outbound_bytes(&inner.queued_bytes, bytes) {
             metric.record_drop();
             return Err(self.dropped(&key, OutboundBound::Byte));
         }
@@ -324,19 +586,19 @@ impl Bus {
             bytes,
             metric: metric.clone(),
         };
-        match self.inner.outbound.try_send(outbound) {
+        match inner.outbound.try_send(outbound) {
             Ok(()) => {
                 metric.record_message();
                 Ok(())
             }
             Err(mpsc::error::TrySendError::Full(out)) => {
-                self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
                 out.metric.enqueue_finished();
                 out.metric.record_drop();
                 Err(self.dropped(&out.key, OutboundBound::Sample))
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
                 metric.enqueue_finished();
                 Err(BusError::Closed)
             }
@@ -344,13 +606,13 @@ impl Bus {
     }
 
     fn dropped(&self, key: &str, bound: OutboundBound) -> BusError {
-        self.inner
+        self.identity
             .health
             .outbound_drops
             .fetch_add(1, Ordering::Relaxed);
         tracing::warn!(
             target: "phoxal.bus",
-            participant = %self.inner.participant,
+            participant = ?self.identity.attribution.participant(),
             key,
             bound = %bound,
             "outbound queue saturated; dropped sample (publish never blocks the step loop)"
@@ -360,26 +622,133 @@ impl Bus {
             bound,
         }
     }
+}
 
-    /// Flush the outbound queue and close the session.
-    pub async fn close(&self) -> Result<()> {
+/// The evidence returned by a deterministic owner close.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BusCloseReport {
+    /// Transport failures observed while draining asynchronous publications.
+    pub transport_errors: Vec<String>,
+    /// Total transport failures, including entries omitted from the bounded evidence.
+    pub transport_error_count: usize,
+    /// Number of failures omitted or byte-truncated from retained evidence.
+    pub transport_errors_truncated: usize,
+    /// Number of worker joins that could not be completed.
+    pub unjoined_workers: usize,
+    /// Close stages that exceeded their explicit deadline.
+    pub timed_out: Vec<BusCloseTimeout>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BusCloseTimeout {
+    Drain,
+    Session,
+    Operations(usize),
+    Workers(usize),
+}
+
+const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
+const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_millis(250);
+const CLOSE_OPERATIONS_TIMEOUT: Duration = Duration::from_millis(250);
+const CLOSE_WORKER_TIMEOUT: Duration = Duration::from_millis(250);
+const CLOSE_REAP_TIMEOUT: Duration = Duration::from_millis(25);
+
+impl BusOwner {
+    /// Flush accepted work, join owned workers, and close the session.
+    pub async fn close(self) -> Result<BusCloseReport> {
         // Stop accepting new samples first so the drain set is finite, then signal
         // the drain task. `notify_one` stores a permit even if the drain task has
         // not yet registered as a waiter, so the shutdown signal is never lost (a
         // `notify_waiters` here would be dropped if the drain task had not been
         // polled yet - e.g. on a single-worker runtime).
+        let _admission = lock(&self.inner.admission);
         self.inner.closing.store(true, Ordering::Release);
+        drop(_admission);
+        self.inner.shutdown.notify_waiters();
         self.inner.shutdown.notify_one();
-        let handle = lock(&self.inner.drain).take();
-        if let Some(handle) = handle {
-            let _ = handle.await;
-        }
-        self.inner
-            .session
-            .close()
+        let operations = self.inner.in_flight.load(Ordering::Acquire);
+        let operations_timed_out = if operations > 0 {
+            tokio::time::timeout(CLOSE_OPERATIONS_TIMEOUT, async {
+                loop {
+                    // Register before checking the counter: an admitted
+                    // operation may finish between the check and await, and
+                    // `notify_waiters` does not retain a permit for a waiter
+                    // registered too late.
+                    let notified = self.inner.in_flight_notify.notified();
+                    if self.inner.in_flight.load(Ordering::Acquire) == 0 {
+                        break;
+                    }
+                    notified.await;
+                }
+            })
             .await
-            .map_err(|e| BusError::Transport(e.to_string()))?;
-        Ok(())
+            .is_err()
+        } else {
+            false
+        };
+        let handle = lock(&self.inner.drain).take();
+        let mut timed_out = Vec::new();
+        if let Some(mut handle) = handle
+            && tokio::time::timeout(CLOSE_DRAIN_TIMEOUT, &mut handle)
+                .await
+                .is_err()
+        {
+            handle.abort();
+            let _ = tokio::time::timeout(CLOSE_REAP_TIMEOUT, &mut handle).await;
+            timed_out.push(BusCloseTimeout::Drain);
+        }
+        let transport = std::mem::take(&mut *lock(&self.inner.transport_errors));
+        let mut report = BusCloseReport {
+            transport_errors: transport.entries,
+            transport_error_count: transport.count,
+            transport_errors_truncated: transport.truncated,
+            timed_out,
+            ..BusCloseReport::default()
+        };
+        if operations_timed_out {
+            report.timed_out.push(BusCloseTimeout::Operations(
+                self.inner.in_flight.load(Ordering::Acquire),
+            ));
+        }
+        let session_result =
+            match tokio::time::timeout(CLOSE_SESSION_TIMEOUT, self.inner.session.close()).await {
+                Ok(result) => result.map_err(|e| BusError::Transport(e.to_string())),
+                Err(_) => {
+                    report.timed_out.push(BusCloseTimeout::Session);
+                    Ok(())
+                }
+            };
+        let workers = std::mem::take(&mut *lock(&self.inner.workers));
+        let mut timed_out_workers = 0;
+        for worker in workers {
+            let mut worker = worker;
+            match tokio::time::timeout(CLOSE_WORKER_TIMEOUT, &mut worker).await {
+                Ok(result) => {
+                    if result.is_err() {
+                        report.unjoined_workers = report.unjoined_workers.saturating_add(1);
+                    }
+                }
+                Err(_) => {
+                    timed_out_workers += 1;
+                    worker.abort();
+                    let _ = tokio::time::timeout(CLOSE_REAP_TIMEOUT, &mut worker).await;
+                }
+            }
+        }
+        if timed_out_workers > 0 {
+            report
+                .timed_out
+                .push(BusCloseTimeout::Workers(timed_out_workers));
+        }
+        session_result.map(|()| report)
+    }
+
+    pub(crate) fn handle(&self) -> BusHandle {
+        BusHandle {
+            identity: Arc::clone(&self.inner.identity),
+            owner: Arc::downgrade(&self.inner),
+            liveness: Arc::downgrade(&self.liveness),
+        }
     }
 }
 
@@ -443,9 +812,12 @@ fn reserve_outbound_bytes(queued: &AtomicUsize, bytes: usize) -> bool {
 async fn drain_loop(
     session: zenoh::Session,
     mut rx: mpsc::Receiver<Outbound>,
-    inner: Arc<BusInner>,
+    owner: Weak<BusInner>,
 ) {
     loop {
+        let Some(inner) = owner.upgrade() else {
+            return;
+        };
         tokio::select! {
             // Shutdown wins over draining so a steady publish stream cannot starve
             // close: on shutdown, flush the finite already-queued set, then stop.
@@ -454,7 +826,7 @@ async fn drain_loop(
                 while let Ok(out) = rx.try_recv() {
                     inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
                     out.metric.enqueue_finished();
-                    put(&session, out).await;
+                    put(&session, out, &inner).await;
                 }
                 break;
             }
@@ -462,7 +834,7 @@ async fn drain_loop(
                 Some(out) => {
                     inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
                     out.metric.enqueue_finished();
-                    put(&session, out).await;
+                    put(&session, out, &inner).await;
                 }
                 None => break,
             },
@@ -470,11 +842,13 @@ async fn drain_loop(
     }
 }
 
-async fn put(session: &zenoh::Session, out: Outbound) {
+async fn put(session: &zenoh::Session, out: Outbound, inner: &Arc<BusInner>) {
     let key = match OwnedKeyExpr::new(out.key.clone()) {
         Ok(key) => key,
         Err(e) => {
-            tracing::error!(target: "phoxal.bus", key = %out.key, error = %e, "invalid publish key");
+            let error = format!("invalid publish key '{}': {e}", out.key);
+            record_transport_error(inner, error.clone());
+            tracing::error!(target: "phoxal.bus", key = %out.key, error = %error, "invalid publish key");
             return;
         }
     };
@@ -484,11 +858,27 @@ async fn put(session: &zenoh::Session, out: Outbound) {
         .attachment(out.attachment)
         .await
     {
-        tracing::warn!(target: "phoxal.bus", key = %out.key, error = %e, "publish failed");
+        let error = format!("publish on '{}' failed: {e}", out.key);
+        record_transport_error(inner, error.clone());
+        tracing::warn!(target: "phoxal.bus", key = %out.key, error = %error, "publish failed");
     }
 }
 
-/// Bound on how long a client-mode `Bus::open` retries a failed connect
+fn record_transport_error(inner: &BusInner, error: String) {
+    let mut errors = lock(&inner.transport_errors);
+    errors.count = errors.count.saturating_add(1);
+    if errors.entries.len() >= 32 {
+        errors.truncated = errors.truncated.saturating_add(1);
+    } else {
+        let bounded = truncate_utf8(&error, 1024);
+        if bounded.len() < error.len() {
+            errors.truncated = errors.truncated.saturating_add(1);
+        }
+        errors.entries.push(bounded);
+    }
+}
+
+/// Bound on how long a client-mode `BusOwner::open` retries a failed connect
 /// before giving up. Passed to Zenoh as `connect/timeout_ms`, which wraps its
 /// own internal connect retry (exponential backoff via `connect/retry/*`,
 /// left at Zenoh's shipped defaults: 1s initial / 4s max / x2 increase)
@@ -549,9 +939,14 @@ pub(crate) fn client_config(endpoint: &str) -> Result<zenoh::Config> {
     Ok(config)
 }
 
-fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
+fn zenoh_config(connect_endpoints: &[String], producer: ProducerId) -> Result<zenoh::Config> {
     let mut config = zenoh::Config::default();
     apply_phoxal_transport_policy(&mut config)?;
+    let id = serde_json::to_string(&producer.to_string())
+        .map_err(|error| BusError::Transport(error.to_string()))?;
+    config
+        .insert_json5("id", &id)
+        .map_err(|error| BusError::Transport(error.to_string()))?;
     if connect_endpoints.is_empty() {
         // In-process: no listeners, no scouting. A single session still delivers
         // its own publications to its own subscribers.
@@ -600,7 +995,7 @@ mod tests {
 
     use crate::contract::ContractBody;
     use crate::handle::publisher::StatePublisher;
-    use crate::handle::subscriber::Latest;
+    use crate::handle::subscriber::{Latest, Subscriber};
     use crate::test_support::{Target, step};
     use crate::topic::{Publish, Subscribe, Topic};
 
@@ -651,8 +1046,9 @@ mod tests {
 
     #[test]
     fn phoxal_transport_settings_are_accepted_by_pinned_zenoh_config() {
-        zenoh_config(&[]).expect("pinned Zenoh must accept Phoxal lease settings");
-        zenoh_config(&["tcp/127.0.0.1:7447".to_string()])
+        zenoh_config(&[], ProducerId::mint())
+            .expect("pinned Zenoh must accept Phoxal lease settings");
+        zenoh_config(&["tcp/127.0.0.1:7447".to_string()], ProducerId::mint())
             .expect("pinned Zenoh must accept Phoxal client settings");
     }
 
@@ -662,7 +1058,7 @@ mod tests {
         // to retry - the key must be absent, not merely zero, so it cannot be
         // mistaken for "connect once, no retry" on a config path that never
         // connects at all.
-        let in_process = zenoh_config(&[]).expect("in-process config");
+        let in_process = zenoh_config(&[], ProducerId::mint()).expect("in-process config");
         assert_eq!(
             in_process
                 .get_json("connect/timeout_ms")
@@ -676,7 +1072,8 @@ mod tests {
         // Client mode (this is what a real launch uses) must carry the bounded,
         // nonzero timeout that switches Zenoh onto its own retry-with-backoff
         // path - see CONNECT_TIMEOUT_MS's docs for why this exact value.
-        let client = zenoh_config(&["tcp/127.0.0.1:7447".to_string()]).expect("client config");
+        let client = zenoh_config(&["tcp/127.0.0.1:7447".to_string()], ProducerId::mint())
+            .expect("client config");
         assert_eq!(
             client
                 .get_json("connect/timeout_ms")
@@ -698,39 +1095,244 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_session_identity_survives_the_round_trip_unpadded() {
-        // Zenoh mints session ids uniformly across the value range, so roughly
-        // one in sixteen renders narrower than an execution's pinned width. A
-        // producer must carry that exactly, not pad it into a different string.
-        let zid: ZenohId = "abc".parse().expect("a short session id is legal");
+    fn a_producer_identity_requires_the_canonical_width() {
+        let short: ZenohId = "abc".parse().expect("a short session id is legal");
+        assert!(
+            producer_from_zid(short).is_err(),
+            "a transport id that is not full-width cannot be a Phoxal producer"
+        );
+        let zid: ZenohId = format!("1{}", "a".repeat(31))
+            .parse()
+            .expect("a full-width session id is legal");
         let producer = producer_from_zid(zid).expect("a session id is always a producer");
-        assert_eq!(producer.to_string(), "abc");
-        assert_eq!(ProducerId::parse(&zid.to_string()), Ok(producer));
+        assert_eq!(
+            producer.to_string(),
+            format!("{:032x}", u128::from(producer))
+        );
+        assert_eq!(ProducerId::parse(&producer.to_string()), Ok(producer));
     }
 
-    #[tokio::test]
-    async fn a_participant_label_must_be_one_concrete_key_segment() {
-        let mut config = BusConfig::in_process("r1");
-        config.participant = String::new();
-        let error = Bus::open(config).await.unwrap_err();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn an_external_bus_does_not_require_participant_attribution() {
+        let config = BusConfig::external_in_process(None);
+        let (owner, bus) = BusOwner::open(config).await.unwrap();
+        assert!(bus.participant().is_none());
         assert!(matches!(
-            error,
-            BusError::InvalidKey {
-                problem: KeyProblem::Empty,
-                ..
-            }
+            owner.declare_participant_ready().await,
+            Err(BusError::InvalidKey { .. })
         ));
+        owner.close().await.unwrap();
+    }
 
-        let mut config = BusConfig::in_process("r1");
-        config.participant = "x".repeat(MAX_SOURCE_PARTICIPANT_BYTES + 1);
-        let error = Bus::open(config).await.unwrap_err();
-        assert!(matches!(
-            error,
-            BusError::InvalidKey {
-                problem: KeyProblem::TooLong { .. },
-                ..
-            }
-        ));
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn ready_lease_is_owner_only_and_carries_exact_participant_and_producer() {
+        let participant = ParticipantId::new("ready-test").unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+            ExecutionId::mint(),
+            participant.clone(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        let ready = owner
+            .declare_participant_ready()
+            .await
+            .expect("the owner can declare Ready");
+        assert_eq!(ready.key().participant(), participant.as_str());
+        assert_eq!(ready.key().producer(), bus.producer());
+        drop(ready);
+        owner.close().await.unwrap();
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reopening_an_execution_mints_a_new_pinned_producer() {
+        let config = BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("reopen")
+                .expect("valid participant id"),
+        );
+        let (first_owner, first) = BusOwner::open(config.clone()).await.unwrap();
+        assert_eq!(
+            first.producer().to_string(),
+            first.session().unwrap().zid().to_string(),
+            "the owner pins and reads back the same producer identity"
+        );
+        let first_producer = first.producer();
+        first_owner.close().await.unwrap();
+
+        let (second_owner, second) = BusOwner::open(config).await.unwrap();
+        assert_ne!(
+            second.producer(),
+            first_producer,
+            "a reopened session must not reuse its predecessor's provenance"
+        );
+        second_owner.close().await.unwrap();
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_clone_uses_one_session_sequence_allocator() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("sequence")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
+        let clone = bus.clone();
+        assert_eq!(bus.next_sequence().unwrap(), 0);
+        assert_eq!(clone.next_sequence().unwrap(), 1);
+        assert_eq!(bus.next_sequence().unwrap(), 2);
+        owner.close().await.unwrap();
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_owner_invalidates_every_transport_operation_and_weakens_handle() {
+        let participant = ParticipantId::new("drop-owner").unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+            ExecutionId::mint(),
+            participant,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+        let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
+        drop(owner);
+
+        assert!(
+            bus.liveness.upgrade().is_none(),
+            "a handle must observe the owner liveness token immediately"
+        );
+        tokio::task::yield_now().await;
+        assert!(
+            bus.owner.upgrade().is_none(),
+            "owned tasks are reaped after yielding"
+        );
+        assert!(bus.session().is_err());
+        assert!(bus.next_sequence().is_err());
+        assert!(bus.take_runtime_metrics().is_err());
+        assert!(
+            publisher
+                .publish(
+                    &step(1, 1),
+                    Target {
+                        linear_x_mps: 0.0,
+                        angular_z_radps: 0.0,
+                    },
+                )
+                .is_err()
+        );
+        let subscribe = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        assert!(Latest::<Target>::new(&bus, &subscribe).await.is_err());
+        assert!(Subscriber::<Target>::new(&bus, &subscribe).await.is_err());
+        assert!(bus.declare_server("dead").await.is_err());
+        assert!(bus.observe_participant_ready(|_| {}).await.is_err());
+        assert!(bus.observe_liveliness_key("dead", |_| {}).await.is_err());
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn close_reports_bounded_stuck_workers() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            ParticipantId::new("stuck-worker").unwrap(),
+        ))
+        .await
+        .unwrap();
+        let stuck = tokio::spawn(std::future::pending::<()>());
+        bus.register_worker(stuck).expect("worker is admitted");
+        let report = owner.close().await.unwrap();
+        assert!(report.timed_out.contains(&BusCloseTimeout::Workers(1)));
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn close_waits_for_an_admitted_operation_and_rejects_later_operations() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            ParticipantId::new("operation-race").unwrap(),
+        ))
+        .await
+        .unwrap();
+        let admitted = bus.admit_operation().expect("operation is admitted");
+        let close = tokio::spawn(owner.close());
+        tokio::task::yield_now().await;
+        assert!(
+            !close.is_finished(),
+            "close must wait for admitted operations"
+        );
+        drop(admitted);
+        let report = close.await.unwrap().unwrap();
+        assert!(
+            !report
+                .timed_out
+                .iter()
+                .any(|timeout| matches!(timeout, BusCloseTimeout::Operations(_)))
+        );
+        assert!(
+            bus.admit_operation().is_err(),
+            "operations after close reject"
+        );
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_stalled_admitted_operation_is_typed_close_timeout_evidence() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            ParticipantId::new("stalled-operation").unwrap(),
+        ))
+        .await
+        .unwrap();
+        let admitted = bus.admit_operation().expect("operation is admitted");
+        let report = owner.close().await.unwrap();
+        assert!(report.timed_out.contains(&BusCloseTimeout::Operations(1)));
+        drop(admitted);
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn transport_evidence_is_bounded_at_utf8_boundaries() {
+        let (owner, _bus) = BusOwner::open(BusConfig::in_process(
+            ParticipantId::new("transport-evidence").unwrap(),
+        ))
+        .await
+        .unwrap();
+        for _ in 0..40 {
+            record_transport_error(&owner.inner, "é".repeat(2_000));
+        }
+        let report = owner.close().await.unwrap();
+        assert_eq!(report.transport_error_count, 40);
+        assert!(report.transport_errors_truncated > 0);
+        assert!(
+            report
+                .transport_errors
+                .iter()
+                .all(|entry| entry.len() <= 1024)
+        );
+        assert!(
+            report
+                .transport_errors
+                .iter()
+                .all(|entry| std::str::from_utf8(entry.as_bytes()).is_ok())
+        );
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_registration_after_close_is_returned_for_joining() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("worker-race")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
+        owner.close().await.unwrap();
+
+        let worker = tokio::spawn(async {});
+        let worker = bus
+            .register_worker(worker)
+            .expect_err("a worker cannot be admitted after close");
+        worker.await.expect("the rejected worker is still joined");
     }
 
     /// The root is the execution and nothing else: no namespace, no robot id, and
@@ -739,9 +1341,12 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn the_key_root_is_the_execution() {
-        let config = BusConfig::in_process("r1");
+        let config = BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("r1")
+                .expect("valid participant id"),
+        );
         let execution = config.execution;
-        let bus = Bus::open(config).await.unwrap();
+        let (owner, bus) = BusOwner::open(config).await.unwrap();
         let expected_root = format!("phoxal/{execution}");
         assert_eq!(bus.root(), expected_root);
         assert!(!bus.root().contains("r1"), "the robot id is not routing");
@@ -749,7 +1354,7 @@ mod tests {
             bus.full_key("yTEST/drive/state"),
             format!("{expected_root}/yTEST/drive/state")
         );
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 
     /// A session publishes under the identity Zenoh gave it, so provenance can be
@@ -757,8 +1362,16 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_producer_is_the_publishing_session() {
-        let bus = Bus::open(BusConfig::in_process("producer")).await.unwrap();
-        assert_eq!(bus.producer().to_string(), bus.session().zid().to_string());
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("producer")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            bus.producer().to_string(),
+            bus.session().unwrap().zid().to_string()
+        );
 
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
@@ -785,7 +1398,7 @@ mod tests {
         let observed = observed.expect("the sample must arrive");
         assert_eq!(observed.metadata.producer, bus.producer());
 
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 
     /// Traffic from a previous execution lands on a different key root and cannot
@@ -794,8 +1407,18 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_previous_execution_cannot_be_observed_as_current() {
-        let previous = Bus::open(BusConfig::in_process("scoped")).await.unwrap();
-        let current = Bus::open(BusConfig::in_process("scoped")).await.unwrap();
+        let (previous_owner, previous) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("scoped")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
+        let (current_owner, current) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("scoped")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         assert_ne!(previous.root(), current.root());
 
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
@@ -818,8 +1441,8 @@ mod tests {
             "a previous execution's traffic must not reach the current run"
         );
 
-        previous.close().await.unwrap();
-        current.close().await.unwrap();
+        previous_owner.close().await.unwrap();
+        current_owner.close().await.unwrap();
     }
 
     /// A client attaching to a running robot knows an endpoint and nothing else -
@@ -836,7 +1459,7 @@ mod tests {
             .await
             .expect("the router binds its endpoint");
 
-        let probed = Bus::probe_routers(&endpoint)
+        let probed = BusOwner::probe_routers(&endpoint)
             .await
             .expect("a running router must be reachable");
         assert_eq!(
@@ -847,22 +1470,22 @@ mod tests {
 
         // The probe owns its whole session: a bus opened afterwards on the same
         // endpoint is unaffected by it having come and gone.
-        let bus = Bus::open(BusConfig {
+        let (owner, _bus) = BusOwner::open(BusConfig::for_participant(
             execution,
-            participant: "after-probe".to_string(),
-            connect_endpoints: vec![endpoint.clone()],
-        })
+            ParticipantId::new("after-probe").expect("test participant id"),
+            vec![endpoint.clone()],
+        ))
         .await
         .expect("the probe must leave the endpoint usable");
         assert_eq!(
-            Bus::probe_routers(&endpoint)
+            BusOwner::probe_routers(&endpoint)
                 .await
                 .expect("probing again while a bus is open must work"),
             vec![execution],
             "a probe must not disturb - or be disturbed by - an existing session"
         );
 
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
         router.close().await.unwrap();
     }
 
@@ -876,7 +1499,7 @@ mod tests {
         drop(dir);
 
         let started = std::time::Instant::now();
-        let probed = Bus::probe_routers(&endpoint).await;
+        let probed = BusOwner::probe_routers(&endpoint).await;
         let error = probed.expect_err("an endpoint with nothing behind it is not connectable");
         assert!(
             error.to_string().contains("Unable to connect"),
@@ -922,7 +1545,7 @@ mod tests {
             .await
             .expect("a plain zenoh router binds the endpoint");
 
-        let error = Bus::probe_routers(&endpoint)
+        let error = BusOwner::probe_routers(&endpoint)
             .await
             .expect_err("a router whose id is not an execution is not a phoxal robot");
         let message = error.to_string();

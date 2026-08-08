@@ -12,7 +12,7 @@ use crate::contract::ContractBody;
 use crate::error::Result;
 use crate::handle::decode_sample;
 use crate::query::{QueryError, QueryFailure};
-use crate::session::Bus;
+use crate::session::BusHandle;
 use crate::topic::{AskQuery, Topic};
 
 /// The Phoxal-pinned finite query timeout - not Zenoh's 10 s default.
@@ -33,7 +33,7 @@ pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// - a second reply (a duplicate responder, also a launch-topology error) is
 ///   [`QueryError::TooManyResponders`].
 pub struct Querier<Req, Resp> {
-    bus: Bus,
+    bus: BusHandle,
     key: String,
     timeout: Duration,
     _p: PhantomData<fn() -> (Req, Resp)>,
@@ -64,7 +64,11 @@ where
     /// `pub` only because the generated api tree and the runner live in other
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
-    pub fn new(bus: Bus, topic: &Topic<AskQuery<Req, Resp>>, timeout: Duration) -> Result<Self> {
+    pub fn new(
+        bus: BusHandle,
+        topic: &Topic<AskQuery<Req, Resp>>,
+        timeout: Duration,
+    ) -> Result<Self> {
         let key = bus.full_key(topic.publish_key()?);
         Ok(Querier {
             bus,
@@ -92,9 +96,15 @@ where
         let key = OwnedKeyExpr::new(self.key.clone())
             .map_err(|e| QueryError::Protocol(format!("invalid query key '{}': {e}", self.key)))?;
 
-        let replies = self
+        // Keep the admission lease named for the whole query, including the
+        // reply receive loop. A temporary chained expression would release it
+        // as soon as `get().await` returned, allowing close to race the reply
+        // wait without tracking the in-flight operation.
+        let session = self
             .bus
             .session()
+            .map_err(|error| QueryError::Protocol(error.to_string()))?;
+        let replies = session
             .get(key)
             .payload(payload)
             .encoding(Encoding::from(MessagePack::ID.encoding_string()))
@@ -159,13 +169,18 @@ mod tests {
     use serial_test::serial;
 
     use crate::query::QueryCode;
-    use crate::session::BusConfig;
+    use crate::session::{BusConfig, BusOwner};
     use crate::test_support::{GetRequest, GetResponse};
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_query_round_trip_ok_then_error() {
-        let bus = Bus::open(BusConfig::in_process("q")).await.unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("q")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let server = bus.declare_server("yTEST/asset/get").await.unwrap();
         let server_bus = bus.clone();
 
@@ -219,7 +234,7 @@ mod tests {
         }
 
         server_task.await.unwrap();
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 
     /// The caller-side deadline is the querier's own, not Zenoh's: a handler
@@ -227,7 +242,12 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_query_timeout_maps_to_deadline_exceeded() {
-        let bus = Bus::open(BusConfig::in_process("timeout")).await.unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("timeout")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let server = bus.declare_server("yTEST/asset/get").await.unwrap();
 
         let server_task = tokio::spawn(async move {
@@ -254,6 +274,46 @@ mod tests {
         }
 
         server_task.await.unwrap();
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_tracks_a_query_reply_wait_until_the_query_finishes() {
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("query-close-race")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
+        let server = bus.declare_server("yTEST/asset/get").await.unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let _incoming = server.recv().await.unwrap();
+            seen_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let topic = Topic::<AskQuery<GetRequest, GetResponse>>::new_static(
+            <GetRequest as ContractBody>::TOPIC,
+        );
+        let querier =
+            Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
+                .unwrap();
+        let query_task = tokio::spawn(async move {
+            querier
+                .query(GetRequest {
+                    path: "held-open".to_string(),
+                })
+                .await
+        });
+        seen_rx.await.expect("the query reached the responder");
+
+        let report = owner.close().await.unwrap();
+        assert!(report.timed_out.iter().any(|timeout| {
+            matches!(timeout, crate::BusCloseTimeout::Operations(count) if *count > 0)
+        }));
+        let _ = query_task.await;
+        server_task.abort();
     }
 }

@@ -77,8 +77,10 @@ impl Node {
     fn expand_module(&self, tree_id: &str, family_prefix: &str, key_prefix: &str) -> TokenStream {
         let name = &self.name;
 
-        // The standard derive set on every macro-emitted wire body: cloneable,
-        // comparable, debuggable, and serde round-trippable.
+        // Generated wire bodies remain convenient to construct and copy for
+        // the current API. `ContractBody` itself does not require `Clone`, so
+        // custom large bodies can opt out; retained transport state is shared
+        // through `Arc`.
         let derives =
             quote!(#[derive(Clone, Debug, PartialEq, ::serde::Serialize, ::serde::Deserialize)]);
 
@@ -104,6 +106,7 @@ impl Node {
             // is what makes two trees' contracts physically distinct Zenoh keys.
             let key = format!("{tree_id}/{}", topic.leaf.key(&node_key_prefix));
             let role = topic.role.bus_variant();
+            let delivery = topic.role.bus_delivery();
             // The tree-qualified type-path name: the tree identity, then the
             // `::`-joined node path (vars excluded), then the body's own
             // PascalCase leaf. This is the exact same identity the contract
@@ -137,6 +140,7 @@ impl Node {
                             const CONTRACT: &'static str = #contract;
                             const TOPIC: &'static str = #key;
                             const ROLE: ::phoxal_bus::TopicRole = #role;
+                            const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
                         #marker
                     });
@@ -154,6 +158,7 @@ impl Node {
                             const CONTRACT: &'static str = #request_contract;
                             const TOPIC: &'static str = #key;
                             const ROLE: ::phoxal_bus::TopicRole = #role;
+                            const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
                         impl ::phoxal_bus::ContractBody for #response {
                             type Api = self::__PhoxalApiMarker;
@@ -162,6 +167,7 @@ impl Node {
                             const CONTRACT: &'static str = #response_contract;
                             const TOPIC: &'static str = #key;
                             const ROLE: ::phoxal_bus::TopicRole = #role;
+                            const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
                     });
                 }

@@ -316,7 +316,7 @@ mod tests {
     use crate::contract::ContractBody;
     use crate::handle::publisher::StatePublisher;
     use crate::handle::subscriber::{Latest, Subscriber};
-    use crate::session::{Bus, BusConfig};
+    use crate::session::{BusConfig, BusOwner};
     use crate::test_support::{Target, metadata, step};
     use crate::topic::{Publish, Subscribe, Topic};
 
@@ -431,17 +431,20 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_rows() {
-        let bus = Bus::open(BusConfig::in_process("metrics")).await.unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("metrics")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
         let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
-        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic, 1)
-            .await
-            .unwrap();
+        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic).await.unwrap();
 
         // Declarations are retained even before any traffic.
-        let quiet = bus.take_runtime_metrics();
+        let quiet = bus.take_runtime_metrics().unwrap();
         assert_eq!(quiet.len(), 3);
         assert!(quiet.iter().all(|row| row.count == 0));
 
@@ -474,6 +477,7 @@ mod tests {
         // Inject a malformed body on the exact subscribed key. Both independent
         // subscriptions reject it and each exact buffer row counts its own error.
         bus.session()
+            .unwrap()
             .put(
                 OwnedKeyExpr::new(bus.full_key(<Target as ContractBody>::TOPIC)).unwrap(),
                 vec![0xc1_u8],
@@ -494,7 +498,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        let rows = bus.take_runtime_metrics();
+        let rows = bus.take_runtime_metrics().unwrap();
         let outbound = rows
             .iter()
             .find(|row| row.key.direction == RuntimeDirection::Publish)
@@ -525,6 +529,6 @@ mod tests {
         assert_eq!(subscriber_row.decode_errors, 1);
 
         drop(subscriber);
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 }

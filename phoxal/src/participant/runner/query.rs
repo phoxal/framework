@@ -4,7 +4,7 @@
 use crate::bus::QueryFailure;
 use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
-use phoxal_bus::{Bus, IncomingQuery};
+use phoxal_bus::{BusHandle, IncomingQuery};
 use tokio::sync::mpsc;
 
 /// How many requests may wait between the receive tasks and the serialized
@@ -34,7 +34,7 @@ impl<R: Participant> QuerySurface<R> {
     /// requests to the same serialized event loop that owns state, step and
     /// reset. `Ok(None)` when the participant registered no queries.
     pub(crate) async fn declare(
-        bus: &Bus,
+        bus: &BusHandle,
         registrations: Vec<QueryRegistration<R>>,
         managed_tasks: &mut ManagedTasks,
     ) -> crate::Result<Option<Self>> {
@@ -99,7 +99,7 @@ impl<R: Participant> QuerySurface<R> {
         participant: &R,
         api: &R::Api,
         state: &mut R::State,
-        bus: &Bus,
+        bus: &BusHandle,
     ) {
         let (index, incoming) = request;
         let Some(registration) = self.registrations.get(index) else {

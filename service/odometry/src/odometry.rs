@@ -198,7 +198,7 @@ impl Participant for Odometry {
 
         let mut left = Vec::with_capacity(config.left.len());
         for binding in config.left {
-            let subscriber = ctx.subscriber(binding.topic(), 32).await?;
+            let subscriber = ctx.subscriber(binding.topic()).await?;
             left.push(BoundEncoder {
                 binding,
                 subscriber,
@@ -206,7 +206,7 @@ impl Participant for Odometry {
         }
         let mut right = Vec::with_capacity(config.right.len());
         for binding in config.right {
-            let subscriber = ctx.subscriber(binding.topic(), 32).await?;
+            let subscriber = ctx.subscriber(binding.topic()).await?;
             right.push(BoundEncoder {
                 binding,
                 subscriber,

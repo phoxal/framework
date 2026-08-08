@@ -53,6 +53,8 @@ use proc_macro::TokenStream;
 ///   `Debug`, `PartialEq`, `serde::Serialize`/`Deserialize`).
 /// - `topic <leaf>: command <Body>;` - a pub/sub topic the owning service
 ///   subscribes (a control input).
+/// - `topic <leaf>: stream <Body>;` - a pub/sub topic the owning service
+///   subscribes (ordered chunks with explicit saturation/close evidence).
 /// - `topic <leaf>: state <Body>;` - a pub/sub topic the owning service publishes
 ///   (telemetry/output). Same wire shape as `command`, but the side-branded
 ///   builders give it the inverse brand (see *Generated topic builders* below).

@@ -18,7 +18,9 @@ use zenoh::key_expr::KeyExpr;
 use zenoh::sample::{Sample, SampleBuilder};
 
 use crate::abi::CodecId;
-use crate::contract::{ApiVersion, CommandContract, ContractBody, StateContract, TopicRole};
+use crate::contract::{
+    ApiVersion, CommandContract, ContractBody, DeliveryFamily, StateContract, TopicRole,
+};
 use crate::handle::stamp::StepToken;
 use crate::metadata::BusMetadata;
 use crate::time::{RobotInstant, TimeWindow};
@@ -46,6 +48,7 @@ impl ContractBody for Target {
     const CONTRACT: &'static str = "drive::Target";
     const TOPIC: &'static str = "yTEST/drive/target";
     const ROLE: TopicRole = TopicRole::State;
+    const DELIVERY: DeliveryFamily = DeliveryFamily::State;
 }
 
 impl StateContract for Target {}
@@ -64,6 +67,7 @@ impl ContractBody for Manual {
     const CONTRACT: &'static str = "motion::Manual";
     const TOPIC: &'static str = "yTEST/motion/manual";
     const ROLE: TopicRole = TopicRole::Command;
+    const DELIVERY: DeliveryFamily = DeliveryFamily::Setpoint;
 }
 
 impl CommandContract for Manual {}
@@ -81,6 +85,7 @@ impl ContractBody for GetRequest {
     const CONTRACT: &'static str = "asset::GetRequest";
     const TOPIC: &'static str = "yTEST/asset/get";
     const ROLE: TopicRole = TopicRole::Query;
+    const DELIVERY: DeliveryFamily = DeliveryFamily::Query;
 }
 
 /// The response half of a stand-in query contract.
@@ -97,6 +102,7 @@ impl ContractBody for GetResponse {
     const CONTRACT: &'static str = "asset::GetResponse";
     const TOPIC: &'static str = "yTEST/asset/get";
     const ROLE: TopicRole = TopicRole::Query;
+    const DELIVERY: DeliveryFamily = DeliveryFamily::Query;
 }
 
 /// A named test timeline. Production timelines are minted opaquely, so tests
@@ -108,7 +114,7 @@ pub(crate) fn timeline(value: u64) -> TimelineId {
 /// A distinct test producer. Nothing mints a producer in production - a
 /// session's identity is the session - so tests name theirs explicitly.
 pub(crate) fn producer(value: u128) -> ProducerId {
-    ProducerId::try_from(value).expect("a test producer is nonzero")
+    ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
 }
 
 /// A step token on a named timeline.
@@ -123,7 +129,11 @@ pub(crate) fn metadata() -> BusMetadata {
         producer: producer(1),
         sequence: 7,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline(1), 42))),
-        participant: "tester".to_string(),
+        participant: Some(
+            phoxal_runtime_contract::identity::ParticipantId::new("tester")
+                .expect("test participant"),
+        ),
+        source_label: None,
     }
 }
 

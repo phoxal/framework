@@ -116,7 +116,7 @@ impl Participant for Joint {
 
         let mut encoders = Vec::with_capacity(bindings.len());
         for binding in bindings {
-            let subscriber = ctx.subscriber(binding.topic(), 32).await?;
+            let subscriber = ctx.subscriber(binding.topic()).await?;
             encoders.push(BoundEncoder {
                 binding,
                 subscriber,

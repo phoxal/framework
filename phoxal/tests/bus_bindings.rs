@@ -37,10 +37,11 @@ fn bus_metadata_for_a_real_body_round_trips() {
     let timeline = TimelineId::mint();
     let meta = BusMetadata {
         codec: CodecId::MessagePack.as_u8(),
-        producer: ProducerId::try_from(1).expect("a test producer is nonzero"),
+        producer: ProducerId::try_from((1_u128 << 124) | 1).expect("a test producer is canonical"),
         sequence: 9,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
-        participant: "tester".to_string(),
+        participant: Some(phoxal_bus::ParticipantId::new("tester").expect("test participant")),
+        source_label: None,
     };
     assert_eq!(BusMetadata::decode(&meta.encode().unwrap()).unwrap(), meta);
 

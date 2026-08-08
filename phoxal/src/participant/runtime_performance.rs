@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::api;
 use phoxal_bus::{
-    Bus, DiagnosticPublisher, RobotInstant, RuntimeBufferKind, RuntimeDirection,
+    BusHandle, DiagnosticPublisher, RobotInstant, RuntimeBufferKind, RuntimeDirection,
     RuntimeMetricSnapshot,
 };
 
@@ -20,7 +20,7 @@ pub(crate) struct RuntimePerformancePublisher {
 }
 
 impl RuntimePerformancePublisher {
-    pub(crate) fn attach(bus: Bus) -> Self {
+    pub(crate) fn attach(bus: BusHandle) -> Self {
         let topic = api::topic::owner().supervisor().telemetry().rollup();
         let publisher = DiagnosticPublisher::new(bus, &topic)
             .inspect_err(|error| {
@@ -91,10 +91,13 @@ impl RuntimePerformance {
         }
     }
 
-    pub(crate) fn take_rollup(&mut self, bus: &Bus) -> Option<api::supervisor::telemetry::Rollup> {
+    pub(crate) fn take_rollup(
+        &mut self,
+        bus: &BusHandle,
+    ) -> Option<api::supervisor::telemetry::Rollup> {
         let now = Instant::now();
         let elapsed = self.take_elapsed(now)?;
-        let topics = TopicRows::from_snapshots(bus.take_runtime_metrics(), elapsed);
+        let topics = TopicRows::from_snapshots(bus.take_runtime_metrics().ok()?, elapsed);
         Some(api::supervisor::telemetry::Rollup {
             window_ns: duration_nanos(elapsed),
             step: self.step.as_mut().map(StepWindow::take),

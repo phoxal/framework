@@ -4,9 +4,12 @@
 //! static (`name { … }`) or dynamic (`name(var) { … }`); it can be nested to any
 //! depth and may hold any mix of types (`struct`/`enum`), `topic` declarations,
 //! and child nodes. Every topic declares a **role**: `topic name: command Body;`
-//! (a control input the owner subscribes), `topic name: state Body;` (telemetry
-//! the owner publishes), or `topic name: query Request => Response;`
-//! (request/response). `command` and `state` are both pub/sub on the wire; the
+//! (a setpoint the owner subscribes), `topic name: stream Body;` (ordered chunks
+//! the owner subscribes), `topic name: state Body;` (telemetry the owner
+//! publishes), `topic name: event Body;` (an owner-published state-temporal
+//! event with ordered stream delivery), or `topic name: query Request => Response;`
+//! (request/response). `command`, `stream`, `state`, and `event` are all pub/sub
+//! on the wire; the
 //! role drives the side-branded builders: the public client builder
 //! (`api::topic::client()...`) and the owner builder (`api::topic::owner()...`)
 //! return side-branded topics (`Publish`/`Subscribe`/`AskQuery`/`ServeQuery`), so

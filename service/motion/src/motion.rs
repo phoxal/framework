@@ -145,7 +145,6 @@ impl Participant for Motion {
                             .component(&reference.component_id)
                             .emergency_stop(&reference.capability_id)
                             .state(),
-                        32,
                     )
                     .await?,
             });
@@ -162,14 +161,14 @@ impl Participant for Motion {
             },
             Api {
                 manual: ctx
-                    .subscriber(api::topic::owner().motion().manual(), 32)
+                    .subscriber(api::topic::owner().motion().manual())
                     .await?,
                 autonomous: ctx
-                    .subscriber(api::topic::client().navigation().candidate(), 32)
+                    .subscriber(api::topic::client().navigation().candidate())
                     .await?,
                 component_estops,
                 safety_constraints: ctx
-                    .subscriber(api::topic::client().safety().constraints(), 32)
+                    .subscriber(api::topic::client().safety().constraints())
                     .await?,
                 drive: ctx
                     .command_publisher(api::topic::client().drive().target())
@@ -311,7 +310,7 @@ mod tests {
     /// A distinct test producer. Nothing mints a producer in production - a
     /// session's identity is the session - so tests name theirs explicitly.
     fn producer(value: u128) -> ProducerId {
-        ProducerId::try_from(value).expect("a test producer is nonzero")
+        ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
     }
 
     fn line() -> TimelineId {

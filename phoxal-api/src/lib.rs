@@ -1511,7 +1511,18 @@ phoxal_api_tree! {
             }
         }
 
+        navigation {
+            // Results are ordered completion events, not a latest-value
+            // snapshot. Keep the published v0.1 role immutable and correct the
+            // active revision's delivery family explicitly.
+            replace topic result: event Result;
+        }
+
         component(instance) {
+            speaker(capability) {
+                replace topic stream: stream Chunk;
+            }
+
             motor(capability) {
                 /// A per-actuator command in the current control revision.
                 replace enum Command {

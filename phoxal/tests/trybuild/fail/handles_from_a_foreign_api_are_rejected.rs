@@ -4,7 +4,9 @@
 // revision, or another `phoxal_api_tree!` tree such as a process-boundary
 // protocol - is rejected at the builder call, which is what makes the `api`
 // field of the participant's embedded metadata record a checked statement.
-use phoxal::bus::{ApiVersion, ContractBody, Publish, StateContract, Topic, TopicRole};
+use phoxal::bus::{
+    ApiVersion, ContractBody, DeliveryFamily, Publish, StateContract, Topic, TopicRole,
+};
 use phoxal::prelude::*;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -23,6 +25,7 @@ impl ContractBody for ForeignState {
     const CONTRACT: &'static str = "drive::State";
     const TOPIC: &'static str = "foreign/drive/state";
     const ROLE: TopicRole = TopicRole::State;
+    const DELIVERY: DeliveryFamily = DeliveryFamily::State;
 }
 
 impl StateContract for ForeignState {}

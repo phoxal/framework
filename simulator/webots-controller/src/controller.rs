@@ -120,7 +120,7 @@ mod tests {
     use crate::channel::PendingPublish;
     use phoxal::__private::ParticipantSpec;
     use phoxal::Participant;
-    use phoxal_bus::{Bus, BusConfig, MeasurementPublisher, Subscriber, TimelineAuthority};
+    use phoxal_bus::{BusConfig, BusOwner, MeasurementPublisher, Subscriber, TimelineAuthority};
     use std::time::Duration;
 
     #[test]
@@ -144,13 +144,14 @@ mod tests {
     // assertion.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_step_publishes_its_outputs_before_its_clock() {
-        let bus = Bus::open(BusConfig::in_process("webots-controller"))
-            .await
-            .expect("bus should open");
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_bus::ParticipantId::new("webots-controller").expect("valid participant id"),
+        ))
+        .await
+        .expect("bus should open");
         let clock_subscriber = Subscriber::<api::simulation::Clock>::new(
             &bus,
             &api::topic::client().simulation().clock(),
-            1,
         )
         .await
         .expect("clock subscriber should attach");
@@ -160,7 +161,6 @@ mod tests {
                 .component("left_drive")
                 .encoder("encoder")
                 .sample(),
-            1,
         )
         .await
         .expect("encoder subscriber should attach");
@@ -212,6 +212,6 @@ mod tests {
             encoder.metadata.sequence < clock.metadata.sequence,
             "all completed-world outputs must enqueue before the matching clock"
         );
-        bus.close().await.expect("bus should close");
+        owner.close().await.expect("bus should close");
     }
 }

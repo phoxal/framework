@@ -144,36 +144,6 @@ pub(crate) fn combine<T>(primary: crate::Result<T>, teardown: TeardownReport) ->
     .into())
 }
 
-pub(crate) fn add_bus_close_error(
-    result: crate::Result<()>,
-    error: anyhow::Error,
-) -> crate::Result<()> {
-    match result {
-        Ok(()) => Err(TerminalError {
-            primary: None,
-            teardown: TeardownReport {
-                bus_close_error: Some(error),
-                ..TeardownReport::default()
-            },
-        }
-        .into()),
-        Err(existing) => match existing.downcast::<TerminalError>() {
-            Ok(mut terminal) => {
-                terminal.teardown.bus_close_error = Some(error);
-                Err(terminal.into())
-            }
-            Err(primary) => Err(TerminalError {
-                primary: Some(primary),
-                teardown: TeardownReport {
-                    bus_close_error: Some(error),
-                    ..TeardownReport::default()
-                },
-            }
-            .into()),
-        },
-    }
-}
-
 /// The shutdown sequence and the single grace budget that bounds it.
 ///
 /// One type because the sequence and the deadline are inseparable: the

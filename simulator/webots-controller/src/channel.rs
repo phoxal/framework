@@ -33,15 +33,6 @@ use crate::capabilities::{SensorStep, SimulatedSensor};
 use crate::catalog::CapabilitySpec;
 use crate::controller::WebotsControllerSimulator;
 
-/// A queue of superseding setpoints only ever needs its newest entry, so it is
-/// shallow.
-const COMMAND_DEPTH: usize = 32;
-
-/// A stream arrives as many chunks in a row, and dropping one silently
-/// corrupts the sound rather than shortening it, so this queue is deeper than
-/// a command queue.
-const STREAM_DEPTH: usize = 256;
-
 /// Reading a subscriber's backlog the way one world step needs it.
 ///
 /// Two answers are meaningful, and which one a capability wants is part of
@@ -348,21 +339,15 @@ impl CapabilityChannel {
         let binding = match spec {
             CapabilitySpec::Motor(spec) => CapabilityBinding::Motor(ActuatorChannel {
                 device: NativeMotor::new(webots, spec)?,
-                commands: ctx
-                    .subscriber(component().motor(id).command(), COMMAND_DEPTH)
-                    .await?,
+                commands: ctx.subscriber(component().motor(id).command()).await?,
             }),
             CapabilitySpec::Led(led) => CapabilityBinding::Led(ActuatorChannel {
                 device: NativeLed::new(webots, led)?,
-                commands: ctx
-                    .subscriber(component().led(id).command(), COMMAND_DEPTH)
-                    .await?,
+                commands: ctx.subscriber(component().led(id).command()).await?,
             }),
             CapabilitySpec::Speaker(speaker) => CapabilityBinding::Speaker(ActuatorChannel {
                 device: NativeSpeaker::new(webots, speaker)?,
-                commands: ctx
-                    .subscriber(component().speaker(id).stream(), STREAM_DEPTH)
-                    .await?,
+                commands: ctx.subscriber(component().speaker(id).stream()).await?,
             }),
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,

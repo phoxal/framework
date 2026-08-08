@@ -76,7 +76,7 @@ impl Participant for Power {
             PowerState::runtime(result_rx, shutdown_ack_rx),
             Api {
                 commands: ctx
-                    .subscriber(api::topic::owner().power().command(), 32)
+                    .subscriber(api::topic::owner().power().command())
                     .await?,
                 command_tx,
                 state: ctx

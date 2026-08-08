@@ -5,7 +5,7 @@ use std::time::Duration;
 use phoxal::__private::{ExecutionOrigin, ParticipantLaunch};
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_bus::{Bus, BusConfig};
+use phoxal_bus::{BusConfig, BusOwner};
 use tokio::sync::Notify;
 
 static STEP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -71,11 +71,13 @@ async fn a_query_observes_completed_steps_and_stepping_resumes_afterward() {
     let first_step = step_started().notified();
     let launch =
         ParticipantLaunch::local("serialized-smoke").with_execution_origin(ExecutionOrigin::mint());
-    let bus = Bus::open(BusConfig {
-        execution: launch.execution,
-        participant: launch.participant_id.clone(),
-        connect_endpoints: Vec::new(),
-    })
+    let participant = phoxal::bus::ParticipantId::new(launch.participant_id.clone())
+        .expect("test participant id");
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        launch.execution,
+        participant,
+        Vec::new(),
+    ))
     .await
     .expect("open in-process bus");
 
@@ -133,5 +135,5 @@ async fn a_query_observes_completed_steps_and_stepping_resumes_afterward() {
     .await
     .expect("runner and smoke client should finish");
     runner_result.expect("runner should shut down cleanly");
-    bus.close().await.expect("close smoke bus");
+    owner.close().await.expect("close smoke bus");
 }

@@ -2,7 +2,7 @@
 //! runner uses to drive typed participant query handlers.
 //!
 //! This is the responder side of the request/response leg whose caller is
-//! [`Querier`](crate::handle::querier::Querier). [`Bus::declare_server`] declares a
+//! [`Querier`](crate::handle::querier::Querier). [`BusHandle::declare_server`] declares a
 //! `complete` queryable on one topic key; [`ServerQueryable::recv`] yields each
 //! [`IncomingQuery`], which exposes the raw request bytes + its [`BusMetadata`]
 //! and the two reply legs:
@@ -25,7 +25,7 @@ use crate::abi::{CodecId, EncodingMetadata};
 use crate::error::{BusError, MetadataProblem, Result};
 use crate::metadata::BusMetadata;
 use crate::query::QueryFailure;
-use crate::session::Bus;
+use crate::session::BusHandle;
 
 /// A declared queryable bound to one server topic key.
 pub struct ServerQueryable {
@@ -114,7 +114,7 @@ impl IncomingQuery {
 
     /// Send a success reply: the plain `Resp` body, with a fresh
     /// provenance-only metadata attachment.
-    pub async fn reply(&self, bus: &Bus, payload: Vec<u8>) -> Result<()> {
+    pub async fn reply(&self, bus: &BusHandle, payload: Vec<u8>) -> Result<()> {
         // A reply expresses no robot time: it answers a question, it does not
         // observe the world.
         let metadata = bus.metadata(None)?;
@@ -141,14 +141,14 @@ impl IncomingQuery {
     }
 }
 
-impl Bus {
+impl BusHandle {
     /// Declare a server queryable on `topic_key` (under the bus root).
     pub async fn declare_server(&self, topic_key: &str) -> Result<ServerQueryable> {
         let full_key = self.full_key(topic_key);
         let key = OwnedKeyExpr::new(full_key.clone())
             .map_err(|e| BusError::not_a_key_expression(&full_key, e))?;
         let inner = self
-            .session()
+            .session()?
             .declare_queryable(key)
             // A phoxal server fully answers its topic; `complete` lets a querier's
             // BestMatching target route to exactly one responder.
@@ -170,7 +170,7 @@ mod tests {
     use serial_test::serial;
     use zenoh::bytes::Encoding;
 
-    use crate::session::BusConfig;
+    use crate::session::{BusConfig, BusOwner};
     use crate::test_support::{GetRequest, metadata};
 
     /// A request whose encoding string and attachment disagree about the codec
@@ -179,9 +179,12 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn incoming_query_rejects_encoding_attachment_codec_mismatch() {
-        let bus = Bus::open(BusConfig::in_process("q-mismatch"))
-            .await
-            .unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_runtime_contract::identity::ParticipantId::new("q-mismatch")
+                .expect("valid participant id"),
+        ))
+        .await
+        .unwrap();
         let server = bus.declare_server("yTEST/asset/get").await.unwrap();
 
         let request = GetRequest {
@@ -194,6 +197,7 @@ mod tests {
         let key = OwnedKeyExpr::new(bus.full_key("yTEST/asset/get")).unwrap();
         let _replies = bus
             .session()
+            .unwrap()
             .get(key)
             .payload(payload)
             // The encoding string claims a codec the attachment disagrees with.
@@ -214,6 +218,6 @@ mod tests {
             other => panic!("expected unsupported codec 99, got {other:?}"),
         }
 
-        bus.close().await.unwrap();
+        owner.close().await.unwrap();
     }
 }

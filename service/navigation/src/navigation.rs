@@ -66,13 +66,13 @@ impl Participant for Navigation {
             NavigationState::default(),
             Api {
                 request: ctx
-                    .subscriber(api::topic::owner().navigation().request(), 32)
+                    .subscriber(api::topic::owner().navigation().request())
                     .await?,
                 localize: ctx
-                    .subscriber(api::topic::client().localize().state(), 32)
+                    .subscriber(api::topic::client().localize().state())
                     .await?,
                 map_revision: ctx
-                    .subscriber(api::topic::client().map().revision(), 32)
+                    .subscriber(api::topic::client().map().revision())
                     .await?,
                 map_submap: ctx.querier(api::topic::client().map().submap()).await?,
                 state: ctx
@@ -506,7 +506,9 @@ mod tests {
 
     use phoxal::__private::ExecutionOrigin;
     use phoxal::__private::{ClockSource, ParticipantLaunch, TestClock, run_with_bus_clock};
-    use phoxal_bus::{Bus, BusConfig, CommandPublisher, StatePublisher, StepToken, Subscriber};
+    use phoxal_bus::{
+        BusConfig, BusOwner, CommandPublisher, StatePublisher, StepToken, Subscriber,
+    };
 
     use super::*;
 
@@ -590,9 +592,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn lifecycle_runs_replays_and_cancels_over_the_real_bus() {
-        let bus = Bus::open(BusConfig::in_process("navigation-lifecycle"))
-            .await
-            .expect("open shared bus");
+        let (owner, bus) = BusOwner::open(BusConfig::in_process(
+            phoxal_bus::ParticipantId::new("navigation-lifecycle").expect("valid participant id"),
+        ))
+        .await
+        .expect("open shared bus");
         let request = CommandPublisher::<api::navigation::Request>::new(
             bus.clone(),
             &api::topic::client().navigation().request(),
@@ -611,21 +615,18 @@ mod tests {
         let states = Subscriber::<api::navigation::State>::new(
             &bus,
             &api::topic::client().navigation().state(),
-            32,
         )
         .await
         .expect("subscribe state");
         let results = Subscriber::<api::navigation::Result>::new(
             &bus,
             &api::topic::client().navigation().result(),
-            32,
         )
         .await
         .expect("subscribe result");
         let candidates = Subscriber::<api::navigation::Candidate>::new(
             &bus,
             &api::topic::client().navigation().candidate(),
-            32,
         )
         .await
         .expect("subscribe candidate");
@@ -748,7 +749,7 @@ mod tests {
 
         let (runner_result, ()) = tokio::join!(runner, client);
         runner_result.expect("navigation runner completed cleanly");
-        bus.close().await.expect("close shared bus");
+        owner.close().await.expect("close shared bus");
     }
 
     async fn await_state(

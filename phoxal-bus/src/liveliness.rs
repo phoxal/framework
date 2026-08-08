@@ -11,7 +11,7 @@ use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleKind;
 
 use crate::error::{BusError, KeyProblem, Result};
-use crate::session::Bus;
+use crate::session::{BusHandle, BusOwner};
 
 const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 
@@ -24,8 +24,11 @@ pub struct ParticipantLivelinessKey {
 }
 
 impl ParticipantLivelinessKey {
-    pub(crate) fn for_bus(bus: &Bus) -> Result<Self> {
-        Self::new(bus.root(), bus.participant(), bus.producer())
+    pub(crate) fn for_bus(bus: &BusHandle) -> Result<Self> {
+        let participant = bus
+            .participant()
+            .ok_or_else(|| BusError::invalid_key("", KeyProblem::Empty))?;
+        Self::new(bus.root(), participant.as_str(), bus.producer())
     }
 
     /// Build and validate a producer-qualified participant key below an
@@ -143,19 +146,22 @@ impl KeyLivelinessObserver {
     }
 }
 
-impl Bus {
+impl BusOwner {
     /// Declare this bus participant's token. Call this only after setup succeeds.
-    pub async fn declare_participant_liveliness(&self) -> Result<ParticipantLivelinessToken> {
-        let key = ParticipantLivelinessKey::for_bus(self)?;
-        let token = self
-            .session()
+    pub async fn declare_participant_ready(&self) -> Result<ParticipantLivelinessToken> {
+        let bus = self.handle();
+        let key = ParticipantLivelinessKey::for_bus(&bus)?;
+        let token = bus
+            .session()?
             .liveliness()
             .declare_token(key.as_str())
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
         Ok(ParticipantLivelinessToken { _token: token, key })
     }
+}
 
+impl BusHandle {
     /// Observe participant appearance and disappearance, including tokens that
     /// were already live when this observer was declared.
     ///
@@ -166,14 +172,14 @@ impl Bus {
     /// Callers that render stable participant presence must aggregate the exact
     /// per-producer events and consider the participant present while at least
     /// one producer remains live.
-    pub async fn observe_participant_liveliness(
+    pub async fn observe_participant_ready(
         &self,
         callback: impl Fn(ParticipantLivelinessEvent) + Send + Sync + 'static,
     ) -> Result<ParticipantLivelinessObserver> {
         let root = self.root().to_string();
         let selector = ParticipantLivelinessKey::selector(&root)?;
         let subscriber = self
-            .session()
+            .session()?
             .liveliness()
             .declare_subscriber(selector)
             .history(true)
@@ -222,18 +228,21 @@ impl Bus {
         let key = OwnedKeyExpr::new(raw.clone())
             .map_err(|error| BusError::not_a_key_expression(&raw, error))?;
 
+        // The initial liveliness query may wait for replies. Keep one
+        // admission lease across declaration, query, and receive so close
+        // cannot race the long-lived receive path.
+        let session = self.session()?;
+
         // Declared before the state is read, so a token lost in between is
         // reported by the subscriber rather than missed by both.
-        let subscriber = self
-            .session()
+        let subscriber = session
             .liveliness()
             .declare_subscriber(key.clone())
             .callback(move |sample| callback(LivelinessStatus::from(sample.kind())))
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
 
-        let replies = self
-            .session()
+        let replies = session
             .liveliness()
             .get(key)
             .await
@@ -322,7 +331,7 @@ mod tests {
     /// A distinct test producer. Nothing mints a producer in production - a
     /// session's identity is the session - so tests name theirs explicitly.
     fn producer(value: u128) -> ProducerId {
-        ProducerId::try_from(value).expect("a test producer is nonzero")
+        ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
     }
 
     #[test]
@@ -399,23 +408,27 @@ mod tests {
             .await
             .expect("the router binds its endpoint");
 
-        let session = |participant: &str| BusConfig {
-            execution,
-            participant: participant.to_string(),
-            connect_endpoints: vec![endpoint.clone()],
+        let session = |participant: &str| {
+            BusConfig::for_participant(
+                execution,
+                phoxal_runtime_contract::identity::ParticipantId::new(participant)
+                    .expect("test participant id"),
+                vec![endpoint.clone()],
+            )
         };
 
         // The declaring side goes first, so the observer genuinely attaches late.
-        let declaring = Bus::open(session("supervisor")).await.unwrap();
+        let (declaring_owner, declaring) = BusOwner::open(session("supervisor")).await.unwrap();
         let token = declaring
             .session()
+            .unwrap()
             .liveliness()
             .declare_token(declaring.full_key("supervisor/identity"))
             .await
             .expect("the supervisor declares its identity token");
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let observing = Bus::open(session("client")).await.unwrap();
+        let (observing_owner, observing) = BusOwner::open(session("client")).await.unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
         let observer = observing
@@ -443,8 +456,8 @@ mod tests {
         assert!(lost, "undeclaring the token must be reported as loss");
 
         drop(observer);
-        observing.close().await.unwrap();
-        declaring.close().await.unwrap();
+        observing_owner.close().await.unwrap();
+        declaring_owner.close().await.unwrap();
         router.close().await.unwrap();
     }
 
@@ -463,11 +476,12 @@ mod tests {
             .await
             .expect("the router binds its endpoint");
 
-        let observing = Bus::open(BusConfig {
+        let (observing_owner, observing) = BusOwner::open(BusConfig::for_participant(
             execution,
-            participant: "client".to_string(),
-            connect_endpoints: vec![endpoint.clone()],
-        })
+            phoxal_runtime_contract::identity::ParticipantId::new("client")
+                .expect("test participant id"),
+            vec![endpoint.clone()],
+        ))
         .await
         .unwrap();
         let observer = observing
@@ -486,7 +500,7 @@ mod tests {
         );
 
         drop(observer);
-        observing.close().await.unwrap();
+        observing_owner.close().await.unwrap();
         router.close().await.unwrap();
     }
 
@@ -511,13 +525,16 @@ mod tests {
             .await
             .expect("the router binds its endpoint");
 
-        let session = |participant: &str| BusConfig {
-            execution,
-            participant: participant.to_string(),
-            connect_endpoints: vec![endpoint.clone()],
+        let session = |participant: &str| {
+            BusConfig::for_participant(
+                execution,
+                phoxal_runtime_contract::identity::ParticipantId::new(participant)
+                    .expect("test participant id"),
+                vec![endpoint.clone()],
+            )
         };
-        let declaring = Bus::open(session("supervisor")).await.unwrap();
-        let observing = Bus::open(session("client")).await.unwrap();
+        let (declaring_owner, declaring) = BusOwner::open(session("supervisor")).await.unwrap();
+        let (observing_owner, observing) = BusOwner::open(session("client")).await.unwrap();
 
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
@@ -532,6 +549,7 @@ mod tests {
         // Prove the subscription is live: a first declaration must reach it.
         let token = declaring
             .session()
+            .unwrap()
             .liveliness()
             .declare_token(declaring.full_key("supervisor/identity"))
             .await
@@ -559,8 +577,8 @@ mod tests {
             "a dropped observer must not receive further changes"
         );
 
-        observing.close().await.unwrap();
-        declaring.close().await.unwrap();
+        observing_owner.close().await.unwrap();
+        declaring_owner.close().await.unwrap();
         router.close().await.unwrap();
     }
 }

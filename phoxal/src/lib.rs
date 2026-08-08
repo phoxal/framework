@@ -175,13 +175,15 @@ pub use phoxal_api::latest as api;
 /// strong that guarantee is.
 pub mod bus {
     pub use phoxal_bus::{
-        ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
-        CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
+        ApiVersion, AskQuery, BusCloseReport, BusConfig, BusError, BusHandle, BusMetadata,
+        BusOwner, CaptureStamp, Codec, CodecError, CodecId, CommandContract, CommandPublisher,
+        ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily, DiagnosticContract,
         DiagnosticPublisher, ExecutionId, LEASE_TRACE_TARGET, Latest, Lease, LeaseDecision,
         LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
-        Observed, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure,
-        QueryResult, Result, RobotInstant, RobotTimeError, ServeQuery, StateContract,
-        StatePublisher, StepStamp, StepToken, Subscribe, Subscriber, TimeWindow, Timed, TimelineId,
+        Observed, ParticipantId, ProducerFence, ProducerId, Publish, Querier, QueryCode,
+        QueryError, QueryFailure, QueryResult, Result, RobotInstant, RobotTimeError, ServeQuery,
+        SourceAttribution, SourceLabel, StateContract, StatePublisher, StepStamp, StepToken,
+        StreamContract, StreamPublisher, Subscribe, Subscriber, TimeWindow, Timed, TimelineId,
         TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
         WorldClockContract, WorldStepToken,
     };
