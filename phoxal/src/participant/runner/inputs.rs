@@ -122,7 +122,7 @@ mod tests {
         assert!(
             inputs
                 .assets
-                .path(
+                .read(
                     &crate::AssetId::new("components/drive_motor/meshes/drive_motor.obj").unwrap()
                 )
                 .is_ok()
@@ -132,7 +132,7 @@ mod tests {
         assert!(
             inputs
                 .assets
-                .path(&crate::AssetId::new("bin/brain").unwrap())
+                .read(&crate::AssetId::new("bin/brain").unwrap())
                 .is_err()
         );
 

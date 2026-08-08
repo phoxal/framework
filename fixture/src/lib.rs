@@ -10,7 +10,7 @@
 //! repository's layout and mean nothing outside it.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use phoxal_bundle::{
     AssetIndex, BinaryCompatibility, BinaryReference, BuildFacts, BundlePath, BundleWriter,
@@ -32,12 +32,24 @@ fn authored_root() -> &'static Path {
 }
 
 /// Stage the fixture into a disposable `runtime.json` bundle.
+pub struct StagedBundle {
+    _parent: TempDir,
+    root: PathBuf,
+}
+
+impl StagedBundle {
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
 #[must_use]
 #[expect(
     clippy::expect_used,
     reason = "every input is a document committed beside this crate, so a failure here is a broken checkout and the panic is the report"
 )]
-pub fn staged_bundle() -> TempDir {
+pub fn staged_bundle() -> StagedBundle {
     let fixture = authored_root();
     let project = fixture.join("robot/rgbd-imu-diff-drive");
     let bundle = tempfile::tempdir().expect("a staging directory");
@@ -136,9 +148,13 @@ pub fn staged_bundle() -> TempDir {
         router: None,
     })
     .expect("fixture runtime document");
-    BundleWriter::write(bundle.path(), &document, &assets, &binaries)
+    let root = bundle.path().join("bundle");
+    BundleWriter::write(&root, &document, &assets, &binaries)
         .expect("the fixture runtime bundle writes");
-    bundle
+    StagedBundle {
+        _parent: bundle,
+        root,
+    }
 }
 
 /// The canonical fixture robot, loaded only from runtime.json.

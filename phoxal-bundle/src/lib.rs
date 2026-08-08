@@ -15,8 +15,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use phoxal_model::identity::ComponentInstanceId;
 use phoxal_model::{AssetId, Clock, Robot};
@@ -690,6 +692,8 @@ pub enum BundleError {
     },
     #[error("bundle root is not a directory: {0}")]
     NotDirectory(PathBuf),
+    #[error("bundle target already exists: {0}")]
+    TargetExists(PathBuf),
     #[error("failed to read runtime document {}: {source}", path.display())]
     ReadDocument {
         path: PathBuf,
@@ -706,6 +710,8 @@ pub enum BundleError {
     UnsupportedEntry { path: PathBuf },
     #[error("bundle contains unexpected file {path}")]
     UnexpectedFile { path: PathBuf },
+    #[error("bundle contains unindexed directory {path}")]
+    UnindexedDirectory { path: PathBuf },
     #[error("bundle is missing required file {path}")]
     MissingFile { path: PathBuf },
     #[error("failed to read bundle file {path}: {source}", path = path.display())]
@@ -760,28 +766,40 @@ impl ParticipantAssets {
         self.entries.keys()
     }
 
-    /// Resolve a declared asset to its bundle path after checking its current
-    /// metadata. The returned path is participant-readable and never points
-    /// into `bin/`.
-    pub fn path(&self, id: &AssetId) -> Result<PathBuf, BundleError> {
+    /// Read a declared asset through one no-follow file descriptor and verify
+    /// the bytes consumed from that same descriptor.
+    pub fn read(&self, id: &AssetId) -> Result<Vec<u8>, BundleError> {
         let entry = self
             .entries
             .get(id)
             .ok_or_else(|| BundleError::UndeclaredAsset { id: id.clone() })?;
-        verify_file(&self.root, entry)?;
-        Ok(entry.path.filesystem_path(&self.root))
+        let path = entry.path.filesystem_path(&self.root);
+        let mut file = open_bundle_file(&self.root, &entry.path)?;
+        let bytes = read_and_verify(&mut file, &path, entry.digest, Some(entry.size_bytes))?;
+        Ok(bytes)
     }
 
-    /// Read a declared asset and re-check its size and digest.
-    pub fn read(&self, id: &AssetId) -> Result<Vec<u8>, BundleError> {
-        let path = self.path(id)?;
-        std::fs::read(&path).map_err(|source| BundleError::ReadFile { path, source })
-    }
-
-    /// Open a declared asset after its integrity fence passes.
+    /// Open a declared asset after hashing the bytes from that same owned file
+    /// descriptor. The returned handle is rewound and never re-resolves a
+    /// pathname, so a later directory or leaf substitution cannot redirect it.
     pub fn open(&self, id: &AssetId) -> Result<std::fs::File, BundleError> {
-        let path = self.path(id)?;
-        std::fs::File::open(&path).map_err(|source| BundleError::ReadFile { path, source })
+        let entry = self
+            .entries
+            .get(id)
+            .ok_or_else(|| BundleError::UndeclaredAsset { id: id.clone() })?;
+        let path = entry.path.filesystem_path(&self.root);
+        let mut verification = open_bundle_file(&self.root, &entry.path)?;
+        let mut reader = verification
+            .try_clone()
+            .map_err(|source| BundleError::ReadFile {
+                path: path.clone(),
+                source,
+            })?;
+        let _ = read_and_verify(&mut reader, &path, entry.digest, Some(entry.size_bytes))?;
+        verification
+            .seek(SeekFrom::Start(0))
+            .map_err(|source| BundleError::ReadFile { path, source })?;
+        Ok(verification)
     }
 }
 
@@ -805,6 +823,13 @@ impl RuntimeBundle {
     /// Open and validate one installed bundle.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, BundleError> {
         let requested = root.as_ref();
+        if let Ok(metadata) = std::fs::symlink_metadata(requested)
+            && metadata.file_type().is_symlink()
+        {
+            return Err(BundleError::ForbiddenSymlink {
+                path: requested.to_path_buf(),
+            });
+        }
         let root = requested
             .canonicalize()
             .map_err(|source| BundleError::Root {
@@ -815,10 +840,25 @@ impl RuntimeBundle {
             return Err(BundleError::NotDirectory(root));
         }
         let runtime_path = root.join(RUNTIME_FILE);
-        let bytes = std::fs::read(&runtime_path).map_err(|source| BundleError::ReadDocument {
-            path: runtime_path.clone(),
-            source,
-        })?;
+        let mut runtime_file = open_bundle_file(&root, &BundlePath::new(RUNTIME_FILE)?).map_err(
+            |error| match error {
+                BundleError::ReadFile { path, source } => {
+                    BundleError::ReadDocument { path, source }
+                }
+                BundleError::MissingFile { path } => BundleError::ReadDocument {
+                    path,
+                    source: std::io::Error::new(std::io::ErrorKind::NotFound, "runtime.json"),
+                },
+                other => other,
+            },
+        )?;
+        let mut bytes = Vec::new();
+        runtime_file
+            .read_to_end(&mut bytes)
+            .map_err(|source| BundleError::ReadDocument {
+                path: runtime_path.clone(),
+                source,
+            })?;
         let document: RuntimeDocument = serde_json::from_slice(&bytes)?;
         document.validate()?;
         validate_layout(&root, document.runtime())?;
@@ -933,37 +973,210 @@ impl BundleWriter {
             }
         }
 
-        let root = root.as_ref();
-        std::fs::create_dir_all(root).map_err(|source| BundleError::ReadFile {
-            path: root.to_path_buf(),
-            source,
-        })?;
-        for (id, bytes) in assets {
-            let path = root
-                .join(ASSETS_DIR)
-                .join(id.as_str().split('/').collect::<PathBuf>());
-            write_file(&path, bytes)?;
+        let requested_root = root.as_ref();
+        let publish_target = prepare_publish_parent(requested_root)?;
+        reject_existing_target(&publish_target)?;
+        let root = create_staging_root(&publish_target)?;
+        let staged = (|| {
+            for (id, bytes) in assets {
+                let path = root
+                    .join(ASSETS_DIR)
+                    .join(id.as_str().split('/').collect::<PathBuf>());
+                write_new_file(&root, &path, bytes)?;
+            }
+            for (path, bytes) in binaries {
+                write_new_file(&root, &path.filesystem_path(&root), bytes)?;
+            }
+            let json = serde_json::to_vec_pretty(document)?;
+            write_new_file(&root, &root.join(RUNTIME_FILE), &json)
+        })();
+        if let Err(error) = staged {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(error);
         }
-        for (path, bytes) in binaries {
-            write_file(&path.filesystem_path(root), bytes)?;
+        if let Err(error) = publish_staging_root(&root, &publish_target) {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(error);
         }
-        let json = serde_json::to_vec_pretty(document)?;
-        write_file(&root.join(RUNTIME_FILE), &json)?;
-        RuntimeBundle::open(root)
+        RuntimeBundle::open(&publish_target)
     }
 }
 
-fn write_file(path: &Path, bytes: &[u8]) -> Result<(), BundleError> {
+fn write_new_file(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), BundleError> {
+    ensure_staging_ancestors(root, path)?;
     let parent = path.parent().ok_or_else(|| BundleError::ReadFile {
         path: path.to_path_buf(),
         source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "file has no parent"),
     })?;
-    std::fs::create_dir_all(parent).map_err(|source| BundleError::ReadFile {
-        path: parent.to_path_buf(),
+    ensure_staging_directory(root, parent)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = options.open(path).map_err(|source| BundleError::ReadFile {
+        path: path.to_path_buf(),
         source,
     })?;
-    std::fs::write(path, bytes).map_err(|source| BundleError::ReadFile {
+    std::io::Write::write_all(&mut file, bytes).map_err(|source| BundleError::ReadFile {
         path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn prepare_publish_parent(root: &Path) -> Result<PathBuf, BundleError> {
+    let parent = root.parent().unwrap_or_else(|| Path::new("."));
+    // A host may intentionally expose its temporary directory through a
+    // compatibility symlink (for example macOS `/var`). Resolve that parent
+    // once; the bundle target itself is still refused when it is a symlink.
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|source| BundleError::ReadFile {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    let metadata =
+        std::fs::symlink_metadata(&canonical_parent).map_err(|source| BundleError::ReadFile {
+            path: canonical_parent.clone(),
+            source,
+        })?;
+    if !metadata.is_dir() {
+        return Err(BundleError::NotDirectory(canonical_parent));
+    }
+    let name = root.file_name().ok_or_else(|| BundleError::ReadFile {
+        path: root.to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid bundle name"),
+    })?;
+    Ok(canonical_parent.join(name))
+}
+
+fn reject_existing_target(root: &Path) -> Result<(), BundleError> {
+    match std::fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(BundleError::ForbiddenSymlink {
+            path: root.to_path_buf(),
+        }),
+        Ok(metadata) if !metadata.is_dir() => Err(BundleError::NotDirectory(root.to_path_buf())),
+        Ok(metadata) if metadata.is_dir() => {
+            if let Some(path) = find_symlink(root)? {
+                Err(BundleError::ForbiddenSymlink { path })
+            } else {
+                Err(BundleError::TargetExists(root.to_path_buf()))
+            }
+        }
+        Ok(_) => Err(BundleError::TargetExists(root.to_path_buf())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(BundleError::ReadFile {
+            path: root.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn find_symlink(directory: &Path) -> Result<Option<PathBuf>, BundleError> {
+    for entry in std::fs::read_dir(directory).map_err(|source| BundleError::ReadFile {
+        path: directory.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| BundleError::ReadFile {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(|source| BundleError::ReadFile {
+                path: path.clone(),
+                source,
+            })?;
+        if metadata.file_type().is_symlink() {
+            return Ok(Some(path));
+        }
+        if metadata.is_dir()
+            && let Some(path) = find_symlink(&path)?
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| BundleError::ReadFile {
+            path: target.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid bundle name"),
+        })?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    for attempt in 0..100u32 {
+        let staged = parent.join(format!(
+            ".{name}.staging-{}-{stamp}-{attempt}",
+            std::process::id()
+        ));
+        match std::fs::create_dir(&staged) {
+            Ok(()) => return Ok(staged),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(BundleError::ReadFile {
+                    path: staged,
+                    source,
+                });
+            }
+        }
+    }
+    Err(BundleError::ReadFile {
+        path: parent.to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::AlreadyExists, "staging name exhausted"),
+    })
+}
+
+fn ensure_staging_directory(root: &Path, directory: &Path) -> Result<(), BundleError> {
+    let relative = directory
+        .strip_prefix(root)
+        .map_err(|_| BundleError::UnsupportedEntry {
+            path: directory.to_path_buf(),
+        })?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(BundleError::UnsupportedEntry {
+                path: directory.to_path_buf(),
+            });
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(BundleError::ForbiddenSymlink { path: current });
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(BundleError::UnsupportedEntry { path: current }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current).map_err(|source| BundleError::ReadFile {
+                    path: current.clone(),
+                    source,
+                })?;
+            }
+            Err(source) => {
+                return Err(BundleError::ReadFile {
+                    path: current,
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_staging_ancestors(root: &Path, path: &Path) -> Result<(), BundleError> {
+    let parent = path.parent().ok_or_else(|| BundleError::UnsupportedEntry {
+        path: path.to_path_buf(),
+    })?;
+    ensure_staging_directory(root, parent)
+}
+
+fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
+    std::fs::rename(staged, target).map_err(|source| BundleError::ReadFile {
+        path: target.to_path_buf(),
         source,
     })
 }
@@ -1005,7 +1218,18 @@ fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
         verify_file(root, entry)?;
     }
     let mut actual_assets = BTreeSet::new();
-    collect_files(root, &root.join(ASSETS_DIR), &mut actual_assets)?;
+    let mut actual_asset_directories = BTreeSet::new();
+    collect_files(
+        root,
+        &root.join(ASSETS_DIR),
+        &mut actual_assets,
+        &mut actual_asset_directories,
+    )?;
+    reject_unindexed_directories(
+        root,
+        &actual_asset_directories,
+        &expected_assets.keys().cloned().collect::<BTreeSet<_>>(),
+    )?;
     if actual_assets != expected_assets.keys().cloned().collect::<BTreeSet<_>>() {
         if let Some(path) = actual_assets
             .difference(&expected_assets.keys().cloned().collect())
@@ -1034,7 +1258,14 @@ fn validate_layout(root: &Path, runtime: &Runtime) -> Result<(), BundleError> {
         .map(|participant| participant.binary.path.clone())
         .collect::<BTreeSet<_>>();
     let mut actual_binaries = BTreeSet::new();
-    collect_files(root, &root.join(BIN_DIR), &mut actual_binaries)?;
+    let mut actual_binary_directories = BTreeSet::new();
+    collect_files(
+        root,
+        &root.join(BIN_DIR),
+        &mut actual_binaries,
+        &mut actual_binary_directories,
+    )?;
+    reject_unindexed_directories(root, &actual_binary_directories, &expected_binaries)?;
     if actual_binaries != expected_binaries {
         if let Some(path) = actual_binaries.difference(&expected_binaries).next() {
             return Err(BundleError::UnexpectedFile {
@@ -1057,9 +1288,42 @@ fn collect_files(
     root: &Path,
     directory: &Path,
     paths: &mut BTreeSet<BundlePath>,
+    directories: &mut BTreeSet<BundlePath>,
 ) -> Result<(), BundleError> {
-    if !directory.exists() {
-        return Ok(());
+    let directory_metadata = match std::fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(BundleError::ReadFile {
+                path: directory.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if directory_metadata.file_type().is_symlink() {
+        return Err(BundleError::ForbiddenSymlink {
+            path: directory.to_path_buf(),
+        });
+    }
+    if !directory_metadata.is_dir() {
+        return Err(BundleError::UnsupportedEntry {
+            path: directory.to_path_buf(),
+        });
+    }
+    let relative_directory =
+        directory
+            .strip_prefix(root)
+            .map_err(|_| BundleError::UnsupportedEntry {
+                path: directory.to_path_buf(),
+            })?;
+    if !relative_directory.as_os_str().is_empty() {
+        let relative = relative_directory
+            .to_str()
+            .ok_or_else(|| BundleError::UnsupportedEntry {
+                path: directory.to_path_buf(),
+            })?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        directories.insert(BundlePath::new(relative)?);
     }
     for entry in std::fs::read_dir(directory).map_err(|source| BundleError::ReadFile {
         path: directory.to_path_buf(),
@@ -1079,7 +1343,7 @@ fn collect_files(
             return Err(BundleError::ForbiddenSymlink { path });
         }
         if metadata.is_dir() {
-            collect_files(root, &path, paths)?;
+            collect_files(root, &path, paths, directories)?;
         } else if metadata.is_file() {
             let relative = path
                 .strip_prefix(root)
@@ -1105,6 +1369,27 @@ fn collect_files(
     Ok(())
 }
 
+fn reject_unindexed_directories(
+    root: &Path,
+    actual: &BTreeSet<BundlePath>,
+    files: &BTreeSet<BundlePath>,
+) -> Result<(), BundleError> {
+    let mut expected = BTreeSet::new();
+    for file in files {
+        let mut components = file.0.split('/').collect::<Vec<_>>();
+        components.pop();
+        for length in 1..=components.len() {
+            expected.insert(BundlePath::new(components[..length].join("/"))?);
+        }
+    }
+    if let Some(unindexed) = actual.difference(&expected).next() {
+        return Err(BundleError::UnindexedDirectory {
+            path: root.join(unindexed.as_str()),
+        });
+    }
+    Ok(())
+}
+
 fn verify_binary(root: &Path, binary: &BinaryReference) -> Result<(), BundleError> {
     verify_digest_and_size(root, &binary.path, binary.digest, None)
 }
@@ -1115,49 +1400,171 @@ fn verify_file(root: &Path, entry: &AssetRecord) -> Result<(), BundleError> {
 
 fn verify_digest_and_size(
     root: &Path,
-    path: &BundlePath,
+    bundle_path: &BundlePath,
     expected: Sha256Digest,
     expected_size: Option<u64>,
 ) -> Result<(), BundleError> {
-    let path = path.filesystem_path(root);
-    let metadata = std::fs::symlink_metadata(&path).map_err(|source| {
-        if source.kind() == std::io::ErrorKind::NotFound {
-            BundleError::MissingFile { path: path.clone() }
-        } else {
-            BundleError::ReadFile {
-                path: path.clone(),
-                source,
-            }
-        }
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(BundleError::ForbiddenSymlink { path });
-    }
-    if !metadata.is_file() {
-        return Err(BundleError::UnsupportedEntry { path });
-    }
-    if let Some(expected_size) = expected_size
-        && metadata.len() != expected_size
-    {
-        return Err(BundleError::Size {
-            path,
-            expected: expected_size,
-            actual: metadata.len(),
-        });
-    }
-    let bytes = std::fs::read(&path).map_err(|source| BundleError::ReadFile {
+    let path = bundle_path.filesystem_path(root);
+    let file = open_bundle_file(root, bundle_path)?;
+    let mut reader = file.try_clone().map_err(|source| BundleError::ReadFile {
         path: path.clone(),
         source,
     })?;
+    let _ = read_and_verify(&mut reader, &path, expected, expected_size)?;
+    Ok(())
+}
+
+fn read_and_verify(
+    file: &mut std::fs::File,
+    path: &Path,
+    expected: Sha256Digest,
+    expected_size: Option<u64>,
+) -> Result<Vec<u8>, BundleError> {
+    let metadata = file.metadata().map_err(|source| BundleError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(BundleError::UnsupportedEntry {
+            path: path.to_path_buf(),
+        });
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|source| BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let actual_size = bytes.len() as u64;
+    if let Some(expected_size) = expected_size
+        && actual_size != expected_size
+    {
+        return Err(BundleError::Size {
+            path: path.to_path_buf(),
+            expected: expected_size,
+            actual: actual_size,
+        });
+    }
     let actual = Sha256Digest::of(&bytes);
     if actual != expected {
         return Err(BundleError::Integrity {
-            path,
+            path: path.to_path_buf(),
             expected,
             actual,
         });
     }
-    Ok(())
+    Ok(bytes)
+}
+
+fn open_bundle_file(root: &Path, path: &BundlePath) -> Result<std::fs::File, BundleError> {
+    let filesystem_path = path.filesystem_path(root);
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+        let root_c = CString::new(root.as_os_str().as_encoded_bytes()).map_err(|_| {
+            BundleError::UnsupportedEntry {
+                path: filesystem_path.clone(),
+            }
+        })?;
+        let root_fd = unsafe {
+            // SAFETY: the CString is NUL-free and points at the requested
+            // directory. O_NOFOLLOW prevents a substituted root symlink.
+            libc::open(
+                root_c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if root_fd < 0 {
+            return Err(io_error_for_path(&filesystem_path));
+        }
+        let mut parent = unsafe { OwnedFd::from_raw_fd(root_fd) };
+        let components = path.0.split('/').collect::<Vec<_>>();
+        for (index, component) in components.iter().enumerate() {
+            let name = CString::new(*component).map_err(|_| BundleError::UnsupportedEntry {
+                path: filesystem_path.clone(),
+            })?;
+            let flags = if index + 1 == components.len() {
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC
+            } else {
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC
+            };
+            let fd = unsafe {
+                // SAFETY: parent remains an owned directory fd and name is a
+                // NUL-free single path component. O_NOFOLLOW applies at every
+                // component, preventing directory and leaf substitution.
+                libc::openat(parent.as_raw_fd(), name.as_ptr(), flags)
+            };
+            if fd < 0 {
+                return Err(io_error_for_path(&filesystem_path));
+            }
+            parent = unsafe { OwnedFd::from_raw_fd(fd) };
+        }
+        Ok(std::fs::File::from(parent))
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows and other supported platforms do not expose a portable
+        // std-only openat/O_NOFOLLOW equivalent. RuntimeBundle has already
+        // rejected symlinks during layout validation; immediately checking
+        // metadata before this open is the documented best-effort fence.
+        let metadata = std::fs::symlink_metadata(&filesystem_path).map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                BundleError::MissingFile {
+                    path: filesystem_path.clone(),
+                }
+            } else {
+                BundleError::ReadFile {
+                    path: filesystem_path.clone(),
+                    source,
+                }
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(BundleError::ForbiddenSymlink {
+                path: filesystem_path,
+            });
+        }
+        std::fs::File::open(&filesystem_path).map_err(|source| BundleError::ReadFile {
+            path: filesystem_path,
+            source,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn io_error_for_path(path: &Path) -> BundleError {
+    let source = std::io::Error::last_os_error();
+    if source.kind() == std::io::ErrorKind::NotFound {
+        BundleError::MissingFile {
+            path: path.to_path_buf(),
+        }
+    } else if source.raw_os_error() == Some(libc::ELOOP) || path_contains_symlink(path) {
+        BundleError::ForbiddenSymlink {
+            path: path.to_path_buf(),
+        }
+    } else {
+        BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn path_contains_symlink(path: &Path) -> bool {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if std::fs::symlink_metadata(&current)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1295,9 +1702,10 @@ mod tests {
 
     #[test]
     fn writer_and_reader_use_only_runtime_json_and_indexed_files() {
-        let root = tempfile::tempdir().expect("bundle root");
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
         let (document, assets, binaries) = document();
-        let loaded = BundleWriter::write(root.path(), &document, &assets, &binaries)
+        let loaded = BundleWriter::write(&root, &document, &assets, &binaries)
             .expect("bundle writes and reopens");
         assert_eq!(loaded.robot_id().as_str(), "rover");
         assert_eq!(loaded.participants().len(), 1);
@@ -1306,15 +1714,16 @@ mod tests {
             loaded.assets().read(&id).expect("asset reads"),
             b"compiled structure"
         );
-        assert!(!root.path().join("robot.yaml").exists());
+        assert!(!root.join("robot.yaml").exists());
     }
 
     #[test]
     fn selection_is_exact_and_happens_before_any_runtime_side_effect() {
-        let root = tempfile::tempdir().expect("bundle root");
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
         let (document, assets, binaries) = document();
         let loaded =
-            BundleWriter::write(root.path(), &document, &assets, &binaries).expect("bundle writes");
+            BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
         let unknown = ParticipantId::new("missing").expect("valid unknown id");
         assert!(matches!(
             loaded.participant(&unknown),
@@ -1324,31 +1733,33 @@ mod tests {
 
     #[test]
     fn a_mutated_indexed_asset_is_rejected_on_open_and_read() {
-        let root = tempfile::tempdir().expect("bundle root");
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
         let (document, assets, binaries) = document();
         let loaded =
-            BundleWriter::write(root.path(), &document, &assets, &binaries).expect("bundle writes");
+            BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
         let id = AssetId::new("robot/structure.json").expect("asset id");
-        std::fs::write(root.path().join("assets/robot/structure.json"), b"tampered")
+        std::fs::write(root.join("assets/robot/structure.json"), b"tampered")
             .expect("tamper asset");
         assert!(matches!(
             loaded.assets().read(&id),
             Err(BundleError::Integrity { .. } | BundleError::Size { .. })
         ));
         assert!(matches!(
-            RuntimeBundle::open(root.path()),
+            RuntimeBundle::open(&root),
             Err(BundleError::Integrity { .. } | BundleError::Size { .. })
         ));
     }
 
     #[test]
     fn a_mutated_indexed_binary_is_rejected_on_open() {
-        let root = tempfile::tempdir().expect("bundle root");
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
         let (document, assets, binaries) = document();
-        BundleWriter::write(root.path(), &document, &assets, &binaries).expect("bundle writes");
-        std::fs::write(root.path().join("bin/drive"), b"tampered").expect("tamper binary");
+        BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        std::fs::write(root.join("bin/drive"), b"tampered").expect("tamper binary");
         assert!(matches!(
-            RuntimeBundle::open(root.path()),
+            RuntimeBundle::open(&root),
             Err(BundleError::Integrity { .. } | BundleError::Size { .. })
         ));
     }
@@ -1356,29 +1767,110 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlinked_bundle_files_are_rejected_before_runtime_use() {
-        let root = tempfile::tempdir().expect("bundle root");
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
         let outside = tempfile::tempdir().expect("outside root");
         let (document, assets, binaries) = document();
-        BundleWriter::write(root.path(), &document, &assets, &binaries).expect("bundle writes");
-        let asset = root.path().join("assets/robot/structure.json");
+        let loaded =
+            BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        let asset = root.join("assets/robot/structure.json");
         std::fs::remove_file(&asset).expect("remove indexed asset");
         std::fs::write(outside.path().join("structure.json"), b"outside").expect("outside asset");
         std::os::unix::fs::symlink(outside.path().join("structure.json"), &asset)
             .expect("symlink asset");
         assert!(matches!(
-            RuntimeBundle::open(root.path()),
+            RuntimeBundle::open(&root),
+            Err(BundleError::ForbiddenSymlink { .. })
+        ));
+        assert!(matches!(
+            loaded
+                .assets()
+                .read(&AssetId::new("robot/structure.json").expect("asset id")),
+            Err(BundleError::ForbiddenSymlink { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn substituted_assets_directory_is_not_followed_by_asset_access() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
+        let outside = tempfile::tempdir().expect("outside root");
+        let (document, assets, binaries) = document();
+        let loaded =
+            BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        let assets_dir = root.join(ASSETS_DIR);
+        let moved_assets = outside.path().join(ASSETS_DIR);
+        std::fs::rename(&assets_dir, &moved_assets).expect("move indexed assets");
+        std::os::unix::fs::symlink(&moved_assets, &assets_dir).expect("symlink assets directory");
+        assert!(matches!(
+            loaded
+                .assets()
+                .read(&AssetId::new("robot/structure.json").expect("asset id")),
+            Err(BundleError::ForbiddenSymlink { .. })
+        ));
+        assert!(matches!(
+            RuntimeBundle::open(&root),
             Err(BundleError::ForbiddenSymlink { .. })
         ));
     }
 
     #[test]
-    fn old_source_documents_are_rejected_as_extra_bundle_truth() {
-        let root = tempfile::tempdir().expect("bundle root");
+    fn unindexed_empty_directories_are_rejected() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
         let (document, assets, binaries) = document();
-        BundleWriter::write(root.path(), &document, &assets, &binaries).expect("bundle writes");
-        std::fs::write(root.path().join("robot.yaml"), b"source truth").expect("old source");
+        BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        std::fs::create_dir(root.join(ASSETS_DIR).join("unused")).expect("empty directory");
         assert!(matches!(
-            RuntimeBundle::open(root.path()),
+            RuntimeBundle::open(&root),
+            Err(BundleError::UnindexedDirectory { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_rejects_existing_symlinked_target_before_writing() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let outside = tempfile::tempdir().expect("outside root");
+        let root = parent.path().join("bundle");
+        std::fs::create_dir(&root).expect("existing root");
+        std::os::unix::fs::symlink(outside.path(), root.join(ASSETS_DIR)).expect("assets symlink");
+        let (document, assets, binaries) = document();
+        assert!(matches!(
+            BundleWriter::write(&root, &document, &assets, &binaries),
+            Err(BundleError::ForbiddenSymlink { .. })
+        ));
+        assert!(!outside.path().join("robot").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writer_rejects_symlinked_leaf_in_existing_target() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let outside = tempfile::tempdir().expect("outside root");
+        let root = parent.path().join("bundle");
+        std::fs::create_dir_all(root.join(ASSETS_DIR).join("robot")).expect("existing tree");
+        let leaf = root.join(ASSETS_DIR).join("robot/structure.json");
+        std::os::unix::fs::symlink(outside.path().join("structure.json"), &leaf)
+            .expect("leaf symlink");
+        let (document, assets, binaries) = document();
+        assert!(matches!(
+            BundleWriter::write(&root, &document, &assets, &binaries),
+            Err(BundleError::ForbiddenSymlink { .. })
+        ));
+        assert!(!outside.path().join("structure.json").exists());
+    }
+
+    #[test]
+    fn old_source_documents_are_rejected_as_extra_bundle_truth() {
+        let parent = tempfile::tempdir().expect("bundle parent");
+        let root = parent.path().join("bundle");
+        let (document, assets, binaries) = document();
+        BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
+        std::fs::write(root.join("robot.yaml"), b"source truth").expect("old source");
+        assert!(matches!(
+            RuntimeBundle::open(&root),
             Err(BundleError::UnexpectedFile { .. })
         ));
     }

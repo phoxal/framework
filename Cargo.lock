@@ -2226,6 +2226,7 @@ name = "phoxal-bundle"
 version = "0.55.0"
 dependencies = [
  "jsonschema",
+ "libc",
  "phoxal-model",
  "phoxal-runtime-contract",
  "serde",
