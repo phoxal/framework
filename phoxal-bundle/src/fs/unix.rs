@@ -397,7 +397,8 @@ fn verify_directory_mode(fd: libc::c_int, path: &Path) -> Result<(), BundleError
             source: std::io::Error::last_os_error(),
         });
     }
-    let actual = unsafe { metadata.assume_init() }.st_mode as u32 & 0o777;
+    let mode = unsafe { metadata.assume_init() }.st_mode;
+    let actual = u64::from(mode & 0o777) as u32;
     if actual != 0o755 {
         return Err(BundleError::DirectoryMode {
             path: path.to_path_buf(),
