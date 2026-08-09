@@ -87,6 +87,7 @@ fn public_library_dependency_direction_is_exact() -> Result<()> {
         ("phoxal-manifest", "phoxal-runtime-contract"),
         ("phoxal-supervisor-api", "phoxal-bus"),
         ("phoxal-supervisor-api", "phoxal-macros"),
+        ("phoxal-supervisor-api", "phoxal-runtime-contract"),
     ];
     let mut actual = Vec::new();
     for package in metadata

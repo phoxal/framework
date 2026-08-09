@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 phoxal-bus = { workspace = true }
 phoxal-macros = { workspace = true }
+phoxal-runtime-contract = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

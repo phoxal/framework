@@ -66,6 +66,21 @@ pub mod payload {
     }
 
     pub mod runtime {
+        use phoxal_runtime_contract::version::RobotApiVersion;
+
+        /// Empty request for the immutable facts of one running bundle.
+        #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct InfoRequest {}
+
+        /// Runtime facts a supervisor advertises before an external client
+        /// selects an exact robot-API adapter.
+        #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Info {
+            pub robot_api: RobotApiVersion,
+        }
+
         #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct Cursor {
             pub sequence: u64,
@@ -225,8 +240,7 @@ phoxal_protocol! {
         }
 
         runtime {
-            // The runtime payloads are owned by `payload::runtime`; this node
-            // contributes only endpoint descriptors and topic paths.
+            query info: crate::payload::runtime::InfoRequest => crate::payload::runtime::Info;
         }
 
         telemetry {
@@ -263,6 +277,10 @@ mod tests {
             "supervisor/asset/get"
         );
         assert_eq!(
+            <supervisor::endpoint::runtime::InfoEndpoint as EndpointDescriptor>::TOPIC,
+            "supervisor/runtime/info"
+        );
+        assert_eq!(
             <supervisor::endpoint::telemetry::RollupEndpoint as EndpointDescriptor>::KIND,
             EndpointKind::Stream
         );
@@ -278,5 +296,18 @@ mod tests {
             .expect("messagepack permits a non-finite test input");
         assert!(rmp_serde::from_slice::<supervisor::logs::LogValue>(&encoded).is_err());
         assert!(rmp_serde::from_slice::<supervisor::log::LogValue>(&encoded).is_err());
+    }
+
+    #[test]
+    fn runtime_info_preserves_an_unknown_robot_api_for_client_dispatch() {
+        let encoded = rmp_serde::to_vec_named(&supervisor::runtime::Info {
+            robot_api: phoxal_runtime_contract::version::RobotApiVersion::new(42, 7),
+        })
+        .unwrap();
+        let decoded: supervisor::runtime::Info = rmp_serde::from_slice(&encoded).unwrap();
+        assert_eq!(
+            decoded.robot_api,
+            phoxal_runtime_contract::version::RobotApiVersion::new(42, 7)
+        );
     }
 }
