@@ -102,7 +102,7 @@ struct BoundEncoder {
 
 pub(crate) struct Api {
     encoders: Vec<BoundEncoder>,
-    states: BTreeMap<JointId, StatePublisher<api::joint::JointState>>,
+    states: BTreeMap<JointId, EventPublisher<api::joint::StateEndpoint>>,
 }
 
 #[phoxal::service(api = Api)]
@@ -133,7 +133,7 @@ impl Participant for Joint {
         for joint_id in joint_ids {
             // Joint OWNS each `joint/{id}` node's state telemetry, so this is
             // the owner builder.
-            let publisher = ctx.state_publisher(api::topic::owner().joint(&joint_id)?.state())?;
+            let publisher = ctx.event_publisher(api::topic::owner().joint(&joint_id)?.state())?;
             states.insert(joint_id, publisher);
         }
 

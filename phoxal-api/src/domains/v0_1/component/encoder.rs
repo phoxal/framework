@@ -7,3 +7,7 @@ pub struct Sample {
     pub position_rad: f64,
     pub velocity_radps: f32,
 }
+
+impl Sample {
+    pub const STALE_AFTER: std::time::Duration = std::time::Duration::from_millis(200);
+}

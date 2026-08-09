@@ -384,13 +384,8 @@ fn current_perception_detection_rejects_nonfinite_and_wrong_shape_values() {
 #[test]
 fn navigation_and_safety_wire_shapes_are_golden() {
     let navigation = api::navigation::Result {
-        operation_id: api::navigation::NavigationOperationId {
-            producer: producer(90),
-            sequence: 4,
-        },
-        request_id: api::navigation::RequestId {
-            value: "nav-1".to_string(),
-        },
+        operation_id: api::navigation::NavigationOperationId::new(producer(90), 4).unwrap(),
+        request_id: api::navigation::RequestId::try_new("nav-1").unwrap(),
         outcome: api::navigation::Outcome::Failed(api::navigation::FailureReason::Blocked),
     };
     assert_eq!(
@@ -585,10 +580,7 @@ fn domain_bodies_round_trip_through_messagepack() {
         map_revision: Some(3),
     });
     round_trip(&api::navigation::State::Running(
-        api::navigation::NavigationOperationId {
-            producer: producer(91),
-            sequence: 1,
-        },
+        api::navigation::NavigationOperationId::new(producer(91), 1).unwrap(),
     ));
     round_trip(&legacy::perception::Detections {
         detections: vec![legacy::perception::Detection {

@@ -12,6 +12,18 @@ pub struct RequestId {
     pub value: String,
 }
 
+impl RequestId {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let value = self.value.trim();
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pose {
     pub x_m: f64,

@@ -24,7 +24,7 @@ mod api;
 pub use api::*;
 pub use phoxal_macros::{phoxal_api, phoxal_api_tree, phoxal_protocol};
 
-mod domains;
+pub mod domains;
 
 #[cfg(test)]
 mod tests;

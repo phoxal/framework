@@ -32,13 +32,13 @@ const BUFFER_MAX_ENTRIES: usize = 16_384;
 /// the frame the folded transform is buffered under.
 struct TrackedJoint {
     joint: DynamicJoint,
-    states: StreamReceiver<api::joint::JointState>,
+    states: StreamReceiver<api::joint::StateEndpoint>,
 }
 
 pub(crate) struct Api {
     joints: Vec<TrackedJoint>,
-    tree: StatePublisher<api::frame::Tree>,
-    static_pub: StatePublisher<api::frame::StaticTransforms>,
+    tree: StatePublisher<api::frame::TreeEndpoint>,
+    static_pub: StatePublisher<api::frame::StaticTransformsEndpoint>,
 }
 
 /// The transform tree: the fixed edges, the parent and joint each frame hangs

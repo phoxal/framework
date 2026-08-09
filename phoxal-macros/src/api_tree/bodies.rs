@@ -126,6 +126,7 @@ impl Node {
         let mut external_aliases = TokenStream::new();
         let mut aliased = std::collections::BTreeSet::new();
         let mut external_parents = std::collections::BTreeMap::<String, syn::Path>::new();
+        let mut semantic_aliases = std::collections::BTreeMap::<String, syn::Path>::new();
         for topic in &self.topics {
             // The tree-qualified wire key: folding the tree's identity in here
             // is what makes two trees' contracts physically distinct Zenoh keys.
@@ -159,17 +160,18 @@ impl Node {
                     let body_path = &body.path;
                     if semantic {
                         collect_external_parent(&mut external_parents, body_path);
+                        register_semantic_alias(&mut semantic_aliases, body_path);
                     }
-                    if (semantic || body.path.segments.len() > 1)
+                    // Semantic nodes retain deterministic parent-module globs
+                    // for supporting types. The explicit aliases emitted below
+                    // select the current replacement when inherited and current
+                    // domains export the same leaf name.
+                    if ((!semantic && body.path.segments.len() > 1)
+                        || (semantic && body.path.segments.len() < 2))
+                        && let Some(last) = body.path.segments.last()
                         && aliased.insert(body.leaf_name())
                     {
-                        let alias = syn::Ident::new(
-                            &body.leaf_name(),
-                            body.path
-                                .segments
-                                .last()
-                                .map_or_else(Span::call_site, |segment| segment.ident.span()),
-                        );
+                        let alias = syn::Ident::new(&body.leaf_name(), last.ident.span());
                         external_aliases.extend(
                             quote! { #[allow(unused_imports)] pub use #body_path as #alias; },
                         );
@@ -240,18 +242,16 @@ impl Node {
                     if semantic {
                         collect_external_parent(&mut external_parents, request_path);
                         collect_external_parent(&mut external_parents, response_path);
+                        register_semantic_alias(&mut semantic_aliases, request_path);
+                        register_semantic_alias(&mut semantic_aliases, response_path);
                     }
                     for body in [request, response] {
-                        if (semantic || body.path.segments.len() > 1)
+                        if ((!semantic && body.path.segments.len() > 1)
+                            || (semantic && body.path.segments.len() < 2))
+                            && let Some(last) = body.path.segments.last()
                             && aliased.insert(body.leaf_name())
                         {
-                            let alias = syn::Ident::new(
-                                &body.leaf_name(),
-                                body.path
-                                    .segments
-                                    .last()
-                                    .map_or_else(Span::call_site, |segment| segment.ident.span()),
-                            );
+                            let alias = syn::Ident::new(&body.leaf_name(), last.ident.span());
                             let path = &body.path;
                             external_aliases.extend(
                                 quote! { #[allow(unused_imports)] pub use #path as #alias; },
@@ -334,6 +334,14 @@ impl Node {
             ));
         }
 
+        for body_path in semantic_aliases.values() {
+            if let Some(last) = body_path.segments.last() {
+                let leaf = last.ident.to_string();
+                let alias = syn::Ident::new(&leaf, last.ident.span());
+                external_aliases
+                    .extend(quote! { #[allow(unused_imports)] pub use #body_path as #alias; });
+            }
+        }
         let external_parent_imports = external_parents
             .into_values()
             .map(|parent| quote! { #[allow(unused_imports)] pub use #parent::*; })
@@ -414,6 +422,43 @@ fn collect_external_parent(
     parent.segments.pop_punct();
     let key = parent.to_token_stream().to_string();
     parents.entry(key).or_insert(parent);
+}
+
+fn register_semantic_alias(
+    aliases: &mut std::collections::BTreeMap<String, syn::Path>,
+    path: &syn::Path,
+) {
+    let Some(last) = path.segments.last() else {
+        return;
+    };
+    let name = last.ident.to_string();
+    let prefer = is_current_version_path(path);
+    let replace = aliases
+        .get(&name)
+        .is_none_or(|existing| prefer && !is_current_version_path(existing));
+    if replace {
+        aliases.insert(name, path.clone());
+    }
+}
+
+fn is_current_version_path(path: &syn::Path) -> bool {
+    let mut segments = path.segments.iter();
+    let prefix = [
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ];
+    prefix
+        .into_iter()
+        .zip(["crate", "domains", "v0_2", ""])
+        .all(|(segment, expected)| {
+            if expected.is_empty() {
+                segment.is_some()
+            } else {
+                segment.is_some_and(|segment| segment.ident == expected)
+            }
+        })
 }
 
 /// Make inherited fields public so participant code in other crates can construct

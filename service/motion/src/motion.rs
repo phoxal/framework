@@ -42,7 +42,7 @@ const COMPONENT_ESTOP_STALE: Duration = Duration::from_secs(1);
 /// One declared emergency stop and the subscription carrying its state.
 struct BoundEmergencyStop {
     reference: CapabilityRef,
-    state: StateView<api::component::emergency_stop::State>,
+    state: StateView<api::component::emergency_stop::StateEndpoint>,
 }
 
 /// Aggregated emergency-stop state across every declared component.
@@ -105,14 +105,14 @@ impl EmergencyStopLatch {
 }
 
 pub(crate) struct Api {
-    manual: SetpointReceiver<api::motion::ManualCommand>,
-    autonomous: StateView<api::navigation::Candidate>,
+    manual: SetpointReceiver<api::motion::ManualEndpoint>,
+    autonomous: StateView<api::navigation::CandidateEndpoint>,
     _navigation_ready: phoxal::bus::ParticipantReadyObserver,
     _safety_ready: phoxal::bus::ParticipantReadyObserver,
     component_estops: Vec<BoundEmergencyStop>,
-    safety_constraints: StateView<api::safety::MotionConstraints>,
-    drive: CommandPublisher<api::drive::Target>,
-    state: StatePublisher<api::motion::State>,
+    safety_constraints: StateView<api::safety::ConstraintsEndpoint>,
+    drive: CommandPublisher<api::drive::TargetEndpoint>,
+    state: StatePublisher<api::motion::StateEndpoint>,
 }
 
 pub(crate) struct MotionState {
@@ -124,7 +124,7 @@ pub(crate) struct MotionState {
     autonomous_admission: Arc<Mutex<FixedSourceAdmission>>,
     autonomous_authority: Arc<Mutex<FixedSourceLease<api::navigation::Candidate>>>,
     estop: EmergencyStopLatch,
-    last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
+    last_safety_constraints: Option<Timed<api::domains::v0_2::safety::MotionConstraints>>,
 }
 
 #[phoxal::service(state = MotionState, api = Api)]
@@ -411,7 +411,7 @@ impl Participant for Motion {
         api.drive.send(drive_target)?;
         api.state.publish(
             &step.token,
-            api::motion::State {
+            api::domains::v0_2::motion::State {
                 decision: arbitration.decision,
                 manual_observed_age_ns: manual_observed_age_ns(state.manual_observed_at, host_now),
                 autonomous_candidate_age_ns: candidate_age_ns(state.last_autonomous.as_ref(), now),

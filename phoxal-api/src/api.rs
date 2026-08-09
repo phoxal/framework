@@ -110,6 +110,20 @@ phoxal_api! {
 
     latest version v0_2 extends v0_1 {
         remove power;
+        joint(joint) {
+            replace topic state: Event<crate::domains::v0_2::joint::JointState>;
+        }
+        frame {
+            replace topic tree: State<crate::domains::v0_2::frame::Tree>;
+            replace topic static_transforms: State<crate::domains::v0_2::frame::StaticTransforms>;
+            replace query lookup: crate::domains::v0_2::frame::LookupRequest => crate::domains::v0_2::frame::LookupResponse;
+        }
+        odometry {
+            replace topic state: State<crate::domains::v0_2::odometry::State>;
+        }
+        localize {
+            replace topic state: State<crate::domains::v0_2::localize::LocalizationState>;
+        }
         drive {
             replace command target: Setpoint<crate::domains::v0_2::drive::Target>;
             replace topic state: State<crate::domains::v0_2::drive::State>;
@@ -129,6 +143,7 @@ phoxal_api! {
             replace topic candidate: State<crate::domains::v0_2::navigation::Candidate>;
             query start: crate::domains::v0_2::navigation::StartRequest => crate::domains::v0_2::navigation::StartResponse;
             query cancel: crate::domains::v0_2::navigation::CancelRequest => crate::domains::v0_2::navigation::CancelResponse;
+            replace query next_frontier: crate::domains::v0_2::navigation::FrontierRequest => crate::domains::v0_2::navigation::FrontierResponse;
         }
         safety {
             replace topic constraints: State<crate::domains::v0_2::safety::MotionConstraints>;

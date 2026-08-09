@@ -39,13 +39,13 @@ struct CompletedOperation {
 }
 
 pub(crate) struct Api {
-    localize: StateView<api::localize::LocalizationState>,
-    map_revision: StateView<api::map::Revision>,
+    localize: StateView<api::localize::StateEndpoint>,
+    map_revision: StateView<api::map::RevisionEndpoint>,
     frontier_requests: tokio::sync::mpsc::Sender<FrontierIoRequest>,
-    state: StatePublisher<api::navigation::State>,
-    progress: StatePublisher<api::navigation::Progress>,
-    result: StatePublisher<api::navigation::Result>,
-    candidate: StatePublisher<api::navigation::Candidate>,
+    state: StatePublisher<api::navigation::StateEndpoint>,
+    progress: StatePublisher<api::navigation::ProgressEndpoint>,
+    result: EventPublisher<api::navigation::ResultEndpoint>,
+    candidate: StatePublisher<api::navigation::CandidateEndpoint>,
 }
 
 pub(crate) struct NavigationState {
@@ -92,7 +92,7 @@ struct CachedFrontier {
 /// runner observed at a step; responses that no longer match those authorities
 /// are rejected when the next step incorporates them.
 async fn frontier_map_worker(
-    map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
+    map_submap: Querier<api::map::SubmapRequest, api::domains::v0_2::map::SubmapResponse>,
     mut requests: tokio::sync::mpsc::Receiver<FrontierIoRequest>,
     results: tokio::sync::mpsc::Sender<FrontierIoResult>,
 ) -> Result<()> {
@@ -109,9 +109,13 @@ async fn frontier_map_worker(
         {
             Ok(response) => {
                 let response_revision = match &response {
-                    api::map::SubmapResponse::Window(window)
-                    | api::map::SubmapResponse::Partial { window } => window.revision,
-                    api::map::SubmapResponse::OutOfBounds { revision, .. } => *revision,
+                    api::domains::v0_2::map::SubmapResponse::Window(window)
+                    | api::domains::v0_2::map::SubmapResponse::Partial { window } => {
+                        window.revision
+                    }
+                    api::domains::v0_2::map::SubmapResponse::OutOfBounds { revision, .. } => {
+                        *revision
+                    }
                 };
                 if response_revision != request.revision {
                     Err(format!(
@@ -187,10 +191,7 @@ impl NavigationState {
     fn next_operation_id(&mut self) -> Option<api::navigation::NavigationOperationId> {
         let sequence = self.next_operation_sequence.checked_add(1)?;
         self.next_operation_sequence = sequence;
-        Some(api::navigation::NavigationOperationId {
-            producer: self.server_producer,
-            sequence,
-        })
+        api::navigation::NavigationOperationId::new(self.server_producer, sequence)
     }
 
     fn cached_start(
@@ -327,7 +328,7 @@ impl Participant for Navigation {
                 frontier_requests,
                 state: ctx.state_publisher(api::topic::owner().navigation().state())?,
                 progress: ctx.state_publisher(api::topic::owner().navigation().progress())?,
-                result: ctx.state_publisher(api::topic::owner().navigation().result())?,
+                result: ctx.event_publisher(api::topic::owner().navigation().result())?,
                 candidate: ctx.state_publisher(api::topic::owner().navigation().candidate())?,
             },
         ))
@@ -822,27 +823,26 @@ mod tests {
         let mut state = NavigationState::new(producer(10));
         for sequence in 1..=(RESULT_CACHE_CAPACITY as u64 + 1) {
             state.remember_completed(
-                api::navigation::NavigationOperationId {
-                    producer: producer(10),
-                    sequence,
-                },
+                api::navigation::NavigationOperationId::new(producer(10), sequence).unwrap(),
                 producer(11),
             );
         }
 
         assert_eq!(state.completed.len(), RESULT_CACHE_CAPACITY);
         assert_eq!(
-            state.completed_owner(api::navigation::NavigationOperationId {
-                producer: producer(10),
-                sequence: 1,
-            }),
+            state.completed_owner(
+                api::navigation::NavigationOperationId::new(producer(10), 1).unwrap()
+            ),
             None
         );
         assert_eq!(
-            state.completed_owner(api::navigation::NavigationOperationId {
-                producer: producer(10),
-                sequence: RESULT_CACHE_CAPACITY as u64 + 1,
-            }),
+            state.completed_owner(
+                api::navigation::NavigationOperationId::new(
+                    producer(10),
+                    RESULT_CACHE_CAPACITY as u64 + 1,
+                )
+                .unwrap(),
+            ),
             Some(producer(11))
         );
     }
@@ -864,10 +864,7 @@ mod tests {
     fn foreign_requester_cannot_cancel_an_active_operation() {
         let owner = producer(5);
         let foreign = producer(6);
-        let operation_id = api::navigation::NavigationOperationId {
-            producer: producer(7),
-            sequence: 1,
-        };
+        let operation_id = api::navigation::NavigationOperationId::new(producer(7), 1).unwrap();
         let mut state = NavigationState::new(producer(7));
         state.active = Some(Active {
             operation_id,
@@ -1027,9 +1024,8 @@ mod tests {
                 requests.push(tokio::spawn(async move {
                     querier
                         .query(start_request(
-                            api::navigation::RequestId {
-                                value: format!("pressure-{index}"),
-                            },
+                            api::navigation::RequestId::try_new(format!("pressure-{index}"))
+                                .unwrap(),
                             0.0,
                         ))
                         .await
@@ -1051,9 +1047,7 @@ mod tests {
     }
 
     fn request_id(value: &str) -> api::navigation::RequestId {
-        api::navigation::RequestId {
-            value: value.to_string(),
-        }
+        api::navigation::RequestId::try_new(value).unwrap()
     }
 
     fn start_request(
@@ -1071,7 +1065,7 @@ mod tests {
     }
 
     async fn await_result(
-        results: &StreamReceiver<api::navigation::Result>,
+        results: &StreamReceiver<api::navigation::ResultEndpoint>,
         operation_id: api::navigation::NavigationOperationId,
     ) -> api::navigation::Result {
         tokio::time::timeout(Duration::from_secs(2), async {

@@ -9,3 +9,14 @@ pub struct LocalizationState {
     pub yaw_rad: f64,
     pub confidence: f32,
 }
+
+impl LocalizationState {
+    #[must_use]
+    pub fn is_usable(&self) -> bool {
+        self.x_m.is_finite()
+            && self.y_m.is_finite()
+            && self.yaw_rad.is_finite()
+            && self.confidence.is_finite()
+            && self.confidence > 0.0
+    }
+}

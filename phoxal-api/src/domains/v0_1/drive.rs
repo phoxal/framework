@@ -31,6 +31,17 @@ pub struct Target {
     pub curvature_limit_radpm: Option<f32>,
 }
 
+impl Target {
+    #[must_use]
+    pub const fn stopped() -> Self {
+        Self {
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        }
+    }
+}
+
 /// The drive participant's published control state.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct State {

@@ -165,7 +165,10 @@ pub mod runtime;
 pub mod testing;
 
 /// The concrete framework API revision selected by this release train.
-pub use phoxal_api::latest as api;
+pub mod api {
+    pub use phoxal_api::domains;
+    pub use phoxal_api::latest::*;
+}
 
 /// Typed contract and handle vocabulary for normal participant authoring.
 ///

@@ -76,16 +76,17 @@ fn a_non_finite_component_makes_an_estimate_unusable() {
     }
 }
 
-fn request_id(value: &str) -> api::navigation::RequestId {
-    api::navigation::RequestId {
-        value: value.to_string(),
-    }
+fn request_id(value: &str) -> Option<api::navigation::RequestId> {
+    api::navigation::RequestId::try_new(value).ok()
 }
 
 #[test]
 fn a_bounded_ascii_token_is_a_valid_request_id() {
     for value in ["a", "run-7", "mission_2.step3", &"x".repeat(128)] {
-        assert!(request_id(value).is_valid(), "{value:?} must be valid");
+        assert!(
+            request_id(value).is_some_and(|id| id.is_valid()),
+            "{value:?} must be valid"
+        );
     }
 }
 
@@ -99,7 +100,7 @@ fn empty_oversized_and_non_token_request_ids_are_refused() {
         "sla/sh",
         "new\nline",
     ] {
-        assert!(!request_id(value).is_valid(), "{value:?} must be refused");
+        assert!(request_id(value).is_none(), "{value:?} must be refused");
     }
 }
 
@@ -108,10 +109,14 @@ fn empty_oversized_and_non_token_request_ids_are_refused() {
 /// newtype, so it is pinned here rather than left to a downstream derive.
 #[test]
 fn request_ids_order_by_their_value() {
-    let mut ids = [request_id("c"), request_id("a"), request_id("b")];
+    let mut ids = [
+        request_id("c").unwrap(),
+        request_id("a").unwrap(),
+        request_id("b").unwrap(),
+    ];
     ids.sort();
     assert_eq!(
-        ids.map(|id| id.value),
+        ids.map(|id| id.as_str().to_owned()),
         ["a".to_string(), "b".to_string(), "c".to_string()]
     );
 }

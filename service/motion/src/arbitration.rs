@@ -32,7 +32,7 @@ impl Arbitration {
         manual: Option<&api::motion::ManualCommand>,
         autonomous: Option<&Timed<api::navigation::Candidate>>,
         emergency_stop_engaged: bool,
-        safety: Option<&Timed<api::safety::MotionConstraints>>,
+        safety: Option<&Timed<api::domains::v0_2::safety::MotionConstraints>>,
         limits: MotionLimits,
         now: RobotInstant,
     ) -> Self {
@@ -164,7 +164,7 @@ fn not_yet_expired(deadline: RobotInstant, now: RobotInstant) -> bool {
 }
 
 pub(crate) fn safety_is_usable(
-    constraints: &Timed<api::safety::MotionConstraints>,
+    constraints: &Timed<api::domains::v0_2::safety::MotionConstraints>,
     now: RobotInstant,
 ) -> bool {
     let body = &constraints.body;
@@ -174,7 +174,7 @@ pub(crate) fn safety_is_usable(
     let mut entry_stopped = false;
     let constraints_valid = body.constraints.iter().all(|constraint| {
         let (reason, valid_from, expires_at, observed_value) = match constraint {
-            api::safety::Constraint::Limited {
+            api::domains::v0_2::safety::Constraint::Limited {
                 reason,
                 max_linear_speed_mps,
                 max_angular_speed_radps,
@@ -193,7 +193,7 @@ pub(crate) fn safety_is_usable(
                 );
                 (reason, *valid_from, *expires_at, *observed_value)
             }
-            api::safety::Constraint::Stopped {
+            api::domains::v0_2::safety::Constraint::Stopped {
                 reason,
                 valid_from,
                 expires_at,
@@ -233,12 +233,12 @@ pub(crate) fn safety_is_usable(
         && constraints_valid
         && body.constraints.iter().all(|constraint| {
             let source = match constraint {
-                api::safety::Constraint::Limited { source, .. }
-                | api::safety::Constraint::Stopped { source, .. } => source,
+                api::domains::v0_2::safety::Constraint::Limited { source, .. }
+                | api::domains::v0_2::safety::Constraint::Stopped { source, .. } => source,
             };
             !source.participant_id.is_empty()
                 && match constraint {
-                    api::safety::Constraint::Limited {
+                    api::domains::v0_2::safety::Constraint::Limited {
                         max_linear_speed_mps,
                         max_angular_speed_radps,
                         ..
@@ -248,7 +248,7 @@ pub(crate) fn safety_is_usable(
                             && max_angular_speed_radps.is_finite()
                             && *max_angular_speed_radps >= 0.0
                     }
-                    api::safety::Constraint::Stopped { .. } => true,
+                    api::domains::v0_2::safety::Constraint::Stopped { .. } => true,
                 }
         })
 }
@@ -329,7 +329,7 @@ mod tests {
         }
     }
 
-    fn safety() -> Timed<api::safety::MotionConstraints> {
+    fn safety() -> Timed<api::domains::v0_2::safety::MotionConstraints> {
         Timed {
             body: api::safety::MotionConstraints {
                 sequence: 1,
@@ -394,10 +394,7 @@ mod tests {
     fn autonomous() -> Timed<api::navigation::Candidate> {
         Timed {
             body: api::navigation::Candidate {
-                operation_id: api::navigation::NavigationOperationId {
-                    producer: producer(1),
-                    sequence: 1,
-                },
+                operation_id: api::navigation::NavigationOperationId::new(producer(1), 1).unwrap(),
                 linear_x_mps: 0.2,
                 angular_z_radps: 0.1,
             },

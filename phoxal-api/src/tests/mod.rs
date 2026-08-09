@@ -20,6 +20,7 @@ mod revision;
 mod topic_builder;
 mod topic_keys;
 mod wire_bodies;
+mod wire_invariants;
 
 use phoxal_bus::{RobotInstant, TimelineId};
 
