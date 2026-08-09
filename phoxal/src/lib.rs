@@ -184,13 +184,13 @@ pub mod bus {
     pub use phoxal_bus::{
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
         CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
-        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, FixedSourceLease,
-        KeySegment, KeySegmentError, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection,
-        LocalInstant, MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack,
-        Observed, ParticipantId, ParticipantReadyEvent, ParticipantReadyEvents,
-        ParticipantReadyStatus, ParticipantSourceIdentity, ProducerId, Publish, Querier, QueryCode,
-        QueryError, QueryFailure, QueryResult, ReceiveTerminal, Result, RobotInstant,
-        RobotTimeError, SampleDeliveryContract, SampleReceiver, ServeQuery,
+        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, FixedSourceAdmission,
+        FixedSourceLease, KeySegment, KeySegmentError, LEASE_TRACE_TARGET, LeaseDecision,
+        LeaseRejection, LocalInstant, MAX_READY_PRODUCERS, MeasurementContract,
+        MeasurementPublisher, MessagePack, Observed, ParticipantId, ParticipantReadyEvent,
+        ParticipantReadyEvents, ParticipantReadyStatus, ParticipantSourceIdentity, ProducerId,
+        Publish, Querier, QueryCode, QueryError, QueryFailure, QueryResult, ReceiveTerminal,
+        Result, RobotInstant, RobotTimeError, SampleDeliveryContract, SampleReceiver, ServeQuery,
         SetpointDeliveryContract, SetpointReceiver, SourceAttribution, SourceLabel, StateContract,
         StateDeliveryContract, StatePublisher, StateView, StepStamp, StepToken, StreamContract,
         StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimeWindow, Timed,
@@ -276,10 +276,11 @@ pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{
         CaptureStamp, CommandPublisher, DiagnosticPublisher, ExclusiveProducerLease,
-        FixedSourceLease, LeaseDecision, LocalInstant, MeasurementPublisher, Observed, Querier,
-        QueryError, QueryResult, RobotInstant, SampleDeliveryContract, SampleReceiver,
-        SetpointDeliveryContract, SetpointReceiver, StateDeliveryContract, StatePublisher,
-        StateView, StreamDeliveryContract, StreamReceiver, TimeWindow, Timed, TimelineId,
+        FixedSourceAdmission, FixedSourceLease, LeaseDecision, LocalInstant, MeasurementPublisher,
+        Observed, Querier, QueryError, QueryResult, RobotInstant, SampleDeliveryContract,
+        SampleReceiver, SetpointDeliveryContract, SetpointReceiver, StateDeliveryContract,
+        StatePublisher, StateView, StreamDeliveryContract, StreamReceiver, TimeWindow, Timed,
+        TimelineId,
     };
     pub use crate::{
         AssetId, ManagedTaskPolicy, Participant, ParticipantAssetResolver, QueryContext,

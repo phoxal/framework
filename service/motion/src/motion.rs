@@ -20,6 +20,7 @@
 //! communication semantics.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -107,6 +108,7 @@ pub(crate) struct Api {
     manual: SetpointReceiver<api::motion::ManualCommand>,
     autonomous: StateView<api::navigation::Candidate>,
     navigation_ready: phoxal::bus::ParticipantReadyEvents,
+    safety_ready: phoxal::bus::ParticipantReadyEvents,
     component_estops: Vec<BoundEmergencyStop>,
     safety_constraints: StateView<api::safety::MotionConstraints>,
     drive: CommandPublisher<api::drive::Target>,
@@ -121,6 +123,7 @@ pub(crate) struct MotionState {
     autonomous_authority: FixedSourceLease<api::navigation::Candidate>,
     estop: EmergencyStopLatch,
     last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
+    safety_authority: Arc<Mutex<FixedSourceAdmission>>,
 }
 
 #[phoxal::service(state = MotionState, api = Api)]
@@ -135,7 +138,10 @@ impl Participant for Motion {
         let robot = ctx.robot()?;
         let navigation = phoxal::bus::ParticipantId::new("navigation")
             .map_err(|error| anyhow::anyhow!("invalid fixed navigation participant id: {error}"))?;
-        let navigation_ready = ctx.participant_ready_events().await?;
+        let navigation_ready = ctx.participant_ready_events_for(&navigation).await?;
+        let safety = phoxal::bus::ParticipantId::new("safety")
+            .map_err(|error| anyhow::anyhow!("invalid fixed safety participant id: {error}"))?;
+        let safety_ready = ctx.participant_ready_events_for(&safety).await?;
         let limits = robot.motion().limits().validate()?;
         let estops =
             robot.capability_refs(|capability| matches!(capability, Capability::EmergencyStop(_)));
@@ -155,6 +161,9 @@ impl Participant for Motion {
             });
         }
 
+        let safety_authority = Arc::new(Mutex::new(FixedSourceAdmission::new(safety)));
+        let admission_authority = Arc::clone(&safety_authority);
+
         Ok((
             MotionState {
                 limits,
@@ -169,6 +178,7 @@ impl Participant for Motion {
                 ),
                 estop: EmergencyStopLatch::new(estops),
                 last_safety_constraints: None,
+                safety_authority,
             },
             Api {
                 manual: ctx
@@ -178,9 +188,24 @@ impl Participant for Motion {
                     .state_view(api::topic::client().navigation().candidate())
                     .await?,
                 navigation_ready,
+                safety_ready,
                 component_estops,
                 safety_constraints: ctx
-                    .state_view(api::topic::client().safety().constraints())
+                    .state_view_with_admission(
+                        api::topic::client().safety().constraints(),
+                        move |observed| {
+                            let Ok(mut authority) = admission_authority.lock() else {
+                                return false;
+                            };
+                            matches!(
+                                authority.offer(
+                                    observed.metadata.source.participant_source(),
+                                    observed.metadata.sequence,
+                                ),
+                                LeaseDecision::Acquired | LeaseDecision::Renewed
+                            )
+                        },
+                    )
                     .await?,
                 drive: ctx.command_publisher(api::topic::client().drive().target())?,
                 state: ctx.state_publisher(api::topic::owner().motion().state())?,
@@ -228,10 +253,23 @@ impl Participant for Motion {
             state.autonomous_authority.mark_ready_overflow();
         }
 
+        while let Some(event) = api.safety_ready.try_recv() {
+            let Ok(mut authority) = state.safety_authority.lock() else {
+                bail!("safety authority lock was poisoned");
+            };
+            authority.update_ready_event(&event);
+        }
+        if api.safety_ready.overflowed() {
+            let Ok(mut authority) = state.safety_authority.lock() else {
+                bail!("safety authority lock was poisoned");
+            };
+            authority.mark_ready_overflow();
+        }
+
         while let Some(observed) = api.manual.try_recv() {
             let observed_at = observed.observed_at;
             match state.manual.offer(
-                observed.metadata.source.producer(),
+                &observed.metadata.source,
                 observed.metadata.sequence,
                 observed_at,
                 observed.body,
@@ -346,7 +384,7 @@ impl Participant for Motion {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::{ProducerId, TimelineId};
+    use phoxal::bus::{ProducerId, SourceAttribution, TimelineId};
 
     use super::*;
 
@@ -354,6 +392,13 @@ mod tests {
     /// producer through the bus owner, while tests name theirs explicitly.
     fn producer(value: u128) -> ProducerId {
         ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
+    }
+
+    fn external(producer: ProducerId) -> SourceAttribution {
+        SourceAttribution::External {
+            producer,
+            label: None,
+        }
     }
 
     fn line() -> TimelineId {
@@ -387,7 +432,7 @@ mod tests {
         let host_start = LocalInstant::from_boot_ns(0);
 
         let mut silent = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
-        silent.offer(producer, 1, host_start, command.clone());
+        silent.offer(&external(producer), 1, host_start, command.clone());
         assert!(silent.live(host_start, at(0)).is_some());
         assert!(
             silent
@@ -399,7 +444,7 @@ mod tests {
         );
 
         let mut held = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
-        held.offer(producer, 1, host_start, command);
+        held.offer(&external(producer), 1, host_start, command);
         assert!(held.live(host_start, at(0)).is_some());
         let past_hold = u64::try_from(MANUAL_HOLD.as_nanos()).unwrap() + 1;
         assert!(held.live(host_start, at(past_hold)).is_none());
@@ -413,7 +458,7 @@ mod tests {
         let host_start = LocalInstant::from_boot_ns(0);
         let mut lease = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         lease.offer(
-            producer,
+            &external(producer),
             1,
             host_start,
             api::motion::ManualCommand {

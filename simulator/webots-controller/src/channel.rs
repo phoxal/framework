@@ -412,7 +412,10 @@ impl CapabilityChannel {
                     MOTOR_SOURCE_SILENCE,
                     Duration::MAX,
                 )),
-                ready: Some(ctx.participant_ready_events().await?),
+                ready: Some(
+                    ctx.participant_ready_events_for(&ParticipantId::new("drive")?)
+                        .await?,
+                ),
             }),
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,

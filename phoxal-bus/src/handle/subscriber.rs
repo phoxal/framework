@@ -137,6 +137,8 @@ struct LatestState<B> {
     retired_timelines: RetiredTimelines,
 }
 
+type Admission<B> = Arc<dyn Fn(&Observed<B>) -> bool + Send + Sync>;
+
 enum LatestIngest {
     Active {
         overwrote: bool,
@@ -255,6 +257,30 @@ impl<B: ContractBody> Latest<B> {
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Self::new_inner(bus, topic, None).await
+    }
+
+    /// Build a keep-last view that admits observations before coalescing them.
+    /// The admission callback is synchronous in-memory policy and runs on the
+    /// transport receive task, before the latest slot can overwrite an older
+    /// accepted observation.
+    #[doc(hidden)]
+    pub async fn new_with_admission<F>(
+        bus: &BusHandle,
+        topic: &Topic<Subscribe<B>>,
+        admission: F,
+    ) -> Result<Self>
+    where
+        F: Fn(&Observed<B>) -> bool + Send + Sync + 'static,
+    {
+        Self::new_inner(bus, topic, Some(Arc::new(admission))).await
+    }
+
+    async fn new_inner(
+        bus: &BusHandle,
+        topic: &Topic<Subscribe<B>>,
+        admission: Option<Admission<B>>,
+    ) -> Result<Self> {
         let state = Arc::new(Mutex::new(LatestState {
             active_timeline: None,
             observed: None,
@@ -270,6 +296,9 @@ impl<B: ContractBody> Latest<B> {
             bus,
             topic.key(),
             move |observed| {
+                if admission.as_ref().is_some_and(|admit| !admit(&observed)) {
+                    return;
+                }
                 let mut state = lock(&store);
                 match state.ingest(observed) {
                     LatestIngest::Active { overwrote } => observe.record_latest(overwrote),
@@ -534,6 +563,23 @@ impl<B: crate::contract::StateDeliveryContract> StateView<B> {
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
         Ok(Self {
             inner: Latest::new(bus, topic).await?,
+        })
+    }
+
+    /// Construct a state view whose source admission runs before keep-last
+    /// coalescing. The callback must be a bounded synchronous policy; it is
+    /// invoked on the receive task.
+    #[doc(hidden)]
+    pub async fn new_with_admission<F>(
+        bus: &BusHandle,
+        topic: &Topic<Subscribe<B>>,
+        admission: F,
+    ) -> Result<Self>
+    where
+        F: Fn(&Observed<B>) -> bool + Send + Sync + 'static,
+    {
+        Ok(Self {
+            inner: Latest::new_with_admission(bus, topic, admission).await?,
         })
     }
 
@@ -2045,6 +2091,57 @@ mod tests {
         assert!(
             observed.observed_at.boot_ns() > 0,
             "every subscription stamps its own observation instant"
+        );
+
+        owner.close().await;
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn state_admission_rejects_a_newer_sample_before_keep_last_overwrite() {
+        let (owner, bus) = BusOwner::open(participant_config("state-admission"))
+            .await
+            .unwrap();
+        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new_with_admission(&bus, &sub_topic, |observed| {
+            observed.body.linear_x_mps > 0.0
+        })
+        .await
+        .unwrap();
+
+        publisher
+            .publish(
+                &step(8, 1),
+                Target {
+                    linear_x_mps: 1.0,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .unwrap();
+        for _ in 0..50 {
+            if latest.latest().is_some_and(|body| body.linear_x_mps == 1.0) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(latest.latest().map(|body| body.linear_x_mps), Some(1.0));
+
+        publisher
+            .publish(
+                &step(8, 2),
+                Target {
+                    linear_x_mps: 0.0,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            latest.latest().map(|body| body.linear_x_mps),
+            Some(1.0),
+            "a rejected newer observation must not overwrite accepted state"
         );
 
         owner.close().await;

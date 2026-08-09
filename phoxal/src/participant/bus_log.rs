@@ -539,7 +539,8 @@ mod tests {
     #[tokio::test]
     async fn lease_decisions_reach_the_bus_log_with_their_full_provenance() {
         use crate::bus::{
-            ExclusiveProducerLease, LocalInstant, ProducerId, RobotInstant, TimelineId,
+            ExclusiveProducerLease, LocalInstant, ProducerId, RobotInstant, SourceAttribution,
+            TimelineId,
         };
         use std::time::Duration;
         use tracing_subscriber::layer::SubscriberExt;
@@ -561,13 +562,17 @@ mod tests {
         let silence = Duration::from_millis(150);
         let start = LocalInstant::from_boot_ns(0);
         let step = RobotInstant::new(TimelineId::mint(), 0);
+        let external = |producer| SourceAttribution::External {
+            producer,
+            label: None,
+        };
 
         tracing::subscriber::with_default(subscriber, || {
             let mut lease =
                 ExclusiveProducerLease::new("motion/manual", silence, Duration::from_millis(500));
-            lease.offer(first, 1, start, "go");
+            lease.offer(&external(first), 1, start, "go");
             lease.live(start, step);
-            lease.offer(second, 0, start, "contender");
+            lease.offer(&external(second), 0, start, "contender");
             lease.live(start.saturating_add(silence), step);
         });
 

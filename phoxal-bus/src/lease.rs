@@ -27,6 +27,10 @@ pub enum LeaseRejection {
     /// The source identified a different participant than this input expects.
     #[error("participant attribution does not match the fixed source")]
     WrongParticipant,
+    /// A participant-attributed source attempted to use an external-only
+    /// acquisition lease.
+    #[error("participant-attributed source cannot acquire an external lease")]
+    ParticipantSource,
     /// No producer currently holds an exact Ready lease for the participant.
     #[error("fixed source has no Ready producer")]
     SourceAbsent,
@@ -340,6 +344,123 @@ impl<B> FixedSourceLease<B> {
     }
 }
 
+/// A bodyless fixed-source admission gate for state observations.
+///
+/// Unlike [`FixedSourceLease`], this type does not own or expire a body.  It
+/// only decides whether a participant-attributed observation may enter a
+/// receiver's keep-last slot.  The receiver retains an accepted value until
+/// that value's own domain validity (for example `expires_at`) ends, even if
+/// the source later loses Ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixedSourceAdmission {
+    expected_participant: ParticipantId,
+    ready: HashSet<ProducerId>,
+    ready_overflow: bool,
+    active: Option<(ProducerId, u64)>,
+}
+
+impl FixedSourceAdmission {
+    /// Construct an admission gate for one participant.
+    pub fn new(expected_participant: ParticipantId) -> Self {
+        Self {
+            expected_participant,
+            ready: HashSet::new(),
+            ready_overflow: false,
+            active: None,
+        }
+    }
+
+    /// The participant this gate accepts.
+    pub fn expected_participant(&self) -> &ParticipantId {
+        &self.expected_participant
+    }
+
+    /// Update one exact participant/producer Ready token.
+    pub fn update_ready(
+        &mut self,
+        source: &ParticipantSourceIdentity,
+        status: ParticipantReadyStatus,
+    ) {
+        if source.participant != self.expected_participant {
+            return;
+        }
+        match status {
+            ParticipantReadyStatus::Ready => {
+                if !self.ready.contains(&source.producer) && self.ready.len() >= MAX_READY_PRODUCERS
+                {
+                    self.ready_overflow = true;
+                } else {
+                    self.ready.insert(source.producer);
+                }
+            }
+            ParticipantReadyStatus::Lost => {
+                self.ready.remove(&source.producer);
+                if self
+                    .active
+                    .is_some_and(|(producer, _)| producer == source.producer)
+                {
+                    self.active = None;
+                }
+            }
+        }
+    }
+
+    /// Apply an exact Ready observer event.
+    pub fn update_ready_event(&mut self, event: &ParticipantReadyEvent) {
+        self.update_ready(&event.source, event.status);
+    }
+
+    /// Mark the Ready observer as lossy; admission remains fail-closed.
+    pub fn mark_ready_overflow(&mut self) {
+        self.ready_overflow = true;
+    }
+
+    /// Number of currently Ready producers for the participant.
+    pub fn ready_count(&self) -> usize {
+        self.ready.len()
+    }
+
+    /// Admit a participant-attributed observation before keep-last coalescing.
+    pub fn offer(
+        &mut self,
+        source: Option<&ParticipantSourceIdentity>,
+        sequence: u64,
+    ) -> LeaseDecision {
+        let Some(source) = source else {
+            return LeaseDecision::Rejected(LeaseRejection::WrongParticipant);
+        };
+        if source.participant != self.expected_participant {
+            return LeaseDecision::Rejected(LeaseRejection::WrongParticipant);
+        }
+        if self.ready_overflow {
+            return LeaseDecision::Rejected(LeaseRejection::ReadyStateOverflow);
+        }
+        if self.ready.is_empty() {
+            return LeaseDecision::Rejected(LeaseRejection::SourceAbsent);
+        }
+        if self.ready.len() != 1 || !self.ready.contains(&source.producer) {
+            return LeaseDecision::Rejected(LeaseRejection::SourceConflict);
+        }
+        let decision = match self.active {
+            Some((producer, _accepted)) if producer != source.producer => {
+                LeaseDecision::Rejected(LeaseRejection::SourceConflict)
+            }
+            Some((_producer, accepted)) if sequence <= accepted => {
+                LeaseDecision::Rejected(LeaseRejection::StaleSequence {
+                    accepted,
+                    observed: sequence,
+                })
+            }
+            Some(_) => LeaseDecision::Renewed,
+            None => LeaseDecision::Acquired,
+        };
+        if matches!(decision, LeaseDecision::Acquired | LeaseDecision::Renewed) {
+            self.active = Some((source.producer, sequence));
+        }
+        decision
+    }
+}
+
 /// A receiver-owned lease for an external/operator producer.
 ///
 /// It has no participant field and never consults Ready.  The first admissible
@@ -377,23 +498,28 @@ impl<B> ExclusiveProducerLease<B> {
     /// Offer a body, acquiring the lease when it is free.
     pub fn offer(
         &mut self,
-        producer: ProducerId,
+        source: &crate::metadata::SourceAttribution,
         sequence: u64,
         observed_at: LocalInstant,
         body: B,
     ) -> LeaseDecision {
-        let decision = match self.owner {
-            None => LeaseDecision::Acquired,
-            Some((owner, _accepted)) if owner != producer => {
-                LeaseDecision::Rejected(LeaseRejection::AuthorityHeld { owner })
+        let producer = source.producer();
+        let decision = if source.participant_source().is_some() {
+            LeaseDecision::Rejected(LeaseRejection::ParticipantSource)
+        } else {
+            match self.owner {
+                None => LeaseDecision::Acquired,
+                Some((owner, _accepted)) if owner != producer => {
+                    LeaseDecision::Rejected(LeaseRejection::AuthorityHeld { owner })
+                }
+                Some((_owner, accepted)) if sequence <= accepted => {
+                    LeaseDecision::Rejected(LeaseRejection::StaleSequence {
+                        accepted,
+                        observed: sequence,
+                    })
+                }
+                Some(_) => LeaseDecision::Renewed,
             }
-            Some((_owner, accepted)) if sequence <= accepted => {
-                LeaseDecision::Rejected(LeaseRejection::StaleSequence {
-                    accepted,
-                    observed: sequence,
-                })
-            }
-            Some(_) => LeaseDecision::Renewed,
         };
         self.observations = self.observations.saturating_add(1);
         tracing::info!(
@@ -542,6 +668,13 @@ mod tests {
         ParticipantSourceIdentity::new(participant.clone(), producer)
     }
 
+    fn external(producer: ProducerId) -> crate::metadata::SourceAttribution {
+        crate::metadata::SourceAttribution::External {
+            producer,
+            label: None,
+        }
+    }
+
     fn step(line: TimelineId, ticks: u64) -> RobotInstant {
         RobotInstant::new(line, ticks)
     }
@@ -687,6 +820,57 @@ mod tests {
     }
 
     #[test]
+    fn fixed_source_admission_rejects_rogue_clear_before_keep_last() {
+        let expected = participant("safety");
+        let rogue = participant("operator");
+        let authoritative = source_identity(&expected, producer(14));
+        let rogue = source_identity(&rogue, producer(15));
+        let mut admission = FixedSourceAdmission::new(expected);
+        admission.update_ready(&authoritative, ParticipantReadyStatus::Ready);
+
+        let mut keep_last = None;
+        if matches!(
+            admission.offer(Some(&authoritative), 1),
+            LeaseDecision::Acquired | LeaseDecision::Renewed
+        ) {
+            keep_last = Some("authoritative stop");
+        }
+        assert_eq!(
+            admission.offer(Some(&rogue), 99),
+            LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
+        );
+        assert_eq!(keep_last, Some("authoritative stop"));
+    }
+
+    #[test]
+    fn fixed_source_admission_ready_loss_keeps_existing_value_outside_gate() {
+        let expected = participant("safety");
+        let identity = source_identity(&expected, producer(16));
+        let mut admission = FixedSourceAdmission::new(expected);
+        admission.update_ready(&identity, ParticipantReadyStatus::Ready);
+        assert_eq!(admission.offer(Some(&identity), 1), LeaseDecision::Acquired);
+        admission.update_ready(&identity, ParticipantReadyStatus::Lost);
+        assert_eq!(admission.ready_count(), 0);
+        assert_eq!(
+            admission.offer(Some(&identity), 2),
+            LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
+        );
+    }
+
+    #[test]
+    fn fixed_source_admission_overflow_blocks_new_values_without_body_state() {
+        let expected = participant("safety");
+        let identity = source_identity(&expected, producer(17));
+        let mut admission = FixedSourceAdmission::new(expected);
+        admission.update_ready(&identity, ParticipantReadyStatus::Ready);
+        admission.mark_ready_overflow();
+        assert_eq!(
+            admission.offer(Some(&identity), 1),
+            LeaseDecision::Rejected(LeaseRejection::ReadyStateOverflow)
+        );
+    }
+
+    #[test]
     fn external_control_has_no_participant_or_ready_prerequisite_and_no_steal() {
         let first = producer(5);
         let second = producer(6);
@@ -696,9 +880,12 @@ mod tests {
             Duration::from_secs(1),
             Duration::from_secs(1),
         );
-        assert_eq!(lease.offer(first, 0, at, "first"), LeaseDecision::Acquired);
         assert_eq!(
-            lease.offer(second, 99, at, "steal"),
+            lease.offer(&external(first), 0, at, "first"),
+            LeaseDecision::Acquired
+        );
+        assert_eq!(
+            lease.offer(&external(second), 99, at, "steal"),
             LeaseDecision::Rejected(LeaseRejection::AuthorityHeld { owner: first })
         );
         assert_eq!(lease.producer(), Some(first));
@@ -711,9 +898,31 @@ mod tests {
         );
         assert!(lease.release(first).is_ok());
         assert_eq!(
-            lease.offer(second, 0, at, "second"),
+            lease.offer(&external(second), 0, at, "second"),
             LeaseDecision::Acquired
         );
+    }
+
+    #[test]
+    fn external_lease_rejects_participant_attribution() {
+        let source = ParticipantSourceIdentity::new(participant("motion"), producer(13));
+        let at = LocalInstant::from_boot_ns(0);
+        let mut lease = ExclusiveProducerLease::new(
+            "motion/manual",
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            lease.offer(
+                &crate::metadata::SourceAttribution::Participant(source),
+                0,
+                at,
+                "rogue",
+            ),
+            LeaseDecision::Rejected(LeaseRejection::ParticipantSource)
+        );
+        assert_eq!(lease.producer(), None);
     }
 
     #[test]
@@ -727,14 +936,14 @@ mod tests {
             Duration::from_millis(10),
             Duration::from_secs(1),
         );
-        lease.offer(first, 0, at, "first");
+        lease.offer(&external(first), 0, at, "first");
         assert!(
             lease
                 .live(at.saturating_add(Duration::from_millis(10)), step(line, 0))
                 .is_none()
         );
         assert_eq!(
-            lease.offer(second, 0, at, "second"),
+            lease.offer(&external(second), 0, at, "second"),
             LeaseDecision::Acquired
         );
     }
@@ -752,12 +961,12 @@ mod tests {
         );
 
         assert_eq!(
-            lease.offer(first, 0, start, "first"),
+            lease.offer(&external(first), 0, start, "first"),
             LeaseDecision::Acquired
         );
         lease.expire_host(after_silence);
         assert_eq!(
-            lease.offer(second, 0, after_silence, "second"),
+            lease.offer(&external(second), 0, after_silence, "second"),
             LeaseDecision::Acquired
         );
         assert_eq!(lease.producer(), Some(second));
@@ -775,7 +984,7 @@ mod tests {
         let mut lease = ExclusiveProducerLease::new("motion/manual", Duration::from_secs(1), hold);
 
         assert_eq!(
-            lease.offer(first, 0, host_start, "first"),
+            lease.offer(&external(first), 0, host_start, "first"),
             LeaseDecision::Acquired
         );
         assert_eq!(lease.live(host_start, step(line, 0)), Some(&"first"));
@@ -786,7 +995,7 @@ mod tests {
         );
         assert_eq!(
             lease.offer(
-                second,
+                &external(second),
                 0,
                 host_start.saturating_add(Duration::from_millis(1)),
                 "second"

@@ -78,8 +78,8 @@ pub use handle::subscriber::{
     SetpointReceiver, StateView, StreamEvent, StreamReceiver, TimelineRetention,
 };
 pub use lease::{
-    ExclusiveProducerLease, FixedSourceLease, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection,
-    MAX_READY_PRODUCERS,
+    ExclusiveProducerLease, FixedSourceAdmission, FixedSourceLease, LEASE_TRACE_TARGET,
+    LeaseDecision, LeaseRejection, MAX_READY_PRODUCERS,
 };
 pub use liveliness::{
     KeyLivelinessObserver, LivelinessStatus, ParticipantReadyEvent, ParticipantReadyEvents,
