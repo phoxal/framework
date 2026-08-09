@@ -1,7 +1,7 @@
 //! The receiving side: a decoded sample, a keep-last-1 view, and a drop-oldest
 //! ring, plus the background subscription task all three share.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -618,6 +618,19 @@ impl<B: crate::contract::SampleDeliveryContract> SampleReceiver<B> {
 /// Delivery-specific ordered stream receiver.
 pub struct StreamReceiver<B> {
     inner: Subscriber<B>,
+    topic: String,
+    next_positions: Mutex<HashMap<crate::ProducerId, Option<u64>>>,
+}
+
+/// One ordered stream observation, including explicit gap evidence.
+#[derive(Debug)]
+pub enum StreamEvent<B> {
+    Item(Observed<B>),
+    Gap {
+        expected: u64,
+        observed: u64,
+        item: Observed<B>,
+    },
 }
 
 impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
@@ -625,15 +638,58 @@ impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
         Ok(Self {
             inner: Subscriber::new(bus, topic).await?,
+            topic: topic.key().to_string(),
+            next_positions: Mutex::new(HashMap::new()),
         })
     }
 
-    pub async fn recv(&self) -> Result<Observed<B>> {
-        self.inner.recv().await
+    /// Receive the next ordered item or explicit gap evidence.
+    pub async fn recv_event(&self) -> Result<StreamEvent<B>> {
+        let observed = self.inner.recv().await?;
+        self.classify(observed)
     }
 
-    pub fn try_recv(&self) -> Option<Observed<B>> {
-        self.inner.try_recv()
+    /// Receive the next item, failing rather than hiding a detected gap.
+    pub async fn recv(&self) -> Result<Observed<B>> {
+        match self.recv_event().await? {
+            StreamEvent::Item(observed) => Ok(observed),
+            StreamEvent::Gap {
+                expected,
+                observed,
+                item,
+            } => Err(BusError::StreamGap {
+                topic: self.topic.clone(),
+                producer: item.metadata.source.producer(),
+                expected,
+                observed,
+            }),
+        }
+    }
+
+    /// Take the next buffered stream event without waiting.
+    pub fn try_recv_event(&self) -> Result<Option<StreamEvent<B>>> {
+        self.inner
+            .try_recv()
+            .map(|observed| self.classify(observed))
+            .transpose()
+    }
+
+    /// Take the next item, failing rather than hiding a detected gap.
+    pub fn try_recv(&self) -> Result<Option<Observed<B>>> {
+        match self.try_recv_event()? {
+            Some(StreamEvent::Item(observed)) => Ok(Some(observed)),
+            Some(StreamEvent::Gap {
+                expected,
+                observed,
+                item,
+            }) => Err(BusError::StreamGap {
+                topic: self.topic.clone(),
+                producer: item.metadata.source.producer(),
+                expected,
+                observed,
+            }),
+            None => Ok(None),
+        }
     }
 
     pub fn terminal(&self) -> Option<ReceiveTerminal> {
@@ -648,6 +704,47 @@ impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
     #[doc(hidden)]
     pub fn timeline_retention(&self) -> TimelineRetention {
         self.inner.retention_handle()
+    }
+
+    fn classify(&self, item: Observed<B>) -> Result<StreamEvent<B>> {
+        classify_stream(&self.topic, &self.next_positions, item)
+    }
+}
+
+fn classify_stream<B>(
+    topic: &str,
+    next_positions: &Mutex<HashMap<crate::ProducerId, Option<u64>>>,
+    item: Observed<B>,
+) -> Result<StreamEvent<B>> {
+    let producer = item.metadata.source.producer();
+    let observed = item
+        .metadata
+        .stream_position
+        .as_ref()
+        .ok_or_else(|| BusError::MissingStreamPosition {
+            topic: topic.to_string(),
+        })?
+        .sequence;
+    let mut positions = lock(next_positions);
+    let next = positions.entry(producer).or_insert(Some(0));
+    let expected = (*next).ok_or(BusError::SequenceExhausted)?;
+    if observed == expected {
+        *next = observed.checked_add(1);
+        Ok(StreamEvent::Item(item))
+    } else if observed > expected {
+        *next = observed.checked_add(1);
+        Ok(StreamEvent::Gap {
+            expected,
+            observed,
+            item,
+        })
+    } else {
+        Err(BusError::StreamPositionRegressed {
+            topic: topic.to_string(),
+            producer,
+            expected,
+            observed,
+        })
     }
 }
 
@@ -1071,6 +1168,57 @@ mod tests {
             },
             observed_at: LocalInstant::try_now().expect("test host clock"),
         }
+    }
+
+    fn stream_observed(body: u8, position: Option<u64>) -> Observed<u8> {
+        let mut observed = observed(body, None);
+        observed.metadata.stream_position =
+            position.map(|sequence| crate::metadata::StreamPosition { sequence });
+        observed
+    }
+
+    #[test]
+    fn stream_positions_surface_gaps_and_reject_regressions() {
+        let positions = Mutex::new(HashMap::new());
+        assert!(matches!(
+            classify_stream("v0.2/test/stream", &positions, stream_observed(1, Some(0)))
+                .expect("first position is ordered"),
+            StreamEvent::Item(Observed { body: 1, .. })
+        ));
+
+        let gap = classify_stream("v0.2/test/stream", &positions, stream_observed(3, Some(2)))
+            .expect("a forward gap is explicit evidence, not a decode failure");
+        assert!(matches!(
+            gap,
+            StreamEvent::Gap {
+                expected: 1,
+                observed: 2,
+                item: Observed { body: 3, .. },
+            }
+        ));
+
+        let regression =
+            classify_stream("v0.2/test/stream", &positions, stream_observed(2, Some(1)))
+                .expect_err("a repeated or reversed position is never ordered stream data");
+        assert!(matches!(
+            regression,
+            BusError::StreamPositionRegressed {
+                expected: 3,
+                observed: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_stream_sample_without_a_position_is_rejected() {
+        let error = classify_stream(
+            "v0.2/test/stream",
+            &Mutex::new(HashMap::new()),
+            stream_observed(1, None),
+        )
+        .expect_err("stream delivery requires a per-topic position");
+        assert!(matches!(error, BusError::MissingStreamPosition { .. }));
     }
 
     #[test]

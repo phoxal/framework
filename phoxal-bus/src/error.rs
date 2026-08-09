@@ -108,6 +108,32 @@ pub enum BusError {
         topic: String,
     },
 
+    /// An ordered stream skipped one or more positions for this receiver.
+    #[error(
+        "stream gap on '{topic}' from producer {producer}: expected position {expected}, observed {observed}"
+    )]
+    StreamGap {
+        topic: String,
+        producer: ProducerId,
+        expected: u64,
+        observed: u64,
+    },
+
+    /// An ordered stream sample omitted its required per-topic position.
+    #[error("stream sample on '{topic}' has no stream position")]
+    MissingStreamPosition { topic: String },
+
+    /// An ordered stream repeated or regressed a position.
+    #[error(
+        "stream position regressed on '{topic}' from producer {producer}: expected at least {expected}, observed {observed}"
+    )]
+    StreamPositionRegressed {
+        topic: String,
+        producer: ProducerId,
+        expected: u64,
+        observed: u64,
+    },
+
     /// A Zenoh session id is not a legal Phoxal identity. Something is
     /// listening on that endpoint, but it is not a Phoxal peer.
     #[error("session id '{zid}' is not a phoxal {role}: {source}")]

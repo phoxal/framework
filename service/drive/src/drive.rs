@@ -862,7 +862,9 @@ mod tests {
         assert_eq!(config.right.len(), 2);
         assert_eq!(config.kinematics.wheel_radius_m, 0.1);
         // Each binding resolves to a concrete dynamic motor topic.
-        let topic = config.left[0].topic()?;
+        let topic = config.left[0]
+            .topic()
+            .expect("compiled motor bindings are valid key segments");
         assert!(topic.key().starts_with("v0.2/component/"));
         assert!(topic.key().ends_with("/command"));
     }

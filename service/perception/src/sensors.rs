@@ -100,12 +100,18 @@ mod tests {
 
         assert_eq!(cameras.len(), 3);
         assert_eq!(depths.len(), 1);
-        assert!(
-            cameras.iter().any(|camera| camera.camera_topic().key()
-                == "v0.2/component/front_camera/camera/rgb/frame")
-        );
+        assert!(cameras.iter().any(|camera| {
+            camera
+                .camera_topic()
+                .expect("compiled camera bindings are valid key segments")
+                .key()
+                == "v0.2/component/front_camera/camera/rgb/frame"
+        }));
         assert_eq!(
-            depths[0].depth_topic().key(),
+            depths[0]
+                .depth_topic()
+                .expect("compiled depth bindings are valid key segments")
+                .key(),
             "v0.2/component/front_camera/depth/depth/frame"
         );
     }

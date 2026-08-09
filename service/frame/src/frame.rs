@@ -112,7 +112,7 @@ impl Participant for Frame {
     #[phoxal::step(hz = 50)]
     fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         for tracked in &api.joints {
-            while let Some(observed) = tracked.states.try_recv() {
+            while let Some(observed) = tracked.states.try_recv()? {
                 let Some(at) = observed.metadata.produced_exactly_at() else {
                     continue;
                 };

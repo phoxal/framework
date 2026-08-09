@@ -47,6 +47,7 @@ impl KeySegment {
             || value.contains('/')
             || value.contains('*')
             || value.chars().any(|character| character.is_control())
+            || zenoh::key_expr::OwnedKeyExpr::new(value.clone()).is_err()
         {
             return Err(KeySegmentError(value));
         }

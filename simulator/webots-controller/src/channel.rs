@@ -48,65 +48,65 @@ const MOTOR_SOURCE_SILENCE: Duration = Duration::from_millis(150);
 /// so a speaker takes every one in order.
 trait CommandBacklog<B> {
     /// The newest queued value; everything it supersedes is dropped.
-    fn take_newest(&self) -> Option<B>;
+    fn take_newest(&self) -> Result<Option<B>>;
 
     /// Everything queued, oldest first.
-    fn take_all(&self) -> Vec<B>;
+    fn take_all(&self) -> Result<Vec<B>>;
 
     /// The newest body together with the trusted transport provenance that
     /// decides whether an actuator may apply it.
-    fn take_newest_observed(&self) -> Option<Observed<B>>;
+    fn take_newest_observed(&self) -> Result<Option<Observed<B>>>;
 }
 
 impl<B: ContractBody + SetpointDeliveryContract> CommandBacklog<B> for SetpointReceiver<B> {
-    fn take_newest(&self) -> Option<B> {
+    fn take_newest(&self) -> Result<Option<B>> {
         let mut newest = None;
         while let Some(received) = self.try_recv() {
             newest = Some(received.body);
         }
-        newest
+        Ok(newest)
     }
 
-    fn take_all(&self) -> Vec<B> {
+    fn take_all(&self) -> Result<Vec<B>> {
         let mut received = Vec::new();
         while let Some(message) = self.try_recv() {
             received.push(message.body);
         }
-        received
+        Ok(received)
     }
 
-    fn take_newest_observed(&self) -> Option<Observed<B>> {
+    fn take_newest_observed(&self) -> Result<Option<Observed<B>>> {
         let mut newest = None;
         while let Some(received) = self.try_recv() {
             newest = Some(received);
         }
-        newest
+        Ok(newest)
     }
 }
 
 impl<B: ContractBody + StreamDeliveryContract> CommandBacklog<B> for StreamReceiver<B> {
-    fn take_newest(&self) -> Option<B> {
+    fn take_newest(&self) -> Result<Option<B>> {
         let mut newest = None;
-        while let Some(received) = self.try_recv() {
+        while let Some(received) = self.try_recv()? {
             newest = Some(received.body);
         }
-        newest
+        Ok(newest)
     }
 
-    fn take_all(&self) -> Vec<B> {
+    fn take_all(&self) -> Result<Vec<B>> {
         let mut received = Vec::new();
-        while let Some(message) = self.try_recv() {
+        while let Some(message) = self.try_recv()? {
             received.push(message.body);
         }
-        received
+        Ok(received)
     }
 
-    fn take_newest_observed(&self) -> Option<Observed<B>> {
+    fn take_newest_observed(&self) -> Result<Option<Observed<B>>> {
         let mut newest = None;
-        while let Some(received) = self.try_recv() {
+        while let Some(received) = self.try_recv()? {
             newest = Some(received);
         }
-        newest
+        Ok(newest)
     }
 }
 
@@ -135,7 +135,7 @@ impl SimulatedActuator for NativeMotor {
     type Receiver = SetpointReceiver<Self::Command>;
 
     fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
-        match commands.take_newest() {
+        match commands.take_newest()? {
             Some(command) => self.apply(&command),
             None => Ok(()),
         }
@@ -155,7 +155,7 @@ impl SimulatedActuator for NativeLed {
     type Receiver = SetpointReceiver<Self::Command>;
 
     fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
-        match commands.take_newest() {
+        match commands.take_newest()? {
             Some(command) => self.apply(&command),
             None => Ok(()),
         }
@@ -173,7 +173,7 @@ impl SimulatedActuator for NativeSpeaker {
     fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
         // Audio chunks move rather than copy: a stream is large, and nothing
         // downstream needs them again.
-        for chunk in commands.take_all() {
+        for chunk in commands.take_all()? {
             self.apply(chunk)?;
         }
         Ok(())
@@ -250,11 +250,11 @@ impl<A: SimulatedActuator> ActuatorChannel<A> {
             // retained motor command is still live.  Drain and park before
             // the next Webots step; the runner will surface the latched clock
             // fault as a participant failure.
-            self.commands.take_all();
+            self.commands.take_all()?;
             authority.clear();
             return self.device.park();
         };
-        match self.commands.take_newest_observed() {
+        match self.commands.take_newest_observed()? {
             Some(observed) => {
                 let body = observed.body;
                 let accepted = matches!(
@@ -280,7 +280,7 @@ impl<A: SimulatedActuator> ActuatorChannel<A> {
     fn park(&mut self) -> Result<()> {
         // Whatever the graph sent that the stopped loop will never apply goes
         // with it; leaving it queued would apply it to a later world.
-        self.commands.take_all();
+        self.commands.take_all()?;
         self.device.park()
     }
 }

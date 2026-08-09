@@ -163,6 +163,7 @@ mod tests {
                 .component("left_drive")
                 .expect("valid component segment")
                 .encoder("encoder")
+                .expect("valid capability segment")
                 .sample(),
         )
         .await
@@ -173,6 +174,7 @@ mod tests {
                 .component("left_drive")
                 .expect("valid component segment")
                 .encoder("encoder")
+                .expect("valid capability segment")
                 .sample(),
         )
         .expect("encoder publisher should attach");
