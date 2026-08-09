@@ -122,6 +122,7 @@ phoxal_api! {
             replace topic state: State<crate::domains::v0_2::perception::State>;
         }
         navigation {
+            remove request;
             replace topic state: State<crate::domains::v0_2::navigation::State>;
             replace topic progress: State<crate::domains::v0_2::navigation::Progress>;
             replace topic result: Event<crate::domains::v0_2::navigation::Result>;
