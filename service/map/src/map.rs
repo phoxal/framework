@@ -18,7 +18,7 @@ use phoxal::prelude::*;
 const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct Api {
-    localize: Subscriber<api::localize::LocalizationState>,
+    localize: StateView<api::localize::LocalizationState>,
     revision: StatePublisher<api::map::Revision>,
 }
 
@@ -181,7 +181,7 @@ impl Participant for Map {
             },
             Api {
                 localize: ctx
-                    .subscriber(api::topic::client().localize().state())
+                    .state_view(api::topic::client().localize().state())
                     .await?,
                 // Map OWNS the `map` node (its revision telemetry and the
                 // `map/submap` query it serves below) -> owner builder;
@@ -203,10 +203,10 @@ impl Participant for Map {
 
     #[phoxal::step(hz = 5)]
     fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
-        while let Some(observed) = api.localize.try_recv() {
-            if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_localization = Some(Timed::new(observed.body, at));
-            }
+        if let Some(observed) = api.localize.observed()
+            && let Some(at) = observed.metadata.produced_exactly_at()
+        {
+            state.last_localization = Some(Timed::new(observed.body.clone(), at));
         }
 
         // Only a real, finite, fresh pose may write the grid; anything else

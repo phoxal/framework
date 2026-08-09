@@ -23,7 +23,7 @@ struct MissionState {
 }
 
 struct MissionApi {
-    drive: Latest<api::drive::State>,
+    drive: StateView<api::drive::State>,
     target: CommandPublisher<api::drive::Target>,
 }
 
@@ -39,7 +39,7 @@ impl Participant for MissionBrain {
         Ok((
             MissionState::default(),
             MissionApi {
-                drive: ctx.latest(api::topic::client().drive().state()).await?,
+                drive: ctx.state_view(api::topic::client().drive().state()).await?,
                 target: ctx
                     .command_publisher(api::topic::client().drive().target())?,
             },

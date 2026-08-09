@@ -43,11 +43,13 @@ impl EncoderBinding {
     /// The dynamic per-instance encoder-sample topic for this binding. Odometry
     /// CONSUMES encoder samples (the encoder driver owns/publishes them), so this
     /// is the client `Subscribe` side from the public builder.
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
-        api::topic::client()
-            .component(&self.reference.component_id)
-            .encoder(&self.reference.capability_id)
-            .sample()
+    fn topic(
+        &self,
+    ) -> Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>>> {
+        Ok(api::topic::client()
+            .component(&self.reference.component_id)?
+            .encoder(&self.reference.capability_id)?
+            .sample())
     }
 }
 
@@ -56,7 +58,7 @@ impl EncoderBinding {
 /// wheel's direction sign.
 struct BoundEncoder {
     binding: EncoderBinding,
-    subscriber: Subscriber<api::component::encoder::Sample>,
+    subscriber: SampleReceiver<api::component::encoder::Sample>,
 }
 
 /// Typed odometry config built from the robot model.
@@ -198,7 +200,7 @@ impl Participant for Odometry {
 
         let mut left = Vec::with_capacity(config.left.len());
         for binding in config.left {
-            let subscriber = ctx.subscriber(binding.topic()).await?;
+            let subscriber = ctx.sample_receiver(binding.topic()?).await?;
             left.push(BoundEncoder {
                 binding,
                 subscriber,
@@ -206,7 +208,7 @@ impl Participant for Odometry {
         }
         let mut right = Vec::with_capacity(config.right.len());
         for binding in config.right {
-            let subscriber = ctx.subscriber(binding.topic()).await?;
+            let subscriber = ctx.sample_receiver(binding.topic()?).await?;
             right.push(BoundEncoder {
                 binding,
                 subscriber,
@@ -380,7 +382,7 @@ mod tests {
         assert_eq!(config.kinematics.unwrap().wheel_radius_m, 0.1);
 
         for binding in config.left.iter().chain(&config.right) {
-            let topic = binding.topic();
+            let topic = binding.topic().unwrap();
             assert!(topic.key().starts_with("v0.2/component/"));
             assert!(topic.key().ends_with("/sample"));
         }

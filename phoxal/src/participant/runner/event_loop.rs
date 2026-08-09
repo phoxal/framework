@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::api;
-use crate::bus::{LocalInstant, RobotInstant, StepToken, Subscriber, TimelineId};
+use crate::bus::{LocalInstant, RobotInstant, StepToken, StreamReceiver, TimelineId};
 use crate::participant::api::Participant;
 use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
@@ -247,7 +247,7 @@ pub(crate) async fn simulation_clock_feed(
     handle: SimulationClockHandle,
 ) -> crate::Result<()> {
     let topic = api::topic::client().simulation().clock();
-    let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic).await {
+    let subscriber = match StreamReceiver::<api::simulation::Clock>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),
     };

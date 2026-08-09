@@ -108,7 +108,7 @@ impl Grid {
 }
 
 struct Api {
-    localize: Latest<api::localize::LocalizationState>,
+    localize: StateView<api::localize::LocalizationState>,
     revision: StatePublisher<api::map::Revision>,
 }
 
@@ -137,7 +137,9 @@ impl Participant for SerializedMap {
                 rev: 0,
             },
             Api {
-                localize: ctx.latest(api::topic::client().localize().state()).await?,
+                localize: ctx
+                    .state_view(api::topic::client().localize().state())
+                    .await?,
                 revision: ctx.state_publisher(api::topic::owner().map().revision())?,
             },
         ))

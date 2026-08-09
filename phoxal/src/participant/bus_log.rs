@@ -404,7 +404,7 @@ async fn drain_loop(
     participant_id: String,
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
-    let topic = api::topic::owner().logs(&participant_id).topic();
+    let topic = api::topic::owner().logs(&participant_id)?.topic();
     let publisher = DiagnosticPublisher::<api::logs::Event>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {

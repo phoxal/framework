@@ -19,8 +19,8 @@ impl Participant for DynamicHandles {
             ranges.push(
                 ctx.measurement_publisher(
                     api::topic::owner()
-                        .component("chassis")
-                        .range(capability)
+                        .component("chassis")?
+                        .range(capability)?
                         .sample(),
                 )?,
             );

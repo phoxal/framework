@@ -19,12 +19,12 @@
 //!
 //! # The crate-root facade
 //!
-//! Every item below is re-exported from the module that owns it, as one
-//! deliberate flat surface for downstream crates. The owning module is the
-//! canonical path - `phoxal_bus::handle::subscriber::Latest` and
-//! `phoxal_bus::Latest` are the same type, and rustdoc documents it once, in
-//! its own module. Code *inside* this crate always imports from the owning
-//! module, never through this facade.
+//! Every author-facing item below is re-exported from the module that owns it,
+//! as one deliberate flat surface for downstream crates. The receive surface
+//! is delivery-specific (`StateView`, `SetpointReceiver`, `SampleReceiver`,
+//! and `StreamReceiver`); the generic ring implementations remain internal.
+//! Code *inside* this crate always imports from the owning module, never
+//! through this facade.
 
 pub mod abi;
 pub mod contract;
@@ -61,7 +61,8 @@ pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, Producer
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
     ApiVersion, CommandContract, ContractBody, DeliveryFamily, DiagnosticContract,
-    MeasurementContract, StateContract, StreamContract, TopicRole, WorldClockContract,
+    MeasurementContract, SampleDeliveryContract, SetpointDeliveryContract, StateContract,
+    StateDeliveryContract, StreamContract, StreamDeliveryContract, TopicRole, WorldClockContract,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{
@@ -70,7 +71,10 @@ pub use handle::publisher::{
 };
 pub use handle::querier::{DEFAULT_QUERY_TIMEOUT, Querier};
 pub use handle::stamp::{StepStamp, StepToken, TimelineAuthority, WorldStepToken};
-pub use handle::subscriber::{Latest, Observed, Subscriber};
+pub use handle::subscriber::{
+    Observed, ReceiveTerminal, SampleReceiver, SetpointReceiver, StateView, StreamReceiver,
+    TimelineRetention,
+};
 pub use lease::{
     ExclusiveProducerLease, FixedSourceLease, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection,
     MAX_READY_PRODUCERS,
@@ -97,4 +101,7 @@ pub use time::{
     CaptureStamp, LocalInstant, RetiredTimelines, RobotInstant, RobotTimeError, TimeWindow, Timed,
     TimelineMismatch, WallTimestamp,
 };
-pub use topic::{AskQuery, Publish, ServeQuery, Subscribe, Topic, TopicKind, WildcardPublish};
+pub use topic::{
+    AskQuery, KeySegment, KeySegmentError, Publish, ServeQuery, Subscribe, Topic, TopicKind,
+    WildcardPublish,
+};

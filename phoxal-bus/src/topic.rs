@@ -21,7 +21,7 @@
 //! - [`ServeQuery<Req, Resp>`] - the **owner** side of a query: it *serves* requests.
 //!
 //! The brand is a COMPILE-TIME marker only: the underlying key and the actual
-//! `Publisher`/`Subscriber`/`Latest`/`Querier`/server ops are unchanged. The api
+//! publisher/receiver/querier/server ops are unchanged. The api
 //! tree emits the builder tree twice - a public *client* builder and an
 //! explicit *owner* builder over identical keys - so the side a participant gets
 //! is decided by which builder it calls, and a wrong side fails to compile in the
@@ -29,6 +29,64 @@
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
+
+/// One concrete dynamic segment in a generated topic key.
+///
+/// A segment is deliberately stricter than a general Zenoh key expression:
+/// generated API builders are for concrete participant-owned topics, not
+/// selectors. Wildcards therefore have to use a separate, explicit
+/// subscription path rather than escaping into a publisher handle.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct KeySegment(String);
+
+impl KeySegment {
+    /// Validate and retain one concrete key segment.
+    pub fn new(value: impl Into<String>) -> Result<Self, KeySegmentError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.contains('/')
+            || value.contains('*')
+            || value.chars().any(|character| character.is_control())
+        {
+            return Err(KeySegmentError(value));
+        }
+        Ok(Self(value))
+    }
+
+    /// The validated segment text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for KeySegment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<String> for KeySegment {
+    type Error = KeySegmentError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<&str> for KeySegment {
+    type Error = KeySegmentError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+/// A dynamic topic value that is not one concrete key segment.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error(
+    "topic key segment must be non-empty, concrete, and contain no '/', '*', or control characters; got {0:?}"
+)]
+pub struct KeySegmentError(String);
 
 /// A pub/sub topic the participant **publishes** `B` on (client command, or
 /// owner state).
@@ -145,6 +203,20 @@ pub struct WildcardPublish {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_segments_reject_non_concrete_values() {
+        for invalid in ["", "a/b", "*", "**", "a\n"] {
+            assert!(
+                KeySegment::new(invalid).is_err(),
+                "{invalid:?} must not cross a dynamic builder boundary"
+            );
+        }
+
+        let segment = KeySegment::new("front_left").expect("concrete segment");
+        assert_eq!(segment.as_str(), "front_left");
+        assert_eq!(segment.to_string(), "front_left");
+    }
 
     #[test]
     fn a_concrete_key_is_publishable_and_a_wildcard_one_is_not() {

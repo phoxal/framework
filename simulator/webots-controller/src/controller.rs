@@ -117,7 +117,10 @@ mod tests {
     use crate::channel::PendingPublish;
     use phoxal::__private::ParticipantSpec;
     use phoxal::Participant;
-    use phoxal_bus::{BusConfig, BusOwner, MeasurementPublisher, Subscriber, TimelineAuthority};
+    use phoxal_bus::{
+        BusConfig, BusOwner, MeasurementPublisher, SampleReceiver, StreamReceiver,
+        TimelineAuthority,
+    };
     use std::time::Duration;
 
     #[test]
@@ -148,16 +151,17 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let clock_subscriber = Subscriber::<api::simulation::Clock>::new(
+        let clock_subscriber = StreamReceiver::<api::simulation::Clock>::new(
             &bus,
             &api::topic::client().simulation().clock(),
         )
         .await
         .expect("clock subscriber should attach");
-        let encoder_subscriber = Subscriber::<api::component::encoder::Sample>::new(
+        let encoder_subscriber = SampleReceiver::<api::component::encoder::Sample>::new(
             &bus,
             &api::topic::client()
                 .component("left_drive")
+                .expect("valid component segment")
                 .encoder("encoder")
                 .sample(),
         )
@@ -167,6 +171,7 @@ mod tests {
             bus.clone(),
             &api::topic::owner()
                 .component("left_drive")
+                .expect("valid component segment")
                 .encoder("encoder")
                 .sample(),
         )

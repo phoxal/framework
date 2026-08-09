@@ -182,6 +182,25 @@ pub trait StreamContract: ContractBody {}
 /// no robot time at all.
 pub trait DiagnosticContract: ContractBody {}
 
+/// Marker for a contract whose transport retains the newest state snapshot.
+///
+/// This is deliberately independent from the temporal publisher marker above:
+/// a diagnostic or event can use state-temporal stamping while requiring an
+/// ordered transport family.
+pub trait StateDeliveryContract: ContractBody {}
+
+/// Marker for a contract whose transport preserves bounded ordered samples
+/// with explicit loss evidence.
+pub trait SampleDeliveryContract: ContractBody {}
+
+/// Marker for a contract whose transport retains only the newest actionable
+/// intent.
+pub trait SetpointDeliveryContract: ContractBody {}
+
+/// Marker for a contract whose transport preserves ordered chunks and surfaces
+/// saturation rather than evicting an older chunk.
+pub trait StreamDeliveryContract: ContractBody {}
+
 /// A version-local wire body: a plain serde type bound to exactly one
 /// [`ApiVersion`] and one contract topic.
 ///

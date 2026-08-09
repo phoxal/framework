@@ -7,7 +7,8 @@ use syn::{Ident, ItemEnum, ItemStruct, Token};
 
 use super::ApiTree;
 use super::model::{
-    Node, Protocol, Removal, TopicDef, TopicKind, TopicLeaf, TopicRole, TypeDef, TypeItem, Version,
+    DeliveryOverride, Node, Protocol, Removal, TopicDef, TopicKind, TopicLeaf, TopicRole, TypeDef,
+    TypeItem, Version,
 };
 
 mod kw {
@@ -23,6 +24,9 @@ mod kw {
     syn::custom_keyword!(state);
     syn::custom_keyword!(measurement);
     syn::custom_keyword!(diagnostic);
+    syn::custom_keyword!(delivery);
+    syn::custom_keyword!(sample);
+    syn::custom_keyword!(setpoint);
     syn::custom_keyword!(event);
     syn::custom_keyword!(query);
     syn::custom_keyword!(world_clock);
@@ -354,12 +358,40 @@ impl Parse for TopicDef {
                  (framework-reserved), or `query <Req> => <Resp>`",
             ));
         };
+        let delivery = if input.peek(kw::delivery) {
+            input.parse::<kw::delivery>()?;
+            if input.peek(kw::state) {
+                input.parse::<kw::state>()?;
+                Some(DeliveryOverride::State)
+            } else if input.peek(kw::sample) {
+                input.parse::<kw::sample>()?;
+                Some(DeliveryOverride::Sample)
+            } else if input.peek(kw::setpoint) {
+                input.parse::<kw::setpoint>()?;
+                Some(DeliveryOverride::Setpoint)
+            } else if input.peek(kw::stream) {
+                input.parse::<kw::stream>()?;
+                Some(DeliveryOverride::Stream)
+            } else {
+                return Err(input.error(
+                    "expected a delivery override: `state`, `sample`, `setpoint`, or `stream`",
+                ));
+            }
+        } else {
+            None
+        };
+        if delivery.is_some() && matches!(&kind, TopicKind::Query { .. }) {
+            return Err(input.error(
+                "delivery overrides apply to pub/sub topics; queries use their direct request/reply transport",
+            ));
+        }
         input.parse::<Token![;]>()?;
         Ok(TopicDef {
             replace: false,
             leaf,
             kind,
             role,
+            delivery,
         })
     }
 }

@@ -110,6 +110,22 @@ fn navigation_result_is_an_owner_event_with_ordered_delivery_only_in_v0_2() {
 }
 
 #[test]
+fn temporal_roles_can_override_transport_delivery() {
+    assert_eq!(
+        <crate::latest::simulation::Clock as ContractBody>::DELIVERY,
+        DeliveryFamily::Stream
+    );
+    assert_eq!(
+        <crate::latest::logs::Event as ContractBody>::DELIVERY,
+        DeliveryFamily::Stream
+    );
+    assert_eq!(
+        <crate::latest::joint::JointState as ContractBody>::DELIVERY,
+        DeliveryFamily::Stream
+    );
+}
+
+#[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     assert_eq!(
         crate::API_CONTRACT_MANIFEST.len(),

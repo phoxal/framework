@@ -35,6 +35,18 @@ pub enum ReceiveTerminal {
     Transport(String),
 }
 
+/// Runner-owned timeline retention callback for a receive handle. This is
+/// cloneable as framework plumbing, while the destructive receiver itself is
+/// intentionally not cloneable on the author surface.
+#[derive(Clone)]
+pub struct TimelineRetention(Arc<dyn Fn(TimelineId) + Send + Sync>);
+
+impl TimelineRetention {
+    pub fn retain(&self, timeline: TimelineId) {
+        (self.0)(timeline);
+    }
+}
+
 struct TerminalState {
     value: Mutex<Option<ReceiveTerminal>>,
     notify: Notify,
@@ -94,18 +106,16 @@ impl<B> Observed<B> {
     }
 }
 
-/// Keep-last-1 view of a topic: the most recently received sample, provenance
+/// Internal keep-last-1 view of a topic used by [`StateView`]: the most recently received sample, provenance
 /// included.
 ///
 /// A background task overwrites a single slot with each decoded sample, so a
-/// reader always sees current state and never a backlog. Use this when only the
-/// latest value matters (the common case for periodic state); reach for
-/// [`Subscriber`] when a bounded history is useful. Decode failures are counted
+/// reader always sees current state and never a backlog. Decode failures are counted
 /// and logged, not stored. Once a timeline barrier is active, possible
 /// replacement timelines are kept in a separate bounded quarantine and remain
 /// invisible until their matching timeline is activated. The subscription lives
-/// until the `Latest` is dropped.
-pub struct Latest<B> {
+/// until the internal view is dropped.
+pub(crate) struct Latest<B> {
     state: Arc<Mutex<LatestState<B>>>,
     metric: RuntimeMetricHandle,
     terminal: Arc<TerminalState>,
@@ -317,25 +327,33 @@ impl<B: ContractBody> Latest<B> {
         self.metric.record_timeline_filtered(filtered);
         self.metric.record_latest_depth(occupied);
     }
+
+    pub(crate) fn retention_handle(&self) -> TimelineRetention
+    where
+        B: 'static,
+    {
+        let retained = self.clone();
+        TimelineRetention(Arc::new(move |timeline| retained.retain_timeline(timeline)))
+    }
 }
 
-/// A drop-oldest ring subscription of observed samples.
+/// Internal ring subscription used by the delivery-specific receiver wrappers.
 ///
 /// A background task pushes each decoded sample onto a bounded ring (the depth
 /// is set at construction). When a slow consumer lets the ring fill, the oldest
 /// buffered sample is evicted and `inbound_drops` is bumped - the newest sample
 /// always wins, the backlog never grows without bound. Use this when a short
-/// history is useful; reach for [`Latest`] when only current state matters.
+/// history is useful; [`StateView`] is used when only current state matters.
 /// Decode failures are counted + logged, not buffered. Once a timeline barrier
 /// is active, possible replacement timelines are kept in separate bounded rings
 /// and remain invisible until their matching timeline is activated. The
-/// subscription lives until the last clone of the `Subscriber` is dropped.
+/// subscription lives until the last internal owner is dropped.
 ///
-/// # Cloning shares one queue - `recv`/`try_recv` compete
+/// # Internal cloning shares one queue - `recv`/`try_recv` compete
 ///
-/// [`Clone`] is cheap (both fields are `Arc`, so a clone shares the one
-/// background decode task and the one backing ring), but unlike [`Latest`] a
-/// `Subscriber` is a **destructive** view: [`recv`](Self::recv)/
+/// The private implementation is cheap to clone (both fields are `Arc`, so a
+/// clone shares the one background decode task and the one backing ring), but
+/// it is a **destructive** view: [`recv`](Self::recv)/
 /// [`try_recv`](Self::try_recv) *pop* from the shared ring, delivering each
 /// buffered sample to exactly one caller. So two clones of one `Subscriber`
 /// are two **competing consumers** of the same queue, not two independent
@@ -343,12 +361,9 @@ impl<B: ContractBody> Latest<B> {
 /// it. That is a correctness question for whoever holds the clones, not a
 /// memory-safety one.
 ///
-/// Prefer [`Latest`] whenever a value needs to be read from more than one place
-/// (its `.observed()` is a non-destructive clone from one mutex-serialized
-/// retained slot, so every clone sees the same current value); reserve sharing a
-/// `Subscriber` clone for a deliberate "first clone to poll wins" work-queue
-/// fan-out.
-pub struct Subscriber<B> {
+/// The public `SetpointReceiver`, `SampleReceiver`, and `StreamReceiver` types
+/// intentionally do not expose this clone operation.
+pub(crate) struct Subscriber<B> {
     ring: Arc<Ring<B>>,
     terminal: Arc<TerminalState>,
     _guard: Arc<SubscriptionGuard>,
@@ -370,9 +385,8 @@ impl<B> Clone for Subscriber<B> {
 impl<B: ContractBody> Subscriber<B> {
     /// Build a drop-oldest ring over a topic.
     ///
-    /// The author-facing path is `ctx.subscriber(...)` in `Participant::setup`.
-    /// `pub` only because the generated api tree and the runner live in other
-    /// crates; see [`crate::handle::stamp`]'s module docs.
+    /// `pub` only because the delivery-specific wrappers and the runner live
+    /// in other crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
         // Buffering is a contract property, not a tuning knob each caller can
@@ -383,7 +397,19 @@ impl<B: ContractBody> Subscriber<B> {
             .runtime_metrics()?
             .register_subscriber(topic.key(), depth);
         let terminal = Arc::new(TerminalState::new());
-        let ring = Arc::new(Ring::new(depth, metric.clone(), Arc::clone(&terminal)));
+        let policy = match B::DELIVERY {
+            DeliveryFamily::Stream => RingPolicy::Refuse,
+            DeliveryFamily::State
+            | DeliveryFamily::Setpoint
+            | DeliveryFamily::Sample
+            | DeliveryFamily::Query => RingPolicy::DropOldest,
+        };
+        let ring = Arc::new(Ring::new(
+            depth,
+            policy,
+            metric.clone(),
+            Arc::clone(&terminal),
+        ));
         let push = Arc::clone(&ring);
         let drops = bus.clone();
         let topic_owned = topic.key().to_string();
@@ -462,6 +488,167 @@ impl<B: ContractBody> Subscriber<B> {
     pub fn retain_timeline(&self, timeline: TimelineId) {
         self.ring.retain_timeline(timeline);
     }
+
+    pub(crate) fn retention_handle(&self) -> TimelineRetention
+    where
+        B: 'static,
+    {
+        let retained = self.clone();
+        TimelineRetention(Arc::new(move |timeline| retained.retain_timeline(timeline)))
+    }
+}
+
+/// Delivery-specific keep-newest view for a state contract.
+#[derive(Clone)]
+pub struct StateView<B> {
+    inner: Latest<B>,
+}
+
+impl<B: crate::contract::StateDeliveryContract> StateView<B> {
+    /// Construct the state view for a typed subscription.
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Latest::new(bus, topic).await?,
+        })
+    }
+
+    pub fn observed(&self) -> Option<Arc<Observed<B>>> {
+        self.inner.observed()
+    }
+
+    pub fn latest(&self) -> Option<B>
+    where
+        B: Clone,
+    {
+        self.inner.latest()
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
+}
+
+/// Delivery-specific receiver for newest-actionable setpoints.
+pub struct SetpointReceiver<B> {
+    inner: Subscriber<B>,
+}
+
+impl<B: crate::contract::SetpointDeliveryContract> SetpointReceiver<B> {
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Subscriber::new(bus, topic).await?,
+        })
+    }
+
+    pub async fn recv(&self) -> Result<Observed<B>> {
+        self.inner.recv().await
+    }
+
+    pub fn try_recv(&self) -> Option<Observed<B>> {
+        self.inner.try_recv()
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
+}
+
+/// Delivery-specific bounded ordered sample receiver.
+pub struct SampleReceiver<B> {
+    inner: Subscriber<B>,
+}
+
+impl<B: crate::contract::SampleDeliveryContract> SampleReceiver<B> {
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Subscriber::new(bus, topic).await?,
+        })
+    }
+
+    pub async fn recv(&self) -> Result<Observed<B>> {
+        self.inner.recv().await
+    }
+
+    pub fn try_recv(&self) -> Option<Observed<B>> {
+        self.inner.try_recv()
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.inner.dropped()
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
+}
+
+/// Delivery-specific ordered stream receiver.
+pub struct StreamReceiver<B> {
+    inner: Subscriber<B>,
+}
+
+impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Subscriber::new(bus, topic).await?,
+        })
+    }
+
+    pub async fn recv(&self) -> Result<Observed<B>> {
+        self.inner.recv().await
+    }
+
+    pub fn try_recv(&self) -> Option<Observed<B>> {
+        self.inner.try_recv()
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
 }
 
 const DEFAULT_ORDERED_CAPACITY: usize = 32;
@@ -477,9 +664,16 @@ struct Ring<B> {
     state: Mutex<RingState<B>>,
     notify: Notify,
     cap: usize,
+    policy: RingPolicy,
     dropped: AtomicU64,
     metric: RuntimeMetricHandle,
     terminal: Arc<TerminalState>,
+}
+
+#[derive(Clone, Copy)]
+enum RingPolicy {
+    DropOldest,
+    Refuse,
 }
 
 struct RingState<B> {
@@ -501,7 +695,12 @@ struct RingPush {
 }
 
 impl<B> Ring<B> {
-    fn new(cap: usize, metric: RuntimeMetricHandle, terminal: Arc<TerminalState>) -> Self {
+    fn new(
+        cap: usize,
+        policy: RingPolicy,
+        metric: RuntimeMetricHandle,
+        terminal: Arc<TerminalState>,
+    ) -> Self {
         Ring {
             state: Mutex::new(RingState {
                 active_timeline: None,
@@ -511,6 +710,7 @@ impl<B> Ring<B> {
             }),
             notify: Notify::new(),
             cap,
+            policy,
             dropped: AtomicU64::new(0),
             metric,
             terminal,
@@ -574,6 +774,16 @@ impl<B> Ring<B> {
 
         let mut dropped = false;
         if state.buf.len() == self.cap {
+            if matches!(self.policy, RingPolicy::Refuse) {
+                self.terminal.set(ReceiveTerminal::Transport(
+                    "stream receiver buffer saturated".to_string(),
+                ));
+                return RingPush {
+                    accepted: false,
+                    evicted: false,
+                    new_pending_timeline: None,
+                };
+            }
             state.buf.pop_front();
             dropped = true;
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -866,7 +1076,12 @@ mod tests {
     fn ring_counts_each_drop_oldest_eviction_cumulatively() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 1);
-        let ring = Ring::new(1, metric, Arc::new(TerminalState::new()));
+        let ring = Ring::new(
+            1,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::new(TerminalState::new()),
+        );
         let first = ring.push(observed(1, None));
         assert!(first.accepted);
         assert!(!first.evicted);
@@ -893,7 +1108,12 @@ mod tests {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 1);
         let terminal = Arc::new(TerminalState::new());
-        let ring = Arc::new(Ring::<u8>::new(1, metric, Arc::clone(&terminal)));
+        let ring = Arc::new(Ring::<u8>::new(
+            1,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::clone(&terminal),
+        ));
         let waiting = {
             let ring = Arc::clone(&ring);
             tokio::spawn(async move { ring.recv().await })
@@ -941,7 +1161,12 @@ mod tests {
     fn a_sample_expressing_no_robot_time_survives_every_timeline_barrier() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/command", 4);
-        let ring = Ring::new(4, metric, Arc::new(TerminalState::new()));
+        let ring = Ring::new(
+            4,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::new(TerminalState::new()),
+        );
         ring.retain_timeline(timeline(1));
         assert!(ring.push(observed(1, None)).accepted);
         // A reset does not discard a command: it belongs to no world history.
@@ -1222,7 +1447,12 @@ mod tests {
     fn subscriber_activation_is_safe_when_replacement_ingress_races_the_clock() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 4);
-        let ring = Arc::new(Ring::new(4, metric, Arc::new(TerminalState::new())));
+        let ring = Arc::new(Ring::new(
+            4,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::new(TerminalState::new()),
+        ));
         assert!(ring.push(observed(1, Some(1))).accepted);
         ring.retain_timeline(timeline(1));
         assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(1));

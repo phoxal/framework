@@ -77,11 +77,14 @@ pub(super) struct TopicDef {
     /// `AskQuery` / `ServeQuery`, so the public (client) and owner builders
     /// return different branded topics. It is also emitted as
     /// `ContractBody::ROLE` plus the matching temporal-role marker impl, which
-    /// is what fixes the robot time a publisher of the body can express. `event`
-    /// intentionally maps to public `TopicRole::State`/`StateContract` while its
-    /// delivery family is `Stream`: it is owner-published state in time, but every
-    /// event is retained in order rather than overwritten as a latest snapshot.
+    /// is what fixes the robot time a publisher of the body can express. The
+    /// optional `delivery` clause changes only the transport family, allowing
+    /// temporal roles such as `event` to use ordered stream delivery without
+    /// inventing a new temporal role.
     pub(super) role: TopicRole,
+    /// Optional transport override. Temporal role and side branding continue
+    /// to come from `role`; this field only changes delivery admission/storage.
+    pub(super) delivery: Option<DeliveryOverride>,
 }
 
 /// One `remove <path>;` declaration. The head segment is split out from the
@@ -144,6 +147,34 @@ pub(super) enum TopicRole {
     WorldClock,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeliveryOverride {
+    State,
+    Sample,
+    Setpoint,
+    Stream,
+}
+
+impl DeliveryOverride {
+    pub(super) fn bus_variant(self) -> TokenStream {
+        match self {
+            Self::State => quote! { ::phoxal_bus::DeliveryFamily::State },
+            Self::Sample => quote! { ::phoxal_bus::DeliveryFamily::Sample },
+            Self::Setpoint => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
+            Self::Stream => quote! { ::phoxal_bus::DeliveryFamily::Stream },
+        }
+    }
+
+    pub(super) fn marker_trait(self) -> TokenStream {
+        match self {
+            Self::State => quote! { ::phoxal_bus::StateDeliveryContract },
+            Self::Sample => quote! { ::phoxal_bus::SampleDeliveryContract },
+            Self::Setpoint => quote! { ::phoxal_bus::SetpointDeliveryContract },
+            Self::Stream => quote! { ::phoxal_bus::StreamDeliveryContract },
+        }
+    }
+}
+
 impl TopicRole {
     /// The `phoxal_bus::TopicRole` variant path this role maps to.
     pub(super) fn bus_variant(self) -> TokenStream {
@@ -170,6 +201,23 @@ impl TopicRole {
             TopicRole::Event => quote! { ::phoxal_bus::DeliveryFamily::Stream },
             TopicRole::Measurement => quote! { ::phoxal_bus::DeliveryFamily::Sample },
             TopicRole::Query => quote! { ::phoxal_bus::DeliveryFamily::Query },
+        }
+    }
+
+    /// The transport marker emitted independently from the temporal role
+    /// marker. This lets an event, diagnostic, or world-clock body opt into
+    /// ordered delivery without inventing another temporal role.
+    pub(super) fn delivery_marker_trait(self) -> TokenStream {
+        match self {
+            TopicRole::Command => quote! { ::phoxal_bus::SetpointDeliveryContract },
+            TopicRole::Stream | TopicRole::Event => {
+                quote! { ::phoxal_bus::StreamDeliveryContract }
+            }
+            TopicRole::Measurement => quote! { ::phoxal_bus::SampleDeliveryContract },
+            TopicRole::State | TopicRole::WorldClock | TopicRole::Diagnostic => {
+                quote! { ::phoxal_bus::StateDeliveryContract }
+            }
+            TopicRole::Query => quote! { ::phoxal_bus::StateDeliveryContract },
         }
     }
 

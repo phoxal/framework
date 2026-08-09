@@ -106,7 +106,10 @@ impl Node {
             // is what makes two trees' contracts physically distinct Zenoh keys.
             let key = format!("{tree_id}/{}", topic.leaf.key(&node_key_prefix));
             let role = topic.role.bus_variant();
-            let delivery = topic.role.bus_delivery();
+            let delivery = topic.delivery.map_or_else(
+                || topic.role.bus_delivery(),
+                |delivery| delivery.bus_variant(),
+            );
             // The tree-qualified type-path name: the tree identity, then the
             // `::`-joined node path (vars excluded), then the body's own
             // PascalCase leaf. This is the exact same identity the contract
@@ -132,6 +135,10 @@ impl Node {
                         .role
                         .marker_trait()
                         .map(|marker| quote! { impl #marker for #body {} });
+                    let delivery_marker = topic.delivery.map_or_else(
+                        || topic.role.delivery_marker_trait(),
+                        |delivery| delivery.marker_trait(),
+                    );
                     impls.extend(quote! {
                         impl ::phoxal_bus::ContractBody for #body {
                             type Api = self::__PhoxalApiMarker;
@@ -142,6 +149,7 @@ impl Node {
                             const ROLE: ::phoxal_bus::TopicRole = #role;
                             const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
+                        impl #delivery_marker for #body {}
                         #marker
                     });
                 }
@@ -160,6 +168,7 @@ impl Node {
                             const ROLE: ::phoxal_bus::TopicRole = #role;
                             const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
+                        impl ::phoxal_bus::StateDeliveryContract for #request {}
                         impl ::phoxal_bus::ContractBody for #response {
                             type Api = self::__PhoxalApiMarker;
                             const NAME: &'static str = #response_name;
@@ -169,6 +178,7 @@ impl Node {
                             const ROLE: ::phoxal_bus::TopicRole = #role;
                             const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
+                        impl ::phoxal_bus::StateDeliveryContract for #response {}
                     });
                 }
             }

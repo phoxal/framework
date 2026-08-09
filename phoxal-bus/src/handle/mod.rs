@@ -7,8 +7,10 @@
 //! - [`publisher`] - the four role-bounded publisher handles, plus the
 //!   framework's own world-clock publisher.
 //! - [`subscriber`] - the receiving side: [`Observed`](subscriber::Observed),
-//!   the keep-last-1 [`Latest`](subscriber::Latest), and the drop-oldest
-//!   [`Subscriber`](subscriber::Subscriber).
+//!   [`StateView`](subscriber::StateView), and the delivery-specific
+//!   [`SetpointReceiver`](subscriber::SetpointReceiver),
+//!   [`SampleReceiver`](subscriber::SampleReceiver), and
+//!   [`StreamReceiver`](subscriber::StreamReceiver).
 //! - [`querier`] - the caller side of the request/response leg.
 //!
 //! This module itself owns only the vocabulary all four share: turning one
@@ -55,9 +57,10 @@
 //!   `outbound_drops`, and returns [`BusError::Saturated`] so the caller can
 //!   observe the loss - it never stalls the step loop. Publishing is therefore a
 //!   plain synchronous call: there is nothing to await.
-//! - **Receivers bound their backlog.** `Latest<B>` keeps only the last sample;
-//!   `Subscriber<B>` keeps a drop-oldest ring, evicting the oldest buffered
-//!   sample and bumping `inbound_drops` when a slow consumer lets the ring fill.
+//! - **Receivers bind their backlog by contract.** `StateView<B>` keeps only
+//!   the last sample, setpoints retain one actionable value, samples use a
+//!   bounded drop-oldest ring with loss evidence, and streams refuse to evict
+//!   an older chunk when their ring is saturated.
 //!
 //! Contract identity lives entirely in the Zenoh key - the version is folded
 //! into `<Body as ContractBody>::TOPIC` - so a receiver's per-key subscription

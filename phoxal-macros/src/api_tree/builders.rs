@@ -143,8 +143,8 @@ impl MaterializedTree {
 impl Node {
     /// The method on a parent builder (or `Root`) that enters this node's
     /// builder. A static node takes no args; a dynamic node takes its var as
-    /// `impl Display`. The returned builder carries all vars bound so far plus
-    /// this node's (if any).
+    /// `impl Display` and validates it as one concrete [`KeySegment`]. The
+    /// returned builder carries all vars bound so far plus this node's (if any).
     fn entry_method(&self) -> TokenStream {
         let name = &self.name;
         let name_str = name.to_string();
@@ -152,8 +152,9 @@ impl Node {
         match &self.var {
             Some(var) => quote! {
                 #[doc = #name_str]
-                pub fn #name(self, #var: impl ::core::fmt::Display) -> #target {
-                    #name::Builder::__from(self, #var.to_string())
+                pub fn #name(self, #var: impl ::core::fmt::Display) -> ::core::result::Result<#target, ::phoxal_bus::KeySegmentError> {
+                    let #var = ::phoxal_bus::KeySegment::new(#var.to_string())?;
+                    Ok(#name::Builder::__from(self, #var))
                 }
             },
             None => quote! {
@@ -168,7 +169,7 @@ impl Node {
     /// Emit the builder module for this node (and recursively its children) on
     /// `side`. `ancestors` is the chain of nodes from the tree root down to (but
     /// excluding) this node, in order. Each builder is a struct that stores every
-    /// in-scope var as a `String`; leaf methods format the key from those fields
+    /// in-scope var as a validated `KeySegment`; leaf methods format the key from those fields
     /// and brand the returned `Topic` per `side` (the same structure and keys on
     /// both sides; only the leaf brand differs).
     fn expand_builder_module(
@@ -198,7 +199,7 @@ impl Node {
         let ancestor_field_idents: Vec<Ident> = (0..ancestor_vars.len()).map(seg_field).collect();
         let field_decls: Vec<TokenStream> = field_idents
             .iter()
-            .map(|f| quote! { pub(super) #f: String })
+            .map(|f| quote! { pub(super) #f: ::phoxal_bus::KeySegment })
             .collect();
 
         // The `__from` constructor: a static node takes only the parent builder; a
@@ -230,7 +231,7 @@ impl Node {
                 // This node's var is the next positional field after the ancestors'.
                 let new_field = seg_field(ancestor_vars.len());
                 quote! {
-                    pub(super) fn __from(#parent_pat: #parent_builder_ty, #var: String) -> Self {
+                    pub(super) fn __from(#parent_pat: #parent_builder_ty, #var: ::phoxal_bus::KeySegment) -> Self {
                         Self { #(#parent_fields,)* #new_field: #var }
                     }
                 }

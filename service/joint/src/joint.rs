@@ -59,11 +59,13 @@ impl EncoderBinding {
 
     /// Joint CONSUMES encoder samples (the encoder driver owns/publishes them), so
     /// this is the client `Subscribe` side from the public builder.
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
-        api::topic::client()
-            .component(&self.reference.component_id)
-            .encoder(&self.reference.capability_id)
-            .sample()
+    fn topic(
+        &self,
+    ) -> Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>>> {
+        Ok(api::topic::client()
+            .component(&self.reference.component_id)?
+            .encoder(&self.reference.capability_id)?
+            .sample())
     }
 
     /// `sample` expressed at the joint: encoder radians scaled by this
@@ -91,7 +93,7 @@ impl EncoderBinding {
 /// samples, so a sample can never be scaled by another binding's gear ratio.
 struct BoundEncoder {
     binding: EncoderBinding,
-    subscriber: Subscriber<api::component::encoder::Sample>,
+    subscriber: SampleReceiver<api::component::encoder::Sample>,
 }
 
 pub(crate) struct Api {
@@ -116,7 +118,7 @@ impl Participant for Joint {
 
         let mut encoders = Vec::with_capacity(bindings.len());
         for binding in bindings {
-            let subscriber = ctx.subscriber(binding.topic()).await?;
+            let subscriber = ctx.sample_receiver(binding.topic()?).await?;
             encoders.push(BoundEncoder {
                 binding,
                 subscriber,
@@ -127,7 +129,7 @@ impl Participant for Joint {
         for joint_id in joint_ids {
             // Joint OWNS each `joint/{id}` node's state telemetry, so this is
             // the owner builder.
-            let publisher = ctx.state_publisher(api::topic::owner().joint(&joint_id).state())?;
+            let publisher = ctx.state_publisher(api::topic::owner().joint(&joint_id)?.state())?;
             states.insert(joint_id, publisher);
         }
 
