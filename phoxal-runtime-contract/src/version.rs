@@ -10,7 +10,7 @@
 //! that implements each contract, because the record that declares them
 //! ([`crate::metadata::ParticipantMetadata`]) has to name all of them at once
 //! and this crate is below `phoxal-bus`, `phoxal-api`, and `phoxal-manifest`
-//! in the graph. `phoxal-api` pins [`RobotApi`] to the revision its contract tree
+//! in the graph. `phoxal-api` pins its generated `RobotApi` to the revision its contract tree
 //! actually speaks, and the runtime bundle pins [`RuntimeSchema`] to the
 //! compiled document grammar it persists. Authored source grammars are not
 //! participant-binary compatibility claims.
