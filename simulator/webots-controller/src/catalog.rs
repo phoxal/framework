@@ -42,8 +42,6 @@ pub(crate) enum CapabilitySpec {
     Mmwave(SampledSpec),
     Microphone(SampledSpec),
     Battery(BatterySpec),
-    Led(CapabilityRef),
-    Speaker(CapabilityRef),
 }
 
 impl CapabilitySpec {
@@ -64,7 +62,6 @@ impl CapabilitySpec {
             Self::Depth(spec) => &spec.sampled.reference,
             Self::Lidar(spec) => &spec.sampled.reference,
             Self::Battery(spec) => &spec.sampled.reference,
-            Self::Led(reference) | Self::Speaker(reference) => reference,
         }
     }
 
@@ -85,8 +82,6 @@ impl CapabilitySpec {
             Self::Mmwave(_) => CapabilityKind::Mmwave,
             Self::Microphone(_) => CapabilityKind::Microphone,
             Self::Battery(_) => CapabilityKind::Battery,
-            Self::Led(_) => CapabilityKind::Led,
-            Self::Speaker(_) => CapabilityKind::Speaker,
         }
     }
 }
@@ -103,8 +98,9 @@ impl CapabilityCatalog {
     /// # Errors
     ///
     /// Returns an error when a declared capability describes an invalid or
-    /// source-too-fast cadence, or when the robot declares more batteries than
-    /// a Webots robot can hold.
+    /// source-too-fast cadence, when the robot declares more batteries than a
+    /// Webots robot can hold, or when it requests an effect with no defined
+    /// source authority.
     pub(crate) fn from_robot(robot: &Robot, basic_time_step_ms: i32) -> Result<Self> {
         let mut specs = Vec::new();
 
@@ -233,8 +229,16 @@ impl CapabilityCatalog {
                     voltage_v: config.voltage_v,
                     capacity_ah: config.capacity_ah,
                 })),
-                Capability::Led(_) => specs.push(CapabilitySpec::Led(reference)),
-                Capability::Speaker(_) => specs.push(CapabilitySpec::Speaker(reference)),
+                // Unlike a motor, no participant owns LED or speaker effects
+                // in the current graph. Applying either command from every
+                // source would turn arrival order into authority. Reject the
+                // simulated graph during setup rather than silently choosing
+                // an owner or applying an unauthorised effect.
+                Capability::Led(_) | Capability::Speaker(_) => bail!(
+                    "Webots {} effects are unsupported before v1: capability {reference} \
+                     has no declared command authority",
+                    capability.kind()
+                ),
                 // Webots has no button, switch, or toggle node, so nothing in
                 // a simulated world can engage or release an e-stop. Leaving
                 // it unpublished is the honest state: `motion` fails closed on
@@ -343,5 +347,38 @@ mod tests {
         let catalog = CapabilityCatalog::from_robot(&robot, basic_time_step_ms)
             .expect("hello-rover capabilities must be schedulable at 16 ms");
         assert_eq!(catalog.specs().len(), 2);
+    }
+
+    #[test]
+    fn effect_capabilities_fail_closed_without_a_declared_authority() {
+        let led = RobotBuilder::new("led-rover")
+            .component_type("status_panel", |panel| panel.led("status", "base_link"))
+            .component("status_panel", "status_panel")
+            .build()
+            .expect("LED model is otherwise valid");
+        let led_error = match CapabilityCatalog::from_robot(&led, 16) {
+            Ok(_) => panic!("an LED effect must not pick an implicit source"),
+            Err(error) => error,
+        };
+        assert!(
+            led_error
+                .to_string()
+                .contains("Webots led effects are unsupported before v1")
+        );
+
+        let speaker = RobotBuilder::new("speaker-rover")
+            .component_type("speaker_panel", |panel| panel.speaker("alert", "base_link"))
+            .component("speaker_panel", "speaker_panel")
+            .build()
+            .expect("speaker model is otherwise valid");
+        let speaker_error = match CapabilityCatalog::from_robot(&speaker, 16) {
+            Ok(_) => panic!("a speaker effect must not pick an implicit source"),
+            Err(error) => error,
+        };
+        assert!(
+            speaker_error
+                .to_string()
+                .contains("Webots speaker effects are unsupported before v1")
+        );
     }
 }

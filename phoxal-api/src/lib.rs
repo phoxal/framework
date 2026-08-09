@@ -1733,9 +1733,13 @@ phoxal_api_tree! {
                 FollowPath(Path),
             }
 
-            /// A start admission request.  The requester producer comes from
-            /// the trusted query envelope; `request_id` is only the client's
-            /// bounded retry key.
+            /// A start admission request. The requester producer comes from
+            /// the trusted query envelope. An accepted `(requester,
+            /// request_id)` is idempotent while the server retains it: stock
+            /// navigation keeps the 1,024 most recent accepted admissions
+            /// globally. Refusals are current-state responses and are not
+            /// retained. A client must not retry an accepted request after it
+            /// has been evicted, or across a navigation reset/restart.
             struct StartRequest {
                 request_id: RequestId,
                 kind: StartKind,
@@ -1747,8 +1751,11 @@ phoxal_api_tree! {
                 Refused(RefusalReason),
             }
 
-            /// Cancel one server-issued operation.  The query requester must
-            /// be the operation owner.
+            /// Cancel one server-issued operation. The query requester must
+            /// be the operation owner. A terminal operation remains
+            /// idempotently cancellable only while stock navigation retains
+            /// it in its global 1,024-operation completion window; after
+            /// eviction the server reports `NotFound`.
             struct CancelRequest {
                 operation_id: NavigationOperationId,
             }

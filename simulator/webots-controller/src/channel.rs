@@ -25,14 +25,12 @@ use crate::capabilities::encoder::NativeEncoder;
 use crate::capabilities::gnss::NativeGnss;
 use crate::capabilities::gyroscope::NativeGyroscope;
 use crate::capabilities::imu::NativeImu;
-use crate::capabilities::led::NativeLed;
 use crate::capabilities::lidar::NativeLidar;
 use crate::capabilities::magnetometer::NativeMagnetometer;
 use crate::capabilities::microphone::NativeMicrophone;
 use crate::capabilities::mmwave::NativeMmwave;
 use crate::capabilities::motor::NativeMotor;
 use crate::capabilities::range::NativeRange;
-use crate::capabilities::speaker::NativeSpeaker;
 use crate::capabilities::{SensorStep, SimulatedSensor};
 use crate::catalog::CapabilitySpec;
 use crate::controller::WebotsControllerSimulator;
@@ -147,44 +145,6 @@ impl SimulatedActuator for NativeMotor {
 
     fn park(&mut self) -> Result<()> {
         self.apply(&api::component::motor::Command::Stop)
-    }
-}
-
-impl SimulatedActuator for NativeLed {
-    type Command = api::component::led::Command;
-    type Receiver = SetpointReceiver<Self::Command>;
-
-    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
-        match commands.take_newest()? {
-            Some(command) => self.apply(&command),
-            None => Ok(()),
-        }
-    }
-
-    fn apply_body(&mut self, command: Self::Command) -> Result<()> {
-        self.apply(&command)
-    }
-}
-
-impl SimulatedActuator for NativeSpeaker {
-    type Command = api::component::speaker::Chunk;
-    type Receiver = StreamReceiver<Self::Command>;
-
-    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
-        // Audio chunks move rather than copy: a stream is large, and nothing
-        // downstream needs them again.
-        for chunk in commands.take_all()? {
-            self.apply(chunk)?;
-        }
-        Ok(())
-    }
-
-    fn apply_body(&mut self, command: Self::Command) -> Result<()> {
-        self.apply(command)
-    }
-
-    fn park(&mut self) -> Result<()> {
-        self.stop()
     }
 }
 
@@ -412,8 +372,6 @@ pub(crate) struct CapabilityChannel {
 /// it belongs to.
 enum CapabilityBinding {
     Motor(ActuatorChannel<NativeMotor>),
-    Led(ActuatorChannel<NativeLed>),
-    Speaker(Box<ActuatorChannel<NativeSpeaker>>),
     Encoder(SensorChannel<NativeEncoder>),
     Imu(SensorChannel<NativeImu>),
     Accelerometer(SensorChannel<NativeAccelerometer>),
@@ -456,24 +414,6 @@ impl CapabilityChannel {
                 )),
                 ready: Some(ctx.participant_ready_events().await?),
             }),
-            CapabilitySpec::Led(led) => CapabilityBinding::Led(ActuatorChannel {
-                device: NativeLed::new(webots, led)?,
-                commands: ctx
-                    .setpoint_receiver(component()?.led(id)?.command())
-                    .await?,
-                authority: None,
-                ready: None,
-            }),
-            CapabilitySpec::Speaker(speaker) => {
-                CapabilityBinding::Speaker(Box::new(ActuatorChannel {
-                    device: NativeSpeaker::new(webots, speaker)?,
-                    commands: ctx
-                        .stream_receiver(component()?.speaker(id)?.stream())
-                        .await?,
-                    authority: None,
-                    ready: None,
-                }))
-            }
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,
                 publisher: ctx.measurement_publisher(component()?.encoder(id)?.sample())?,
@@ -544,8 +484,6 @@ impl CapabilityChannel {
     pub(crate) fn apply_backlog(&mut self) -> Result<()> {
         match &mut self.binding {
             CapabilityBinding::Motor(channel) => channel.apply_backlog(),
-            CapabilityBinding::Led(channel) => channel.apply_backlog(),
-            CapabilityBinding::Speaker(channel) => channel.apply_backlog(),
             CapabilityBinding::Encoder(_)
             | CapabilityBinding::Imu(_)
             | CapabilityBinding::Accelerometer(_)
@@ -567,8 +505,6 @@ impl CapabilityChannel {
     pub(crate) fn park(&mut self) -> Result<()> {
         match &mut self.binding {
             CapabilityBinding::Motor(channel) => channel.park(),
-            CapabilityBinding::Led(channel) => channel.park(),
-            CapabilityBinding::Speaker(channel) => channel.park(),
             CapabilityBinding::Encoder(_)
             | CapabilityBinding::Imu(_)
             | CapabilityBinding::Accelerometer(_)
@@ -602,9 +538,7 @@ impl CapabilityChannel {
             CapabilityBinding::Mmwave(channel) => channel.reset(logical_time_ns),
             CapabilityBinding::Microphone(channel) => channel.reset(logical_time_ns),
             CapabilityBinding::Battery(channel) => channel.device.reset(logical_time_ns),
-            CapabilityBinding::Motor(_)
-            | CapabilityBinding::Led(_)
-            | CapabilityBinding::Speaker(_) => Ok(()),
+            CapabilityBinding::Motor(_) => Ok(()),
         }
     }
 
@@ -654,9 +588,7 @@ impl CapabilityChannel {
                 }
                 Ok(())
             }
-            CapabilityBinding::Motor(_)
-            | CapabilityBinding::Led(_)
-            | CapabilityBinding::Speaker(_) => Ok(()),
+            CapabilityBinding::Motor(_) => Ok(()),
         }
     }
 

@@ -1117,11 +1117,12 @@ pub(crate) fn producer_from_zid(zid: ZenohId) -> Result<ProducerId> {
     })
 }
 
-/// Mint the only production [`ProducerId`] in the workspace.
+/// Mint a production [`ProducerId`] before opening its Zenoh session.
 ///
 /// The runtime-contract crate intentionally exposes the producer as an opaque
 /// value with parsing/conversion only. A producer is a bus-session concern, so
-/// its random mint belongs here beside the code that pins it into Zenoh.
+/// its mint belongs here beside the Zenoh configuration and identity check
+/// that pin it to the opened session.
 fn mint_producer_id() -> Result<ProducerId> {
     let mut bytes = [0_u8; ProducerId::LEN / 2];
     getrandom::fill(&mut bytes)
