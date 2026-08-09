@@ -320,6 +320,53 @@ fn final_runtime_requires_a_simulator_to_follow_simulation_time() {
 }
 
 #[test]
+fn simulated_runtime_requires_exactly_one_simulator_authority() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    runtime.robot = simulated_motor_robot(MotorCommand::Velocity, MotorCommand::Velocity);
+    for participant in &mut runtime.participants {
+        participant.clock = ParticipantClock::Simulation;
+    }
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot.clone(),
+            runtime.artifacts.clone(),
+            runtime.participants.clone(),
+            runtime.assets.clone(),
+            runtime.router.clone(),
+        ),
+        Err(DocumentError::MissingSimulator)
+    ));
+
+    let simulator_artifact = ParticipantArtifactId::new("drive").expect("simulator artifact");
+    runtime
+        .artifacts
+        .get_mut(&simulator_artifact)
+        .expect("simulator artifact")
+        .contract
+        .kind = ParticipantKind::Simulator;
+    runtime.participants.push(RuntimeParticipant::new(
+        ParticipantId::new("second-simulator").expect("second simulator id"),
+        simulator_artifact,
+        None,
+        None,
+        ParticipantClock::Simulation,
+    ));
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::DuplicateSimulator)
+    ));
+}
+
+#[test]
 fn stock_drive_requirement_rejects_non_differential_topologies() {
     for kind in [
         phoxal_model::robot::KinematicKind::Mecanum,

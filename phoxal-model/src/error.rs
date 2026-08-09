@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use crate::component::capability::{CapabilityKind, StructuralKind};
+use crate::component::capability::{CapabilityKind, CapabilityRole, StructuralKind};
 use crate::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId,
     MODULE_INSTANCE_SEPARATOR,
@@ -122,6 +122,21 @@ pub enum ModelError {
     UnknownRoleCapability {
         instance: ComponentInstanceId,
         capability_id: CapabilityId,
+    },
+
+    /// A persisted role key must name at least one role.
+    #[error("component '{instance}' capability '{capability_id}' has an empty role assignment")]
+    EmptyCapabilityRoles {
+        instance: ComponentInstanceId,
+        capability_id: CapabilityId,
+    },
+
+    /// A persisted role list may not repeat a role and rely on set coercion.
+    #[error("component '{instance}' capability '{capability_id}' repeats role '{role}'")]
+    DuplicateCapabilityRole {
+        instance: ComponentInstanceId,
+        capability_id: CapabilityId,
+        role: CapabilityRole,
     },
 
     /// A simulation type has no component type to simulate.

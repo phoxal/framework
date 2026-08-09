@@ -34,7 +34,7 @@ pub enum Clock {
 }
 
 /// One resolved component instance in the canonical robot.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
     id: ComponentInstanceId,
@@ -45,6 +45,52 @@ pub struct ComponentInstance {
     /// capability was not selected for any role and creates no obligation.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
+}
+
+impl<'de> serde::Deserialize<'de> for ComponentInstance {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            id: ComponentInstanceId,
+            component_type: ComponentTypeId,
+            mount_link: LinkId,
+            direction_signs: BTreeMap<CapabilityId, i8>,
+            #[serde(default)]
+            roles: BTreeMap<CapabilityId, Vec<CapabilityRole>>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let mut roles = BTreeMap::new();
+        for (capability_id, authored) in wire.roles {
+            if authored.is_empty() {
+                return Err(serde::de::Error::custom(ModelError::EmptyCapabilityRoles {
+                    instance: wire.id.clone(),
+                    capability_id,
+                }));
+            }
+            let mut canonical = BTreeSet::new();
+            for role in authored {
+                if !canonical.insert(role) {
+                    return Err(serde::de::Error::custom(
+                        ModelError::DuplicateCapabilityRole {
+                            instance: wire.id.clone(),
+                            capability_id,
+                            role,
+                        },
+                    ));
+                }
+            }
+            roles.insert(capability_id, canonical);
+        }
+        Ok(Self::new(
+            wire.id,
+            wire.component_type,
+            wire.mount_link,
+            wire.direction_signs,
+            roles,
+        ))
+    }
 }
 
 /// Canonical motion facts.
@@ -1598,6 +1644,21 @@ mod tests {
         value["footprint"]["radius_m"] = json!(0.1);
         let decoded: Robot = serde_json::from_value(value).expect("finite stored radius is valid");
         assert_eq!(decoded.footprint_envelope().unwrap().radius_m, 0.1);
+    }
+
+    #[test]
+    fn runtime_role_lists_reject_empty_and_duplicate_assignments() {
+        let robot = robot_with(&["front"]);
+        let value = serde_json::to_value(&robot).expect("robot serializes");
+
+        let mut empty = value.clone();
+        empty["component_instances"]["front"]["roles"] = json!({"eye": []});
+        assert!(serde_json::from_value::<Robot>(empty).is_err());
+
+        let mut duplicate = value;
+        duplicate["component_instances"]["front"]["roles"] =
+            json!({"eye": ["perception", "perception"]});
+        assert!(serde_json::from_value::<Robot>(duplicate).is_err());
     }
 
     fn reference(component: &str, capability: &str) -> CapabilityRef {

@@ -70,12 +70,12 @@ impl fmt::Display for DetectionValidationError {
 impl std::error::Error for DetectionValidationError {}
 
 /// Failure classes a detector/backend can report without turning a cycle into
-/// an implicit empty result. The placeholder currently never fails, but the
-/// boundary is explicit for a model backend plugged into this participant.
+/// an implicit empty result. The placeholder reports [`Self::BackendUnavailable`]
+/// until an actual model backend is linked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     dead_code,
-    reason = "the placeholder backend is infallible; these terminal classes are the detector seam"
+    reason = "the unavailable placeholder exercises one class; model backends own the remaining detector failures"
 )]
 pub(crate) enum DetectorFailure {
     BackendUnavailable,

@@ -43,20 +43,30 @@ impl StagedBundle {
 }
 
 #[must_use]
+pub fn staged_bundle() -> StagedBundle {
+    staged_bundle_from_manifest("robot.yaml")
+}
+
+#[cfg(test)]
+fn staged_simulation_bundle() -> StagedBundle {
+    staged_bundle_from_manifest("robot.simulated.yaml")
+}
+
 #[expect(
     clippy::expect_used,
     reason = "every input is a document committed beside this crate, so a failure here is a broken checkout and the panic is the report"
 )]
-pub fn staged_bundle() -> StagedBundle {
+fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
     let fixture = authored_root();
     let project = fixture.join("robot/rgbd-imu-diff-drive");
     let bundle = tempfile::tempdir().expect("a staging directory");
-    let manifest = source::robot::Manifest::load(project.join("robot.yaml"))
-        .expect("the fixture robot manifest");
+    let robot_manifest = project.join(manifest_name);
+    let manifest =
+        source::robot::Manifest::load(&robot_manifest).expect("the fixture robot manifest");
     let source::robot::Manifest::V0(manifest) = manifest;
     let sources = SourceSet {
         project_root: project.clone(),
-        robot_manifest: project.join("robot.yaml"),
+        robot_manifest,
         component_roots: manifest
             .used_component_types()
             .into_iter()
@@ -226,7 +236,7 @@ mod tests {
     use phoxal_runtime_contract::identity::ParticipantArtifactId;
     use phoxal_runtime_contract::metadata::ParticipantKind;
 
-    use super::{robot, staged_bundle};
+    use super::{robot, staged_bundle, staged_simulation_bundle};
 
     #[test]
     fn the_staged_bundle_has_only_runtime_layout() {
@@ -283,6 +293,38 @@ mod tests {
         assert_eq!(
             loaded.assets().read(&router_id).expect("router bytes"),
             b"{}\n"
+        );
+    }
+
+    #[test]
+    fn simulated_fixture_selects_one_simulator_without_drivers() {
+        let bundle = staged_simulation_bundle();
+        let loaded = RuntimeBundle::open_verified(bundle.path()).expect("the staged bundle loads");
+        let kinds = loaded
+            .participants()
+            .iter()
+            .map(|participant| {
+                loaded
+                    .artifacts()
+                    .get(participant.artifact())
+                    .expect("participant artifact")
+                    .contract()
+                    .kind
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| **kind == ParticipantKind::Simulator)
+                .count(),
+            1
+        );
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| **kind == ParticipantKind::Driver)
+                .count(),
+            0
         );
     }
 }

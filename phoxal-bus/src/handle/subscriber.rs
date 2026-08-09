@@ -1,5 +1,6 @@
-//! The receiving side: a decoded sample, a keep-last-1 view, and a drop-oldest
-//! ring, plus the background subscription task all three share.
+//! The receiving side: decoded observations, keep-last state, bounded ordered
+//! sample queues, refusal-preserving stream queues, and their shared
+//! background subscription machinery.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -386,7 +387,7 @@ impl<B> Clone for Subscriber<B> {
 }
 
 impl<B: ContractBody> Subscriber<B> {
-    /// Build a drop-oldest ring over a topic.
+    /// Build the delivery family's bounded receive storage over a topic.
     ///
     /// `pub` only because the delivery-specific wrappers and the runner live
     /// in other crates; see [`crate::handle::stamp`]'s module docs.
@@ -665,6 +666,7 @@ impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
 
     /// Receive the next ordered item or explicit gap evidence.
     pub async fn recv_event(&self) -> Result<StreamEvent<B>> {
+        self.ensure_open()?;
         let observed = self.inner.recv().await?;
         self.classify(observed)
     }
@@ -688,6 +690,7 @@ impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
 
     /// Take the next buffered stream event without waiting.
     pub fn try_recv_event(&self) -> Result<Option<StreamEvent<B>>> {
+        self.ensure_open()?;
         self.inner
             .try_recv()
             .map(|observed| self.classify(observed))
@@ -737,6 +740,13 @@ impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
                 });
         }
         result
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        match self.inner.terminal() {
+            Some(terminal) => Err(terminal_error(terminal)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1399,6 +1409,21 @@ mod tests {
             producer: producer(u128::try_from(MAX_STREAM_SOURCES + 1).expect("source index")),
             label: None,
         };
+        let Observed {
+            metadata,
+            observed_at,
+            ..
+        } = stream_observed(3, Some(1));
+        let mut buffered = Observed {
+            body: OrderedChunk(3),
+            metadata,
+            observed_at,
+        };
+        buffered.metadata.source = SourceAttribution::External {
+            producer: producer(1),
+            label: None,
+        };
+        assert!(receiver.inner.ring.push(buffered).accepted);
         let error = receiver
             .classify(item)
             .expect_err("the receiver must fail closed at the source-history bound");
@@ -1424,6 +1449,17 @@ mod tests {
                 ..
             }
         ));
+        assert!(matches!(
+            receiver.try_recv_event(),
+            Err(BusError::TooManyStreamSources {
+                limit: MAX_STREAM_SOURCES,
+                ..
+            })
+        ));
+        assert!(
+            receiver.inner.try_recv().is_some(),
+            "terminal stream receive must not dequeue an already-buffered chunk"
+        );
     }
 
     #[test]

@@ -8,9 +8,9 @@
 //! tracker assigns stable `track_id`s by nearest same-class association within
 //! a time/distance window.
 //!
-//! The default detector is honest: no heavyweight model backend is linked, so
-//! the participant publishes empty detection sets while still reporting camera
-//! health.
+//! The default detector is honest: no model backend is linked, so it publishes
+//! no detection batch and reports `BackendUnavailable` health instead of
+//! treating an unprocessed frame as a valid empty result.
 
 use phoxal::api;
 use phoxal::model::identity::ComponentInstanceId;
