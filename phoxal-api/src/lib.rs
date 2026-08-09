@@ -96,6 +96,8 @@
 //! [`ContractBody`]: phoxal_bus::ContractBody
 //! [`ContractBody::TOPIC`]: phoxal_bus::ContractBody::TOPIC
 
+#[cfg(test)]
+use phoxal_macros::phoxal_api;
 use phoxal_macros::phoxal_api_tree;
 
 /// The exact robot API revisions implemented by this API build.
@@ -525,8 +527,8 @@ phoxal_api_tree! {
                 stop_reason: Option<StopReason>,
             }
 
-            topic target: command Target;
-            topic state: state State;
+            command target: Setpoint<Target>;
+            topic state: State<State>;
         }
 
         joint(joint) {
@@ -538,7 +540,7 @@ phoxal_api_tree! {
                 effort_nm: Option<f64>,
             }
 
-            topic state: state JointState delivery stream;
+            topic state: Event<JointState>;
         }
 
         frame {
@@ -578,9 +580,9 @@ phoxal_api_tree! {
                 transform: Option<FrameTransform>,
             }
 
-            topic tree: state Tree;
-            topic static_transforms: state StaticTransforms;
-            topic lookup: query LookupRequest => LookupResponse;
+            topic tree: State<Tree>;
+            topic static_transforms: State<StaticTransforms>;
+            query lookup: LookupRequest => LookupResponse;
         }
 
         power {
@@ -621,8 +623,8 @@ phoxal_api_tree! {
                 detail: Option<String>,
             }
 
-            topic command: command Command;
-            topic state: state State;
+            command command: Setpoint<Command>;
+            topic state: State<State>;
         }
 
         motion {
@@ -678,8 +680,8 @@ phoxal_api_tree! {
                 active_safety_constraints: Vec<super::safety::Constraint>,
             }
 
-            topic manual: command ManualCommand;
-            topic state: state State;
+            command manual: Setpoint<ManualCommand>;
+            topic state: State<State>;
         }
 
         safety {
@@ -753,8 +755,8 @@ phoxal_api_tree! {
                 motion: MotionConstraints,
             }
 
-            topic constraints: state MotionConstraints;
-            topic state: state State;
+            topic constraints: State<MotionConstraints>;
+            topic state: State<State>;
         }
 
         navigation {
@@ -857,12 +859,12 @@ phoxal_api_tree! {
                 map_revision: Option<u64>,
             }
 
-            topic request: command Request;
-            topic state: state State;
-            topic progress: state Progress;
-            topic result: state Result;
-            topic candidate: state Candidate;
-            topic next_frontier: query FrontierRequest => FrontierResponse;
+            command request: Setpoint<Request>;
+            topic state: State<State>;
+            topic progress: State<Progress>;
+            topic result: State<Result>;
+            topic candidate: State<Candidate>;
+            query next_frontier: FrontierRequest => FrontierResponse;
         }
 
         perception {
@@ -888,8 +890,8 @@ phoxal_api_tree! {
                 detector: String,
             }
 
-            topic detections: state Detections;
-            topic state: state State;
+            topic detections: State<Detections>;
+            topic state: State<State>;
         }
 
         video {
@@ -914,7 +916,7 @@ phoxal_api_tree! {
                 Unavailable,
             }
 
-            topic open: query OpenRequest => OpenOutcome;
+            query open: OpenRequest => OpenOutcome;
         }
 
         simulation {
@@ -952,7 +954,7 @@ phoxal_api_tree! {
                     Stop,
                 }
 
-                topic command: command Command;
+                command command: Setpoint<Command>;
             }
 
             encoder(capability) {
@@ -962,7 +964,7 @@ phoxal_api_tree! {
                     velocity_radps: f32,
                 }
 
-                topic sample: measurement Sample;
+                topic sample: Sample<Sample>;
             }
 
             accelerometer(capability) {
@@ -971,7 +973,7 @@ phoxal_api_tree! {
                     linear_acceleration: [f32; 3],
                 }
 
-                topic sample: measurement Sample;
+                topic sample: Sample<Sample>;
             }
 
             gyroscope(capability) {
@@ -980,7 +982,7 @@ phoxal_api_tree! {
                     angular_velocity: [f32; 3],
                 }
 
-                topic sample: measurement Sample;
+                topic sample: Sample<Sample>;
             }
 
             magnetometer(capability) {
@@ -989,7 +991,7 @@ phoxal_api_tree! {
                     magnetic_field: [f32; 3],
                 }
 
-                topic sample: measurement Sample;
+                topic sample: Sample<Sample>;
             }
 
             imu(capability) {
@@ -1018,7 +1020,7 @@ phoxal_api_tree! {
                     bias: Option<Bias>,
                 }
 
-                topic sample: measurement Sample;
+                topic sample: Sample<Sample>;
             }
 
             range(capability) {
@@ -1049,7 +1051,7 @@ phoxal_api_tree! {
                     health: SensorHealth,
                 }
 
-                topic sample: measurement Sample;
+                topic sample: Sample<Sample>;
             }
 
             gnss(capability) {
@@ -1061,7 +1063,7 @@ phoxal_api_tree! {
                     position_covariance: [f64; 9],
                 }
 
-                topic sample: measurement Sample;
+                topic sample: Sample<Sample>;
             }
 
             camera(capability) {
@@ -1113,7 +1115,7 @@ phoxal_api_tree! {
                     data: Vec<u8>,
                 }
 
-                topic frame: measurement Frame;
+                topic frame: Sample<Frame>;
             }
 
             depth(capability) {
@@ -1168,7 +1170,7 @@ phoxal_api_tree! {
                     calibration: Option<CalibrationIdentity>,
                 }
 
-                topic frame: measurement Frame;
+                topic frame: Sample<Frame>;
             }
 
             lidar(capability) {
@@ -1219,7 +1221,7 @@ phoxal_api_tree! {
                     Points(Points),
                 }
 
-                topic scan: measurement Scan;
+                topic scan: Sample<Scan>;
             }
 
             mmwave(capability) {
@@ -1236,7 +1238,7 @@ phoxal_api_tree! {
                     detections: Vec<Detection>,
                 }
 
-                topic scan: measurement Scan;
+                topic scan: Sample<Scan>;
             }
 
             microphone(capability) {
@@ -1245,7 +1247,7 @@ phoxal_api_tree! {
                     data: Vec<u8>,
                 }
 
-                topic frame: measurement Frame;
+                topic frame: Sample<Frame>;
             }
 
             led(capability) {
@@ -1256,7 +1258,7 @@ phoxal_api_tree! {
                     Off,
                 }
 
-                topic command: command Command;
+                command command: Setpoint<Command>;
             }
 
             speaker(capability) {
@@ -1270,7 +1272,7 @@ phoxal_api_tree! {
                     stream: Option<Vec<u8>>,
                 }
 
-                topic stream: command Chunk;
+                command stream: Setpoint<Chunk>;
             }
 
             battery(capability) {
@@ -1282,7 +1284,7 @@ phoxal_api_tree! {
                     charge_ratio: f32,
                 }
 
-                topic state: state State;
+                topic state: State<State>;
             }
 
             emergency_stop(capability) {
@@ -1292,7 +1294,7 @@ phoxal_api_tree! {
                     engaged: bool,
                 }
 
-                topic state: state State;
+                topic state: State<State>;
             }
         }
 
@@ -1306,7 +1308,7 @@ phoxal_api_tree! {
                 angular_z_radps: f32,
             }
 
-            topic state: state State;
+            topic state: State<State>;
         }
 
         localize {
@@ -1318,7 +1320,7 @@ phoxal_api_tree! {
                 confidence: f32,
             }
 
-            topic state: state LocalizationState;
+            topic state: State<LocalizationState>;
         }
 
         map {
@@ -1344,12 +1346,12 @@ phoxal_api_tree! {
                 cells: Vec<u8>,
             }
 
-            topic revision: state Revision;
-            topic submap: query SubmapRequest => SubmapResponse;
+            topic revision: State<Revision>;
+            query submap: SubmapRequest => SubmapResponse;
         }
 
     }
-    version v0_2 extends v0_1 {
+    latest version v0.2 extends v0.1 {
         remove power;
 
         drive {
@@ -1532,7 +1534,7 @@ phoxal_api_tree! {
             // Results are ordered completion events, not a latest-value
             // snapshot. Keep the published v0.1 role immutable and correct the
             // active revision's delivery family explicitly.
-            replace topic result: event Result;
+            replace topic result: Event<Result>;
 
             replace enum State {
                 Idle,
@@ -1559,8 +1561,8 @@ phoxal_api_tree! {
                 angular_z_radps: f32,
             }
 
-            topic start: query StartRequest => StartResponse;
-            topic cancel: query CancelRequest => CancelResponse;
+            query start: StartRequest => StartResponse;
+            query cancel: CancelRequest => CancelResponse;
         }
 
         safety {
@@ -1730,12 +1732,12 @@ phoxal_api_tree! {
                 },
             }
 
-            replace topic submap: query SubmapRequest => SubmapResponse;
+            replace query submap: SubmapRequest => SubmapResponse;
         }
 
         component(instance) {
             speaker(capability) {
-                replace topic stream: stream Chunk;
+                replace command stream: Stream<Chunk>;
             }
 
             motor(capability) {
@@ -1749,7 +1751,6 @@ phoxal_api_tree! {
             }
         }
     }
-    latest v0_2;
 }
 
 impl TryFrom<GridBoundsWire> for v0_2::map::Bounds {

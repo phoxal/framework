@@ -1,0 +1,5 @@
+error: `phoxal_api!` declares endpoints over normal Rust domain types; move this struct/enum into the version/domain module
+ --> tests/trybuild/fail/api_authored_body.rs:6:20
+  |
+6 |             struct Body { value: u8 }
+  |                    ^^^^

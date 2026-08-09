@@ -141,6 +141,25 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Declare the versioned robot API surface. This is the normal authoring
+/// entry point; protocol trees use [`phoxal_protocol!`] instead.
+#[proc_macro]
+pub fn phoxal_api(input: TokenStream) -> TokenStream {
+    api_tree::expand_api(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Declare a process-boundary protocol surface without a revision/latest
+/// axis. Keeping protocol mode in its own macro prevents the two grammars from
+/// silently drifting into one another.
+#[proc_macro]
+pub fn phoxal_protocol(input: TokenStream) -> TokenStream {
+    api_tree::expand_protocol(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 /// Attach a positive, finite frequency to the ordinary
 /// [`Participant::step`](https://docs.rs/phoxal) override.
 #[proc_macro_attribute]

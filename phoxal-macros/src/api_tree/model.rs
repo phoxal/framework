@@ -31,6 +31,11 @@ pub(super) struct Version {
     /// The dotted wire spelling of `name` (`v0_1` -> `"v0.1"`), which is both
     /// this revision's identity and its leading wire-key segment.
     pub(super) wire_id: String,
+    /// Whether this declaration selects the train's facade.  Keeping the
+    /// selection on the revision makes the source declaration self-contained;
+    /// the old trailing `latest vN_M;` form is still accepted by the
+    /// compatibility parser, but new trees should use `version vN_M latest`.
+    pub(super) latest: bool,
     pub(super) parent: Option<Ident>,
     pub(super) nodes: Vec<Node>,
     pub(super) removals: Vec<Removal>,
@@ -85,6 +90,14 @@ pub(super) struct TopicDef {
     /// Optional transport override. Temporal role and side branding continue
     /// to come from `role`; this field only changes delivery admission/storage.
     pub(super) delivery: Option<DeliveryOverride>,
+    /// True only for pre-#1002 role spellings that the compatibility macro
+    /// still accepts. The public `phoxal_api!` entry point rejects these so new
+    /// source uses the independent semantic vocabulary.
+    pub(super) legacy: bool,
+    /// Whether the owner publishes this endpoint. New semantic declarations
+    /// carry direction explicitly (`topic` vs `command`); legacy roles derive
+    /// it from `TopicRole`.
+    pub(super) owner_publishes: bool,
 }
 
 /// One `remove <path>;` declaration. The head segment is split out from the
@@ -153,6 +166,18 @@ pub(super) enum DeliveryOverride {
     Sample,
     Setpoint,
     Stream,
+}
+
+impl TopicDef {
+    /// The transport family emitted on the body and consumed by the semantic
+    /// bus scheduler. Keeping this calculation in the source model means the
+    /// generated manifest cannot accidentally classify an overridden topic by
+    /// its temporal role.
+    pub(super) fn delivery_family(&self) -> TokenStream {
+        self.delivery
+            .map(DeliveryOverride::bus_variant)
+            .unwrap_or_else(|| self.role.bus_delivery())
+    }
 }
 
 impl DeliveryOverride {
@@ -247,8 +272,35 @@ impl TopicRole {
 
 #[derive(Clone)]
 pub(super) enum TopicKind {
-    PubSub(Ident),
-    Query { request: Ident, response: Ident },
+    PubSub(BodyPath),
+    Query {
+        request: BodyPath,
+        response: BodyPath,
+    },
+}
+
+/// A payload path supplied by the normal domain/version modules. The old tree
+/// grammar produces a one-segment path; the semantic API grammar accepts a
+/// complete Rust path such as `crate::versions::v0_2::drive::Target`.
+#[derive(Clone)]
+pub(super) struct BodyPath {
+    pub(super) path: syn::Path,
+}
+
+impl BodyPath {
+    pub(super) fn from_ident(ident: Ident) -> Self {
+        Self {
+            path: syn::Path::from(ident),
+        }
+    }
+
+    pub(super) fn leaf_name(&self) -> String {
+        self.path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            .unwrap_or_else(|| "Body".to_string())
+    }
 }
 
 /// One fully resolved tree ready to emit, from either mode.
@@ -354,6 +406,34 @@ impl Node {
                 }
             }
             Node::reject_delta_forms(&node.children, &[], reason)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn reject_legacy_roles(nodes: &[Node]) -> syn::Result<()> {
+        for node in nodes {
+            for topic in &node.topics {
+                if topic.legacy {
+                    return Err(syn::Error::new_spanned(
+                        topic.leaf.method_ident(),
+                        "legacy topic roles `measurement`, `diagnostic`, and `world_clock` are only available to `phoxal_api_tree!`; use `state`, `sample`, or `event` with an explicit delivery family",
+                    ));
+                }
+            }
+            Self::reject_legacy_roles(&node.children)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn reject_authored_types(nodes: &[Node]) -> syn::Result<()> {
+        for node in nodes {
+            if let Some(type_def) = node.types.first() {
+                return Err(syn::Error::new_spanned(
+                    type_def.ident(),
+                    "`phoxal_api!` declares endpoints over normal Rust domain types; move this struct/enum into the version/domain module",
+                ));
+            }
+            Self::reject_authored_types(&node.children)?;
         }
         Ok(())
     }

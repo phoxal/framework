@@ -4,7 +4,7 @@
 //! process can therefore report an unknown-but-valid `RobotApiVersion` without
 //! requiring a robot-domain compatibility adapter.
 
-use phoxal_macros::phoxal_api_tree;
+use phoxal_macros::phoxal_protocol;
 use serde::Deserialize;
 
 pub(crate) fn deserialize_finite_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -21,7 +21,7 @@ where
     }
 }
 
-phoxal_api_tree! {
+phoxal_protocol! {
     protocol supervisor {
         logs(participant_id) {
             struct Timestamp { unix_seconds: i64, nanos: u32 }

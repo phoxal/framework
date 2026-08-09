@@ -69,6 +69,56 @@ mod standalone_version {
     }
 }
 
+/// The #1002 semantic surface keeps payload ownership in ordinary Rust
+/// modules. The macro only materializes revision-local aliases, descriptors,
+/// and builders around those paths.
+mod semantic_surface {
+    use phoxal_bus::{ApiVersion, ContractBody};
+
+    #[allow(dead_code)]
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct V1SamplePayload {
+        pub value: u8,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct V1TargetPayload {
+        pub value: u8,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct V1QueryRequest {
+        pub value: u8,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct V1QueryResponse {
+        pub value: u8,
+    }
+
+    crate::phoxal_api! {
+        latest version v0.2 {
+            data {
+                topic sample: Sample<crate::tests::macro_fixtures::semantic_surface::V1SamplePayload>;
+                command target: Setpoint<crate::tests::macro_fixtures::semantic_surface::V1TargetPayload>;
+                query lookup: crate::tests::macro_fixtures::semantic_surface::V1QueryRequest => crate::tests::macro_fixtures::semantic_surface::V1QueryResponse;
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_descriptors_keep_external_payloads_and_latest_mapping() {
+        assert_eq!(<v0_2::Api as ApiVersion>::ID, "v0.2");
+        assert_eq!(
+            <v0_2::data::V1SamplePayload as ContractBody>::TOPIC,
+            "v0.2/data/sample"
+        );
+    }
+}
+
 /// A representative **protocol** tree: the mode `phoxal-supervisor-api` is
 /// authored in. It is deliberately a fixture rather than a real protocol - this
 /// crate owns the robot API, not any process-boundary protocol - and covers the

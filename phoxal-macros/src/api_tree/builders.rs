@@ -10,7 +10,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
-use super::model::{MaterializedTree, Node, TopicDef, TopicKind, TopicLeaf};
+use super::model::{BodyPath, MaterializedTree, Node, TopicDef, TopicKind, TopicLeaf};
 
 /// Which side a generated builder tree brands its leaves with.
 ///
@@ -338,8 +338,15 @@ impl TopicDef {
         // `path[0]` is the top-level node - exactly what `__phoxal_type_root` already
         // aliases - so only the segments AFTER it need to be descended.
         let rest_path: Vec<&Ident> = path.iter().skip(1).map(|s| &s.name).collect();
-        let body_path =
-            |body: &Ident| quote! { self::__phoxal_type_root #(::#rest_path)* :: #body };
+        let body_path = |body: &BodyPath| {
+            if body.path.segments.len() == 1 {
+                let body = &body.path.segments[0].ident;
+                quote! { self::__phoxal_type_root #(::#rest_path)* :: #body }
+            } else {
+                let path = &body.path;
+                quote! { #path }
+            }
+        };
         match &self.kind {
             TopicKind::PubSub(body) => {
                 let b = body_path(body);
@@ -348,7 +355,7 @@ impl TopicDef {
                 // role never carries a `PubSub` kind - the parser pairs it with
                 // `TopicKind::Query` - and `owner_publishes` treats it like an
                 // owner-published role, which is unreachable but harmless.)
-                let owner_publishes = self.role.owner_publishes();
+                let owner_publishes = self.owner_publishes;
                 match side {
                     Side::Owner if owner_publishes => quote! { ::phoxal_bus::Publish<#b> },
                     Side::Client if !owner_publishes => quote! { ::phoxal_bus::Publish<#b> },

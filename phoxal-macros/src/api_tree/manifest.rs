@@ -18,6 +18,7 @@ use super::model::{MaterializedTree, Node, TopicKind, TopicRole};
 pub(super) struct ManifestVersion {
     name: String,
     contracts: Vec<ManifestContract>,
+    fingerprint: String,
 }
 
 struct ManifestContract {
@@ -29,6 +30,7 @@ struct ManifestContract {
     /// The declared role, so a check can enumerate every command or stream
     /// topic without parsing names.
     role: TopicRole,
+    delivery: proc_macro2::TokenStream,
 }
 
 impl ManifestVersion {
@@ -44,6 +46,7 @@ impl ManifestVersion {
         });
         Self {
             name: tree.id.clone(),
+            fingerprint: fingerprint(&contracts),
             contracts,
         }
     }
@@ -52,21 +55,25 @@ impl ManifestVersion {
     pub(super) fn expand_manifest(versions: &[Self]) -> TokenStream {
         let version_entries = versions.iter().map(|version| {
             let name = &version.name;
+            let fingerprint = &version.fingerprint;
             let contracts = version.contracts.iter().map(|contract| {
                 let family = &contract.family;
                 let topic = &contract.topic;
                 let role = contract.role.bus_variant();
+                let delivery = &contract.delivery;
                 quote! {
                     ApiContractManifestContract {
                         family: #family,
                         topic: #topic,
                         role: #role,
+                        delivery: #delivery,
                     }
                 }
             });
             quote! {
                 ApiContractManifestVersion {
                     name: #name,
+                    fingerprint: #fingerprint,
                     contracts: &[#(#contracts),*],
                 }
             }
@@ -75,38 +82,33 @@ impl ManifestVersion {
         quote! {
             /// One generated API version in the contract manifest.
             ///
-            /// `#[cfg(test)]`-only: this is the tree's own
-            /// self-enumeration, which backs `phoxal-api`'s curation tests (every
-            /// command topic is deliberately classified, every wire key composes
-            /// as intended). It is available only to test builds.
-            #[cfg(test)]
+            /// Deterministic generated enumeration of one API revision.
             #[doc(hidden)]
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct ApiContractManifestVersion {
                 pub name: &'static str,
+                pub fingerprint: &'static str,
                 pub contracts: &'static [ApiContractManifestContract],
             }
 
             /// One generated contract in the contract manifest. `family` is the
             /// version-qualified contract identity; `topic` is its
             /// version-qualified wire key. The name itself is the whole identity.
-            /// `#[cfg(test)]`-only - see
-            /// [`ApiContractManifestVersion`]'s docs.
-            #[cfg(test)]
+            /// The semantic delivery family is recorded independently from
+            /// the temporal role, so curation and tooling see overrides.
             #[doc(hidden)]
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct ApiContractManifestContract {
                 pub family: &'static str,
                 pub topic: &'static str,
                 pub role: ::phoxal_bus::TopicRole,
+                pub delivery: ::phoxal_bus::DeliveryFamily,
             }
 
             /// The tree's own enumeration of every contract it declares, used by
             /// `phoxal-api`'s curation tests to assert that each command topic is
             /// deliberately classified and each wire key composes as intended.
-            /// `#[cfg(test)]`-only for the two consumers in
-            /// `phoxal-api/src/tests.rs`.
-            #[cfg(test)]
+            /// Stable source-generated contract inventory.
             #[doc(hidden)]
             pub const API_CONTRACT_MANIFEST: &[ApiContractManifestVersion] = &[#(#version_entries),*];
         }
@@ -132,21 +134,24 @@ fn collect(
             match &topic.kind {
                 TopicKind::PubSub(body) => {
                     contracts.push(ManifestContract {
-                        family: format!("{tree_id}::{family_path}::{body}"),
+                        family: format!("{tree_id}::{family_path}::{}", body.leaf_name()),
                         topic: topic_key,
                         role: topic.role,
+                        delivery: topic.delivery_family(),
                     });
                 }
                 TopicKind::Query { request, response } => {
                     contracts.push(ManifestContract {
-                        family: format!("{tree_id}::{family_path}::{request}"),
+                        family: format!("{tree_id}::{family_path}::{}", request.leaf_name()),
                         topic: topic_key.clone(),
                         role: topic.role,
+                        delivery: topic.delivery_family(),
                     });
                     contracts.push(ManifestContract {
-                        family: format!("{tree_id}::{family_path}::{response}"),
+                        family: format!("{tree_id}::{family_path}::{}", response.leaf_name()),
                         topic: topic_key,
                         role: topic.role,
+                        delivery: topic.delivery_family(),
                     });
                 }
             }
@@ -160,4 +165,28 @@ fn collect(
             contracts,
         );
     }
+}
+
+/// FNV-1a is intentionally implemented here instead of depending on a hash
+/// crate: the manifest is a compile-time source fingerprint, not a security
+/// digest. Inputs are already sorted by `(family, topic)` above, making this
+/// independent of declaration order and proc-macro map iteration.
+fn fingerprint(contracts: &[ManifestContract]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for contract in contracts {
+        for byte in contract.family.bytes().chain([0].into_iter()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        for byte in contract.topic.bytes().chain([0].into_iter()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        let role = contract.role.bus_variant().to_string();
+        for byte in role.bytes().chain([0].into_iter()) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("fnv1a64-{hash:016x}")
 }

@@ -7,9 +7,9 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Ident, ItemStruct};
+use syn::ItemStruct;
 
-use super::model::{MaterializedTree, Node, TopicKind, TypeItem};
+use super::model::{MaterializedTree, Node, TopicKind, TopicRole, TypeItem};
 
 impl MaterializedTree {
     /// Emit this tree's module: the zero-variant `Api` marker that keeps one
@@ -101,6 +101,8 @@ impl Node {
         }
 
         let mut impls = TokenStream::new();
+        let mut external_aliases = TokenStream::new();
+        let mut aliased = std::collections::BTreeSet::new();
         for topic in &self.topics {
             // The tree-qualified wire key: folding the tree's identity in here
             // is what makes two trees' contracts physically distinct Zenoh keys.
@@ -120,10 +122,23 @@ impl Node {
             // with the tree identity dropped - `NAME == VERSION + "::" +
             // CONTRACT` by construction.
             let tree_id = tree_id.to_string();
-            let name_for = |body: &Ident| format!("{tree_id}::{family_path}::{body}");
-            let contract_for = |body: &Ident| format!("{family_path}::{body}");
+            let name_for = |body: &super::model::BodyPath| {
+                format!("{tree_id}::{family_path}::{}", body.leaf_name())
+            };
+            let contract_for =
+                |body: &super::model::BodyPath| format!("{family_path}::{}", body.leaf_name());
             match &topic.kind {
                 TopicKind::PubSub(body) => {
+                    let body_path = &body.path;
+                    if body.path.segments.len() > 1 && aliased.insert(body.leaf_name()) {
+                        let alias = syn::Ident::new(
+                            &body.leaf_name(),
+                            body.path.segments.last().unwrap().ident.span(),
+                        );
+                        external_aliases.extend(
+                            quote! { #[allow(unused_imports)] pub use #body_path as #alias; },
+                        );
+                    }
                     let name = name_for(body);
                     let contract = contract_for(body);
                     // The role rides as an inherent `#[doc(hidden)] pub const ROLE` on
@@ -134,13 +149,16 @@ impl Node {
                     let marker = topic
                         .role
                         .marker_trait()
-                        .map(|marker| quote! { impl #marker for #body {} });
+                        .map(|marker| quote! { impl #marker for #body_path {} });
+                    let event_marker = (topic.role == TopicRole::Event).then(
+                        || quote! { impl ::phoxal_bus::DiagnosticContract for #body_path {} },
+                    );
                     let delivery_marker = topic.delivery.map_or_else(
                         || topic.role.delivery_marker_trait(),
                         |delivery| delivery.marker_trait(),
                     );
                     impls.extend(quote! {
-                        impl ::phoxal_bus::ContractBody for #body {
+                        impl ::phoxal_bus::ContractBody for #body_path {
                             type Api = self::__PhoxalApiMarker;
                             const NAME: &'static str = #name;
                             const VERSION: &'static str = #tree_id;
@@ -149,17 +167,32 @@ impl Node {
                             const ROLE: ::phoxal_bus::TopicRole = #role;
                             const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
-                        impl #delivery_marker for #body {}
+                        impl #delivery_marker for #body_path {}
                         #marker
+                        #event_marker
                     });
                 }
                 TopicKind::Query { request, response } => {
+                    let request_path = &request.path;
+                    let response_path = &response.path;
+                    for body in [request, response] {
+                        if body.path.segments.len() > 1 && aliased.insert(body.leaf_name()) {
+                            let alias = syn::Ident::new(
+                                &body.leaf_name(),
+                                body.path.segments.last().unwrap().ident.span(),
+                            );
+                            let path = &body.path;
+                            external_aliases.extend(
+                                quote! { #[allow(unused_imports)] pub use #path as #alias; },
+                            );
+                        }
+                    }
                     let request_name = name_for(request);
                     let response_name = name_for(response);
                     let request_contract = contract_for(request);
                     let response_contract = contract_for(response);
                     impls.extend(quote! {
-                        impl ::phoxal_bus::ContractBody for #request {
+                        impl ::phoxal_bus::ContractBody for #request_path {
                             type Api = self::__PhoxalApiMarker;
                             const NAME: &'static str = #request_name;
                             const VERSION: &'static str = #tree_id;
@@ -168,7 +201,7 @@ impl Node {
                             const ROLE: ::phoxal_bus::TopicRole = #role;
                             const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
-                        impl ::phoxal_bus::ContractBody for #response {
+                        impl ::phoxal_bus::ContractBody for #response_path {
                             type Api = self::__PhoxalApiMarker;
                             const NAME: &'static str = #response_name;
                             const VERSION: &'static str = #tree_id;
@@ -202,6 +235,7 @@ impl Node {
                 pub use super::__PhoxalApiMarker;
 
                 #types
+                #external_aliases
                 #impls
                 #child_mods
             }
