@@ -200,9 +200,8 @@ impl SemanticKind {
         }
     }
 
-    /// The transport marker emitted independently from the temporal role
-    /// marker. This lets an event or diagnostic body opt into ordered delivery
-    /// without inventing another temporal role.
+    /// The transport marker derived from the endpoint semantic. Events share
+    /// ordered transport with streams while retaining their step-time marker.
     pub(super) fn delivery_marker_trait(self) -> TokenStream {
         match self {
             Self::Setpoint => quote! { ::phoxal_bus::SetpointDeliveryContract },
