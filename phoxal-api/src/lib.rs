@@ -22,7 +22,7 @@
 
 mod api;
 pub use api::*;
-pub use phoxal_macros::{phoxal_api, phoxal_protocol};
+pub use phoxal_macros::phoxal_api;
 
 pub mod domains;
 
