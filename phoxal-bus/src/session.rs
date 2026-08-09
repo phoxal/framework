@@ -12,7 +12,7 @@
 //! `ZenohId` is foreign to this crate and the Phoxal identities are foreign to
 //! Zenoh's, so neither side can carry the conversion.
 
-use std::future::IntoFuture;
+use std::future::{Future, IntoFuture};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -196,7 +196,7 @@ struct BusInner {
     drain_pause_ack: Notify,
     #[cfg(test)]
     drain_resume: Notify,
-    drain: std::sync::Mutex<Option<OwnedDrain>>,
+    drain: std::sync::Mutex<Option<SupervisedWorker>>,
     workers: Arc<BusWorkerGroup>,
     transport_errors: std::sync::Mutex<TransportErrors>,
     terminal: watch::Sender<BusTerminal>,
@@ -250,7 +250,7 @@ struct RegisteredWorker {
     raw_abort: AbortHandle,
 }
 
-struct OwnedDrain {
+struct SupervisedWorker {
     monitor: JoinHandle<()>,
     raw_abort: AbortHandle,
 }
@@ -261,7 +261,7 @@ struct BusWorkerGroup {
     workers: std::sync::Mutex<Vec<RegisteredWorker>>,
     changed: Notify,
     closing: AtomicBool,
-    reaper: std::sync::Mutex<Option<JoinHandle<()>>>,
+    reaper: std::sync::Mutex<Option<SupervisedWorker>>,
 }
 
 impl BusWorkerGroup {
@@ -397,7 +397,8 @@ impl Drop for BusOwner {
         }
         self.inner.workers.begin_close();
         if let Some(reaper) = lock(&self.inner.workers.reaper).take() {
-            reaper.abort();
+            reaper.raw_abort.abort();
+            reaper.monitor.abort();
         }
         for worker in self.inner.workers.take_remaining() {
             worker.handle.abort();
@@ -489,9 +490,17 @@ impl BusOwner {
             in_flight_notify: Notify::new(),
         });
 
-        let drain = spawn_supervised_drain(drain_session, Arc::downgrade(&inner));
+        let drain = spawn_supervised_worker(
+            "outbound-drain",
+            drain_loop(drain_session, Arc::downgrade(&inner)),
+            Arc::downgrade(&inner),
+        );
         *lock(&inner.drain) = Some(drain);
-        let reaper = tokio::spawn(worker_reaper(Arc::clone(&workers), Arc::downgrade(&inner)));
+        let reaper = spawn_supervised_worker(
+            "bus-worker-reaper",
+            worker_reaper(Arc::clone(&workers), Arc::downgrade(&inner)),
+            Arc::downgrade(&inner),
+        );
         *lock(&workers.reaper) = Some(reaper);
 
         let liveness = Arc::new(AtomicBool::new(true));
@@ -671,6 +680,18 @@ impl BusHandle {
         let drain = lock(&inner.drain);
         let drain = drain.as_ref().ok_or(BusError::Closed)?;
         drain.raw_abort.abort();
+        Ok(())
+    }
+
+    /// Test-only failure injection for proving that the owner-side worker
+    /// reaper is itself supervised as mandatory transport infrastructure.
+    #[cfg(any(test, feature = "test-harness"))]
+    #[doc(hidden)]
+    pub fn __test_abort_worker_reaper(&self) -> Result<()> {
+        let inner = self.live_inner()?;
+        let reaper = lock(&inner.workers.reaper);
+        let reaper = reaper.as_ref().ok_or(BusError::Closed)?;
+        reaper.raw_abort.abort();
         Ok(())
     }
 
@@ -1017,7 +1038,7 @@ impl BusOwner {
         if let Some(mut reaper) = reaper {
             match tokio::time::timeout(
                 deadline.saturating_duration_since(tokio::time::Instant::now()),
-                &mut reaper,
+                &mut reaper.monitor,
             )
             .await
             {
@@ -1029,7 +1050,8 @@ impl BusOwner {
                     });
                 }
                 Err(_) => {
-                    reaper.abort();
+                    reaper.raw_abort.abort();
+                    reaper.monitor.abort();
                     let remaining = self.inner.workers.take_remaining();
                     report.unjoined_workers = remaining.len();
                     for worker in remaining {
@@ -1175,8 +1197,15 @@ impl Drop for TestDrainPause {
     }
 }
 
-fn spawn_supervised_drain(session: zenoh::Session, owner: Weak<BusInner>) -> OwnedDrain {
-    let worker = tokio::spawn(drain_loop(session, Weak::clone(&owner)));
+fn spawn_supervised_worker<F>(
+    name: &'static str,
+    future: F,
+    owner: Weak<BusInner>,
+) -> SupervisedWorker
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let worker = tokio::spawn(future);
     let raw_abort = worker.abort_handle();
     let monitor = tokio::spawn(async move {
         let result = worker.await;
@@ -1188,16 +1217,16 @@ fn spawn_supervised_drain(session: zenoh::Session, owner: Weak<BusInner>) -> Own
         }
         let fault = match result {
             Ok(()) => BusFault::WorkerExited {
-                worker: "outbound-drain".to_string(),
+                worker: name.to_string(),
             },
             Err(error) => BusFault::WorkerJoin {
-                worker: "outbound-drain".to_string(),
+                worker: name.to_string(),
                 error: error.to_string(),
             },
         };
         signal_fatal(&inner, fault);
     });
-    OwnedDrain { monitor, raw_abort }
+    SupervisedWorker { monitor, raw_abort }
 }
 
 async fn record_session_close<F, E>(

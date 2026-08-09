@@ -298,6 +298,24 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
 
 static BUS_FAULT_SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 
+#[phoxal::service(id = "transport-fault-lifecycle", state = ())]
+struct TransportFaultLifecycle;
+
+impl Participant for TransportFaultLifecycle {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> crate::Result<(Self::State, Self::Api)> {
+        Ok(((), ()))
+    }
+
+    async fn shutdown(&self, _api: &Self::Api, _state: &mut Self::State) -> crate::Result<()> {
+        BUS_FAULT_SHUTDOWN_CALLED.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
 async fn wait_for_ready_status(events: &ParticipantReadyEvents, status: ParticipantReadyStatus) {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -313,28 +331,13 @@ async fn wait_for_ready_status(events: &ParticipantReadyEvents, status: Particip
     .expect("the Ready lifecycle event must be observable");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn outbound_drain_failure_revokes_ready_runs_shutdown_and_returns_bus_fault() {
-    #[phoxal::service(id = "drain-fault-lifecycle", state = ())]
-    struct DrainFaultLifecycle;
-
-    impl Participant for DrainFaultLifecycle {
-        async fn setup(
-            &self,
-            _ctx: &mut SetupContext<Self>,
-            _config: Self::Config,
-        ) -> crate::Result<(Self::State, Self::Api)> {
-            Ok(((), ()))
-        }
-
-        async fn shutdown(&self, _api: &Self::Api, _state: &mut Self::State) -> crate::Result<()> {
-            BUS_FAULT_SHUTDOWN_CALLED.store(true, Ordering::Release);
-            Ok(())
-        }
-    }
-
+async fn assert_owner_worker_failure_reaches_lifecycle(
+    worker: &str,
+    abort: impl FnOnce(&phoxal_bus::BusHandle) -> phoxal_bus::Result<()>,
+) {
     BUS_FAULT_SHUTDOWN_CALLED.store(false, Ordering::Release);
-    let participant_id = ParticipantId::new("drain-fault-lifecycle").expect("valid participant id");
+    let participant_id =
+        ParticipantId::new("transport-fault-lifecycle").expect("valid participant id");
     let (owner, bus) = BusOwner::open(BusConfig::for_participant(
         phoxal_runtime_contract::identity::ExecutionId::mint(),
         participant_id.clone(),
@@ -353,7 +356,7 @@ async fn outbound_drain_failure_revokes_ready_runs_shutdown_and_returns_bus_faul
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
     let mut shutdown = ShutdownController::new(std::future::pending());
 
-    let outcome = Runner::<DrainFaultLifecycle, RealClock>::start(
+    let outcome = Runner::<TransportFaultLifecycle, RealClock>::start(
         super::lifecycle::StartInputs {
             bus: bus.clone(),
             session: BusLease::Owned(owner),
@@ -379,8 +382,7 @@ async fn outbound_drain_failure_revokes_ready_runs_shutdown_and_returns_bus_faul
     };
     wait_for_ready_status(&ready_events, ParticipantReadyStatus::Ready).await;
 
-    bus.__test_abort_outbound_drain()
-        .expect("the running owner has an outbound drain");
+    abort(&bus).expect("the running owner has the selected transport worker");
     let error = runner
         .run(&mut shutdown)
         .await
@@ -389,10 +391,28 @@ async fn outbound_drain_failure_revokes_ready_runs_shutdown_and_returns_bus_faul
         error
             .chain()
             .find_map(|cause| cause.downcast_ref::<ParticipantFault>()),
-        Some(ParticipantFault::Bus(BusFault::WorkerJoin { worker, .. }))
-            if worker == "outbound-drain"
+        Some(ParticipantFault::Bus(BusFault::WorkerJoin { worker: observed, .. }))
+            if observed == worker
     ));
     assert!(BUS_FAULT_SHUTDOWN_CALLED.load(Ordering::Acquire));
     wait_for_ready_status(&ready_events, ParticipantReadyStatus::Lost).await;
     bus_logs.shutdown();
+}
+
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outbound_drain_failure_revokes_ready_runs_shutdown_and_returns_bus_fault() {
+    assert_owner_worker_failure_reaches_lifecycle("outbound-drain", |bus| {
+        bus.__test_abort_outbound_drain()
+    })
+    .await;
+}
+
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_reaper_failure_revokes_ready_runs_shutdown_and_returns_bus_fault() {
+    assert_owner_worker_failure_reaches_lifecycle("bus-worker-reaper", |bus| {
+        bus.__test_abort_worker_reaper()
+    })
+    .await;
 }
