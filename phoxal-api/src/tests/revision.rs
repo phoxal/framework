@@ -118,6 +118,17 @@ fn generated_contract_manifest_lists_contract_shapes() {
         2,
         "the train ships the immutable v0.1 and current v0.2 revisions"
     );
+    assert_eq!(
+        crate::API_CONTRACT_MANIFEST
+            .iter()
+            .map(|version| (version.name, version.fingerprint))
+            .collect::<Vec<_>>(),
+        [
+            ("v0.1", "fnv1a64-35b95d29b7b06385"),
+            ("v0.2", "fnv1a64-982018e0549c9aa5"),
+        ],
+        "materialized maintained revisions must change only through an explicit fingerprint update"
+    );
 
     let version = crate::API_CONTRACT_MANIFEST
         .iter()
