@@ -82,7 +82,7 @@ pub mod subscriber;
 use zenoh::sample::Sample;
 
 use crate::abi::{Codec, CodecId, EncodingError, EncodingMetadata, MessagePack};
-use crate::contract::EndpointDescriptor;
+use crate::contract::{EndpointDescriptor, Payload};
 use crate::error::{BusError, MetadataProblem, Result};
 use crate::metadata::BusMetadata;
 
@@ -96,6 +96,10 @@ pub(crate) fn decode_sample<E: EndpointDescriptor>(
     sample: &Sample,
     topic: &str,
 ) -> Result<(E::Payload, BusMetadata)> {
+    decode_payload::<E::Payload>(sample, topic)
+}
+
+pub(crate) fn decode_payload<B: Payload>(sample: &Sample, topic: &str) -> Result<(B, BusMetadata)> {
     let malformed = |problem: MetadataProblem| BusError::metadata(topic, problem);
 
     let encoding: EncodingMetadata = sample
@@ -129,7 +133,7 @@ pub(crate) fn decode_sample<E: EndpointDescriptor>(
         });
     }
 
-    let body = MessagePack::decode::<E::Payload>(sample.payload().to_bytes().as_ref())?;
+    let body = MessagePack::decode::<B>(sample.payload().to_bytes().as_ref())?;
     Ok((body, metadata))
 }
 

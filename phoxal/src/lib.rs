@@ -196,14 +196,15 @@ pub mod bus {
         LeaseRejection, LocalInstant, MAX_READY_PRODUCERS, MeasurementContract,
         MeasurementPublisher, MessagePack, Observed, ParticipantId, ParticipantReadyEvent,
         ParticipantReadyEvents, ParticipantReadyObserver, ParticipantReadyStatus,
-        ParticipantSourceIdentity, Payload, ProducerId, Publish, Querier, QueryCode, QueryError,
-        QueryFailure, QueryResult, ReceiveTerminal, Result, RobotInstant, RobotTimeError,
-        SampleContract, SampleDeliveryContract, SamplePublisher, SampleReceiver, ServeQuery,
-        SetpointContract, SetpointDeliveryContract, SetpointPublisher, SetpointReceiver,
-        SourceAttribution, SourceLabel, StateContract, StateDeliveryContract, StatePublisher,
-        StateView, StepStamp, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher,
-        StreamReceiver, Subscribe, TimeWindow, Timed, TimelineId, TimelineMismatch, Topic,
-        TopicKind, TopicRole, WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
+        ParticipantSourceIdentity, Payload, ProducerId, Publish, Querier, QueryCode,
+        QueryEndpointDescriptor, QueryError, QueryFailure, QueryResult, ReceiveTerminal, Result,
+        RobotInstant, RobotTimeError, SampleContract, SampleDeliveryContract, SamplePublisher,
+        SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract, SetpointPublisher,
+        SetpointReceiver, SourceAttribution, SourceLabel, StateContract, StateDeliveryContract,
+        StatePublisher, StateView, StepStamp, StepToken, StreamContract, StreamDeliveryContract,
+        StreamPublisher, StreamReceiver, Subscribe, TimeWindow, Timed, TimelineId,
+        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
+        WorldClockContract, WorldStepToken,
     };
 }
 

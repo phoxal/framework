@@ -91,8 +91,8 @@ use proc_macro::TokenStream;
 /// method that returns a typed `bus::Topic<Kind>` with the key formatted from the
 /// carried variables. The leaf brand is side-specific: on the client side a
 /// `command` leaf is `Publish<Body>`, a `state` leaf is `Subscribe<Body>`, and a
-/// `query` leaf is `AskQuery<Req, Resp>`; on the owner side those flip to
-/// `Subscribe<Body>` / `Publish<Body>` / `ServeQuery<Req, Resp>`.
+/// `query` leaf is `AskQuery<E>`; on the owner side those flip to
+/// `Subscribe<Body>` / `Publish<Body>` / `ServeQuery<E>`.
 ///
 /// # Protocol mode
 ///

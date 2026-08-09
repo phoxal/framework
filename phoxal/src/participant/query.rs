@@ -7,7 +7,7 @@
 
 use std::marker::PhantomData;
 
-use crate::bus::{Codec, ContractBody, MessagePack, QueryFailure};
+use crate::bus::{Codec, MessagePack, Payload, QueryFailure};
 use crate::participant::api::Participant;
 use crate::participant::context::QueryContext;
 
@@ -32,7 +32,7 @@ pub(crate) type ServerOutcome = std::result::Result<ServerReply, QueryFailure>;
 ///
 /// `topic` is a plain `String` rather than a typed
 /// [`Topic`](crate::bus::Topic): erasure is the point of this type, and a
-/// `Topic<ServeQuery<Req, Resp>>` still names `Req` and `Resp`, so it cannot
+/// `Topic<ServeQuery<E>>` still names the endpoint descriptor, so it cannot
 /// survive into the erased registration list the runner iterates. The key
 /// string is all that is left to match an incoming query against, and it was
 /// produced by the typed builder at the checked `ctx.query(...)` call site.
@@ -44,8 +44,8 @@ pub(crate) struct QueryRegistration<R: Participant> {
 impl<R: Participant> QueryRegistration<R> {
     pub(crate) fn new<Req, Resp, H>(topic: String, handler: H) -> Self
     where
-        Req: ContractBody,
-        Resp: ContractBody,
+        Req: Payload,
+        Resp: Payload,
         H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,
@@ -102,8 +102,8 @@ struct TypedQueryHandler<H, Req, Resp> {
 impl<R, H, Req, Resp> ErasedQueryHandler<R> for TypedQueryHandler<H, Req, Resp>
 where
     R: Participant,
-    Req: ContractBody,
-    Resp: ContractBody,
+    Req: Payload,
+    Resp: Payload,
     H: for<'a> Fn(
             &'a R,
             &'a R::Api,
@@ -124,18 +124,11 @@ where
         request: Vec<u8>,
     ) -> ServerOutcome {
         let request = MessagePack::decode::<Req>(&request).map_err(|error| {
-            QueryFailure::invalid_argument(format!(
-                "decode query request for '{}': {error}",
-                Req::TOPIC
-            ))
+            QueryFailure::invalid_argument(format!("decode query request: {error}"))
         })?;
         let response = (self.handler)(participant, api, query_context, request, state)?;
-        let payload = MessagePack::encode(&response).map_err(|error| {
-            QueryFailure::internal(format!(
-                "encode query response for '{}': {error}",
-                Resp::TOPIC
-            ))
-        })?;
+        let payload = MessagePack::encode(&response)
+            .map_err(|error| QueryFailure::internal(format!("encode query response: {error}")))?;
         Ok(ServerReply { payload })
     }
 }

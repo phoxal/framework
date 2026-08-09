@@ -265,7 +265,7 @@ impl ApiTree {
                 nodes: protocol.nodes.clone(),
             };
             manifest_trees.push(ManifestVersion::of(&tree));
-            out.extend(tree.expand());
+            out.extend(tree.expand(false));
         }
         let manifest = ManifestVersion::expand_manifest(&manifest_trees);
         Ok(quote! {
@@ -319,7 +319,7 @@ impl ApiTree {
                 nodes,
             };
             manifest_versions.push(ManifestVersion::of(&concrete));
-            out.extend(concrete.expand());
+            out.extend(concrete.expand(emit_catalogue));
             materialized.insert(name, concrete.nodes);
         }
         if !materialized.contains_key(&latest.to_string()) {
@@ -850,8 +850,8 @@ mod tests {
             expanded
                 .matches("const TOPIC : & 'static str = \"v0.1/asset/get\"")
                 .count(),
-            2,
-            "both the request and response bodies of a query topic share its \
+            3,
+            "the request, response, and endpoint descriptor of a query topic share its \
              version-qualified key: {expanded}"
         );
         assert!(

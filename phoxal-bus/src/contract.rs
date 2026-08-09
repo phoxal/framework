@@ -190,6 +190,19 @@ pub trait EndpointDescriptor: 'static {
     const KIND: EndpointKind;
 }
 
+/// Descriptor for a typed request/reply endpoint.
+///
+/// A semantic API endpoint owns both payload paths while remaining one
+/// zero-sized type in the generated API. Compatibility trees also generate
+/// this descriptor for query topics so typed request/reply handles have one
+/// stable shape during migration.
+pub trait QueryEndpointDescriptor: EndpointDescriptor {
+    /// Request payload decoded from the query.
+    type Request: Payload;
+    /// Response payload encoded in the reply.
+    type Response: Payload;
+}
+
 /// Short name for an endpoint descriptor used by typed bus APIs.
 pub trait Endpoint: EndpointDescriptor {}
 

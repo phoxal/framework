@@ -161,6 +161,49 @@ pub(super) enum DeliveryOverride {
 }
 
 impl TopicDef {
+    pub(super) fn endpoint_ident(&self) -> Ident {
+        let leaf = self.leaf.method_ident();
+        let name = leaf
+            .to_string()
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut part = part.to_string();
+                if let Some(first) = part.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                part
+            })
+            .collect::<String>();
+        Ident::new(&format!("{name}Endpoint"), leaf.span())
+    }
+
+    pub(super) fn endpoint_kind(&self) -> TokenStream {
+        match &self.kind {
+            TopicKind::Query { .. } => quote! { ::phoxal_bus::EndpointKind::Query },
+            TopicKind::PubSub(_) => match self.delivery.unwrap_or_else(|| match self.role {
+                TopicRole::State | TopicRole::Diagnostic | TopicRole::WorldClock => {
+                    DeliveryOverride::State
+                }
+                TopicRole::Measurement => DeliveryOverride::Sample,
+                TopicRole::Command => DeliveryOverride::Setpoint,
+                TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
+                TopicRole::Query => unreachable!("query is not a pub/sub endpoint"),
+            }) {
+                DeliveryOverride::State => quote! { ::phoxal_bus::EndpointKind::State },
+                DeliveryOverride::Sample => quote! { ::phoxal_bus::EndpointKind::Sample },
+                DeliveryOverride::Setpoint => quote! { ::phoxal_bus::EndpointKind::Setpoint },
+                DeliveryOverride::Stream => {
+                    if self.role == TopicRole::Event {
+                        quote! { ::phoxal_bus::EndpointKind::Event }
+                    } else {
+                        quote! { ::phoxal_bus::EndpointKind::Stream }
+                    }
+                }
+            },
+        }
+    }
+
     /// The transport family emitted on the body and consumed by the semantic
     /// bus scheduler. Keeping this calculation in the source model means the
     /// generated manifest cannot accidentally classify an overridden topic by

@@ -8,9 +8,10 @@ use std::time::Duration;
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
 use crate::ParticipantAssetResolver;
 use crate::bus::{
-    AskQuery, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
+    AskQuery, CommandPublisher, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
     DiagnosticPublisher, EventContract, EventPublisher, EventReceiver, MeasurementPublisher,
-    Observed, Publish, Querier, RobotInstant, SampleContract, SampleDeliveryContract,
+    Observed, Publish, Querier, QueryEndpointDescriptor, RobotInstant, SampleContract,
+    SampleDeliveryContract,
     SamplePublisher, SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract,
     SetpointPublisher, SetpointReceiver, StateContract, StateDeliveryContract, StatePublisher,
     StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher, StreamReceiver,
@@ -343,10 +344,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub fn querier<Req: ContractBody, Resp: ContractBody>(
+    pub fn querier<E: QueryEndpointDescriptor>(
         &self,
-        topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Querier<Req, Resp>> {
+        topic: Topic<AskQuery<E>>,
+    ) -> crate::Result<Querier<E::Request, E::Response>> {
         Ok(Querier::new(
             self.bus.clone(),
             &topic,
@@ -354,21 +355,20 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         )?)
     }
 
-    pub fn query<Req, Resp, H>(
+    pub fn query<E, H>(
         &mut self,
-        topic: Topic<ServeQuery<Req, Resp>>,
+        topic: Topic<ServeQuery<E>>,
         handler: H,
     ) -> crate::Result<()>
     where
-        Req: ContractBody,
-        Resp: ContractBody,
+        E: QueryEndpointDescriptor,
         H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,
                 QueryContext,
-                Req,
+                E::Request,
                 &'a mut R::State,
-            ) -> crate::bus::QueryResult<Resp>
+            ) -> crate::bus::QueryResult<E::Response>
             + Send
             + Sync
             + 'static,
@@ -381,7 +381,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         {
             anyhow::bail!("duplicate query binding for '{topic}'");
         }
-        self.queries.push(QueryRegistration::new(topic, handler));
+        self.queries.push(QueryRegistration::new::<E::Request, E::Response, H>(
+            topic, handler,
+        ));
         Ok(())
     }
 }

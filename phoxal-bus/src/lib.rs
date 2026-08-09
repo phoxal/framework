@@ -62,9 +62,10 @@ pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, Producer
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
     ApiVersion, CommandContract, ContractBody, DeliveryFamily, DiagnosticContract, Endpoint,
-    EndpointDescriptor, EndpointKind, EventContract, MeasurementContract, Payload, SampleContract,
-    SampleDeliveryContract, SetpointContract, SetpointDeliveryContract, StateContract,
-    StateDeliveryContract, StreamContract, StreamDeliveryContract, TopicRole, WorldClockContract,
+    EndpointDescriptor, EndpointKind, EventContract, MeasurementContract, Payload,
+    QueryEndpointDescriptor, SampleContract, SampleDeliveryContract, SetpointContract,
+    SetpointDeliveryContract, StateContract, StateDeliveryContract, StreamContract,
+    StreamDeliveryContract, TopicRole, WorldClockContract,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{

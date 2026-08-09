@@ -73,17 +73,14 @@ mod standalone_version {
 /// modules. The macro only materializes revision-local aliases, descriptors,
 /// and builders around those paths.
 mod semantic_surface {
-    use phoxal_bus::{ApiVersion, ContractBody};
+    use phoxal_bus::{
+        ApiVersion, EndpointDescriptor, QueryEndpointDescriptor, SampleDeliveryContract,
+        StateContract, StateDeliveryContract,
+    };
 
     #[allow(dead_code)]
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct V1SamplePayload {
-        pub value: u8,
-    }
-
-    #[allow(dead_code)]
-    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct V1TargetPayload {
+    pub struct SharedPayload {
         pub value: u8,
     }
 
@@ -102,8 +99,8 @@ mod semantic_surface {
     crate::phoxal_api! {
         latest version v0.2 {
             data {
-                topic sample: Sample<crate::tests::macro_fixtures::semantic_surface::V1SamplePayload>;
-                command target: Setpoint<crate::tests::macro_fixtures::semantic_surface::V1TargetPayload>;
+                topic mirror: State<crate::tests::macro_fixtures::semantic_surface::SharedPayload>;
+                topic sample: Sample<crate::tests::macro_fixtures::semantic_surface::SharedPayload>;
                 query lookup: crate::tests::macro_fixtures::semantic_surface::V1QueryRequest => crate::tests::macro_fixtures::semantic_surface::V1QueryResponse;
             }
         }
@@ -113,9 +110,25 @@ mod semantic_surface {
     fn semantic_descriptors_keep_external_payloads_and_latest_mapping() {
         assert_eq!(<v0_2::Api as ApiVersion>::ID, "v0.2");
         assert_eq!(
-            <v0_2::data::V1SamplePayload as ContractBody>::TOPIC,
+            <v0_2::endpoint::data::SampleEndpoint as EndpointDescriptor>::TOPIC,
             "v0.2/data/sample"
         );
+        type Mirror = v0_2::endpoint::data::MirrorEndpoint;
+        type Sample = v0_2::endpoint::data::SampleEndpoint;
+        type Lookup = v0_2::endpoint::data::LookupEndpoint;
+        fn state<E: StateContract + StateDeliveryContract>() {}
+        fn sample<E: SampleDeliveryContract>() {}
+        state::<Mirror>();
+        sample::<Sample>();
+        assert_ne!(
+            <Mirror as EndpointDescriptor>::TOPIC,
+            <Sample as EndpointDescriptor>::TOPIC
+        );
+        fn shared<E: EndpointDescriptor<Payload = SharedPayload>>() {}
+        shared::<Mirror>();
+        shared::<Sample>();
+        fn query<E: QueryEndpointDescriptor>() {}
+        query::<Lookup>();
     }
 }
 
@@ -168,8 +181,8 @@ mod protocol_tree {
 
     fn assert_publish<B: ContractBody>(_topic: Topic<Publish<B>>) {}
     fn assert_subscribe<B: ContractBody>(_topic: Topic<Subscribe<B>>) {}
-    fn assert_ask<Req: ContractBody, Resp: ContractBody>(_topic: Topic<AskQuery<Req, Resp>>) {}
-    fn assert_serve<Req: ContractBody, Resp: ContractBody>(_topic: Topic<ServeQuery<Req, Resp>>) {}
+    fn assert_ask<E: phoxal_bus::QueryEndpointDescriptor>(_topic: Topic<AskQuery<E>>) {}
+    fn assert_serve<E: phoxal_bus::QueryEndpointDescriptor>(_topic: Topic<ServeQuery<E>>) {}
 
     /// A protocol key carries no `v0.1/` segment: it is relative to the
     /// protocol, which the bus session then mounts under its execution-scoped
