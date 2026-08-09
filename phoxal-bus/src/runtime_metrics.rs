@@ -42,7 +42,7 @@ pub enum RuntimeBufferKind {
     Outbound,
     /// A keep-last-1 slot.
     Latest,
-    /// A drop-oldest subscriber ring.
+    /// Delivery-family bounded receive storage.
     Subscriber,
 }
 

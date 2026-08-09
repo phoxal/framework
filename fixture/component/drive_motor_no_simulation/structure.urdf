@@ -1,0 +1,11 @@
+<?xml version="1.0" ?>
+<robot name="drive_motor_without_simulation">
+  <link name="mount" />
+  <joint name="motor_joint" type="continuous">
+    <parent link="mount" />
+    <child link="rotor_link" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+    <axis xyz="0 0 1" />
+  </joint>
+  <link name="rotor_link" />
+</robot>

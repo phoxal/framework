@@ -52,6 +52,11 @@ fn staged_simulation_bundle() -> StagedBundle {
     staged_bundle_from_manifest("robot.simulated.yaml")
 }
 
+#[cfg(test)]
+fn staged_simulation_bundle_without_component_models() -> StagedBundle {
+    staged_bundle_from_manifest("robot.simulated-no-models.yaml")
+}
+
 #[expect(
     clippy::expect_used,
     reason = "every input is a document committed beside this crate, so a failure here is a broken checkout and the panic is the report"
@@ -183,13 +188,7 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
             );
         }
     }
-    if robot.clock() == Clock::Simulated
-        && robot.components().any(|instance| {
-            robot
-                .simulation_for_instance(instance.id().as_str())
-                .is_some()
-        })
-    {
+    if robot.clock() == Clock::Simulated {
         stage_participant(
             "webots-controller".to_string(),
             "webots-controller".to_string(),
@@ -236,7 +235,10 @@ mod tests {
     use phoxal_runtime_contract::identity::ParticipantArtifactId;
     use phoxal_runtime_contract::metadata::ParticipantKind;
 
-    use super::{robot, staged_bundle, staged_simulation_bundle};
+    use super::{
+        robot, staged_bundle, staged_simulation_bundle,
+        staged_simulation_bundle_without_component_models,
+    };
 
     #[test]
     fn the_staged_bundle_has_only_runtime_layout() {
@@ -326,5 +328,26 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn simulated_fixture_without_component_models_still_selects_world_authority() {
+        let bundle = staged_simulation_bundle_without_component_models();
+        let loaded = RuntimeBundle::open_verified(bundle.path()).expect("the staged bundle loads");
+        assert!(loaded.robot().components().all(|instance| {
+            loaded
+                .robot()
+                .simulation_for_instance(instance.id().as_str())
+                .is_none()
+        }));
+        let simulator_count = loaded
+            .participants()
+            .iter()
+            .filter(|participant| {
+                loaded.artifacts()[participant.artifact()].contract().kind
+                    == ParticipantKind::Simulator
+            })
+            .count();
+        assert_eq!(simulator_count, 1);
     }
 }

@@ -1,0 +1,30 @@
+schema: phoxal/robot/v0
+clock: simulated
+robot:
+  id: simulated-without-component-models
+  structure: structure.urdf
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators:
+    - front_left_drive.motor
+    encoders:
+    - front_left_drive.encoder
+  components:
+    front_left_drive:
+      component: drive_motor_no_simulation
+      mount_link: front_left_wheel_mount
+      driver:
+        connection:
+          type: can
+          bus: 0
+          node_id: 1
+      parameters:
+        motor:
+          kind: motor
+          direction_sign: 1
+        encoder:
+          kind: encoder
+          direction_sign: 1

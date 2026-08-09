@@ -343,11 +343,11 @@ impl<B: ContractBody> Latest<B> {
 
 /// Internal ring subscription used by the delivery-specific receiver wrappers.
 ///
-/// A background task pushes each decoded sample onto a bounded ring (the depth
-/// is set at construction). When a slow consumer lets the ring fill, the oldest
-/// buffered sample is evicted and `inbound_drops` is bumped - the newest sample
-/// always wins, the backlog never grows without bound. Use this when a short
-/// history is useful; [`StateView`] is used when only current state matters.
+/// A background task pushes each decoded sample onto bounded storage whose
+/// overflow policy is selected from the contract's delivery family. Samples
+/// evict the oldest buffered value with explicit loss evidence; streams refuse
+/// admission and terminate with saturation evidence instead. The backlog never
+/// grows without bound. [`StateView`] is used when only current state matters.
 /// Decode failures are counted + logged, not buffered. Once a timeline barrier
 /// is active, possible replacement timelines are kept in separate bounded rings
 /// and remain invisible until their matching timeline is activated. The
@@ -457,7 +457,7 @@ impl<B: ContractBody> Subscriber<B> {
         })
     }
 
-    /// Await the next observed sample (drop-oldest under congestion).
+    /// Await the next observed value from the delivery-family buffer.
     ///
     /// **Destructive**: this pops from the ring, so the sample is delivered to
     /// exactly this caller. If this `Subscriber` was cloned, every clone
