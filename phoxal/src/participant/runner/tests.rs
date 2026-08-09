@@ -15,9 +15,10 @@ use crate::participant::managed::{
 };
 use crate::participant::scheduler::AnyStepScheduler;
 use phoxal_bundle::ParticipantClock;
-use phoxal_bus::{BusConfig, BusFault, BusOwner};
+use phoxal_bus::{BusConfig, BusFault, BusOwner, ParticipantReadyEvents, ParticipantReadyStatus};
 use phoxal_runtime_contract::identity::ParticipantId;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -292,5 +293,106 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
     close_session_with_result(Ok::<(), anyhow::Error>(()), session, deadline)
         .await
         .expect("bus close after cancelled setup");
+    bus_logs.shutdown();
+}
+
+static BUS_FAULT_SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
+
+async fn wait_for_ready_status(events: &ParticipantReadyEvents, status: ParticipantReadyStatus) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            while let Some(event) = events.try_recv() {
+                if event.status == status {
+                    return;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the Ready lifecycle event must be observable");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outbound_drain_failure_revokes_ready_runs_shutdown_and_returns_bus_fault() {
+    #[phoxal::service(id = "drain-fault-lifecycle", state = ())]
+    struct DrainFaultLifecycle;
+
+    impl Participant for DrainFaultLifecycle {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
+        }
+
+        async fn shutdown(&self, _api: &Self::Api, _state: &mut Self::State) -> crate::Result<()> {
+            BUS_FAULT_SHUTDOWN_CALLED.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    BUS_FAULT_SHUTDOWN_CALLED.store(false, Ordering::Release);
+    let participant_id = ParticipantId::new("drain-fault-lifecycle").expect("valid participant id");
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        phoxal_runtime_contract::identity::ExecutionId::mint(),
+        participant_id.clone(),
+        Vec::new(),
+    ))
+    .await
+    .expect("open in-process bus");
+    let ready_events = bus
+        .participant_ready_events()
+        .await
+        .expect("observe exact Ready changes");
+    let (scheduler, clock_handle) =
+        AnyStepScheduler::for_clock_mode(ParticipantClock::Clockless, None, None)
+            .expect("disabled scheduler");
+    assert!(clock_handle.is_none());
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
+    let mut shutdown = ShutdownController::new(std::future::pending());
+
+    let outcome = Runner::<DrainFaultLifecycle, RealClock>::start(
+        super::lifecycle::StartInputs {
+            bus: bus.clone(),
+            session: BusLease::Owned(owner),
+            participant_id,
+            shutdown_grace: Duration::from_secs(1),
+            bundle: None,
+            config: (),
+            clock: RunnerClock::Disabled,
+            scheduler,
+            schedule: None,
+            clock_mode: ParticipantClock::Clockless,
+            tasks: RunnerTasks {
+                simulation_clock: None,
+                bus_log: bus_log_task,
+                query_reply_delay: None,
+            },
+        },
+        &mut shutdown,
+    )
+    .await;
+    let StartOutcome::Ready(runner) = outcome else {
+        panic!("healthy setup must acquire Ready before the injected failure");
+    };
+    wait_for_ready_status(&ready_events, ParticipantReadyStatus::Ready).await;
+
+    bus.__test_abort_outbound_drain()
+        .expect("the running owner has an outbound drain");
+    let error = runner
+        .run(&mut shutdown)
+        .await
+        .expect_err("an owner-owned drain failure is terminal");
+    assert!(matches!(
+        error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<ParticipantFault>()),
+        Some(ParticipantFault::Bus(BusFault::WorkerJoin { worker, .. }))
+            if worker == "outbound-drain"
+    ));
+    assert!(BUS_FAULT_SHUTDOWN_CALLED.load(Ordering::Acquire));
+    wait_for_ready_status(&ready_events, ParticipantReadyStatus::Lost).await;
     bus_logs.shutdown();
 }

@@ -27,6 +27,7 @@ tracing = { workspace = true }
 zenoh = { workspace = true }
 
 [features]
+test-harness = []
 # The supervisor's embedded Zenoh router. Off by default so
 # participants - which reach this crate through the `phoxal` facade - never see
 # a router in their API surface; only `phoxal-cli`'s supervisor enables it.

@@ -12,6 +12,7 @@
 //! `ZenohId` is foreign to this crate and the Phoxal identities are foreign to
 //! Zenoh's, so neither side can carry the conversion.
 
+use std::future::IntoFuture;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -189,7 +190,13 @@ struct BusInner {
     admission: std::sync::Mutex<()>,
     closing: AtomicBool,
     shutdown: Notify,
-    drain: std::sync::Mutex<Option<JoinHandle<()>>>,
+    #[cfg(test)]
+    drain_paused: AtomicBool,
+    #[cfg(test)]
+    drain_pause_ack: Notify,
+    #[cfg(test)]
+    drain_resume: Notify,
+    drain: std::sync::Mutex<Option<OwnedDrain>>,
     workers: Arc<BusWorkerGroup>,
     transport_errors: std::sync::Mutex<TransportErrors>,
     terminal: watch::Sender<BusTerminal>,
@@ -240,6 +247,11 @@ struct RegisteredWorker {
     name: String,
     expected: Arc<AtomicBool>,
     handle: JoinHandle<()>,
+    raw_abort: AbortHandle,
+}
+
+struct OwnedDrain {
+    monitor: JoinHandle<()>,
     raw_abort: AbortHandle,
 }
 
@@ -380,7 +392,8 @@ impl Drop for BusOwner {
         self.inner.shutdown.notify_waiters();
         self.inner.shutdown.notify_one();
         if let Some(drain) = lock(&self.inner.drain).take() {
-            drain.abort();
+            drain.raw_abort.abort();
+            drain.monitor.abort();
         }
         self.inner.workers.begin_close();
         if let Some(reaper) = lock(&self.inner.workers.reaper).take() {
@@ -461,6 +474,12 @@ impl BusOwner {
             admission: std::sync::Mutex::new(()),
             closing: AtomicBool::new(false),
             shutdown: Notify::new(),
+            #[cfg(test)]
+            drain_paused: AtomicBool::new(false),
+            #[cfg(test)]
+            drain_pause_ack: Notify::new(),
+            #[cfg(test)]
+            drain_resume: Notify::new(),
             drain: std::sync::Mutex::new(None),
             workers: Arc::clone(&workers),
             transport_errors: std::sync::Mutex::new(TransportErrors::default()),
@@ -470,7 +489,7 @@ impl BusOwner {
             in_flight_notify: Notify::new(),
         });
 
-        let drain = tokio::spawn(drain_loop(drain_session, Arc::downgrade(&inner)));
+        let drain = spawn_supervised_drain(drain_session, Arc::downgrade(&inner));
         *lock(&inner.drain) = Some(drain);
         let reaper = tokio::spawn(worker_reaper(Arc::clone(&workers), Arc::downgrade(&inner)));
         *lock(&workers.reaper) = Some(reaper);
@@ -641,6 +660,45 @@ impl BusHandle {
         }
         inner.workers.register(name.into(), expected, worker);
         Ok(())
+    }
+
+    /// Test-only failure injection for proving that the participant lifecycle
+    /// observes an actual owner-owned outbound worker termination.
+    #[cfg(any(test, feature = "test-harness"))]
+    #[doc(hidden)]
+    pub fn __test_abort_outbound_drain(&self) -> Result<()> {
+        let inner = self.live_inner()?;
+        let drain = lock(&inner.drain);
+        let drain = drain.as_ref().ok_or(BusError::Closed)?;
+        drain.raw_abort.abort();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_pause_outbound_drain(&self) -> Result<TestDrainPause> {
+        let inner = self.live_inner()?;
+        inner.drain_paused.store(true, Ordering::Release);
+        inner.outbound_notify.notify_one();
+        inner.drain_pause_ack.notified().await;
+        Ok(TestDrainPause {
+            inner: Arc::downgrade(&inner),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_queued_stream_metadata(&self, key: &str) -> Vec<BusMetadata> {
+        self.owner
+            .upgrade()
+            .map(|inner| {
+                lock(&inner.outbound)
+                    .stream_attachments(key)
+                    .into_iter()
+                    .map(|attachment| {
+                        BusMetadata::decode(&attachment).expect("queued metadata must decode")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The current owner-shared terminal state.
@@ -930,59 +988,59 @@ impl BusOwner {
         };
         let handle = lock(&self.inner.drain).take();
         let mut timed_out = Vec::new();
-        if let Some(mut handle) = handle {
+        if let Some(mut drain) = handle {
             let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if tokio::time::timeout(timeout, &mut handle).await.is_err() {
-                handle.abort();
-                timed_out.push(BusCloseTimeout::Drain);
+            match tokio::time::timeout(timeout, &mut drain.monitor).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    lock(&self.inner.worker_failures).push(BusFault::WorkerJoin {
+                        worker: "outbound-drain-monitor".to_string(),
+                        error: error.to_string(),
+                    });
+                }
+                Err(_) => {
+                    drain.raw_abort.abort();
+                    drain.monitor.abort();
+                    timed_out.push(BusCloseTimeout::Drain);
+                }
             }
         }
-        let transport = std::mem::take(&mut *lock(&self.inner.transport_errors));
-        let mut report = BusCloseReport {
-            transport_errors: transport.entries,
-            transport_error_count: transport.count,
-            transport_errors_truncated: transport.truncated,
-            worker_failures: lock(&self.inner.worker_failures).clone(),
-            timed_out,
-            ..BusCloseReport::default()
-        };
+        let mut report = initial_close_report(&self.inner, timed_out);
         if operations_timed_out {
             report.timed_out.push(BusCloseTimeout::Operations(
                 self.inner.in_flight.load(Ordering::Acquire),
             ));
         }
-        match tokio::time::timeout(
-            deadline.saturating_duration_since(tokio::time::Instant::now()),
-            self.inner.session.close(),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => report.session_close_error = Some(error.to_string()),
-            Err(_) => {
-                report.timed_out.push(BusCloseTimeout::Session);
-            }
-        }
+        record_session_close(&mut report, deadline, self.inner.session.close()).await;
         self.inner.workers.begin_close();
         let reaper = { lock(&self.inner.workers.reaper).take() };
-        if let Some(mut reaper) = reaper
-            && tokio::time::timeout(
+        if let Some(mut reaper) = reaper {
+            match tokio::time::timeout(
                 deadline.saturating_duration_since(tokio::time::Instant::now()),
                 &mut reaper,
             )
             .await
-            .is_err()
-        {
-            reaper.abort();
-            let remaining = self.inner.workers.take_remaining();
-            report.unjoined_workers = remaining.len();
-            for worker in remaining {
-                worker.handle.abort();
-                worker.raw_abort.abort();
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    lock(&self.inner.worker_failures).push(BusFault::WorkerJoin {
+                        worker: "bus-worker-reaper".to_string(),
+                        error: error.to_string(),
+                    });
+                }
+                Err(_) => {
+                    reaper.abort();
+                    let remaining = self.inner.workers.take_remaining();
+                    report.unjoined_workers = remaining.len();
+                    for worker in remaining {
+                        worker.handle.abort();
+                        worker.raw_abort.abort();
+                    }
+                    report
+                        .timed_out
+                        .push(BusCloseTimeout::Workers(report.unjoined_workers));
+                }
             }
-            report
-                .timed_out
-                .push(BusCloseTimeout::Workers(report.unjoined_workers));
         }
         report.worker_failures = lock(&self.inner.worker_failures).clone();
         mark_terminal_closed(&self.inner);
@@ -1069,6 +1127,18 @@ async fn drain_loop(session: zenoh::Session, owner: Weak<BusInner>) {
         let Some(inner) = owner.upgrade() else {
             return;
         };
+        #[cfg(test)]
+        if inner.drain_paused.load(Ordering::Acquire) {
+            inner.drain_pause_ack.notify_one();
+            while inner.drain_paused.load(Ordering::Acquire)
+                && !inner.closing.load(Ordering::Acquire)
+            {
+                tokio::select! {
+                    _ = inner.drain_resume.notified() => {}
+                    _ = inner.shutdown.notified() => {}
+                }
+            }
+        }
         let next = { lock(&inner.outbound).pop_next() };
         if let Some(out) = next {
             out.metric.enqueue_finished();
@@ -1086,6 +1156,79 @@ async fn drain_loop(session: zenoh::Session, owner: Weak<BusInner>) {
             _ = inner.shutdown.notified() => {}
             _ = inner.outbound_notify.notified() => {}
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestDrainPause {
+    inner: Weak<BusInner>,
+}
+
+#[cfg(test)]
+impl Drop for TestDrainPause {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.upgrade() {
+            inner.drain_paused.store(false, Ordering::Release);
+            inner.drain_resume.notify_waiters();
+            inner.drain_resume.notify_one();
+        }
+    }
+}
+
+fn spawn_supervised_drain(session: zenoh::Session, owner: Weak<BusInner>) -> OwnedDrain {
+    let worker = tokio::spawn(drain_loop(session, Weak::clone(&owner)));
+    let raw_abort = worker.abort_handle();
+    let monitor = tokio::spawn(async move {
+        let result = worker.await;
+        let Some(inner) = owner.upgrade() else {
+            return;
+        };
+        if inner.closing.load(Ordering::Acquire) {
+            return;
+        }
+        let fault = match result {
+            Ok(()) => BusFault::WorkerExited {
+                worker: "outbound-drain".to_string(),
+            },
+            Err(error) => BusFault::WorkerJoin {
+                worker: "outbound-drain".to_string(),
+                error: error.to_string(),
+            },
+        };
+        signal_fatal(&inner, fault);
+    });
+    OwnedDrain { monitor, raw_abort }
+}
+
+async fn record_session_close<F, E>(
+    report: &mut BusCloseReport,
+    deadline: tokio::time::Instant,
+    close: F,
+) where
+    F: IntoFuture<Output = std::result::Result<(), E>>,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
+        close.into_future(),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => report.session_close_error = Some(error.to_string()),
+        Err(_) => report.timed_out.push(BusCloseTimeout::Session),
+    }
+}
+
+fn initial_close_report(inner: &BusInner, timed_out: Vec<BusCloseTimeout>) -> BusCloseReport {
+    let transport = std::mem::take(&mut *lock(&inner.transport_errors));
+    BusCloseReport {
+        transport_errors: transport.entries,
+        transport_error_count: transport.count,
+        transport_errors_truncated: transport.truncated,
+        worker_failures: lock(&inner.worker_failures).clone(),
+        timed_out,
+        ..BusCloseReport::default()
     }
 }
 
@@ -1158,11 +1301,6 @@ async fn put(session: &zenoh::Session, out: Outbound, inner: &Arc<BusInner>) {
         Ok(key) => key,
         Err(e) => {
             let error = format!("invalid publish key '{}': {e}", out.key);
-            inner
-                .identity
-                .health
-                .transport_failures
-                .fetch_add(1, Ordering::Relaxed);
             record_transport_error(inner, error.clone());
             tracing::error!(target: "phoxal.bus", key = %out.key, error = %error, "invalid publish key");
             return;
@@ -1175,11 +1313,6 @@ async fn put(session: &zenoh::Session, out: Outbound, inner: &Arc<BusInner>) {
         .await
     {
         let error = format!("publish on '{}' failed: {e}", out.key);
-        inner
-            .identity
-            .health
-            .transport_failures
-            .fetch_add(1, Ordering::Relaxed);
         record_transport_error(inner, error.clone());
         tracing::warn!(target: "phoxal.bus", key = %out.key, error = %error, "publish failed");
     }
@@ -1681,20 +1814,47 @@ mod tests {
         assert!(matches!(observer.terminal(), BusTerminal::Fatal(_)));
     }
 
-    #[test]
-    fn close_report_keeps_async_and_session_close_evidence_together() {
-        let report = BusCloseReport {
-            transport_errors: vec!["earlier put failed".to_string()],
-            transport_error_count: 1,
-            session_close_error: Some("later session close failed".to_string()),
-            ..BusCloseReport::default()
-        };
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn aborting_the_owned_drain_is_a_terminal_bus_fault() {
+        let (owner, bus) = BusOwner::open(participant_config("drain-fatal"))
+            .await
+            .unwrap();
+        bus.__test_abort_outbound_drain()
+            .expect("the live owner has a drain worker");
+
+        let fault = tokio::time::timeout(Duration::from_secs(1), bus.wait_for_fatal())
+            .await
+            .expect("the drain monitor must wake lifecycle observers");
+        assert!(matches!(
+            fault,
+            BusFault::WorkerJoin { ref worker, .. } if worker == "outbound-drain"
+        ));
+        let report = owner.close().await;
+        assert!(report.worker_failures.contains(&fault));
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn close_path_keeps_async_and_session_close_evidence_together() {
+        let (owner, _bus) = BusOwner::open(participant_config("close-evidence"))
+            .await
+            .unwrap();
+        record_transport_error(&owner.inner, "earlier put failed".to_string());
+        let mut report = initial_close_report(&owner.inner, Vec::new());
+        record_session_close(
+            &mut report,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            async { Err::<(), _>("later session close failed") },
+        )
+        .await;
         assert!(!report.is_clean());
         assert_eq!(report.transport_errors, ["earlier put failed"]);
         assert_eq!(
             report.session_close_error.as_deref(),
             Some("later session close failed")
         );
+        owner.close().await;
     }
 
     #[serial]

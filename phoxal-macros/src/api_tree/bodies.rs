@@ -168,7 +168,6 @@ impl Node {
                             const ROLE: ::phoxal_bus::TopicRole = #role;
                             const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
-                        impl ::phoxal_bus::StateDeliveryContract for #request {}
                         impl ::phoxal_bus::ContractBody for #response {
                             type Api = self::__PhoxalApiMarker;
                             const NAME: &'static str = #response_name;
@@ -178,7 +177,6 @@ impl Node {
                             const ROLE: ::phoxal_bus::TopicRole = #role;
                             const DELIVERY: ::phoxal_bus::DeliveryFamily = #delivery;
                         }
-                        impl ::phoxal_bus::StateDeliveryContract for #response {}
                     });
                 }
             }

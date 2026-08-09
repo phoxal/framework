@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::contract::{ContractBody, DeliveryFamily};
-use crate::error::{BusError, Result};
+use crate::error::{BusError, KeyProblem, Result};
 use crate::handle::decode_sample;
 use crate::lock::lock;
 use crate::metadata::BusMetadata;
@@ -389,6 +389,14 @@ impl<B: ContractBody> Subscriber<B> {
     /// in other crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        if B::DELIVERY == DeliveryFamily::Stream
+            && topic
+                .key()
+                .split('/')
+                .any(|segment| segment == "*" || segment == "**")
+        {
+            return Err(BusError::invalid_key(topic.key(), KeyProblem::Wildcard));
+        }
         // Buffering is a contract property, not a tuning knob each caller can
         // guess at. State and setpoint observations retain one newest value;
         // ordered samples and streams use the bounded sample window.
@@ -419,6 +427,12 @@ impl<B: ContractBody> Subscriber<B> {
             move |observed| {
                 let outcome = push.push(observed);
                 if !outcome.accepted {
+                    if outcome.saturated {
+                        drops.signal_fatal(BusFault::SubscriptionReceive {
+                            topic: topic_owned.clone(),
+                            error: "ordered stream receive buffer saturated".to_string(),
+                        });
+                    }
                     return;
                 }
                 if let Some(timeline) = outcome.new_pending_timeline {
@@ -726,7 +740,10 @@ fn classify_stream<B>(
         })?
         .sequence;
     let mut positions = lock(next_positions);
-    let next = positions.entry(producer).or_insert(Some(0));
+    let Some(next) = positions.get_mut(&producer) else {
+        positions.insert(producer, observed.checked_add(1));
+        return Ok(StreamEvent::Item(item));
+    };
     let expected = (*next).ok_or(BusError::SequenceExhausted)?;
     if observed == expected {
         *next = observed.checked_add(1);
@@ -788,6 +805,7 @@ struct PendingTimeline<B> {
 struct RingPush {
     accepted: bool,
     evicted: bool,
+    saturated: bool,
     new_pending_timeline: Option<TimelineId>,
 }
 
@@ -828,6 +846,7 @@ impl<B> Ring<B> {
                 return RingPush {
                     accepted: false,
                     evicted: false,
+                    saturated: false,
                     new_pending_timeline: None,
                 };
             }
@@ -840,12 +859,23 @@ impl<B> Ring<B> {
             let pending_index = match pending_index {
                 Some(index) => index,
                 None => {
-                    if state.pending.len() == PENDING_TIMELINE_CAPACITY
-                        && let Some(removed) = state.pending.pop_front()
-                    {
-                        self.metric.record_timeline_filtered(
-                            u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
-                        );
+                    if state.pending.len() == PENDING_TIMELINE_CAPACITY {
+                        if matches!(self.policy, RingPolicy::Refuse) {
+                            self.terminal.set(ReceiveTerminal::Transport(
+                                "stream receiver timeline quarantine saturated".to_string(),
+                            ));
+                            return RingPush {
+                                accepted: false,
+                                evicted: false,
+                                saturated: true,
+                                new_pending_timeline: None,
+                            };
+                        }
+                        if let Some(removed) = state.pending.pop_front() {
+                            self.metric.record_timeline_filtered(
+                                u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
+                            );
+                        }
                     }
                     state.pending.push_back(PendingTimeline {
                         timeline,
@@ -857,6 +887,17 @@ impl<B> Ring<B> {
             };
             let pending = &mut state.pending[pending_index];
             if pending.buf.len() == self.cap {
+                if matches!(self.policy, RingPolicy::Refuse) {
+                    self.terminal.set(ReceiveTerminal::Transport(
+                        "stream receiver timeline quarantine saturated".to_string(),
+                    ));
+                    return RingPush {
+                        accepted: false,
+                        evicted: false,
+                        saturated: true,
+                        new_pending_timeline: None,
+                    };
+                }
                 pending.buf.pop_front();
                 self.metric.record_timeline_filtered(1);
             }
@@ -865,6 +906,7 @@ impl<B> Ring<B> {
             return RingPush {
                 accepted: true,
                 evicted: false,
+                saturated: false,
                 new_pending_timeline,
             };
         }
@@ -878,6 +920,7 @@ impl<B> Ring<B> {
                 return RingPush {
                     accepted: false,
                     evicted: false,
+                    saturated: true,
                     new_pending_timeline: None,
                 };
             }
@@ -895,6 +938,7 @@ impl<B> Ring<B> {
         RingPush {
             accepted: true,
             evicted: dropped,
+            saturated: false,
             new_pending_timeline: None,
         }
     }
@@ -1119,7 +1163,10 @@ mod tests {
     use serial_test::serial;
 
     use crate::abi::CodecId;
-    use crate::contract::{ApiVersion, ContractBody, DeliveryFamily, StateContract, TopicRole};
+    use crate::contract::{
+        ApiVersion, ContractBody, DeliveryFamily, StateContract, StreamContract,
+        StreamDeliveryContract, TopicRole,
+    };
     use crate::handle::publisher::{CommandPublisher, StatePublisher};
     use crate::metadata::{ParticipantSourceIdentity, SourceAttribution};
     use crate::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
@@ -1150,6 +1197,22 @@ mod tests {
     }
 
     impl StateContract for NonCloneBody {}
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct OrderedChunk(u8);
+
+    impl ContractBody for OrderedChunk {
+        type Api = NonCloneApi;
+        const NAME: &'static str = "nonclone::stream::Chunk";
+        const VERSION: &'static str = "nonclone";
+        const CONTRACT: &'static str = "stream::Chunk";
+        const TOPIC: &'static str = "nonclone/stream/chunk";
+        const ROLE: TopicRole = TopicRole::Stream;
+        const DELIVERY: DeliveryFamily = DeliveryFamily::Stream;
+    }
+
+    impl StreamContract for OrderedChunk {}
+    impl StreamDeliveryContract for OrderedChunk {}
 
     fn observed(body: u8, line: Option<u64>) -> Observed<u8> {
         Observed {
@@ -1211,6 +1274,25 @@ mod tests {
     }
 
     #[test]
+    fn a_late_stream_subscription_establishes_its_first_observed_position() {
+        let positions = Mutex::new(HashMap::new());
+        assert!(matches!(
+            classify_stream("v0.2/test/stream", &positions, stream_observed(1, Some(41)),)
+                .expect("traffic before subscription is not receiver-observed loss"),
+            StreamEvent::Item(Observed { body: 1, .. })
+        ));
+        assert!(matches!(
+            classify_stream("v0.2/test/stream", &positions, stream_observed(2, Some(43)),)
+                .expect("a discontinuity after the baseline is explicit"),
+            StreamEvent::Gap {
+                expected: 42,
+                observed: 43,
+                item: Observed { body: 2, .. },
+            }
+        ));
+    }
+
+    #[test]
     fn a_stream_sample_without_a_position_is_rejected() {
         let error = classify_stream(
             "v0.2/test/stream",
@@ -1250,6 +1332,32 @@ mod tests {
         assert_eq!(row.bounded_evictions, 2);
         assert_eq!(row.current_depth, 0);
         assert_eq!(row.high_water_depth, 1);
+    }
+
+    #[test]
+    fn stream_quarantine_refuses_saturation_without_evicting_an_accepted_chunk() {
+        let metrics = RuntimeMetrics::default();
+        let metric = metrics.register_subscriber("v0.2/test/stream", 2);
+        let terminal = Arc::new(TerminalState::new());
+        let ring = Ring::new(2, RingPolicy::Refuse, metric, Arc::clone(&terminal));
+        ring.retain_timeline(timeline(1));
+
+        assert!(ring.push(observed(1, Some(2))).accepted);
+        assert!(ring.push(observed(2, Some(2))).accepted);
+        assert!(
+            !ring.push(observed(3, Some(2))).accepted,
+            "the third foreign-world chunk must be refused, not replace the first"
+        );
+        assert!(matches!(
+            terminal.get(),
+            Some(ReceiveTerminal::Transport(error))
+                if error.contains("timeline quarantine saturated")
+        ));
+
+        ring.retain_timeline(timeline(2));
+        assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(1));
+        assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(2));
+        assert!(ring.try_pop().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1303,6 +1411,27 @@ mod tests {
             .await
             .expect("a non-Clone body still has a retained-state subscription");
         assert!(latest.observed().is_none());
+        owner.close().await;
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_stream_receiver_rejects_a_wildcard_before_transport() {
+        let (owner, bus) = BusOwner::open(participant_config("wildcard-stream"))
+            .await
+            .unwrap();
+        let topic = Topic::<Subscribe<OrderedChunk>>::new_owned("nonclone/stream/*".to_string());
+        let error = match StreamReceiver::new(&bus, &topic).await {
+            Ok(_) => panic!("one position tracker cannot mix concrete stream topics"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            BusError::InvalidKey {
+                problem: KeyProblem::Wildcard,
+                ..
+            }
+        ));
         owner.close().await;
     }
 

@@ -238,10 +238,14 @@ impl<B: DiagnosticContract> DiagnosticPublisher<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{ApiVersion, DeliveryFamily, StreamContract, TopicRole};
+    use crate::contract::{
+        ApiVersion, DeliveryFamily, MeasurementContract, StateContract, StreamContract, TopicRole,
+    };
     use crate::error::BusError;
-    use crate::session::{BusOwner, OUTBOUND_MAX_BYTES};
+    use crate::runtime_metrics::RuntimeBufferKind;
+    use crate::session::{BusOwner, OUTBOUND_CAPACITY, OUTBOUND_MAX_BYTES};
     use crate::test_support::{Target, participant_config, step};
+    use crate::time::CaptureStamp;
     use crate::topic::Topic;
     use serial_test::serial;
 
@@ -265,6 +269,36 @@ mod tests {
     }
 
     impl StreamContract for StreamChunk {}
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct StateChunk(u16);
+
+    impl ContractBody for StateChunk {
+        type Api = StreamApi;
+        const NAME: &'static str = "stream-test::State";
+        const VERSION: &'static str = "stream-test";
+        const CONTRACT: &'static str = "State";
+        const TOPIC: &'static str = "stream-test/state";
+        const ROLE: TopicRole = TopicRole::State;
+        const DELIVERY: DeliveryFamily = DeliveryFamily::State;
+    }
+
+    impl StateContract for StateChunk {}
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct SampleChunk(u16);
+
+    impl ContractBody for SampleChunk {
+        type Api = StreamApi;
+        const NAME: &'static str = "stream-test::Sample";
+        const VERSION: &'static str = "stream-test";
+        const CONTRACT: &'static str = "Sample";
+        const TOPIC: &'static str = "stream-test/sample";
+        const ROLE: TopicRole = TopicRole::Measurement;
+        const DELIVERY: DeliveryFamily = DeliveryFamily::Sample;
+    }
+
+    impl MeasurementContract for SampleChunk {}
 
     /// A publish after close is a real loss, and the caller has to be able to
     /// see it: silently succeeding would let a participant believe it had
@@ -302,5 +336,89 @@ mod tests {
             .expect_err("an oversized stream chunk must not be accepted");
         assert!(matches!(error, BusError::WouldBlock { .. }));
         owner.close().await;
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publisher_admission_enforces_each_delivery_family_and_records_evidence() {
+        let (owner, bus) = BusOwner::open(participant_config("semantic-admission"))
+            .await
+            .unwrap();
+        let pause = bus
+            .test_pause_outbound_drain()
+            .await
+            .expect("test drain can be held before admission");
+        let state =
+            StatePublisher::<StateChunk>::new(bus.clone(), &Topic::new_static(StateChunk::TOPIC))
+                .unwrap();
+        let sample = MeasurementPublisher::<SampleChunk>::new(
+            bus.clone(),
+            &Topic::new_static(SampleChunk::TOPIC),
+        )
+        .unwrap();
+        let stream = StreamPublisher::<StreamChunk>::new(
+            bus.clone(),
+            &Topic::new_static(StreamChunk::TOPIC),
+        )
+        .unwrap();
+
+        for value in 0..3 {
+            state
+                .publish(&step(1, value), StateChunk(value as u16))
+                .unwrap();
+        }
+        for value in 0..=OUTBOUND_CAPACITY {
+            sample
+                .publish(CaptureStamp::Untranslated, SampleChunk(value as u16))
+                .unwrap();
+        }
+        for value in 0..OUTBOUND_CAPACITY {
+            stream.send(StreamChunk(vec![value as u8])).unwrap();
+        }
+        assert!(matches!(
+            stream.send(StreamChunk(vec![0xff])).unwrap_err(),
+            BusError::WouldBlock { .. }
+        ));
+
+        let full_stream_key = bus.full_key(StreamChunk::TOPIC);
+        let positions: Vec<_> = bus
+            .test_queued_stream_metadata(&full_stream_key)
+            .into_iter()
+            .map(|metadata| {
+                metadata
+                    .stream_position
+                    .expect("an accepted stream has a position")
+                    .sequence
+            })
+            .collect();
+        assert_eq!(positions, (0..OUTBOUND_CAPACITY as u64).collect::<Vec<_>>());
+
+        let rows = bus.take_runtime_metrics().unwrap();
+        let row = |topic: &str| {
+            rows.iter()
+                .find(|row| {
+                    row.key.buffer_kind == RuntimeBufferKind::Outbound
+                        && row.key.topic.ends_with(topic)
+                })
+                .expect("publisher metric row")
+        };
+        assert_eq!(row(StateChunk::TOPIC).count, 3);
+        assert_eq!(row(StateChunk::TOPIC).latest_overwrites, 2);
+        assert_eq!(row(SampleChunk::TOPIC).count, OUTBOUND_CAPACITY as u64 + 1);
+        assert_eq!(row(SampleChunk::TOPIC).bounded_evictions, 1);
+        assert_eq!(row(StreamChunk::TOPIC).count, OUTBOUND_CAPACITY as u64);
+        assert_eq!(row(StreamChunk::TOPIC).drops, 1);
+        assert_eq!(
+            bus.health()
+                .outbound_drops
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "one sample eviction and one refused stream are both live evidence"
+        );
+
+        drop(pause);
+        owner
+            .close_until(tokio::time::Instant::now() + std::time::Duration::from_secs(10))
+            .await;
     }
 }

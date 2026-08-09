@@ -24,7 +24,7 @@ path = "src/lib.rs"
 # enables it as a **dev**-dependency feature, because a participant crate's
 # tests are a separate compilation unit that cannot enable this crate's
 # `cfg(test)`.
-test-harness = []
+test-harness = ["phoxal-bus/test-harness"]
 
 [dependencies]
 phoxal-api = { workspace = true }

@@ -217,7 +217,9 @@ impl TopicRole {
             TopicRole::State | TopicRole::WorldClock | TopicRole::Diagnostic => {
                 quote! { ::phoxal_bus::StateDeliveryContract }
             }
-            TopicRole::Query => quote! { ::phoxal_bus::StateDeliveryContract },
+            TopicRole::Query => {
+                unreachable!("query bodies have no pub/sub delivery marker")
+            }
         }
     }
 

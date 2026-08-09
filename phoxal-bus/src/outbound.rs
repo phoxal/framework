@@ -97,6 +97,15 @@ impl OutboundScheduler {
         self.state.len() + self.setpoint.len() + self.sample.len() + self.stream.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn stream_attachments(&self, key: &str) -> Vec<Vec<u8>> {
+        self.stream
+            .iter()
+            .filter(|outbound| outbound.key == key)
+            .map(|outbound| outbound.attachment.clone())
+            .collect()
+    }
+
     /// Return the next position without mutating it. The caller commits this
     /// only after the corresponding stream item has been admitted.
     pub(crate) fn next_stream_position(&self, key: &str) -> u64 {
