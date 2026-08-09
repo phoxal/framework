@@ -1,13 +1,16 @@
 //! v0.1 video payloads.
 #![allow(legacy_derive_helpers)]
 
+#[allow(unused_imports)]
+pub use crate::domains::source::{InvalidVideoSourceRef, VideoSourceRef};
+
 /// Ask to open a video stream for one exact camera capability at an
 /// optional size. The pre-v1 backend currently has no encoded
 /// transport, so the response reports that outcome instead of
 /// fabricating a stream identity or lifecycle.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OpenRequest {
-    pub source: crate::VideoSourceRef,
+    pub source: VideoSourceRef,
     pub width_px: Option<u32>,
     pub height_px: Option<u32>,
 }

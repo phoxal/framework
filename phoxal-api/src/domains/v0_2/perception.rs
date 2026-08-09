@@ -1,6 +1,9 @@
 //! v0.2 perception payloads.
 #![allow(legacy_derive_helpers)]
 
+#[allow(unused_imports)]
+pub use crate::domains::source::{InvalidSourceRef, SourceRef};
+
 /// A current-revision detection with wire-level finite and fixed
 /// shape guarantees. The v0.1 body above remains untouched.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -25,7 +28,7 @@ pub struct Detection {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Detections {
-    pub source: crate::SourceRef,
+    pub source: SourceRef,
     pub captured_at: ::phoxal_bus::TimeWindow,
     pub detections: Vec<Detection>,
 }
