@@ -144,6 +144,9 @@ phoxal_api! {
             motor(capability) {
                 replace command command: Setpoint<crate::domains::v0_2::component::motor::Command>;
             }
+            camera(capability) {
+                replace topic frame: Sample<crate::domains::v0_2::component::camera::Frame>;
+            }
         }
     }
 }
