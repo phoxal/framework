@@ -2,7 +2,7 @@
 //! sample queues, refusal-preserving stream queues, and their shared
 //! background subscription machinery.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,6 +37,10 @@ pub enum ReceiveTerminal {
     /// A stream receiver exhausted its fixed producer-position history bound.
     /// Existing history is retained; no source entry is silently evicted.
     TooManyStreamSources { topic: String, limit: usize },
+    /// A setpoint receiver exhausted its fixed producer-source bound. Existing
+    /// actionable intents are retained; no producer can evict another before
+    /// the authority lease sees it.
+    TooManySetpointSources { topic: String, limit: usize },
 }
 
 /// Runner-owned timeline retention callback for a receive handle. This is
@@ -132,6 +136,8 @@ struct LatestState<B> {
     pending: VecDeque<Arc<Observed<B>>>,
     retired_timelines: RetiredTimelines,
 }
+
+type Admission<B> = Arc<dyn Fn(&Observed<B>) -> bool + Send + Sync>;
 
 enum LatestIngest {
     Active {
@@ -251,6 +257,30 @@ impl<B: ContractBody> Latest<B> {
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Self::new_inner(bus, topic, None).await
+    }
+
+    /// Build a keep-last view that admits observations before coalescing them.
+    /// The admission callback is synchronous in-memory policy and runs on the
+    /// transport receive task, before the latest slot can overwrite an older
+    /// accepted observation.
+    #[doc(hidden)]
+    pub async fn new_with_admission<F>(
+        bus: &BusHandle,
+        topic: &Topic<Subscribe<B>>,
+        admission: F,
+    ) -> Result<Self>
+    where
+        F: Fn(&Observed<B>) -> bool + Send + Sync + 'static,
+    {
+        Self::new_inner(bus, topic, Some(Arc::new(admission))).await
+    }
+
+    async fn new_inner(
+        bus: &BusHandle,
+        topic: &Topic<Subscribe<B>>,
+        admission: Option<Admission<B>>,
+    ) -> Result<Self> {
         let state = Arc::new(Mutex::new(LatestState {
             active_timeline: None,
             observed: None,
@@ -266,6 +296,9 @@ impl<B: ContractBody> Latest<B> {
             bus,
             topic.key(),
             move |observed| {
+                if admission.as_ref().is_some_and(|admit| !admit(&observed)) {
+                    return;
+                }
                 let mut state = lock(&store);
                 match state.ingest(observed) {
                     LatestIngest::Active { overwrote } => observe.record_latest(overwrote),
@@ -345,7 +378,8 @@ impl<B: ContractBody> Latest<B> {
 ///
 /// A background task pushes each decoded sample onto bounded storage whose
 /// overflow policy is selected from the contract's delivery family. Samples
-/// evict the oldest buffered value with explicit loss evidence; streams refuse
+/// evict the oldest buffered value with explicit loss evidence; setpoints keep
+/// the newest value per producer in first-pending-source order; streams refuse
 /// admission and terminate with saturation evidence instead. The backlog never
 /// grows without bound. [`StateView`] is used when only current state matters.
 /// Decode failures are counted + logged, not buffered. Once a timeline barrier
@@ -397,8 +431,9 @@ impl<B: ContractBody> Subscriber<B> {
             return Err(BusError::invalid_key(topic.key(), KeyProblem::Wildcard));
         }
         // Buffering is a contract property, not a tuning knob each caller can
-        // guess at. State and setpoint observations retain one newest value;
-        // ordered samples and streams use the bounded sample window.
+        // guess at. State retains one newest value; setpoints retain one newest
+        // value per producer up to their fixed source bound; ordered samples
+        // and streams use the bounded sample window.
         let depth = delivery_capacity(B::DELIVERY);
         let metric = bus
             .runtime_metrics()?
@@ -406,16 +441,17 @@ impl<B: ContractBody> Subscriber<B> {
         let terminal = Arc::new(TerminalState::new());
         let policy = match B::DELIVERY {
             DeliveryFamily::Stream => RingPolicy::Refuse,
-            DeliveryFamily::State
-            | DeliveryFamily::Setpoint
-            | DeliveryFamily::Sample
-            | DeliveryFamily::Query => RingPolicy::DropOldest,
+            DeliveryFamily::Setpoint => RingPolicy::Setpoint,
+            DeliveryFamily::State | DeliveryFamily::Sample | DeliveryFamily::Query => {
+                RingPolicy::DropOldest
+            }
         };
         let ring = Arc::new(Ring::new(
             depth,
             policy,
             metric.clone(),
             Arc::clone(&terminal),
+            topic.key(),
         ));
         let push = Arc::clone(&ring);
         let drops = bus.clone();
@@ -427,9 +463,13 @@ impl<B: ContractBody> Subscriber<B> {
                 let outcome = push.push(observed);
                 if !outcome.accepted {
                     if outcome.saturated {
+                        let error = match B::DELIVERY {
+                            DeliveryFamily::Setpoint => "setpoint receiver source bound exceeded",
+                            _ => "ordered stream receive buffer saturated",
+                        };
                         drops.signal_fatal(BusFault::SubscriptionReceive {
                             topic: topic_owned.clone(),
-                            error: "ordered stream receive buffer saturated".to_string(),
+                            error: error.to_string(),
                         });
                     }
                     return;
@@ -526,6 +566,23 @@ impl<B: crate::contract::StateDeliveryContract> StateView<B> {
         })
     }
 
+    /// Construct a state view whose source admission runs before keep-last
+    /// coalescing. The callback must be a bounded synchronous policy; it is
+    /// invoked on the receive task.
+    #[doc(hidden)]
+    pub async fn new_with_admission<F>(
+        bus: &BusHandle,
+        topic: &Topic<Subscribe<B>>,
+        admission: F,
+    ) -> Result<Self>
+    where
+        F: Fn(&Observed<B>) -> bool + Send + Sync + 'static,
+    {
+        Ok(Self {
+            inner: Latest::new_with_admission(bus, topic, admission).await?,
+        })
+    }
+
     pub fn observed(&self) -> Option<Arc<Observed<B>>> {
         self.inner.observed()
     }
@@ -566,10 +623,16 @@ impl<B: crate::contract::SetpointDeliveryContract> SetpointReceiver<B> {
     }
 
     pub async fn recv(&self) -> Result<Observed<B>> {
+        if let Some(terminal) = self.terminal() {
+            return Err(terminal_error(terminal));
+        }
         self.inner.recv().await
     }
 
     pub fn try_recv(&self) -> Option<Observed<B>> {
+        if self.terminal().is_some() {
+            return None;
+        }
         self.inner.try_recv()
     }
 
@@ -634,6 +697,14 @@ pub struct StreamReceiver<B> {
     topic: String,
     next_positions: Mutex<HashMap<crate::ProducerId, Option<u64>>>,
 }
+
+/// The fixed number of producer histories one setpoint receiver retains.
+///
+/// A setpoint receiver keeps one newest actionable value for each source. It
+/// refuses a new source once this bound is reached instead of allowing a flood
+/// from an unrelated producer to evict a source whose authority has not yet
+/// been evaluated.
+pub const MAX_SETPOINT_SOURCES: usize = 16;
 
 /// The fixed number of producer histories one stream receiver retains.
 ///
@@ -800,12 +871,14 @@ const DEFAULT_ORDERED_CAPACITY: usize = 32;
 
 const fn delivery_capacity(family: DeliveryFamily) -> usize {
     match family {
-        DeliveryFamily::State | DeliveryFamily::Setpoint | DeliveryFamily::Query => 1,
+        DeliveryFamily::State | DeliveryFamily::Query => 1,
+        DeliveryFamily::Setpoint => MAX_SETPOINT_SOURCES,
         DeliveryFamily::Sample | DeliveryFamily::Stream => DEFAULT_ORDERED_CAPACITY,
     }
 }
 
 struct Ring<B> {
+    topic: String,
     state: Mutex<RingState<B>>,
     notify: Notify,
     cap: usize,
@@ -819,18 +892,110 @@ struct Ring<B> {
 enum RingPolicy {
     DropOldest,
     Refuse,
+    Setpoint,
 }
 
 struct RingState<B> {
     active_timeline: Option<TimelineId>,
     buf: VecDeque<Observed<B>>,
+    setpoints: SetpointBuffer<B>,
     pending: VecDeque<PendingTimeline<B>>,
+    pending_setpoints: VecDeque<PendingSetpointTimeline<B>>,
     retired_timelines: RetiredTimelines,
+}
+
+/// One bounded producer-scoped setpoint lane. The map coalesces each source's
+/// newest value while the order queue records when each source first became
+/// pending. A separate instance is kept for each quarantined timeline so the
+/// delivery family never bypasses temporal barriers.
+struct SetpointBuffer<B> {
+    values: HashMap<crate::ProducerId, Observed<B>>,
+    order: VecDeque<crate::ProducerId>,
+}
+
+impl<B> SetpointBuffer<B> {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            values: HashMap::with_capacity(cap),
+            order: VecDeque::with_capacity(cap),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    fn contains(&self, producer: crate::ProducerId) -> bool {
+        self.values.contains_key(&producer)
+    }
+
+    fn insert(&mut self, item: Observed<B>) -> bool {
+        let producer = item.metadata.source.producer();
+        if let Some(previous) = self.values.get_mut(&producer) {
+            *previous = item;
+            true
+        } else {
+            self.order.push_back(producer);
+            self.values.insert(producer, item);
+            false
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<(crate::ProducerId, Observed<B>)> {
+        while let Some(producer) = self.order.pop_front() {
+            if let Some(item) = self.values.remove(&producer) {
+                return Some((producer, item));
+            }
+        }
+        None
+    }
+
+    fn retain_timeline(&mut self, timeline: TimelineId) -> u64 {
+        let mut retained = VecDeque::with_capacity(self.order.len());
+        let mut filtered = 0_u64;
+        while let Some(producer) = self.order.pop_front() {
+            let keep = self
+                .values
+                .get(&producer)
+                .is_some_and(|item| item.timeline().is_none_or(|line| line == timeline));
+            if keep {
+                retained.push_back(producer);
+            } else if self.values.remove(&producer).is_some() {
+                filtered = filtered.saturating_add(1);
+            }
+        }
+        self.order = retained;
+        filtered
+    }
 }
 
 struct PendingTimeline<B> {
     timeline: TimelineId,
     buf: VecDeque<Observed<B>>,
+}
+
+struct PendingSetpointTimeline<B> {
+    timeline: TimelineId,
+    buffer: SetpointBuffer<B>,
+}
+
+impl<B> RingState<B> {
+    fn setpoint_source_present(&self, producer: crate::ProducerId) -> bool {
+        self.setpoints.contains(producer)
+            || self
+                .pending_setpoints
+                .iter()
+                .any(|pending| pending.buffer.contains(producer))
+    }
+
+    fn setpoint_source_count(&self) -> usize {
+        let mut producers = HashSet::new();
+        producers.extend(self.setpoints.values.keys().copied());
+        for pending in &self.pending_setpoints {
+            producers.extend(pending.buffer.values.keys().copied());
+        }
+        producers.len()
+    }
 }
 
 struct RingPush {
@@ -846,12 +1011,16 @@ impl<B> Ring<B> {
         policy: RingPolicy,
         metric: RuntimeMetricHandle,
         terminal: Arc<TerminalState>,
+        topic: impl Into<String>,
     ) -> Self {
         Ring {
+            topic: topic.into(),
             state: Mutex::new(RingState {
                 active_timeline: None,
                 buf: VecDeque::with_capacity(cap),
+                setpoints: SetpointBuffer::with_capacity(cap),
                 pending: VecDeque::with_capacity(PENDING_TIMELINE_CAPACITY),
+                pending_setpoints: VecDeque::with_capacity(PENDING_TIMELINE_CAPACITY),
                 retired_timelines: RetiredTimelines::default(),
             }),
             notify: Notify::new(),
@@ -865,6 +1034,9 @@ impl<B> Ring<B> {
 
     /// Push into the active queue or a bounded foreign-timeline quarantine.
     fn push(&self, item: Observed<B>) -> RingPush {
+        if matches!(self.policy, RingPolicy::Setpoint) {
+            return self.push_setpoint(item);
+        }
         let mut state = lock(&self.state);
         // A sample expressing no robot time belongs to no world history and is
         // never quarantined.
@@ -974,8 +1146,148 @@ impl<B> Ring<B> {
         }
     }
 
+    /// Keep one newest actionable value per producer while preserving the
+    /// order in which producers first became pending. A new producer beyond
+    /// the fixed bound terminates the receiver rather than evicting an older
+    /// producer's intent before authority can inspect it.
+    fn push_setpoint(&self, item: Observed<B>) -> RingPush {
+        let producer = item.metadata.source.producer();
+        let mut state = lock(&self.state);
+        // Check while holding the same mutex that serializes dequeue. This
+        // makes terminal state win over a wrapper-level check racing a
+        // buffered actionable intent: once terminal evidence is visible, no
+        // later setpoint may be admitted or delivered.
+        if self.terminal.get().is_some() {
+            return RingPush {
+                accepted: false,
+                evicted: false,
+                saturated: false,
+                new_pending_timeline: None,
+            };
+        }
+
+        let timeline = item.timeline();
+        let foreign_timeline = timeline
+            .zip(state.active_timeline)
+            .and_then(|(timeline, active)| (timeline != active).then_some(timeline));
+        let (overwrote, depth, new_pending_timeline) = if let Some(timeline) = foreign_timeline {
+            if state.retired_timelines.contains(timeline) {
+                self.metric.record_timeline_filtered(1);
+                return RingPush {
+                    accepted: false,
+                    evicted: false,
+                    saturated: false,
+                    new_pending_timeline: None,
+                };
+            }
+
+            let source_exists = state.setpoint_source_present(producer);
+            let (pending_index, new_pending_timeline) = match state
+                .pending_setpoints
+                .iter()
+                .position(|pending| pending.timeline == timeline)
+            {
+                Some(index) => (index, None),
+                None => {
+                    if !source_exists && state.setpoint_source_count() >= self.cap {
+                        return self.setpoint_source_overflow();
+                    }
+                    if state.pending_setpoints.len() == PENDING_TIMELINE_CAPACITY
+                        && let Some(removed) = state.pending_setpoints.pop_front()
+                    {
+                        self.metric.record_timeline_filtered(
+                            u64::try_from(removed.buffer.len()).unwrap_or(u64::MAX),
+                        );
+                    }
+                    state.pending_setpoints.push_back(PendingSetpointTimeline {
+                        timeline,
+                        buffer: SetpointBuffer::with_capacity(self.cap),
+                    });
+                    (state.pending_setpoints.len() - 1, Some(timeline))
+                }
+            };
+            let replacing = state.pending_setpoints[pending_index]
+                .buffer
+                .contains(producer);
+            if !replacing {
+                let at_capacity = state.pending_setpoints[pending_index].buffer.len() >= self.cap;
+                if at_capacity || (!source_exists && state.setpoint_source_count() >= self.cap) {
+                    return self.setpoint_source_overflow();
+                }
+            }
+            let pending = &mut state.pending_setpoints[pending_index];
+            let overwrote = pending.buffer.insert(item);
+            (overwrote, None, new_pending_timeline)
+        } else {
+            let source_exists = state.setpoint_source_present(producer);
+            if !state.setpoints.contains(producer)
+                && (state.setpoints.len() >= self.cap
+                    || (!source_exists && state.setpoint_source_count() >= self.cap))
+            {
+                return self.setpoint_source_overflow();
+            }
+            let overwrote = state.setpoints.insert(item);
+            (overwrote, Some(state.setpoints.len()), None)
+        };
+
+        if overwrote {
+            self.metric.record_latest_overwrite();
+        }
+        if let Some(depth) = depth {
+            self.metric.record_subscriber(false, depth);
+        } else {
+            self.metric.record_pending();
+        }
+        drop(state);
+        self.notify.notify_one();
+        RingPush {
+            accepted: true,
+            evicted: false,
+            saturated: false,
+            new_pending_timeline,
+        }
+    }
+
+    fn setpoint_source_overflow(&self) -> RingPush {
+        self.record_setpoint_source_overflow();
+        RingPush {
+            accepted: false,
+            evicted: false,
+            saturated: true,
+            new_pending_timeline: None,
+        }
+    }
+
+    fn record_setpoint_source_overflow(&self) {
+        self.metric.record_drop();
+        self.terminal.set(ReceiveTerminal::TooManySetpointSources {
+            topic: self.topic.clone(),
+            limit: self.cap,
+        });
+    }
+
     fn try_pop(&self) -> Option<(Observed<B>, usize)> {
         let mut state = lock(&self.state);
+        if matches!(self.policy, RingPolicy::Setpoint) {
+            if self.terminal.get().is_some() {
+                return None;
+            }
+            if let Some((producer, item)) = state.setpoints.pop_front() {
+                // Re-check while the ring mutex is still held. If a
+                // worker publishes terminal evidence after the initial
+                // check but before this pop's linearization point, put
+                // the item back at the front and refuse delivery.
+                if self.terminal.get().is_some() {
+                    state.setpoints.order.push_front(producer);
+                    state.setpoints.values.insert(producer, item);
+                    return None;
+                }
+                let depth = state.setpoints.len();
+                self.metric.record_subscriber_pop(depth);
+                return Some((item, depth));
+            }
+            return None;
+        }
         let item = state.buf.pop_front()?;
         let depth = state.buf.len();
         self.metric.record_subscriber_pop(depth);
@@ -983,6 +1295,10 @@ impl<B> Ring<B> {
     }
 
     fn retain_timeline(&self, timeline: TimelineId) {
+        if matches!(self.policy, RingPolicy::Setpoint) {
+            self.retain_setpoint_timeline(timeline);
+            return;
+        }
         let mut state = lock(&self.state);
         if state.active_timeline == Some(timeline) {
             return;
@@ -1035,6 +1351,68 @@ impl<B> Ring<B> {
         }
     }
 
+    fn retain_setpoint_timeline(&self, timeline: TimelineId) {
+        let mut state = lock(&self.state);
+        if state.active_timeline == Some(timeline) {
+            return;
+        }
+        if let Some(previous) = state.active_timeline.replace(timeline) {
+            state.retired_timelines.retire(previous);
+        }
+        state.retired_timelines.activate(timeline);
+
+        let mut filtered = state.setpoints.retain_timeline(timeline);
+        if let Some(index) = state
+            .pending_setpoints
+            .iter()
+            .position(|pending| pending.timeline == timeline)
+        {
+            let mut promoted = match state.pending_setpoints.remove(index) {
+                Some(pending) => pending.buffer,
+                None => SetpointBuffer::with_capacity(self.cap),
+            };
+            while let Some((_producer, item)) = promoted.pop_front() {
+                let producer = item.metadata.source.producer();
+                if let Some(previous) = state.setpoints.values.get_mut(&producer) {
+                    // Producer sequence is transport-wide and monotonic, so it
+                    // gives deterministic newest-value selection when a
+                    // clockless value and a quarantined timed value meet at
+                    // promotion. The source's first-pending order remains the
+                    // active order in either case.
+                    if item.metadata.sequence >= previous.metadata.sequence {
+                        *previous = item;
+                        self.metric.record_latest_overwrite();
+                    }
+                } else {
+                    if state.setpoints.len() >= self.cap {
+                        // Admission enforces this invariant for every
+                        // producer/timeline lane. Keep the release build
+                        // fail-closed if a future change ever violates it
+                        // during promotion rather than growing the slot.
+                        self.record_setpoint_source_overflow();
+                        break;
+                    }
+                    state.setpoints.insert(item);
+                }
+            }
+        }
+        filtered = filtered.saturating_add(
+            state
+                .pending_setpoints
+                .iter()
+                .map(|pending| u64::try_from(pending.buffer.len()).unwrap_or(u64::MAX))
+                .sum(),
+        );
+        state.pending_setpoints.clear();
+        self.metric.record_timeline_filtered(filtered);
+        self.metric.record_subscriber_pop(state.setpoints.len());
+        let notify = !state.setpoints.values.is_empty();
+        drop(state);
+        if notify {
+            self.notify.notify_waiters();
+        }
+    }
+
     async fn recv(&self) -> Result<(Observed<B>, usize)> {
         loop {
             // Register the waiter *before* checking, so a push between the check
@@ -1062,6 +1440,9 @@ fn terminal_error(terminal: ReceiveTerminal) -> BusError {
         ReceiveTerminal::Transport(error) => BusError::Transport(error),
         ReceiveTerminal::TooManyStreamSources { topic, limit } => {
             BusError::TooManyStreamSources { topic, limit }
+        }
+        ReceiveTerminal::TooManySetpointSources { topic, limit } => {
+            BusError::TooManySetpointSources { topic, limit }
         }
     }
 }
@@ -1202,12 +1583,15 @@ mod tests {
         StreamDeliveryContract, TopicRole,
     };
     use crate::handle::publisher::{CommandPublisher, StatePublisher};
+    use crate::lease::{FixedSourceLease, LeaseDecision, LeaseRejection};
+    use crate::liveliness::ParticipantReadyStatus;
     use crate::metadata::{ParticipantSourceIdentity, SourceAttribution};
     use crate::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
     use crate::session::BusOwner;
     use crate::test_support::{Manual, Target, participant_config, producer, step, timeline};
     use crate::time::RobotInstant;
     use crate::topic::{Publish, Subscribe};
+    use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct NonCloneBody {
@@ -1272,6 +1656,380 @@ mod tests {
         observed.metadata.stream_position =
             position.map(|sequence| crate::metadata::StreamPosition { sequence });
         observed
+    }
+
+    fn setpoint_observed(body: u8, participant: &str, source: ProducerId) -> Observed<u8> {
+        setpoint_observed_at(body, participant, source, None)
+    }
+
+    fn setpoint_observed_at(
+        body: u8,
+        participant: &str,
+        source: ProducerId,
+        line: Option<u64>,
+    ) -> Observed<u8> {
+        let mut observed = observed(body, line);
+        observed.metadata.source = SourceAttribution::Participant(ParticipantSourceIdentity::new(
+            ParticipantId::new(participant).expect("valid test participant"),
+            source,
+        ));
+        observed
+    }
+
+    fn setpoint_ring(metrics: &RuntimeMetrics) -> Ring<u8> {
+        let metric = metrics.register_subscriber("v0.1/test/setpoint", MAX_SETPOINT_SOURCES);
+        Ring::new(
+            MAX_SETPOINT_SOURCES,
+            RingPolicy::Setpoint,
+            metric,
+            Arc::new(TerminalState::new()),
+            "v0.1/test/setpoint",
+        )
+    }
+
+    #[test]
+    fn setpoint_keeps_newest_value_per_producer_in_first_pending_source_order() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+
+        assert!(
+            ring.push(setpoint_observed(1, "motion", producer(1)))
+                .accepted
+        );
+        assert!(
+            ring.push(setpoint_observed(2, "motion", producer(2)))
+                .accepted
+        );
+        assert!(
+            ring.push(setpoint_observed(3, "motion", producer(1)))
+                .accepted
+        );
+        assert!(
+            ring.push(setpoint_observed(4, "motion", producer(2)))
+                .accepted
+        );
+
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(3));
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(4));
+        assert!(ring.try_pop().is_none());
+
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(row.count, 4);
+        assert_eq!(row.latest_overwrites, 2);
+        assert_eq!(row.bounded_evictions, 0);
+        assert_eq!(row.drops, 0);
+        assert_eq!(row.high_water_depth, 2);
+        assert_eq!(row.current_depth, 0);
+    }
+
+    #[test]
+    fn one_producer_flood_cannot_evict_another_producers_pending_setpoint() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+
+        assert!(
+            ring.push(setpoint_observed(10, "motion", producer(1)))
+                .accepted
+        );
+        for body in 0..u8::try_from(MAX_SETPOINT_SOURCES * 4).expect("test flood fits in u8") {
+            assert!(
+                ring.push(setpoint_observed(body, "motion", producer(2)))
+                    .accepted
+            );
+        }
+
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(10));
+        assert_eq!(
+            ring.try_pop().map(|(item, _)| item.body),
+            Some(u8::try_from(MAX_SETPOINT_SOURCES * 4 - 1).expect("test flood fits in u8"))
+        );
+        assert!(ring.try_pop().is_none());
+    }
+
+    #[test]
+    fn fixed_source_rejects_wrong_producer_without_evicting_legitimate_intent() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        let participant = ParticipantId::new("motion").expect("valid test participant");
+        let legitimate = ParticipantSourceIdentity::new(participant.clone(), producer(1));
+        let wrong = ParticipantSourceIdentity::new(participant.clone(), producer(2));
+        let mut lease = FixedSourceLease::new(
+            "motion/manual",
+            participant,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        lease.update_ready(&legitimate, ParticipantReadyStatus::Ready);
+
+        assert!(
+            ring.push(setpoint_observed(1, "motion", wrong.producer))
+                .accepted
+        );
+        assert!(
+            ring.push(setpoint_observed(2, "motion", legitimate.producer))
+                .accepted
+        );
+        for body in 3..u8::try_from(MAX_SETPOINT_SOURCES * 4).expect("test flood fits in u8") {
+            assert!(
+                ring.push(setpoint_observed(body, "motion", wrong.producer))
+                    .accepted
+            );
+        }
+
+        let wrong_item = ring.try_pop().expect("wrong source remains first").0;
+        assert!(matches!(
+            lease.offer(
+                wrong_item.metadata.source.participant_source(),
+                wrong_item.metadata.sequence,
+                wrong_item.observed_at,
+                wrong_item.body,
+            ),
+            LeaseDecision::Rejected(LeaseRejection::SourceConflict)
+        ));
+        let legitimate_item = ring.try_pop().expect("legitimate source was not evicted").0;
+        assert!(matches!(
+            lease.offer(
+                legitimate_item.metadata.source.participant_source(),
+                legitimate_item.metadata.sequence,
+                legitimate_item.observed_at,
+                legitimate_item.body,
+            ),
+            LeaseDecision::Acquired
+        ));
+        assert_eq!(lease.producer(), Some(legitimate.producer));
+    }
+
+    #[test]
+    fn setpoint_source_bound_is_typed_and_retains_all_existing_sources() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+
+        for source in 0..MAX_SETPOINT_SOURCES {
+            assert!(
+                ring.push(setpoint_observed(
+                    u8::try_from(source).expect("source index fits in u8"),
+                    "motion",
+                    producer(u128::try_from(source + 1).expect("source index")),
+                ))
+                .accepted
+            );
+        }
+        let extra = ring.push(setpoint_observed(
+            u8::try_from(MAX_SETPOINT_SOURCES).expect("source index fits in u8"),
+            "motion",
+            producer(u128::try_from(MAX_SETPOINT_SOURCES + 1).expect("source index")),
+        ));
+        assert!(!extra.accepted);
+        assert!(extra.saturated);
+        let terminal = ring.terminal.get().expect("source overflow is terminal");
+        assert!(matches!(
+            terminal.clone(),
+            ReceiveTerminal::TooManySetpointSources {
+                limit: MAX_SETPOINT_SOURCES,
+                ..
+            }
+        ));
+        assert!(matches!(
+            terminal_error(terminal),
+            BusError::TooManySetpointSources {
+                limit: MAX_SETPOINT_SOURCES,
+                ..
+            }
+        ));
+
+        // Terminal precedence is part of the receiver contract: a buffered
+        // actionable intent remains available for evidence, but is never
+        // dequeued after the source-bound failure is visible.
+        assert!(ring.try_pop().is_none());
+        let state = lock(&ring.state);
+        assert_eq!(state.setpoints.len(), MAX_SETPOINT_SOURCES);
+        assert_eq!(state.setpoints.order.len(), MAX_SETPOINT_SOURCES);
+        assert_eq!(state.setpoints.order.front().copied(), Some(producer(1)));
+        drop(state);
+
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(row.count, MAX_SETPOINT_SOURCES as u64);
+        assert_eq!(row.drops, 1);
+        assert_eq!(row.latest_overwrites, 0);
+        assert_eq!(row.current_depth, MAX_SETPOINT_SOURCES as u64);
+    }
+
+    #[test]
+    fn setpoint_quarantines_and_promotes_replacement_timeline_per_producer() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        let first = ring.push(setpoint_observed_at(1, "motion", producer(1), Some(2)));
+        assert!(first.accepted);
+        assert_eq!(first.new_pending_timeline, Some(timeline(2)));
+        assert!(
+            ring.push(setpoint_observed_at(2, "motion", producer(2), Some(2)))
+                .accepted
+        );
+        assert!(
+            ring.push(setpoint_observed_at(3, "motion", producer(1), Some(2)))
+                .accepted
+        );
+        // Only the first arrival for a foreign timeline creates a quarantine;
+        // subsequent values join its producer-scoped lane.
+        assert_eq!(
+            ring.push(setpoint_observed_at(4, "motion", producer(2), Some(2)))
+                .new_pending_timeline,
+            None
+        );
+        assert!(ring.try_pop().is_none());
+
+        {
+            let state = lock(&ring.state);
+            assert_eq!(state.pending_setpoints.len(), 1);
+            assert_eq!(state.pending_setpoints[0].buffer.len(), 2);
+            assert_eq!(
+                state.pending_setpoints[0].buffer.order.front().copied(),
+                Some(producer(1))
+            );
+        }
+
+        ring.retain_timeline(timeline(2));
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(3));
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(4));
+        assert!(ring.try_pop().is_none());
+
+        // Timeline 1 is retired after promotion; delayed traffic from that
+        // world is filtered rather than entering a new producer slot.
+        assert!(
+            !ring
+                .push(setpoint_observed_at(4, "motion", producer(1), Some(1)))
+                .accepted
+        );
+        assert!(ring.terminal.get().is_none());
+
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(row.count, 4);
+        assert_eq!(row.latest_overwrites, 2);
+        assert_eq!(row.timeline_filtered, 1);
+        assert_eq!(row.drops, 0);
+        assert_eq!(row.bounded_evictions, 0);
+    }
+
+    #[test]
+    fn active_timed_setpoint_is_filtered_on_timeline_replacement() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        assert!(
+            ring.push(setpoint_observed_at(7, "motion", producer(1), Some(1)))
+                .accepted
+        );
+        ring.retain_timeline(timeline(2));
+
+        assert!(ring.try_pop().is_none());
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(row.timeline_filtered, 1);
+        assert_eq!(row.current_depth, 0);
+        assert_eq!(row.drops, 0);
+    }
+
+    #[test]
+    fn clockless_setpoint_survives_timeline_replacement() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        assert!(
+            ring.push(setpoint_observed(9, "motion", producer(1)))
+                .accepted
+        );
+        ring.retain_timeline(timeline(2));
+
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(9));
+        assert!(ring.try_pop().is_none());
+    }
+
+    #[test]
+    fn setpoint_timeline_quarantine_is_bounded_and_discloses_filtered_values() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        for line in 2..=(PENDING_TIMELINE_CAPACITY as u64 + 2) {
+            assert!(
+                ring.push(setpoint_observed_at(
+                    u8::try_from(line).expect("test timeline fits in u8"),
+                    "motion",
+                    producer(u128::from(line)),
+                    Some(line),
+                ))
+                .accepted
+            );
+        }
+        {
+            let state = lock(&ring.state);
+            assert_eq!(state.pending_setpoints.len(), PENDING_TIMELINE_CAPACITY);
+            assert!(
+                state
+                    .pending_setpoints
+                    .iter()
+                    .all(|pending| pending.buffer.len() == 1)
+            );
+        }
+
+        // The oldest candidate timeline was dropped to keep quarantine bounded.
+        ring.retain_timeline(timeline(2));
+        assert!(ring.try_pop().is_none());
+        assert!(
+            !ring
+                .push(setpoint_observed_at(99, "motion", producer(99), Some(1)))
+                .accepted
+        );
+
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(
+            row.timeline_filtered,
+            (PENDING_TIMELINE_CAPACITY + 2) as u64
+        );
+        assert_eq!(row.drops, 0);
+    }
+
+    #[test]
+    fn setpoint_source_bound_applies_inside_a_timeline_quarantine() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        for source in 0..MAX_SETPOINT_SOURCES {
+            assert!(
+                ring.push(setpoint_observed_at(
+                    u8::try_from(source).expect("source index fits in u8"),
+                    "motion",
+                    producer(u128::try_from(source + 1).expect("source index")),
+                    Some(2),
+                ))
+                .accepted
+            );
+        }
+        let extra = ring.push(setpoint_observed_at(
+            99,
+            "motion",
+            producer(u128::try_from(MAX_SETPOINT_SOURCES + 1).expect("source index")),
+            Some(2),
+        ));
+        assert!(!extra.accepted);
+        assert!(extra.saturated);
+        assert!(matches!(
+            ring.terminal.get(),
+            Some(ReceiveTerminal::TooManySetpointSources {
+                limit: MAX_SETPOINT_SOURCES,
+                ..
+            })
+        ));
+        let state = lock(&ring.state);
+        assert_eq!(state.pending_setpoints.len(), 1);
+        assert_eq!(
+            state.pending_setpoints[0].buffer.len(),
+            MAX_SETPOINT_SOURCES
+        );
     }
 
     #[test]
@@ -1379,6 +2137,7 @@ mod tests {
                     RingPolicy::Refuse,
                     metric,
                     Arc::clone(&terminal),
+                    "v0.2/test/stream",
                 )),
                 terminal: Arc::clone(&terminal),
                 _guard: Arc::new(SubscriptionGuard {
@@ -1471,6 +2230,7 @@ mod tests {
             RingPolicy::DropOldest,
             metric,
             Arc::new(TerminalState::new()),
+            "v0.1/test/state",
         );
         let first = ring.push(observed(1, None));
         assert!(first.accepted);
@@ -1498,7 +2258,13 @@ mod tests {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.2/test/stream", 2);
         let terminal = Arc::new(TerminalState::new());
-        let ring = Ring::new(2, RingPolicy::Refuse, metric, Arc::clone(&terminal));
+        let ring = Ring::new(
+            2,
+            RingPolicy::Refuse,
+            metric,
+            Arc::clone(&terminal),
+            "v0.2/test/stream",
+        );
         ring.retain_timeline(timeline(1));
 
         assert!(ring.push(observed(1, Some(2))).accepted);
@@ -1529,6 +2295,7 @@ mod tests {
             RingPolicy::DropOldest,
             metric,
             Arc::clone(&terminal),
+            "v0.1/test/state",
         ));
         let waiting = {
             let ring = Arc::clone(&ring);
@@ -1547,7 +2314,10 @@ mod tests {
     #[test]
     fn contract_families_choose_owned_buffer_semantics() {
         assert_eq!(delivery_capacity(DeliveryFamily::State), 1);
-        assert_eq!(delivery_capacity(DeliveryFamily::Setpoint), 1);
+        assert_eq!(
+            delivery_capacity(DeliveryFamily::Setpoint),
+            MAX_SETPOINT_SOURCES
+        );
         assert_eq!(delivery_capacity(DeliveryFamily::Query), 1);
         assert_eq!(
             delivery_capacity(DeliveryFamily::Sample),
@@ -1605,6 +2375,7 @@ mod tests {
             RingPolicy::DropOldest,
             metric,
             Arc::new(TerminalState::new()),
+            "v0.1/test/command",
         );
         ring.retain_timeline(timeline(1));
         assert!(ring.push(observed(1, None)).accepted);
@@ -1724,6 +2495,57 @@ mod tests {
         assert!(
             observed.observed_at.boot_ns() > 0,
             "every subscription stamps its own observation instant"
+        );
+
+        owner.close().await;
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn state_admission_rejects_a_newer_sample_before_keep_last_overwrite() {
+        let (owner, bus) = BusOwner::open(participant_config("state-admission"))
+            .await
+            .unwrap();
+        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new_with_admission(&bus, &sub_topic, |observed| {
+            observed.body.linear_x_mps > 0.0
+        })
+        .await
+        .unwrap();
+
+        publisher
+            .publish(
+                &step(8, 1),
+                Target {
+                    linear_x_mps: 1.0,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .unwrap();
+        for _ in 0..50 {
+            if latest.latest().is_some_and(|body| body.linear_x_mps == 1.0) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(latest.latest().map(|body| body.linear_x_mps), Some(1.0));
+
+        publisher
+            .publish(
+                &step(8, 2),
+                Target {
+                    linear_x_mps: 0.0,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            latest.latest().map(|body| body.linear_x_mps),
+            Some(1.0),
+            "a rejected newer observation must not overwrite accepted state"
         );
 
         owner.close().await;
@@ -1891,6 +2713,7 @@ mod tests {
             RingPolicy::DropOldest,
             metric,
             Arc::new(TerminalState::new()),
+            "v0.1/test/state",
         ));
         assert!(ring.push(observed(1, Some(1))).accepted);
         ring.retain_timeline(timeline(1));

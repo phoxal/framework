@@ -10,8 +10,8 @@
 use anyhow::Result;
 use phoxal::api;
 use phoxal::bus::{
-    CaptureStamp, ContractBody, FixedSourceLease, LeaseDecision, LocalInstant, MeasurementContract,
-    ParticipantId, ParticipantReadyEvents, StepStamp, WorldStepToken,
+    CaptureStamp, ContractBody, FixedSourceLease, LocalInstant, MeasurementContract, ParticipantId,
+    ParticipantReadyEvents, StepStamp, WorldStepToken,
 };
 use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
@@ -25,14 +25,12 @@ use crate::capabilities::encoder::NativeEncoder;
 use crate::capabilities::gnss::NativeGnss;
 use crate::capabilities::gyroscope::NativeGyroscope;
 use crate::capabilities::imu::NativeImu;
-use crate::capabilities::led::NativeLed;
 use crate::capabilities::lidar::NativeLidar;
 use crate::capabilities::magnetometer::NativeMagnetometer;
 use crate::capabilities::microphone::NativeMicrophone;
 use crate::capabilities::mmwave::NativeMmwave;
 use crate::capabilities::motor::NativeMotor;
 use crate::capabilities::range::NativeRange;
-use crate::capabilities::speaker::NativeSpeaker;
 use crate::capabilities::{SensorStep, SimulatedSensor};
 use crate::catalog::CapabilitySpec;
 use crate::controller::WebotsControllerSimulator;
@@ -41,72 +39,23 @@ const MOTOR_SOURCE_SILENCE: Duration = Duration::from_millis(150);
 
 /// Reading a subscriber's backlog the way one world step needs it.
 ///
-/// Two answers are meaningful, and which one a capability wants is part of
-/// what that capability is. A superseded setpoint has no effect worth
-/// applying, so an actuator takes only the newest. A stream's chunks are not
-/// alternatives - dropping one corrupts the sound rather than shortening it -
-/// so a speaker takes every one in order.
+/// An actuator offers every pending setpoint to its fixed-source authority
+/// before deciding which held command to apply.  Coalescing before authority
+/// would let a later packet from an unauthorised producer erase Drive's
+/// already-pending intent.
 trait CommandBacklog<B> {
-    /// The newest queued value; everything it supersedes is dropped.
-    fn take_newest(&self) -> Result<Option<B>>;
-
-    /// Everything queued, oldest first.
-    fn take_all(&self) -> Result<Vec<B>>;
-
-    /// The newest body together with the trusted transport provenance that
-    /// decides whether an actuator may apply it.
-    fn take_newest_observed(&self) -> Result<Option<Observed<B>>>;
+    /// Every queued value, in receiver order, including trusted transport
+    /// provenance for fixed-source authority admission.
+    fn take_all_observed(&self) -> Result<Vec<Observed<B>>>;
 }
 
 impl<B: ContractBody + SetpointDeliveryContract> CommandBacklog<B> for SetpointReceiver<B> {
-    fn take_newest(&self) -> Result<Option<B>> {
-        let mut newest = None;
-        while let Some(received) = self.try_recv() {
-            newest = Some(received.body);
+    fn take_all_observed(&self) -> Result<Vec<Observed<B>>> {
+        let mut pending = Vec::new();
+        while let Some(observed) = self.try_recv() {
+            pending.push(observed);
         }
-        Ok(newest)
-    }
-
-    fn take_all(&self) -> Result<Vec<B>> {
-        let mut received = Vec::new();
-        while let Some(message) = self.try_recv() {
-            received.push(message.body);
-        }
-        Ok(received)
-    }
-
-    fn take_newest_observed(&self) -> Result<Option<Observed<B>>> {
-        let mut newest = None;
-        while let Some(received) = self.try_recv() {
-            newest = Some(received);
-        }
-        Ok(newest)
-    }
-}
-
-impl<B: ContractBody + StreamDeliveryContract> CommandBacklog<B> for StreamReceiver<B> {
-    fn take_newest(&self) -> Result<Option<B>> {
-        let mut newest = None;
-        while let Some(received) = self.try_recv()? {
-            newest = Some(received.body);
-        }
-        Ok(newest)
-    }
-
-    fn take_all(&self) -> Result<Vec<B>> {
-        let mut received = Vec::new();
-        while let Some(message) = self.try_recv()? {
-            received.push(message.body);
-        }
-        Ok(received)
-    }
-
-    fn take_newest_observed(&self) -> Result<Option<Observed<B>>> {
-        let mut newest = None;
-        while let Some(received) = self.try_recv()? {
-            newest = Some(received);
-        }
-        Ok(newest)
+        Ok(pending)
     }
 }
 
@@ -115,10 +64,8 @@ trait SimulatedActuator {
     /// The contract body this device is commanded with.
     type Command: ContractBody + Clone;
 
-    /// Apply everything the graph sent since the previous step.
+    /// The command receiver bound to this actuator.
     type Receiver: CommandBacklog<Self::Command>;
-
-    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()>;
 
     /// Apply one already-admitted command body.
     fn apply_body(&mut self, command: Self::Command) -> Result<()>;
@@ -134,57 +81,12 @@ impl SimulatedActuator for NativeMotor {
     type Command = api::component::motor::Command;
     type Receiver = SetpointReceiver<Self::Command>;
 
-    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
-        match commands.take_newest()? {
-            Some(command) => self.apply(&command),
-            None => Ok(()),
-        }
-    }
-
     fn apply_body(&mut self, command: Self::Command) -> Result<()> {
         self.apply(&command)
     }
 
     fn park(&mut self) -> Result<()> {
         self.apply(&api::component::motor::Command::Stop)
-    }
-}
-
-impl SimulatedActuator for NativeLed {
-    type Command = api::component::led::Command;
-    type Receiver = SetpointReceiver<Self::Command>;
-
-    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
-        match commands.take_newest()? {
-            Some(command) => self.apply(&command),
-            None => Ok(()),
-        }
-    }
-
-    fn apply_body(&mut self, command: Self::Command) -> Result<()> {
-        self.apply(&command)
-    }
-}
-
-impl SimulatedActuator for NativeSpeaker {
-    type Command = api::component::speaker::Chunk;
-    type Receiver = StreamReceiver<Self::Command>;
-
-    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
-        // Audio chunks move rather than copy: a stream is large, and nothing
-        // downstream needs them again.
-        for chunk in commands.take_all()? {
-            self.apply(chunk)?;
-        }
-        Ok(())
-    }
-
-    fn apply_body(&mut self, command: Self::Command) -> Result<()> {
-        self.apply(command)
-    }
-
-    fn park(&mut self) -> Result<()> {
-        self.stop()
     }
 }
 
@@ -228,60 +130,55 @@ where
 struct ActuatorChannel<A: SimulatedActuator> {
     device: A,
     commands: A::Receiver,
-    authority: Option<FixedSourceLease<A::Command>>,
-    ready: Option<ParticipantReadyEvents>,
+    authority: FixedSourceLease<A::Command>,
+    ready: ParticipantReadyEvents,
 }
 
 impl<A: SimulatedActuator> ActuatorChannel<A> {
     fn apply_backlog(&mut self) -> Result<()> {
-        let Some(authority) = self.authority.as_mut() else {
-            return self.device.apply_backlog(&self.commands);
-        };
-        if let Some(ready) = self.ready.as_ref() {
-            while let Some(event) = ready.try_recv() {
-                authority.update_ready_event(&event);
-            }
-            if ready.overflowed() {
-                authority.mark_ready_overflow();
-            }
+        while let Some(event) = self.ready.try_recv() {
+            self.authority.update_ready_event(&event);
+        }
+        if self.ready.overflowed() {
+            self.authority.mark_ready_overflow();
         }
         let Some(host_now) = LocalInstant::try_now() else {
             // A receiver that cannot stamp its own clock cannot prove that a
             // retained motor command is still live.  Drain and park before
             // the next Webots step; the runner will surface the latched clock
             // fault as a participant failure.
-            self.commands.take_all()?;
-            authority.clear();
+            self.commands.take_all_observed()?;
+            self.authority.clear();
             return self.device.park();
         };
-        match self.commands.take_newest_observed()? {
-            Some(observed) => {
-                let body = observed.body;
-                let accepted = matches!(
-                    authority.offer(
-                        observed.metadata.source.participant_source(),
-                        observed.metadata.sequence,
-                        observed.observed_at,
-                        body.clone(),
-                    ),
-                    LeaseDecision::Acquired | LeaseDecision::Renewed
-                );
-                if accepted && authority.live_host(host_now).is_some() {
-                    self.device.apply_body(body)
-                } else {
-                    self.device.park()
-                }
-            }
-            None if authority.live_host(host_now).is_none() => self.device.park(),
-            None => Ok(()),
+        admit_pending(&mut self.authority, self.commands.take_all_observed()?);
+        match self.authority.live_host(host_now) {
+            Some(command) => self.device.apply_body(command.clone()),
+            None => self.device.park(),
         }
     }
 
     fn park(&mut self) -> Result<()> {
         // Whatever the graph sent that the stopped loop will never apply goes
         // with it; leaving it queued would apply it to a later world.
-        self.commands.take_all()?;
+        self.commands.take_all_observed()?;
         self.device.park()
+    }
+}
+
+/// Admit every pending command before selecting the held value to apply.
+///
+/// The receiver preserves one pending command per producer.  Offering that
+/// complete set to the lease keeps an unauthorised producer from coalescing
+/// away Drive's candidate before the authority check can reject it.
+fn admit_pending<B>(authority: &mut FixedSourceLease<B>, pending: Vec<Observed<B>>) {
+    for observed in pending {
+        let _decision = authority.offer(
+            observed.metadata.source.participant_source(),
+            observed.metadata.sequence,
+            observed.observed_at,
+            observed.body,
+        );
     }
 }
 
@@ -412,8 +309,6 @@ pub(crate) struct CapabilityChannel {
 /// it belongs to.
 enum CapabilityBinding {
     Motor(ActuatorChannel<NativeMotor>),
-    Led(ActuatorChannel<NativeLed>),
-    Speaker(Box<ActuatorChannel<NativeSpeaker>>),
     Encoder(SensorChannel<NativeEncoder>),
     Imu(SensorChannel<NativeImu>),
     Accelerometer(SensorChannel<NativeAccelerometer>),
@@ -448,32 +343,16 @@ impl CapabilityChannel {
                 commands: ctx
                     .setpoint_receiver(component()?.motor(id)?.command())
                     .await?,
-                authority: Some(FixedSourceLease::new(
+                authority: FixedSourceLease::new(
                     "component/motor/command",
                     ParticipantId::new("drive")?,
                     MOTOR_SOURCE_SILENCE,
                     Duration::MAX,
-                )),
-                ready: Some(ctx.participant_ready_events().await?),
-            }),
-            CapabilitySpec::Led(led) => CapabilityBinding::Led(ActuatorChannel {
-                device: NativeLed::new(webots, led)?,
-                commands: ctx
-                    .setpoint_receiver(component()?.led(id)?.command())
+                ),
+                ready: ctx
+                    .participant_ready_events_for(&ParticipantId::new("drive")?)
                     .await?,
-                authority: None,
-                ready: None,
             }),
-            CapabilitySpec::Speaker(speaker) => {
-                CapabilityBinding::Speaker(Box::new(ActuatorChannel {
-                    device: NativeSpeaker::new(webots, speaker)?,
-                    commands: ctx
-                        .stream_receiver(component()?.speaker(id)?.stream())
-                        .await?,
-                    authority: None,
-                    ready: None,
-                }))
-            }
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,
                 publisher: ctx.measurement_publisher(component()?.encoder(id)?.sample())?,
@@ -544,8 +423,6 @@ impl CapabilityChannel {
     pub(crate) fn apply_backlog(&mut self) -> Result<()> {
         match &mut self.binding {
             CapabilityBinding::Motor(channel) => channel.apply_backlog(),
-            CapabilityBinding::Led(channel) => channel.apply_backlog(),
-            CapabilityBinding::Speaker(channel) => channel.apply_backlog(),
             CapabilityBinding::Encoder(_)
             | CapabilityBinding::Imu(_)
             | CapabilityBinding::Accelerometer(_)
@@ -567,8 +444,6 @@ impl CapabilityChannel {
     pub(crate) fn park(&mut self) -> Result<()> {
         match &mut self.binding {
             CapabilityBinding::Motor(channel) => channel.park(),
-            CapabilityBinding::Led(channel) => channel.park(),
-            CapabilityBinding::Speaker(channel) => channel.park(),
             CapabilityBinding::Encoder(_)
             | CapabilityBinding::Imu(_)
             | CapabilityBinding::Accelerometer(_)
@@ -602,9 +477,7 @@ impl CapabilityChannel {
             CapabilityBinding::Mmwave(channel) => channel.reset(logical_time_ns),
             CapabilityBinding::Microphone(channel) => channel.reset(logical_time_ns),
             CapabilityBinding::Battery(channel) => channel.device.reset(logical_time_ns),
-            CapabilityBinding::Motor(_)
-            | CapabilityBinding::Led(_)
-            | CapabilityBinding::Speaker(_) => Ok(()),
+            CapabilityBinding::Motor(_) => Ok(()),
         }
     }
 
@@ -654,9 +527,7 @@ impl CapabilityChannel {
                 }
                 Ok(())
             }
-            CapabilityBinding::Motor(_)
-            | CapabilityBinding::Led(_)
-            | CapabilityBinding::Speaker(_) => Ok(()),
+            CapabilityBinding::Motor(_) => Ok(()),
         }
     }
 
@@ -667,5 +538,71 @@ impl CapabilityChannel {
             channel.read_into(step, &mut pending)?;
         }
         Ok(StepOutput::new(pending))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phoxal::bus::{
+        BusMetadata, CodecId, ParticipantReadyStatus, ParticipantSourceIdentity, ProducerId,
+        SourceAttribution,
+    };
+
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from((1_u128 << 124) | value).expect("canonical test producer")
+    }
+
+    fn source(participant: &str, producer: ProducerId) -> ParticipantSourceIdentity {
+        ParticipantSourceIdentity::new(
+            ParticipantId::new(participant).expect("valid test participant"),
+            producer,
+        )
+    }
+
+    fn observed(body: u8, source: ParticipantSourceIdentity, sequence: u64) -> Observed<u8> {
+        Observed {
+            body,
+            metadata: BusMetadata {
+                codec: CodecId::MessagePack.as_u8(),
+                sequence,
+                stream_position: None,
+                produced_at: None,
+                source: SourceAttribution::Participant(source),
+            },
+            observed_at: LocalInstant::try_now().expect("test host clock"),
+        }
+    }
+
+    #[test]
+    fn drive_command_survives_a_wrong_source_flood_before_motor_selection() {
+        let drive = ParticipantId::new("drive").expect("valid drive participant");
+        let drive_source = source("drive", producer(1));
+        let rogue_source = source("rogue", producer(2));
+        let mut authority = FixedSourceLease::new(
+            "component/motor/command",
+            drive,
+            MOTOR_SOURCE_SILENCE,
+            Duration::MAX,
+        );
+        authority.update_ready(&drive_source, ParticipantReadyStatus::Ready);
+
+        // Setpoint receive preserves one pending value per producer.  Drive's
+        // command is therefore still present when a rogue producer has
+        // flooded its own pending slot.
+        admit_pending(
+            &mut authority,
+            vec![
+                observed(7, drive_source, 1),
+                observed(90, rogue_source.clone(), 1),
+                observed(91, rogue_source.clone(), 2),
+                observed(92, rogue_source, 3),
+            ],
+        );
+
+        assert_eq!(
+            authority.live_host(LocalInstant::try_now().expect("test host clock")),
+            Some(&7)
+        );
     }
 }

@@ -20,6 +20,7 @@
 //! communication semantics.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -106,7 +107,8 @@ impl EmergencyStopLatch {
 pub(crate) struct Api {
     manual: SetpointReceiver<api::motion::ManualCommand>,
     autonomous: StateView<api::navigation::Candidate>,
-    navigation_ready: phoxal::bus::ParticipantReadyEvents,
+    _navigation_ready: phoxal::bus::ParticipantReadyObserver,
+    _safety_ready: phoxal::bus::ParticipantReadyObserver,
     component_estops: Vec<BoundEmergencyStop>,
     safety_constraints: StateView<api::safety::MotionConstraints>,
     drive: CommandPublisher<api::drive::Target>,
@@ -118,13 +120,28 @@ pub(crate) struct MotionState {
     manual: ExclusiveProducerLease<api::motion::ManualCommand>,
     manual_observed_at: Option<LocalInstant>,
     last_autonomous: Option<Timed<api::navigation::Candidate>>,
-    autonomous_authority: FixedSourceLease<api::navigation::Candidate>,
+    last_autonomous_offer: Option<NavigationOfferKey>,
+    autonomous_admission: Arc<Mutex<FixedSourceAdmission>>,
+    autonomous_authority: Arc<Mutex<FixedSourceLease<api::navigation::Candidate>>>,
     estop: EmergencyStopLatch,
     last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
 }
 
 #[phoxal::service(state = MotionState, api = Api)]
 pub(crate) struct Motion;
+
+type NavigationOfferKey = (phoxal::bus::ProducerId, u64, u64);
+
+fn current_navigation_offer_key(
+    admission: &FixedSourceAdmission,
+    source: Option<&phoxal::bus::ParticipantSourceIdentity>,
+    sequence: u64,
+) -> Option<NavigationOfferKey> {
+    if !admission.is_current(source, sequence) {
+        return None;
+    }
+    Some((source?.producer, sequence, admission.ready_generation()))
+}
 
 impl Participant for Motion {
     async fn setup(
@@ -135,7 +152,29 @@ impl Participant for Motion {
         let robot = ctx.robot()?;
         let navigation = phoxal::bus::ParticipantId::new("navigation")
             .map_err(|error| anyhow::anyhow!("invalid fixed navigation participant id: {error}"))?;
-        let navigation_ready = ctx.participant_ready_events().await?;
+        let navigation_authority = Arc::new(Mutex::new(FixedSourceLease::new(
+            "navigation/candidate",
+            navigation.clone(),
+            AUTONOMOUS_SILENCE,
+            AUTONOMOUS_HOLD,
+        )));
+        let navigation_admission =
+            Arc::new(Mutex::new(FixedSourceAdmission::new(navigation.clone())));
+        let ready_authority = Arc::clone(&navigation_authority);
+        let ready_admission = Arc::clone(&navigation_admission);
+        let navigation_ready = ctx
+            .observe_participant_ready_for(&navigation, move |event| {
+                if let Ok(mut authority) = ready_authority.lock() {
+                    authority.update_ready_event(&event);
+                }
+                if let Ok(mut admission) = ready_admission.lock() {
+                    admission.update_ready_event(&event);
+                }
+            })
+            .await?;
+        let candidate_admission = Arc::clone(&navigation_admission);
+        let safety = phoxal::bus::ParticipantId::new("safety")
+            .map_err(|error| anyhow::anyhow!("invalid fixed safety participant id: {error}"))?;
         let limits = robot.motion().limits().validate()?;
         let estops =
             robot.capability_refs(|capability| matches!(capability, Capability::EmergencyStop(_)));
@@ -155,18 +194,26 @@ impl Participant for Motion {
             });
         }
 
+        let safety_authority = Arc::new(Mutex::new(FixedSourceAdmission::new(safety.clone())));
+        let ready_authority = Arc::clone(&safety_authority);
+        let safety_ready = ctx
+            .observe_participant_ready_for(&safety, move |event| {
+                if let Ok(mut authority) = ready_authority.lock() {
+                    authority.update_ready_event(&event);
+                }
+            })
+            .await?;
+        let admission_authority = Arc::clone(&safety_authority);
+
         Ok((
             MotionState {
                 limits,
                 manual: ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
                 manual_observed_at: None,
                 last_autonomous: None,
-                autonomous_authority: FixedSourceLease::new(
-                    "navigation/candidate",
-                    navigation,
-                    AUTONOMOUS_SILENCE,
-                    AUTONOMOUS_HOLD,
-                ),
+                last_autonomous_offer: None,
+                autonomous_admission: navigation_admission,
+                autonomous_authority: navigation_authority,
                 estop: EmergencyStopLatch::new(estops),
                 last_safety_constraints: None,
             },
@@ -175,12 +222,41 @@ impl Participant for Motion {
                     .setpoint_receiver(api::topic::owner().motion().manual())
                     .await?,
                 autonomous: ctx
-                    .state_view(api::topic::client().navigation().candidate())
+                    .state_view_with_admission(
+                        api::topic::client().navigation().candidate(),
+                        move |observed| {
+                            let Ok(mut admission) = candidate_admission.lock() else {
+                                return false;
+                            };
+                            matches!(
+                                admission.offer(
+                                    observed.metadata.source.participant_source(),
+                                    observed.metadata.sequence,
+                                ),
+                                LeaseDecision::Acquired | LeaseDecision::Renewed
+                            )
+                        },
+                    )
                     .await?,
-                navigation_ready,
+                _navigation_ready: navigation_ready,
+                _safety_ready: safety_ready,
                 component_estops,
                 safety_constraints: ctx
-                    .state_view(api::topic::client().safety().constraints())
+                    .state_view_with_admission(
+                        api::topic::client().safety().constraints(),
+                        move |observed| {
+                            let Ok(mut authority) = admission_authority.lock() else {
+                                return false;
+                            };
+                            matches!(
+                                authority.offer(
+                                    observed.metadata.source.participant_source(),
+                                    observed.metadata.sequence,
+                                ),
+                                LeaseDecision::Acquired | LeaseDecision::Renewed
+                            )
+                        },
+                    )
                     .await?,
                 drive: ctx.command_publisher(api::topic::client().drive().target())?,
                 state: ctx.state_publisher(api::topic::owner().motion().state())?,
@@ -190,7 +266,11 @@ impl Participant for Motion {
 
     fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.last_autonomous = None;
-        state.autonomous_authority.clear();
+        state.last_autonomous_offer = None;
+        let Ok(mut authority) = state.autonomous_authority.lock() else {
+            return Err(anyhow::anyhow!("navigation authority lock was poisoned"));
+        };
+        authority.clear();
         state.last_safety_constraints = None;
         state.estop.reset_timeline();
         // The manual command is a clockless operator input sampled at a logical
@@ -216,22 +296,15 @@ impl Participant for Motion {
             bail!("the host boot clock could not be read");
         };
 
-        // Release a silent external owner before admitting this step's
-        // queue. Otherwise a replacement operator would need to transmit a
-        // second command after the receiver happened to call `live`.
-        state.manual.expire_before_offer(host_now, now);
-
-        while let Some(event) = api.navigation_ready.try_recv() {
-            state.autonomous_authority.update_ready_event(&event);
-        }
-        if api.navigation_ready.overflowed() {
-            state.autonomous_authority.mark_ready_overflow();
-        }
-
         while let Some(observed) = api.manual.try_recv() {
+            // The receiver may hold one pending intent per producer. Expire
+            // the current owner before every offer so a stale first item
+            // cannot reacquire the lease and block a fresh later producer in
+            // the same step.
+            state.manual.expire_before_offer(host_now, now);
             let observed_at = observed.observed_at;
             match state.manual.offer(
-                observed.metadata.source.producer(),
+                &observed.metadata.source,
                 observed.metadata.sequence,
                 observed_at,
                 observed.body,
@@ -249,18 +322,48 @@ impl Participant for Motion {
         if let Some(observed) = api.autonomous.observed()
             && let Some(at) = observed.metadata.produced_exactly_at()
         {
-            let body = observed.body.clone();
-            let decision = state.autonomous_authority.offer(
-                observed.metadata.source.participant_source(),
-                observed.metadata.sequence,
-                observed.observed_at,
-                body.clone(),
-            );
-            if !matches!(decision, LeaseDecision::Rejected(_)) {
-                state.last_autonomous = Some(Timed::new(body, at));
+            let source = observed.metadata.source.participant_source();
+            let offer_key = {
+                let Ok(admission) = state.autonomous_admission.lock() else {
+                    bail!("navigation admission lock was poisoned");
+                };
+                current_navigation_offer_key(&admission, source, observed.metadata.sequence)
+            };
+            let mut accepted_for_liveness =
+                offer_key.is_some() && state.last_autonomous_offer == offer_key;
+            if let Some(offer_key) = offer_key
+                && state.last_autonomous_offer != Some(offer_key)
+            {
+                let Ok(mut authority) = state.autonomous_authority.lock() else {
+                    bail!("navigation authority lock was poisoned");
+                };
+                let decision = authority.offer(
+                    source,
+                    observed.metadata.sequence,
+                    observed.observed_at,
+                    observed.body.clone(),
+                );
+                state.last_autonomous_offer = Some(offer_key);
+                accepted_for_liveness = !matches!(decision, LeaseDecision::Rejected(_));
+                if let LeaseDecision::Rejected(rejection) = decision {
+                    tracing::warn!(
+                        target: "phoxal.motion",
+                        error = %rejection,
+                        "rejected visible navigation candidate"
+                    );
+                }
+            }
+            if accepted_for_liveness {
+                state.last_autonomous = Some(Timed::new(observed.body.clone(), at));
             }
         }
-        if state.autonomous_authority.live(host_now, now).is_none() {
+        let navigation_live = {
+            let Ok(mut authority) = state.autonomous_authority.lock() else {
+                bail!("navigation authority lock was poisoned");
+            };
+            authority.live(host_now, now).is_some()
+        };
+        if !navigation_live {
             state.last_autonomous = None;
         }
         for bound in &api.component_estops {
@@ -346,7 +449,11 @@ impl Participant for Motion {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::{ProducerId, TimelineId};
+    use phoxal::bus::{
+        FixedSourceAdmission, FixedSourceLease, LeaseDecision, LeaseRejection, ParticipantId,
+        ParticipantReadyStatus, ParticipantSourceIdentity, ProducerId, SourceAttribution,
+        TimelineId,
+    };
 
     use super::*;
 
@@ -356,12 +463,83 @@ mod tests {
         ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
     }
 
+    fn external(producer: ProducerId) -> SourceAttribution {
+        SourceAttribution::External {
+            producer,
+            label: None,
+        }
+    }
+
     fn line() -> TimelineId {
         TimelineId::from_raw(1).expect("test timeline must be nonzero")
     }
 
+    fn navigation_source(producer: ProducerId) -> ParticipantSourceIdentity {
+        ParticipantSourceIdentity::new(
+            ParticipantId::new("navigation").expect("valid navigation participant"),
+            producer,
+        )
+    }
+
     fn at(ticks: u64) -> RobotInstant {
         RobotInstant::new(line(), ticks)
+    }
+
+    #[test]
+    fn navigation_ready_loss_requires_fresh_same_sequence_for_liveness() {
+        let source = navigation_source(producer(22));
+        let observed_at = LocalInstant::from_boot_ns(0);
+        let mut admission = FixedSourceAdmission::new(source.participant.clone());
+        let mut authority = FixedSourceLease::new(
+            "navigation/candidate",
+            source.participant.clone(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        admission.update_ready(&source, ParticipantReadyStatus::Ready);
+        authority.update_ready(&source, ParticipantReadyStatus::Ready);
+
+        assert_eq!(admission.offer(Some(&source), 7), LeaseDecision::Acquired);
+        let mut last_offer = Some(
+            current_navigation_offer_key(&admission, Some(&source), 7)
+                .expect("the first candidate is current"),
+        );
+        assert_eq!(
+            authority.offer(Some(&source), 7, observed_at, "T1"),
+            LeaseDecision::Acquired
+        );
+
+        // Ready loss invalidates the retained candidate immediately. The
+        // step-facing StateView may still expose T1, but it must not reacquire
+        // the lease after Ready returns.
+        admission.update_ready(&source, ParticipantReadyStatus::Lost);
+        authority.update_ready(&source, ParticipantReadyStatus::Lost);
+        admission.update_ready(&source, ParticipantReadyStatus::Ready);
+        authority.update_ready(&source, ParticipantReadyStatus::Ready);
+        assert!(current_navigation_offer_key(&admission, Some(&source), 7).is_none());
+        assert_eq!(
+            authority.live(observed_at, at(0)),
+            None,
+            "retained T1 must not become live again"
+        );
+        assert!(
+            last_offer.is_some(),
+            "the old marker remains historical evidence"
+        );
+
+        // A fresh ingress publication with the same producer and sequence has
+        // a new Ready generation and therefore receives a new offer key.
+        assert_eq!(admission.offer(Some(&source), 7), LeaseDecision::Acquired);
+        let fresh_offer = current_navigation_offer_key(&admission, Some(&source), 7)
+            .expect("fresh ingress is current");
+        assert_ne!(last_offer, Some(fresh_offer));
+        assert_eq!(
+            authority.offer(Some(&source), 7, observed_at, "fresh"),
+            LeaseDecision::Acquired
+        );
+        last_offer = Some(fresh_offer);
+        assert_eq!(authority.live(observed_at, at(0)), Some(&"fresh"));
+        assert_eq!(last_offer, Some(fresh_offer));
     }
 
     fn estop(index: u8) -> CapabilityRef {
@@ -387,7 +565,7 @@ mod tests {
         let host_start = LocalInstant::from_boot_ns(0);
 
         let mut silent = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
-        silent.offer(producer, 1, host_start, command.clone());
+        silent.offer(&external(producer), 1, host_start, command.clone());
         assert!(silent.live(host_start, at(0)).is_some());
         assert!(
             silent
@@ -399,10 +577,79 @@ mod tests {
         );
 
         let mut held = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
-        held.offer(producer, 1, host_start, command);
+        held.offer(&external(producer), 1, host_start, command);
         assert!(held.live(host_start, at(0)).is_some());
         let past_hold = u64::try_from(MANUAL_HOLD.as_nanos()).unwrap() + 1;
         assert!(held.live(host_start, at(past_hold)).is_none());
+    }
+
+    #[test]
+    fn stale_manual_a_is_expired_before_fresh_b_first_offer() {
+        let first = producer(3);
+        let second = producer(4);
+        let host_start = LocalInstant::from_boot_ns(0);
+        let fresh_at = host_start.saturating_add(MANUAL_SILENCE + Duration::from_millis(1));
+        let mut lease = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
+
+        // The first pending value is stale by the time this step drains it.
+        // Both checks use the step's current host time, as Motion does.
+        lease.expire_before_offer(fresh_at, at(0));
+        assert_eq!(
+            lease.offer(&external(first), 1, host_start, 1_u8),
+            LeaseDecision::Acquired
+        );
+
+        // This is the same order as Motion's pending-receiver drain: the
+        // owner expiry check is immediately before each offer. Without the
+        // second check, stale A would still own the lease and fresh B's first
+        // command would be rejected.
+        lease.expire_before_offer(fresh_at, at(0));
+        assert_eq!(
+            lease.offer(&external(second), 1, fresh_at, 3_u8),
+            LeaseDecision::Acquired
+        );
+        assert_eq!(lease.producer(), Some(second));
+    }
+
+    #[test]
+    fn continuous_manual_a_beats_faster_b_past_manual_silence() {
+        let first = producer(5);
+        let second = producer(6);
+        let host_start = LocalInstant::from_boot_ns(0);
+        let mut lease = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
+        let mut first_sequence = 0;
+        let mut second_sequence = 0;
+
+        // B floods every 10 ms while A renews every 50 ms. The exchange lasts
+        // well beyond MANUAL_SILENCE, but A's continuous publishing keeps its
+        // receiver-owned authority and every faster B offer is rejected.
+        for tick_ms in 0..=500 {
+            let now = host_start.saturating_add(Duration::from_millis(tick_ms));
+            if tick_ms % 50 == 0 {
+                first_sequence += 1;
+                lease.expire_before_offer(now, at(0));
+                assert!(matches!(
+                    lease.offer(&external(first), first_sequence, now, 1_u8),
+                    LeaseDecision::Acquired | LeaseDecision::Renewed
+                ));
+            }
+            if tick_ms % 10 == 0 {
+                second_sequence += 1;
+                lease.expire_before_offer(now, at(0));
+                assert!(matches!(
+                    lease.offer(&external(second), second_sequence, now, 2_u8),
+                    LeaseDecision::Rejected(LeaseRejection::AuthorityHeld { owner })
+                        if owner == first
+                ));
+            }
+        }
+
+        assert!(Duration::from_millis(500) > MANUAL_SILENCE);
+        assert_eq!(lease.producer(), Some(first));
+        assert_eq!(
+            lease.live(host_start.saturating_add(Duration::from_millis(500)), at(0)),
+            Some(&1)
+        );
     }
 
     /// A lease that expired while the simulation was paused must not apply on
@@ -413,7 +660,7 @@ mod tests {
         let host_start = LocalInstant::from_boot_ns(0);
         let mut lease = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         lease.offer(
-            producer,
+            &external(producer),
             1,
             host_start,
             api::motion::ManualCommand {

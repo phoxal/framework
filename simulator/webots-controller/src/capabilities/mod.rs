@@ -15,14 +15,12 @@ pub(crate) mod encoder;
 pub(crate) mod gnss;
 pub(crate) mod gyroscope;
 pub(crate) mod imu;
-pub(crate) mod led;
 pub(crate) mod lidar;
 pub(crate) mod magnetometer;
 pub(crate) mod microphone;
 pub(crate) mod mmwave;
 pub(crate) mod motor;
 pub(crate) mod range;
-pub(crate) mod speaker;
 
 use anyhow::{Result, bail};
 use phoxal::SampleSchedule;

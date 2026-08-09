@@ -94,6 +94,15 @@ impl ParticipantReadyKey {
         OwnedKeyExpr::new(selector.clone())
             .map_err(|error| BusError::not_a_key_expression(&selector, error))
     }
+
+    /// Selector for one participant's producer-qualified Ready keys.
+    fn participant_selector(root: &str, participant: &ParticipantId) -> Result<OwnedKeyExpr> {
+        validate_root(root)?;
+        validate_participant(participant.as_str())?;
+        let selector = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/*");
+        OwnedKeyExpr::new(selector.clone())
+            .map_err(|error| BusError::not_a_key_expression(&selector, error))
+    }
 }
 
 /// Presence or absence of one Liveliness token.
@@ -256,11 +265,48 @@ impl BusHandle {
     /// delivering changes through a bounded local channel suitable for a
     /// participant step loop.
     pub async fn participant_ready_events(&self) -> Result<ParticipantReadyEvents> {
+        self.participant_ready_events_with_selector(ParticipantReadyKey::selector(self.root())?)
+            .await
+    }
+
+    /// Observe only the producer-qualified Ready keys for `participant`.
+    /// Scoping the selector before the bounded local queue prevents unrelated
+    /// participant churn from consuming the receiver's authority evidence.
+    pub async fn participant_ready_events_for(
+        &self,
+        participant: &ParticipantId,
+    ) -> Result<ParticipantReadyEvents> {
+        self.participant_ready_events_with_selector(ParticipantReadyKey::participant_selector(
+            self.root(),
+            participant,
+        )?)
+        .await
+    }
+
+    /// Observe one participant's Ready keys directly on the transport
+    /// callback. This is for ingress fences that must linearize Ready loss
+    /// with a sample before the participant's next step.
+    pub async fn observe_participant_ready_for(
+        &self,
+        participant: &ParticipantId,
+        callback: impl Fn(ParticipantReadyEvent) + Send + Sync + 'static,
+    ) -> Result<ParticipantReadyObserver> {
+        self.observe_participant_ready_selector(
+            ParticipantReadyKey::participant_selector(self.root(), participant)?,
+            callback,
+        )
+        .await
+    }
+
+    async fn participant_ready_events_with_selector(
+        &self,
+        selector: OwnedKeyExpr,
+    ) -> Result<ParticipantReadyEvents> {
         let (sender, receiver) = mpsc::channel(64);
         let overflowed = Arc::new(AtomicBool::new(false));
         let dropped = Arc::clone(&overflowed);
         let observer = self
-            .observe_participant_ready(move |event| {
+            .observe_participant_ready_selector(selector, move |event| {
                 if sender.try_send(event).is_err() {
                     dropped.store(true, Ordering::Release);
                 }
@@ -289,6 +335,17 @@ impl BusHandle {
     ) -> Result<ParticipantReadyObserver> {
         let root = self.root().to_string();
         let selector = ParticipantReadyKey::selector(&root)?;
+        self.observe_participant_ready_selector(selector, callback)
+            .await
+    }
+
+    /// Observe the exact selector used by a participant-scoped Ready stream.
+    async fn observe_participant_ready_selector(
+        &self,
+        selector: OwnedKeyExpr,
+        callback: impl Fn(ParticipantReadyEvent) + Send + Sync + 'static,
+    ) -> Result<ParticipantReadyObserver> {
+        let root = self.root().to_string();
         let subscriber = self
             .session()?
             .liveliness()
@@ -491,6 +548,21 @@ mod tests {
             format!("{ROOT}/liveliness/participants/*/*")
         );
         assert!(selector.includes(&key.key));
+    }
+
+    #[test]
+    fn participant_scoped_selector_excludes_unrelated_ready_churn() {
+        let root = ROOT;
+        let expected = ParticipantId::new("safety").unwrap();
+        let selected = ParticipantReadyKey::participant_selector(root, &expected).unwrap();
+        let safety = ParticipantReadyKey::new(root, "safety", producer(4)).unwrap();
+        let navigation = ParticipantReadyKey::new(root, "navigation", producer(5)).unwrap();
+        assert_eq!(
+            selected.as_str(),
+            format!("{root}/liveliness/participants/safety/*")
+        );
+        assert!(selected.includes(&safety.key));
+        assert!(!selected.includes(&navigation.key));
     }
 
     /// The supervisor's identity token is one exact key, and a client attaching

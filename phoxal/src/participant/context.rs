@@ -9,8 +9,8 @@ use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuth
 use crate::ParticipantAssetResolver;
 use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
-    DiagnosticContract, DiagnosticPublisher, MeasurementContract, MeasurementPublisher, Publish,
-    Querier, RobotInstant, SampleDeliveryContract, SampleReceiver, ServeQuery,
+    DiagnosticContract, DiagnosticPublisher, MeasurementContract, MeasurementPublisher, Observed,
+    Publish, Querier, RobotInstant, SampleDeliveryContract, SampleReceiver, ServeQuery,
     SetpointDeliveryContract, SetpointReceiver, StateContract, StateDeliveryContract,
     StatePublisher, StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher,
     StreamReceiver, Subscribe, TimelineId, Topic, WorldClockContract,
@@ -75,6 +75,30 @@ impl<R: Participant> SetupContext<R> {
         &self,
     ) -> crate::Result<phoxal_bus::ParticipantReadyEvents> {
         Ok(self.bus.participant_ready_events().await?)
+    }
+
+    /// Subscribe only to the exact producer-qualified Ready keys for one
+    /// fixed participant. This keeps unrelated participant churn outside the
+    /// bounded authority-evidence queue.
+    pub async fn participant_ready_events_for(
+        &self,
+        participant: &phoxal_bus::ParticipantId,
+    ) -> crate::Result<phoxal_bus::ParticipantReadyEvents> {
+        Ok(self.bus.participant_ready_events_for(participant).await?)
+    }
+
+    /// Observe one participant's Ready keys directly on the transport
+    /// callback. Use this only for ingress admission that must see Ready loss
+    /// before the next sample can enter a retained state view.
+    pub async fn observe_participant_ready_for(
+        &self,
+        participant: &phoxal_bus::ParticipantId,
+        callback: impl Fn(phoxal_bus::ParticipantReadyEvent) + Send + Sync + 'static,
+    ) -> crate::Result<phoxal_bus::ParticipantReadyObserver> {
+        Ok(self
+            .bus
+            .observe_participant_ready_for(participant, callback)
+            .await?)
     }
 
     pub(crate) fn new(bus: BusHandle, runtime: Option<ParticipantRuntimeInputs>) -> Self {
@@ -223,6 +247,25 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<StateView<B>> {
         let handle = StateView::new(&self.bus, &topic).await?;
+        let retained = handle.timeline_retention();
+        self.register_timeline_retention(move |timeline| {
+            retained.retain(timeline);
+        });
+        Ok(handle)
+    }
+
+    /// Build a state view whose synchronous source admission runs before the
+    /// keep-last slot coalesces observations.
+    #[doc(hidden)]
+    pub async fn state_view_with_admission<
+        B: StateDeliveryContract<Api = R::ContractApi>,
+        F: Fn(&Observed<B>) -> bool + Send + Sync + 'static,
+    >(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+        admission: F,
+    ) -> crate::Result<StateView<B>> {
+        let handle = StateView::new_with_admission(&self.bus, &topic, admission).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
             retained.retain(timeline);

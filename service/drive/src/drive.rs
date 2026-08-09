@@ -438,7 +438,7 @@ impl Participant for Drive {
         let config = DriveConfig::from_robot(ctx.robot()?)?;
         let motion = phoxal::bus::ParticipantId::new("motion")
             .map_err(|error| anyhow::anyhow!("invalid fixed motion participant id: {error}"))?;
-        let ready = ctx.participant_ready_events().await?;
+        let ready = ctx.participant_ready_events_for(&motion).await?;
 
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner builder.

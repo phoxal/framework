@@ -74,12 +74,12 @@ pub use handle::publisher::{
 pub use handle::querier::{DEFAULT_QUERY_TIMEOUT, Querier};
 pub use handle::stamp::{StepStamp, StepToken, TimelineAuthority, WorldStepToken};
 pub use handle::subscriber::{
-    MAX_STREAM_SOURCES, Observed, ReceiveTerminal, SampleReceiver, SetpointReceiver, StateView,
-    StreamEvent, StreamReceiver, TimelineRetention,
+    MAX_SETPOINT_SOURCES, MAX_STREAM_SOURCES, Observed, ReceiveTerminal, SampleReceiver,
+    SetpointReceiver, StateView, StreamEvent, StreamReceiver, TimelineRetention,
 };
 pub use lease::{
-    ExclusiveProducerLease, FixedSourceLease, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection,
-    MAX_READY_PRODUCERS,
+    ExclusiveProducerLease, FixedSourceAdmission, FixedSourceLease, LEASE_TRACE_TARGET,
+    LeaseDecision, LeaseRejection, MAX_READY_PRODUCERS,
 };
 pub use liveliness::{
     KeyLivelinessObserver, LivelinessStatus, ParticipantReadyEvent, ParticipantReadyEvents,
