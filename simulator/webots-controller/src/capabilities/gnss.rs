@@ -28,6 +28,7 @@ impl NativeGnss {
 
 impl SimulatedSensor for NativeGnss {
     type Sample = api::component::gnss::Sample;
+    type Endpoint = api::endpoint::component::gnss::SampleEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.schedule
@@ -35,11 +36,13 @@ impl SimulatedSensor for NativeGnss {
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
         let reading = self.gps.reading()?;
-        Ok(Some(api::component::gnss::Sample {
-            latitude: reading.position[0],
-            longitude: reading.position[1],
-            altitude: reading.position[2],
-            position_covariance: [0.0; 9],
-        }))
+        api::component::gnss::Sample::try_new(
+            reading.position[0],
+            reading.position[1],
+            reading.position[2],
+            [0.0; 9],
+        )
+        .map(Some)
+        .map_err(anyhow::Error::from)
     }
 }

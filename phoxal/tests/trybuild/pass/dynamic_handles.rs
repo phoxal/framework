@@ -2,7 +2,7 @@ use phoxal::api;
 use phoxal::prelude::*;
 
 struct Api {
-    ranges: Vec<MeasurementPublisher<api::component::range::Sample>>,
+    ranges: Vec<MeasurementPublisher<api::endpoint::component::range::SampleEndpoint>>,
 }
 
 #[phoxal::driver(id = "dynamic-handles", api = Api)]

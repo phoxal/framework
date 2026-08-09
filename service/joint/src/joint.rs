@@ -61,7 +61,11 @@ impl EncoderBinding {
     /// this is the client `Subscribe` side from the public builder.
     fn topic(
         &self,
-    ) -> Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>>> {
+    ) -> Result<
+        phoxal::bus::Topic<
+            phoxal::bus::Subscribe<api::endpoint::component::encoder::SampleEndpoint>,
+        >,
+    > {
         Ok(api::topic::client()
             .component(&self.reference.component_id)?
             .encoder(&self.reference.capability_id)?
@@ -93,7 +97,7 @@ impl EncoderBinding {
 /// samples, so a sample can never be scaled by another binding's gear ratio.
 struct BoundEncoder {
     binding: EncoderBinding,
-    subscriber: SampleReceiver<api::component::encoder::Sample>,
+    subscriber: SampleReceiver<api::endpoint::component::encoder::SampleEndpoint>,
 }
 
 pub(crate) struct Api {

@@ -11,5 +11,6 @@ vector_sensor!(
     webots_rs::device::accelerometer::Accelerometer,
     accelerometer,
     api::component::accelerometer::Sample,
+    api::endpoint::component::accelerometer::SampleEndpoint,
     linear_acceleration,
 );

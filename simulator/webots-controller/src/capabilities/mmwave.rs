@@ -29,6 +29,7 @@ impl NativeMmwave {
 
 impl SimulatedSensor for NativeMmwave {
     type Sample = api::component::mmwave::Scan;
+    type Endpoint = api::endpoint::component::mmwave::ScanEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.schedule
@@ -36,9 +37,9 @@ impl SimulatedSensor for NativeMmwave {
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
         let targets = self.radar.targets()?;
-        Ok(Some(api::component::mmwave::Scan {
-            detections: targets.iter().map(detection).collect(),
-        }))
+        api::component::mmwave::Scan::try_new(targets.iter().map(detection).collect())
+            .map(Some)
+            .map_err(anyhow::Error::from)
     }
 }
 

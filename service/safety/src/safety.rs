@@ -530,8 +530,8 @@ pub(crate) struct Api {
     map_events: std::sync::Mutex<mpsc::Receiver<MapQueryEvent>>,
     map_epoch: Arc<AtomicU64>,
     drive: StateView<api::drive::State>,
-    batteries: Vec<BoundStateInput<api::component::battery::State>>,
-    ranges: Vec<BoundSampleInput<api::component::range::Sample>>,
+    batteries: Vec<BoundStateInput<api::endpoint::component::battery::StateEndpoint>>,
+    ranges: Vec<BoundSampleInput<api::endpoint::component::range::SampleEndpoint>>,
     constraints: StatePublisher<api::safety::MotionConstraints>,
     state: StatePublisher<api::safety::State>,
 }

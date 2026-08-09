@@ -157,17 +157,18 @@ mod tests {
         )
         .await
         .expect("clock subscriber should attach");
-        let encoder_subscriber = SampleReceiver::<api::component::encoder::Sample>::new(
-            &bus,
-            &api::topic::client()
-                .component("left_drive")
-                .expect("valid component segment")
-                .encoder("encoder")
-                .expect("valid capability segment")
-                .sample(),
-        )
-        .await
-        .expect("encoder subscriber should attach");
+        let encoder_subscriber =
+            SampleReceiver::<api::endpoint::component::encoder::SampleEndpoint>::new(
+                &bus,
+                &api::topic::client()
+                    .component("left_drive")
+                    .expect("valid component segment")
+                    .encoder("encoder")
+                    .expect("valid capability segment")
+                    .sample(),
+            )
+            .await
+            .expect("encoder subscriber should attach");
         let encoder_publisher = MeasurementPublisher::new(
             bus.clone(),
             &api::topic::owner()
@@ -191,10 +192,7 @@ mod tests {
         let world_step = authority.completed_step(20_000_000);
         let output = StepOutput::new(vec![PendingPublish::Encoder(
             encoder_publisher,
-            api::component::encoder::Sample {
-                position_rad: 1.0,
-                velocity_radps: 0.5,
-            },
+            api::component::encoder::Sample::try_new(1.0, 0.5).unwrap(),
         )]);
         api.commit_step(&world_step, 2, output)
             .expect("commit should publish");

@@ -10,8 +10,8 @@
 use anyhow::Result;
 use phoxal::api;
 use phoxal::bus::{
-    CaptureStamp, ContractBody, EndpointDescriptor, FixedSourceLease, LocalInstant,
-    MeasurementContract, ParticipantId, ParticipantReadyEvents, StepStamp, WorldStepToken,
+    CaptureStamp, EndpointDescriptor, FixedSourceLease, LocalInstant, MeasurementContract,
+    ParticipantId, ParticipantReadyEvents, Payload, StepStamp, WorldStepToken,
 };
 use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
@@ -43,14 +43,14 @@ const MOTOR_SOURCE_SILENCE: Duration = Duration::from_millis(150);
 /// before deciding which held command to apply.  Coalescing before authority
 /// would let a later packet from an unauthorised producer erase Drive's
 /// already-pending intent.
-trait CommandBacklog<B: EndpointDescriptor<Payload = B>> {
+trait CommandBacklog<B: Payload, E: EndpointDescriptor<Payload = B>> {
     /// Every queued value, in receiver order, including trusted transport
     /// provenance for fixed-source authority admission.
     fn take_all_observed(&self) -> Result<Vec<Observed<B>>>;
 }
 
-impl<B: ContractBody + SetpointDeliveryContract + EndpointDescriptor<Payload = B>> CommandBacklog<B>
-    for SetpointReceiver<B>
+impl<B: Payload, E: SetpointDeliveryContract<Payload = B>> CommandBacklog<B, E>
+    for SetpointReceiver<E>
 {
     fn take_all_observed(&self) -> Result<Vec<Observed<B>>> {
         let mut pending = Vec::new();
@@ -64,10 +64,11 @@ impl<B: ContractBody + SetpointDeliveryContract + EndpointDescriptor<Payload = B
 /// A Webots device the graph drives.
 trait SimulatedActuator {
     /// The contract body this device is commanded with.
-    type Command: ContractBody + Clone;
+    type Command: Payload + Clone;
 
     /// The command receiver bound to this actuator.
-    type Receiver: CommandBacklog<Self::Command>;
+    type Endpoint: SetpointDeliveryContract<Payload = Self::Command>;
+    type Receiver: CommandBacklog<Self::Command, Self::Endpoint>;
 
     /// Apply one already-admitted command body.
     fn apply_body(&mut self, command: Self::Command) -> Result<()>;
@@ -81,7 +82,8 @@ trait SimulatedActuator {
 
 impl SimulatedActuator for NativeMotor {
     type Command = api::component::motor::Command;
-    type Receiver = SetpointReceiver<Self::Command>;
+    type Endpoint = api::endpoint::component::motor::CommandEndpoint;
+    type Receiver = SetpointReceiver<Self::Endpoint>;
 
     fn apply_body(&mut self, command: Self::Command) -> Result<()> {
         self.apply(&command)
@@ -95,15 +97,15 @@ impl SimulatedActuator for NativeMotor {
 /// A sensor device and the measurement handle it publishes on.
 struct SensorChannel<S: SimulatedSensor>
 where
-    S::Sample: MeasurementContract,
+    S::Endpoint: MeasurementContract<Payload = S::Sample>,
 {
     device: S,
-    publisher: MeasurementPublisher<S::Sample>,
+    publisher: MeasurementPublisher<S::Endpoint>,
 }
 
 impl<S: SimulatedSensor> SensorChannel<S>
 where
-    S::Sample: MeasurementContract,
+    S::Endpoint: MeasurementContract<Payload = S::Sample>,
 {
     fn reset(&mut self, logical_time_ns: u64) -> Result<()> {
         self.device.reset(logical_time_ns)
@@ -118,7 +120,7 @@ where
     fn read_into(
         &mut self,
         step: SensorStep,
-        wrap: fn(MeasurementPublisher<S::Sample>, S::Sample) -> PendingPublish,
+        wrap: fn(MeasurementPublisher<S::Endpoint>, S::Sample) -> PendingPublish,
         pending: &mut Vec<PendingPublish>,
     ) -> Result<()> {
         if let Some(sample) = self.device.read_if_due(step)? {
@@ -191,62 +193,62 @@ fn admit_pending<B>(authority: &mut FixedSourceLease<B>, pending: Vec<Observed<B
 /// rather than a measurement.
 struct BatteryChannel {
     device: NativeBattery,
-    publisher: StatePublisher<api::component::battery::State>,
+    publisher: StatePublisher<api::endpoint::component::battery::StateEndpoint>,
 }
 
 /// One body a completed world advance produced, carrying the handle it
 /// publishes on.
 pub(crate) enum PendingPublish {
     Encoder(
-        MeasurementPublisher<api::component::encoder::Sample>,
+        MeasurementPublisher<api::endpoint::component::encoder::SampleEndpoint>,
         api::component::encoder::Sample,
     ),
     Imu(
-        MeasurementPublisher<api::component::imu::Sample>,
+        MeasurementPublisher<api::endpoint::component::imu::SampleEndpoint>,
         api::component::imu::Sample,
     ),
     Accelerometer(
-        MeasurementPublisher<api::component::accelerometer::Sample>,
+        MeasurementPublisher<api::endpoint::component::accelerometer::SampleEndpoint>,
         api::component::accelerometer::Sample,
     ),
     Gyroscope(
-        MeasurementPublisher<api::component::gyroscope::Sample>,
+        MeasurementPublisher<api::endpoint::component::gyroscope::SampleEndpoint>,
         api::component::gyroscope::Sample,
     ),
     Range(
-        MeasurementPublisher<api::component::range::Sample>,
+        MeasurementPublisher<api::endpoint::component::range::SampleEndpoint>,
         api::component::range::Sample,
     ),
     Camera(
-        MeasurementPublisher<api::component::camera::Frame>,
+        MeasurementPublisher<api::endpoint::component::camera::FrameEndpoint>,
         api::component::camera::Frame,
     ),
     Depth(
-        MeasurementPublisher<api::component::depth::Frame>,
+        MeasurementPublisher<api::endpoint::component::depth::FrameEndpoint>,
         api::component::depth::Frame,
     ),
     Gnss(
-        MeasurementPublisher<api::component::gnss::Sample>,
+        MeasurementPublisher<api::endpoint::component::gnss::SampleEndpoint>,
         api::component::gnss::Sample,
     ),
     Magnetometer(
-        MeasurementPublisher<api::component::magnetometer::Sample>,
+        MeasurementPublisher<api::endpoint::component::magnetometer::SampleEndpoint>,
         api::component::magnetometer::Sample,
     ),
     Lidar(
-        MeasurementPublisher<api::component::lidar::Scan>,
+        MeasurementPublisher<api::endpoint::component::lidar::ScanEndpoint>,
         api::component::lidar::Scan,
     ),
     Mmwave(
-        MeasurementPublisher<api::component::mmwave::Scan>,
+        MeasurementPublisher<api::endpoint::component::mmwave::ScanEndpoint>,
         api::component::mmwave::Scan,
     ),
     Microphone(
-        MeasurementPublisher<api::component::microphone::Frame>,
+        MeasurementPublisher<api::endpoint::component::microphone::FrameEndpoint>,
         api::component::microphone::Frame,
     ),
     Battery(
-        StatePublisher<api::component::battery::State>,
+        StatePublisher<api::endpoint::component::battery::StateEndpoint>,
         api::component::battery::State,
     ),
 }

@@ -11,5 +11,6 @@ vector_sensor!(
     webots_rs::device::gyro::Gyro,
     gyro,
     api::component::gyroscope::Sample,
+    api::endpoint::component::gyroscope::SampleEndpoint,
     angular_velocity,
 );

@@ -37,6 +37,7 @@ impl NativeCamera {
 
 impl SimulatedSensor for NativeCamera {
     type Sample = api::component::camera::Frame;
+    type Endpoint = api::endpoint::component::camera::FrameEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.sampled.schedule

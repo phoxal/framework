@@ -56,11 +56,12 @@ impl BatterySpec {
                 Some(watts / self.voltage_v)
             })
             .unwrap_or(0.0);
-        api::component::battery::State {
-            voltage_v: self.voltage_v as f32,
-            current_a: current_a as f32,
-            charge_ratio: charge_ratio as f32,
-        }
+        api::component::battery::State::try_new(
+            self.voltage_v as f32,
+            current_a as f32,
+            charge_ratio as f32,
+        )
+        .expect("validated Webots battery specification and reading")
     }
 }
 
@@ -86,6 +87,7 @@ impl NativeBattery {
 
 impl SimulatedSensor for NativeBattery {
     type Sample = api::component::battery::State;
+    type Endpoint = api::endpoint::component::battery::StateEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.sampled.schedule

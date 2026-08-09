@@ -4,6 +4,7 @@
 
 use super::{instant, round_trip};
 use crate::{v0_1 as legacy, v0_2 as api};
+use serde::de::DeserializeOwned;
 
 fn producer(value: u128) -> phoxal_bus::ProducerId {
     phoxal_bus::ProducerId::try_from((1_u128 << 124) | value).expect("canonical producer")
@@ -647,7 +648,7 @@ fn component_capability_bodies_round_trip_through_messagepack() {
     let frame = api::component::camera::Frame {
         width: 640,
         height: 480,
-        encoding: api::component::camera::Encoding::Rgb8,
+        encoding: api::component::camera::Encoding::Jpeg,
         intrinsics: Some(api::component::camera::Intrinsics {
             fx: 500.0,
             fy: 501.0,
@@ -671,4 +672,36 @@ fn component_capability_bodies_round_trip_through_messagepack() {
     let bytes = rmp_serde::to_vec_named(&frame).unwrap();
     let decoded: api::component::camera::Frame = rmp_serde::from_slice(&bytes).unwrap();
     assert_eq!(frame, decoded);
+}
+
+fn rejects_json_and_messagepack<T: DeserializeOwned>(value: serde_json::Value) {
+    assert!(serde_json::from_value::<T>(value.clone()).is_err());
+    assert!(rmp_serde::from_slice::<T>(&rmp_serde::to_vec_named(&value).unwrap()).is_err());
+}
+
+#[test]
+fn v0_2_sensor_wires_reject_malformed_json_and_messagepack() {
+    rejects_json_and_messagepack::<api::component::depth::Frame>(serde_json::json!({
+        "samples_mm": [], "encoding": "u16_millimeters", "invalid_sample_policy": "zero_is_invalid",
+        "width": 0, "height": 1, "intrinsics": null, "distortion": null, "exposure": null, "calibration": null
+    }));
+    rejects_json_and_messagepack::<api::component::range::Sample>(serde_json::json!({
+        "distance_m": -1.0, "limits": null, "quality": null, "health": "nominal"
+    }));
+    rejects_json_and_messagepack::<api::component::battery::State>(serde_json::json!({
+        "voltage_v": 12.0, "current_a": 0.0, "charge_ratio": 1.1
+    }));
+    rejects_json_and_messagepack::<api::component::gnss::Sample>(serde_json::json!({
+        "latitude": 91.0, "longitude": 0.0, "altitude": 0.0, "position_covariance": [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    }));
+    rejects_json_and_messagepack::<api::component::imu::Sample>(serde_json::json!({
+        "orientation": [2.0,0.0,0.0,0.0], "angular_velocity_radps": [0.0,0.0,0.0], "linear_acceleration_mps2": [0.0,0.0,0.0],
+        "covariance": null, "noise_density": null, "sensor_frame_id": null, "health": "nominal", "bias": null
+    }));
+    rejects_json_and_messagepack::<api::component::encoder::Sample>(
+        serde_json::json!({"position_rad": 0.0, "velocity_radps": "bad"}),
+    );
+    rejects_json_and_messagepack::<api::component::mmwave::Scan>(
+        serde_json::json!({"detections": [{"position": [0.0,0.0,0.0], "velocity": [0.0,0.0,0.0], "snr": "bad"}]}),
+    );
 }

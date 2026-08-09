@@ -28,6 +28,13 @@ pub enum RangeSample {
     Valid(f32),
     Invalid,
 }
+/// A cartesian return is likewise explicit about a missing/invalid reading.
+#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointSample {
+    Valid([f32; 3]),
+    Invalid,
+}
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Ranges {
     pub ranges: Vec<RangeSample>,
@@ -38,7 +45,7 @@ pub struct Ranges {
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Points {
-    pub points: Vec<[f32; 3]>,
+    pub points: Vec<PointSample>,
     pub limits: Option<RangeLimits>,
     pub quality: Option<ScanQuality>,
     pub health: SensorHealth,
@@ -126,16 +133,28 @@ impl Scan {
         }))
     }
     pub fn points(
-        points: Vec<[f32; 3]>,
+        points: Vec<PointSample>,
         limits: Option<RangeLimits>,
         quality: Option<ScanQuality>,
         health: SensorHealth,
     ) -> Result<Self, InvalidScan> {
         let limits = checked_limits(limits)?;
-        if points.iter().flatten().any(|v| !v.is_finite()) {
+        if points
+            .iter()
+            .filter_map(|point| match point {
+                PointSample::Valid(value) => Some(value),
+                PointSample::Invalid => None,
+            })
+            .flatten()
+            .any(|v| !v.is_finite())
+        {
             return Err(InvalidScan("lidar points must be finite"));
         }
-        if quality.is_some_and(|q| usize::try_from(q.valid_points).ok() != Some(points.len())) {
+        let valid = points
+            .iter()
+            .filter(|point| matches!(point, PointSample::Valid(_)))
+            .count();
+        if quality.is_some_and(|q| usize::try_from(q.valid_points).ok() != Some(valid)) {
             return Err(InvalidScan("lidar valid point count must match points"));
         }
         Ok(Self::Points(Points {

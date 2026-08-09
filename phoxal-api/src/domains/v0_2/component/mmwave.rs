@@ -31,10 +31,9 @@ impl Scan {
                 .chain(d.velocity.iter())
                 .chain(std::iter::once(&d.snr))
                 .all(|v| v.is_finite())
-                || d.snr < 0.0
         }) {
             return Err(InvalidScan(
-                "mmWave positions, velocities and SNR must be finite; SNR must be nonnegative",
+                "mmWave positions, velocities, and received power must be finite",
             ));
         }
         Ok(Self { detections })

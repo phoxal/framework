@@ -30,8 +30,8 @@ const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_nanos(
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 
 pub(crate) struct Api {
-    cameras: Vec<SampleReceiver<api::component::camera::Frame>>,
-    depths: Vec<SampleReceiver<api::component::depth::Frame>>,
+    cameras: Vec<SampleReceiver<api::endpoint::component::camera::FrameEndpoint>>,
+    depths: Vec<SampleReceiver<api::endpoint::component::depth::FrameEndpoint>>,
     localization: StateView<api::localize::LocalizationState>,
     detections: StatePublisher<api::perception::Detections>,
     state: StatePublisher<api::perception::State>,
