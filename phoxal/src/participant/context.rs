@@ -8,14 +8,13 @@ use std::time::Duration;
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
 use crate::ParticipantAssetResolver;
 use crate::bus::{
-    AskQuery, CommandPublisher, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
-    DiagnosticPublisher, EventContract, EventPublisher, EventReceiver, MeasurementPublisher,
-    Observed, Publish, Querier, QueryEndpointDescriptor, RobotInstant, SampleContract,
-    SampleDeliveryContract,
-    SamplePublisher, SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract,
-    SetpointPublisher, SetpointReceiver, StateContract, StateDeliveryContract, StatePublisher,
-    StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher, StreamReceiver,
-    Subscribe, TimelineId, Topic,
+    AskQuery, CommandPublisher, DEFAULT_QUERY_TIMEOUT, DiagnosticContract, DiagnosticPublisher,
+    EventContract, EventPublisher, EventReceiver, MeasurementPublisher, Observed, Publish, Querier,
+    QueryEndpointDescriptor, RobotInstant, SampleContract, SampleDeliveryContract, SamplePublisher,
+    SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract, SetpointPublisher,
+    SetpointReceiver, StateContract, StateDeliveryContract, StatePublisher, StateView, StepToken,
+    StreamContract, StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimelineId,
+    Topic,
 };
 use crate::model::Robot;
 use crate::participant::api::Participant;
@@ -355,11 +354,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         )?)
     }
 
-    pub fn query<E, H>(
-        &mut self,
-        topic: Topic<ServeQuery<E>>,
-        handler: H,
-    ) -> crate::Result<()>
+    pub fn query<E, H>(&mut self, topic: Topic<ServeQuery<E>>, handler: H) -> crate::Result<()>
     where
         E: QueryEndpointDescriptor,
         H: for<'a> Fn(
@@ -381,9 +376,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         {
             anyhow::bail!("duplicate query binding for '{topic}'");
         }
-        self.queries.push(QueryRegistration::new::<E::Request, E::Response, H>(
-            topic, handler,
-        ));
+        self.queries
+            .push(QueryRegistration::new::<E::Request, E::Response, H>(
+                topic, handler,
+            ));
         Ok(())
     }
 }

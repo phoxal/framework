@@ -182,9 +182,7 @@ impl TopicDef {
         match &self.kind {
             TopicKind::Query { .. } => quote! { ::phoxal_bus::EndpointKind::Query },
             TopicKind::PubSub(_) => match self.delivery.unwrap_or_else(|| match self.role {
-                TopicRole::State | TopicRole::Diagnostic | TopicRole::WorldClock => {
-                    DeliveryOverride::State
-                }
+                TopicRole::State | TopicRole::Diagnostic => DeliveryOverride::State,
                 TopicRole::Measurement => DeliveryOverride::Sample,
                 TopicRole::Command => DeliveryOverride::Setpoint,
                 TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
