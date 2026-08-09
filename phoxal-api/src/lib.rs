@@ -96,57 +96,9 @@
 //! [`ContractBody`]: phoxal_bus::ContractBody
 //! [`ContractBody::TOPIC`]: phoxal_bus::ContractBody::TOPIC
 
-#[cfg(test)]
-use phoxal_macros::phoxal_api;
-use phoxal_macros::phoxal_api_tree;
-
-/// The exact robot API revisions implemented by this API build.
-///
-/// This is intentionally the closed, client-facing catalogue. The process
-/// contract carries the open [`RobotApiVersion`] value so an external process
-/// can decode and report a newer revision without pretending to implement it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RobotApi {
-    V0_1,
-    V0_2,
-}
-
-impl RobotApi {
-    /// The train-selected revision used by normal robot participants.
-    pub const LATEST: Self = Self::V0_2;
-
-    /// Canonical process token for this implemented revision.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::V0_1 => "phoxal/robot-api/v0.1",
-            Self::V0_2 => "phoxal/robot-api/v0.2",
-        }
-    }
-
-    /// Convert this implemented revision to the universal process identity.
-    #[must_use]
-    pub const fn version(self) -> phoxal_runtime_contract::version::RobotApiVersion {
-        match self {
-            Self::V0_1 => phoxal_runtime_contract::version::RobotApiVersion::new(0, 1),
-            Self::V0_2 => phoxal_runtime_contract::version::RobotApiVersion::new(0, 2),
-        }
-    }
-
-    /// Find an implemented API revision for a universal process identity.
-    #[must_use]
-    pub fn from_version(
-        version: phoxal_runtime_contract::version::RobotApiVersion,
-    ) -> Option<Self> {
-        if version == Self::V0_1.version() {
-            Some(Self::V0_1)
-        } else if version == Self::V0_2.version() {
-            Some(Self::V0_2)
-        } else {
-            None
-        }
-    }
-}
+mod api;
+pub use api::*;
+pub use phoxal_macros::{phoxal_api, phoxal_api_tree};
 
 mod domains;
 
@@ -381,18 +333,18 @@ pub struct GridPointWire {
 pub struct GridWindowWire {
     #[serde(deserialize_with = "crate::deserialize_nonempty_frame_id")]
     pub frame_id: String,
-    pub origin_pose: crate::v0_2::map::Pose,
-    pub cell_origin: crate::v0_2::map::Point,
+    pub origin_pose: crate::domains::v0_2::map::Pose,
+    pub cell_origin: crate::domains::v0_2::map::Point,
     #[serde(deserialize_with = "crate::deserialize_finite_positive_resolution")]
     pub resolution_m: f32,
     #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
     pub width: u32,
     #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
     pub height: u32,
-    pub cells: Vec<crate::v0_2::map::Occupancy>,
+    pub cells: Vec<crate::domains::v0_2::map::Occupancy>,
     pub revision: u64,
-    pub requested: crate::v0_2::map::Bounds,
-    pub covered: crate::v0_2::map::Bounds,
+    pub requested: crate::domains::v0_2::map::Bounds,
+    pub covered: crate::domains::v0_2::map::Bounds,
 }
 
 #[doc(hidden)]
@@ -446,10 +398,10 @@ pub enum SafetyMotionPermissionWire {
         effective_linear_speed_mps: f32,
         #[serde(deserialize_with = "crate::deserialize_finite_nonnegative_safety_limit")]
         effective_angular_speed_radps: f32,
-        reasons: Vec<crate::v0_2::safety::ConstraintReason>,
+        reasons: Vec<crate::domains::v0_2::safety::ConstraintReason>,
     },
     Stopped {
-        reasons: Vec<crate::v0_2::safety::ConstraintReason>,
+        reasons: Vec<crate::domains::v0_2::safety::ConstraintReason>,
     },
 }
 
@@ -458,8 +410,8 @@ pub enum SafetyMotionPermissionWire {
 #[serde(deny_unknown_fields)]
 pub enum SafetyConstraintWire {
     Limited {
-        reason: crate::v0_2::safety::ConstraintReason,
-        source: crate::v0_2::safety::ConstraintSource,
+        reason: crate::domains::v0_2::safety::ConstraintReason,
+        source: crate::domains::v0_2::safety::ConstraintSource,
         #[serde(deserialize_with = "crate::deserialize_finite_nonnegative_safety_limit")]
         max_linear_speed_mps: f32,
         #[serde(deserialize_with = "crate::deserialize_finite_nonnegative_safety_limit")]
@@ -470,8 +422,8 @@ pub enum SafetyConstraintWire {
         expires_at: ::phoxal_bus::RobotInstant,
     },
     Stopped {
-        reason: crate::v0_2::safety::ConstraintReason,
-        source: crate::v0_2::safety::ConstraintSource,
+        reason: crate::domains::v0_2::safety::ConstraintReason,
+        source: crate::domains::v0_2::safety::ConstraintSource,
         #[serde(deserialize_with = "crate::deserialize_optional_finite_safety_value")]
         observed_value: Option<f32>,
         valid_from: ::phoxal_bus::RobotInstant,
@@ -489,1251 +441,7 @@ pub struct SafetyMotionConstraintsWire {
     pub expires_at: ::phoxal_bus::RobotInstant,
 }
 
-phoxal_api_tree! {
-    version v0_1 {
-        drive {
-            /// Why actuation authority is in its current state.
-            enum StopReason {
-                /// Nothing is live: no target has been accepted, the producer
-                /// has gone silent past the host deadline, or the held command
-                /// exceeded its logical hold horizon. All three are the same
-                /// fact to a consumer - the drive is not being commanded.
-                TargetStale,
-                TargetNotFinite,
-                ActuatorCommandNotFinite,
-                Inactive,
-                EmergencyStop,
-                Fault,
-            }
-
-            /// Whether the drive is actively commanding the actuators.
-            enum ActuatorAuthority {
-                Active,
-                Stopped,
-            }
-
-            /// A requested or limited planar velocity.
-            struct Target {
-                linear_x_mps: f32,
-                angular_z_radps: f32,
-                curvature_limit_radpm: Option<f32>,
-            }
-
-            /// The drive participant's published control state.
-            struct State {
-                target: Target,
-                limited_target: Target,
-                actuator_authority: ActuatorAuthority,
-                stop_reason: Option<StopReason>,
-            }
-
-            command target: Setpoint<Target>;
-            topic state: State<State>;
-        }
-
-        joint(joint) {
-            /// Per-joint position/velocity (and optional effort) on a dynamic
-            /// per-joint key.
-            struct JointState {
-                position_rad: f64,
-                velocity_radps: f64,
-                effort_nm: Option<f64>,
-            }
-
-            topic state: Event<JointState>;
-        }
-
-        frame {
-            /// A parent → child rigid transform (translation + xyzw quaternion).
-            struct FrameTransform {
-                parent_frame_id: String,
-                child_frame_id: String,
-                translation_m: [f64; 3],
-                rotation_quat_xyzw: [f64; 4],
-                /// When this transform was observed. Absent for a static
-                /// transform, which is configuration rather than observation.
-                stamp: Option<::phoxal_bus::RobotInstant>,
-            }
-
-            /// Transforms that do not change over time.
-            struct StaticTransforms {
-                transforms: Vec<FrameTransform>,
-            }
-
-            /// The current transform tree.
-            struct Tree {
-                transforms: Vec<FrameTransform>,
-            }
-
-            /// Ask for the transform between two frames, optionally at a time.
-            struct LookupRequest {
-                target_frame_id: String,
-                source_frame_id: String,
-                /// The instant to resolve at. The frame service returns the
-                /// latest dynamic sample at or before this instant and never a
-                /// future sample. Absent asks for the greatest retained time.
-                at: Option<::phoxal_bus::RobotInstant>,
-            }
-
-            /// The resolved transform, or `None` if it is not available.
-            struct LookupResponse {
-                transform: Option<FrameTransform>,
-            }
-
-            topic tree: State<Tree>;
-            topic static_transforms: State<StaticTransforms>;
-            query lookup: LookupRequest => LookupResponse;
-        }
-
-        power {
-            /// A platform power command.
-            #[derive(Copy, Eq)]
-            enum Command {
-                Reboot,
-                Shutdown,
-            }
-
-            /// Where the power participant is in handling a command.
-            #[derive(Copy, Eq)]
-            enum Status {
-                Idle,
-                Rebooting,
-                ShuttingDown,
-                Failed,
-            }
-
-            /// Why a power command was rejected outright.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum RejectedReason {
-                HostIntegrationUnavailable,
-                CommandRejected,
-            }
-
-            /// Why an accepted power command later failed.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum FailedReason {
-                HostCommandFailed,
-            }
-
-            /// The power participant's published state.
-            struct State {
-                status: Status,
-                detail: Option<String>,
-            }
-
-            command command: Setpoint<Command>;
-            topic state: State<State>;
-        }
-
-        motion {
-            struct Target {
-                linear_x_mps: f32,
-                angular_z_radps: f32,
-                curvature_limit_radpm: Option<f32>,
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum Source {
-                Manual,
-                Navigation,
-                EmergencyStop,
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum ZeroReason {
-                NoCandidate,
-                NavigationCandidateStale,
-                ManualCandidateNotFinite,
-                NavigationCandidateNotFinite,
-                EmergencyStopEngaged,
-                SafetyConstraintsUnavailable,
-                SafetyProtectiveStop,
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum SafetyRuntime {
-                Absent,
-                Present,
-            }
-
-            struct ManualCommand {
-                linear_x_mps: f64,
-                angular_z_radps: f64,
-            }
-
-            struct State {
-                /// How long ago motion observed the live manual command, on
-                /// its own host clock. `None` when no manual command is live.
-                manual_observed_age_ns: Option<u64>,
-                autonomous_candidate_age_ns: Option<u64>,
-                safety_constraints_age_ns: Option<u64>,
-                selected_source: Option<Source>,
-                final_target: Target,
-                zero_reason: Option<ZeroReason>,
-                safety_runtime: SafetyRuntime,
-                component_estop_blocked: bool,
-                active_safety_constraints: Vec<super::safety::Constraint>,
-            }
-
-            command manual: Setpoint<ManualCommand>;
-            topic state: State<State>;
-        }
-
-        safety {
-            /// Why safety is stopping or limiting body motion.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum ConstraintReason {
-                WorldUnavailable,
-                MapUnavailable,
-                DrivableSpaceUnavailable,
-                LocalizationUnavailable,
-                LocalizationUncertain,
-                ObstacleProximity,
-                RangeSensorFault,
-                DriveFault,
-                BatteryLow,
-                BatteryCritical,
-                SpeedZone,
-                OperatorPolicy,
-            }
-
-            /// Typed origin of one constraint, suitable for operator diagnosis.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum ConstraintSourceKind {
-                WorldModel,
-                Map,
-                Localization,
-                Range,
-                Drive,
-                Battery,
-                Operator,
-            }
-
-            struct ConstraintSource {
-                kind: ConstraintSourceKind,
-                participant_id: String,
-                component_id: Option<String>,
-                capability_id: Option<String>,
-            }
-
-            struct Constraint {
-                reason: ConstraintReason,
-                source: ConstraintSource,
-                stop: bool,
-                max_linear_speed_mps: Option<f32>,
-                max_angular_speed_radps: Option<f32>,
-                observed_value: Option<f32>,
-                /// The instant this constraint starts applying, on the
-                /// publisher's timeline. A consumer on another timeline gets a
-                /// checked error, never a silently wrong comparison.
-                valid_from: ::phoxal_bus::RobotInstant,
-                /// The instant this constraint stops applying.
-                expires_at: ::phoxal_bus::RobotInstant,
-            }
-
-            /// The sole safety-to-motion control product. Motion accepts it only
-            /// on the same timeline and before `expires_at`.
-            struct MotionConstraints {
-                sequence: u64,
-                stop: bool,
-                max_linear_speed_mps: Option<f32>,
-                max_angular_speed_radps: Option<f32>,
-                constraints: Vec<Constraint>,
-                expires_at: ::phoxal_bus::RobotInstant,
-            }
-
-            /// Operator-facing state mirrors the exact product consumed by motion.
-            struct State {
-                clear: bool,
-                motion: MotionConstraints,
-            }
-
-            topic constraints: State<MotionConstraints>;
-            topic state: State<State>;
-        }
-
-        navigation {
-            /// A caller-chosen identifier for one navigation request.
-            ///
-            /// `Ord` is derived so a consumer can key an ordered map on the
-            /// identity itself rather than on a copy of its inner `String`,
-            /// which is what keeps the newtype meaningful past the point where
-            /// requests are tracked. The derives add no bytes to the wire.
-            #[derive(Eq, PartialOrd, Ord)]
-            struct RequestId {
-                value: String,
-            }
-
-            struct Pose {
-                x_m: f64,
-                y_m: f64,
-                yaw_rad: Option<f64>,
-            }
-
-            struct Path {
-                poses: Vec<Pose>,
-                map_revision: Option<u64>,
-            }
-
-            enum RequestKind {
-                GotoPose(Pose),
-                FollowPath(Path),
-                Cancel(RequestId),
-            }
-
-            struct Request {
-                request_id: RequestId,
-                kind: RequestKind,
-            }
-
-            enum State {
-                Idle,
-                Accepted(RequestId),
-                Running(RequestId),
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum FailureReason {
-                LocalizationUnavailable,
-                MapUnavailable,
-                MapChanged,
-                NoPath,
-                Blocked,
-                Internal,
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum RefusalReason {
-                Busy,
-                InvalidRequest,
-                Unsupported,
-            }
-
-            enum Outcome {
-                Succeeded,
-                Failed(FailureReason),
-                Refused(RefusalReason),
-                Cancelled,
-                TimedOut,
-            }
-
-            struct Progress {
-                request_id: RequestId,
-                distance_remaining_m: f64,
-                path_index: u32,
-            }
-
-            struct Result {
-                request_id: RequestId,
-                outcome: Outcome,
-            }
-
-            struct Candidate {
-                request_id: RequestId,
-                linear_x_mps: f32,
-                angular_z_radps: f32,
-            }
-
-            struct FrontierRequest {
-                map_revision: Option<u64>,
-            }
-
-            struct Frontier {
-                x_m: f64,
-                y_m: f64,
-                score: f32,
-                size: u32,
-            }
-
-            struct FrontierResponse {
-                frontier: Option<Frontier>,
-                map_revision: Option<u64>,
-            }
-
-            command request: Setpoint<Request>;
-            topic state: State<State>;
-            topic progress: State<Progress>;
-            topic result: State<Result>;
-            topic candidate: State<Candidate>;
-            query next_frontier: FrontierRequest => FrontierResponse;
-        }
-
-        perception {
-            /// A single detected object: class, confidence, and pose in a frame.
-            struct Detection {
-                class_id: String,
-                confidence: f32,
-                position_m: [f64; 3],
-                frame_id: String,
-                track_id: Option<u64>,
-            }
-
-            /// A batch of detections from one perception cycle.
-            struct Detections {
-                detections: Vec<Detection>,
-                /// The frame instant these detections were derived from.
-                stamp: Option<::phoxal_bus::RobotInstant>,
-            }
-
-            /// The perception participant's published health.
-            struct State {
-                healthy: bool,
-                detector: String,
-            }
-
-            topic detections: State<Detections>;
-            topic state: State<State>;
-        }
-
-        video {
-            /// Ask to open a video stream for one exact camera capability at an
-            /// optional size. The pre-v1 backend currently has no encoded
-            /// transport, so the response reports that outcome instead of
-            /// fabricating a stream identity or lifecycle.
-            struct OpenRequest {
-                source: crate::VideoSourceRef,
-                width_px: Option<u32>,
-                height_px: Option<u32>,
-            }
-
-            /// Why a requested video stream could not be opened.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum OpenOutcome {
-                /// The source exists, but no encoder/transport backend exists
-                /// in this train.
-                Unsupported,
-                /// No camera source is currently available.
-                Unavailable,
-            }
-
-            query open: OpenRequest => OpenOutcome;
-        }
-
-        // Per-instance component capabilities: framework participant / driver
-        // territory. `component(instance)` selects a manifest-declared component;
-        // each child `kind(capability)` is a self-contained node whose key is
-        // `component/{instance}/<kind>/{capability}/<leaf>`. Nodes duplicate any
-        // types they share by design - the node path disambiguates, so the names
-        // are path-local.
-        component(instance) {
-            motor(capability) {
-                /// A per-actuator command.
-                enum Command {
-                    Velocity(f32),
-                    Torque(f32),
-                    Stop,
-                }
-
-                command command: Setpoint<Command>;
-            }
-
-            encoder(capability) {
-                /// Per-encoder sample on a dynamic per-instance key.
-                struct Sample {
-                    position_rad: f64,
-                    velocity_radps: f32,
-                }
-
-                topic sample: Sample<Sample>;
-            }
-
-            accelerometer(capability) {
-                /// Raw accelerometer sample in the sensor-local frame in m/s^2.
-                struct Sample {
-                    linear_acceleration: [f32; 3],
-                }
-
-                topic sample: Sample<Sample>;
-            }
-
-            gyroscope(capability) {
-                /// Raw angular velocity sample in the sensor-local frame in rad/s.
-                struct Sample {
-                    angular_velocity: [f32; 3],
-                }
-
-                topic sample: Sample<Sample>;
-            }
-
-            magnetometer(capability) {
-                /// Raw magnetic-field sample in the sensor-local frame.
-                struct Sample {
-                    magnetic_field: [f32; 3],
-                }
-
-                topic sample: Sample<Sample>;
-            }
-
-            imu(capability) {
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum SensorHealth {
-                    Nominal,
-                    Degraded,
-                    Fault,
-                }
-
-                #[derive(Copy)]
-                struct Bias {
-                    angular_velocity_radps: [f32; 3],
-                    linear_acceleration_mps2: [f32; 3],
-                }
-
-                struct Sample {
-                    orientation: Option<[f32; 4]>,
-                    angular_velocity_radps: [f32; 3],
-                    linear_acceleration_mps2: [f32; 3],
-                    covariance: Option<[f32; 9]>,
-                    noise_density: Option<[f32; 3]>,
-                    sensor_frame_id: Option<String>,
-                    health: SensorHealth,
-                    bias: Option<Bias>,
-                }
-
-                topic sample: Sample<Sample>;
-            }
-
-            range(capability) {
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum SensorHealth {
-                    Nominal,
-                    Degraded,
-                    Fault,
-                }
-
-                #[derive(Copy)]
-                struct Limits {
-                    min_m: f32,
-                    max_m: f32,
-                }
-
-                #[derive(Copy)]
-                struct SampleQuality {
-                    valid: bool,
-                    confidence: Option<f32>,
-                }
-
-                struct Sample {
-                    distance_m: f32,
-                    limits: Option<Limits>,
-                    quality: Option<SampleQuality>,
-                    health: SensorHealth,
-                }
-
-                topic sample: Sample<Sample>;
-            }
-
-            gnss(capability) {
-                /// A GNSS fix: geodetic position plus a 3x3 position covariance.
-                struct Sample {
-                    latitude: f64,
-                    longitude: f64,
-                    altitude: f64,
-                    position_covariance: [f64; 9],
-                }
-
-                topic sample: Sample<Sample>;
-            }
-
-            camera(capability) {
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum Encoding {
-                    Jpeg,
-                    Png,
-                    L8,
-                    Rgb8,
-                    Rgba8,
-                }
-
-                #[derive(Copy)]
-                struct Intrinsics {
-                    fx: f32,
-                    fy: f32,
-                    cx: f32,
-                    cy: f32,
-                }
-
-                struct Distortion {
-                    model: String,
-                    coefficients: Vec<f32>,
-                }
-
-                #[derive(Copy)]
-                struct ExposureTiming {
-                    exposure_start_ns: Option<u64>,
-                    exposure_duration_ns: Option<u64>,
-                }
-
-                struct CalibrationIdentity {
-                    id: String,
-                    version: String,
-                }
-
-                /// One camera frame: encoded pixel bytes plus optional calibration
-                /// and timing metadata.
-                struct Frame {
-                    width: u32,
-                    height: u32,
-                    encoding: Encoding,
-                    intrinsics: Option<Intrinsics>,
-                    distortion: Option<Distortion>,
-                    exposure: Option<ExposureTiming>,
-                    calibration: Option<CalibrationIdentity>,
-                    #[serde(with = "serde_bytes")]
-                    data: Vec<u8>,
-                }
-
-                topic frame: Sample<Frame>;
-            }
-
-            depth(capability) {
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum Encoding {
-                    U16Millimeters,
-                }
-
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum InvalidSamplePolicy {
-                    ZeroIsInvalid,
-                    NonFiniteIsInvalid,
-                }
-
-                #[derive(Copy)]
-                struct Intrinsics {
-                    fx: f32,
-                    fy: f32,
-                    cx: f32,
-                    cy: f32,
-                }
-
-                struct Distortion {
-                    model: String,
-                    coefficients: Vec<f32>,
-                }
-
-                #[derive(Copy)]
-                struct ExposureTiming {
-                    exposure_start_ns: Option<u64>,
-                    exposure_duration_ns: Option<u64>,
-                }
-
-                struct CalibrationIdentity {
-                    id: String,
-                    version: String,
-                }
-
-                /// One depth frame: per-pixel millimetre samples plus optional
-                /// calibration and timing metadata.
-                struct Frame {
-                    samples_mm: Vec<u16>,
-                    encoding: Encoding,
-                    invalid_sample_policy: InvalidSamplePolicy,
-                    width: Option<u32>,
-                    height: Option<u32>,
-                    intrinsics: Option<Intrinsics>,
-                    distortion: Option<Distortion>,
-                    exposure: Option<ExposureTiming>,
-                    calibration: Option<CalibrationIdentity>,
-                }
-
-                topic frame: Sample<Frame>;
-            }
-
-            lidar(capability) {
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum SensorHealth {
-                    Nominal,
-                    Degraded,
-                    Fault,
-                }
-
-                #[derive(Copy)]
-                struct ScanGeometry {
-                    angle_min_rad: f32,
-                    angle_increment_rad: f32,
-                }
-
-                #[derive(Copy)]
-                struct RangeLimits {
-                    min_m: f32,
-                    max_m: f32,
-                }
-
-                #[derive(Copy)]
-                struct ScanQuality {
-                    valid_points: u32,
-                }
-
-                struct Ranges {
-                    ranges: Vec<f32>,
-                    geometry: Option<ScanGeometry>,
-                    limits: Option<RangeLimits>,
-                    quality: Option<ScanQuality>,
-                    health: SensorHealth,
-                }
-
-                struct Points {
-                    points: Vec<[f32; 3]>,
-                    limits: Option<RangeLimits>,
-                    quality: Option<ScanQuality>,
-                    health: SensorHealth,
-                }
-
-                /// One lidar scan, either as polar ranges or as cartesian points.
-                #[serde(tag = "kind", rename_all = "snake_case")]
-                enum Scan {
-                    Ranges(Ranges),
-                    Points(Points),
-                }
-
-                topic scan: Sample<Scan>;
-            }
-
-            mmwave(capability) {
-                /// One mmWave radar detection: position, velocity, and SNR.
-                #[derive(Copy)]
-                struct Detection {
-                    position: [f32; 3],
-                    velocity: [f32; 3],
-                    snr: f32,
-                }
-
-                /// One mmWave radar scan as a set of detections.
-                struct Scan {
-                    detections: Vec<Detection>,
-                }
-
-                topic scan: Sample<Scan>;
-            }
-
-            microphone(capability) {
-                /// One audio frame as raw encoded bytes.
-                struct Frame {
-                    data: Vec<u8>,
-                }
-
-                topic frame: Sample<Frame>;
-            }
-
-            led(capability) {
-                /// A per-LED on/off command.
-                #[derive(Copy, Eq)]
-                enum Command {
-                    On,
-                    Off,
-                }
-
-                command command: Setpoint<Command>;
-            }
-
-            speaker(capability) {
-                /// One chunk of an audio stream to play on this speaker.
-                ///
-                /// `Some(bytes)` carries WAV-coded audio: the first chunk of a
-                /// stream starts with the standard WAV header, later chunks
-                /// continue its data. `None` ends the stream and is what tells
-                /// the owner the sound is complete.
-                struct Chunk {
-                    stream: Option<Vec<u8>>,
-                }
-
-                command stream: Setpoint<Chunk>;
-            }
-
-            battery(capability) {
-                /// Battery state reported by the pack's owner - the simulator
-                /// backing this capability, or the real driver.
-                struct State {
-                    voltage_v: f32,
-                    current_a: f32,
-                    charge_ratio: f32,
-                }
-
-                topic state: State<State>;
-            }
-
-            emergency_stop(capability) {
-                /// Per-instance emergency-stop state.
-                #[derive(Eq)]
-                struct State {
-                    engaged: bool,
-                }
-
-                topic state: State<State>;
-            }
-        }
-
-        odometry {
-            /// A planar pose + twist estimate in the odometry frame.
-            struct State {
-                x_m: f64,
-                y_m: f64,
-                yaw_rad: f64,
-                linear_x_mps: f32,
-                angular_z_radps: f32,
-            }
-
-            topic state: State<State>;
-        }
-
-        localize {
-            /// A planar localization estimate in the map frame.
-            struct LocalizationState {
-                x_m: f64,
-                y_m: f64,
-                yaw_rad: f64,
-                confidence: f32,
-            }
-
-            topic state: State<LocalizationState>;
-        }
-
-        map {
-            /// A published map revision marker.
-            struct Revision {
-                revision: u64,
-                resolution_m: f32,
-            }
-
-            /// Request a rectangular submap window (map-frame metres).
-            struct SubmapRequest {
-                min_x_m: f64,
-                min_y_m: f64,
-                max_x_m: f64,
-                max_y_m: f64,
-            }
-
-            /// An occupancy-grid window: row-major cells, 0..=100 + 255 = unknown.
-            struct SubmapResponse {
-                width: u32,
-                height: u32,
-                resolution_m: f32,
-                cells: Vec<u8>,
-            }
-
-            topic revision: State<Revision>;
-            query submap: SubmapRequest => SubmapResponse;
-        }
-
-    }
-    latest version v0.2 extends v0.1 {
-        remove power;
-
-        drive {
-            remove ActuatorAuthority;
-
-            #[serde(rename_all = "snake_case")]
-            replace enum StopReason {
-                TargetStale,
-                TargetNotFinite,
-                ActuatorCommandNotFinite,
-                EmergencyStop,
-                Fault,
-            }
-
-            /// A finite requested or limited planar velocity in the current
-            /// control wire revision.
-            #[serde(deny_unknown_fields)]
-            replace struct Target {
-                #[serde(deserialize_with = "crate::deserialize_finite_target_scalar")]
-                pub(crate) linear_x_mps: f32,
-                #[serde(deserialize_with = "crate::deserialize_finite_target_scalar")]
-                pub(crate) angular_z_radps: f32,
-            }
-
-            /// The drive participant's exclusive control state.
-            replace enum State {
-                Active {
-                    target: Target,
-                    limited_target: Target,
-                },
-                Stopped {
-                    target: Target,
-                    reason: StopReason,
-                },
-            }
-        }
-
-        motion {
-            remove Target;
-
-            /// The sole motion execution decision. A stopped decision carries
-            /// no source or target, so consumers cannot observe an active
-            /// source alongside a stop reason.
-            enum Decision {
-                Active {
-                    source: Source,
-                    target: crate::v0_2::drive::Target,
-                },
-                Stopped {
-                    reason: ZeroReason,
-                },
-            }
-
-            replace struct State {
-                decision: Decision,
-                /// How long ago motion observed the live manual command, on
-                /// its own host clock. `None` when no manual command is live.
-                manual_observed_age_ns: Option<u64>,
-                autonomous_candidate_age_ns: Option<u64>,
-                safety_constraints_age_ns: Option<u64>,
-                safety_runtime: SafetyRuntime,
-                component_estop_blocked: bool,
-                active_safety_constraints: Vec<super::safety::Constraint>,
-                safety_permission: super::safety::MotionPermission,
-            }
-        }
-
-        perception {
-            /// A current-revision detection with wire-level finite and fixed
-            /// shape guarantees. The v0.1 body above remains untouched.
-            #[serde(deny_unknown_fields)]
-            replace struct Detection {
-                class_id: String,
-                #[serde(deserialize_with = "crate::deserialize_finite_detection_confidence")]
-                confidence: f32,
-                #[serde(deserialize_with = "crate::deserialize_finite_detection_position")]
-                position_m: [f64; 3],
-                frame_id: String,
-                track_id: Option<u64>,
-            }
-
-            /// One source-captured perception batch. `captured_at` is copied
-            /// from the selected camera measurement's provenance; it is not
-            /// the perception step's publication instant.
-            #[serde(deny_unknown_fields)]
-            replace struct Detections {
-                source: crate::SourceRef,
-                captured_at: ::phoxal_bus::TimeWindow,
-                detections: Vec<Detection>,
-            }
-
-            /// Why the perception participant cannot provide a healthy batch.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum HealthReason {
-                MissingCamera,
-                StaleCamera,
-                InvalidCamera,
-                DetectorFailure,
-                BackendUnavailable,
-                PublicationFailure,
-                ManagedInputFailure,
-            }
-
-            /// The perception participant's exclusive published health.
-            #[serde(deny_unknown_fields)]
-            replace enum State {
-                Healthy { detector: String },
-                Unhealthy {
-                    detector: String,
-                    reason: HealthReason,
-                },
-            }
-        }
-
-        navigation {
-            remove RequestKind;
-            remove Request;
-            remove request;
-
-            /// A navigation server-issued operation identity.  The producer
-            /// scopes the local sequence to this service incarnation, so a
-            /// restart inside one execution cannot collide with an old
-            /// operation that used the same counter value.
-            #[derive(Copy, Eq, Hash)]
-            struct NavigationOperationId {
-                producer: ::phoxal_bus::ProducerId,
-                sequence: u64,
-            }
-
-            /// Work accepted by the navigation server.
-            enum StartKind {
-                GotoPose(Pose),
-                FollowPath(Path),
-            }
-
-            /// A start admission request. The requester producer comes from
-            /// the trusted query envelope. An accepted `(requester,
-            /// request_id)` is idempotent while the server retains it: stock
-            /// navigation keeps the 1,024 most recent accepted admissions
-            /// globally. Refusals are current-state responses and are not
-            /// retained. A client must not retry an accepted request after it
-            /// has been evicted, or across a navigation reset/restart.
-            struct StartRequest {
-                request_id: RequestId,
-                kind: StartKind,
-            }
-
-            /// The server's idempotent admission response.
-            enum StartResponse {
-                Accepted { operation_id: NavigationOperationId },
-                Refused(RefusalReason),
-            }
-
-            /// Cancel one server-issued operation. The query requester must
-            /// be the operation owner. A terminal operation remains
-            /// idempotently cancellable only while stock navigation retains
-            /// it in its global 1,024-operation completion window; after
-            /// eviction the server reports `NotFound`.
-            struct CancelRequest {
-                operation_id: NavigationOperationId,
-            }
-
-            /// The cancellation admission response.
-            enum CancelResponse {
-                Accepted,
-                Refused(RefusalReason),
-            }
-
-            #[serde(rename_all = "snake_case")]
-            replace enum RefusalReason {
-                Busy,
-                InvalidRequest,
-                Unsupported,
-                Unavailable,
-                NotOwner,
-                NotFound,
-            }
-
-            // Results are ordered completion events, not a latest-value
-            // snapshot. Keep the published v0.1 role immutable and correct the
-            // active revision's delivery family explicitly.
-            replace topic result: Event<Result>;
-
-            replace enum State {
-                Idle,
-                Accepted(NavigationOperationId),
-                Running(NavigationOperationId),
-            }
-
-            replace struct Progress {
-                operation_id: NavigationOperationId,
-                request_id: RequestId,
-                distance_remaining_m: f64,
-                path_index: u32,
-            }
-
-            replace struct Result {
-                operation_id: NavigationOperationId,
-                request_id: RequestId,
-                outcome: Outcome,
-            }
-
-            replace struct Candidate {
-                operation_id: NavigationOperationId,
-                linear_x_mps: f32,
-                angular_z_radps: f32,
-            }
-
-            query start: StartRequest => StartResponse;
-            query cancel: CancelRequest => CancelResponse;
-        }
-
-        safety {
-            /// Why safety is stopping or limiting body motion in v0.2. The
-            /// map/footprint reasons are deliberately distinct so a fail
-            /// closed decision remains diagnosable without parsing text.
-            #[serde(rename_all = "snake_case")]
-            replace enum ConstraintReason {
-                WorldUnavailable,
-                MapUnavailable,
-                MapStale,
-                MapPartial,
-                MapRevisionInvalid,
-                UnknownOccupancy,
-                FootprintUnavailable,
-                FootprintMismatch,
-                FootprintObstacle,
-                DrivableSpaceUnavailable,
-                LocalizationUnavailable,
-                LocalizationUncertain,
-                ObstacleProximity,
-                RangeSensorFault,
-                DriveFault,
-                BatteryLow,
-                BatteryCritical,
-                BatteryUnavailable,
-                BatteryStale,
-                SpeedZone,
-                OperatorPolicy,
-            }
-
-            /// Additional provenance category for the compiled footprint
-            /// checks. The source is still the safety participant, but the
-            /// category tells operators which safety input failed.
-            #[serde(rename_all = "snake_case")]
-            replace enum ConstraintSourceKind {
-                WorldModel,
-                Map,
-                Localization,
-                Range,
-                Drive,
-                Battery,
-                Footprint,
-                Operator,
-            }
-
-            /// A constraint is one shape only: a `Limited` item carries
-            /// effective limits and a `Stopped` item carries no contradictory
-            /// limit fields. This prevents a consumer from having to choose
-            /// between `stop = true` and a nonzero limit.
-            #[serde(try_from = "crate::SafetyConstraintWire")]
-            replace enum Constraint {
-                Limited {
-                    reason: ConstraintReason,
-                    source: ConstraintSource,
-                    max_linear_speed_mps: f32,
-                    max_angular_speed_radps: f32,
-                    observed_value: Option<f32>,
-                    valid_from: ::phoxal_bus::RobotInstant,
-                    expires_at: ::phoxal_bus::RobotInstant,
-                },
-                Stopped {
-                    reason: ConstraintReason,
-                    source: ConstraintSource,
-                    observed_value: Option<f32>,
-                    valid_from: ::phoxal_bus::RobotInstant,
-                    expires_at: ::phoxal_bus::RobotInstant,
-                },
-            }
-
-            /// The sole safety permission consumed by motion. Its variants
-            /// are mutually exclusive and carry exactly the fields that make
-            /// sense for that decision.
-            #[serde(try_from = "crate::SafetyMotionPermissionWire")]
-            enum MotionPermission {
-                Clear,
-                Limited {
-                    effective_linear_speed_mps: f32,
-                    effective_angular_speed_radps: f32,
-                    reasons: Vec<ConstraintReason>,
-                },
-                Stopped {
-                    reasons: Vec<ConstraintReason>,
-                },
-            }
-
-            #[serde(try_from = "crate::SafetyMotionConstraintsWire")]
-            replace struct MotionConstraints {
-                sequence: u64,
-                permission: MotionPermission,
-                constraints: Vec<Constraint>,
-                expires_at: ::phoxal_bus::RobotInstant,
-            }
-
-            #[serde(deny_unknown_fields)]
-            replace struct State {
-                constraints: MotionConstraints,
-            }
-        }
-
-        map {
-            /// A finite world-space point used as the cell origin and pose
-            /// translation in a self-describing grid response.
-            #[serde(try_from = "crate::GridPointWire")]
-            struct Point {
-                x_m: f64,
-                y_m: f64,
-            }
-
-            /// The map-frame pose of the grid's reference origin.
-            #[serde(try_from = "crate::GridPoseWire")]
-            struct Pose {
-                x_m: f64,
-                y_m: f64,
-                yaw_rad: f64,
-            }
-
-            /// Requested and covered map-frame bounds.
-            #[serde(try_from = "crate::GridBoundsWire")]
-            struct Bounds {
-                min_x_m: f64,
-                min_y_m: f64,
-                max_x_m: f64,
-                max_y_m: f64,
-            }
-
-            /// Occupancy has a closed wire domain. Unknown is not treated as
-            /// free by safety or navigation.
-            #[serde(rename_all = "snake_case")]
-            enum Occupancy {
-                Free,
-                Occupied,
-                Unknown,
-            }
-
-            /// A revisioned map window whose origin, frame, extent and bounds
-            /// travel with the cells themselves.
-            #[serde(try_from = "crate::GridWindowWire")]
-            struct GridWindow {
-                frame_id: String,
-                origin_pose: Pose,
-                cell_origin: Point,
-                #[serde(deserialize_with = "crate::deserialize_finite_positive_resolution")]
-                resolution_m: f32,
-                #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
-                width: u32,
-                #[serde(deserialize_with = "crate::deserialize_nonzero_map_dimension")]
-                height: u32,
-                cells: Vec<Occupancy>,
-                revision: u64,
-                requested: Bounds,
-                covered: Bounds,
-            }
-
-            /// A query either returns a complete window, a clipped window
-            /// with explicit requested/covered bounds, or an explicit
-            /// out-of-bounds result. A responder may not silently substitute
-            /// a different extent for what was requested.
-            replace enum SubmapResponse {
-                Window(GridWindow),
-                Partial { window: GridWindow },
-                OutOfBounds {
-                    requested: Bounds,
-                    #[serde(deserialize_with = "crate::deserialize_nonempty_frame_id")]
-                    frame_id: String,
-                    revision: u64,
-                },
-            }
-
-            replace query submap: SubmapRequest => SubmapResponse;
-        }
-
-        component(instance) {
-            speaker(capability) {
-                replace command stream: Stream<Chunk>;
-            }
-
-            motor(capability) {
-                /// A per-actuator command in the current control revision.
-                replace enum Command {
-                    Position(#[serde(deserialize_with = "crate::deserialize_finite_motor_scalar")] f32),
-                    Velocity(#[serde(deserialize_with = "crate::deserialize_finite_motor_scalar")] f32),
-                    Torque(#[serde(deserialize_with = "crate::deserialize_finite_motor_scalar")] f32),
-                    Stop,
-                }
-            }
-        }
-    }
-}
-
-impl TryFrom<GridBoundsWire> for v0_2::map::Bounds {
+impl TryFrom<GridBoundsWire> for crate::domains::v0_2::map::Bounds {
     type Error = GridWireError;
 
     fn try_from(value: GridBoundsWire) -> Result<Self, Self::Error> {
@@ -1749,7 +457,7 @@ impl TryFrom<GridBoundsWire> for v0_2::map::Bounds {
     }
 }
 
-impl TryFrom<GridPoseWire> for v0_2::map::Pose {
+impl TryFrom<GridPoseWire> for crate::domains::v0_2::map::Pose {
     type Error = GridWireError;
 
     fn try_from(value: GridPoseWire) -> Result<Self, Self::Error> {
@@ -1761,7 +469,7 @@ impl TryFrom<GridPoseWire> for v0_2::map::Pose {
     }
 }
 
-impl TryFrom<GridPointWire> for v0_2::map::Point {
+impl TryFrom<GridPointWire> for crate::domains::v0_2::map::Point {
     type Error = GridWireError;
 
     fn try_from(value: GridPointWire) -> Result<Self, Self::Error> {
@@ -1772,7 +480,7 @@ impl TryFrom<GridPointWire> for v0_2::map::Point {
     }
 }
 
-impl TryFrom<GridWindowWire> for v0_2::map::GridWindow {
+impl TryFrom<GridWindowWire> for crate::domains::v0_2::map::GridWindow {
     type Error = GridWireError;
 
     fn try_from(value: GridWindowWire) -> Result<Self, Self::Error> {
@@ -1835,7 +543,7 @@ impl TryFrom<GridWindowWire> for v0_2::map::GridWindow {
     }
 }
 
-impl TryFrom<SafetyMotionPermissionWire> for v0_2::safety::MotionPermission {
+impl TryFrom<SafetyMotionPermissionWire> for crate::domains::v0_2::safety::MotionPermission {
     type Error = GridWireError;
 
     fn try_from(value: SafetyMotionPermissionWire) -> Result<Self, Self::Error> {
@@ -1860,7 +568,7 @@ impl TryFrom<SafetyMotionPermissionWire> for v0_2::safety::MotionPermission {
     }
 }
 
-impl TryFrom<SafetyConstraintWire> for v0_2::safety::Constraint {
+impl TryFrom<SafetyConstraintWire> for crate::domains::v0_2::safety::Constraint {
     type Error = GridWireError;
 
     fn try_from(value: SafetyConstraintWire) -> Result<Self, Self::Error> {
@@ -1921,7 +629,7 @@ impl TryFrom<SafetyConstraintWire> for v0_2::safety::Constraint {
     }
 }
 
-impl TryFrom<SafetyMotionConstraintsWire> for v0_2::safety::MotionConstraints {
+impl TryFrom<SafetyMotionConstraintsWire> for crate::domains::v0_2::safety::MotionConstraints {
     type Error = GridWireError;
 
     fn try_from(value: SafetyMotionConstraintsWire) -> Result<Self, Self::Error> {
@@ -1930,7 +638,7 @@ impl TryFrom<SafetyMotionConstraintsWire> for v0_2::safety::MotionConstraints {
             .constraints
             .into_iter()
             .map(TryInto::try_into)
-            .collect::<Result<Vec<v0_2::safety::Constraint>, GridWireError>>()?;
+            .collect::<Result<Vec<crate::domains::v0_2::safety::Constraint>, GridWireError>>()?;
         let expected = expected_safety_permission(&constraints)?;
         if permission != expected {
             return Err(GridWireError(
@@ -1939,12 +647,12 @@ impl TryFrom<SafetyMotionConstraintsWire> for v0_2::safety::MotionConstraints {
         }
         for constraint in &constraints {
             let (valid_from, expires_at) = match constraint {
-                v0_2::safety::Constraint::Limited {
+                crate::domains::v0_2::safety::Constraint::Limited {
                     valid_from,
                     expires_at,
                     ..
                 }
-                | v0_2::safety::Constraint::Stopped {
+                | crate::domains::v0_2::safety::Constraint::Stopped {
                     valid_from,
                     expires_at,
                     ..
@@ -1974,28 +682,28 @@ impl TryFrom<SafetyMotionConstraintsWire> for v0_2::safety::MotionConstraints {
 }
 
 fn expected_safety_permission(
-    constraints: &[v0_2::safety::Constraint],
-) -> Result<v0_2::safety::MotionPermission, GridWireError> {
+    constraints: &[crate::domains::v0_2::safety::Constraint],
+) -> Result<crate::domains::v0_2::safety::MotionPermission, GridWireError> {
     let reasons = constraints
         .iter()
         .map(|constraint| match constraint {
-            v0_2::safety::Constraint::Limited { reason, .. }
-            | v0_2::safety::Constraint::Stopped { reason, .. } => reason.clone(),
+            crate::domains::v0_2::safety::Constraint::Limited { reason, .. }
+            | crate::domains::v0_2::safety::Constraint::Stopped { reason, .. } => reason.clone(),
         })
         .collect::<Vec<_>>();
     if constraints
         .iter()
-        .any(|constraint| matches!(constraint, v0_2::safety::Constraint::Stopped { .. }))
+        .any(|constraint| matches!(constraint, crate::domains::v0_2::safety::Constraint::Stopped { .. }))
     {
-        return Ok(v0_2::safety::MotionPermission::Stopped { reasons });
+        return Ok(crate::domains::v0_2::safety::MotionPermission::Stopped { reasons });
     }
     if constraints.is_empty() {
-        return Ok(v0_2::safety::MotionPermission::Clear);
+        return Ok(crate::domains::v0_2::safety::MotionPermission::Clear);
     }
     let mut linear = f32::MAX;
     let mut angular = f32::MAX;
     for constraint in constraints {
-        let v0_2::safety::Constraint::Limited {
+        let crate::domains::v0_2::safety::Constraint::Limited {
             max_linear_speed_mps,
             max_angular_speed_radps,
             ..
@@ -2006,7 +714,7 @@ fn expected_safety_permission(
         linear = linear.min(*max_linear_speed_mps);
         angular = angular.min(*max_angular_speed_radps);
     }
-    Ok(v0_2::safety::MotionPermission::Limited {
+    Ok(crate::domains::v0_2::safety::MotionPermission::Limited {
         effective_linear_speed_mps: linear,
         effective_angular_speed_radps: angular,
         reasons,

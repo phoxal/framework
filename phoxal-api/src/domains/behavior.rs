@@ -22,7 +22,7 @@
 
 use std::time::Duration;
 
-use crate::{v0_1, v0_2};
+use crate::domains::{v0_1, v0_2};
 
 impl v0_1::drive::Target {
     /// The target that commands no motion.
@@ -170,31 +170,3 @@ impl v0_1::component::encoder::Sample {
     /// genuinely silent publisher and not on ordinary jitter.
     pub const STALE_AFTER: Duration = Duration::from_millis(200);
 }
-
-impl v0_2::localize::LocalizationState {
-    #[must_use]
-    pub fn is_usable(&self) -> bool {
-        self.x_m.is_finite()
-            && self.y_m.is_finite()
-            && self.yaw_rad.is_finite()
-            && self.confidence.is_finite()
-            && self.confidence > 0.0
-    }
-}
-
-impl v0_2::navigation::RequestId {
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        let value = self.value.trim();
-        !value.is_empty()
-            && value.len() <= 128
-            && value
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-    }
-}
-
-impl v0_2::component::encoder::Sample {
-    pub const STALE_AFTER: Duration = Duration::from_millis(200);
-}
-
