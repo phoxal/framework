@@ -1,4 +1,4 @@
-error: legacy topic roles `measurement`, `diagnostic`, and `world_clock` are only available to `phoxal_api_tree!`; use `state`, `sample`, or `event` with an explicit delivery family
+error: legacy topic roles `measurement` and `diagnostic` are only available to `phoxal_api_tree!`; use `state`, `sample`, or `event` with an explicit delivery family
  --> tests/trybuild/fail/api_legacy_roles.rs:8:19
   |
 8 |             topic sample: measurement Body;

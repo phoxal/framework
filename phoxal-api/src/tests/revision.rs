@@ -117,6 +117,7 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .iter()
         .find(|version| version.name == "v0.1")
         .expect("v0.1 should be in the generated manifest");
+    assert_eq!(version.fingerprint, "fnv1a64-9aa079e215605819");
 
     let drive_state = version
         .contracts
@@ -141,6 +142,7 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .iter()
         .find(|version| version.name == "v0.2")
         .expect("v0.2 should be in the generated manifest");
+    assert_eq!(current.fingerprint, "fnv1a64-f2167f0775e137a3");
     let current_drive_state = current
         .contracts
         .iter()

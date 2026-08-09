@@ -1,0 +1,9 @@
+error: `phoxal_api!` accepts only `version` revisions; use `phoxal_protocol!` for protocol trees
+ --> tests/trybuild/fail/api_protocol_in_api.rs:3:1
+  |
+3 | / phoxal_api! {
+4 | |     protocol supervisor {}
+5 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `phoxal_api` (in Nightly builds, run with -Z macro-backtrace for more info)

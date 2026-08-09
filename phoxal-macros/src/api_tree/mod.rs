@@ -290,6 +290,12 @@ impl ApiTree {
                     format!("duplicate API revision `{}`", version.name),
                 ));
             }
+            if emit_catalogue && version.latest && !version.latest_prefix {
+                return Err(syn::Error::new_spanned(
+                    &version.name,
+                    "strict `phoxal_api!` requires the selection prefix `latest version vM.m ...`",
+                ));
+            }
             let nodes = match &version.parent {
                 Some(parent) => {
                     let base = materialized.get(&parent.to_string()).ok_or_else(|| {
@@ -829,6 +835,27 @@ mod tests {
         assert!(expanded.contains("pub enum RobotApi"));
         assert!(expanded.contains("pub const LATEST : Self = Self :: V0_2"));
         assert!(expanded.contains("pub use v0_2 as latest"));
+    }
+
+    #[test]
+    fn strict_revision_materialization_is_deterministic() {
+        let input = quote! {
+            version v0.1 {
+                data { topic base: State<crate::Base>; }
+            }
+            latest version v0.2 extends v0.1 {
+                data { topic added: Sample<crate::Added>; }
+            }
+        };
+        let first = compact_tokens(expand_api(input.clone()).expect("first expansion"));
+        let second = compact_tokens(expand_api(input).expect("second expansion"));
+        assert_eq!(
+            first, second,
+            "revision materialization must be byte-stable"
+        );
+        assert!(first.contains("v0.2/data/base"));
+        assert!(first.contains("v0.2/data/added"));
+        assert!(first.contains("pub use v0_2 as latest"));
     }
 
     #[test]

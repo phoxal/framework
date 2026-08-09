@@ -72,6 +72,7 @@ impl Parse for ApiTree {
             input.parse::<kw::latest>()?;
             let mut version: Version = input.parse()?;
             version.latest = true;
+            version.latest_prefix = true;
             versions.push(version);
         }
         while input.peek(kw::version) {
@@ -81,6 +82,7 @@ impl Parse for ApiTree {
             input.parse::<kw::latest>()?;
             let mut version: Version = input.parse()?;
             version.latest = true;
+            version.latest_prefix = true;
             versions.push(version);
             while input.peek(kw::version) {
                 versions.push(input.parse()?);
@@ -121,6 +123,9 @@ impl Parse for ApiTree {
             input.parse::<kw::latest>()?;
             let latest = input.parse()?;
             input.parse::<Token![;]>()?;
+            if let Some(version) = versions.iter_mut().find(|version| version.name == latest) {
+                version.latest = true;
+            }
             latest
         };
         if input.peek(kw::protocol) {
@@ -232,6 +237,7 @@ impl Parse for Version {
             name,
             wire_id,
             latest,
+            latest_prefix: false,
             parent,
             nodes,
             removals,
@@ -432,9 +438,9 @@ impl Parse for TopicDef {
                 let body = parse_body_path(input)?;
                 input.parse::<Token![>]>()?;
                 let (role, owner_publishes) = match descriptor.to_string().as_str() {
-                    "State" => (TopicRole::State, prefix == 0),
-                    "Sample" => (TopicRole::Measurement, prefix == 0),
-                    "Event" => (TopicRole::Event, prefix == 0),
+                    "State" if prefix == 0 => (TopicRole::State, true),
+                    "Sample" if prefix == 0 => (TopicRole::Measurement, true),
+                    "Event" if prefix == 0 => (TopicRole::Event, true),
                     "Stream" => (TopicRole::Stream, prefix == 0),
                     "Setpoint" if prefix == 1 => (TopicRole::Command, false),
                     _ => {

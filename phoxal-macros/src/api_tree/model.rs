@@ -34,8 +34,11 @@ pub(super) struct Version {
     /// Whether this declaration selects the train's facade.  Keeping the
     /// selection on the revision makes the source declaration self-contained;
     /// the old trailing `latest vN_M;` form is still accepted by the
-    /// compatibility parser, but new trees should use `version vN_M latest`.
+    /// compatibility parser, but strict trees use `latest version vM.m ...`.
     pub(super) latest: bool,
+    /// Whether strict mode selected this revision with the prefix spelling
+    /// `latest version vM.m ...`.
+    pub(super) latest_prefix: bool,
     pub(super) parent: Option<Ident>,
     pub(super) nodes: Vec<Node>,
     pub(super) removals: Vec<Removal>,

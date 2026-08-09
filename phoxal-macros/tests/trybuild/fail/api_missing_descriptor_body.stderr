@@ -1,0 +1,5 @@
+error: semantic endpoint descriptors must carry one payload type in angle brackets
+ --> tests/trybuild/fail/api_missing_descriptor_body.rs:8:26
+  |
+8 |             topic state: State Payload;
+  |                          ^^^^^

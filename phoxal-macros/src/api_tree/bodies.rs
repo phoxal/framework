@@ -168,10 +168,15 @@ impl Node {
                         );
                     }
                     if semantic {
-                        let temporal_marker = topic
-                            .role
-                            .marker_trait()
-                            .map(|marker| quote! { impl #marker for #endpoint {} });
+                        let temporal_marker = if topic.role == TopicRole::Event {
+                            quote! { impl ::phoxal_bus::EventContract for #endpoint {} }
+                        } else {
+                            topic
+                                .role
+                                .marker_trait()
+                                .map(|marker| quote! { impl #marker for #endpoint {} })
+                                .unwrap_or_default()
+                        };
                         let delivery_marker = topic.delivery.map_or_else(
                             || topic.role.delivery_marker_trait(),
                             |delivery| delivery.marker_trait(),

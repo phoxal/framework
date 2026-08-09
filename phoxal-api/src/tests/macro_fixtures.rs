@@ -132,6 +132,80 @@ mod semantic_surface {
     }
 }
 
+/// Every strict semantic endpoint form compiles through the public macro and
+/// resolves to a distinct descriptor kind while reusing ordinary Rust payloads.
+mod semantic_forms {
+    use phoxal_bus::{
+        EndpointDescriptor, EndpointKind, EventContract, QueryEndpointDescriptor,
+        SampleDeliveryContract, SetpointDeliveryContract, StateContract, StateDeliveryContract,
+        StreamContract, StreamDeliveryContract,
+    };
+
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    pub struct Payload {
+        pub value: u8,
+    }
+
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    pub struct Request {
+        pub value: u8,
+    }
+
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    pub struct Response {
+        pub value: u8,
+    }
+
+    crate::phoxal_api! {
+        latest version v0.3 {
+            forms {
+                topic state: State<crate::tests::macro_fixtures::semantic_forms::Payload>;
+                topic sample: Sample<crate::tests::macro_fixtures::semantic_forms::Payload>;
+                topic event: Event<crate::tests::macro_fixtures::semantic_forms::Payload>;
+                topic stream: Stream<crate::tests::macro_fixtures::semantic_forms::Payload>;
+                command setpoint: Setpoint<crate::tests::macro_fixtures::semantic_forms::Payload>;
+                command chunks: Stream<crate::tests::macro_fixtures::semantic_forms::Payload>;
+                query lookup: crate::tests::macro_fixtures::semantic_forms::Request => crate::tests::macro_fixtures::semantic_forms::Response;
+            }
+        }
+    }
+
+    #[test]
+    fn all_semantic_forms_have_expected_endpoint_kinds_and_markers() {
+        type State = v0_3::endpoint::forms::StateEndpoint;
+        type Sample = v0_3::endpoint::forms::SampleEndpoint;
+        type Event = v0_3::endpoint::forms::EventEndpoint;
+        type Stream = v0_3::endpoint::forms::StreamEndpoint;
+        type Setpoint = v0_3::endpoint::forms::SetpointEndpoint;
+        type Chunks = v0_3::endpoint::forms::ChunksEndpoint;
+        type Lookup = v0_3::endpoint::forms::LookupEndpoint;
+
+        fn state<E: StateContract + StateDeliveryContract>() {}
+        fn sample<E: SampleDeliveryContract>() {}
+        fn event<E: EventContract + StreamDeliveryContract>() {}
+        fn stream<E: StreamContract + StreamDeliveryContract>() {}
+        fn setpoint<E: SetpointDeliveryContract>() {}
+        fn query<E: QueryEndpointDescriptor>() {}
+        state::<State>();
+        sample::<Sample>();
+        event::<Event>();
+        stream::<Stream>();
+        setpoint::<Setpoint>();
+        stream::<Chunks>();
+        query::<Lookup>();
+        assert_eq!(<State as EndpointDescriptor>::KIND, EndpointKind::State);
+        assert_eq!(<Sample as EndpointDescriptor>::KIND, EndpointKind::Sample);
+        assert_eq!(<Event as EndpointDescriptor>::KIND, EndpointKind::Event);
+        assert_eq!(<Stream as EndpointDescriptor>::KIND, EndpointKind::Stream);
+        assert_eq!(
+            <Setpoint as EndpointDescriptor>::KIND,
+            EndpointKind::Setpoint
+        );
+        assert_eq!(<Chunks as EndpointDescriptor>::KIND, EndpointKind::Stream);
+        assert_eq!(<Lookup as EndpointDescriptor>::KIND, EndpointKind::Query);
+    }
+}
+
 /// A representative **protocol** tree: the mode `phoxal-supervisor-api` is
 /// authored in. It is deliberately a fixture rather than a real protocol - this
 /// crate owns the robot API, not any process-boundary protocol - and covers the
@@ -143,7 +217,7 @@ mod protocol_tree {
         ApiVersion, AskQuery, ContractBody, Publish, ServeQuery, Subscribe, Topic, TopicRole,
     };
 
-    crate::phoxal_api_tree! {
+    crate::phoxal_protocol! {
         protocol fixture {
             connect {
                 /// The version tag is the developer's, not the macro's: the
