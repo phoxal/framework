@@ -2,7 +2,7 @@
 //! sample queues, refusal-preserving stream queues, and their shared
 //! background subscription machinery.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -898,15 +898,104 @@ enum RingPolicy {
 struct RingState<B> {
     active_timeline: Option<TimelineId>,
     buf: VecDeque<Observed<B>>,
-    setpoints: HashMap<crate::ProducerId, Observed<B>>,
-    setpoint_order: VecDeque<crate::ProducerId>,
+    setpoints: SetpointBuffer<B>,
     pending: VecDeque<PendingTimeline<B>>,
+    pending_setpoints: VecDeque<PendingSetpointTimeline<B>>,
     retired_timelines: RetiredTimelines,
+}
+
+/// One bounded producer-scoped setpoint lane. The map coalesces each source's
+/// newest value while the order queue records when each source first became
+/// pending. A separate instance is kept for each quarantined timeline so the
+/// delivery family never bypasses temporal barriers.
+struct SetpointBuffer<B> {
+    values: HashMap<crate::ProducerId, Observed<B>>,
+    order: VecDeque<crate::ProducerId>,
+}
+
+impl<B> SetpointBuffer<B> {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            values: HashMap::with_capacity(cap),
+            order: VecDeque::with_capacity(cap),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    fn contains(&self, producer: crate::ProducerId) -> bool {
+        self.values.contains_key(&producer)
+    }
+
+    fn insert(&mut self, item: Observed<B>) -> bool {
+        let producer = item.metadata.source.producer();
+        if let Some(previous) = self.values.get_mut(&producer) {
+            *previous = item;
+            true
+        } else {
+            self.order.push_back(producer);
+            self.values.insert(producer, item);
+            false
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<(crate::ProducerId, Observed<B>)> {
+        while let Some(producer) = self.order.pop_front() {
+            if let Some(item) = self.values.remove(&producer) {
+                return Some((producer, item));
+            }
+        }
+        None
+    }
+
+    fn retain_timeline(&mut self, timeline: TimelineId) -> u64 {
+        let mut retained = VecDeque::with_capacity(self.order.len());
+        let mut filtered = 0_u64;
+        while let Some(producer) = self.order.pop_front() {
+            let keep = self
+                .values
+                .get(&producer)
+                .is_some_and(|item| item.timeline().is_none_or(|line| line == timeline));
+            if keep {
+                retained.push_back(producer);
+            } else if self.values.remove(&producer).is_some() {
+                filtered = filtered.saturating_add(1);
+            }
+        }
+        self.order = retained;
+        filtered
+    }
 }
 
 struct PendingTimeline<B> {
     timeline: TimelineId,
     buf: VecDeque<Observed<B>>,
+}
+
+struct PendingSetpointTimeline<B> {
+    timeline: TimelineId,
+    buffer: SetpointBuffer<B>,
+}
+
+impl<B> RingState<B> {
+    fn setpoint_source_present(&self, producer: crate::ProducerId) -> bool {
+        self.setpoints.contains(producer)
+            || self
+                .pending_setpoints
+                .iter()
+                .any(|pending| pending.buffer.contains(producer))
+    }
+
+    fn setpoint_source_count(&self) -> usize {
+        let mut producers = HashSet::new();
+        producers.extend(self.setpoints.values.keys().copied());
+        for pending in &self.pending_setpoints {
+            producers.extend(pending.buffer.values.keys().copied());
+        }
+        producers.len()
+    }
 }
 
 struct RingPush {
@@ -929,9 +1018,9 @@ impl<B> Ring<B> {
             state: Mutex::new(RingState {
                 active_timeline: None,
                 buf: VecDeque::with_capacity(cap),
-                setpoints: HashMap::with_capacity(cap),
-                setpoint_order: VecDeque::with_capacity(cap),
+                setpoints: SetpointBuffer::with_capacity(cap),
                 pending: VecDeque::with_capacity(PENDING_TIMELINE_CAPACITY),
+                pending_setpoints: VecDeque::with_capacity(PENDING_TIMELINE_CAPACITY),
                 retired_timelines: RetiredTimelines::default(),
             }),
             notify: Notify::new(),
@@ -1076,36 +1165,105 @@ impl<B> Ring<B> {
                 new_pending_timeline: None,
             };
         }
-        if let Some(previous) = state.setpoints.get_mut(&producer) {
-            *previous = item;
-            self.metric.record_latest_overwrite();
-        } else {
-            if state.setpoints.len() >= self.cap {
-                self.metric.record_drop();
-                self.terminal.set(ReceiveTerminal::TooManySetpointSources {
-                    topic: self.topic.clone(),
-                    limit: self.cap,
-                });
+
+        let timeline = item.timeline();
+        let foreign_timeline = timeline
+            .zip(state.active_timeline)
+            .and_then(|(timeline, active)| (timeline != active).then_some(timeline));
+        let (overwrote, depth, new_pending_timeline) = if let Some(timeline) = foreign_timeline {
+            if state.retired_timelines.contains(timeline) {
+                self.metric.record_timeline_filtered(1);
                 return RingPush {
                     accepted: false,
                     evicted: false,
-                    saturated: true,
+                    saturated: false,
                     new_pending_timeline: None,
                 };
             }
-            state.setpoint_order.push_back(producer);
-            state.setpoints.insert(producer, item);
+
+            let source_exists = state.setpoint_source_present(producer);
+            let (pending_index, new_pending_timeline) = match state
+                .pending_setpoints
+                .iter()
+                .position(|pending| pending.timeline == timeline)
+            {
+                Some(index) => (index, None),
+                None => {
+                    if !source_exists && state.setpoint_source_count() >= self.cap {
+                        return self.setpoint_source_overflow();
+                    }
+                    if state.pending_setpoints.len() == PENDING_TIMELINE_CAPACITY
+                        && let Some(removed) = state.pending_setpoints.pop_front()
+                    {
+                        self.metric.record_timeline_filtered(
+                            u64::try_from(removed.buffer.len()).unwrap_or(u64::MAX),
+                        );
+                    }
+                    state.pending_setpoints.push_back(PendingSetpointTimeline {
+                        timeline,
+                        buffer: SetpointBuffer::with_capacity(self.cap),
+                    });
+                    (state.pending_setpoints.len() - 1, Some(timeline))
+                }
+            };
+            let replacing = state.pending_setpoints[pending_index]
+                .buffer
+                .contains(producer);
+            if !replacing {
+                let at_capacity = state.pending_setpoints[pending_index].buffer.len() >= self.cap;
+                if at_capacity || (!source_exists && state.setpoint_source_count() >= self.cap) {
+                    return self.setpoint_source_overflow();
+                }
+            }
+            let pending = &mut state.pending_setpoints[pending_index];
+            let overwrote = pending.buffer.insert(item);
+            (overwrote, None, new_pending_timeline)
+        } else {
+            let source_exists = state.setpoint_source_present(producer);
+            if !state.setpoints.contains(producer)
+                && (state.setpoints.len() >= self.cap
+                    || (!source_exists && state.setpoint_source_count() >= self.cap))
+            {
+                return self.setpoint_source_overflow();
+            }
+            let overwrote = state.setpoints.insert(item);
+            (overwrote, Some(state.setpoints.len()), None)
+        };
+
+        if overwrote {
+            self.metric.record_latest_overwrite();
         }
-        let depth = state.setpoints.len();
-        self.metric.record_subscriber(false, depth);
+        if let Some(depth) = depth {
+            self.metric.record_subscriber(false, depth);
+        } else {
+            self.metric.record_pending();
+        }
         drop(state);
         self.notify.notify_one();
         RingPush {
             accepted: true,
             evicted: false,
             saturated: false,
+            new_pending_timeline,
+        }
+    }
+
+    fn setpoint_source_overflow(&self) -> RingPush {
+        self.record_setpoint_source_overflow();
+        RingPush {
+            accepted: false,
+            evicted: false,
+            saturated: true,
             new_pending_timeline: None,
         }
+    }
+
+    fn record_setpoint_source_overflow(&self) {
+        self.metric.record_drop();
+        self.terminal.set(ReceiveTerminal::TooManySetpointSources {
+            topic: self.topic.clone(),
+            limit: self.cap,
+        });
     }
 
     fn try_pop(&self) -> Option<(Observed<B>, usize)> {
@@ -1114,21 +1272,19 @@ impl<B> Ring<B> {
             if self.terminal.get().is_some() {
                 return None;
             }
-            while let Some(producer) = state.setpoint_order.pop_front() {
-                if let Some(item) = state.setpoints.remove(&producer) {
-                    // Re-check while the ring mutex is still held. If a
-                    // worker publishes terminal evidence after the initial
-                    // check but before this pop's linearization point, put
-                    // the item back at the front and refuse delivery.
-                    if self.terminal.get().is_some() {
-                        state.setpoint_order.push_front(producer);
-                        state.setpoints.insert(producer, item);
-                        return None;
-                    }
-                    let depth = state.setpoints.len();
-                    self.metric.record_subscriber_pop(depth);
-                    return Some((item, depth));
+            if let Some((producer, item)) = state.setpoints.pop_front() {
+                // Re-check while the ring mutex is still held. If a
+                // worker publishes terminal evidence after the initial
+                // check but before this pop's linearization point, put
+                // the item back at the front and refuse delivery.
+                if self.terminal.get().is_some() {
+                    state.setpoints.order.push_front(producer);
+                    state.setpoints.values.insert(producer, item);
+                    return None;
                 }
+                let depth = state.setpoints.len();
+                self.metric.record_subscriber_pop(depth);
+                return Some((item, depth));
             }
             return None;
         }
@@ -1140,8 +1296,7 @@ impl<B> Ring<B> {
 
     fn retain_timeline(&self, timeline: TimelineId) {
         if matches!(self.policy, RingPolicy::Setpoint) {
-            // Setpoint contracts carry actionable, clockless intent. They must
-            // survive a world-timeline replacement just as command inputs do.
+            self.retain_setpoint_timeline(timeline);
             return;
         }
         let mut state = lock(&self.state);
@@ -1190,6 +1345,68 @@ impl<B> Ring<B> {
         self.metric.record_timeline_filtered(filtered);
         self.metric.record_subscriber_pop(state.buf.len());
         let notify = !state.buf.is_empty();
+        drop(state);
+        if notify {
+            self.notify.notify_waiters();
+        }
+    }
+
+    fn retain_setpoint_timeline(&self, timeline: TimelineId) {
+        let mut state = lock(&self.state);
+        if state.active_timeline == Some(timeline) {
+            return;
+        }
+        if let Some(previous) = state.active_timeline.replace(timeline) {
+            state.retired_timelines.retire(previous);
+        }
+        state.retired_timelines.activate(timeline);
+
+        let mut filtered = state.setpoints.retain_timeline(timeline);
+        if let Some(index) = state
+            .pending_setpoints
+            .iter()
+            .position(|pending| pending.timeline == timeline)
+        {
+            let mut promoted = match state.pending_setpoints.remove(index) {
+                Some(pending) => pending.buffer,
+                None => SetpointBuffer::with_capacity(self.cap),
+            };
+            while let Some((_producer, item)) = promoted.pop_front() {
+                let producer = item.metadata.source.producer();
+                if let Some(previous) = state.setpoints.values.get_mut(&producer) {
+                    // Producer sequence is transport-wide and monotonic, so it
+                    // gives deterministic newest-value selection when a
+                    // clockless value and a quarantined timed value meet at
+                    // promotion. The source's first-pending order remains the
+                    // active order in either case.
+                    if item.metadata.sequence >= previous.metadata.sequence {
+                        *previous = item;
+                        self.metric.record_latest_overwrite();
+                    }
+                } else {
+                    if state.setpoints.len() >= self.cap {
+                        // Admission enforces this invariant for every
+                        // producer/timeline lane. Keep the release build
+                        // fail-closed if a future change ever violates it
+                        // during promotion rather than growing the slot.
+                        self.record_setpoint_source_overflow();
+                        break;
+                    }
+                    state.setpoints.insert(item);
+                }
+            }
+        }
+        filtered = filtered.saturating_add(
+            state
+                .pending_setpoints
+                .iter()
+                .map(|pending| u64::try_from(pending.buffer.len()).unwrap_or(u64::MAX))
+                .sum(),
+        );
+        state.pending_setpoints.clear();
+        self.metric.record_timeline_filtered(filtered);
+        self.metric.record_subscriber_pop(state.setpoints.len());
+        let notify = !state.setpoints.values.is_empty();
         drop(state);
         if notify {
             self.notify.notify_waiters();
@@ -1442,7 +1659,16 @@ mod tests {
     }
 
     fn setpoint_observed(body: u8, participant: &str, source: ProducerId) -> Observed<u8> {
-        let mut observed = observed(body, None);
+        setpoint_observed_at(body, participant, source, None)
+    }
+
+    fn setpoint_observed_at(
+        body: u8,
+        participant: &str,
+        source: ProducerId,
+        line: Option<u64>,
+    ) -> Observed<u8> {
+        let mut observed = observed(body, line);
         observed.metadata.source = SourceAttribution::Participant(ParticipantSourceIdentity::new(
             ParticipantId::new(participant).expect("valid test participant"),
             source,
@@ -1617,8 +1843,8 @@ mod tests {
         assert!(ring.try_pop().is_none());
         let state = lock(&ring.state);
         assert_eq!(state.setpoints.len(), MAX_SETPOINT_SOURCES);
-        assert_eq!(state.setpoint_order.len(), MAX_SETPOINT_SOURCES);
-        assert_eq!(state.setpoint_order.front().copied(), Some(producer(1)));
+        assert_eq!(state.setpoints.order.len(), MAX_SETPOINT_SOURCES);
+        assert_eq!(state.setpoints.order.front().copied(), Some(producer(1)));
         drop(state);
 
         let row = metrics.take().pop().expect("setpoint metric row");
@@ -1626,6 +1852,184 @@ mod tests {
         assert_eq!(row.drops, 1);
         assert_eq!(row.latest_overwrites, 0);
         assert_eq!(row.current_depth, MAX_SETPOINT_SOURCES as u64);
+    }
+
+    #[test]
+    fn setpoint_quarantines_and_promotes_replacement_timeline_per_producer() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        let first = ring.push(setpoint_observed_at(1, "motion", producer(1), Some(2)));
+        assert!(first.accepted);
+        assert_eq!(first.new_pending_timeline, Some(timeline(2)));
+        assert!(
+            ring.push(setpoint_observed_at(2, "motion", producer(2), Some(2)))
+                .accepted
+        );
+        assert!(
+            ring.push(setpoint_observed_at(3, "motion", producer(1), Some(2)))
+                .accepted
+        );
+        // Only the first arrival for a foreign timeline creates a quarantine;
+        // subsequent values join its producer-scoped lane.
+        assert_eq!(
+            ring.push(setpoint_observed_at(4, "motion", producer(2), Some(2)))
+                .new_pending_timeline,
+            None
+        );
+        assert!(ring.try_pop().is_none());
+
+        {
+            let state = lock(&ring.state);
+            assert_eq!(state.pending_setpoints.len(), 1);
+            assert_eq!(state.pending_setpoints[0].buffer.len(), 2);
+            assert_eq!(
+                state.pending_setpoints[0].buffer.order.front().copied(),
+                Some(producer(1))
+            );
+        }
+
+        ring.retain_timeline(timeline(2));
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(3));
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(4));
+        assert!(ring.try_pop().is_none());
+
+        // Timeline 1 is retired after promotion; delayed traffic from that
+        // world is filtered rather than entering a new producer slot.
+        assert!(
+            !ring
+                .push(setpoint_observed_at(4, "motion", producer(1), Some(1)))
+                .accepted
+        );
+        assert!(ring.terminal.get().is_none());
+
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(row.count, 4);
+        assert_eq!(row.latest_overwrites, 2);
+        assert_eq!(row.timeline_filtered, 1);
+        assert_eq!(row.drops, 0);
+        assert_eq!(row.bounded_evictions, 0);
+    }
+
+    #[test]
+    fn active_timed_setpoint_is_filtered_on_timeline_replacement() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        assert!(
+            ring.push(setpoint_observed_at(7, "motion", producer(1), Some(1)))
+                .accepted
+        );
+        ring.retain_timeline(timeline(2));
+
+        assert!(ring.try_pop().is_none());
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(row.timeline_filtered, 1);
+        assert_eq!(row.current_depth, 0);
+        assert_eq!(row.drops, 0);
+    }
+
+    #[test]
+    fn clockless_setpoint_survives_timeline_replacement() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        assert!(
+            ring.push(setpoint_observed(9, "motion", producer(1)))
+                .accepted
+        );
+        ring.retain_timeline(timeline(2));
+
+        assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(9));
+        assert!(ring.try_pop().is_none());
+    }
+
+    #[test]
+    fn setpoint_timeline_quarantine_is_bounded_and_discloses_filtered_values() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        for line in 2..=(PENDING_TIMELINE_CAPACITY as u64 + 2) {
+            assert!(
+                ring.push(setpoint_observed_at(
+                    u8::try_from(line).expect("test timeline fits in u8"),
+                    "motion",
+                    producer(u128::from(line)),
+                    Some(line),
+                ))
+                .accepted
+            );
+        }
+        {
+            let state = lock(&ring.state);
+            assert_eq!(state.pending_setpoints.len(), PENDING_TIMELINE_CAPACITY);
+            assert!(
+                state
+                    .pending_setpoints
+                    .iter()
+                    .all(|pending| pending.buffer.len() == 1)
+            );
+        }
+
+        // The oldest candidate timeline was dropped to keep quarantine bounded.
+        ring.retain_timeline(timeline(2));
+        assert!(ring.try_pop().is_none());
+        assert!(
+            !ring
+                .push(setpoint_observed_at(99, "motion", producer(99), Some(1)))
+                .accepted
+        );
+
+        let row = metrics.take().pop().expect("setpoint metric row");
+        assert_eq!(
+            row.timeline_filtered,
+            (PENDING_TIMELINE_CAPACITY + 2) as u64
+        );
+        assert_eq!(row.drops, 0);
+    }
+
+    #[test]
+    fn setpoint_source_bound_applies_inside_a_timeline_quarantine() {
+        let metrics = RuntimeMetrics::default();
+        let ring = setpoint_ring(&metrics);
+        ring.retain_timeline(timeline(1));
+
+        for source in 0..MAX_SETPOINT_SOURCES {
+            assert!(
+                ring.push(setpoint_observed_at(
+                    u8::try_from(source).expect("source index fits in u8"),
+                    "motion",
+                    producer(u128::try_from(source + 1).expect("source index")),
+                    Some(2),
+                ))
+                .accepted
+            );
+        }
+        let extra = ring.push(setpoint_observed_at(
+            99,
+            "motion",
+            producer(u128::try_from(MAX_SETPOINT_SOURCES + 1).expect("source index")),
+            Some(2),
+        ));
+        assert!(!extra.accepted);
+        assert!(extra.saturated);
+        assert!(matches!(
+            ring.terminal.get(),
+            Some(ReceiveTerminal::TooManySetpointSources {
+                limit: MAX_SETPOINT_SOURCES,
+                ..
+            })
+        ));
+        let state = lock(&ring.state);
+        assert_eq!(state.pending_setpoints.len(), 1);
+        assert_eq!(
+            state.pending_setpoints[0].buffer.len(),
+            MAX_SETPOINT_SOURCES
+        );
     }
 
     #[test]

@@ -274,12 +274,12 @@ impl Participant for Motion {
             bail!("the host boot clock could not be read");
         };
 
-        // Release a silent external owner before admitting this step's
-        // queue. Otherwise a replacement operator would need to transmit a
-        // second command after the receiver happened to call `live`.
-        state.manual.expire_before_offer(host_now, now);
-
         while let Some(observed) = api.manual.try_recv() {
+            // The receiver may hold one pending intent per producer. Expire
+            // the current owner before every offer so a stale first item
+            // cannot reacquire the lease and block a fresh later producer in
+            // the same step.
+            state.manual.expire_before_offer(host_now, now);
             let observed_at = observed.observed_at;
             match state.manual.offer(
                 &observed.metadata.source,
@@ -394,7 +394,7 @@ impl Participant for Motion {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::{ProducerId, SourceAttribution, TimelineId};
+    use phoxal::bus::{LeaseRejection, ProducerId, SourceAttribution, TimelineId};
 
     use super::*;
 
@@ -458,6 +458,75 @@ mod tests {
         assert!(held.live(host_start, at(0)).is_some());
         let past_hold = u64::try_from(MANUAL_HOLD.as_nanos()).unwrap() + 1;
         assert!(held.live(host_start, at(past_hold)).is_none());
+    }
+
+    #[test]
+    fn stale_manual_a_is_expired_before_fresh_b_first_offer() {
+        let first = producer(3);
+        let second = producer(4);
+        let host_start = LocalInstant::from_boot_ns(0);
+        let fresh_at = host_start.saturating_add(MANUAL_SILENCE + Duration::from_millis(1));
+        let mut lease = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
+
+        // The first pending value is stale by the time this step drains it.
+        // Both checks use the step's current host time, as Motion does.
+        lease.expire_before_offer(fresh_at, at(0));
+        assert_eq!(
+            lease.offer(&external(first), 1, host_start, 1_u8),
+            LeaseDecision::Acquired
+        );
+
+        // This is the same order as Motion's pending-receiver drain: the
+        // owner expiry check is immediately before each offer. Without the
+        // second check, stale A would still own the lease and fresh B's first
+        // command would be rejected.
+        lease.expire_before_offer(fresh_at, at(0));
+        assert_eq!(
+            lease.offer(&external(second), 1, fresh_at, 3_u8),
+            LeaseDecision::Acquired
+        );
+        assert_eq!(lease.producer(), Some(second));
+    }
+
+    #[test]
+    fn continuous_manual_a_beats_faster_b_past_manual_silence() {
+        let first = producer(5);
+        let second = producer(6);
+        let host_start = LocalInstant::from_boot_ns(0);
+        let mut lease = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
+        let mut first_sequence = 0;
+        let mut second_sequence = 0;
+
+        // B floods every 10 ms while A renews every 50 ms. The exchange lasts
+        // well beyond MANUAL_SILENCE, but A's continuous publishing keeps its
+        // receiver-owned authority and every faster B offer is rejected.
+        for tick_ms in 0..=500 {
+            let now = host_start.saturating_add(Duration::from_millis(tick_ms));
+            if tick_ms % 50 == 0 {
+                first_sequence += 1;
+                lease.expire_before_offer(now, at(0));
+                assert!(matches!(
+                    lease.offer(&external(first), first_sequence, now, 1_u8),
+                    LeaseDecision::Acquired | LeaseDecision::Renewed
+                ));
+            }
+            if tick_ms % 10 == 0 {
+                second_sequence += 1;
+                lease.expire_before_offer(now, at(0));
+                assert!(matches!(
+                    lease.offer(&external(second), second_sequence, now, 2_u8),
+                    LeaseDecision::Rejected(LeaseRejection::AuthorityHeld { owner })
+                        if owner == first
+                ));
+            }
+        }
+
+        assert!(Duration::from_millis(500) > MANUAL_SILENCE);
+        assert_eq!(lease.producer(), Some(first));
+        assert_eq!(
+            lease.live(host_start.saturating_add(Duration::from_millis(500)), at(0)),
+            Some(&1)
+        );
     }
 
     /// A lease that expired while the simulation was paused must not apply on
