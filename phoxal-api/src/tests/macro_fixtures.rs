@@ -80,8 +80,15 @@ mod semantic_surface {
 
     #[allow(dead_code)]
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct Supporting {
+        pub code: u8,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct SharedPayload {
         pub value: u8,
+        pub support: Supporting,
     }
 
     #[allow(dead_code)]
@@ -116,6 +123,10 @@ mod semantic_surface {
         type Mirror = v0_2::endpoint::data::MirrorEndpoint;
         type Sample = v0_2::endpoint::data::SampleEndpoint;
         type Lookup = v0_2::endpoint::data::LookupEndpoint;
+        // Semantic node modules re-export the authored domain module, not just
+        // endpoint payload leaves. Supporting siblings remain available from
+        // the generated version facade.
+        let _: Option<v0_2::data::Supporting> = None;
         fn state<E: StateContract + StateDeliveryContract>() {}
         fn sample<E: SampleDeliveryContract>() {}
         state::<Mirror>();

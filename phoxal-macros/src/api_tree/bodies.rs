@@ -6,7 +6,7 @@
 //! spliced into the same tree module here.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::ItemStruct;
 
 use super::model::{MaterializedTree, Node, TopicKind, TopicRole, TypeItem};
@@ -125,6 +125,7 @@ impl Node {
         let mut impls = TokenStream::new();
         let mut external_aliases = TokenStream::new();
         let mut aliased = std::collections::BTreeSet::new();
+        let mut external_parents = std::collections::BTreeMap::<String, syn::Path>::new();
         for topic in &self.topics {
             // The tree-qualified wire key: folding the tree's identity in here
             // is what makes two trees' contracts physically distinct Zenoh keys.
@@ -156,6 +157,9 @@ impl Node {
             match &topic.kind {
                 TopicKind::PubSub(body) => {
                     let body_path = &body.path;
+                    if semantic {
+                        collect_external_parent(&mut external_parents, body_path);
+                    }
                     if (semantic || body.path.segments.len() > 1)
                         && aliased.insert(body.leaf_name())
                     {
@@ -234,6 +238,10 @@ impl Node {
                 TopicKind::Query { request, response } => {
                     let request_path = &request.path;
                     let response_path = &response.path;
+                    if semantic {
+                        collect_external_parent(&mut external_parents, request_path);
+                        collect_external_parent(&mut external_parents, response_path);
+                    }
                     for body in [request, response] {
                         if (semantic || body.path.segments.len() > 1)
                             && aliased.insert(body.leaf_name())
@@ -324,6 +332,11 @@ impl Node {
             ));
         }
 
+        let external_parent_imports = external_parents
+            .into_values()
+            .map(|parent| quote! { #[allow(unused_imports)] pub use #parent::*; })
+            .collect::<TokenStream>();
+
         quote! {
             pub mod #name {
                 //! Version-local bodies for the `#name_str` node.
@@ -338,6 +351,7 @@ impl Node {
                 pub use super::__PhoxalApiMarker;
 
                 #types
+                #external_parent_imports
                 #external_aliases
                 #impls
                 #child_mods
@@ -380,6 +394,24 @@ impl Node {
             }
         }
     }
+}
+
+/// Keep the normal domain module visible from the generated version-local node
+/// facade. Endpoint payload leaves are also aliased individually below, but a
+/// payload's sibling support types (identifiers, enums, error types, etc.) are
+/// part of that same authored domain module and must remain available too.
+fn collect_external_parent(
+    parents: &mut std::collections::BTreeMap<String, syn::Path>,
+    path: &syn::Path,
+) {
+    if path.segments.len() < 2 {
+        return;
+    }
+    let mut parent = path.clone();
+    parent.segments.pop();
+    parent.segments.pop_punct();
+    let key = parent.to_token_stream().to_string();
+    parents.entry(key).or_insert(parent);
 }
 
 /// Make inherited fields public so participant code in other crates can construct
