@@ -283,6 +283,21 @@ impl BusHandle {
         .await
     }
 
+    /// Observe one participant's Ready keys directly on the transport
+    /// callback. This is for ingress fences that must linearize Ready loss
+    /// with a sample before the participant's next step.
+    pub async fn observe_participant_ready_for(
+        &self,
+        participant: &ParticipantId,
+        callback: impl Fn(ParticipantReadyEvent) + Send + Sync + 'static,
+    ) -> Result<ParticipantReadyObserver> {
+        self.observe_participant_ready_selector(
+            ParticipantReadyKey::participant_selector(self.root(), participant)?,
+            callback,
+        )
+        .await
+    }
+
     async fn participant_ready_events_with_selector(
         &self,
         selector: OwnedKeyExpr,

@@ -87,6 +87,20 @@ impl<R: Participant> SetupContext<R> {
         Ok(self.bus.participant_ready_events_for(participant).await?)
     }
 
+    /// Observe one participant's Ready keys directly on the transport
+    /// callback. Use this only for ingress admission that must see Ready loss
+    /// before the next sample can enter a retained state view.
+    pub async fn observe_participant_ready_for(
+        &self,
+        participant: &phoxal_bus::ParticipantId,
+        callback: impl Fn(phoxal_bus::ParticipantReadyEvent) + Send + Sync + 'static,
+    ) -> crate::Result<phoxal_bus::ParticipantReadyObserver> {
+        Ok(self
+            .bus
+            .observe_participant_ready_for(participant, callback)
+            .await?)
+    }
+
     pub(crate) fn new(bus: BusHandle, runtime: Option<ParticipantRuntimeInputs>) -> Self {
         SetupContext {
             bus,

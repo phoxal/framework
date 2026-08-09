@@ -843,18 +843,39 @@ mod tests {
     }
 
     #[test]
-    fn fixed_source_admission_ready_loss_keeps_existing_value_outside_gate() {
+    fn fixed_source_admission_rejects_after_ready_loss_before_step_and_keeps_a() {
         let expected = participant("safety");
         let identity = source_identity(&expected, producer(16));
         let mut admission = FixedSourceAdmission::new(expected);
         admission.update_ready(&identity, ParticipantReadyStatus::Ready);
         assert_eq!(admission.offer(Some(&identity), 1), LeaseDecision::Acquired);
+        let keep_last = Some("product A");
         admission.update_ready(&identity, ParticipantReadyStatus::Lost);
         assert_eq!(admission.ready_count(), 0);
         assert_eq!(
             admission.offer(Some(&identity), 2),
             LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
         );
+        assert_eq!(keep_last, Some("product A"));
+    }
+
+    #[test]
+    fn fixed_source_admission_rejects_a_navigation_rogue_flood_before_keep_last() {
+        let expected = participant("navigation");
+        let source = source_identity(&expected, producer(18));
+        let rogue = source_identity(&participant("operator"), producer(19));
+        let mut admission = FixedSourceAdmission::new(expected);
+        admission.update_ready(&source, ParticipantReadyStatus::Ready);
+
+        let keep_last = Some("candidate A");
+        assert_eq!(admission.offer(Some(&source), 1), LeaseDecision::Acquired);
+        for sequence in 2..=100 {
+            assert_eq!(
+                admission.offer(Some(&rogue), sequence),
+                LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
+            );
+        }
+        assert_eq!(keep_last, Some("candidate A"));
     }
 
     #[test]

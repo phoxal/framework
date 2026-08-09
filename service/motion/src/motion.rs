@@ -107,8 +107,8 @@ impl EmergencyStopLatch {
 pub(crate) struct Api {
     manual: SetpointReceiver<api::motion::ManualCommand>,
     autonomous: StateView<api::navigation::Candidate>,
-    navigation_ready: phoxal::bus::ParticipantReadyEvents,
-    safety_ready: phoxal::bus::ParticipantReadyEvents,
+    _navigation_ready: phoxal::bus::ParticipantReadyObserver,
+    _safety_ready: phoxal::bus::ParticipantReadyObserver,
     component_estops: Vec<BoundEmergencyStop>,
     safety_constraints: StateView<api::safety::MotionConstraints>,
     drive: CommandPublisher<api::drive::Target>,
@@ -120,10 +120,9 @@ pub(crate) struct MotionState {
     manual: ExclusiveProducerLease<api::motion::ManualCommand>,
     manual_observed_at: Option<LocalInstant>,
     last_autonomous: Option<Timed<api::navigation::Candidate>>,
-    autonomous_authority: FixedSourceLease<api::navigation::Candidate>,
+    autonomous_authority: Arc<Mutex<FixedSourceLease<api::navigation::Candidate>>>,
     estop: EmergencyStopLatch,
     last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
-    safety_authority: Arc<Mutex<FixedSourceAdmission>>,
 }
 
 #[phoxal::service(state = MotionState, api = Api)]
@@ -138,10 +137,23 @@ impl Participant for Motion {
         let robot = ctx.robot()?;
         let navigation = phoxal::bus::ParticipantId::new("navigation")
             .map_err(|error| anyhow::anyhow!("invalid fixed navigation participant id: {error}"))?;
-        let navigation_ready = ctx.participant_ready_events_for(&navigation).await?;
+        let navigation_authority = Arc::new(Mutex::new(FixedSourceLease::new(
+            "navigation/candidate",
+            navigation.clone(),
+            AUTONOMOUS_SILENCE,
+            AUTONOMOUS_HOLD,
+        )));
+        let ready_authority = Arc::clone(&navigation_authority);
+        let navigation_ready = ctx
+            .observe_participant_ready_for(&navigation, move |event| {
+                if let Ok(mut authority) = ready_authority.lock() {
+                    authority.update_ready_event(&event);
+                }
+            })
+            .await?;
+        let navigation_admission = Arc::clone(&navigation_authority);
         let safety = phoxal::bus::ParticipantId::new("safety")
             .map_err(|error| anyhow::anyhow!("invalid fixed safety participant id: {error}"))?;
-        let safety_ready = ctx.participant_ready_events_for(&safety).await?;
         let limits = robot.motion().limits().validate()?;
         let estops =
             robot.capability_refs(|capability| matches!(capability, Capability::EmergencyStop(_)));
@@ -161,7 +173,15 @@ impl Participant for Motion {
             });
         }
 
-        let safety_authority = Arc::new(Mutex::new(FixedSourceAdmission::new(safety)));
+        let safety_authority = Arc::new(Mutex::new(FixedSourceAdmission::new(safety.clone())));
+        let ready_authority = Arc::clone(&safety_authority);
+        let safety_ready = ctx
+            .observe_participant_ready_for(&safety, move |event| {
+                if let Ok(mut authority) = ready_authority.lock() {
+                    authority.update_ready_event(&event);
+                }
+            })
+            .await?;
         let admission_authority = Arc::clone(&safety_authority);
 
         Ok((
@@ -170,25 +190,35 @@ impl Participant for Motion {
                 manual: ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
                 manual_observed_at: None,
                 last_autonomous: None,
-                autonomous_authority: FixedSourceLease::new(
-                    "navigation/candidate",
-                    navigation,
-                    AUTONOMOUS_SILENCE,
-                    AUTONOMOUS_HOLD,
-                ),
+                autonomous_authority: navigation_authority,
                 estop: EmergencyStopLatch::new(estops),
                 last_safety_constraints: None,
-                safety_authority,
             },
             Api {
                 manual: ctx
                     .setpoint_receiver(api::topic::owner().motion().manual())
                     .await?,
                 autonomous: ctx
-                    .state_view(api::topic::client().navigation().candidate())
+                    .state_view_with_admission(
+                        api::topic::client().navigation().candidate(),
+                        move |observed| {
+                            let Ok(mut authority) = navigation_admission.lock() else {
+                                return false;
+                            };
+                            matches!(
+                                authority.offer(
+                                    observed.metadata.source.participant_source(),
+                                    observed.metadata.sequence,
+                                    observed.observed_at,
+                                    observed.body.clone(),
+                                ),
+                                LeaseDecision::Acquired | LeaseDecision::Renewed
+                            )
+                        },
+                    )
                     .await?,
-                navigation_ready,
-                safety_ready,
+                _navigation_ready: navigation_ready,
+                _safety_ready: safety_ready,
                 component_estops,
                 safety_constraints: ctx
                     .state_view_with_admission(
@@ -215,7 +245,10 @@ impl Participant for Motion {
 
     fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.last_autonomous = None;
-        state.autonomous_authority.clear();
+        let Ok(mut authority) = state.autonomous_authority.lock() else {
+            return Err(anyhow::anyhow!("navigation authority lock was poisoned"));
+        };
+        authority.clear();
         state.last_safety_constraints = None;
         state.estop.reset_timeline();
         // The manual command is a clockless operator input sampled at a logical
@@ -246,26 +279,6 @@ impl Participant for Motion {
         // second command after the receiver happened to call `live`.
         state.manual.expire_before_offer(host_now, now);
 
-        while let Some(event) = api.navigation_ready.try_recv() {
-            state.autonomous_authority.update_ready_event(&event);
-        }
-        if api.navigation_ready.overflowed() {
-            state.autonomous_authority.mark_ready_overflow();
-        }
-
-        while let Some(event) = api.safety_ready.try_recv() {
-            let Ok(mut authority) = state.safety_authority.lock() else {
-                bail!("safety authority lock was poisoned");
-            };
-            authority.update_ready_event(&event);
-        }
-        if api.safety_ready.overflowed() {
-            let Ok(mut authority) = state.safety_authority.lock() else {
-                bail!("safety authority lock was poisoned");
-            };
-            authority.mark_ready_overflow();
-        }
-
         while let Some(observed) = api.manual.try_recv() {
             let observed_at = observed.observed_at;
             match state.manual.offer(
@@ -287,18 +300,15 @@ impl Participant for Motion {
         if let Some(observed) = api.autonomous.observed()
             && let Some(at) = observed.metadata.produced_exactly_at()
         {
-            let body = observed.body.clone();
-            let decision = state.autonomous_authority.offer(
-                observed.metadata.source.participant_source(),
-                observed.metadata.sequence,
-                observed.observed_at,
-                body.clone(),
-            );
-            if !matches!(decision, LeaseDecision::Rejected(_)) {
-                state.last_autonomous = Some(Timed::new(body, at));
-            }
+            state.last_autonomous = Some(Timed::new(observed.body.clone(), at));
         }
-        if state.autonomous_authority.live(host_now, now).is_none() {
+        let navigation_live = {
+            let Ok(mut authority) = state.autonomous_authority.lock() else {
+                bail!("navigation authority lock was poisoned");
+            };
+            authority.live(host_now, now).is_some()
+        };
+        if !navigation_live {
             state.last_autonomous = None;
         }
         for bound in &api.component_estops {
