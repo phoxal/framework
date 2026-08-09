@@ -25,6 +25,7 @@ impl NativeMicrophone {
 
 impl SimulatedSensor for NativeMicrophone {
     type Sample = api::component::microphone::Frame;
+    type Endpoint = api::endpoint::component::microphone::FrameEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.schedule

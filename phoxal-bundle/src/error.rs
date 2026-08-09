@@ -8,12 +8,21 @@ use phoxal_model::{AssetId, Clock};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
 use phoxal_runtime_contract::metadata::ParticipantKind;
 use phoxal_runtime_contract::metadata::ParticipantRequirement;
+use phoxal_runtime_contract::version::RobotApiVersion;
 
 use crate::{BundlePath, BundlePathError, DigestError, ParticipantClock, Sha256Digest};
 
 /// Why a persisted runtime document is not a valid execution plan.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum DocumentError {
+    #[error(
+        "artifact '{artifact}' speaks robot API {actual}, but this runtime already selected {expected}"
+    )]
+    MixedRobotApi {
+        artifact: ParticipantArtifactId,
+        expected: RobotApiVersion,
+        actual: RobotApiVersion,
+    },
     #[error("duplicate participant id '{id}'")]
     DuplicateParticipant { id: ParticipantId },
     #[error("duplicate participant binary path '{path}'")]

@@ -8,12 +8,12 @@ use std::time::Duration;
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
 use crate::ParticipantAssetResolver;
 use crate::bus::{
-    AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
-    DiagnosticContract, DiagnosticPublisher, MeasurementContract, MeasurementPublisher, Observed,
-    Publish, Querier, RobotInstant, SampleDeliveryContract, SampleReceiver, ServeQuery,
-    SetpointDeliveryContract, SetpointReceiver, StateContract, StateDeliveryContract,
-    StatePublisher, StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher,
-    StreamReceiver, Subscribe, TimelineId, Topic, WorldClockContract,
+    AskQuery, DEFAULT_QUERY_TIMEOUT, EventContract, EventPublisher, EventReceiver, Observed,
+    Publish, Querier, QueryEndpointDescriptor, RobotInstant, SampleContract,
+    SampleDeliveryContract, SamplePublisher, SampleReceiver, ServeQuery, SetpointContract,
+    SetpointDeliveryContract, SetpointPublisher, SetpointReceiver, StateContract,
+    StateDeliveryContract, StatePublisher, StateView, StepToken, StreamContract,
+    StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimelineId, Topic,
 };
 use crate::model::Robot;
 use crate::participant::api::Participant;
@@ -200,12 +200,11 @@ impl<R: Participant> SetupContext<R> {
     }
 }
 
-/// Every typed-IO builder below binds its body's `ContractBody::Api` to
+/// Every typed-IO builder below binds its endpoint descriptor's `Api` to
 /// `R::ContractApi`, the one revision the role attribute fixed for this
-/// participant. A body from any other API - a second revision, or another
-/// `phoxal_api_tree!` tree such as a process-boundary protocol - is a compile
-/// error at the builder call, not a runtime mismatch: this is what makes the
-/// `api` field of the participant's embedded metadata record truthful.
+/// participant. A descriptor from any other API revision is a compile error at
+/// the builder call, not a runtime mismatch: this is what makes the `api`
+/// field of the participant's embedded metadata record truthful.
 impl<R: Participant + TypedIoSurface> SetupContext<R> {
     pub fn state_publisher<B: StateContract<Api = R::ContractApi>>(
         &self,
@@ -214,18 +213,25 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(StatePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn measurement_publisher<B: MeasurementContract<Api = R::ContractApi>>(
+    pub fn sample_publisher<B: SampleContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<MeasurementPublisher<B>> {
-        Ok(MeasurementPublisher::new(self.bus.clone(), &topic)?)
+    ) -> crate::Result<SamplePublisher<B>> {
+        Ok(SamplePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn command_publisher<B: CommandContract<Api = R::ContractApi>>(
+    pub fn setpoint_publisher<B: SetpointContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<CommandPublisher<B>> {
-        Ok(CommandPublisher::new(self.bus.clone(), &topic)?)
+    ) -> crate::Result<SetpointPublisher<B>> {
+        Ok(SetpointPublisher::new(self.bus.clone(), &topic)?)
+    }
+
+    pub fn event_publisher<B: EventContract<Api = R::ContractApi>>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<EventPublisher<B>> {
+        Ok(EventPublisher::new(self.bus.clone(), &topic)?)
     }
 
     pub fn stream_publisher<B: StreamContract<Api = R::ContractApi>>(
@@ -235,14 +241,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(StreamPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn diagnostic_publisher<B: DiagnosticContract<Api = R::ContractApi>>(
-        &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<DiagnosticPublisher<B>> {
-        Ok(DiagnosticPublisher::new(self.bus.clone(), &topic)?)
-    }
-
-    pub async fn state_view<B: StateDeliveryContract<Api = R::ContractApi>>(
+    pub async fn state_view<
+        B: StateContract<Api = R::ContractApi> + StateDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<StateView<B>> {
@@ -258,8 +259,8 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     /// keep-last slot coalesces observations.
     #[doc(hidden)]
     pub async fn state_view_with_admission<
-        B: StateDeliveryContract<Api = R::ContractApi>,
-        F: Fn(&Observed<B>) -> bool + Send + Sync + 'static,
+        B: StateContract<Api = R::ContractApi> + StateDeliveryContract<Api = R::ContractApi>,
+        F: Fn(&Observed<B::Payload>) -> bool + Send + Sync + 'static,
     >(
         &mut self,
         topic: Topic<Subscribe<B>>,
@@ -273,7 +274,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn setpoint_receiver<B: SetpointDeliveryContract<Api = R::ContractApi>>(
+    pub async fn setpoint_receiver<
+        B: SetpointContract<Api = R::ContractApi> + SetpointDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<SetpointReceiver<B>> {
@@ -285,7 +288,21 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn sample_receiver<B: SampleDeliveryContract<Api = R::ContractApi>>(
+    pub async fn event_receiver<B: EventContract<Api = R::ContractApi>>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<EventReceiver<B>> {
+        let handle = EventReceiver::new(&self.bus, &topic).await?;
+        let retained = handle.timeline_retention();
+        self.register_timeline_retention(move |timeline| {
+            retained.retain(timeline);
+        });
+        Ok(handle)
+    }
+
+    pub async fn sample_receiver<
+        B: SampleContract<Api = R::ContractApi> + SampleDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<SampleReceiver<B>> {
@@ -297,7 +314,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn stream_receiver<B: StreamDeliveryContract<Api = R::ContractApi>>(
+    pub async fn stream_receiver<
+        B: StreamContract<Api = R::ContractApi> + StreamDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<StreamReceiver<B>> {
@@ -309,13 +328,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub fn querier<
-        Req: ContractBody<Api = R::ContractApi>,
-        Resp: ContractBody<Api = R::ContractApi>,
-    >(
+    pub fn querier<E: QueryEndpointDescriptor>(
         &self,
-        topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Querier<Req, Resp>> {
+        topic: Topic<AskQuery<E>>,
+    ) -> crate::Result<Querier<E::Request, E::Response>> {
         Ok(Querier::new(
             self.bus.clone(),
             &topic,
@@ -323,21 +339,16 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         )?)
     }
 
-    pub fn query<Req, Resp, H>(
-        &mut self,
-        topic: Topic<ServeQuery<Req, Resp>>,
-        handler: H,
-    ) -> crate::Result<()>
+    pub fn query<E, H>(&mut self, topic: Topic<ServeQuery<E>>, handler: H) -> crate::Result<()>
     where
-        Req: ContractBody<Api = R::ContractApi>,
-        Resp: ContractBody<Api = R::ContractApi>,
+        E: QueryEndpointDescriptor,
         H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,
                 QueryContext,
-                Req,
+                E::Request,
                 &'a mut R::State,
-            ) -> crate::bus::QueryResult<Resp>
+            ) -> crate::bus::QueryResult<E::Response>
             + Send
             + Sync
             + 'static,
@@ -350,7 +361,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         {
             anyhow::bail!("duplicate query binding for '{topic}'");
         }
-        self.queries.push(QueryRegistration::new(topic, handler));
+        self.queries
+            .push(QueryRegistration::new::<E::Request, E::Response, H>(
+                topic, handler,
+            ));
         Ok(())
     }
 }
@@ -378,11 +392,13 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
         Ok(TimelineAuthority::mint(timeline)?)
     }
 
-    pub fn world_clock_publisher<B: WorldClockContract<Api = R::ContractApi>>(
+    pub fn world_clock_publisher(
         &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<WorldClockPublisher<B>> {
-        Ok(WorldClockPublisher::mint(self.bus.clone(), &topic)?)
+    ) -> crate::Result<WorldClockPublisher<crate::runtime::simulation::ClockEndpoint>> {
+        Ok(WorldClockPublisher::mint(
+            self.bus.clone(),
+            &crate::runtime::simulation::owner_topic(),
+        )?)
     }
 }
 

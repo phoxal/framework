@@ -2196,6 +2196,7 @@ dependencies = [
  "phoxal-macros",
  "phoxal-model",
  "phoxal-runtime-contract",
+ "phoxal-supervisor-api",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -2475,6 +2476,17 @@ dependencies = [
  "tokio",
  "tracing",
  "webots-rs",
+]
+
+[[package]]
+name = "phoxal-supervisor-api"
+version = "0.55.0"
+dependencies = [
+ "phoxal-bus",
+ "phoxal-macros",
+ "phoxal-runtime-contract",
+ "rmp-serde",
+ "serde",
 ]
 
 [[package]]

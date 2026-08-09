@@ -7,7 +7,7 @@
 
 use std::marker::PhantomData;
 
-use crate::bus::{Codec, ContractBody, MessagePack, QueryFailure};
+use crate::bus::{Codec, MessagePack, Payload, QueryFailure};
 use crate::participant::api::Participant;
 use crate::participant::context::QueryContext;
 
@@ -32,7 +32,7 @@ pub(crate) type ServerOutcome = std::result::Result<ServerReply, QueryFailure>;
 ///
 /// `topic` is a plain `String` rather than a typed
 /// [`Topic`](crate::bus::Topic): erasure is the point of this type, and a
-/// `Topic<ServeQuery<Req, Resp>>` still names `Req` and `Resp`, so it cannot
+/// `Topic<ServeQuery<E>>` still names the endpoint descriptor, so it cannot
 /// survive into the erased registration list the runner iterates. The key
 /// string is all that is left to match an incoming query against, and it was
 /// produced by the typed builder at the checked `ctx.query(...)` call site.
@@ -44,8 +44,8 @@ pub(crate) struct QueryRegistration<R: Participant> {
 impl<R: Participant> QueryRegistration<R> {
     pub(crate) fn new<Req, Resp, H>(topic: String, handler: H) -> Self
     where
-        Req: ContractBody,
-        Resp: ContractBody,
+        Req: Payload,
+        Resp: Payload,
         H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,
@@ -102,8 +102,8 @@ struct TypedQueryHandler<H, Req, Resp> {
 impl<R, H, Req, Resp> ErasedQueryHandler<R> for TypedQueryHandler<H, Req, Resp>
 where
     R: Participant,
-    Req: ContractBody,
-    Resp: ContractBody,
+    Req: Payload,
+    Resp: Payload,
     H: for<'a> Fn(
             &'a R,
             &'a R::Api,
@@ -124,18 +124,11 @@ where
         request: Vec<u8>,
     ) -> ServerOutcome {
         let request = MessagePack::decode::<Req>(&request).map_err(|error| {
-            QueryFailure::invalid_argument(format!(
-                "decode query request for '{}': {error}",
-                Req::TOPIC
-            ))
+            QueryFailure::invalid_argument(format!("decode query request: {error}"))
         })?;
         let response = (self.handler)(participant, api, query_context, request, state)?;
-        let payload = MessagePack::encode(&response).map_err(|error| {
-            QueryFailure::internal(format!(
-                "encode query response for '{}': {error}",
-                Resp::TOPIC
-            ))
-        })?;
+        let payload = MessagePack::encode(&response)
+            .map_err(|error| QueryFailure::internal(format!("encode query response: {error}")))?;
         Ok(ServerReply { payload })
     }
 }
@@ -143,9 +136,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::QueryRegistration;
-    use crate::api;
     use crate::bus::{Codec, MessagePack, QueryCode, QueryFailure};
     use crate::prelude::*;
+    use phoxal_supervisor_api::supervisor;
 
     struct Api;
 
@@ -173,13 +166,13 @@ mod tests {
             &self,
             _api: &Api,
             query: QueryContext,
-            request: api::supervisor::asset::GetRequest,
+            request: supervisor::asset::GetRequest,
             state: &mut QueryState,
-        ) -> QueryResult<api::supervisor::asset::GetResponse> {
+        ) -> QueryResult<supervisor::asset::GetResponse> {
             state.calls.push(request.path.clone());
             state.requesters.push(query.producer());
             if request.path == "ok" {
-                Ok(api::supervisor::asset::GetResponse::Found {
+                Ok(supervisor::asset::GetResponse::Found {
                     bytes: vec![1, 2, 3],
                 })
             } else {
@@ -191,7 +184,7 @@ mod tests {
     #[test]
     fn typed_query_dispatch_decodes_mutates_and_encodes() {
         let registration = QueryRegistration::new(
-            "v0.2/supervisor/asset/get".to_string(),
+            "v0.1/supervisor/asset/get".to_string(),
             QueryParticipant::get,
         );
         let participant = QueryParticipant;
@@ -202,7 +195,7 @@ mod tests {
         let second_producer =
             phoxal_bus::ProducerId::try_from((1_u128 << 124) | 2).expect("canonical test producer");
 
-        let first = MessagePack::encode(&api::supervisor::asset::GetRequest {
+        let first = MessagePack::encode(&supervisor::asset::GetRequest {
             path: "ok".to_string(),
         })
         .unwrap();
@@ -215,14 +208,13 @@ mod tests {
                 first,
             )
             .unwrap();
-        let response: api::supervisor::asset::GetResponse =
-            MessagePack::decode(&reply.payload).unwrap();
+        let response: supervisor::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
         assert!(matches!(
             response,
-            api::supervisor::asset::GetResponse::Found { .. }
+            supervisor::asset::GetResponse::Found { .. }
         ));
 
-        let second = MessagePack::encode(&api::supervisor::asset::GetRequest {
+        let second = MessagePack::encode(&supervisor::asset::GetRequest {
             path: "missing".to_string(),
         })
         .unwrap();

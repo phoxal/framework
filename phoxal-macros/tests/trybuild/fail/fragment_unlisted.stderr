@@ -1,0 +1,29 @@
+error[E0277]: the trait bound `__PhoxalApiFragmentMarker: __PhoxalApiFragmentRegistered` is not satisfied
+  --> tests/trybuild/fail/fragment_unlisted.rs:7:5
+   |
+ 7 | /     phoxal_api_fragment! {
+ 8 | |         path forgotten;
+ 9 | |         version v1_0;
+10 | |             topic state: State<State>;
+11 | |     }
+   | |_____^ unsatisfied trait bound
+   |
+help: the trait `__PhoxalApiFragmentRegistered` is not implemented for `__PhoxalApiFragmentMarker`
+  --> tests/trybuild/fail/fragment_unlisted.rs:7:5
+   |
+ 7 | /     phoxal_api_fragment! {
+ 8 | |         path forgotten;
+ 9 | |         version v1_0;
+10 | |             topic state: State<State>;
+11 | |     }
+   | |_____^
+help: this trait has no implementations, consider adding one
+  --> tests/trybuild/fail/fragment_unlisted.rs:7:5
+   |
+ 7 | /     phoxal_api_fragment! {
+ 8 | |         path forgotten;
+ 9 | |         version v1_0;
+10 | |             topic state: State<State>;
+11 | |     }
+   | |_____^
+   = note: this error originates in the macro `phoxal_api_fragment` (in Nightly builds, run with -Z macro-backtrace for more info)

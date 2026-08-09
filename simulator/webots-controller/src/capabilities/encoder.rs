@@ -36,6 +36,7 @@ impl NativeEncoder {
 
 impl SimulatedSensor for NativeEncoder {
     type Sample = api::component::encoder::Sample;
+    type Endpoint = api::endpoint::component::encoder::SampleEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.sampled.schedule
@@ -63,10 +64,9 @@ impl SimulatedSensor for NativeEncoder {
             })
             .unwrap_or(0.0);
         self.last = Some((position_rad, step.time_ns));
-        Ok(Some(api::component::encoder::Sample {
-            position_rad,
-            velocity_radps: velocity_radps as f32,
-        }))
+        api::component::encoder::Sample::try_new(position_rad, velocity_radps as f32)
+            .map(Some)
+            .map_err(anyhow::Error::from)
     }
 }
 

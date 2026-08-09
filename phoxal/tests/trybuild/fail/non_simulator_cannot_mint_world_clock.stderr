@@ -1,10 +1,10 @@
 error[E0599]: the method `timeline_authority` exists for mutable reference `&mut phoxal::SetupContext<NotASimulator>`, but its trait bounds were not satisfied
-  --> tests/trybuild/fail/non_simulator_cannot_mint_world_clock.rs:13:30
+  --> tests/trybuild/fail/non_simulator_cannot_mint_world_clock.rs:12:30
    |
- 5 | struct NotASimulator;
+ 4 | struct NotASimulator;
    | -------------------- doesn't satisfy `_: WorldAuthoritySurface`
 ...
-13 |         let _authority = ctx.timeline_authority(TimelineId::mint())?;
+12 |         let _authority = ctx.timeline_authority(TimelineId::mint())?;
    |                              ^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<NotASimulator>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
@@ -16,17 +16,13 @@ note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be impl
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0599]: the method `world_clock_publisher` exists for mutable reference `&mut phoxal::SetupContext<NotASimulator>`, but its trait bounds were not satisfied
-  --> tests/trybuild/fail/non_simulator_cannot_mint_world_clock.rs:15:14
+  --> tests/trybuild/fail/non_simulator_cannot_mint_world_clock.rs:13:26
    |
- 5 |   struct NotASimulator;
-   |   -------------------- doesn't satisfy `_: WorldAuthoritySurface`
+ 4 | struct NotASimulator;
+   | -------------------- doesn't satisfy `_: WorldAuthoritySurface`
 ...
-14 |           let _clock = ctx
-   |  ______________________-
-15 | |             .world_clock_publisher(api::topic::owner().simulation().clock())?;
-   | |             -^^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<NotASimulator>` due to unsatisfied trait bounds
-   | |_____________|
-   |
+13 |         let _clock = ctx.world_clock_publisher()?;
+   |                          ^^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<NotASimulator>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
            `NotASimulator: phoxal::__private::surface::WorldAuthoritySurface`

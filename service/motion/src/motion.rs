@@ -42,7 +42,7 @@ const COMPONENT_ESTOP_STALE: Duration = Duration::from_secs(1);
 /// One declared emergency stop and the subscription carrying its state.
 struct BoundEmergencyStop {
     reference: CapabilityRef,
-    state: StateView<api::component::emergency_stop::State>,
+    state: StateView<api::endpoint::component::emergency_stop::StateEndpoint>,
 }
 
 /// Aggregated emergency-stop state across every declared component.
@@ -105,14 +105,14 @@ impl EmergencyStopLatch {
 }
 
 pub(crate) struct Api {
-    manual: SetpointReceiver<api::motion::ManualCommand>,
-    autonomous: StateView<api::navigation::Candidate>,
+    manual: SetpointReceiver<api::endpoint::motion::ManualEndpoint>,
+    autonomous: StateView<api::endpoint::navigation::CandidateEndpoint>,
     _navigation_ready: phoxal::bus::ParticipantReadyObserver,
     _safety_ready: phoxal::bus::ParticipantReadyObserver,
     component_estops: Vec<BoundEmergencyStop>,
-    safety_constraints: StateView<api::safety::MotionConstraints>,
-    drive: CommandPublisher<api::drive::Target>,
-    state: StatePublisher<api::motion::State>,
+    safety_constraints: StateView<api::endpoint::safety::ConstraintsEndpoint>,
+    drive: SetpointPublisher<api::endpoint::drive::TargetEndpoint>,
+    state: StatePublisher<api::endpoint::motion::StateEndpoint>,
 }
 
 pub(crate) struct MotionState {
@@ -258,7 +258,7 @@ impl Participant for Motion {
                         },
                     )
                     .await?,
-                drive: ctx.command_publisher(api::topic::client().drive().target())?,
+                drive: ctx.setpoint_publisher(api::topic::client().drive().target())?,
                 state: ctx.state_publisher(api::topic::owner().motion().state())?,
             },
         ))

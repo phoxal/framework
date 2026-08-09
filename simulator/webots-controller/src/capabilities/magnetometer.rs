@@ -11,5 +11,6 @@ vector_sensor!(
     webots_rs::device::compass::Compass,
     compass,
     api::component::magnetometer::Sample,
+    api::endpoint::component::magnetometer::SampleEndpoint,
     magnetic_field,
 );

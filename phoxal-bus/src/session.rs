@@ -1483,10 +1483,10 @@ mod tests {
 
     use serial_test::serial;
 
-    use crate::contract::ContractBody;
+    use crate::contract::EndpointDescriptor;
     use crate::handle::publisher::StatePublisher;
     use crate::handle::subscriber::{Latest, Subscriber};
-    use crate::test_support::{Target, participant_config, step};
+    use crate::test_support::{Target, TargetEndpoint, participant_config, step};
     use crate::topic::{Publish, Subscribe, Topic};
 
     fn test_producer(value: u128) -> ProducerId {
@@ -1660,8 +1660,8 @@ mod tests {
         ))
         .await
         .unwrap();
-        let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
+        let topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &topic).unwrap();
         drop(owner);
 
         assert!(
@@ -1689,9 +1689,17 @@ mod tests {
                 )
                 .is_err()
         );
-        let subscribe = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        assert!(Latest::<Target>::new(&bus, &subscribe).await.is_err());
-        assert!(Subscriber::<Target>::new(&bus, &subscribe).await.is_err());
+        let subscribe = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        assert!(
+            Latest::<TargetEndpoint>::new(&bus, &subscribe)
+                .await
+                .is_err()
+        );
+        assert!(
+            Subscriber::<TargetEndpoint>::new(&bus, &subscribe)
+                .await
+                .is_err()
+        );
         assert!(bus.declare_server("dead").await.is_err());
         assert!(bus.observe_participant_ready(|_| {}).await.is_err());
         assert!(bus.observe_liveliness_key("dead", |_| {}).await.is_err());
@@ -1937,10 +1945,12 @@ mod tests {
             bus.session().unwrap().zid().to_string()
         );
 
-        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<TargetEndpoint>::new(&bus, &sub_topic)
+            .await
+            .unwrap();
 
         let mut observed = None;
         for tick in 0..100 {
@@ -1976,10 +1986,12 @@ mod tests {
         let (current_owner, current) = BusOwner::open(participant_config("scoped")).await.unwrap();
         assert_ne!(previous.root(), current.root());
 
-        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let stale = StatePublisher::<Target>::new(previous.clone(), &pub_topic).unwrap();
-        let latest = Latest::<Target>::new(&current, &sub_topic).await.unwrap();
+        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let stale = StatePublisher::<TargetEndpoint>::new(previous.clone(), &pub_topic).unwrap();
+        let latest = Latest::<TargetEndpoint>::new(&current, &sub_topic)
+            .await
+            .unwrap();
 
         stale
             .publish(

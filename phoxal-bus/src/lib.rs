@@ -1,8 +1,7 @@
 //! # phoxal-bus
 //!
-//! The Phoxal bus ABI floor: the Zenoh-native wire boundary, plus the two
-//! contract primitive traits ([`ApiVersion`] / [`ContractBody`]) the bus client
-//! is generic over.
+//! The Phoxal bus ABI floor: the Zenoh-native wire boundary, plus API-version,
+//! payload, and endpoint-descriptor primitives the bus client is generic over.
 //!
 //! Samples are Zenoh-native. One sample is:
 //!
@@ -62,20 +61,21 @@ pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, Producer
 
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
-    ApiVersion, CommandContract, ContractBody, DeliveryFamily, DiagnosticContract,
-    MeasurementContract, SampleDeliveryContract, SetpointDeliveryContract, StateContract,
-    StateDeliveryContract, StreamContract, StreamDeliveryContract, TopicRole, WorldClockContract,
+    ApiVersion, DeliveryFamily, Endpoint, EndpointDescriptor, EndpointKind, EventContract, Payload,
+    QueryEndpointDescriptor, SampleContract, SampleDeliveryContract, SetpointContract,
+    SetpointDeliveryContract, StateContract, StateDeliveryContract, StreamContract,
+    StreamDeliveryContract, WorldClockContract,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{
-    CommandPublisher, DiagnosticPublisher, MeasurementPublisher, StatePublisher, StreamPublisher,
+    EventPublisher, SamplePublisher, SetpointPublisher, StatePublisher, StreamPublisher,
     WorldClockPublisher,
 };
 pub use handle::querier::{DEFAULT_QUERY_TIMEOUT, Querier};
 pub use handle::stamp::{StepStamp, StepToken, TimelineAuthority, WorldStepToken};
 pub use handle::subscriber::{
-    MAX_SETPOINT_SOURCES, MAX_STREAM_SOURCES, Observed, ReceiveTerminal, SampleReceiver,
-    SetpointReceiver, StateView, StreamEvent, StreamReceiver, TimelineRetention,
+    EventReceiver, MAX_SETPOINT_SOURCES, MAX_STREAM_SOURCES, Observed, ReceiveTerminal,
+    SampleReceiver, SetpointReceiver, StateView, StreamEvent, StreamReceiver, TimelineRetention,
 };
 pub use lease::{
     ExclusiveProducerLease, FixedSourceAdmission, FixedSourceLease, LEASE_TRACE_TARGET,

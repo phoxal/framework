@@ -30,11 +30,11 @@ const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_nanos(
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 
 pub(crate) struct Api {
-    cameras: Vec<SampleReceiver<api::component::camera::Frame>>,
-    depths: Vec<SampleReceiver<api::component::depth::Frame>>,
-    localization: StateView<api::localize::LocalizationState>,
-    detections: StatePublisher<api::perception::Detections>,
-    state: StatePublisher<api::perception::State>,
+    cameras: Vec<SampleReceiver<api::endpoint::component::camera::FrameEndpoint>>,
+    depths: Vec<SampleReceiver<api::endpoint::component::depth::FrameEndpoint>>,
+    localization: StateView<api::endpoint::localize::StateEndpoint>,
+    detections: StatePublisher<api::endpoint::perception::DetectionsEndpoint>,
+    state: StatePublisher<api::endpoint::perception::StateEndpoint>,
 }
 
 pub(crate) struct PerceptionState {
@@ -142,39 +142,43 @@ impl Participant for Perception {
 
         let now = step.now();
         let detector = state.detector.detector_name().to_string();
-        let unhealthy = |reason| api::perception::State::Unhealthy {
-            detector: detector.clone(),
-            reason,
-        };
+        let unhealthy = |reason| api::perception::State::unhealthy(detector.clone(), reason);
 
         // State is deliberately published on every cycle, including when all
         // cameras have disappeared. A missing or stale input is not allowed to
         // become a silent gap that downstream consumers mistake for health.
         let state_body = match state.camera_input(now) {
-            CameraInput::Missing => unhealthy(api::perception::HealthReason::MissingCamera),
-            CameraInput::Stale => unhealthy(api::perception::HealthReason::StaleCamera),
-            CameraInput::Invalid => unhealthy(api::perception::HealthReason::InvalidCamera),
+            CameraInput::Missing => unhealthy(api::perception::HealthReason::MissingCamera)?,
+            CameraInput::Stale => unhealthy(api::perception::HealthReason::StaleCamera)?,
+            CameraInput::Invalid => unhealthy(api::perception::HealthReason::InvalidCamera)?,
             CameraInput::Ready => match state.detect(now) {
                 Ok(Some((source, captured_at, detections))) => {
-                    let batch = api::perception::Detections {
-                        source,
-                        captured_at,
-                        detections,
-                    };
+                    let batch =
+                        match api::perception::Detections::try_new(source, captured_at, detections)
+                        {
+                            Ok(batch) => batch,
+                            Err(_) => {
+                                api.state.publish(
+                                    &step.token,
+                                    unhealthy(api::perception::HealthReason::DetectorFailure)?,
+                                )?;
+                                return Ok(());
+                            }
+                        };
                     if let Err(error) = api.detections.publish(&step.token, batch) {
                         // A publication failure is terminal for this cycle. If
                         // the state channel is still available, report that
                         // loss explicitly before returning the original error.
-                        let failure = unhealthy(api::perception::HealthReason::PublicationFailure);
+                        let failure = unhealthy(api::perception::HealthReason::PublicationFailure)?;
                         return preserve_detection_publication_error(
                             error,
                             api.state.publish(&step.token, failure),
                         );
                     }
-                    api::perception::State::Healthy { detector }
+                    api::perception::State::healthy(detector.clone())?
                 }
-                Ok(None) => unhealthy(api::perception::HealthReason::InvalidCamera),
-                Err(error) => unhealthy(detector_health_reason(error)),
+                Ok(None) => unhealthy(api::perception::HealthReason::InvalidCamera)?,
+                Err(error) => unhealthy(detector_health_reason(error))?,
             },
         };
 
@@ -303,7 +307,7 @@ impl PerceptionState {
         now: RobotInstant,
     ) -> Result<
         Option<(
-            phoxal::SourceRef,
+            api::perception::SourceRef,
             TimeWindow,
             Vec<api::perception::Detection>,
         )>,
@@ -420,9 +424,9 @@ fn valid_camera_frame(frame: &api::component::camera::Frame) -> bool {
 /// A sample published without one cannot be aged against this step's clock, so
 /// it is dropped rather than held as if it were current; that leaves the
 /// previous slot untouched, which the freshness gate will then age out.
-fn drain_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscriber: &SampleReceiver<B>,
-    slot: &mut Option<Timed<B>>,
+fn drain_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscriber: &SampleReceiver<E>,
+    slot: &mut Option<Timed<E::Payload>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
         if let Some(at) = observed.metadata.produced_exactly_at() {
@@ -435,9 +439,9 @@ fn drain_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
 /// caller can publish an explicit invalid-input health reason. The old helper
 /// above remains exact-only for depth/localization consumers that still need an
 /// exact robot instant for their existing math.
-fn drain_capture_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscriber: &SampleReceiver<B>,
-    slot: &mut Option<Captured<B>>,
+fn drain_capture_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscriber: &SampleReceiver<E>,
+    slot: &mut Option<Captured<E::Payload>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
         *slot = Some(Captured {
@@ -449,18 +453,18 @@ fn drain_capture_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
 
 /// [`drain_latest`] across index-coupled subscribers and slots, one slot per
 /// bound sensor.
-fn drain_latest_per_source<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscribers: &[SampleReceiver<B>],
-    slots: &mut [Option<Timed<B>>],
+fn drain_latest_per_source<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscribers: &[SampleReceiver<E>],
+    slots: &mut [Option<Timed<E::Payload>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {
         drain_latest(subscriber, slot);
     }
 }
 
-fn drain_capture_latest_per_source<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscribers: &[SampleReceiver<B>],
-    slots: &mut [Option<Captured<B>>],
+fn drain_capture_latest_per_source<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscribers: &[SampleReceiver<E>],
+    slots: &mut [Option<Captured<E::Payload>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {
         drain_capture_latest(subscriber, slot);
@@ -469,7 +473,7 @@ fn drain_capture_latest_per_source<B: phoxal::bus::ContractBody + SampleDelivery
 
 #[cfg(test)]
 mod tests {
-    use phoxal::SourceRef;
+    use phoxal::api;
     use phoxal::bus::{RobotInstant, TimeWindow, Timed, TimelineId};
     use phoxal::model::identity::{CapabilityId, CapabilityRef, ComponentInstanceId, LinkId};
 
@@ -491,7 +495,7 @@ mod tests {
         let component = ComponentInstanceId::new("front_camera").unwrap();
         let capability = CapabilityId::new("rgb").unwrap();
         SensorBinding {
-            source: SourceRef::parse("front_camera.rgb").unwrap(),
+            source: api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
             capability: CapabilityRef::new(component, capability),
             frame_id: LinkId::new("camera_link"),
         }

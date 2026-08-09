@@ -617,7 +617,7 @@ pub fn expand_participant(
         #[doc(hidden)]
         const #metadata_const_ident: &'static str =
             #phoxal::__private::compatibility::participant_metadata_json!(
-                api = #phoxal::__private::compatibility::API,
+                api = #phoxal::__private::compatibility::API_TOKEN,
                 bus = #phoxal::__private::compatibility::BUS,
                 launch = #phoxal::__private::compatibility::LAUNCH,
                 runtime = #phoxal::__private::compatibility::RUNTIME,
@@ -1016,7 +1016,7 @@ mod tests {
     /// attribute to the train-selected facade, never named by the author. Every
     /// `SetupContext` builder is bounded on this associated type, so a
     /// participant that reached for a second API revision - or another
-    /// `phoxal_api_tree!` tree - fails to compile rather than embedding an
+    /// unrelated semantic API tree - fails to compile rather than embedding an
     /// `api` claim its handles contradict.
     #[test]
     fn every_role_fixes_its_contract_api_to_the_train_selected_facade() {

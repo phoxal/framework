@@ -36,6 +36,7 @@ impl NativeDepth {
 
 impl SimulatedSensor for NativeDepth {
     type Sample = api::component::depth::Frame;
+    type Endpoint = api::endpoint::component::depth::FrameEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.sampled.schedule
@@ -48,26 +49,31 @@ impl SimulatedSensor for NativeDepth {
             .into_iter()
             .map(meters_to_u16_mm)
             .collect();
-        Ok(Some(api::component::depth::Frame {
+        api::component::depth::Frame::try_new(
             samples_mm,
-            encoding: api::component::depth::Encoding::U16Millimeters,
-            invalid_sample_policy: api::component::depth::InvalidSamplePolicy::ZeroIsInvalid,
-            width: Some(self.spec.width),
-            height: Some(self.spec.height),
-            intrinsics: None,
-            distortion: None,
-            exposure: None,
-            calibration: None,
-        }))
+            api::component::depth::Encoding::U16Millimeters,
+            api::component::depth::InvalidSamplePolicy::ZeroIsInvalid,
+            self.spec.width,
+            self.spec.height,
+            None,
+            None,
+            None,
+            None,
+        )
+        .map(Some)
+        .map_err(anyhow::Error::from)
     }
 }
 
 fn meters_to_u16_mm(meters: f32) -> u16 {
     if !meters.is_finite() || meters <= 0.0 {
-        0
-    } else {
-        (meters * 1000.0).round().clamp(1.0, f32::from(u16::MAX)) as u16
+        return 0;
     }
+    let millimeters = (meters * 1000.0).round();
+    if !(1.0..=f32::from(u16::MAX)).contains(&millimeters) {
+        return 0;
+    }
+    millimeters as u16
 }
 
 #[cfg(test)]
@@ -75,8 +81,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn meters_to_u16_mm_rounds_and_clamps() {
+    fn meters_to_u16_mm_rounds_and_marks_unrepresentable_values_invalid() {
         assert_eq!(meters_to_u16_mm(1.25), 1250);
         assert_eq!(meters_to_u16_mm(f32::NAN), 0);
+        assert_eq!(meters_to_u16_mm(0.0001), 0);
+        assert_eq!(meters_to_u16_mm(70.0), 0);
     }
 }

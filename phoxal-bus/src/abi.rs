@@ -2,7 +2,7 @@
 //! codec that id selects.
 //!
 //! A version-qualified Zenoh key carries wire identity
-//! (`<Body as ContractBody>::TOPIC`, e.g. `v0.1/drive/target`), while the
+//! (`<Endpoint as EndpointDescriptor>::TOPIC`, e.g. `v0.1/drive/target`), while the
 //! encoding string records the codec. A receiver therefore sees only samples
 //! for its subscribed contract key and validates their encoding.
 //!
@@ -19,7 +19,7 @@ use std::str::FromStr;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Hard ceiling for one decoded contract body. This matches the session
+/// Hard ceiling for one decoded endpoint payload. This matches the session
 /// outbound byte budget, so a peer cannot ask a consumer to deserialize a
 /// body larger than any conforming local publisher may queue.
 pub const MAX_DECODE_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -232,7 +232,7 @@ impl Codec for MessagePack {
 /// A codec encode/decode failure.
 ///
 /// Both variants carry the codec library's own message text. It is opaque by
-/// construction - the codec is generic over every contract body, so there is no
+/// construction - the codec is generic over every endpoint payload, so there is no
 /// structure this crate could recover from a serde failure without teaching the
 /// bus about the shape of every body it carries.
 #[derive(Debug, thiserror::Error)]

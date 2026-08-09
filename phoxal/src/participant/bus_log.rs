@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::api;
 use crate::participant::lock;
-use phoxal_bus::{BusHandle, DiagnosticPublisher};
+use phoxal_bus::{BusHandle, StreamPublisher};
+use phoxal_supervisor_api::supervisor;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Metadata};
@@ -141,23 +141,23 @@ where
 
 #[derive(Clone, Debug)]
 struct LogRecord {
-    time: api::logs::Timestamp,
-    level: api::logs::Level,
+    time: supervisor::logs::Timestamp,
+    level: supervisor::logs::Level,
     target: String,
     message: String,
-    fields: BTreeMap<String, api::logs::LogValue>,
+    fields: BTreeMap<String, supervisor::logs::LogValue>,
     truncated: u32,
 }
 
 impl LogRecord {
     /// A tracing level as the wire enum names it.
-    fn wire_level(level: Level) -> api::logs::Level {
+    fn wire_level(level: Level) -> supervisor::logs::Level {
         match level {
-            Level::ERROR => api::logs::Level::Error,
-            Level::WARN => api::logs::Level::Warn,
-            Level::INFO => api::logs::Level::Info,
-            Level::DEBUG => api::logs::Level::Debug,
-            Level::TRACE => api::logs::Level::Trace,
+            Level::ERROR => supervisor::logs::Level::Error,
+            Level::WARN => supervisor::logs::Level::Warn,
+            Level::INFO => supervisor::logs::Level::Info,
+            Level::DEBUG => supervisor::logs::Level::Debug,
+            Level::TRACE => supervisor::logs::Level::Trace,
         }
     }
 
@@ -177,8 +177,8 @@ impl LogRecord {
         }
     }
 
-    fn into_event(self, seq: u64, dropped: u32) -> api::logs::Event {
-        api::logs::Event {
+    fn into_event(self, seq: u64, dropped: u32) -> supervisor::logs::Event {
+        supervisor::logs::Event {
             seq,
             time: self.time,
             level: self.level,
@@ -193,7 +193,7 @@ impl LogRecord {
 
 struct FieldVisitor {
     message: Option<String>,
-    fields: BTreeMap<String, api::logs::LogValue>,
+    fields: BTreeMap<String, supervisor::logs::LogValue>,
     remaining_text_bytes: usize,
     truncations: u32,
 }
@@ -218,7 +218,7 @@ impl FieldVisitor {
         bounded
     }
 
-    fn record_value(&mut self, field: &Field, mut value: api::logs::LogValue) {
+    fn record_value(&mut self, field: &Field, mut value: supervisor::logs::LogValue) {
         let name = field.name();
         if name == "message" {
             let message = log_value_to_string(&value);
@@ -229,7 +229,7 @@ impl FieldVisitor {
                 return;
             }
             let name = self.bounded(name, MAX_FIELD_NAME_BYTES);
-            if let api::logs::LogValue::String(text) = &mut value {
+            if let supervisor::logs::LogValue::String(text) = &mut value {
                 *text = self.bounded(text, MAX_FIELD_VALUE_BYTES);
             }
             self.fields.insert(name, value);
@@ -239,23 +239,23 @@ impl FieldVisitor {
 
 impl Visit for FieldVisitor {
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.record_value(field, api::logs::LogValue::Bool(value));
+        self.record_value(field, supervisor::logs::LogValue::Bool(value));
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.record_value(field, api::logs::LogValue::I64(value));
+        self.record_value(field, supervisor::logs::LogValue::I64(value));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.record_value(field, api::logs::LogValue::U64(value));
+        self.record_value(field, supervisor::logs::LogValue::U64(value));
     }
 
     fn record_f64(&mut self, field: &Field, value: f64) {
-        self.record_value(field, api::logs::LogValue::F64(value));
+        self.record_value(field, supervisor::logs::LogValue::F64(value));
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.record_value(field, api::logs::LogValue::String(value.to_string()));
+        self.record_value(field, supervisor::logs::LogValue::String(value.to_string()));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
@@ -269,7 +269,7 @@ impl Visit for FieldVisitor {
         if formatted.truncated {
             self.truncations = self.truncations.saturating_add(1);
         }
-        self.record_value(field, api::logs::LogValue::String(formatted.value));
+        self.record_value(field, supervisor::logs::LogValue::String(formatted.value));
     }
 }
 
@@ -404,8 +404,8 @@ async fn drain_loop(
     participant_id: String,
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
-    let topic = api::topic::owner().logs(&participant_id)?.topic();
-    let publisher = DiagnosticPublisher::<api::logs::Event>::new(bus, &topic)?;
+    let topic = supervisor::topic::owner().logs(&participant_id)?.topic();
+    let publisher = StreamPublisher::<supervisor::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let dropped = state.take_dropped();
@@ -413,7 +413,7 @@ async fn drain_loop(
         seq = seq.wrapping_add(1);
         let result = IN_BUS_LOG_PUBLISH.with(|guard| {
             guard.set(true);
-            let result = publisher.publish(event);
+            let result = publisher.send(event);
             guard.set(false);
             result
         });
@@ -432,15 +432,15 @@ fn target_is_filtered(target: &str) -> bool {
         || target.starts_with("phoxal.bus")
 }
 
-fn timestamp_now() -> api::logs::Timestamp {
+fn timestamp_now() -> supervisor::logs::Timestamp {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => api::logs::Timestamp {
+        Ok(duration) => supervisor::logs::Timestamp {
             unix_seconds: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
             nanos: duration.subsec_nanos(),
         },
         Err(error) => {
             let duration = error.duration();
-            api::logs::Timestamp {
+            supervisor::logs::Timestamp {
                 unix_seconds: -i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
                 nanos: duration.subsec_nanos(),
             }
@@ -448,13 +448,13 @@ fn timestamp_now() -> api::logs::Timestamp {
     }
 }
 
-fn log_value_to_string(value: &api::logs::LogValue) -> String {
+fn log_value_to_string(value: &supervisor::logs::LogValue) -> String {
     match value {
-        api::logs::LogValue::Bool(value) => value.to_string(),
-        api::logs::LogValue::I64(value) => value.to_string(),
-        api::logs::LogValue::U64(value) => value.to_string(),
-        api::logs::LogValue::F64(value) => value.to_string(),
-        api::logs::LogValue::String(value) => value.clone(),
+        supervisor::logs::LogValue::Bool(value) => value.to_string(),
+        supervisor::logs::LogValue::I64(value) => value.to_string(),
+        supervisor::logs::LogValue::U64(value) => value.to_string(),
+        supervisor::logs::LogValue::F64(value) => value.to_string(),
+        supervisor::logs::LogValue::String(value) => value.clone(),
     }
 }
 
@@ -464,11 +464,11 @@ mod tests {
 
     fn record() -> LogRecord {
         LogRecord {
-            time: api::logs::Timestamp {
+            time: supervisor::logs::Timestamp {
                 unix_seconds: 1,
                 nanos: 2,
             },
-            level: api::logs::Level::Info,
+            level: supervisor::logs::Level::Info,
             target: "test".to_string(),
             message: "hello".to_string(),
             fields: BTreeMap::new(),
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(captured.message, "ready");
         assert!(matches!(
             captured.fields.get("marker"),
-            Some(api::logs::LogValue::U64(7))
+            Some(supervisor::logs::LogValue::U64(7))
         ));
         state.clear_sender(token);
     }
@@ -579,7 +579,8 @@ mod tests {
         let mut decisions = Vec::new();
         while let Ok(record) = receiver.try_recv() {
             assert_eq!(record.target, phoxal_bus::LEASE_TRACE_TARGET);
-            let Some(api::logs::LogValue::String(decision)) = record.fields.get("decision") else {
+            let Some(supervisor::logs::LogValue::String(decision)) = record.fields.get("decision")
+            else {
                 panic!("every lease record names its decision: {record:?}");
             };
             decisions.push((decision.clone(), record));
@@ -595,20 +596,22 @@ mod tests {
             .expect("expiry record");
         assert_eq!(
             expired.fields.get("producer"),
-            Some(&api::logs::LogValue::String(first.to_string())),
+            Some(&supervisor::logs::LogValue::String(first.to_string())),
             "an expiry names the command that died, not just the lease"
         );
         assert_eq!(
             expired.fields.get("sequence"),
-            Some(&api::logs::LogValue::U64(1))
+            Some(&supervisor::logs::LogValue::U64(1))
         );
         assert_eq!(
             expired.fields.get("observation"),
-            Some(&api::logs::LogValue::U64(1))
+            Some(&supervisor::logs::LogValue::U64(1))
         );
         assert!(decisions.iter().all(|(_, record)| {
             record.fields.get("input")
-                == Some(&api::logs::LogValue::String("motion/manual".to_string()))
+                == Some(&supervisor::logs::LogValue::String(
+                    "motion/manual".to_string(),
+                ))
         }));
 
         state.clear_sender(token);

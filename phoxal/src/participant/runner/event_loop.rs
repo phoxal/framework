@@ -2,13 +2,13 @@
 
 use std::time::Duration;
 
-use crate::api;
 use crate::bus::{LocalInstant, RobotInstant, StepToken, StreamReceiver, TimelineId};
 use crate::participant::api::Participant;
 use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
+use crate::runtime::simulation::ClockEndpoint;
 use phoxal_bundle::ParticipantClock;
 
 use super::ShutdownController;
@@ -240,30 +240,29 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
     }
 }
 
-/// Subscribe the authoritative `simulation/clock` feed and drive the live
+/// Subscribe the authoritative `runtime/simulation/clock` hand and drive the live
 /// scheduler from exact production instants for the task's lifetime.
 pub(crate) async fn simulation_clock_feed(
     bus: phoxal_bus::BusHandle,
     handle: SimulationClockHandle,
 ) -> crate::Result<()> {
-    let topic = api::topic::client().simulation().clock();
-    let subscriber = match StreamReceiver::<api::simulation::Clock>::new(&bus, &topic).await {
+    let topic = crate::runtime::simulation::client_topic();
+    let subscriber = match StreamReceiver::<ClockEndpoint>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),
     };
     tracing::info!(
         target: "phoxal.runtime",
         topic = topic.key(),
-        "subscribed the live simulation/clock feed; driving the simulation scheduler from it"
+        "subscribed the live runtime/simulation/clock hand; driving the simulation scheduler from it"
     );
     loop {
-        let observed = subscriber
-            .recv()
-            .await
-            .map_err(|error| anyhow::anyhow!("simulation/clock subscriber terminated: {error}"))?;
+        let observed = subscriber.recv().await.map_err(|error| {
+            anyhow::anyhow!("runtime/simulation/clock subscriber terminated: {error}")
+        })?;
         let Some(at) = observed.metadata.produced_exactly_at() else {
             return Err(anyhow::anyhow!(
-                "simulation/clock sample has no exact production instant"
+                "runtime/simulation/clock sample has no exact production instant"
             ));
         };
         match handle.advance(at) {

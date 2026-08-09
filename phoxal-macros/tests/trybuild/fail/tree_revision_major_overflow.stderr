@@ -1,0 +1,5 @@
+error: API revision major component must fit in a `u16`
+ --> tests/trybuild/fail/tree_revision_major_overflow.rs:7:24
+  |
+7 |         latest version v65536_0;
+  |                        ^^^^^^^^

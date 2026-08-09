@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ParticipantArtifactId;
-use crate::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
+use crate::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
 
 /// Every process-boundary version identity one participant binary speaks.
 /// Authored source grammars are intentionally absent: a runtime process
@@ -39,7 +39,7 @@ pub struct ParticipantContract {
     /// The role kind declared by the artifact's role macro.
     pub kind: ParticipantKind,
     /// The robot API revision used by the artifact.
-    pub api: RobotApi,
+    pub api: RobotApiVersion,
     /// The process-boundary schemas used by the artifact.
     pub schemas: ParticipantSchemas,
     /// The optional static topology requirement.
@@ -127,7 +127,7 @@ impl ParticipantMetadata {
 }
 
 /// An embedded metadata section that is not a document this framework train
-/// understands: malformed JSON, an unknown schema tag, an unknown version
+/// understands: malformed JSON, an unknown schema tag, a malformed version
 /// identity, or an unknown field.
 #[derive(Debug, thiserror::Error)]
 #[error("participant metadata is not a readable phoxal document: {0}")]
@@ -141,7 +141,7 @@ mod tests {
 
     fn record(fields: &str) -> Vec<u8> {
         format!(
-            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},"requirement":null,{fields}}}"#
+            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{SCHEMAS},"requirement":null,{fields}}}"#
         )
         .into_bytes()
     }
@@ -153,7 +153,7 @@ mod tests {
         ))
         .expect("the exact document a role macro embeds must parse");
 
-        assert_eq!(contract.api, RobotApi::V0_2);
+        assert_eq!(contract.api, RobotApiVersion::new(0, 1));
         assert_eq!(contract.schemas.bus, BusAbi::V0);
         assert_eq!(contract.schemas.launch, LaunchAbi::V0);
         assert_eq!(contract.schemas.runtime, RuntimeSchema::V0);
@@ -195,16 +195,14 @@ mod tests {
     }
 
     #[test]
-    fn a_version_identity_from_another_train_is_rejected_by_name() {
+    fn a_future_robot_api_identity_is_preserved() {
         let bytes = format!(
             r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.3","schemas":{SCHEMAS},"id":"drive","kind":"service","config_schema":null}}"#
         )
         .into_bytes();
-        let message = ParticipantMetadata::from_bytes(&bytes)
-            .expect_err("an API revision this train does not speak must not parse")
-            .to_string();
-        assert!(message.contains("phoxal/robot-api/v0.3"), "{message}");
-        assert!(message.contains("phoxal/robot-api/v0.2"), "{message}");
+        let metadata = ParticipantMetadata::from_bytes(&bytes)
+            .expect("the process boundary keeps a validated API identity open");
+        assert_eq!(metadata.contract().api, RobotApiVersion::new(0, 3));
     }
 
     #[test]

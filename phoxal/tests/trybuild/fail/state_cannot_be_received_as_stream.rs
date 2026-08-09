@@ -10,9 +10,7 @@ impl Participant for WrongStateReceiver {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let _state = ctx
-            .stream_receiver(api::topic::client().drive().state())
-            .await?;
+        let _state = ctx.stream_receiver(api::topic::client().drive().state());
         Ok(((), ()))
     }
 }

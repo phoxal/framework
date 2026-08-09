@@ -3,7 +3,7 @@
 //! The wire body is the plain MessagePack payload; provenance rides here, in
 //! the Zenoh attachment. Identity (which contract, which version) is not
 //! carried in the envelope at all - it lives in the Zenoh key itself, since the
-//! version is folded into `<Body as ContractBody>::TOPIC`, so a receiver's
+//! version is folded into `<Endpoint as EndpointDescriptor>::TOPIC`, so a receiver's
 //! per-key subscription is the whole fast-reject.
 //!
 //! Provenance is a [`SourceAttribution`] plus a per-producer sequence, and the

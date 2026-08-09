@@ -33,6 +33,7 @@ phoxal-bundle = { workspace = true }
 phoxal-macros = { workspace = true }
 phoxal-model = { workspace = true }
 phoxal-runtime-contract = { workspace = true }
+phoxal-supervisor-api = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 const_format = { workspace = true }

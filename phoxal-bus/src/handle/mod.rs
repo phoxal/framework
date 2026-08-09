@@ -1,16 +1,17 @@
-//! Body-typed handles over the version-qualified bus boundary.
+//! Endpoint-typed handles over the version-qualified bus boundary.
 //!
 //! The handles are grouped by what they own:
 //!
 //! - [`stamp`] - the step tokens that let a publisher express robot time, and
 //!   the timeline authority that mints world steps.
-//! - [`publisher`] - the four role-bounded publisher handles, plus the
-//!   framework's own world-clock publisher.
+//! - [`publisher`] - the endpoint-kind publisher handles, plus the framework's
+//!   own world-clock publisher.
 //! - [`subscriber`] - the receiving side: [`Observed`](subscriber::Observed),
 //!   [`StateView`](subscriber::StateView), and the delivery-specific
 //!   [`SetpointReceiver`](subscriber::SetpointReceiver),
 //!   [`SampleReceiver`](subscriber::SampleReceiver), and
-//!   [`StreamReceiver`](subscriber::StreamReceiver).
+//!   [`StreamReceiver`](subscriber::StreamReceiver), plus ordered
+//!   [`EventReceiver`](subscriber::EventReceiver).
 //! - [`querier`] - the caller side of the request/response leg.
 //!
 //! This module itself owns only the vocabulary all four share: turning one
@@ -29,13 +30,13 @@
 //!   [`WorldStepToken`](stamp::WorldStepToken) a
 //!   [`TimelineAuthority`](stamp::TimelineAuthority) mints for the world
 //!   authority alone.
-//! - [`MeasurementPublisher<B>`](publisher::MeasurementPublisher) publishes with
+//! - [`SamplePublisher<B>`](publisher::SamplePublisher) publishes with
 //!   a [`CaptureStamp`](crate::time::CaptureStamp) the driver derived from its
 //!   device clock, and honestly represents an untranslated capture rather than
 //!   inventing one.
-//! - [`CommandPublisher<B>`](publisher::CommandPublisher) and
-//!   [`DiagnosticPublisher<B>`](publisher::DiagnosticPublisher) express no robot
-//!   time at all.
+//! - [`SetpointPublisher<B>`](publisher::SetpointPublisher) and
+//!   [`StreamPublisher<B>`](publisher::StreamPublisher) express no robot time
+//!   at all.
 //!
 //! # Receiving is bus-stamped
 //!
@@ -66,7 +67,7 @@
 //!   an older chunk when their ring is saturated.
 //!
 //! Contract identity lives entirely in the Zenoh key - the version is folded
-//! into `<Body as ContractBody>::TOPIC` - so a receiver's per-key subscription
+//! into `<Endpoint as EndpointDescriptor>::TOPIC` - so a receiver's per-key subscription
 //! is the fast-reject, and the decode path only still validates the codec. A
 //! decode failure is counted (`decode_errors`) + logged as a health signal,
 //! never a silent accept. Timeline-aware handles separately count purged or
@@ -81,20 +82,24 @@ pub mod subscriber;
 use zenoh::sample::Sample;
 
 use crate::abi::{Codec, CodecId, EncodingError, EncodingMetadata, MessagePack};
-use crate::contract::ContractBody;
+use crate::contract::{EndpointDescriptor, Payload};
 use crate::error::{BusError, MetadataProblem, Result};
 use crate::metadata::BusMetadata;
 
-/// Decode one Zenoh sample into a body of `B`, validating the codec before
+/// Decode one Zenoh sample into the payload of endpoint `E`, validating the codec before
 /// touching the payload.
 ///
 /// Contract identity is not checked here: it is guaranteed by the Zenoh key
 /// itself, and this function is only ever invoked for samples received on a
-/// subscription already scoped to `B`'s version-qualified topic.
-pub(crate) fn decode_sample<B: ContractBody>(
+/// subscription already scoped to `E`'s version-qualified topic.
+pub(crate) fn decode_sample<E: EndpointDescriptor>(
     sample: &Sample,
     topic: &str,
-) -> Result<(B, BusMetadata)> {
+) -> Result<(E::Payload, BusMetadata)> {
+    decode_payload::<E::Payload>(sample, topic)
+}
+
+pub(crate) fn decode_payload<B: Payload>(sample: &Sample, topic: &str) -> Result<(B, BusMetadata)> {
     let malformed = |problem: MetadataProblem| BusError::metadata(topic, problem);
 
     let encoding: EncodingMetadata = sample
@@ -136,14 +141,14 @@ pub(crate) fn decode_sample<B: ContractBody>(
 mod tests {
     use super::*;
     use crate::abi::CodecError;
-    use crate::test_support::{Target, sample, sample_with, sample_with_encoding};
+    use crate::test_support::{Target, TargetEndpoint, sample, sample_with, sample_with_encoding};
 
     const TOPIC: &str = "yTEST/drive/target";
 
     #[test]
     fn decode_accepts_a_matching_sample() {
         let sample = sample(CodecId::MessagePack.as_u8());
-        let (body, metadata) = decode_sample::<Target>(&sample, TOPIC).unwrap();
+        let (body, metadata) = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap();
         assert_eq!(body.linear_x_mps, 1.0);
         assert_eq!(metadata.codec, CodecId::MessagePack.as_u8());
     }
@@ -164,7 +169,7 @@ mod tests {
             payload,
         );
 
-        let error = decode_sample::<Target>(&sample, TOPIC).unwrap_err();
+        let error = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap_err();
         assert!(matches!(
             error,
             BusError::UnsupportedCodec { codec: 99, .. }
@@ -173,7 +178,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_unsupported_codec() {
-        let error = decode_sample::<Target>(&sample(99), TOPIC).unwrap_err();
+        let error = decode_sample::<TargetEndpoint>(&sample(99), TOPIC).unwrap_err();
         assert!(matches!(
             error,
             BusError::UnsupportedCodec { codec: 99, .. }
@@ -183,7 +188,7 @@ mod tests {
     #[test]
     fn decode_rejects_corrupt_payload() {
         let sample = sample_with(CodecId::MessagePack.as_u8(), vec![0xc1, 0xc1, 0xc1]);
-        let error = decode_sample::<Target>(&sample, TOPIC).unwrap_err();
+        let error = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap_err();
         assert!(matches!(error, BusError::Codec(CodecError::Decode(_))));
     }
 }

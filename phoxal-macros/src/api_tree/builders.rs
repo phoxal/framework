@@ -3,8 +3,7 @@
 //!
 //! Both trees walk identical node methods and format identical keys; only the
 //! brand a leaf method returns differs. Keys are built from the same node path
-//! the [`super::bodies`] pass uses for `ContractBody::TOPIC`, so the builder
-//! and the const cannot drift apart.
+//! the [`super::bodies`] pass uses for descriptor `TOPIC`, so they cannot drift.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -14,16 +13,16 @@ use super::model::{MaterializedTree, Node, TopicDef, TopicKind, TopicLeaf};
 
 /// Which side a generated builder tree brands its leaves with.
 ///
-/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. A `command` or
-///   `stream` leaf yields `Topic<Publish<B>>` (the client sends intent/chunks),
-///   a `state` or `event` leaf yields `Topic<Subscribe<B>>` (the client observes
-///   state/events), and a `query`
-///   leaf yields `Topic<AskQuery<Req, Resp>>` (the client calls).
+/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. A setpoint or
+///   stream leaf yields `Topic<Publish<E>>` (the client sends intent/chunks),
+///   a state/sample/event leaf yields `Topic<Subscribe<E>>` (the client observes
+///   products), and a query
+///   leaf yields `Topic<AskQuery<E>>` (the client calls).
 /// - [`Side::Owner`] - the `topic::owner()...` tree. The brands flip:
-///   `command`/`stream` -> `Subscribe` (the owner reads its control input),
-///   `state`/`event` -> `Publish` (the owner emits telemetry/events),
+///   setpoint/stream -> `Subscribe` (the owner reads control/chunks),
+///   state/sample/event -> `Publish` (the owner emits products),
 ///   `query` -> `ServeQuery`
-///   (the owner serves).
+///   (the owner serves through `ServeQuery<E>`).
 #[derive(Clone, Copy)]
 enum Side {
     Client,
@@ -46,51 +45,26 @@ impl MaterializedTree {
     /// a builder module per node); the OWNER tree lives under `topic::owner`
     /// (`topic::owner()` + the same builder modules, one level deeper).
     ///
-    /// Self-contained absolute paths: a builder leaf needs to name a body type
-    /// that lives in the PARALLEL type-tree hanging off the same tree module
-    /// (`topic::component::motor::Builder` needs `component::motor::Command`).
-    /// Rather than counting `super::` hops back to the tree root and down again
-    /// per leaf, `topic` seeds one hidden alias per top-level node
-    /// (`#[doc(hidden)] pub use super::component as __phoxal_type_root_component;`,
-    /// a single, always-valid hop since `topic` is a direct child of the tree
-    /// module) and `owner` re-forwards each of them one hop further. Every
-    /// builder module under either side then imports its own top-level node's
-    /// alias - a single hop from its immediate parent - under the uniform local
-    /// name `__phoxal_type_root`, and deeper builder modules just forward THAT
-    /// one hop at a time. A leaf reference is then always
-    /// `self::__phoxal_type_root::…::Body`: no supers count, no dependency on
-    /// how deep the node was authored.
+    /// Builder leaves name generated endpoint descriptors through one hidden
+    /// root alias. It is forwarded one hop at every nesting level, so endpoint
+    /// references never depend on a counted `super::` path.
     pub(super) fn expand_topic_module(&self) -> TokenStream {
         let mut client_root_methods = TokenStream::new();
         let mut client_builder_mods = TokenStream::new();
         let mut owner_root_methods = TokenStream::new();
         let mut owner_builder_mods = TokenStream::new();
-        let mut type_root_seeds = TokenStream::new();
-        let mut type_root_forwards = TokenStream::new();
         for node in &self.nodes {
-            let name = &node.name;
-            let alias = type_root_alias_ident(name);
-
             client_root_methods.extend(node.entry_method());
             client_builder_mods.extend(node.expand_builder_module(&self.id, &[], Side::Client));
             owner_root_methods.extend(node.entry_method());
             owner_builder_mods.extend(node.expand_builder_module(&self.id, &[], Side::Owner));
-
-            type_root_seeds.extend(quote! {
-                #[doc(hidden)]
-                pub use super::#name as #alias;
-            });
-            type_root_forwards.extend(quote! {
-                #[doc(hidden)]
-                pub use super::#alias;
-            });
         }
 
         quote! {
             /// Api-local topic builders, side-branded. The PUBLIC
             /// `topic::client()...` chain is the CLIENT side; the OWNER side is
             /// the equally explicit [`topic::owner()`](owner). Every leaf binds the
-            /// topic's node-path/kind to a tree-local body and the side it grants.
+            /// topic's node path and descriptor to the side it grants.
             pub mod topic {
                 /// Begin a CLIENT topic path for this tree.
                 pub fn client() -> Root {
@@ -105,10 +79,8 @@ impl MaterializedTree {
                     #client_root_methods
                 }
 
-                // Per-top-level-node type-tree aliases (self-contained absolute
-                // paths): seeded here because `topic` is always exactly one hop
-                // from the tree module that holds the type tree.
-                #type_root_seeds
+                #[doc(hidden)]
+                pub use super::endpoint as __phoxal_endpoint_root;
 
                 #client_builder_mods
 
@@ -121,6 +93,9 @@ impl MaterializedTree {
                 /// node here, getting the publish/subscribe/serve side it must take.
                 /// Consumed topics still go through [`client()`](self::client).
                 pub mod owner {
+                    #[doc(hidden)]
+                    pub use super::__phoxal_endpoint_root;
+
                     /// Root of the owner topic builder chain. `#[non_exhaustive]` keeps
                     /// [`owner()`](super::owner) as its sole public entry point.
                     #[non_exhaustive]
@@ -128,10 +103,6 @@ impl MaterializedTree {
                     impl Root {
                         #owner_root_methods
                     }
-
-                    // Forward each top-level node's type-tree alias one more hop, from
-                    // `topic` into `owner` (still a single, always-valid hop).
-                    #type_root_forwards
 
                     #owner_builder_mods
                 }
@@ -274,30 +245,15 @@ impl Node {
             child_mods.extend(child.expand_builder_module(tree_id, &path, side));
         }
 
-        // Self-contained absolute path to this top-level node's type-tree: at the
-        // top of a top-level node's builder subtree (`ancestors` empty) import the
-        // alias `expand_topic_module` seeded one hop up (in `topic` for the client
-        // side, in `topic::owner` for the owner side - both are that alias's direct
-        // parent). Every deeper builder module just re-forwards it one more hop under
-        // the same local name, so a leaf at any depth reaches its body type through
-        // `self::__phoxal_type_root` with no supers count.
-        let type_root_import = if ancestors.is_empty() {
-            let alias = type_root_alias_ident(name);
-            quote! {
-                #[doc(hidden)]
-                pub use super::#alias as __phoxal_type_root;
-            }
-        } else {
-            quote! {
-                #[doc(hidden)]
-                pub use super::__phoxal_type_root;
-            }
+        let endpoint_root_import = quote! {
+            #[doc(hidden)]
+            pub use super::__phoxal_endpoint_root;
         };
 
         let builder_doc = format!("Topic builder for the `{name_str}` node.");
         quote! {
             pub mod #name {
-                #type_root_import
+                #endpoint_root_import
 
                 #[doc = #builder_doc]
                 // Keep a path builder reachable only through its parent builder, so
@@ -321,46 +277,29 @@ impl Node {
 impl TopicDef {
     /// The branded `Kind` type for this leaf on `side`.
     ///
-    /// The body path is built from `self::__phoxal_type_root` (this top-level
-    /// node's type-tree alias, forwarded one hop at a time down from
-    /// `topic`/`topic::owner`), followed by the node path's segments after the
-    /// top-level one (which the alias already denotes), then the body ident.
-    /// This is a fixed-shape reference that never depends on how deep the node
-    /// was authored or on which side is being built.
-    ///
-    /// The brand is picked from `(role, side)`:
-    ///
-    /// - `command`: client publishes (`Publish`), owner subscribes (`Subscribe`).
-    /// - `state` / `event` / `measurement` / `diagnostic`: client subscribes (`Subscribe`),
-    ///   owner publishes (`Publish`).
-    /// - `query`: client asks (`AskQuery`), owner serves (`ServeQuery`).
+    /// The brand is picked from endpoint direction and builder side.
     fn builder_leaf_kind(&self, path: &[NodeSeg], side: Side) -> TokenStream {
-        // `path[0]` is the top-level node - exactly what `__phoxal_type_root` already
-        // aliases - so only the segments AFTER it need to be descended.
-        let rest_path: Vec<&Ident> = path.iter().skip(1).map(|s| &s.name).collect();
-        let body_path =
-            |body: &Ident| quote! { self::__phoxal_type_root #(::#rest_path)* :: #body };
+        let endpoint_path: Vec<&Ident> = path.iter().map(|s| &s.name).collect();
         match &self.kind {
-            TopicKind::PubSub(body) => {
-                let b = body_path(body);
-                // Every pub/sub role shares the wire shape and differs only in
-                // which side publishes; the role + side pick the brand. (A `query`
-                // role never carries a `PubSub` kind - the parser pairs it with
-                // `TopicKind::Query` - and `owner_publishes` treats it like an
-                // owner-published role, which is unreachable but harmless.)
-                let owner_publishes = self.role.owner_publishes();
+            TopicKind::PubSub(_) => {
+                let endpoint = self.endpoint_ident();
+                let endpoint =
+                    quote! { self::__phoxal_endpoint_root #(::#endpoint_path)* :: #endpoint };
+                let owner_publishes = self.owner_publishes;
                 match side {
-                    Side::Owner if owner_publishes => quote! { ::phoxal_bus::Publish<#b> },
-                    Side::Client if !owner_publishes => quote! { ::phoxal_bus::Publish<#b> },
-                    _ => quote! { ::phoxal_bus::Subscribe<#b> },
+                    Side::Owner if owner_publishes => quote! { ::phoxal_bus::Publish<#endpoint> },
+                    Side::Client if !owner_publishes => quote! { ::phoxal_bus::Publish<#endpoint> },
+                    _ => quote! { ::phoxal_bus::Subscribe<#endpoint> },
                 }
             }
-            TopicKind::Query { request, response } => {
-                let req = body_path(request);
-                let resp = body_path(response);
+            TopicKind::Query { .. } => {
+                let endpoint = self.endpoint_ident();
+                let endpoint =
+                    quote! { self::__phoxal_endpoint_root #(::#endpoint_path)* :: #endpoint };
+                let req = endpoint.clone();
                 match side {
-                    Side::Client => quote! { ::phoxal_bus::AskQuery<#req, #resp> },
-                    Side::Owner => quote! { ::phoxal_bus::ServeQuery<#req, #resp> },
+                    Side::Client => quote! { ::phoxal_bus::AskQuery<#req> },
+                    Side::Owner => quote! { ::phoxal_bus::ServeQuery<#req> },
                 }
             }
         }
@@ -373,7 +312,7 @@ impl TopicLeaf {
     /// `{}` for each dynamic var, optionally then `/leaf`) and the
     /// human-readable `{var}`-placeholder doc key. Both are derived from the
     /// node path so the concrete key and the documented key stay in lockstep
-    /// with `ContractBody::TOPIC`.
+    /// with descriptor `TOPIC`.
     fn builder_key_parts(&self, tree_id: &str, path: &[NodeSeg]) -> (String, String) {
         let mut fmt_segs = vec![tree_id.to_string()];
         let mut doc_segs = vec![tree_id.to_string()];
@@ -408,13 +347,4 @@ impl TopicLeaf {
 /// reused across a nested path never produces duplicate builder struct fields.
 fn seg_field(i: usize) -> Ident {
     quote::format_ident!("__seg{}", i)
-}
-
-/// The name of the hidden alias, seeded once in `topic` per top-level node, that
-/// re-exports that node's type-tree module (e.g. `component`) under a name that
-/// cannot collide with the SAME-named builder submodule `topic` also declares for
-/// it. Builder modules import it (and re-forward it downward) as
-/// `__phoxal_type_root`.
-fn type_root_alias_ident(node_name: &Ident) -> Ident {
-    quote::format_ident!("__phoxal_type_root_{}", node_name)
 }

@@ -2,7 +2,7 @@ use phoxal::api;
 use phoxal::prelude::*;
 
 struct Api {
-    ranges: Vec<MeasurementPublisher<api::component::range::Sample>>,
+    ranges: Vec<SamplePublisher<api::endpoint::component::range::SampleEndpoint>>,
 }
 
 #[phoxal::driver(id = "dynamic-handles", api = Api)]
@@ -17,7 +17,7 @@ impl Participant for DynamicHandles {
         let mut ranges = Vec::new();
         for capability in ["front", "rear"] {
             ranges.push(
-                ctx.measurement_publisher(
+                ctx.sample_publisher(
                     api::topic::owner()
                         .component("chassis")?
                         .range(capability)?

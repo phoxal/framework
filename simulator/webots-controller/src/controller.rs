@@ -13,13 +13,13 @@
 //! which would assert a state no one in the world can change.
 
 use anyhow::Result;
-use phoxal::api;
 use phoxal::bus::{TimelineId, WorldStepToken};
 use phoxal::prelude::*;
 // `WorldClockPublisher` is deliberately not part of `phoxal::bus`/`phoxal::prelude`:
 // it is world-clock authority, which only this simulator legitimately names, so
 // it lives behind the explicit `phoxal_bus` opt-in instead - see that module's
 // docs.
+use phoxal::runtime::simulation::{Clock, ClockEndpoint};
 use phoxal_bus::WorldClockPublisher;
 
 use crate::backend::{SharedBackend, WebotsHandle};
@@ -41,7 +41,7 @@ pub(crate) fn run() -> Result<()> {
 /// of a device. Every capability's own handle lives with the device serving it.
 #[derive(Clone)]
 pub(crate) struct Api {
-    clock: WorldClockPublisher<api::simulation::Clock>,
+    clock: WorldClockPublisher<ClockEndpoint>,
 }
 
 impl Api {
@@ -55,8 +55,7 @@ impl Api {
         output: StepOutput,
     ) -> Result<()> {
         output.publish(world_step)?;
-        self.clock
-            .publish(world_step, api::simulation::Clock { step })?;
+        self.clock.publish(world_step, Clock { step })?;
         Ok(())
     }
 }
@@ -79,7 +78,7 @@ impl Participant for WebotsControllerSimulator {
         // effective source cadence schedules are allowed to publish at.
         let handle = WebotsHandle::open()?;
         let catalog = CapabilityCatalog::from_robot(ctx.robot()?, handle.basic_time_step_ms())?;
-        let clock = ctx.world_clock_publisher(api::topic::owner().simulation().clock())?;
+        let clock = ctx.world_clock_publisher()?;
 
         // One pass over the catalog binds each capability's device and its bus
         // handle together, so the two are never matched up by position later.
@@ -117,9 +116,9 @@ mod tests {
     use crate::channel::PendingPublish;
     use phoxal::__private::ParticipantSpec;
     use phoxal::Participant;
+    use phoxal::api;
     use phoxal_bus::{
-        BusConfig, BusOwner, MeasurementPublisher, SampleReceiver, StreamReceiver,
-        TimelineAuthority,
+        BusConfig, BusOwner, SamplePublisher, SampleReceiver, StreamReceiver, TimelineAuthority,
     };
     use std::time::Duration;
 
@@ -151,24 +150,25 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let clock_subscriber = StreamReceiver::<api::simulation::Clock>::new(
+        let clock_subscriber = StreamReceiver::<ClockEndpoint>::new(
             &bus,
-            &api::topic::client().simulation().clock(),
+            &phoxal::runtime::simulation::client_topic(),
         )
         .await
         .expect("clock subscriber should attach");
-        let encoder_subscriber = SampleReceiver::<api::component::encoder::Sample>::new(
-            &bus,
-            &api::topic::client()
-                .component("left_drive")
-                .expect("valid component segment")
-                .encoder("encoder")
-                .expect("valid capability segment")
-                .sample(),
-        )
-        .await
-        .expect("encoder subscriber should attach");
-        let encoder_publisher = MeasurementPublisher::new(
+        let encoder_subscriber =
+            SampleReceiver::<api::endpoint::component::encoder::SampleEndpoint>::new(
+                &bus,
+                &api::topic::client()
+                    .component("left_drive")
+                    .expect("valid component segment")
+                    .encoder("encoder")
+                    .expect("valid capability segment")
+                    .sample(),
+            )
+            .await
+            .expect("encoder subscriber should attach");
+        let encoder_publisher = SamplePublisher::new(
             bus.clone(),
             &api::topic::owner()
                 .component("left_drive")
@@ -181,7 +181,7 @@ mod tests {
         let api = Api {
             clock: WorldClockPublisher::mint(
                 bus.clone(),
-                &api::topic::owner().simulation().clock(),
+                &phoxal::runtime::simulation::owner_topic(),
             )
             .expect("clock publisher should attach"),
         };
@@ -191,10 +191,7 @@ mod tests {
         let world_step = authority.completed_step(20_000_000);
         let output = StepOutput::new(vec![PendingPublish::Encoder(
             encoder_publisher,
-            api::component::encoder::Sample {
-                position_rad: 1.0,
-                velocity_radps: 0.5,
-            },
+            api::component::encoder::Sample::try_new(1.0, 0.5).unwrap(),
         )]);
         api.commit_step(&world_step, 2, output)
             .expect("commit should publish");

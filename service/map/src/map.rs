@@ -18,8 +18,8 @@ use phoxal::prelude::*;
 const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct Api {
-    localize: StateView<api::localize::LocalizationState>,
-    revision: StatePublisher<api::map::Revision>,
+    localize: StateView<api::endpoint::localize::StateEndpoint>,
+    revision: StatePublisher<api::endpoint::map::RevisionEndpoint>,
 }
 
 pub(crate) struct MapState {

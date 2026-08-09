@@ -43,8 +43,10 @@ pub(crate) struct SensorStep {
 /// declares a publish rate, the controller resolves it to a logical-time
 /// deadline schedule once at setup, and every family applies it the same way.
 pub(crate) trait SimulatedSensor {
-    /// The contract body this device produces.
-    type Sample;
+    /// The endpoint payload this device produces.
+    type Sample: phoxal::bus::Payload;
+    /// The endpoint carrying [`Self::Sample`].
+    type Endpoint: phoxal::bus::EndpointDescriptor<Payload = Self::Sample>;
 
     /// The mutable publish cadence this capability was bound at.
     fn schedule(&mut self) -> &mut SampleSchedule;
@@ -205,6 +207,7 @@ macro_rules! vector_sensor {
         $device:ty,
         $accessor:ident,
         $sample:ty,
+        $endpoint:ty,
         $field:ident $(,)?
     ) => {
         pub(crate) struct $native {
@@ -228,6 +231,7 @@ macro_rules! vector_sensor {
 
         impl $crate::capabilities::SimulatedSensor for $native {
             type Sample = $sample;
+            type Endpoint = $endpoint;
 
             fn schedule(&mut self) -> &mut ::phoxal::SampleSchedule {
                 &mut self.spec.schedule
@@ -240,9 +244,9 @@ macro_rules! vector_sensor {
                 // A captured type cannot be written directly in struct-literal
                 // position, so the body type is named through a local alias.
                 type Sample = $sample;
-                Ok(Some(Sample {
-                    $field: self.device.values()?.map(|value| value as f32),
-                }))
+                Sample::try_new(self.device.values()?.map(|value| value as f32))
+                    .map(Some)
+                    .map_err(::anyhow::Error::from)
             }
         }
     };

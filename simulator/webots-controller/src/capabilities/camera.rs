@@ -37,6 +37,7 @@ impl NativeCamera {
 
 impl SimulatedSensor for NativeCamera {
     type Sample = api::component::camera::Frame;
+    type Endpoint = api::endpoint::component::camera::FrameEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.sampled.schedule
@@ -48,16 +49,16 @@ impl SimulatedSensor for NativeCamera {
             CameraMode::Mono => (api::component::camera::Encoding::L8, bgra_to_luma(&bgra)),
             CameraMode::Rgb => (api::component::camera::Encoding::Rgb8, bgra_to_rgb(&bgra)),
         };
-        Ok(Some(api::component::camera::Frame {
-            width: self.spec.width,
-            height: self.spec.height,
+        Ok(Some(api::component::camera::Frame::try_new(
+            self.spec.width,
+            self.spec.height,
             encoding,
-            intrinsics: None,
-            distortion: None,
-            exposure: None,
-            calibration: None,
+            None,
+            None,
+            None,
+            None,
             data,
-        }))
+        )?))
     }
 }
 

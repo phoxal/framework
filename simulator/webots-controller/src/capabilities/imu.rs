@@ -36,6 +36,7 @@ impl NativeImu {
 
 impl SimulatedSensor for NativeImu {
     type Sample = api::component::imu::Sample;
+    type Endpoint = api::endpoint::component::imu::SampleEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.schedule
@@ -45,16 +46,18 @@ impl SimulatedSensor for NativeImu {
         let [roll, pitch, yaw] = self.inertial_unit.get_roll_pitch_yaw()?;
         let acceleration = self.accelerometer.values()?.map(|value| value as f32);
         let angular_velocity = self.gyro.values()?.map(|value| value as f32);
-        Ok(Some(api::component::imu::Sample {
-            orientation: Some(quaternion_wxyz_from_rpy(roll, pitch, yaw)),
-            angular_velocity_radps: angular_velocity,
-            linear_acceleration_mps2: acceleration,
-            covariance: None,
-            noise_density: None,
-            sensor_frame_id: None,
-            health: api::component::imu::SensorHealth::Nominal,
-            bias: None,
-        }))
+        api::component::imu::Sample::try_new(
+            Some(quaternion_wxyz_from_rpy(roll, pitch, yaw)),
+            angular_velocity,
+            acceleration,
+            None,
+            None,
+            None,
+            api::component::imu::SensorHealth::Nominal,
+            None,
+        )
+        .map(Some)
+        .map_err(anyhow::Error::from)
     }
 }
 

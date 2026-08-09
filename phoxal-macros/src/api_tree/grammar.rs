@@ -1,42 +1,30 @@
-//! The `phoxal_api_tree!` grammar: the keyword table and every `Parse` impl
+//! The semantic API/protocol grammar: the keyword table and every `Parse` impl
 //! that turns an invocation's tokens into the [`super::model`] tree, plus the
 //! diagnostics that name why a form is not accepted where it was written.
 
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, ItemEnum, ItemStruct, Token};
+use syn::{Ident, Token};
 
-use super::ApiTree;
-use super::model::{
-    DeliveryOverride, Node, Protocol, Removal, TopicDef, TopicKind, TopicLeaf, TopicRole, TypeDef,
-    TypeItem, Version,
-};
+use super::model::{BodyPath, Node, Protocol, SemanticKind, TopicDef, TopicKind, TopicLeaf};
 
 mod kw {
-    syn::custom_keyword!(extends);
-    syn::custom_keyword!(latest);
     syn::custom_keyword!(protocol);
     syn::custom_keyword!(remove);
     syn::custom_keyword!(replace);
-    syn::custom_keyword!(version);
     syn::custom_keyword!(topic);
     syn::custom_keyword!(command);
     syn::custom_keyword!(stream);
     syn::custom_keyword!(state);
-    syn::custom_keyword!(measurement);
-    syn::custom_keyword!(diagnostic);
     syn::custom_keyword!(delivery);
     syn::custom_keyword!(sample);
     syn::custom_keyword!(setpoint);
     syn::custom_keyword!(event);
     syn::custom_keyword!(query);
-    syn::custom_keyword!(world_clock);
 }
 
-/// The diagnostic for an invocation that reaches a `protocol` tree from inside
-/// the other mode. The protocol-first direction has its own wording at the top
-/// of [`ApiTree::parse`]; this is every other direction, so a misplaced
-/// `protocol` never lands on the generic "expected a child node" error.
-const MODES_DO_NOT_MIX: &str = "a `protocol <name> { … }` tree stands alone at the top of its own `phoxal_api_tree!` \
+/// The diagnostic for an invocation that nests a `protocol` tree inside
+/// another protocol node.
+const MODES_DO_NOT_MIX: &str = "a `protocol <name> { … }` tree stands alone at the top of its own semantic macro \
      invocation: it has no `version` revisions and no `latest` selection, so the two modes never \
      mix in one invocation";
 
@@ -51,44 +39,26 @@ pub(super) const VERSION_HAS_NO_PARENT: &str =
 pub(super) const PROTOCOL_HAS_NO_DELTAS: &str = "is not valid inside a `protocol` tree: a protocol has no revision history, so edit the \
      declaration in place";
 
-impl Parse for ApiTree {
+pub(super) struct ProtocolInput(pub(super) Vec<Protocol>);
+
+impl Parse for ProtocolInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        if input.peek(kw::protocol) {
-            let mut protocols = Vec::new();
-            while input.peek(kw::protocol) {
-                protocols.push(input.parse()?);
-            }
-            if !input.is_empty() {
-                return Err(input.error(
-                    "a `protocol` invocation declares only `protocol <name> { … }` trees: it has \
-                     no `version` revisions and no `latest` selection",
-                ));
-            }
-            return Ok(ApiTree::Protocols(protocols));
-        }
-        let mut versions = Vec::new();
-        while input.peek(kw::version) {
-            versions.push(input.parse()?);
-        }
-        if input.peek(kw::protocol) {
-            return Err(input.error(MODES_DO_NOT_MIX));
-        }
-        if versions.is_empty() {
+        if !input.peek(kw::protocol) {
             return Err(input.error(
-                "phoxal_api_tree! requires at least one `version` block or one \
-                 `protocol <name> { … }` tree",
+                "`phoxal_protocol!` accepts only `protocol <name> { ... }` trees; use \
+                 `phoxal_api_tree!` plus fragments for Robot API revisions",
             ));
         }
-        input.parse::<kw::latest>()?;
-        let latest = input.parse()?;
-        input.parse::<Token![;]>()?;
-        if input.peek(kw::protocol) {
-            return Err(input.error(MODES_DO_NOT_MIX));
+        let mut protocols = Vec::new();
+        while input.peek(kw::protocol) {
+            protocols.push(input.parse()?);
         }
         if !input.is_empty() {
-            return Err(input.error("expected exactly one final `latest <revision>;` declaration"));
+            return Err(
+                input.error("a `protocol` invocation declares only `protocol <name> { … }` trees")
+            );
         }
-        Ok(ApiTree::Api { versions, latest })
+        Ok(Self(protocols))
     }
 }
 
@@ -124,70 +94,12 @@ impl Parse for Protocol {
     }
 }
 
-impl Parse for Version {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        input.parse::<kw::version>()?;
-        let name: Ident = input.parse()?;
-        let name_text = name.to_string();
-        let Some(parts) = name_text.strip_prefix('v') else {
-            return Err(syn::Error::new(
-                name.span(),
-                "API revisions use Rust identifiers such as `v0_1` or `v1_0`",
-            ));
-        };
-        let Some((major, minor)) = parts.split_once('_') else {
-            return Err(syn::Error::new(
-                name.span(),
-                "API revisions use two-part Rust identifiers such as `v0_1` or `v1_0`",
-            ));
-        };
-        let valid_part = |part: &str| {
-            !part.is_empty()
-                && (part == "0" || !part.starts_with('0'))
-                && part.bytes().all(|byte| byte.is_ascii_digit())
-        };
-        if !valid_part(major) || !valid_part(minor) {
-            return Err(syn::Error::new(
-                name.span(),
-                "API revision components must be canonical decimal numbers, e.g. `v0_1`",
-            ));
-        }
-        let wire_id = format!("v{major}.{minor}");
-        let parent = if input.peek(kw::extends) {
-            input.parse::<kw::extends>()?;
-            Some(input.parse()?)
-        } else {
-            None
-        };
-        let body;
-        syn::braced!(body in input);
-        let mut nodes = Vec::new();
-        let mut removals = Vec::new();
-        while !body.is_empty() {
-            if body.peek(kw::remove) {
-                removals.push(body.parse()?);
-            } else {
-                nodes.push(body.parse()?);
-            }
-        }
-        Ok(Version {
-            name,
-            wire_id,
-            parent,
-            nodes,
-            removals,
-        })
-    }
-}
-
 impl Parse for Node {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let replace = if input.peek(kw::replace) {
+        if input.peek(kw::replace) {
             input.parse::<kw::replace>()?;
-            true
-        } else {
-            false
-        };
+            return Err(input.error(format!("`replace` {PROTOCOL_HAS_NO_DELTAS}")));
+        }
         // `protocol <name> {` here is a protocol tree nested inside another
         // tree. A node literally called `protocol` is followed by `{` or `(`,
         // never by a second identifier, so this only catches the mix-up.
@@ -212,57 +124,36 @@ impl Parse for Node {
 
         let body;
         syn::braced!(body in input);
-        let mut types = Vec::new();
         let mut topics = Vec::new();
         let mut children = Vec::new();
-        let mut removals = Vec::new();
         while !body.is_empty() {
             // Leading doc-comments / attributes apply to the next item; `topic`
             // declarations take none.
             let attrs = body.call(syn::Attribute::parse_outer)?;
-            let replace_item = if body.peek(kw::replace) {
+            if body.peek(kw::replace) {
                 body.parse::<kw::replace>()?;
-                true
-            } else {
-                false
-            };
+                return Err(body.error(format!("`replace` {PROTOCOL_HAS_NO_DELTAS}")));
+            }
             if body.peek(kw::remove) {
-                if replace_item {
-                    return Err(body.error("`replace remove` is not valid; use `remove <path>;`"));
-                }
                 if let Some(attr) = attrs.first() {
                     return Err(syn::Error::new_spanned(
                         attr,
                         "attributes are not allowed on a `remove` declaration",
                     ));
                 }
-                removals.push(body.parse()?);
-            } else if body.peek(kw::topic) {
+                return Err(body.error(format!("`remove` {PROTOCOL_HAS_NO_DELTAS}")));
+            } else if body.peek(kw::topic) || body.peek(kw::command) || body.peek(kw::query) {
                 if let Some(attr) = attrs.first() {
                     return Err(syn::Error::new_spanned(
                         attr,
                         "attributes are not allowed on a `topic` declaration",
                     ));
                 }
-                let mut topic: TopicDef = body.parse()?;
-                topic.replace = replace_item;
-                topics.push(topic);
-            } else if body.peek(Token![struct]) {
-                let mut item: ItemStruct = body.parse()?;
-                item.attrs = attrs;
-                item.vis = syn::Visibility::Public(syn::token::Pub::default());
-                types.push(TypeDef {
-                    replace: replace_item,
-                    item: TypeItem::Struct(item),
-                });
-            } else if body.peek(Token![enum]) {
-                let mut item: ItemEnum = body.parse()?;
-                item.attrs = attrs;
-                item.vis = syn::Visibility::Public(syn::token::Pub::default());
-                types.push(TypeDef {
-                    replace: replace_item,
-                    item: TypeItem::Enum(item),
-                });
+                topics.push(body.parse()?);
+            } else if body.peek(Token![struct]) || body.peek(Token![enum]) {
+                return Err(body.error(
+                    "semantic API/protocol trees declare endpoints over ordinary Rust domain types; move this struct/enum into its domain module",
+                ));
             } else if body.peek(Ident)
                 && (body.peek2(syn::token::Paren) || body.peek2(syn::token::Brace))
             {
@@ -273,33 +164,43 @@ impl Parse for Node {
                         "attributes are not allowed on a child node declaration",
                     ));
                 }
-                let mut child: Node = body.parse()?;
-                child.replace = replace_item;
-                children.push(child);
+                children.push(body.parse()?);
             } else if body.peek(kw::protocol) && body.peek2(Ident) {
                 return Err(body.error(MODES_DO_NOT_MIX));
             } else {
                 return Err(body.error(
-                    "expected `struct`, `enum`, `topic …;`, or a child node `name { … }` / \
+                    "expected an endpoint declaration or a child node `name { … }` / \
                      `name(var) { … }` inside an API node block",
                 ));
             }
         }
         Ok(Node {
             name,
-            replace,
             var,
-            types,
             topics,
             children,
-            removals,
         })
     }
 }
 
 impl Parse for TopicDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        input.parse::<kw::topic>()?;
+        // New endpoint direction is part of the declaration prefix:
+        // `topic frame: Sample<Frame>` publishes from the owner,
+        // `command target: Setpoint<Target>` is consumed by the owner, and
+        // `query start: Req => Resp` is request/reply.
+        let prefix = if input.peek(kw::topic) {
+            input.parse::<kw::topic>()?;
+            0u8
+        } else if input.peek(kw::command) {
+            input.parse::<kw::command>()?;
+            1u8
+        } else if input.peek(kw::query) {
+            input.parse::<kw::query>()?;
+            2u8
+        } else {
+            return Err(input.error("expected `topic`, `command`, or `query` endpoint"));
+        };
         let leaf = if input.peek(Token![self]) {
             input.parse::<Token![self]>()?;
             TopicLeaf::Node
@@ -307,105 +208,70 @@ impl Parse for TopicDef {
             TopicLeaf::Named(input.parse()?)
         };
         input.parse::<Token![:]>()?;
-        // Every topic declares a role. `command`, `stream`, `state`, `event`,
-        // `measurement`, and `diagnostic` carry a single pub/sub body and differ
-        // by role; `query`
-        // carries request/response. The role rides alongside the kind and
-        // selects the side brand in the generated builders: a `command` leaf is
-        // `Publish` on the public builder and `Subscribe` on the owner builder;
-        // every owner-published role is the reverse.
-        let (kind, role) = if input.peek(kw::command) {
-            input.parse::<kw::command>()?;
-            let body: Ident = input.parse()?;
-            (TopicKind::PubSub(body), TopicRole::Command)
-        } else if input.peek(kw::stream) {
-            input.parse::<kw::stream>()?;
-            let body: Ident = input.parse()?;
-            (TopicKind::PubSub(body), TopicRole::Stream)
-        } else if input.peek(kw::state) {
-            input.parse::<kw::state>()?;
-            let body: Ident = input.parse()?;
-            (TopicKind::PubSub(body), TopicRole::State)
-        } else if input.peek(kw::event) {
-            input.parse::<kw::event>()?;
-            let body: Ident = input.parse()?;
-            (TopicKind::PubSub(body), TopicRole::Event)
-        } else if input.peek(kw::measurement) {
-            input.parse::<kw::measurement>()?;
-            let body: Ident = input.parse()?;
-            (TopicKind::PubSub(body), TopicRole::Measurement)
-        } else if input.peek(kw::diagnostic) {
-            input.parse::<kw::diagnostic>()?;
-            let body: Ident = input.parse()?;
-            (TopicKind::PubSub(body), TopicRole::Diagnostic)
-        } else if input.peek(kw::query) {
-            input.parse::<kw::query>()?;
-            let request: Ident = input.parse()?;
+        if prefix == 2 {
+            let request = parse_body_path(input)?;
             input.parse::<Token![=>]>()?;
-            let response: Ident = input.parse()?;
-            (TopicKind::Query { request, response }, TopicRole::Query)
-        } else if input.peek(kw::world_clock) {
-            // Framework-reserved: see `TopicRole::WorldClock`'s docs. There is
-            // exactly one production use (`simulation::Clock` in
-            // `phoxal-api/src/lib.rs`) and no reason for a second.
-            input.parse::<kw::world_clock>()?;
-            let body: Ident = input.parse()?;
-            (TopicKind::PubSub(body), TopicRole::WorldClock)
-        } else {
-            return Err(input.error(
-                "expected a topic role: `command <Body>`, `stream <Body>`, `state <Body>`, `event <Body>`, \
-                 `measurement <Body>`, `diagnostic <Body>`, `world_clock <Body>` \
-                 (framework-reserved), or `query <Req> => <Resp>`",
-            ));
-        };
-        let delivery = if input.peek(kw::delivery) {
-            input.parse::<kw::delivery>()?;
-            if input.peek(kw::state) {
-                input.parse::<kw::state>()?;
-                Some(DeliveryOverride::State)
-            } else if input.peek(kw::sample) {
-                input.parse::<kw::sample>()?;
-                Some(DeliveryOverride::Sample)
-            } else if input.peek(kw::setpoint) {
-                input.parse::<kw::setpoint>()?;
-                Some(DeliveryOverride::Setpoint)
-            } else if input.peek(kw::stream) {
-                input.parse::<kw::stream>()?;
-                Some(DeliveryOverride::Stream)
-            } else {
-                return Err(input.error(
-                    "expected a delivery override: `state`, `sample`, `setpoint`, or `stream`",
-                ));
+            let response = parse_body_path(input)?;
+            input.parse::<Token![;]>()?;
+            return Ok(TopicDef {
+                replace: false,
+                leaf,
+                kind: TopicKind::Query { request, response },
+                semantic: SemanticKind::Query,
+                owner_publishes: true,
+            });
+        }
+        // The semantic descriptor spelling is `State<T>`, `Sample<T>`,
+        // `Event<T>`, `Stream<T>`, or `Setpoint<T>`. It is deliberately
+        // distinguished from the old lowercase role keywords.
+        if input.peek(Ident)
+            && !input.peek(kw::command)
+            && !input.peek(kw::stream)
+            && !input.peek(kw::state)
+            && !input.peek(kw::event)
+            && !input.peek(kw::sample)
+            && !input.peek(kw::setpoint)
+            && !input.peek(kw::query)
+        {
+            let descriptor: Ident = input.parse()?;
+            if input.peek(Token![<]) {
+                input.parse::<Token![<]>()?;
+                let body = parse_body_path(input)?;
+                input.parse::<Token![>]>()?;
+                let (semantic, owner_publishes) = match descriptor.to_string().as_str() {
+                    "State" if prefix == 0 => (SemanticKind::State, true),
+                    "Sample" if prefix == 0 => (SemanticKind::Sample, true),
+                    "Event" if prefix == 0 => (SemanticKind::Event, true),
+                    "Stream" => (SemanticKind::Stream, prefix == 0),
+                    "Setpoint" if prefix == 1 => (SemanticKind::Setpoint, false),
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            descriptor,
+                            "expected semantic descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`",
+                        ));
+                    }
+                };
+                input.parse::<Token![;]>()?;
+                return Ok(TopicDef {
+                    replace: false,
+                    leaf,
+                    kind: TopicKind::PubSub(body),
+                    semantic,
+                    owner_publishes,
+                });
             }
-        } else {
-            None
-        };
-        if delivery.is_some() && matches!(&kind, TopicKind::Query { .. }) {
-            return Err(input.error(
-                "delivery overrides apply to pub/sub topics; queries use their direct request/reply transport",
+            return Err(syn::Error::new_spanned(
+                descriptor,
+                "semantic endpoint descriptors must carry one payload type in angle brackets",
             ));
         }
-        input.parse::<Token![;]>()?;
-        Ok(TopicDef {
-            replace: false,
-            leaf,
-            kind,
-            role,
-            delivery,
-        })
+        Err(input.error(
+            "expected a semantic endpoint descriptor: `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`",
+        ))
     }
 }
 
-impl Parse for Removal {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        input.parse::<kw::remove>()?;
-        let head = input.parse()?;
-        let mut rest = Vec::new();
-        while input.peek(Token![::]) {
-            input.parse::<Token![::]>()?;
-            rest.push(input.parse()?);
-        }
-        input.parse::<Token![;]>()?;
-        Ok(Removal { head, rest })
-    }
+fn parse_body_path(input: ParseStream) -> syn::Result<BodyPath> {
+    let ty: syn::TypePath = input.parse()?;
+    Ok(BodyPath { path: ty.path })
 }

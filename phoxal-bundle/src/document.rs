@@ -8,6 +8,7 @@ use phoxal_model::component::capability::MotorCommand;
 use phoxal_model::identity::CapabilityRef;
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
+use phoxal_runtime_contract::version::RobotApiVersion;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -90,6 +91,12 @@ impl RuntimeDocument {
     #[must_use]
     pub fn robot(&self) -> &Robot {
         &self.runtime().robot
+    }
+
+    /// The one Robot API revision validated for this execution.
+    #[must_use]
+    pub fn robot_api(&self) -> RobotApiVersion {
+        self.runtime().robot_api()
     }
 
     /// The final participant set, in persisted order.
@@ -209,6 +216,23 @@ impl Runtime {
         self.router.as_ref()
     }
 
+    /// The one Robot API revision selected by every launched participant.
+    ///
+    /// Runtime construction proves this invariant and every valid runtime has
+    /// a brain participant, so the lookup cannot fail after validation.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Runtime is constructible only after validation proves at least one selected participant and its artifact"
+    )]
+    pub fn robot_api(&self) -> RobotApiVersion {
+        self.participants
+            .first()
+            .and_then(|participant| self.artifacts.get(&participant.artifact))
+            .map(|artifact| artifact.contract().api)
+            .expect("validated runtime has a selected participant artifact")
+    }
+
     fn validate(&self) -> Result<(), DocumentError> {
         let mut ids = BTreeSet::new();
         let mut artifact_paths = BTreeSet::new();
@@ -244,6 +268,7 @@ impl Runtime {
         let mut referenced_artifacts = BTreeSet::new();
         let mut brain = None;
         let mut simulator_count = 0_u8;
+        let mut robot_api = None;
         for participant in &self.participants {
             let artifact = self.artifacts.get(&participant.artifact).ok_or_else(|| {
                 DocumentError::UnknownArtifact {
@@ -258,6 +283,17 @@ impl Runtime {
                 }
             })?;
             participant.validate(&self.robot, artifact, validator)?;
+            let api = artifact.contract().api;
+            if let Some(expected) = robot_api
+                && expected != api
+            {
+                return Err(DocumentError::MixedRobotApi {
+                    artifact: participant.artifact.clone(),
+                    expected,
+                    actual: api,
+                });
+            }
+            robot_api = Some(api);
             if artifact.contract().kind == phoxal_runtime_contract::metadata::ParticipantKind::Brain
             {
                 if participant.id.as_str() != "brain" {

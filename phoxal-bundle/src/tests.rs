@@ -14,7 +14,7 @@ use phoxal_model::builder::Kinematics;
 use phoxal_model::component::capability::{Capability, Motor, MotorCommand, StructuralTarget};
 use phoxal_model::identity::{ComponentInstanceId, JointId};
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind, ParticipantSchemas};
-use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
+use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
 
 type StagedBytes = (
     RuntimeDocument,
@@ -40,7 +40,7 @@ fn document() -> StagedBytes {
         ParticipantContract {
             id: artifact_id.clone(),
             kind: ParticipantKind::Service,
-            api: RobotApi::V0_2,
+            api: RobotApiVersion::new(0, 1),
             schemas: ParticipantSchemas {
                 bus: BusAbi::V0,
                 launch: LaunchAbi::V0,
@@ -67,7 +67,7 @@ fn document() -> StagedBytes {
         ParticipantContract {
             id: brain_id.clone(),
             kind: ParticipantKind::Brain,
-            api: RobotApi::V0_2,
+            api: RobotApiVersion::new(0, 1),
             schemas: ParticipantSchemas {
                 bus: BusAbi::V0,
                 launch: LaunchAbi::V0,
@@ -102,6 +102,34 @@ fn document() -> StagedBytes {
     .expect("runtime");
     let document = RuntimeDocument::new(runtime);
     (document, assets, binaries)
+}
+
+#[test]
+fn runtime_rejects_mixed_robot_api_artifacts_and_exposes_the_selected_api() {
+    let (document, _, _) = document();
+    assert_eq!(document.robot_api(), RobotApiVersion::new(0, 1));
+
+    let RuntimeDocument::V0(mut runtime) = document;
+    let drive = ParticipantArtifactId::new("drive").expect("drive artifact id");
+    runtime
+        .artifacts
+        .get_mut(&drive)
+        .expect("drive artifact")
+        .contract
+        .api = RobotApiVersion::new(0, 3);
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::MixedRobotApi { expected, actual, .. })
+            if expected == RobotApiVersion::new(0, 3)
+                && actual == RobotApiVersion::new(0, 1)
+    ));
 }
 
 fn motor_robot(left: MotorCommand, right: MotorCommand) -> Robot {

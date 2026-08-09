@@ -1,0 +1,16 @@
+error: inherited endpoint already exists; prefix it with `replace`
+  --> tests/trybuild/fail/delta_inherited_without_replace.rs:17:17
+   |
+17 |           command target: Setpoint<Target>;
+   |                   ^^^^^^
+...
+21 | / phoxal_api_tree! {
+22 | |     output generated;
+23 | |     source crate;
+24 | |     versions {
+...  |
+28 | |     fragments { base; delta; }
+29 | | }
+   | |_- in this macro invocation
+   |
+   = note: this error originates in the macro `delta::__phoxal_api_fragment_collect` which comes from the expansion of the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)

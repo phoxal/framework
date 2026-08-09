@@ -8,9 +8,9 @@ use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::Sample;
 
 use crate::abi::{Codec, MessagePack};
-use crate::contract::ContractBody;
+use crate::contract::{Payload, QueryEndpointDescriptor};
 use crate::error::Result;
-use crate::handle::decode_sample;
+use crate::handle::decode_payload;
 use crate::query::{QueryError, QueryFailure};
 use crate::session::BusHandle;
 use crate::topic::{AskQuery, Topic};
@@ -35,6 +35,7 @@ pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Querier<Req, Resp> {
     bus: BusHandle,
     key: String,
+    topic: &'static str,
     timeout: Duration,
     _p: PhantomData<fn() -> (Req, Resp)>,
 }
@@ -47,32 +48,29 @@ impl<Req, Resp> Clone for Querier<Req, Resp> {
         Querier {
             bus: self.bus.clone(),
             key: self.key.clone(),
+            topic: self.topic,
             timeout: self.timeout,
             _p: PhantomData,
         }
     }
 }
 
-impl<Req, Resp> Querier<Req, Resp>
-where
-    Req: ContractBody,
-    Resp: ContractBody,
-{
+impl<Req: Payload, Resp: Payload> Querier<Req, Resp> {
     /// Build a querier over a query topic.
     ///
     /// The author-facing path is `ctx.querier(...)` in `Participant::setup`.
     /// `pub` only because the generated api tree and the runner live in other
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
-    pub fn new(
-        bus: BusHandle,
-        topic: &Topic<AskQuery<Req, Resp>>,
-        timeout: Duration,
-    ) -> Result<Self> {
+    pub fn new<E>(bus: BusHandle, topic: &Topic<AskQuery<E>>, timeout: Duration) -> Result<Self>
+    where
+        E: QueryEndpointDescriptor<Request = Req, Response = Resp>,
+    {
         let key = bus.full_key(topic.publish_key()?);
         Ok(Querier {
             bus,
             key,
+            topic: E::TOPIC,
             timeout,
             _p: PhantomData,
         })
@@ -130,7 +128,7 @@ where
                     if outcome.is_some() {
                         return Err(QueryError::TooManyResponders);
                     }
-                    outcome = Some(decode_reply_result::<Resp>(reply.into_result()));
+                    outcome = Some(decode_reply_result::<Resp>(reply.into_result(), self.topic));
                 }
                 Ok(Err(_)) => break, // reply stream closed
                 Err(_elapsed) => {
@@ -146,11 +144,12 @@ where
     }
 }
 
-fn decode_reply_result<Resp: ContractBody>(
+fn decode_reply_result<Resp: Payload>(
     result: std::result::Result<Sample, zenoh::query::ReplyError>,
+    topic: &str,
 ) -> std::result::Result<Resp, QueryError> {
     match result {
-        Ok(sample) => decode_sample::<Resp>(&sample, Resp::TOPIC)
+        Ok(sample) => decode_payload::<Resp>(&sample, topic)
             .map(|(body, _)| body)
             .map_err(|e| QueryError::Decode(e.to_string())),
         Err(reply_error) => {
@@ -170,7 +169,7 @@ mod tests {
 
     use crate::query::QueryCode;
     use crate::session::BusOwner;
-    use crate::test_support::{GetRequest, GetResponse, participant_config};
+    use crate::test_support::{GetEndpoint, GetRequest, GetResponse, participant_config};
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -202,9 +201,7 @@ mod tests {
             }
         });
 
-        let topic = Topic::<AskQuery<GetRequest, GetResponse>>::new_static(
-            <GetRequest as ContractBody>::TOPIC,
-        );
+        let topic = Topic::<AskQuery<GetEndpoint>>::new_static("yTEST/asset/get");
         let querier =
             Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
                 .unwrap();
@@ -245,9 +242,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
 
-        let topic = Topic::<AskQuery<GetRequest, GetResponse>>::new_static(
-            <GetRequest as ContractBody>::TOPIC,
-        );
+        let topic = Topic::<AskQuery<GetEndpoint>>::new_static("yTEST/asset/get");
         let querier =
             Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_millis(20))
                 .unwrap();
@@ -281,9 +276,7 @@ mod tests {
             std::future::pending::<()>().await;
         });
 
-        let topic = Topic::<AskQuery<GetRequest, GetResponse>>::new_static(
-            <GetRequest as ContractBody>::TOPIC,
-        );
+        let topic = Topic::<AskQuery<GetEndpoint>>::new_static("yTEST/asset/get");
         let querier =
             Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
                 .unwrap();

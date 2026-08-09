@@ -50,44 +50,67 @@ impl NativeLidar {
 
 impl SimulatedSensor for NativeLidar {
     type Sample = api::component::lidar::Scan;
+    type Endpoint = api::endpoint::component::lidar::ScanEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.sampled.schedule
     }
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
-        Ok(Some(match self.lidar.reading()? {
+        match self.lidar.reading()? {
             LidarReading::RangeImage(ranges) => {
-                let valid_points = ranges.iter().filter(|range| range.is_finite()).count();
-                api::component::lidar::Scan::Ranges(api::component::lidar::Ranges {
+                let ranges: Vec<_> = ranges
+                    .into_iter()
+                    .map(|range| {
+                        if range.is_finite() {
+                            api::component::lidar::RangeSample::Valid(range)
+                        } else {
+                            api::component::lidar::RangeSample::Invalid
+                        }
+                    })
+                    .collect();
+                let valid_points = ranges
+                    .iter()
+                    .filter(|range| matches!(range, api::component::lidar::RangeSample::Valid(_)))
+                    .count();
+                api::component::lidar::Scan::ranges(
                     ranges,
-                    geometry: self.geometry,
-                    limits: Some(self.limits),
-                    quality: Some(api::component::lidar::ScanQuality {
+                    self.geometry,
+                    Some(self.limits),
+                    Some(api::component::lidar::ScanQuality {
                         valid_points: valid_points as u32,
                     }),
-                    health: api::component::lidar::SensorHealth::Nominal,
-                })
+                    api::component::lidar::SensorHealth::Nominal,
+                )
             }
             LidarReading::PointCloud(cloud) => {
-                let points: Vec<[f32; 3]> = cloud
+                let points: Vec<_> = cloud
                     .iter()
-                    .map(|point| [point.x, point.y, point.z])
+                    .map(|point| {
+                        let point = [point.x, point.y, point.z];
+                        if point.iter().all(|axis| axis.is_finite()) {
+                            api::component::lidar::PointSample::Valid(point)
+                        } else {
+                            api::component::lidar::PointSample::Invalid
+                        }
+                    })
                     .collect();
                 let valid_points = points
                     .iter()
-                    .filter(|point| point.iter().all(|axis| axis.is_finite()))
+                    .filter(|point| matches!(point, api::component::lidar::PointSample::Valid(_)))
                     .count();
-                api::component::lidar::Scan::Points(api::component::lidar::Points {
+                api::component::lidar::Scan::points(
                     points,
-                    limits: Some(self.limits),
-                    quality: Some(api::component::lidar::ScanQuality {
+                    Some(self.limits),
+                    Some(api::component::lidar::ScanQuality {
                         valid_points: valid_points as u32,
                     }),
-                    health: api::component::lidar::SensorHealth::Nominal,
-                })
+                    api::component::lidar::SensorHealth::Nominal,
+                )
             }
-        }))
+        }
+        .map(Some)
+        .map_err(anyhow::Error::from)
     }
 }
 

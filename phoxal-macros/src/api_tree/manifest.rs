@@ -1,18 +1,9 @@
-//! The contract manifest: the tree's own `#[cfg(test)]` enumeration of every
-//! contract it declares.
-//!
-//! `phoxal-api`'s curation tests read it to assert that each command and stream
-//! topic is deliberately classified and each wire key composes as intended, so it is
-//! emitted only into test builds and never becomes public API surface.
-//!
-//! The manifest records the public temporal role. An `event` declaration is
-//! therefore listed as `State`; its separate ordered-delivery guarantee is
-//! asserted through the generated `ContractBody::DELIVERY` constant.
+//! Generated endpoint catalogue for materialized API and protocol trees.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::model::{MaterializedTree, Node, TopicKind, TopicRole};
+use super::model::{MaterializedTree, Node, TopicKind};
 
 /// One tree (an API revision or a protocol) in the emitted manifest.
 pub(super) struct ManifestVersion {
@@ -21,25 +12,23 @@ pub(super) struct ManifestVersion {
 }
 
 struct ManifestContract {
-    /// Tree-qualified contract identity, e.g. `"v0.1::drive::Target"` - the
-    /// version is part of the name, not a separate axis.
-    family: String,
-    /// Tree-qualified wire key, e.g. `"v0.1/drive/target"`.
+    endpoint: String,
     topic: String,
-    /// The declared role, so a check can enumerate every command or stream
-    /// topic without parsing names.
-    role: TopicRole,
+    payload: Option<String>,
+    request: Option<String>,
+    response: Option<String>,
+    kind_tokens: TokenStream,
+    delivery_tokens: TokenStream,
 }
 
 impl ManifestVersion {
-    /// Enumerate every contract `tree` declares, sorted by `(family, topic)` so
-    /// the emitted manifest is order-stable regardless of authoring order.
+    /// Enumerate every endpoint, sorted independently of authoring order.
     pub(super) fn of(tree: &MaterializedTree) -> Self {
         let mut contracts = Vec::new();
         collect(&tree.id, &tree.nodes, "", "", &mut contracts);
         contracts.sort_by(|left, right| {
-            left.family
-                .cmp(&right.family)
+            left.endpoint
+                .cmp(&right.endpoint)
                 .then_with(|| left.topic.cmp(&right.topic))
         });
         Self {
@@ -48,19 +37,26 @@ impl ManifestVersion {
         }
     }
 
-    /// Emit the manifest const and the two record types it is built from.
     pub(super) fn expand_manifest(versions: &[Self]) -> TokenStream {
         let version_entries = versions.iter().map(|version| {
             let name = &version.name;
             let contracts = version.contracts.iter().map(|contract| {
-                let family = &contract.family;
+                let endpoint = &contract.endpoint;
                 let topic = &contract.topic;
-                let role = contract.role.bus_variant();
+                let payload = optional_string(&contract.payload);
+                let request = optional_string(&contract.request);
+                let response = optional_string(&contract.response);
+                let kind = &contract.kind_tokens;
+                let delivery = &contract.delivery_tokens;
                 quote! {
                     ApiContractManifestContract {
-                        family: #family,
+                        endpoint: #endpoint,
                         topic: #topic,
-                        role: #role,
+                        payload: #payload,
+                        request: #request,
+                        response: #response,
+                        kind: #kind,
+                        delivery: #delivery,
                     }
                 }
             });
@@ -73,13 +69,7 @@ impl ManifestVersion {
         });
 
         quote! {
-            /// One generated API version in the contract manifest.
-            ///
-            /// `#[cfg(test)]`-only: this is the tree's own
-            /// self-enumeration, which backs `phoxal-api`'s curation tests (every
-            /// command topic is deliberately classified, every wire key composes
-            /// as intended). It is available only to test builds.
-            #[cfg(test)]
+            /// One generated API/protocol tree in the endpoint catalogue.
             #[doc(hidden)]
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct ApiContractManifestVersion {
@@ -87,35 +77,33 @@ impl ManifestVersion {
                 pub contracts: &'static [ApiContractManifestContract],
             }
 
-            /// One generated contract in the contract manifest. `family` is the
-            /// version-qualified contract identity; `topic` is its
-            /// version-qualified wire key. The name itself is the whole identity.
-            /// `#[cfg(test)]`-only - see
-            /// [`ApiContractManifestVersion`]'s docs.
-            #[cfg(test)]
+            /// One generated endpoint and its transport contract.
             #[doc(hidden)]
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct ApiContractManifestContract {
-                pub family: &'static str,
+                pub endpoint: &'static str,
                 pub topic: &'static str,
-                pub role: ::phoxal_bus::TopicRole,
+                pub payload: Option<&'static str>,
+                pub request: Option<&'static str>,
+                pub response: Option<&'static str>,
+                pub kind: ::phoxal_bus::EndpointKind,
+                pub delivery: ::phoxal_bus::DeliveryFamily,
             }
 
-            /// The tree's own enumeration of every contract it declares, used by
-            /// `phoxal-api`'s curation tests to assert that each command topic is
-            /// deliberately classified and each wire key composes as intended.
-            /// `#[cfg(test)]`-only for the two consumers in
-            /// `phoxal-api/src/tests.rs`.
-            #[cfg(test)]
+            /// Every endpoint declared by the materialized trees.
             #[doc(hidden)]
             pub const API_CONTRACT_MANIFEST: &[ApiContractManifestVersion] = &[#(#version_entries),*];
         }
     }
 }
 
-/// Walk `nodes` depth-first, deriving each topic's family path and wire key
-/// from exactly the same node-path accessors the body codegen uses, so the
-/// manifest and `ContractBody`'s consts cannot drift apart.
+fn optional_string(value: &Option<String>) -> TokenStream {
+    match value {
+        Some(value) => quote! { Some(#value) },
+        None => quote! { None },
+    }
+}
+
 fn collect(
     tree_id: &str,
     nodes: &[Node],
@@ -129,27 +117,30 @@ fn collect(
 
         for topic in &node.topics {
             let topic_key = format!("{tree_id}/{}", topic.leaf.key(&node_key_prefix));
-            match &topic.kind {
-                TopicKind::PubSub(body) => {
-                    contracts.push(ManifestContract {
-                        family: format!("{tree_id}::{family_path}::{body}"),
-                        topic: topic_key,
-                        role: topic.role,
-                    });
-                }
-                TopicKind::Query { request, response } => {
-                    contracts.push(ManifestContract {
-                        family: format!("{tree_id}::{family_path}::{request}"),
-                        topic: topic_key.clone(),
-                        role: topic.role,
-                    });
-                    contracts.push(ManifestContract {
-                        family: format!("{tree_id}::{family_path}::{response}"),
-                        topic: topic_key,
-                        role: topic.role,
-                    });
-                }
-            }
+            let endpoint = topic.endpoint_ident();
+            let endpoint_name = format!("{tree_id}::{family_path}::{endpoint}");
+            let kind_tokens = topic.endpoint_kind();
+            let delivery_tokens = topic.delivery_family();
+            contracts.push(match &topic.kind {
+                TopicKind::PubSub(body) => ManifestContract {
+                    endpoint: endpoint_name,
+                    topic: topic_key,
+                    payload: Some(body.identity()),
+                    request: None,
+                    response: None,
+                    kind_tokens,
+                    delivery_tokens,
+                },
+                TopicKind::Query { request, response } => ManifestContract {
+                    endpoint: endpoint_name,
+                    topic: topic_key,
+                    payload: None,
+                    request: Some(request.identity()),
+                    response: Some(response.identity()),
+                    kind_tokens,
+                    delivery_tokens,
+                },
+            });
         }
 
         collect(

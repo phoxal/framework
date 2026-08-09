@@ -2,7 +2,6 @@
 //! capabilities to subscribe to, and resolves each to its mount frame.
 
 use phoxal::Result;
-use phoxal::SourceRef;
 use phoxal::api;
 use phoxal::model::Robot;
 use phoxal::model::component::capability::Capability;
@@ -12,7 +11,7 @@ use phoxal::model::identity::{CapabilityRef, ComponentInstanceId, LinkId};
 pub(crate) struct SensorBinding {
     pub(crate) capability: CapabilityRef,
     /// The validated dotted source identity carried by perception batches.
-    pub(crate) source: SourceRef,
+    pub(crate) source: api::perception::SourceRef,
     /// The link the capability is mounted on, which is the frame its
     /// observations are expressed in.
     pub(crate) frame_id: LinkId,
@@ -40,7 +39,7 @@ impl SensorBinding {
             .into_iter()
             .map(|capability| -> Result<Self> {
                 Ok(Self {
-                    source: SourceRef::parse(capability.to_string())?,
+                    source: api::perception::SourceRef::parse(capability.to_string())?,
                     frame_id: robot.link_target_frame(&capability)?,
                     capability,
                 })
@@ -56,8 +55,9 @@ impl SensorBinding {
     // them), so these are the client `Subscribe` side from the public builder.
     pub(crate) fn camera_topic(
         &self,
-    ) -> phoxal::Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>>>
-    {
+    ) -> phoxal::Result<
+        phoxal::bus::Topic<phoxal::bus::Subscribe<api::endpoint::component::camera::FrameEndpoint>>,
+    > {
         Ok(api::topic::client()
             .component(&self.capability.component_id)?
             .camera(&self.capability.capability_id)?
@@ -66,8 +66,9 @@ impl SensorBinding {
 
     pub(crate) fn depth_topic(
         &self,
-    ) -> phoxal::Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::depth::Frame>>>
-    {
+    ) -> phoxal::Result<
+        phoxal::bus::Topic<phoxal::bus::Subscribe<api::endpoint::component::depth::FrameEndpoint>>,
+    > {
         Ok(api::topic::client()
             .component(&self.capability.component_id)?
             .depth(&self.capability.capability_id)?
@@ -105,14 +106,14 @@ mod tests {
                 .camera_topic()
                 .expect("compiled camera bindings are valid key segments")
                 .key()
-                == "v0.2/component/front_camera/camera/rgb/frame"
+                == "v0.1/component/front_camera/camera/rgb/frame"
         }));
         assert_eq!(
             depths[0]
                 .depth_topic()
                 .expect("compiled depth bindings are valid key segments")
                 .key(),
-            "v0.2/component/front_camera/depth/depth/frame"
+            "v0.1/component/front_camera/depth/depth/frame"
         );
     }
 }

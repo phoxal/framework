@@ -39,13 +39,13 @@ struct CompletedOperation {
 }
 
 pub(crate) struct Api {
-    localize: StateView<api::localize::LocalizationState>,
-    map_revision: StateView<api::map::Revision>,
+    localize: StateView<api::endpoint::localize::StateEndpoint>,
+    map_revision: StateView<api::endpoint::map::RevisionEndpoint>,
     frontier_requests: tokio::sync::mpsc::Sender<FrontierIoRequest>,
-    state: StatePublisher<api::navigation::State>,
-    progress: StatePublisher<api::navigation::Progress>,
-    result: StatePublisher<api::navigation::Result>,
-    candidate: StatePublisher<api::navigation::Candidate>,
+    state: StatePublisher<api::endpoint::navigation::StateEndpoint>,
+    progress: StatePublisher<api::endpoint::navigation::ProgressEndpoint>,
+    result: EventPublisher<api::endpoint::navigation::ResultEndpoint>,
+    candidate: StatePublisher<api::endpoint::navigation::CandidateEndpoint>,
 }
 
 pub(crate) struct NavigationState {
@@ -187,10 +187,7 @@ impl NavigationState {
     fn next_operation_id(&mut self) -> Option<api::navigation::NavigationOperationId> {
         let sequence = self.next_operation_sequence.checked_add(1)?;
         self.next_operation_sequence = sequence;
-        Some(api::navigation::NavigationOperationId {
-            producer: self.server_producer,
-            sequence,
-        })
+        api::navigation::NavigationOperationId::new(self.server_producer, sequence)
     }
 
     fn cached_start(
@@ -327,7 +324,7 @@ impl Participant for Navigation {
                 frontier_requests,
                 state: ctx.state_publisher(api::topic::owner().navigation().state())?,
                 progress: ctx.state_publisher(api::topic::owner().navigation().progress())?,
-                result: ctx.state_publisher(api::topic::owner().navigation().result())?,
+                result: ctx.event_publisher(api::topic::owner().navigation().result())?,
                 candidate: ctx.state_publisher(api::topic::owner().navigation().candidate())?,
             },
         ))
@@ -745,8 +742,8 @@ mod tests {
         let first_id = first.next_operation_id().unwrap();
         let second_id = second.next_operation_id().unwrap();
         assert_ne!(first_id, second_id);
-        assert_eq!(first_id.sequence, second_id.sequence);
-        assert_ne!(first_id.producer, second_id.producer);
+        assert_eq!(first_id.sequence(), second_id.sequence());
+        assert_ne!(first_id.producer(), second_id.producer());
     }
 
     #[test]
@@ -755,8 +752,8 @@ mod tests {
         let first = state.next_operation_id().unwrap();
         state.reset();
         let second = state.next_operation_id().unwrap();
-        assert_eq!(first.producer, second.producer);
-        assert_eq!(second.sequence, first.sequence + 1);
+        assert_eq!(first.producer(), second.producer());
+        assert_eq!(second.sequence(), first.sequence() + 1);
     }
 
     #[test]
@@ -822,27 +819,26 @@ mod tests {
         let mut state = NavigationState::new(producer(10));
         for sequence in 1..=(RESULT_CACHE_CAPACITY as u64 + 1) {
             state.remember_completed(
-                api::navigation::NavigationOperationId {
-                    producer: producer(10),
-                    sequence,
-                },
+                api::navigation::NavigationOperationId::new(producer(10), sequence).unwrap(),
                 producer(11),
             );
         }
 
         assert_eq!(state.completed.len(), RESULT_CACHE_CAPACITY);
         assert_eq!(
-            state.completed_owner(api::navigation::NavigationOperationId {
-                producer: producer(10),
-                sequence: 1,
-            }),
+            state.completed_owner(
+                api::navigation::NavigationOperationId::new(producer(10), 1).unwrap()
+            ),
             None
         );
         assert_eq!(
-            state.completed_owner(api::navigation::NavigationOperationId {
-                producer: producer(10),
-                sequence: RESULT_CACHE_CAPACITY as u64 + 1,
-            }),
+            state.completed_owner(
+                api::navigation::NavigationOperationId::new(
+                    producer(10),
+                    RESULT_CACHE_CAPACITY as u64 + 1,
+                )
+                .unwrap(),
+            ),
             Some(producer(11))
         );
     }
@@ -864,10 +860,7 @@ mod tests {
     fn foreign_requester_cannot_cancel_an_active_operation() {
         let owner = producer(5);
         let foreign = producer(6);
-        let operation_id = api::navigation::NavigationOperationId {
-            producer: producer(7),
-            sequence: 1,
-        };
+        let operation_id = api::navigation::NavigationOperationId::new(producer(7), 1).unwrap();
         let mut state = NavigationState::new(producer(7));
         state.active = Some(Active {
             operation_id,
@@ -920,17 +913,17 @@ mod tests {
             Duration::from_secs(2),
         )
         .expect("build cancel querier");
-        let localization = StatePublisher::<api::localize::LocalizationState>::new(
+        let localization = StatePublisher::<api::endpoint::localize::StateEndpoint>::new(
             bus.clone(),
             &api::topic::owner().localize().state(),
         )
         .expect("build localization publisher");
-        let map_revision = StatePublisher::<api::map::Revision>::new(
+        let map_revision = StatePublisher::<api::endpoint::map::RevisionEndpoint>::new(
             bus.clone(),
             &api::topic::owner().map().revision(),
         )
         .expect("build map revision publisher");
-        let results = StreamReceiver::<api::navigation::Result>::new(
+        let results = EventReceiver::<api::endpoint::navigation::ResultEndpoint>::new(
             &bus,
             &api::topic::client().navigation().result(),
         )
@@ -1027,9 +1020,8 @@ mod tests {
                 requests.push(tokio::spawn(async move {
                     querier
                         .query(start_request(
-                            api::navigation::RequestId {
-                                value: format!("pressure-{index}"),
-                            },
+                            api::navigation::RequestId::try_new(format!("pressure-{index}"))
+                                .unwrap(),
                             0.0,
                         ))
                         .await
@@ -1051,9 +1043,7 @@ mod tests {
     }
 
     fn request_id(value: &str) -> api::navigation::RequestId {
-        api::navigation::RequestId {
-            value: value.to_string(),
-        }
+        api::navigation::RequestId::try_new(value).unwrap()
     }
 
     fn start_request(
@@ -1071,7 +1061,7 @@ mod tests {
     }
 
     async fn await_result(
-        results: &StreamReceiver<api::navigation::Result>,
+        results: &EventReceiver<api::endpoint::navigation::ResultEndpoint>,
         operation_id: api::navigation::NavigationOperationId,
     ) -> api::navigation::Result {
         tokio::time::timeout(Duration::from_secs(2), async {

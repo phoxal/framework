@@ -394,10 +394,7 @@ mod tests {
     fn autonomous() -> Timed<api::navigation::Candidate> {
         Timed {
             body: api::navigation::Candidate {
-                operation_id: api::navigation::NavigationOperationId {
-                    producer: producer(1),
-                    sequence: 1,
-                },
+                operation_id: api::navigation::NavigationOperationId::new(producer(1), 1).unwrap(),
                 linear_x_mps: 0.2,
                 angular_z_radps: 0.1,
             },

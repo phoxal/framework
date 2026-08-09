@@ -17,8 +17,8 @@
 //!   or an owner publishing its state).
 //! - [`Subscribe<B>`] - the participant *subscribes/observes* `B` (a client
 //!   observing state, or an owner reading its command input).
-//! - [`AskQuery<Req, Resp>`] - the **client** side of a query: it *calls* the owner.
-//! - [`ServeQuery<Req, Resp>`] - the **owner** side of a query: it *serves* requests.
+//! - [`AskQuery<E>`] - the **client** side of a query: it *calls* the owner.
+//! - [`ServeQuery<E>`] - the **owner** side of a query: it *serves* requests.
 //!
 //! The brand is a COMPILE-TIME marker only: the underlying key and the actual
 //! publisher/receiver/querier/server ops are unchanged. The api
@@ -99,11 +99,11 @@ pub struct Subscribe<B>(PhantomData<fn() -> B>);
 
 /// The **client** side of a query topic carrying request `Req`/response `Resp`:
 /// the holder *calls* the owner.
-pub struct AskQuery<Req, Resp>(PhantomData<fn() -> (Req, Resp)>);
+pub struct AskQuery<E>(PhantomData<fn() -> E>);
 
 /// The **owner** side of a query topic carrying request `Req`/response `Resp`:
 /// the holder *serves* requests.
-pub struct ServeQuery<Req, Resp>(PhantomData<fn() -> (Req, Resp)>);
+pub struct ServeQuery<E>(PhantomData<fn() -> E>);
 
 mod sealed {
     pub trait Sealed {}
@@ -116,10 +116,10 @@ impl<B> sealed::Sealed for Publish<B> {}
 impl<B> TopicKind for Publish<B> {}
 impl<B> sealed::Sealed for Subscribe<B> {}
 impl<B> TopicKind for Subscribe<B> {}
-impl<Req, Resp> sealed::Sealed for AskQuery<Req, Resp> {}
-impl<Req, Resp> TopicKind for AskQuery<Req, Resp> {}
-impl<Req, Resp> sealed::Sealed for ServeQuery<Req, Resp> {}
-impl<Req, Resp> TopicKind for ServeQuery<Req, Resp> {}
+impl<E> sealed::Sealed for AskQuery<E> {}
+impl<E> TopicKind for AskQuery<E> {}
+impl<E> sealed::Sealed for ServeQuery<E> {}
+impl<E> TopicKind for ServeQuery<E> {}
 
 /// A typed topic: a version-qualified key bound to its body type(s) via `Kind`.
 pub struct Topic<Kind> {
@@ -132,7 +132,7 @@ impl<Kind> Topic<Kind> {
     ///
     /// # Why this is `pub`
     ///
-    /// The `phoxal_api_tree!` macro expands in the `phoxal-api` crate, where the
+    /// The Robot API fragment materializer expands in `phoxal-api`, where the
     /// versioned APIs live, and its generated builders call this over each
     /// contract's canonical key. Generated code in a downstream crate needs a
     /// `pub` constructor, and Rust has no visibility between "this crate" and

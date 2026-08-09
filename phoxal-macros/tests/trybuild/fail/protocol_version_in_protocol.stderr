@@ -1,0 +1,5 @@
+error: `phoxal_protocol!` accepts only `protocol <name> { ... }` trees; use `phoxal_api_tree!` plus fragments for Robot API revisions
+ --> tests/trybuild/fail/protocol_version_in_protocol.rs:4:5
+  |
+4 |     version v0_1 {}
+  |     ^^^^^^^

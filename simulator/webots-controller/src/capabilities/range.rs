@@ -32,23 +32,26 @@ impl NativeRange {
 
 impl SimulatedSensor for NativeRange {
     type Sample = api::component::range::Sample;
+    type Endpoint = api::endpoint::component::range::SampleEndpoint;
 
     fn schedule(&mut self) -> &mut phoxal::SampleSchedule {
         &mut self.spec.sampled.schedule
     }
 
     fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
-        Ok(Some(api::component::range::Sample {
-            distance_m: self.sensor.value()? as f32,
-            limits: Some(api::component::range::Limits {
+        api::component::range::Sample::try_new(
+            self.sensor.value()? as f32,
+            Some(api::component::range::Limits {
                 min_m: self.spec.min_range_m,
                 max_m: self.spec.max_range_m,
             }),
-            quality: Some(api::component::range::SampleQuality {
+            Some(api::component::range::SampleQuality {
                 valid: true,
                 confidence: None,
             }),
-            health: api::component::range::SensorHealth::Nominal,
-        }))
+            api::component::range::SensorHealth::Nominal,
+        )
+        .map(Some)
+        .map_err(anyhow::Error::from)
     }
 }
