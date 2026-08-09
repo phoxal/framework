@@ -424,7 +424,6 @@ impl Parse for TopicDef {
             && !input.peek(kw::setpoint)
             && !input.peek(kw::measurement)
             && !input.peek(kw::diagnostic)
-            && !input.peek(kw::world_clock)
             && !input.peek(kw::query)
         {
             let descriptor: Ident = input.parse()?;

@@ -407,7 +407,7 @@ impl Node {
                 if topic.legacy {
                     return Err(syn::Error::new_spanned(
                         topic.leaf.method_ident(),
-                        "legacy topic roles `measurement`, `diagnostic`, and `world_clock` are only available to `phoxal_api_tree!`; use `state`, `sample`, or `event` with an explicit delivery family",
+                        "legacy topic roles `measurement` and `diagnostic` are only available to `phoxal_api_tree!`; use `state`, `sample`, or `event` with an explicit delivery family",
                     ));
                 }
             }
