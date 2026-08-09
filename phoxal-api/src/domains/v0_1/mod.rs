@@ -1,16 +1,15 @@
 //! v0.1 payload domains.
 
-pub mod drive;
-pub mod joint;
-pub mod frame;
-pub mod power;
-pub mod motion;
-pub mod safety;
-pub mod navigation;
-pub mod perception;
-pub mod video;
 pub mod component;
-pub mod odometry;
+pub mod drive;
+pub mod frame;
+pub mod joint;
 pub mod localize;
 pub mod map;
-
+pub mod motion;
+pub mod navigation;
+pub mod odometry;
+pub mod perception;
+pub mod power;
+pub mod safety;
+pub mod video;
