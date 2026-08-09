@@ -1095,12 +1095,24 @@ mod tests {
                         scale: Some([1.0, 2.0, 3.0]),
                     }),
                 ],
+                // A collision beneath the revolute mast is intentionally not
+                // buildable: the source compiler must refuse an envelope it
+                // cannot conservatively derive. The empty collection still
+                // states the builder field without weakening that invariant.
+                collisions: Vec::new(),
+            })
+            // Keep the full collision wire shape covered on a fixed link: it
+            // contributes to the compiled envelope without depending on the
+            // mast's runtime pose.
+            .link(builder::Link {
+                name: "base_link",
                 collisions: vec![builder::Collision {
                     name: Some("hull_bounds"),
                     xyz: [4.0, 5.0, 6.0],
                     rpy: [0.11, 0.12, 0.13],
                     geometry: Geometry::Sphere { radius: 0.35 },
                 }],
+                ..builder::Link::default()
             })
             .material(builder::Material {
                 name: "grey",
@@ -1124,7 +1136,7 @@ mod tests {
         assert_eq!(inertial.mass_kg(), 2.5);
         assert_eq!(inertial.inertia().values(), [2.0, 0.1, 0.2, 3.0, 0.3, 4.0]);
         assert_eq!(visuals.len(), 5);
-        assert_eq!(collisions.len(), 1);
+        assert_eq!(collisions.len(), 0);
 
         let mut shapes = Vec::new();
         for visual in link.visuals() {
@@ -1173,7 +1185,12 @@ mod tests {
         }
         assert_eq!(shapes, ["box", "cylinder", "capsule", "sphere", "mesh"]);
 
-        let collision = link.collisions().next().expect("the stated collision");
+        let collision = structure
+            .link("base_link")
+            .expect("the base link")
+            .collisions()
+            .next()
+            .expect("the stated collision");
         let Collision {
             name,
             origin,

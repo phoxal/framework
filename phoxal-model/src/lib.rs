@@ -34,6 +34,7 @@ pub mod compiler;
 
 pub use asset::AssetId;
 pub use builder::RobotBuilder;
+pub use component::capability::CapabilityRole;
 pub use error::{
     IdentifierKind, JointOwner, KinematicScalarField, LinkRole, ModelError, MotionLimitField,
     PoseOwner, StructureError,

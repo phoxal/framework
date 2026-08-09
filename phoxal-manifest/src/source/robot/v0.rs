@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 // Kinematics and motion limits are canonical domain facts with exactly one
 // definition. This document describes the shape they take in authored YAML; it
 // does not re-export them, so `phoxal_model::robot` stays their only path.
+use phoxal_model::CapabilityRole;
 use phoxal_model::robot::{KinematicConfig, MotionLimits};
 
 /// Exact top-level `robot.yaml` v0 document.
@@ -150,60 +151,14 @@ pub struct Component {
     /// What each capability on this instance is declared to be for.
     ///
     /// This is the input to service activation: which services a robot runs is
-    /// to be decided from the roles its capabilities declare, so that a robot
-    /// with no capability serving a role does not start the service that
-    /// consumes it. The resolver that reads this is not built yet, so today the
-    /// field is validated for shape and otherwise carried through untouched.
-    ///
-    /// It is authored contract, not dead weight: do not remove it because
-    /// nothing reads it. Beyond that, `robot.yaml` denies unknown fields, so
-    /// removing it would reject documents that parse today.
+    /// decided from the roles its capabilities declare, so that a robot with
+    /// no capability serving a role does not start the service that consumes
+    /// it. The compiler resolves these keys against the selected component
+    /// document and persists the typed assignment in `runtime.json`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub roles: BTreeMap<String, Vec<Role>>,
+    pub roles: BTreeMap<String, Vec<CapabilityRole>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub parameters: BTreeMap<String, Parameters>,
-}
-
-/// What an authored role hint claims a capability is used for.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Localization,
-    Mapping,
-    Traversability,
-    Odometry,
-    Perception,
-}
-
-impl Role {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Localization => "localization",
-            Self::Mapping => "mapping",
-            Self::Traversability => "traversability",
-            Self::Odometry => "odometry",
-            Self::Perception => "perception",
-        }
-    }
-}
-
-impl fmt::Display for Role {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -363,13 +318,9 @@ pub enum ValidationError {
     RepeatedRole {
         instance: String,
         capability: String,
-        role: Role,
+        role: CapabilityRole,
     },
     InvalidRuntimeClock {
-        instance: String,
-    },
-    /// `clock: simulated` cannot coexist with a physical component driver.
-    DriverUnderSimulatedClock {
         instance: String,
     },
     InvalidKinematicField {
@@ -500,12 +451,6 @@ impl fmt::Display for ValidationError {
                 formatter,
                 "robot.components.{instance}.driver.runtime_clock_ms must be > 0"
             ),
-            Self::DriverUnderSimulatedClock { instance } => write!(
-                formatter,
-                "robot.components.{instance}.driver cannot run under `clock: simulated`: a \
-                 component driver owns physical hardware IO; remove the driver block or run \
-                 this robot on the real clock"
-            ),
             Self::InvalidKinematicField { field, message } => {
                 write!(formatter, "robot.kinematic.{field} {message}")
             }
@@ -547,6 +492,8 @@ mod tests {
 
     use crate::source::SourceError;
     use crate::source::robot::Manifest;
+
+    use super::Clock;
 
     /// The rules a rejected document broke, or an empty list when it failed
     /// before validation ran at all.
@@ -642,6 +589,35 @@ router:
     }
 
     #[test]
+    fn simulated_source_may_declare_driver_facts_for_finalization() -> anyhow::Result<()> {
+        let manifest = Manifest::parse(
+            r#"
+schema: phoxal/robot/v0
+clock: simulated
+robot:
+  id: test-bot
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: [drive.motor]
+    encoders: []
+  components:
+    drive:
+      component: drive_motor
+      mount_link: base_link
+      driver:
+        connection: { type: can, bus: 0, node_id: 1 }
+"#,
+        )?;
+        let Manifest::V0(manifest) = manifest;
+        assert_eq!(manifest.clock, Clock::Simulated);
+        assert!(manifest.robot.components["drive"].driver.is_some());
+        Ok(())
+    }
+
+    #[test]
     fn instance_parameters_parse_emergency_stop_capability() -> anyhow::Result<()> {
         let manifest = Manifest::parse(
             r#"
@@ -677,6 +653,36 @@ robot:
             .expect("e_stop capability parameters should parse");
         assert_eq!(parameters.kind().as_str(), "emergency_stop");
 
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_safety_role_parses_from_authored_documents() -> anyhow::Result<()> {
+        let manifest = Manifest::parse(
+            r#"
+schema: phoxal/robot/v0
+robot:
+  id: test-bot
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: [drive.motor]
+    encoders: []
+  components:
+    sensor:
+      component: range
+      mount_link: base_link
+      roles:
+        range: [safety]
+"#,
+        )?;
+        let Manifest::V0(manifest) = manifest;
+        assert_eq!(
+            manifest.robot.components["sensor"].roles["range"],
+            vec![phoxal_model::CapabilityRole::Safety]
+        );
         Ok(())
     }
 

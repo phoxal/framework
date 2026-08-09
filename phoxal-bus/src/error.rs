@@ -134,6 +134,13 @@ pub enum BusError {
         observed: u64,
     },
 
+    /// A stream receiver observed more producer sources than its fixed
+    /// position-history bound can retain. The receiver fails closed rather
+    /// than evicting an older producer's history and making future gaps
+    /// ambiguous.
+    #[error("stream receiver on '{topic}' exceeded its {limit}-source position-history bound")]
+    TooManyStreamSources { topic: String, limit: usize },
+
     /// A Zenoh session id is not a legal Phoxal identity. Something is
     /// listening on that endpoint, but it is not a Phoxal peer.
     #[error("session id '{zid}' is not a phoxal {role}: {source}")]

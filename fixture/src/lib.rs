@@ -43,20 +43,35 @@ impl StagedBundle {
 }
 
 #[must_use]
+pub fn staged_bundle() -> StagedBundle {
+    staged_bundle_from_manifest("robot.yaml")
+}
+
+#[cfg(test)]
+fn staged_simulation_bundle() -> StagedBundle {
+    staged_bundle_from_manifest("robot.simulated.yaml")
+}
+
+#[cfg(test)]
+fn staged_simulation_bundle_without_component_models() -> StagedBundle {
+    staged_bundle_from_manifest("robot.simulated-no-models.yaml")
+}
+
 #[expect(
     clippy::expect_used,
     reason = "every input is a document committed beside this crate, so a failure here is a broken checkout and the panic is the report"
 )]
-pub fn staged_bundle() -> StagedBundle {
+fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
     let fixture = authored_root();
     let project = fixture.join("robot/rgbd-imu-diff-drive");
     let bundle = tempfile::tempdir().expect("a staging directory");
-    let manifest = source::robot::Manifest::load(project.join("robot.yaml"))
-        .expect("the fixture robot manifest");
+    let robot_manifest = project.join(manifest_name);
+    let manifest =
+        source::robot::Manifest::load(&robot_manifest).expect("the fixture robot manifest");
     let source::robot::Manifest::V0(manifest) = manifest;
     let sources = SourceSet {
         project_root: project.clone(),
-        robot_manifest: project.join("robot.yaml"),
+        robot_manifest,
         component_roots: manifest
             .used_component_types()
             .into_iter()
@@ -155,24 +170,25 @@ pub fn staged_bundle() -> StagedBundle {
             None,
         );
     }
-    for driver in drivers {
-        let instance = robot
-            .component_instance(driver.component_instance.as_str())
-            .expect("a compiled driver must bind a canonical component instance");
-        let artifact = driver.implementation.clone();
-        stage_participant(
-            artifact.as_str().to_string(),
-            format!("{artifact}-{}", instance.id()),
-            ParticipantKind::Driver,
-            Some(serde_json::to_value(driver.config).expect("driver config is serializable")),
-            Some(driver.component_instance),
-        );
+    // Final topology owns the execution-mode choice. A simulated runtime has
+    // simulator participants, while a real runtime has hardware drivers; the
+    // persisted graph never contains both roles for one robot.
+    if robot.clock() == Clock::Real {
+        for driver in drivers {
+            let instance = robot
+                .component_instance(driver.component_instance.as_str())
+                .expect("a compiled driver must bind a canonical component instance");
+            let artifact = driver.implementation.clone();
+            stage_participant(
+                artifact.as_str().to_string(),
+                format!("{artifact}-{}", instance.id()),
+                ParticipantKind::Driver,
+                Some(serde_json::to_value(driver.config).expect("driver config is serializable")),
+                Some(driver.component_instance),
+            );
+        }
     }
-    if robot.components().any(|instance| {
-        robot
-            .simulation_for_instance(instance.id().as_str())
-            .is_some()
-    }) {
+    if robot.clock() == Clock::Simulated {
         stage_participant(
             "webots-controller".to_string(),
             "webots-controller".to_string(),
@@ -219,7 +235,10 @@ mod tests {
     use phoxal_runtime_contract::identity::ParticipantArtifactId;
     use phoxal_runtime_contract::metadata::ParticipantKind;
 
-    use super::{robot, staged_bundle};
+    use super::{
+        robot, staged_bundle, staged_simulation_bundle,
+        staged_simulation_bundle_without_component_models,
+    };
 
     #[test]
     fn the_staged_bundle_has_only_runtime_layout() {
@@ -237,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn driver_instances_reuse_one_artifact_and_simulation_has_one_controller() {
+    fn real_fixture_selects_drivers_without_a_simulator() {
         let bundle = staged_bundle();
         let loaded = RuntimeBundle::open_verified(bundle.path()).expect("the staged bundle loads");
         let driver = ParticipantArtifactId::new("drive_motor").expect("driver artifact");
@@ -249,7 +268,7 @@ mod tests {
                 .count(),
             4
         );
-        assert_eq!(loaded.artifacts().len(), 3);
+        assert_eq!(loaded.artifacts().len(), 2);
         assert_eq!(
             loaded
                 .participants()
@@ -264,7 +283,7 @@ mod tests {
                         == ParticipantKind::Simulator
                 })
                 .count(),
-            1
+            0
         );
         let router = loaded
             .document()
@@ -277,5 +296,58 @@ mod tests {
             loaded.assets().read(&router_id).expect("router bytes"),
             b"{}\n"
         );
+    }
+
+    #[test]
+    fn simulated_fixture_selects_one_simulator_without_drivers() {
+        let bundle = staged_simulation_bundle();
+        let loaded = RuntimeBundle::open_verified(bundle.path()).expect("the staged bundle loads");
+        let kinds = loaded
+            .participants()
+            .iter()
+            .map(|participant| {
+                loaded
+                    .artifacts()
+                    .get(participant.artifact())
+                    .expect("participant artifact")
+                    .contract()
+                    .kind
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| **kind == ParticipantKind::Simulator)
+                .count(),
+            1
+        );
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| **kind == ParticipantKind::Driver)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn simulated_fixture_without_component_models_still_selects_world_authority() {
+        let bundle = staged_simulation_bundle_without_component_models();
+        let loaded = RuntimeBundle::open_verified(bundle.path()).expect("the staged bundle loads");
+        assert!(loaded.robot().components().all(|instance| {
+            loaded
+                .robot()
+                .simulation_for_instance(instance.id().as_str())
+                .is_none()
+        }));
+        let simulator_count = loaded
+            .participants()
+            .iter()
+            .filter(|participant| {
+                loaded.artifacts()[participant.artifact()].contract().kind
+                    == ParticipantKind::Simulator
+            })
+            .count();
+        assert_eq!(simulator_count, 1);
     }
 }

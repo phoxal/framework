@@ -8,9 +8,9 @@
 //! tracker assigns stable `track_id`s by nearest same-class association within
 //! a time/distance window.
 //!
-//! The default detector is honest: no heavyweight model backend is linked, so
-//! the participant publishes empty detection sets while still reporting camera
-//! health.
+//! The default detector is honest: no model backend is linked, so it publishes
+//! no detection batch and reports `BackendUnavailable` health instead of
+//! treating an unprocessed frame as a valid empty result.
 
 use phoxal::api;
 use phoxal::model::identity::ComponentInstanceId;
@@ -555,21 +555,15 @@ mod tests {
     }
 
     #[test]
-    fn detection_batch_keeps_camera_capture_time_when_step_is_later() {
+    fn placeholder_backend_does_not_produce_a_healthy_empty_batch() {
         let captured_at = TimeWindow::exact(instant(100));
         let mut state = state(Some(Captured {
             body: camera(),
             captured_at: Some(captured_at),
         }));
-        let (_, batch_captured_at, detections) =
-            state.detect(instant(100 + 250_000_000)).unwrap().unwrap();
+        let error = state.detect(instant(100 + 250_000_000)).unwrap_err();
 
-        assert_eq!(batch_captured_at, captured_at);
-        assert!(detections.is_empty(), "empty placeholder output is healthy");
-        assert_ne!(
-            batch_captured_at,
-            TimeWindow::exact(instant(100 + 250_000_000))
-        );
+        assert_eq!(error, DetectorFailure::BackendUnavailable);
     }
 
     #[test]

@@ -60,11 +60,24 @@ pub enum DocumentError {
     BrainIdMismatch { actual: ParticipantId },
     #[error("runtime graph contains more than one brain participant")]
     DuplicateBrain,
+    #[error("simulated runtime graph has no simulator world authority")]
+    MissingSimulator,
+    #[error("simulated runtime graph contains more than one simulator world authority")]
+    DuplicateSimulator,
     #[error(
         "participant '{participant}' clock {participant_clock:?} conflicts with robot clock {robot:?}"
     )]
     ClockMismatch {
         participant: ParticipantId,
+        robot: Clock,
+        participant_clock: ParticipantClock,
+    },
+    #[error(
+        "{kind:?} participant '{participant}' clock {participant_clock:?} is incompatible with robot clock {robot:?}"
+    )]
+    ExecutionModeMismatch {
+        participant: ParticipantId,
+        kind: ParticipantKind,
         robot: Clock,
         participant_clock: ParticipantClock,
     },

@@ -243,6 +243,7 @@ impl Runtime {
         }
         let mut referenced_artifacts = BTreeSet::new();
         let mut brain = None;
+        let mut simulator_count = 0_u8;
         for participant in &self.participants {
             let artifact = self.artifacts.get(&participant.artifact).ok_or_else(|| {
                 DocumentError::UnknownArtifact {
@@ -268,6 +269,11 @@ impl Runtime {
                     return Err(DocumentError::DuplicateBrain);
                 }
             }
+            if artifact.contract().kind
+                == phoxal_runtime_contract::metadata::ParticipantKind::Simulator
+            {
+                simulator_count = simulator_count.saturating_add(1);
+            }
             referenced_artifacts.insert(participant.artifact.clone());
             if !ids.insert(participant.id.clone()) {
                 return Err(DocumentError::DuplicateParticipant {
@@ -277,6 +283,13 @@ impl Runtime {
         }
         if brain.is_none() {
             return Err(DocumentError::MissingBrain);
+        }
+        if self.robot.clock() == phoxal_model::Clock::Simulated {
+            match simulator_count {
+                0 => return Err(DocumentError::MissingSimulator),
+                1 => {}
+                _ => return Err(DocumentError::DuplicateSimulator),
+            }
         }
         if let Some(artifact) = self
             .artifacts

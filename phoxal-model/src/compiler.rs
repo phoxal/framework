@@ -14,10 +14,10 @@
 //! which is also why the feature-gated `test_builder` assembles its in-memory
 //! robots through these same entry points rather than around them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::component::Component;
-use crate::component::capability::Capability;
+use crate::component::capability::{Capability, CapabilityRole};
 use crate::error::ModelError;
 use crate::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
 use crate::robot::{Clock, ComponentInstance, KinematicConfig, MotionLimits, Robot};
@@ -76,7 +76,25 @@ pub fn component_instance(
     mount_link: LinkId,
     direction_signs: BTreeMap<CapabilityId, i8>,
 ) -> ComponentInstance {
-    ComponentInstance::new(id, component_type, mount_link, direction_signs)
+    ComponentInstance::new(
+        id,
+        component_type,
+        mount_link,
+        direction_signs,
+        BTreeMap::<CapabilityId, BTreeSet<CapabilityRole>>::new(),
+    )
+}
+
+/// Build one mounted component instance with authored capability roles.
+#[must_use]
+pub fn component_instance_with_roles(
+    id: ComponentInstanceId,
+    component_type: ComponentTypeId,
+    mount_link: LinkId,
+    direction_signs: BTreeMap<CapabilityId, i8>,
+    roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
+) -> ComponentInstance {
+    ComponentInstance::new(id, component_type, mount_link, direction_signs, roles)
 }
 
 /// Assemble and validate the canonical robot.
@@ -85,18 +103,13 @@ pub fn component_instance(
 ///
 /// Returns the first [`ModelError`] the assembled model violates.
 pub fn robot(parts: RobotParts) -> Result<Robot, ModelError> {
-    let footprint = match crate::footprint::compile(
+    // The footprint is a source/build product. Persisted runtime documents
+    // carry this value (or an explicit `null`) and never reconstruct it from
+    // collision geometry.
+    let footprint = crate::footprint::compile(
         &parts.structure,
         &parts.component_instances,
         &parts.component_types,
-    ) {
-        Ok(footprint) => footprint,
-        // Generic model builders historically accept movable collision
-        // geometry. Stock safety rejects it at the manifest boundary, while
-        // retaining a `None` envelope here makes those non-safety model tests
-        // and legacy runtime documents explicit fail-closed values.
-        Err(ModelError::FootprintMovableJoint { .. } | ModelError::FootprintMesh { .. }) => None,
-        Err(error) => return Err(error),
-    };
+    )?;
     Robot::new(parts, footprint)
 }

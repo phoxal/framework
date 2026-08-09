@@ -1,0 +1,20 @@
+schema: phoxal/component/v0
+capabilities:
+  motor:
+    kind: motor
+    command: velocity
+    max_torque_nm: 2.0
+    max_velocity_radps: 20.943951
+    gear_ratio: 1.0
+    target:
+      kind: joint
+      id: motor_joint
+  encoder:
+    kind: encoder
+    publish_rate_hz: 50.0
+    gear_ratio: 1.0
+    encoder_type: incremental
+    counts_per_revolution: 4096
+    target:
+      kind: joint
+      id: motor_joint

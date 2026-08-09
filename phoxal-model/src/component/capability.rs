@@ -4,6 +4,46 @@ use std::fmt;
 
 use crate::identity::{ComponentInstanceId, JointId, LinkId};
 
+/// The canonical purpose assigned to a component capability by an authored
+/// robot manifest.
+///
+/// Roles are source/runtime contract facts rather than service names. Keeping
+/// the closed vocabulary in the canonical model means every reader of a
+/// finalized runtime document agrees on the same spelling and set of values.
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityRole {
+    Localization,
+    Mapping,
+    Traversability,
+    Odometry,
+    Perception,
+    Safety,
+}
+
+impl CapabilityRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Localization => "localization",
+            Self::Mapping => "mapping",
+            Self::Traversability => "traversability",
+            Self::Odometry => "odometry",
+            Self::Perception => "perception",
+            Self::Safety => "safety",
+        }
+    }
+}
+
+impl fmt::Display for CapabilityRole {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Capability {

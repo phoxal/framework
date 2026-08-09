@@ -112,8 +112,8 @@ pub(crate) fn timeline(value: u64) -> TimelineId {
     TimelineId::from_raw(value).expect("a test timeline id is nonzero")
 }
 
-/// A distinct test producer. Nothing mints a producer in production - a
-/// session's identity is the session - so tests name theirs explicitly.
+/// A distinct deterministic test producer. Production sessions mint their
+/// producer through the bus owner, while tests name theirs explicitly.
 pub(crate) fn producer(value: u128) -> ProducerId {
     ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
 }
