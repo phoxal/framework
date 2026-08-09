@@ -288,6 +288,38 @@ fn final_runtime_rejects_a_driver_on_a_simulated_robot() {
 }
 
 #[test]
+fn final_runtime_requires_a_simulator_to_follow_simulation_time() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    runtime.robot = simulated_motor_robot(MotorCommand::Velocity, MotorCommand::Velocity);
+    runtime
+        .artifacts
+        .get_mut(&ParticipantArtifactId::new("drive").expect("drive artifact"))
+        .expect("drive artifact")
+        .contract
+        .kind = ParticipantKind::Simulator;
+    runtime.participants[0].component = None;
+    runtime.participants[0].clock = ParticipantClock::Clockless;
+    runtime.participants[1].clock = ParticipantClock::Simulation;
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::ExecutionModeMismatch {
+            kind: ParticipantKind::Simulator,
+            robot: Clock::Simulated,
+            participant_clock: ParticipantClock::Clockless,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn stock_drive_requirement_rejects_non_differential_topologies() {
     for kind in [
         phoxal_model::robot::KinematicKind::Mecanum,

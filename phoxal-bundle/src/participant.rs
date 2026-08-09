@@ -92,16 +92,23 @@ impl RuntimeParticipant {
                 });
             }
         }
-        match (artifact.contract().kind, robot.clock()) {
-            (ParticipantKind::Driver, Clock::Simulated)
-            | (ParticipantKind::Simulator, Clock::Real) => {
-                return Err(DocumentError::ExecutionModeMismatch {
-                    participant: self.id.clone(),
-                    kind: artifact.contract().kind,
-                    robot: robot.clock(),
-                });
+        let kind = artifact.contract().kind;
+        let execution_mode_matches = match kind {
+            ParticipantKind::Driver => {
+                robot.clock() == Clock::Real && self.clock != ParticipantClock::Simulation
             }
-            _ => {}
+            ParticipantKind::Simulator => {
+                robot.clock() == Clock::Simulated && self.clock == ParticipantClock::Simulation
+            }
+            ParticipantKind::Brain | ParticipantKind::Service => true,
+        };
+        if !execution_mode_matches {
+            return Err(DocumentError::ExecutionModeMismatch {
+                participant: self.id.clone(),
+                kind,
+                robot: robot.clock(),
+                participant_clock: self.clock,
+            });
         }
         match (robot.clock(), self.clock) {
             (Clock::Real, ParticipantClock::Simulation) => {
