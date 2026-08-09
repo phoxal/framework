@@ -525,15 +525,15 @@ impl WorldInputs {
 }
 
 pub(crate) struct Api {
-    localization: StateView<api::localize::LocalizationState>,
-    map: StateView<api::map::Revision>,
+    localization: StateView<api::endpoint::localize::StateEndpoint>,
+    map: StateView<api::endpoint::map::RevisionEndpoint>,
     map_events: std::sync::Mutex<mpsc::Receiver<MapQueryEvent>>,
     map_epoch: Arc<AtomicU64>,
-    drive: StateView<api::drive::State>,
+    drive: StateView<api::endpoint::drive::StateEndpoint>,
     batteries: Vec<BoundStateInput<api::endpoint::component::battery::StateEndpoint>>,
     ranges: Vec<BoundSampleInput<api::endpoint::component::range::SampleEndpoint>>,
-    constraints: StatePublisher<api::safety::MotionConstraints>,
-    state: StatePublisher<api::safety::State>,
+    constraints: StatePublisher<api::endpoint::safety::ConstraintsEndpoint>,
+    state: StatePublisher<api::endpoint::safety::StateEndpoint>,
 }
 
 pub(crate) struct SafetyState {

@@ -32,9 +32,9 @@ const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 pub(crate) struct Api {
     cameras: Vec<SampleReceiver<api::endpoint::component::camera::FrameEndpoint>>,
     depths: Vec<SampleReceiver<api::endpoint::component::depth::FrameEndpoint>>,
-    localization: StateView<api::localize::LocalizationState>,
-    detections: StatePublisher<api::perception::Detections>,
-    state: StatePublisher<api::perception::State>,
+    localization: StateView<api::endpoint::localize::StateEndpoint>,
+    detections: StatePublisher<api::endpoint::perception::DetectionsEndpoint>,
+    state: StatePublisher<api::endpoint::perception::StateEndpoint>,
 }
 
 pub(crate) struct PerceptionState {

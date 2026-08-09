@@ -101,7 +101,11 @@ impl MotorBinding {
     /// this is the `Publish` side from the public builder.
     fn topic(
         &self,
-    ) -> Result<phoxal::bus::Topic<phoxal::bus::Publish<api::component::motor::Command>>> {
+    ) -> Result<
+        phoxal::bus::Topic<
+            phoxal::bus::Publish<api::endpoint::component::motor::CommandEndpoint>,
+        >,
+    > {
         Ok(api::topic::client()
             .component(&self.reference.component_id)?
             .motor(&self.reference.capability_id)?
@@ -123,7 +127,7 @@ impl MotorBinding {
 /// The two are one record rather than two vectors read at the same index,
 /// because a command paired with another motor's direction sign would turn a
 /// wheel the wrong way with nothing to report.
-/// The production sink is [`CommandPublisher`]. An in-process bus cannot
+/// The production sink is [`SetpointPublisher`]. An in-process bus cannot
 /// deterministically fail only one publisher: all cloned publishers share one
 /// private `BusHandle` outbound queue, so saturation or close fails every motor
 /// handle together. Keeping this narrow send seam in production lets the
@@ -133,13 +137,13 @@ trait MotorCommandSink {
     fn send(&self, command: api::component::motor::Command) -> Result<()>;
 }
 
-impl MotorCommandSink for CommandPublisher<api::component::motor::Command> {
+impl MotorCommandSink for SetpointPublisher<api::endpoint::component::motor::CommandEndpoint> {
     fn send(&self, command: api::component::motor::Command) -> Result<()> {
-        Ok(CommandPublisher::send(self, command)?)
+        Ok(SetpointPublisher::send(self, command)?)
     }
 }
 
-struct BoundMotor<P = CommandPublisher<api::component::motor::Command>> {
+struct BoundMotor<P = SetpointPublisher<api::endpoint::component::motor::CommandEndpoint>> {
     binding: MotorBinding,
     publisher: P,
 }
@@ -356,9 +360,9 @@ impl DriveConfig {
 }
 
 pub(crate) struct Api {
-    target: SetpointReceiver<api::drive::Target>,
+    target: SetpointReceiver<api::endpoint::drive::TargetEndpoint>,
     ready: phoxal::bus::ParticipantReadyEvents,
-    state: StatePublisher<api::drive::State>,
+    state: StatePublisher<api::endpoint::drive::StateEndpoint>,
     left_motors: Vec<BoundMotor>,
     right_motors: Vec<BoundMotor>,
 }
@@ -449,12 +453,12 @@ impl Participant for Drive {
 
         let mut left_motors = Vec::with_capacity(config.left.len());
         for binding in config.left {
-            let publisher = ctx.command_publisher(binding.topic()?)?;
+            let publisher = ctx.setpoint_publisher(binding.topic()?)?;
             left_motors.push(BoundMotor { binding, publisher });
         }
         let mut right_motors = Vec::with_capacity(config.right.len());
         for binding in config.right {
-            let publisher = ctx.command_publisher(binding.topic()?)?;
+            let publisher = ctx.setpoint_publisher(binding.topic()?)?;
             right_motors.push(BoundMotor { binding, publisher });
         }
 
