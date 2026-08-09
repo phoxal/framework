@@ -413,7 +413,7 @@ pub(crate) struct CapabilityChannel {
 enum CapabilityBinding {
     Motor(ActuatorChannel<NativeMotor>),
     Led(ActuatorChannel<NativeLed>),
-    Speaker(ActuatorChannel<NativeSpeaker>),
+    Speaker(Box<ActuatorChannel<NativeSpeaker>>),
     Encoder(SensorChannel<NativeEncoder>),
     Imu(SensorChannel<NativeImu>),
     Accelerometer(SensorChannel<NativeAccelerometer>),
@@ -464,14 +464,16 @@ impl CapabilityChannel {
                 authority: None,
                 ready: None,
             }),
-            CapabilitySpec::Speaker(speaker) => CapabilityBinding::Speaker(ActuatorChannel {
-                device: NativeSpeaker::new(webots, speaker)?,
-                commands: ctx
-                    .stream_receiver(component()?.speaker(id)?.stream())
-                    .await?,
-                authority: None,
-                ready: None,
-            }),
+            CapabilitySpec::Speaker(speaker) => {
+                CapabilityBinding::Speaker(Box::new(ActuatorChannel {
+                    device: NativeSpeaker::new(webots, speaker)?,
+                    commands: ctx
+                        .stream_receiver(component()?.speaker(id)?.stream())
+                        .await?,
+                    authority: None,
+                    ready: None,
+                }))
+            }
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,
                 publisher: ctx.measurement_publisher(component()?.encoder(id)?.sample())?,
