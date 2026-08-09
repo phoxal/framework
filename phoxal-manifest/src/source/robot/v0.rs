@@ -323,10 +323,6 @@ pub enum ValidationError {
     InvalidRuntimeClock {
         instance: String,
     },
-    /// `clock: simulated` cannot coexist with a physical component driver.
-    DriverUnderSimulatedClock {
-        instance: String,
-    },
     InvalidKinematicField {
         field: String,
         message: String,
@@ -455,12 +451,6 @@ impl fmt::Display for ValidationError {
                 formatter,
                 "robot.components.{instance}.driver.runtime_clock_ms must be > 0"
             ),
-            Self::DriverUnderSimulatedClock { instance } => write!(
-                formatter,
-                "robot.components.{instance}.driver cannot run under `clock: simulated`: a \
-                 component driver owns physical hardware IO; remove the driver block or run \
-                 this robot on the real clock"
-            ),
             Self::InvalidKinematicField { field, message } => {
                 write!(formatter, "robot.kinematic.{field} {message}")
             }
@@ -502,6 +492,8 @@ mod tests {
 
     use crate::source::SourceError;
     use crate::source::robot::Manifest;
+
+    use super::Clock;
 
     /// The rules a rejected document broke, or an empty list when it failed
     /// before validation ran at all.
@@ -593,6 +585,35 @@ router:
         let reparsed = Manifest::parse(&serialized)?;
         assert_eq!(reparsed, manifest);
 
+        Ok(())
+    }
+
+    #[test]
+    fn simulated_source_may_declare_driver_facts_for_finalization() -> anyhow::Result<()> {
+        let manifest = Manifest::parse(
+            r#"
+schema: phoxal/robot/v0
+clock: simulated
+robot:
+  id: test-bot
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: [drive.motor]
+    encoders: []
+  components:
+    drive:
+      component: drive_motor
+      mount_link: base_link
+      driver:
+        connection: { type: can, bus: 0, node_id: 1 }
+"#,
+        )?;
+        let Manifest::V0(manifest) = manifest;
+        assert_eq!(manifest.clock, Clock::Simulated);
+        assert!(manifest.robot.components["drive"].driver.is_some());
         Ok(())
     }
 

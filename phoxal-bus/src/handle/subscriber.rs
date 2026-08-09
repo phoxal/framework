@@ -33,6 +33,9 @@ pub enum ReceiveTerminal {
     Closed,
     /// The transport reported a terminal failure.
     Transport(String),
+    /// A stream receiver exhausted its fixed producer-position history bound.
+    /// Existing history is retained; no source entry is silently evicted.
+    TooManyStreamSources { topic: String, limit: usize },
 }
 
 /// Runner-owned timeline retention callback for a receive handle. This is
@@ -631,6 +634,14 @@ pub struct StreamReceiver<B> {
     next_positions: Mutex<HashMap<crate::ProducerId, Option<u64>>>,
 }
 
+/// The fixed number of producer histories one stream receiver retains.
+///
+/// A stream receiver cannot evict an old producer's position history: doing so
+/// would turn a later return from that producer into an unobservable baseline
+/// reset. Once this bound is reached, the receiver terminates with explicit
+/// [`ReceiveTerminal::TooManyStreamSources`] evidence instead.
+pub const MAX_STREAM_SOURCES: usize = 16;
+
 /// One ordered stream observation, including explicit gap evidence.
 #[derive(Debug)]
 pub enum StreamEvent<B> {
@@ -716,7 +727,16 @@ impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
     }
 
     fn classify(&self, item: Observed<B>) -> Result<StreamEvent<B>> {
-        classify_stream(&self.topic, &self.next_positions, item)
+        let result = classify_stream(&self.topic, &self.next_positions, item);
+        if let Err(BusError::TooManyStreamSources { topic, limit }) = &result {
+            self.inner
+                .terminal
+                .set(ReceiveTerminal::TooManyStreamSources {
+                    topic: topic.clone(),
+                    limit: *limit,
+                });
+        }
+        result
     }
 }
 
@@ -736,6 +756,12 @@ fn classify_stream<B>(
         .sequence;
     let mut positions = lock(next_positions);
     let Some(next) = positions.get_mut(&producer) else {
+        if positions.len() >= MAX_STREAM_SOURCES {
+            return Err(BusError::TooManyStreamSources {
+                topic: topic.to_string(),
+                limit: MAX_STREAM_SOURCES,
+            });
+        }
         positions.insert(producer, observed.checked_add(1));
         return Ok(StreamEvent::Item(item));
     };
@@ -1024,6 +1050,9 @@ fn terminal_error(terminal: ReceiveTerminal) -> BusError {
     match terminal {
         ReceiveTerminal::Closed => BusError::Closed,
         ReceiveTerminal::Transport(error) => BusError::Transport(error),
+        ReceiveTerminal::TooManyStreamSources { topic, limit } => {
+            BusError::TooManyStreamSources { topic, limit }
+        }
     }
 }
 
@@ -1296,6 +1325,105 @@ mod tests {
         )
         .expect_err("stream delivery requires a per-topic position");
         assert!(matches!(error, BusError::MissingStreamPosition { .. }));
+    }
+
+    #[test]
+    fn stream_position_history_fails_closed_without_evicting_an_old_source() {
+        let positions = Mutex::new(HashMap::new());
+        for source in 0..MAX_STREAM_SOURCES {
+            let mut item = stream_observed(1, Some(0));
+            item.metadata.source = SourceAttribution::External {
+                producer: producer(u128::try_from(source + 1).expect("source index")),
+                label: None,
+            };
+            classify_stream("v0.2/test/stream", &positions, item)
+                .expect("the fixed source bound admits each first source");
+        }
+
+        let mut extra = stream_observed(2, Some(0));
+        extra.metadata.source = SourceAttribution::External {
+            producer: producer(u128::try_from(MAX_STREAM_SOURCES + 1).expect("source index")),
+            label: None,
+        };
+        let error = classify_stream("v0.2/test/stream", &positions, extra)
+            .expect_err("a new source beyond the fixed history bound must terminate");
+        assert!(matches!(
+            error,
+            BusError::TooManyStreamSources {
+                limit: MAX_STREAM_SOURCES,
+                ..
+            }
+        ));
+        assert_eq!(lock(&positions).len(), MAX_STREAM_SOURCES);
+    }
+
+    #[test]
+    fn too_many_stream_sources_is_typed_terminal_evidence() {
+        let metrics = RuntimeMetrics::default();
+        let metric = metrics.register_subscriber("v0.2/test/stream", DEFAULT_ORDERED_CAPACITY);
+        let terminal = Arc::new(TerminalState::new());
+        let receiver = StreamReceiver::<OrderedChunk> {
+            inner: Subscriber {
+                ring: Arc::new(Ring::new(
+                    DEFAULT_ORDERED_CAPACITY,
+                    RingPolicy::Refuse,
+                    metric,
+                    Arc::clone(&terminal),
+                )),
+                terminal: Arc::clone(&terminal),
+                _guard: Arc::new(SubscriptionGuard {
+                    cancel: Arc::new(Notify::new()),
+                    expected: Arc::new(AtomicBool::new(false)),
+                }),
+            },
+            topic: "v0.2/test/stream".to_string(),
+            next_positions: Mutex::new(HashMap::new()),
+        };
+        for source in 0..MAX_STREAM_SOURCES {
+            lock(&receiver.next_positions).insert(
+                producer(u128::try_from(source + 1).expect("source index")),
+                Some(1),
+            );
+        }
+        let Observed {
+            metadata,
+            observed_at,
+            ..
+        } = stream_observed(2, Some(0));
+        let mut item = Observed {
+            body: OrderedChunk(2),
+            metadata,
+            observed_at,
+        };
+        item.metadata.source = SourceAttribution::External {
+            producer: producer(u128::try_from(MAX_STREAM_SOURCES + 1).expect("source index")),
+            label: None,
+        };
+        let error = receiver
+            .classify(item)
+            .expect_err("the receiver must fail closed at the source-history bound");
+        assert!(matches!(
+            error,
+            BusError::TooManyStreamSources {
+                limit: MAX_STREAM_SOURCES,
+                ..
+            }
+        ));
+        let terminal = receiver.terminal().expect("source overflow is terminal");
+        assert!(matches!(
+            terminal.clone(),
+            ReceiveTerminal::TooManyStreamSources {
+                limit: MAX_STREAM_SOURCES,
+                ..
+            }
+        ));
+        assert!(matches!(
+            terminal_error(terminal),
+            BusError::TooManyStreamSources {
+                limit: MAX_STREAM_SOURCES,
+                ..
+            }
+        ));
     }
 
     #[test]

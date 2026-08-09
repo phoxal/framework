@@ -5,14 +5,14 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use crate::*;
-use phoxal_model::{AssetId, Robot};
+use phoxal_model::{AssetId, Clock, Robot};
 use phoxal_runtime_contract::identity::ParticipantId;
 use phoxal_runtime_contract::metadata::ParticipantRequirement;
 
 use phoxal_model::RobotBuilder;
 use phoxal_model::builder::Kinematics;
 use phoxal_model::component::capability::{Capability, Motor, MotorCommand, StructuralTarget};
-use phoxal_model::identity::JointId;
+use phoxal_model::identity::{ComponentInstanceId, JointId};
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind, ParticipantSchemas};
 use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
 
@@ -105,6 +105,14 @@ fn document() -> StagedBytes {
 }
 
 fn motor_robot(left: MotorCommand, right: MotorCommand) -> Robot {
+    motor_robot_with_clock(Clock::Real, left, right)
+}
+
+fn simulated_motor_robot(left: MotorCommand, right: MotorCommand) -> Robot {
+    motor_robot_with_clock(Clock::Simulated, left, right)
+}
+
+fn motor_robot_with_clock(clock: Clock, left: MotorCommand, right: MotorCommand) -> Robot {
     let motor_type = |command| {
         move |motor: phoxal_model::builder::ComponentTypeBuilder| {
             motor.capability(
@@ -122,6 +130,7 @@ fn motor_robot(left: MotorCommand, right: MotorCommand) -> Robot {
         }
     };
     RobotBuilder::new("rover")
+        .clock(clock)
         .component_type("left_motor", motor_type(left))
         .component_type("right_motor", motor_type(right))
         .component("left_drive", "left_motor")
@@ -216,6 +225,66 @@ fn stock_drive_requirement_accepts_differential_velocity_motors() {
         document.robot().motion().kinematic().kind(),
         phoxal_model::robot::KinematicKind::Differential
     );
+}
+
+#[test]
+fn final_runtime_rejects_a_simulator_on_a_real_robot() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    runtime
+        .artifacts
+        .get_mut(&ParticipantArtifactId::new("drive").expect("drive artifact"))
+        .expect("drive artifact")
+        .contract
+        .kind = ParticipantKind::Simulator;
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::ExecutionModeMismatch {
+            kind: ParticipantKind::Simulator,
+            robot: Clock::Real,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn final_runtime_rejects_a_driver_on_a_simulated_robot() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    runtime.robot = simulated_motor_robot(MotorCommand::Velocity, MotorCommand::Velocity);
+    runtime
+        .artifacts
+        .get_mut(&ParticipantArtifactId::new("drive").expect("drive artifact"))
+        .expect("drive artifact")
+        .contract
+        .kind = ParticipantKind::Driver;
+    runtime.participants[0].component =
+        Some(ComponentInstanceId::new("left_drive").expect("simulated test component instance"));
+    for participant in &mut runtime.participants {
+        participant.clock = ParticipantClock::Simulation;
+    }
+
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::ExecutionModeMismatch {
+            kind: ParticipantKind::Driver,
+            robot: Clock::Simulated,
+            ..
+        })
+    ));
 }
 
 #[test]

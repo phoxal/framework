@@ -436,8 +436,8 @@ mod tests {
 
     const ROOT: &str = "phoxal/ffffffffffffffffffffffffffffffff";
 
-    /// A distinct test producer. Nothing mints a producer in production - a
-    /// session's identity is the session - so tests name theirs explicitly.
+    /// A distinct deterministic test producer. Production sessions mint their
+    /// producer through the bus owner, while tests name theirs explicitly.
     fn producer(value: u128) -> ProducerId {
         ProducerId::try_from((1_u128 << 124) | value).expect("a test producer is canonical")
     }

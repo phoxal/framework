@@ -155,24 +155,31 @@ pub fn staged_bundle() -> StagedBundle {
             None,
         );
     }
-    for driver in drivers {
-        let instance = robot
-            .component_instance(driver.component_instance.as_str())
-            .expect("a compiled driver must bind a canonical component instance");
-        let artifact = driver.implementation.clone();
-        stage_participant(
-            artifact.as_str().to_string(),
-            format!("{artifact}-{}", instance.id()),
-            ParticipantKind::Driver,
-            Some(serde_json::to_value(driver.config).expect("driver config is serializable")),
-            Some(driver.component_instance),
-        );
+    // Final topology owns the execution-mode choice. A simulated runtime has
+    // simulator participants, while a real runtime has hardware drivers; the
+    // persisted graph never contains both roles for one robot.
+    if robot.clock() == Clock::Real {
+        for driver in drivers {
+            let instance = robot
+                .component_instance(driver.component_instance.as_str())
+                .expect("a compiled driver must bind a canonical component instance");
+            let artifact = driver.implementation.clone();
+            stage_participant(
+                artifact.as_str().to_string(),
+                format!("{artifact}-{}", instance.id()),
+                ParticipantKind::Driver,
+                Some(serde_json::to_value(driver.config).expect("driver config is serializable")),
+                Some(driver.component_instance),
+            );
+        }
     }
-    if robot.components().any(|instance| {
-        robot
-            .simulation_for_instance(instance.id().as_str())
-            .is_some()
-    }) {
+    if robot.clock() == Clock::Simulated
+        && robot.components().any(|instance| {
+            robot
+                .simulation_for_instance(instance.id().as_str())
+                .is_some()
+        })
+    {
         stage_participant(
             "webots-controller".to_string(),
             "webots-controller".to_string(),
@@ -237,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn driver_instances_reuse_one_artifact_and_simulation_has_one_controller() {
+    fn real_fixture_selects_drivers_without_a_simulator() {
         let bundle = staged_bundle();
         let loaded = RuntimeBundle::open_verified(bundle.path()).expect("the staged bundle loads");
         let driver = ParticipantArtifactId::new("drive_motor").expect("driver artifact");
@@ -249,7 +256,7 @@ mod tests {
                 .count(),
             4
         );
-        assert_eq!(loaded.artifacts().len(), 3);
+        assert_eq!(loaded.artifacts().len(), 2);
         assert_eq!(
             loaded
                 .participants()
@@ -264,7 +271,7 @@ mod tests {
                         == ParticipantKind::Simulator
                 })
                 .count(),
-            1
+            0
         );
         let router = loaded
             .document()

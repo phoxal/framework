@@ -92,6 +92,17 @@ impl RuntimeParticipant {
                 });
             }
         }
+        match (artifact.contract().kind, robot.clock()) {
+            (ParticipantKind::Driver, Clock::Simulated)
+            | (ParticipantKind::Simulator, Clock::Real) => {
+                return Err(DocumentError::ExecutionModeMismatch {
+                    participant: self.id.clone(),
+                    kind: artifact.contract().kind,
+                    robot: robot.clock(),
+                });
+            }
+            _ => {}
+        }
         match (robot.clock(), self.clock) {
             (Clock::Real, ParticipantClock::Simulation) => {
                 return Err(DocumentError::ClockMismatch {

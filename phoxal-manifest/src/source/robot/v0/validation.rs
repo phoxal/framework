@@ -71,13 +71,6 @@ impl Manifest {
                     instance: component_id.clone(),
                 });
             }
-            // A component driver owns physical hardware IO; stepping it with
-            // simulated time is never a meaningful robot.
-            if self.clock == super::Clock::Simulated {
-                errors.push(ValidationError::DriverUnderSimulatedClock {
-                    instance: component_id.clone(),
-                });
-            }
         }
     }
 

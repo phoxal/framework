@@ -68,6 +68,12 @@ pub enum DocumentError {
         robot: Clock,
         participant_clock: ParticipantClock,
     },
+    #[error("{kind:?} participant '{participant}' is incompatible with robot clock {robot:?}")]
+    ExecutionModeMismatch {
+        participant: ParticipantId,
+        kind: ParticipantKind,
+        robot: Clock,
+    },
     #[error(
         "artifact '{artifact}' requires {requirement:?}, but the robot uses {actual} kinematics"
     )]
