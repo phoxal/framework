@@ -221,6 +221,10 @@ impl Runtime {
     /// Runtime construction proves this invariant and every valid runtime has
     /// a brain participant, so the lookup cannot fail after validation.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "Runtime is constructible only after validation proves at least one selected participant and its artifact"
+    )]
     pub fn robot_api(&self) -> RobotApiVersion {
         self.participants
             .first()
