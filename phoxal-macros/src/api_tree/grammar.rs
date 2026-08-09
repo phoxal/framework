@@ -106,7 +106,7 @@ impl Parse for ApiTree {
             let selected = versions
                 .iter()
                 .position(|version| version.latest)
-                .expect("count checked above");
+                .ok_or_else(|| input.error("exactly one latest revision is required"))?;
             if selected + 1 != versions.len() {
                 return Err(syn::Error::new_spanned(
                     &versions[selected].name,
@@ -478,82 +478,47 @@ impl Parse for TopicDef {
         // every owner-published role is the reverse.
         let (kind, role, legacy) = if input.peek(kw::command) {
             input.parse::<kw::command>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::Command,
-                false,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::Command, false)
         } else if input.peek(kw::stream) {
             input.parse::<kw::stream>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::Stream,
-                false,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::Stream, false)
         } else if input.peek(kw::state) {
             input.parse::<kw::state>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::State,
-                false,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::State, false)
         } else if input.peek(kw::sample) {
             // The semantic grammar names the transport family directly. The
             // legacy `measurement` spelling is intentionally kept below only
             // for the compatibility tree while generated contracts converge
             // on the independent `DELIVERY` marker.
             input.parse::<kw::sample>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::Measurement,
-                false,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::Measurement, false)
         } else if input.peek(kw::event) {
             input.parse::<kw::event>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::Event,
-                false,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::Event, false)
         } else if input.peek(kw::setpoint) {
             input.parse::<kw::setpoint>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::Command,
-                false,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::Command, false)
         } else if input.peek(kw::measurement) {
             input.parse::<kw::measurement>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::Measurement,
-                true,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::Measurement, true)
         } else if input.peek(kw::diagnostic) {
             input.parse::<kw::diagnostic>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::Diagnostic,
-                true,
-            )
+            let body = parse_body_path(input)?;
+            (TopicKind::PubSub(body), TopicRole::Diagnostic, true)
         } else if input.peek(kw::query) {
             input.parse::<kw::query>()?;
-            let request: Ident = input.parse()?;
+            let request = parse_body_path(input)?;
             input.parse::<Token![=>]>()?;
-            let response: Ident = input.parse()?;
+            let response = parse_body_path(input)?;
             (
-                TopicKind::Query {
-                    request: BodyPath::from_ident(request),
-                    response: BodyPath::from_ident(response),
-                },
+                TopicKind::Query { request, response },
                 TopicRole::Query,
                 false,
             )

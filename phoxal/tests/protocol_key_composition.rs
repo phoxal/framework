@@ -7,19 +7,22 @@
 //! change to either root convention would drift it silently. This test opens a
 //! real in-process session and asserts the final key.
 
-use phoxal_bus::{BusConfig, BusOwner, ContractBody, ExecutionId};
-use phoxal_macros::phoxal_api_tree;
+use phoxal_bus::{BusConfig, BusOwner, EndpointDescriptor, ExecutionId};
+use phoxal_macros::phoxal_protocol;
 
-phoxal_api_tree! {
+mod payload {
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[serde(tag = "schema")]
+    pub enum Hello {
+        #[serde(rename = "supervisor.hello/v0")]
+        V0 { token: String },
+    }
+}
+
+phoxal_protocol! {
     protocol supervisor {
         connect {
-            #[serde(tag = "schema")]
-            enum Hello {
-                #[serde(rename = "supervisor.hello/v0")]
-                V0 { token: String },
-            }
-
-            topic hello: command Hello;
+            topic hello: command crate::payload::Hello;
         }
     }
 }
@@ -36,14 +39,14 @@ async fn a_protocol_topic_composes_under_the_execution_scoped_root() {
 
     // The macro's half: relative, protocol-led, no revision segment.
     assert_eq!(
-        <supervisor::connect::Hello as ContractBody>::TOPIC,
+        <supervisor::endpoint::connect::HelloEndpoint as EndpointDescriptor>::TOPIC,
         "supervisor/connect/hello"
     );
     // The session's half: the execution is the whole root.
     assert_eq!(bus.root(), format!("phoxal/{execution}"));
     // Composed, this is the key a supervisor protocol actually speaks on.
     assert_eq!(
-        bus.full_key(<supervisor::connect::Hello as ContractBody>::TOPIC),
+        bus.full_key(<supervisor::endpoint::connect::HelloEndpoint as EndpointDescriptor>::TOPIC),
         format!("phoxal/{execution}/supervisor/connect/hello")
     );
 

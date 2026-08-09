@@ -405,7 +405,8 @@ async fn drain_loop(
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
     let topic = supervisor::topic::owner().logs(&participant_id)?.topic();
-    let publisher = DiagnosticPublisher::<supervisor::logs::Event>::new(bus, &topic)?;
+    let publisher =
+        DiagnosticPublisher::<supervisor::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let dropped = state.take_dropped();

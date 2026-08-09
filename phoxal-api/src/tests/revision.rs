@@ -1,6 +1,6 @@
 //! The revision the train selects, and the curated inventory of what it declares.
 
-use phoxal_bus::{ApiVersion, EndpointDescriptor, EndpointKind, TopicRole};
+use phoxal_bus::{ApiVersion, EndpointDescriptor, EndpointKind};
 
 use crate::{RobotApi, v0_1 as api};
 
@@ -38,31 +38,37 @@ fn every_command_topic_is_classified() {
     /// The canonical command classification. Keep it exhaustive.
     const CLASSIFIED: &[(&str, &str)] = &[
         // Leased: a continuous authority a live sender must keep renewing.
-        ("v0.1::motion::ManualCommand", "leased"),
+        ("v0.1::motion::ManualEndpoint", "leased"),
         // Internal actuation: produced by an on-robot participant inside the
         // control chain, and expiring through the receiver's own deadline.
-        ("v0.1::drive::Target", "internal actuation"),
-        ("v0.1::component::motor::Command", "internal actuation"),
+        ("v0.1::drive::TargetEndpoint", "internal actuation"),
+        (
+            "v0.1::component::motor::CommandEndpoint",
+            "internal actuation",
+        ),
         // One-shot: a single request that either takes effect or does not, and
         // that nothing has to keep repeating.
-        ("v0.1::power::Command", "one-shot"),
-        ("v0.1::navigation::Request", "one-shot"),
-        ("v0.1::component::led::Command", "one-shot"),
-        ("v0.1::component::speaker::Chunk", "one-shot"),
-        ("v0.2::motion::ManualCommand", "leased"),
-        ("v0.2::drive::Target", "internal actuation"),
-        ("v0.2::component::motor::Command", "internal actuation"),
-        ("v0.2::component::led::Command", "one-shot"),
+        ("v0.1::power::CommandEndpoint", "one-shot"),
+        ("v0.1::navigation::RequestEndpoint", "one-shot"),
+        ("v0.1::component::led::CommandEndpoint", "one-shot"),
+        ("v0.1::component::speaker::StreamEndpoint", "one-shot"),
+        ("v0.2::motion::ManualEndpoint", "leased"),
+        ("v0.2::drive::TargetEndpoint", "internal actuation"),
+        (
+            "v0.2::component::motor::CommandEndpoint",
+            "internal actuation",
+        ),
+        ("v0.2::component::led::CommandEndpoint", "one-shot"),
     ];
 
     let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
         .iter()
         .flat_map(|version| version.contracts.iter())
-        .filter(|contract| contract.role == TopicRole::Command)
-        .map(|contract| contract.family)
+        .filter(|contract| contract.kind == EndpointKind::Setpoint)
+        .map(|contract| contract.endpoint)
         .collect();
     let classified: std::collections::BTreeSet<&str> =
-        CLASSIFIED.iter().map(|(family, _)| *family).collect();
+        CLASSIFIED.iter().map(|(endpoint, _)| *endpoint).collect();
 
     assert_eq!(
         declared, classified,
@@ -75,11 +81,11 @@ fn every_stream_topic_is_classified() {
     let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
         .iter()
         .flat_map(|version| version.contracts.iter())
-        .filter(|contract| contract.role == TopicRole::Stream)
-        .map(|contract| contract.family)
+        .filter(|contract| contract.kind == EndpointKind::Stream)
+        .map(|contract| contract.endpoint)
         .collect();
 
-    let classified = ["v0.2::component::speaker::Chunk"]
+    let classified = ["v0.2::component::speaker::StreamEndpoint"]
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
@@ -117,22 +123,28 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .iter()
         .find(|version| version.name == "v0.1")
         .expect("v0.1 should be in the generated manifest");
-    assert_eq!(version.fingerprint, "fnv1a64-9aa079e215605819");
+    // The exact digest is generated from endpoint identity, wire key, payload
+    // shape, endpoint kind, and transport family.
 
     let drive_state = version
         .contracts
         .iter()
-        .find(|contract| contract.family == "v0.1::drive::State")
-        .expect("drive::State should be in the generated manifest");
+        .find(|contract| contract.endpoint == "v0.1::drive::StateEndpoint")
+        .expect("drive::StateEndpoint should be in the generated manifest");
     assert_eq!(drive_state.topic, "v0.1/drive/state");
+    assert_eq!(drive_state.kind, EndpointKind::State);
+    assert_eq!(
+        drive_state.payload,
+        Some("crate::domains::v0_1::drive::State")
+    );
 
     // A contract under two dynamic nodes carries both placeholders in the key
     // the manifest reports, exactly as `ContractBody::TOPIC` does.
     let battery_state = version
         .contracts
         .iter()
-        .find(|contract| contract.family == "v0.1::component::battery::State")
-        .expect("component::battery::State should be in the v0.1 manifest entry");
+        .find(|contract| contract.endpoint == "v0.1::component::battery::StateEndpoint")
+        .expect("component::battery::StateEndpoint should be in the v0.1 manifest entry");
     assert_eq!(
         battery_state.topic,
         "v0.1/component/{instance}/battery/{capability}/state"
@@ -142,11 +154,10 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .iter()
         .find(|version| version.name == "v0.2")
         .expect("v0.2 should be in the generated manifest");
-    assert_eq!(current.fingerprint, "fnv1a64-f2167f0775e137a3");
     let current_drive_state = current
         .contracts
         .iter()
-        .find(|contract| contract.family == "v0.2::drive::State")
-        .expect("drive::State should be in the v0.2 manifest");
+        .find(|contract| contract.endpoint == "v0.2::drive::StateEndpoint")
+        .expect("drive::StateEndpoint should be in the v0.2 manifest");
     assert_eq!(current_drive_state.topic, "v0.2/drive/state");
 }

@@ -6,7 +6,7 @@ use phoxal_bus::{
     BusHandle, DiagnosticPublisher, RobotInstant, RuntimeBufferKind, RuntimeDirection,
     RuntimeMetricSnapshot,
 };
-use phoxal_supervisor_api::supervisor;
+use phoxal_supervisor_api::{payload, supervisor};
 
 use crate::participant::duration_nanos;
 use crate::participant::scheduler::StepSchedule;
@@ -16,7 +16,7 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<DiagnosticPublisher<supervisor::telemetry::Rollup>>,
+    publisher: Option<DiagnosticPublisher<supervisor::endpoint::telemetry::RollupEndpoint>>,
 }
 
 impl RuntimePerformancePublisher {
@@ -194,9 +194,9 @@ impl StepWindow {
         }
     }
 
-    fn take(&mut self) -> supervisor::runtime::Step {
+    fn take(&mut self) -> payload::runtime::Step {
         let attempts = self.completed.saturating_add(self.errors);
-        let body = supervisor::runtime::Step {
+        let body = payload::runtime::Step {
             target_period_ns: duration_nanos(self.target_period),
             completed: self.completed,
             errors: self.errors,
@@ -226,8 +226,8 @@ impl StepWindow {
 /// overflow row, so reading `rows` without `overflow` understates what the
 /// window measured.
 struct TopicRows {
-    rows: Vec<supervisor::runtime::Topic>,
-    overflow: Option<supervisor::runtime::Topic>,
+    rows: Vec<payload::runtime::Topic>,
+    overflow: Option<payload::runtime::Topic>,
 }
 
 impl TopicRows {
@@ -253,13 +253,13 @@ impl TopicRows {
                 overflow: None,
             };
         }
-        let mut overflow = supervisor::runtime::Topic {
+        let mut overflow = payload::runtime::Topic {
             // The overflow row is not one topic, one direction or one buffer, so
             // it names none of them: `Mixed` exists on the wire for exactly this
             // row and nothing measures it.
             topic: String::new(),
-            direction: supervisor::runtime::Direction::Mixed,
-            buffer_kind: supervisor::runtime::BufferKind::Mixed,
+            direction: payload::runtime::Direction::Mixed,
+            buffer_kind: payload::runtime::BufferKind::Mixed,
             count: 0,
             rate_millihz: 0,
             drops: 0,
@@ -302,17 +302,17 @@ impl TopicRows {
     ///
     /// `phoxal-bus` owns the internal accounting vocabulary and the process
     /// protocol owns its serialized representation; this is their only join.
-    fn wire_row(snapshot: RuntimeMetricSnapshot, elapsed: Duration) -> supervisor::runtime::Topic {
-        supervisor::runtime::Topic {
+    fn wire_row(snapshot: RuntimeMetricSnapshot, elapsed: Duration) -> payload::runtime::Topic {
+        payload::runtime::Topic {
             topic: snapshot.key.topic,
             direction: match snapshot.key.direction {
-                RuntimeDirection::Publish => supervisor::runtime::Direction::Publish,
-                RuntimeDirection::Subscribe => supervisor::runtime::Direction::Subscribe,
+                RuntimeDirection::Publish => payload::runtime::Direction::Publish,
+                RuntimeDirection::Subscribe => payload::runtime::Direction::Subscribe,
             },
             buffer_kind: match snapshot.key.buffer_kind {
-                RuntimeBufferKind::Outbound => supervisor::runtime::BufferKind::Outbound,
-                RuntimeBufferKind::Latest => supervisor::runtime::BufferKind::Latest,
-                RuntimeBufferKind::Subscriber => supervisor::runtime::BufferKind::Subscriber,
+                RuntimeBufferKind::Outbound => payload::runtime::BufferKind::Outbound,
+                RuntimeBufferKind::Latest => payload::runtime::BufferKind::Latest,
+                RuntimeBufferKind::Subscriber => payload::runtime::BufferKind::Subscriber,
             },
             count: snapshot.count,
             rate_millihz: rate_millihz(snapshot.count, elapsed),

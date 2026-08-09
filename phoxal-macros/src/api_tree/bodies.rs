@@ -5,7 +5,7 @@
 //! The parallel topic-builder tree is emitted by [`super::builders`] and
 //! spliced into the same tree module here.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote};
 use syn::ItemStruct;
 
@@ -165,22 +165,21 @@ impl Node {
                     {
                         let alias = syn::Ident::new(
                             &body.leaf_name(),
-                            body.path.segments.last().unwrap().ident.span(),
+                            body.path
+                                .segments
+                                .last()
+                                .map_or_else(Span::call_site, |segment| segment.ident.span()),
                         );
                         external_aliases.extend(
                             quote! { #[allow(unused_imports)] pub use #body_path as #alias; },
                         );
                     }
                     if semantic {
-                        let temporal_marker = if topic.role == TopicRole::Event {
-                            quote! { impl ::phoxal_bus::EventContract for #endpoint {} }
-                        } else {
-                            topic
-                                .role
-                                .marker_trait()
-                                .map(|marker| quote! { impl #marker for #endpoint {} })
-                                .unwrap_or_default()
-                        };
+                        let temporal_marker = topic
+                            .role
+                            .semantic_marker_trait()
+                            .map(|marker| quote! { impl #marker for #endpoint {} })
+                            .unwrap_or_default();
                         let delivery_marker = topic.delivery.map_or_else(
                             || topic.role.delivery_marker_trait(),
                             |delivery| delivery.marker_trait(),
@@ -248,7 +247,10 @@ impl Node {
                         {
                             let alias = syn::Ident::new(
                                 &body.leaf_name(),
-                                body.path.segments.last().unwrap().ident.span(),
+                                body.path
+                                    .segments
+                                    .last()
+                                    .map_or_else(Span::call_site, |segment| segment.ident.span()),
                             );
                             let path = &body.path;
                             external_aliases.extend(

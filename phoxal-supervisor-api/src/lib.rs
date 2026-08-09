@@ -21,172 +21,276 @@ where
     }
 }
 
+/// Ordinary protocol payloads. The generated `supervisor` module below owns
+/// endpoint descriptors and topic builders; these modules own only wire data.
+pub mod payload {
+    pub mod logs {
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Timestamp {
+            pub unix_seconds: i64,
+            pub nanos: u32,
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum Level {
+            Error,
+            Warn,
+            Info,
+            Debug,
+            Trace,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(untagged)]
+        pub enum LogValue {
+            Bool(bool),
+            I64(i64),
+            U64(u64),
+            F64(#[serde(deserialize_with = "crate::deserialize_finite_f64")] f64),
+            String(String),
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Event {
+            pub seq: u64,
+            pub time: Timestamp,
+            pub level: Level,
+            pub target: String,
+            pub message: String,
+            pub fields: ::std::collections::BTreeMap<String, LogValue>,
+            pub dropped: u32,
+            #[serde(default)]
+            pub truncated: u32,
+        }
+    }
+
+    pub mod runtime {
+        #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Cursor {
+            pub sequence: u64,
+        }
+
+        #[derive(
+            Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+        )]
+        #[serde(rename_all = "snake_case")]
+        pub enum Direction {
+            Publish,
+            Subscribe,
+            Mixed,
+        }
+
+        #[derive(
+            Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+        )]
+        #[serde(rename_all = "snake_case")]
+        pub enum BufferKind {
+            Outbound,
+            Latest,
+            Subscriber,
+            Mixed,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Step {
+            pub target_period_ns: u64,
+            pub completed: u64,
+            pub errors: u64,
+            pub mean_duration_ns: u64,
+            pub max_duration_ns: u64,
+            pub mean_lateness_ns: u64,
+            pub max_lateness_ns: u64,
+            pub missed_ticks: u64,
+            pub overruns: u64,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Topic {
+            pub topic: String,
+            pub direction: Direction,
+            pub buffer_kind: BufferKind,
+            pub count: u64,
+            pub rate_millihz: u64,
+            pub drops: u64,
+            pub latest_overwrites: u64,
+            pub bounded_evictions: u64,
+            pub capacity: u64,
+            pub current_depth: u64,
+            pub high_water_depth: u64,
+            pub decode_errors: u64,
+            pub timeline_filtered: u64,
+            pub overflowed_rows: u32,
+        }
+    }
+
+    pub mod telemetry {
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Rollup {
+            pub window_ns: u64,
+            pub step: Option<crate::payload::runtime::Step>,
+            pub topics: Vec<crate::payload::runtime::Topic>,
+            pub overflow: Option<crate::payload::runtime::Topic>,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct SnapshotRequest {
+            pub participant_id: Option<String>,
+            pub limit: u32,
+            pub before_sequence: Option<u64>,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Record {
+            pub sequence: u64,
+            pub participant_id: String,
+            pub truncated: u32,
+            pub window_ns: u64,
+            pub step: Option<crate::payload::runtime::Step>,
+            pub topics: Vec<crate::payload::runtime::Topic>,
+            pub overflow: Option<crate::payload::runtime::Topic>,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Snapshot {
+            pub cursor: crate::payload::runtime::Cursor,
+            pub records: Vec<Record>,
+            pub capacity_evictions: u64,
+            pub next_before_sequence: Option<u64>,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Follow {
+            pub cursor: crate::payload::runtime::Cursor,
+            pub record: Record,
+        }
+    }
+
+    pub mod log {
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct SnapshotRequest {}
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Timestamp {
+            pub unix_seconds: i64,
+            pub nanos: u32,
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum Level {
+            Error,
+            Warn,
+            Info,
+            Debug,
+            Trace,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(untagged)]
+        pub enum LogValue {
+            Bool(bool),
+            I64(i64),
+            U64(u64),
+            F64(f64),
+            String(String),
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Record {
+            pub sequence: u64,
+            pub participant_id: String,
+            pub source_sequence: u64,
+            pub time: Timestamp,
+            pub level: Level,
+            pub target: String,
+            pub message: String,
+            pub fields: ::std::collections::BTreeMap<String, LogValue>,
+            pub dropped: u32,
+            pub truncated: u32,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Snapshot {
+            pub cursor: crate::payload::runtime::Cursor,
+            pub ingest_dropped: u64,
+            pub records: Vec<Record>,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct Follow {
+            pub cursor: crate::payload::runtime::Cursor,
+            pub ingest_dropped: u64,
+            pub record: Record,
+        }
+    }
+
+    pub mod asset {
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub struct GetRequest {
+            pub path: String,
+        }
+
+        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub enum GetResponse {
+            Found { bytes: Vec<u8> },
+            Missing,
+            InvalidPath,
+        }
+    }
+}
+
 phoxal_protocol! {
     protocol supervisor {
         logs(participant_id) {
-            struct Timestamp { unix_seconds: i64, nanos: u32 }
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum Level { Error, Warn, Info, Debug, Trace }
-            #[serde(untagged)]
-            enum LogValue {
-                Bool(bool),
-                I64(i64),
-                U64(u64),
-                F64(#[serde(deserialize_with = "crate::deserialize_finite_f64")] f64),
-                String(String),
-            }
-            struct Event {
-                seq: u64,
-                time: Timestamp,
-                level: Level,
-                target: String,
-                message: String,
-                fields: ::std::collections::BTreeMap<String, LogValue>,
-                dropped: u32,
-                #[serde(default)]
-                truncated: u32,
-            }
-            topic self: diagnostic Event delivery stream;
+            topic self: diagnostic crate::payload::logs::Event delivery stream;
         }
 
         runtime {
-            #[derive(Eq)]
-            struct Cursor {
-                sequence: u64,
-            }
-
-            #[derive(Copy, Eq, Ord, PartialOrd)]
-            #[serde(rename_all = "snake_case")]
-            enum Direction { Publish, Subscribe, Mixed }
-
-            #[derive(Copy, Eq, Ord, PartialOrd)]
-            #[serde(rename_all = "snake_case")]
-            enum BufferKind { Outbound, Latest, Subscriber, Mixed }
-
-            struct Step {
-                target_period_ns: u64,
-                completed: u64,
-                errors: u64,
-                mean_duration_ns: u64,
-                max_duration_ns: u64,
-                mean_lateness_ns: u64,
-                max_lateness_ns: u64,
-                missed_ticks: u64,
-                overruns: u64,
-            }
-
-            struct Topic {
-                topic: String,
-                direction: Direction,
-                buffer_kind: BufferKind,
-                count: u64,
-                rate_millihz: u64,
-                drops: u64,
-                latest_overwrites: u64,
-                bounded_evictions: u64,
-                capacity: u64,
-                current_depth: u64,
-                high_water_depth: u64,
-                decode_errors: u64,
-                timeline_filtered: u64,
-                overflowed_rows: u32,
-            }
+            // The runtime payloads are owned by `payload::runtime`; this node
+            // contributes only endpoint descriptors and topic paths.
         }
 
         telemetry {
-            struct Rollup {
-                window_ns: u64,
-                step: Option<crate::supervisor::runtime::Step>,
-                topics: Vec<crate::supervisor::runtime::Topic>,
-                overflow: Option<crate::supervisor::runtime::Topic>,
-            }
-            struct SnapshotRequest {
-                participant_id: Option<String>,
-                limit: u32,
-                before_sequence: Option<u64>,
-            }
-            struct Record {
-                sequence: u64,
-                participant_id: String,
-                truncated: u32,
-                window_ns: u64,
-                step: Option<crate::supervisor::runtime::Step>,
-                topics: Vec<crate::supervisor::runtime::Topic>,
-                overflow: Option<crate::supervisor::runtime::Topic>,
-            }
-            struct Snapshot {
-                cursor: crate::supervisor::runtime::Cursor,
-                records: Vec<Record>,
-                capacity_evictions: u64,
-                next_before_sequence: Option<u64>,
-            }
-            struct Follow {
-                cursor: crate::supervisor::runtime::Cursor,
-                record: Record,
-            }
-            topic rollup: diagnostic Rollup;
-            topic snapshot: query SnapshotRequest => Snapshot;
-            topic follow: diagnostic Follow;
+            topic rollup: diagnostic crate::payload::telemetry::Rollup;
+            topic snapshot: query crate::payload::telemetry::SnapshotRequest => crate::payload::telemetry::Snapshot;
+            topic follow: diagnostic crate::payload::telemetry::Follow;
         }
 
         log {
-            struct SnapshotRequest {}
-            struct Timestamp { unix_seconds: i64, nanos: u32 }
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum Level { Error, Warn, Info, Debug, Trace }
-            #[serde(untagged)]
-            enum LogValue { Bool(bool), I64(i64), U64(u64), F64(f64), String(String) }
-            struct Record {
-                sequence: u64,
-                participant_id: String,
-                source_sequence: u64,
-                time: Timestamp,
-                level: Level,
-                target: String,
-                message: String,
-                fields: ::std::collections::BTreeMap<String, LogValue>,
-                dropped: u32,
-                truncated: u32,
-            }
-            struct Snapshot {
-                cursor: crate::supervisor::runtime::Cursor,
-                ingest_dropped: u64,
-                records: Vec<Record>,
-            }
-            struct Follow {
-                cursor: crate::supervisor::runtime::Cursor,
-                ingest_dropped: u64,
-                record: Record,
-            }
-            topic snapshot: query SnapshotRequest => Snapshot;
-            topic follow: diagnostic Follow;
+            topic snapshot: query crate::payload::log::SnapshotRequest => crate::payload::log::Snapshot;
+            topic follow: diagnostic crate::payload::log::Follow;
         }
 
         asset {
-            struct GetRequest { path: String }
-            enum GetResponse { Found { bytes: Vec<u8> }, Missing, InvalidPath }
-            topic get: query GetRequest => GetResponse;
+            topic get: query crate::payload::asset::GetRequest => crate::payload::asset::GetResponse;
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use phoxal_bus::ContractBody;
+    use phoxal_bus::{EndpointDescriptor, EndpointKind};
 
     use crate::supervisor;
 
     #[test]
     fn process_topics_are_protocol_qualified_not_robot_api_qualified() {
         assert_eq!(
-            <supervisor::telemetry::Rollup as ContractBody>::TOPIC,
+            <supervisor::endpoint::telemetry::RollupEndpoint as EndpointDescriptor>::TOPIC,
             "supervisor/telemetry/rollup"
         );
         assert_eq!(
-            <supervisor::asset::GetRequest as ContractBody>::TOPIC,
+            <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::TOPIC,
             "supervisor/asset/get"
+        );
+        assert_eq!(
+            <supervisor::endpoint::telemetry::RollupEndpoint as EndpointDescriptor>::KIND,
+            EndpointKind::State
+        );
+        assert_eq!(
+            <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::KIND,
+            EndpointKind::Query
         );
     }
 

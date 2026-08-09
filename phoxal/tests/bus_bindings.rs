@@ -10,7 +10,7 @@
 
 use phoxal::api;
 use phoxal::bus::{
-    BusMetadata, CodecId, ContractBody, ParticipantSourceIdentity, ProducerId, RobotInstant,
+    BusMetadata, CodecId, EndpointDescriptor, ParticipantSourceIdentity, ProducerId, RobotInstant,
     SourceAttribution, TimeWindow, TimelineId,
 };
 use phoxal_supervisor_api::supervisor;
@@ -25,12 +25,12 @@ fn encoding_string_carries_only_the_codec() {
 #[test]
 fn contract_body_topic_is_version_qualified_on_the_real_tree() {
     assert_eq!(
-        <api::drive::Target as ContractBody>::TOPIC,
+        <api::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
         "v0.2/drive/target"
     );
     assert_eq!(
-        <supervisor::asset::GetRequest as ContractBody>::TOPIC,
-        "v0.2/supervisor/asset/get"
+        <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::TOPIC,
+        "supervisor/asset/get"
     );
 }
 

@@ -2,9 +2,12 @@
 //!
 //! Three macro families make up the authoring surface:
 //!
-//! - [`phoxal_api_tree!`] - declares concrete API-revision modules
-//!   (`phoxal_api::v0_1`, …), their revision-local body types, the
-//!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
+//! - [`phoxal_api!`] - declares concrete robot API revisions over ordinary Rust
+//!   payload modules, generating endpoint descriptors and topic builders.
+//! - [`phoxal_protocol!`] - declares process-boundary protocol endpoints over
+//!   ordinary Rust payload modules, with protocol-relative keys.
+//! - [`phoxal_api_tree!`] - retains the legacy authored-body tree for the
+//!   compatibility migration.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
@@ -26,7 +29,7 @@ mod authoring;
 
 use proc_macro::TokenStream;
 
-/// Declare a tree of wire bodies + typed topics, in one of two modes.
+/// Declare a compatibility tree of wire bodies + typed topics, in one of two modes.
 ///
 /// **API mode** (`version`) is the robot API: one invocation owns one or more
 /// `version vM_N { … }` blocks and exactly one final `latest vM_N;`
@@ -48,9 +51,9 @@ use proc_macro::TokenStream;
 /// or dynamic (`name(var) { … }`, binding exactly one variable), and may nest to
 /// any depth. Inside a node block, in any order:
 ///
-/// - `struct …` / `enum …` - a version-local wire body. Macro-declared structs
-///   get public fields; every body gets the standard derive set (`Clone`,
-///   `Debug`, `PartialEq`, `serde::Serialize`/`Deserialize`).
+/// - `struct …` / `enum …` - a legacy version-local wire body. New API and
+///   protocol declarations keep payloads in ordinary Rust modules and use
+///   endpoint descriptors instead.
 /// - `topic <leaf>: command <Body>;` - a pub/sub topic the owning service
 ///   subscribes (a control input).
 /// - `topic <leaf>: stream <Body>;` - a pub/sub topic the owning service
@@ -97,20 +100,14 @@ use proc_macro::TokenStream;
 /// # Protocol mode
 ///
 /// ```text
-/// phoxal_api_tree! {
+/// phoxal_protocol! {
 ///     protocol supervisor {
 ///         connect {
-///             #[serde(tag = "schema")]
-///             enum Hello {
-///                 #[serde(rename = "supervisor.hello/v0")]
-///                 V0 { token: String },
-///             }
-///             topic hello: command Hello;   // key `supervisor/connect/hello`
+///             topic hello: command crate::payload::Hello;
 ///         }
 ///         run(execution) {
-///             struct SnapshotRequest {}
-///             struct Snapshot { running: bool }
-///             topic snapshot: query SnapshotRequest => Snapshot;
+///             topic snapshot: query crate::payload::SnapshotRequest
+///                 => crate::payload::Snapshot;
 ///         }
 ///     }
 /// }
@@ -127,13 +124,12 @@ use proc_macro::TokenStream;
 /// - there is no revision history: `latest`, `extends`, `replace`, and `remove`
 ///   are all rejected. Pre-1.0, edit the declaration in place;
 /// - the **developer owns the payload's schema version**. A document that
-///   crosses a process boundary is authored as a serde-tagged enum whose
-///   variants are its versions; this macro never reads a body's shape, never
-///   infers a breaking change, and never mints a version;
-/// - the generated marker's `ApiVersion::ID` (and each body's
-///   `ContractBody::VERSION`) is the protocol name. The marker's job is
-///   unchanged - it keeps one tree's bodies from being mistaken for another's
-///   at compile time.
+///   crosses a process boundary is authored as a serde-tagged enum in the
+///   ordinary payload module; this macro never reads its shape or mints a
+///   version;
+/// - the generated marker's `ApiVersion::ID` is the protocol name, while each
+///   generated endpoint descriptor owns its endpoint identity and points at
+///   the ordinary payload type.
 #[proc_macro]
 pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
     api_tree::expand(input.into())

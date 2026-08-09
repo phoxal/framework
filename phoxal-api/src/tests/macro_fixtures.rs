@@ -141,6 +141,37 @@ mod semantic_surface {
         fn query<E: QueryEndpointDescriptor>() {}
         query::<Lookup>();
     }
+
+    #[test]
+    fn endpoint_manifest_keeps_shared_payloads_as_distinct_endpoint_records() {
+        assert_eq!(API_CONTRACT_MANIFEST.len(), 1);
+        let contracts = API_CONTRACT_MANIFEST[0].contracts;
+        assert_eq!(contracts.len(), 3);
+        let mirror = contracts
+            .iter()
+            .find(|contract| contract.endpoint.ends_with("MirrorEndpoint"))
+            .expect("mirror endpoint manifest record");
+        let sample = contracts
+            .iter()
+            .find(|contract| contract.endpoint.ends_with("SampleEndpoint"))
+            .expect("sample endpoint manifest record");
+        let lookup = contracts
+            .iter()
+            .find(|contract| contract.endpoint.ends_with("LookupEndpoint"))
+            .expect("query endpoint manifest record");
+        assert_ne!(mirror.endpoint, sample.endpoint);
+        assert_eq!(mirror.payload, sample.payload);
+        assert_eq!(lookup.payload, None);
+        assert_eq!(
+            lookup.request,
+            Some("crate::tests::macro_fixtures::semantic_surface::V1QueryRequest")
+        );
+        assert_eq!(
+            lookup.response,
+            Some("crate::tests::macro_fixtures::semantic_surface::V1QueryResponse")
+        );
+        assert!(!API_CONTRACT_MANIFEST[0].fingerprint.is_empty());
+    }
 }
 
 /// Every strict semantic endpoint form compiles through the public macro and
@@ -225,47 +256,55 @@ mod semantic_forms {
 /// document body.
 mod protocol_tree {
     use phoxal_bus::{
-        ApiVersion, AskQuery, ContractBody, Publish, ServeQuery, Subscribe, Topic, TopicRole,
+        ApiVersion, AskQuery, EndpointDescriptor, Publish, QueryEndpointDescriptor, ServeQuery,
+        Subscribe, Topic,
     };
 
-    crate::phoxal_protocol! {
-        protocol fixture {
-            connect {
-                /// The version tag is the developer's, not the macro's: the
-                /// enum variant IS the schema version, selected by serde at
-                /// parse time. Pre-v1, `V0` is edited in place.
-                #[serde(tag = "schema")]
-                enum Hello {
-                    #[serde(rename = "fixture.hello/v0")]
-                    V0 { token: String },
-                }
+    mod payload {
+        pub mod connect {
+            #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+            #[serde(tag = "schema")]
+            pub enum Hello {
+                #[serde(rename = "fixture.hello/v0")]
+                V0 { token: String },
+            }
+        }
 
-                topic hello: command Hello;
+        pub mod run {
+            #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+            pub struct SnapshotRequest {
+                pub limit: u32,
             }
 
-            run(execution) {
-                struct SnapshotRequest {
-                    limit: u32,
-                }
+            #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+            #[serde(tag = "schema")]
+            pub enum Snapshot {
+                #[serde(rename = "fixture.snapshot/v0")]
+                V0 { running: bool },
+            }
 
-                #[serde(tag = "schema")]
-                enum Snapshot {
-                    #[serde(rename = "fixture.snapshot/v0")]
-                    V0 { running: bool },
-                }
-
-                struct Progress {
-                    completed: u32,
-                }
-
-                topic snapshot: query SnapshotRequest => Snapshot;
-                topic progress: state Progress;
+            #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+            pub struct Progress {
+                pub completed: u32,
             }
         }
     }
 
-    fn assert_publish<B: ContractBody>(_topic: Topic<Publish<B>>) {}
-    fn assert_subscribe<B: ContractBody>(_topic: Topic<Subscribe<B>>) {}
+    crate::phoxal_protocol! {
+        protocol fixture {
+            connect {
+                topic hello: command crate::tests::macro_fixtures::protocol_tree::payload::connect::Hello;
+            }
+
+            run(execution) {
+                topic snapshot: query crate::tests::macro_fixtures::protocol_tree::payload::run::SnapshotRequest => crate::tests::macro_fixtures::protocol_tree::payload::run::Snapshot;
+                topic progress: state crate::tests::macro_fixtures::protocol_tree::payload::run::Progress;
+            }
+        }
+    }
+
+    fn assert_publish<E: EndpointDescriptor>(_topic: Topic<Publish<E>>) {}
+    fn assert_subscribe<E: EndpointDescriptor>(_topic: Topic<Subscribe<E>>) {}
     fn assert_ask<E: phoxal_bus::QueryEndpointDescriptor>(_topic: Topic<AskQuery<E>>) {}
     fn assert_serve<E: phoxal_bus::QueryEndpointDescriptor>(_topic: Topic<ServeQuery<E>>) {}
 
@@ -276,20 +315,16 @@ mod protocol_tree {
     fn protocol_keys_carry_no_version_segment() {
         assert_eq!(<fixture::Api as ApiVersion>::ID, "fixture");
         assert_eq!(
-            <fixture::connect::Hello as ContractBody>::TOPIC,
+            <fixture::endpoint::connect::HelloEndpoint as EndpointDescriptor>::TOPIC,
             "fixture/connect/hello"
         );
         assert_eq!(
-            <fixture::connect::Hello as ContractBody>::NAME,
-            "fixture::connect::Hello"
+            <fixture::endpoint::connect::HelloEndpoint as EndpointDescriptor>::NAME,
+            "fixture::connect::HelloEndpoint"
         );
         assert_eq!(
-            <fixture::connect::Hello as ContractBody>::CONTRACT,
-            "connect::Hello"
-        );
-        assert_eq!(
-            <fixture::connect::Hello as ContractBody>::ROLE,
-            TopicRole::Command
+            <fixture::endpoint::connect::HelloEndpoint as EndpointDescriptor>::CONTRACT,
+            "connect::HelloEndpoint"
         );
         assert_eq!(
             fixture::topic::client().connect().hello().key(),
@@ -302,7 +337,7 @@ mod protocol_tree {
     #[test]
     fn a_dynamic_segment_is_filled_from_the_builder() {
         assert_eq!(
-            <fixture::run::Progress as ContractBody>::TOPIC,
+            <fixture::endpoint::run::ProgressEndpoint as EndpointDescriptor>::TOPIC,
             "fixture/run/{execution}/progress"
         );
         assert_eq!(
@@ -313,11 +348,14 @@ mod protocol_tree {
                 .key(),
             "fixture/run/x7f/progress"
         );
-        // A query's request and response share the one key, as in API mode.
-        assert_eq!(
-            <fixture::run::SnapshotRequest as ContractBody>::TOPIC,
-            <fixture::run::Snapshot as ContractBody>::TOPIC
-        );
+        fn assert_query<
+            E: QueryEndpointDescriptor<
+                    Request = payload::run::SnapshotRequest,
+                    Response = payload::run::Snapshot,
+                >,
+        >() {
+        }
+        assert_query::<fixture::endpoint::run::SnapshotEndpoint>();
     }
 
     /// Both side-branded builder trees are generated, and taking the wrong side

@@ -6,7 +6,7 @@
 //! produces and what every codegen pass reads.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::visit_mut::{self, VisitMut};
 use syn::{Ident, ItemEnum, ItemStruct};
 
@@ -205,6 +205,29 @@ impl TopicDef {
         }
     }
 
+    /// The stable manifest spelling for the endpoint's fixed semantic kind.
+    ///
+    /// Keep this beside [`endpoint_kind`](Self::endpoint_kind) so the emitted
+    /// enum value and the fingerprint input cannot drift apart.
+    pub(super) fn endpoint_kind_name(&self) -> &'static str {
+        match &self.kind {
+            TopicKind::Query { .. } => "Query",
+            TopicKind::PubSub(_) => match self.delivery.unwrap_or_else(|| match self.role {
+                TopicRole::State | TopicRole::Diagnostic => DeliveryOverride::State,
+                TopicRole::Measurement => DeliveryOverride::Sample,
+                TopicRole::Command => DeliveryOverride::Setpoint,
+                TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
+                TopicRole::Query => unreachable!("query is not a pub/sub endpoint"),
+            }) {
+                DeliveryOverride::State => "State",
+                DeliveryOverride::Sample => "Sample",
+                DeliveryOverride::Setpoint => "Setpoint",
+                DeliveryOverride::Stream if self.role == TopicRole::Event => "Event",
+                DeliveryOverride::Stream => "Stream",
+            },
+        }
+    }
+
     /// The transport family emitted on the body and consumed by the semantic
     /// bus scheduler. Keeping this calculation in the source model means the
     /// generated manifest cannot accidentally classify an overridden topic by
@@ -213,6 +236,25 @@ impl TopicDef {
         self.delivery
             .map(DeliveryOverride::bus_variant)
             .unwrap_or_else(|| self.role.bus_delivery())
+    }
+
+    /// The stable manifest spelling for the transport family.
+    pub(super) fn delivery_family_name(&self) -> &'static str {
+        if self.delivery.is_none() && self.role == TopicRole::Query {
+            return "Query";
+        }
+        match self.delivery.unwrap_or_else(|| match self.role {
+            TopicRole::State | TopicRole::Diagnostic => DeliveryOverride::State,
+            TopicRole::Measurement => DeliveryOverride::Sample,
+            TopicRole::Command => DeliveryOverride::Setpoint,
+            TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
+            TopicRole::Query => unreachable!("query delivery handled above"),
+        }) {
+            DeliveryOverride::State => "State",
+            DeliveryOverride::Sample => "Sample",
+            DeliveryOverride::Setpoint => "Setpoint",
+            DeliveryOverride::Stream => "Stream",
+        }
     }
 }
 
@@ -298,6 +340,22 @@ impl TopicRole {
         }
     }
 
+    /// The direct endpoint-kind marker for semantic descriptors. The legacy
+    /// body marker remains available above until the robot consumers finish
+    /// migration; semantic endpoints must not depend on its compatibility
+    /// bridges.
+    pub(super) fn semantic_marker_trait(self) -> Option<TokenStream> {
+        match self {
+            TopicRole::Command => Some(quote! { ::phoxal_bus::SetpointContract }),
+            TopicRole::Stream => Some(quote! { ::phoxal_bus::StreamContract }),
+            TopicRole::State => Some(quote! { ::phoxal_bus::StateContract }),
+            TopicRole::Event => Some(quote! { ::phoxal_bus::EventContract }),
+            TopicRole::Measurement => Some(quote! { ::phoxal_bus::SampleContract }),
+            TopicRole::Diagnostic => Some(quote! { ::phoxal_bus::DiagnosticContract }),
+            TopicRole::Query => None,
+        }
+    }
+
     /// Whether the owning participant publishes this role (as opposed to
     /// subscribing it).
     pub(super) fn owner_publishes(self) -> bool {
@@ -323,18 +381,21 @@ pub(super) struct BodyPath {
 }
 
 impl BodyPath {
-    pub(super) fn from_ident(ident: Ident) -> Self {
-        Self {
-            path: syn::Path::from(ident),
-        }
-    }
-
     pub(super) fn leaf_name(&self) -> String {
         self.path
             .segments
             .last()
             .map(|segment| segment.ident.to_string())
             .unwrap_or_else(|| "Body".to_string())
+    }
+
+    /// A deterministic source identity for manifest/fingerprint evidence.
+    ///
+    /// The path is intentionally retained as authored rather than reduced to
+    /// its leaf: two endpoints may reuse one payload, and two payloads may
+    /// share a leaf name in different modules.
+    pub(super) fn identity(&self) -> String {
+        self.path.to_token_stream().to_string().replace(' ', "")
     }
 }
 

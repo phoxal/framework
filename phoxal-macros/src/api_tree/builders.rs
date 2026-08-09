@@ -310,16 +310,9 @@ impl Node {
                 pub use super::__phoxal_type_root;
             }
         };
-        let endpoint_root_import = if ancestors.is_empty() {
-            quote! {
-                #[doc(hidden)]
-                pub use super::__phoxal_endpoint_root;
-            }
-        } else {
-            quote! {
-                #[doc(hidden)]
-                pub use super::__phoxal_endpoint_root;
-            }
+        let endpoint_root_import = quote! {
+            #[doc(hidden)]
+            pub use super::__phoxal_endpoint_root;
         };
 
         let builder_doc = format!("Topic builder for the `{name_str}` node.");

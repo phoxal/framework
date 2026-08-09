@@ -1,25 +1,22 @@
-//! `phoxal_api_tree!` - the single API layer.
+//! Shared expansion for the semantic API/protocol macros and the legacy
+//! `phoxal_api_tree!` compatibility entry point.
 //!
-//! Grammar. The body of a `version` is a tree of **nodes**. A node is either
-//! static (`name { … }`) or dynamic (`name(var) { … }`); it can be nested to any
-//! depth and may hold any mix of types (`struct`/`enum`), `topic` declarations,
-//! and child nodes. Every topic declares a **role**: `topic name: command Body;`
-//! (a setpoint the owner subscribes), `topic name: stream Body;` (ordered chunks
-//! the owner subscribes), `topic name: state Body;` (telemetry the owner
-//! publishes), `topic name: event Body;` (an owner-published state-temporal
-//! event with ordered stream delivery), or `topic name: query Request => Response;`
-//! (request/response). `command`, `stream`, `state`, and `event` are all pub/sub
-//! on the wire; the
-//! role drives the side-branded builders: the public client builder
-//! (`api::topic::client()...`) and the owner builder (`api::topic::owner()...`)
-//! return side-branded topics (`Publish`/`Subscribe`/`AskQuery`/`ServeQuery`), so
-//! taking the wrong side does not compile. The role is also emitted as a `ROLE`
-//! const on each body. A topic's key and dynamism are
-//! derived from the node path, not from per-topic params; a topic whose node path
-//! contains at least one `(var)` node is dynamic, one with none is static.
-//! `topic self: state <Body>;` binds the body to the node path itself instead of
-//! appending a leaf segment, for framework infrastructure topics such as
-//! `logs/{participant_id}`.
+//! The body of a `version` or `protocol` is a tree of **nodes**. A node is
+//! either static (`name { … }`) or dynamic (`name(var) { … }`); it can be
+//! nested to any depth. Semantic declarations use endpoint descriptors:
+//! `topic name: State<Payload>;`, `Sample<Payload>`, `Event<Payload>`,
+//! `Stream<Payload>`, `command name: Setpoint<Payload>`, and query
+//! `query Request => Response`. The legacy compatibility tree additionally
+//! accepts role-first declarations such as `topic name: command Body;` and
+//! may author wire bodies inline. Endpoint kind drives the side-branded
+//! builders: the public client builder (`api::topic::client()...`) and the
+//! owner builder (`api::topic::owner()...`) return side-branded topics
+//! (`Publish`/`Subscribe`/`AskQuery`/`ServeQuery`), so taking the wrong side
+//! does not compile. A topic's key and dynamism are derived from the node path,
+//! not from per-topic params; a topic whose node path contains at least one
+//! `(var)` node is dynamic, one with none is static. `topic self: ...` binds
+//! the endpoint to the node path itself instead of appending a leaf segment,
+//! for infrastructure topics such as `logs/{participant_id}`.
 //! A revision may extend exactly one earlier revision. The child is materialized
 //! as a complete concrete tree; inherited definitions are regenerated under the
 //! child's identity, while `replace` and `remove` make deltas explicit. Exactly
@@ -57,22 +54,20 @@
 //! no revision history.
 //!
 //! ```text
-//! phoxal_api_tree! {
+//! mod payload {
+//!     pub struct Hello { pub token: String }
+//! }
+//! phoxal_protocol! {
 //!     protocol supervisor {
 //!         connect {
-//!             #[serde(tag = "schema")]
-//!             enum Hello {
-//!                 #[serde(rename = "supervisor.hello/v0")]
-//!                 V0 { token: String },
-//!             }
-//!             topic hello: command Hello;      // key supervisor/connect/hello
+//!             topic hello: command crate::payload::Hello;
 //!         }
 //!     }
 //! }
 //! ```
 //!
 //! Everything below the tree root is identical to API mode - nested static and
-//! dynamic `name(var) { … }` nodes, temporal roles, query typing, the two
+//! dynamic `name(var) { … }` nodes, endpoint kinds, query typing, the two
 //! side-branded builder trees, and the same self-contained path scheme. The
 //! differences are all at the root:
 //!
@@ -83,32 +78,24 @@
 //!   the same slot the dotted revision fills in API mode, so a protocol
 //!   composes under the host's execution-scoped bus root exactly like a robot
 //!   API topic does (`phoxal/<execution-id>/supervisor/…`).
-//! - **The developer owns the schema version.** A protocol body is an ordinary
-//!   authored `struct`/`enum`; a document that crosses a process boundary is a
-//!   serde-tagged enum whose variants are its schema versions. The macro never
-//!   infers a breaking change and never mints a version - it does not read the
-//!   body's shape at all.
-//! - **`Api::ID` is the protocol name.** A protocol still gets the zero-variant
-//!   `enum Api {}` marker every `ContractBody` binds to, so a protocol body and
-//!   an API body remain non-interchangeable in the type system. Its
-//!   `ApiVersion::ID` - and so each body's `ContractBody::VERSION` - is the
-//!   protocol name rather than a dotted revision, because the tree identity is
-//!   what that slot names; the payload's own schema version lives in the body's
-//!   serde tag, where the developer put it.
+//! - **The developer owns the schema version.** A protocol payload is an ordinary
+//!   `struct`/`enum` in the caller's module; a document that crosses a process
+//!   boundary is a serde-tagged enum whose variants are its schema versions.
+//! - **`Api::ID` is the protocol name.** The generated endpoint descriptors point
+//!   at those ordinary payload types, so endpoint identity and payload identity
+//!   cannot be confused.
 //!
 //! Each `version` becomes a `pub mod vN` carrying a marker `enum Api {}`
-//! (`ApiVersion`), a nested `pub mod` per node holding that node's version-local
-//! bodies (plain serde types, with no envelope wrapper) and their
-//! `ContractBody` impls, plus an api-local `topic` builder module.
+//! (`ApiVersion`), one endpoint descriptor per topic, and an api-local `topic`
+//! builder module. The legacy compatibility entry point additionally emits its
+//! authored body types and `ContractBody` implementations.
 //!
 //! **Wire identity is the version-qualified key, not a transitive-shape hash.**
-//! The version is folded into `ContractBody::TOPIC`: a contract's
-//! identity is its version-qualified name (`v0.1::drive::Target`), and that
-//! name is real on the wire because the key carries it too
-//! (`v0.1/drive/target`). Two participants interoperate on a contract iff
-//! they use the exact same version-qualified name - enforced by the type system
-//! (the `Api` bound) and realized on the wire by the key, which makes two
-//! differently-versioned contracts physically incapable of colliding.
+//! A generated endpoint's identity (`v0.1::drive::TargetEndpoint`) and key
+//! (`v0.1/drive/target`) are derived from the same tree path. Two participants
+//! interoperate on an endpoint iff they use the exact same descriptor identity
+//! and key. Legacy body types retain `ContractBody::TOPIC` as a compatibility
+//! projection of that endpoint.
 //! Published concrete revisions are immutable.
 //!
 //! # Self-contained absolute paths (no depth-counted `super::`)
@@ -265,7 +252,10 @@ impl ApiTree {
                 nodes: protocol.nodes.clone(),
             };
             manifest_trees.push(ManifestVersion::of(&tree));
-            out.extend(tree.expand(false));
+            // Protocol payloads live in ordinary modules just like robot API
+            // payloads. The generated tree owns only endpoint descriptors and
+            // builders; it never re-mints the wire bodies.
+            out.extend(tree.expand(true));
         }
         let manifest = ManifestVersion::expand_manifest(&manifest_trees);
         Ok(quote! {
@@ -346,8 +336,12 @@ impl ApiTree {
             let Some((major, minor)) = version.wire_id[1..].split_once('.') else {
                 unreachable!("validated revision has dotted wire id")
             };
-            let major: u16 = major.parse().expect("validated major revision");
-            let minor: u16 = minor.parse().expect("validated minor revision");
+            let major: u16 = major
+                .parse()
+                .unwrap_or_else(|_| unreachable!("validated major revision"));
+            let minor: u16 = minor
+                .parse()
+                .unwrap_or_else(|_| unreachable!("validated minor revision"));
             quote! { Self::#variant => ::phoxal_runtime_contract::version::RobotApiVersion::new(#major, #minor) }
         });
         let catalogue_declarations = versions.iter().map(|version| {
@@ -519,7 +513,8 @@ mod tests {
             "the protocol marker's ID is the protocol name: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"supervisor::connect::Hello\""),
+            expanded
+                .contains("const NAME : & 'static str = \"supervisor::connect::HelloEndpoint\""),
             "the protocol-qualified type identity mirrors API mode: {expanded}"
         );
         assert!(
@@ -795,22 +790,27 @@ mod tests {
             "the deterministic manifest must be emitted as a stable public inventory: {expanded}"
         );
         assert!(expanded.contains("pub fingerprint : & 'static str"));
+        assert!(expanded.contains("pub endpoint : & 'static str"));
+        assert!(expanded.contains("pub payload : Option < & 'static str >"));
+        assert!(expanded.contains("pub request : Option < & 'static str >"));
+        assert!(expanded.contains("pub response : Option < & 'static str >"));
+        assert!(expanded.contains("pub kind : :: phoxal_bus :: EndpointKind"));
         assert!(expanded.contains("pub delivery : :: phoxal_bus :: DeliveryFamily"));
         assert!(
             expanded.contains("name : \"v0.2\""),
             "child revision should be represented in the manifest: {expanded}"
         );
         assert!(
-            expanded.contains("family : \"v0.1::sample::Body\""),
-            "manifest family is the version-qualified contract identity: {expanded}"
+            expanded.contains("endpoint : \"v0.1::sample::BodyEndpoint\""),
+            "manifest endpoint is the version-qualified endpoint identity: {expanded}"
         );
         assert!(
             expanded.contains("topic : \"v0.2/sample/body\""),
             "manifest topic is the version-qualified wire key: {expanded}"
         );
         assert!(
-            expanded.contains("family : \"v0.2::sample::Body\""),
-            "each version's contracts get their own version-qualified name: {expanded}"
+            expanded.contains("endpoint : \"v0.2::sample::BodyEndpoint\""),
+            "each version's endpoints get their own version-qualified name: {expanded}"
         );
         assert!(
             expanded.contains("topic : \"v0.2/sample/body\""),
