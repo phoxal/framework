@@ -1,5 +1,17 @@
 {
   "$defs": {
+    "CapabilityRole": {
+      "description": "The canonical purpose assigned to a component capability by an authored\nrobot manifest.\n\nRoles are source/runtime contract facts rather than service names. Keeping\nthe closed vocabulary in the canonical model means every reader of a\nfinalized runtime document agrees on the same spelling and set of values.",
+      "enum": [
+        "localization",
+        "mapping",
+        "traversability",
+        "odometry",
+        "perception",
+        "safety"
+      ],
+      "type": "string"
+    },
     "Clock": {
       "description": "Authored `clock:` - the time domain the robot runs on.\n\nThis mirrors [`phoxal_model::Clock`] rather than reusing it: the canonical\nvalue deliberately carries no wire form, and the exhaustive [`From`] impl\nbelow turns any future divergence between the two into a compile error.",
       "oneOf": [
@@ -45,11 +57,11 @@
         "roles": {
           "additionalProperties": {
             "items": {
-              "$ref": "#/$defs/Role"
+              "$ref": "#/$defs/CapabilityRole"
             },
             "type": "array"
           },
-          "description": "What each capability on this instance is declared to be for.\n\nThis is the input to service activation: which services a robot runs is\nto be decided from the roles its capabilities declare, so that a robot\nwith no capability serving a role does not start the service that\nconsumes it. The resolver that reads this is not built yet, so today the\nfield is validated for shape and otherwise carried through untouched.\n\nIt is authored contract, not dead weight: do not remove it because\nnothing reads it. Beyond that, `robot.yaml` denies unknown fields, so\nremoving it would reject documents that parse today.",
+          "description": "What each capability on this instance is declared to be for.\n\nThis is the input to service activation: which services a robot runs is\ndecided from the roles its capabilities declare, so that a robot with\nno capability serving a role does not start the service that consumes\nit. The compiler resolves these keys against the selected component\ndocument and persists the typed assignment in `runtime.json`.",
           "type": "object"
         }
       },
@@ -784,17 +796,6 @@
         "motion_limits"
       ],
       "type": "object"
-    },
-    "Role": {
-      "description": "What an authored role hint claims a capability is used for.",
-      "enum": [
-        "localization",
-        "mapping",
-        "traversability",
-        "odometry",
-        "perception"
-      ],
-      "type": "string"
     },
     "Router": {
       "additionalProperties": false,

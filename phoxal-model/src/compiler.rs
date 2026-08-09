@@ -14,10 +14,10 @@
 //! which is also why the feature-gated `test_builder` assembles its in-memory
 //! robots through these same entry points rather than around them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::component::Component;
-use crate::component::capability::Capability;
+use crate::component::capability::{Capability, CapabilityRole};
 use crate::error::ModelError;
 use crate::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
 use crate::robot::{Clock, ComponentInstance, KinematicConfig, MotionLimits, Robot};
@@ -76,7 +76,25 @@ pub fn component_instance(
     mount_link: LinkId,
     direction_signs: BTreeMap<CapabilityId, i8>,
 ) -> ComponentInstance {
-    ComponentInstance::new(id, component_type, mount_link, direction_signs)
+    ComponentInstance::new(
+        id,
+        component_type,
+        mount_link,
+        direction_signs,
+        BTreeMap::<CapabilityId, BTreeSet<CapabilityRole>>::new(),
+    )
+}
+
+/// Build one mounted component instance with authored capability roles.
+#[must_use]
+pub fn component_instance_with_roles(
+    id: ComponentInstanceId,
+    component_type: ComponentTypeId,
+    mount_link: LinkId,
+    direction_signs: BTreeMap<CapabilityId, i8>,
+    roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
+) -> ComponentInstance {
+    ComponentInstance::new(id, component_type, mount_link, direction_signs, roles)
 }
 
 /// Assemble and validate the canonical robot.

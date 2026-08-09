@@ -114,6 +114,16 @@ pub enum ModelError {
         capability_id: CapabilityId,
     },
 
+    /// A capability role assignment names a capability its component type does
+    /// not declare.
+    #[error(
+        "component '{instance}' role assignment references unknown capability '{capability_id}'"
+    )]
+    UnknownRoleCapability {
+        instance: ComponentInstanceId,
+        capability_id: CapabilityId,
+    },
+
     /// A simulation type has no component type to simulate.
     #[error("simulation type '{component_type}' has no matching component type")]
     SimulationWithoutComponentType { component_type: ComponentTypeId },

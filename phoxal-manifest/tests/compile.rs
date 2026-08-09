@@ -90,6 +90,26 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
 }
 
 #[test]
+fn authored_capability_roles_are_persisted_and_ordered_in_the_robot_model() {
+    let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
+    let compiled = sources(&root).compile().expect("fixture must compile");
+    assert_eq!(
+        compiled
+            .robot()
+            .capabilities_with_role(phoxal_model::CapabilityRole::Safety),
+        vec![phoxal_model::identity::CapabilityRef::new(
+            phoxal_model::identity::ComponentInstanceId::new("front_center_tof").unwrap(),
+            phoxal_model::identity::CapabilityId::new("range").unwrap(),
+        )]
+    );
+    assert_eq!(
+        serde_json::to_value(compiled.robot()).unwrap()["component_instances"]["front_center_tof"]
+            ["roles"]["range"],
+        serde_json::json!(["mapping", "traversability", "safety"])
+    );
+}
+
+#[test]
 fn router_configuration_is_preserved_as_a_compiled_asset_fact() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
     let compiled = sources(&root).compile().expect("fixture must compile");

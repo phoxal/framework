@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use phoxal::api;
 use phoxal::bus::{ContractBody, SampleDeliveryContract, StateDeliveryContract};
 use phoxal::model::FootprintEnvelope;
-use phoxal::model::component::capability::Capability;
+use phoxal::model::component::capability::{Capability, CapabilityRole};
 use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
 
@@ -550,10 +550,17 @@ impl Participant for Safety {
     ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
         let footprint = robot.footprint_envelope();
-        let range_refs =
-            robot.capability_refs(|capability| matches!(capability, Capability::Range(_)));
-        let battery_refs =
-            robot.capability_refs(|capability| matches!(capability, Capability::Battery(_)));
+        let safety_refs = robot.capabilities_with_role(CapabilityRole::Safety);
+        let range_refs = safety_refs
+            .iter()
+            .filter(|reference| matches!(robot.capability(reference), Some(Capability::Range(_))))
+            .cloned()
+            .collect::<Vec<_>>();
+        let battery_refs = safety_refs
+            .iter()
+            .filter(|reference| matches!(robot.capability(reference), Some(Capability::Battery(_))))
+            .cloned()
+            .collect::<Vec<_>>();
 
         let mut ranges = Vec::with_capacity(range_refs.len());
         for reference in &range_refs {

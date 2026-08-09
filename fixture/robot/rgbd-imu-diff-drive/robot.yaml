@@ -108,6 +108,7 @@ robot:
         range:
         - mapping
         - traversability
+        - safety
     gnss:
       component: gnss
       mount_link: gnss_mount

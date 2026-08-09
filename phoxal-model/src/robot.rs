@@ -1,12 +1,12 @@
 //! Canonical immutable robot model.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::compiler::RobotParts;
 use crate::component::Component;
 use crate::component::capability::{
-    Capability, CapabilityKind, Encoder, Motor, StructuralKind, StructuralTarget,
+    Capability, CapabilityKind, CapabilityRole, Encoder, Motor, StructuralKind, StructuralTarget,
 };
 use crate::error::{
     IdentifierKind, JointOwner, KinematicScalarField, ModelError, MotionLimitField,
@@ -41,6 +41,10 @@ pub struct ComponentInstance {
     component_type: ComponentTypeId,
     mount_link: LinkId,
     direction_signs: BTreeMap<CapabilityId, i8>,
+    /// Authored purpose(s) for each capability. An absent key means that the
+    /// capability was not selected for any role and creates no obligation.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
 }
 
 /// Canonical motion facts.
@@ -604,12 +608,14 @@ impl ComponentInstance {
         component_type: ComponentTypeId,
         mount_link: LinkId,
         direction_signs: BTreeMap<CapabilityId, i8>,
+        roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
     ) -> Self {
         Self {
             id,
             component_type,
             mount_link,
             direction_signs,
+            roles,
         }
     }
 
@@ -627,6 +633,20 @@ impl ComponentInstance {
     #[must_use]
     pub const fn mount_link(&self) -> &LinkId {
         &self.mount_link
+    }
+
+    /// Authored role assignments, ordered by capability and role.
+    #[must_use]
+    pub const fn roles(&self) -> &BTreeMap<CapabilityId, BTreeSet<CapabilityRole>> {
+        &self.roles
+    }
+
+    /// Whether this instance assigns `role` to the named capability.
+    #[must_use]
+    pub fn has_role(&self, capability: &CapabilityId, role: CapabilityRole) -> bool {
+        self.roles
+            .get(capability)
+            .is_some_and(|roles| roles.contains(&role))
     }
 }
 
@@ -819,6 +839,32 @@ impl Robot {
             .collect::<Vec<_>>();
         references.sort();
         references
+    }
+
+    /// Every capability assigned the given authored role, ordered by
+    /// `(component id, capability id)`.
+    #[must_use]
+    pub fn capabilities_with_role(&self, role: CapabilityRole) -> Vec<CapabilityRef> {
+        self.component_instances
+            .values()
+            .filter_map(|instance| {
+                self.component_types
+                    .get(instance.component_type())
+                    .map(|component| (instance, component))
+            })
+            .flat_map(|(instance, component)| {
+                instance
+                    .roles()
+                    .iter()
+                    .filter(move |(capability_id, roles)| {
+                        roles.contains(&role)
+                            && component.capability(capability_id.as_str()).is_some()
+                    })
+                    .map(move |(capability_id, _)| {
+                        CapabilityRef::new(instance.id().clone(), capability_id.clone())
+                    })
+            })
+            .collect()
     }
 
     /// The referenced motor and the direction sign to apply to it.
@@ -1034,6 +1080,14 @@ impl Robot {
                 }
                 if component.capability(capability_id.as_str()).is_none() {
                     return Err(ModelError::UnknownDirectionSignCapability {
+                        instance: id.clone(),
+                        capability_id: capability_id.clone(),
+                    });
+                }
+            }
+            for capability_id in instance.roles.keys() {
+                if component.capability(capability_id.as_str()).is_none() {
+                    return Err(ModelError::UnknownRoleCapability {
                         instance: id.clone(),
                         capability_id: capability_id.clone(),
                     });

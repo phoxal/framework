@@ -103,6 +103,17 @@ pub enum CompileError {
         capability_id: String,
     },
 
+    /// Instance roles name a capability the resolved component document does
+    /// not declare.
+    #[error(
+        "component instance '{instance}' role assignments reference unknown capability \
+         '{capability_id}'"
+    )]
+    UnknownRoleCapability {
+        instance: String,
+        capability_id: String,
+    },
+
     /// Instance parameters claim a different capability kind than the component
     /// type declares.
     #[error(
@@ -358,6 +369,17 @@ impl ResolvedSources {
                     component_type: authored.component.clone(),
                 })?;
             let mut direction_signs = BTreeMap::new();
+            let mut roles = BTreeMap::new();
+            for (capability_id, authored_roles) in &authored.roles {
+                if component.capability(capability_id).is_none() {
+                    return Err(CompileError::UnknownRoleCapability {
+                        instance: id.clone(),
+                        capability_id: capability_id.clone(),
+                    });
+                }
+                let canonical_id = self.identity(CapabilityId::new(capability_id))?;
+                roles.insert(canonical_id, authored_roles.iter().copied().collect());
+            }
             for (capability_id, parameters) in &authored.parameters {
                 let declared = component.capability(capability_id).ok_or_else(|| {
                     CompileError::UnknownCapability {
@@ -381,11 +403,12 @@ impl ResolvedSources {
             let instance_id = self.identity(ComponentInstanceId::new(id))?;
             component_instances.insert(
                 instance_id.clone(),
-                phoxal_model::compiler::component_instance(
+                phoxal_model::compiler::component_instance_with_roles(
                     instance_id,
                     self.identity(ComponentTypeId::new(&authored.component))?,
                     LinkId::new(&authored.mount_link),
                     direction_signs,
+                    roles,
                 ),
             );
         }
