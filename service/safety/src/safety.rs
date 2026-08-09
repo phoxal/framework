@@ -33,6 +33,9 @@ const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 const PROTECTIVE_STOP_DISTANCE_M: f32 = 0.25;
 const PROXIMITY_LIMIT_DISTANCE_M: f32 = 0.60;
 const PROXIMITY_LINEAR_LIMIT_MPS: f32 = 0.15;
+/// Operational clearance belongs to the safety policy, not to the compiled
+/// physical collision envelope.
+const FOOTPRINT_SAFETY_MARGIN_M: f64 = 0.10;
 
 // The participant a constraint names as its source. These are published wire
 // values, so each spelling is written once here rather than at the call sites
@@ -437,7 +440,7 @@ impl WorldInputs {
         if !localization.x_m.is_finite() || !localization.y_m.is_finite() {
             return Err(api::safety::ConstraintReason::LocalizationUnavailable);
         }
-        let required = footprint.required_radius_m();
+        let required = footprint.radius_m + FOOTPRINT_SAFETY_MARGIN_M;
         if !required.is_finite() || required <= 0.0 {
             return Err(api::safety::ConstraintReason::FootprintMismatch);
         }
@@ -1021,7 +1024,7 @@ mod tests {
     }
 
     fn test_footprint() -> FootprintEnvelope {
-        FootprintEnvelope::new(0.1, 0.0).expect("test footprint is finite")
+        FootprintEnvelope::new(0.1).expect("test footprint is finite")
     }
 
     fn test_window(revision: u64) -> api::map::GridWindow {
@@ -1200,13 +1203,21 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_persisted_clearance_is_part_of_the_checked_footprint() {
-        let footprint = FootprintEnvelope::new(0.05, 0.10).expect("finite clearance");
-        let result = nominal_world().assess(8, now(), Some(footprint)).unwrap();
-        assert!(matches!(
-            result.permission,
-            api::safety::MotionPermission::Clear
-        ));
+    fn safety_applies_its_operational_margin_to_the_physical_footprint() {
+        let footprint = FootprintEnvelope::new(0.05).expect("finite radius");
+        let mut world = nominal_world();
+        // This cell starts 0.10 m from the robot centre. It is outside the
+        // physical 0.05 m radius but inside the safety policy's 0.10 m margin.
+        world
+            .map_window
+            .as_mut()
+            .expect("nominal world has a map window")
+            .body
+            .cells[32 * 64 + 34] = api::map::Occupancy::Unknown;
+        let result = world.assess(8, now(), Some(footprint)).unwrap();
+        assert!(result.constraints.iter().any(|constraint| {
+            constraint_reason(constraint) == api::safety::ConstraintReason::UnknownOccupancy
+        }));
     }
 
     #[test]

@@ -16,38 +16,20 @@ use crate::robot::ComponentInstance;
 use crate::structure::{Geometry, JointKind, Structure};
 
 /// A conservative planar radial envelope around the robot's ground-projection
-/// origin. The optional clearance is persisted with the envelope so a runtime
-/// never has to re-derive a safety margin from authored source.
+/// origin.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct FootprintEnvelope {
     /// Maximum planar distance from `base_footprint` to any collision point.
     pub radius_m: f64,
-    /// Additional radial clearance applied by stock safety.
-    #[serde(default)]
-    pub clearance_m: f64,
 }
 
 impl FootprintEnvelope {
     /// Construct a validated envelope.
-    pub fn new(radius_m: f64, clearance_m: f64) -> Result<Self, ModelError> {
-        if !(radius_m.is_finite()
-            && radius_m > 0.0
-            && clearance_m.is_finite()
-            && clearance_m >= 0.0
-            && (radius_m + clearance_m).is_finite())
-        {
+    pub fn new(radius_m: f64) -> Result<Self, ModelError> {
+        if !(radius_m.is_finite() && radius_m > 0.0) {
             return Err(ModelError::FootprintRadius);
         }
-        Ok(Self {
-            radius_m,
-            clearance_m,
-        })
-    }
-
-    /// The radius stock safety must cover in the occupancy grid.
-    #[must_use]
-    pub const fn required_radius_m(self) -> f64 {
-        self.radius_m + self.clearance_m
+        Ok(Self { radius_m })
     }
 }
 
@@ -57,12 +39,10 @@ impl<'de> serde::Deserialize<'de> for FootprintEnvelope {
         #[serde(deny_unknown_fields)]
         struct Wire {
             radius_m: f64,
-            #[serde(default)]
-            clearance_m: f64,
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        Self::new(wire.radius_m, wire.clearance_m).map_err(serde::de::Error::custom)
+        Self::new(wire.radius_m).map_err(serde::de::Error::custom)
     }
 }
 
@@ -94,9 +74,7 @@ pub fn compile(
         radius = Some(radius.map_or(candidate, |current| current.max(candidate)));
     }
 
-    radius
-        .map(|radius| FootprintEnvelope::new(radius, 0.0))
-        .transpose()
+    radius.map(FootprintEnvelope::new).transpose()
 }
 
 fn structure_radius(structure: &Structure) -> Result<Option<f64>, ModelError> {
@@ -356,8 +334,8 @@ mod tests {
 
     #[test]
     fn envelope_rejects_nonfinite_values() {
-        assert!(FootprintEnvelope::new(f64::NAN, 0.0).is_err());
-        assert!(FootprintEnvelope::new(1.0, -0.1).is_err());
+        assert!(FootprintEnvelope::new(f64::NAN).is_err());
+        assert!(FootprintEnvelope::new(0.0).is_err());
         assert!(
             serde_json::from_value::<FootprintEnvelope>(json!({
                 "radius_m": 0.0,
@@ -365,11 +343,12 @@ mod tests {
             }))
             .is_err()
         );
-        let legacy_default = serde_json::from_value::<FootprintEnvelope>(json!({
-            "radius_m": 0.2
-        }))
-        .expect("clearance is explicitly defaulted for older documents");
-        assert_eq!(legacy_default.clearance_m, 0.0);
+        assert!(
+            serde_json::from_value::<FootprintEnvelope>(json!({
+                "radius_m": 0.2
+            }))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -385,7 +364,6 @@ mod tests {
             .expect("fixed geometry compiles")
             .expect("collision geometry produces an envelope");
         assert_eq!(envelope.radius_m, 0.75);
-        assert_eq!(envelope.clearance_m, 0.0);
     }
 
     #[test]

@@ -103,18 +103,13 @@ pub fn component_instance_with_roles(
 ///
 /// Returns the first [`ModelError`] the assembled model violates.
 pub fn robot(parts: RobotParts) -> Result<Robot, ModelError> {
-    let footprint = match crate::footprint::compile(
+    // The footprint is a source/build product. Persisted runtime documents
+    // carry this value (or an explicit `null`) and never reconstruct it from
+    // collision geometry.
+    let footprint = crate::footprint::compile(
         &parts.structure,
         &parts.component_instances,
         &parts.component_types,
-    ) {
-        Ok(footprint) => footprint,
-        // Generic model builders historically accept movable collision
-        // geometry. Stock safety rejects it at the manifest boundary, while
-        // retaining a `None` envelope here makes those non-safety model tests
-        // and legacy runtime documents explicit fail-closed values.
-        Err(ModelError::FootprintMovableJoint { .. } | ModelError::FootprintMesh { .. }) => None,
-        Err(error) => return Err(error),
-    };
+    )?;
     Robot::new(parts, footprint)
 }

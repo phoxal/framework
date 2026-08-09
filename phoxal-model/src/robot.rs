@@ -538,8 +538,8 @@ pub struct Robot {
     component_types: BTreeMap<ComponentTypeId, Component>,
     simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
-    /// Compiler-derived stock-safety facts. Legacy runtime documents may omit
-    /// this value; safety consumers treat that as unavailable.
+    /// Compiler-derived stock-safety facts. `None` is explicitly persisted
+    /// when the authored robot has no collision geometry.
     footprint: Option<FootprintEnvelope>,
 }
 
@@ -561,9 +561,16 @@ struct RobotWire {
     component_types: BTreeMap<ComponentTypeId, Component>,
     simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
-    #[serde(default)]
-    footprint: Option<FootprintEnvelope>,
+    footprint: PersistedFootprint,
 }
+
+/// A required wire field whose value may be `null`.
+///
+/// `Option<T>` is normally permissive in a derived serde struct: both a
+/// missing key and `null` become `None`. Runtime documents need to distinguish
+/// them so every persisted robot says explicitly whether a footprint exists.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedFootprint(Option<FootprintEnvelope>);
 
 impl serde::Serialize for Robot {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -576,7 +583,7 @@ impl serde::Serialize for Robot {
             component_types: self.component_types.clone(),
             simulation_types: self.simulation_types.clone(),
             structure: self.structure.clone(),
-            footprint: self.footprint,
+            footprint: PersistedFootprint(self.footprint),
         }
         .serialize(serializer)
     }
@@ -596,7 +603,7 @@ impl<'de> serde::Deserialize<'de> for Robot {
                 simulation_types: wire.simulation_types,
                 structure: wire.structure,
             },
-            wire.footprint,
+            wire.footprint.0,
         )
         .map_err(serde::de::Error::custom)
     }
@@ -1018,28 +1025,14 @@ impl Robot {
         Ok(())
     }
 
-    /// Validate a persisted envelope against the canonical collision geometry.
+    /// Validate only the envelope's universal scalar invariant.
     ///
-    /// Older runtime documents may omit the envelope and remain readable, but
-    /// a present envelope must be at least as conservative as the freshly
-    /// compiled extent. Stock safety treats an omitted envelope as
-    /// unavailable; it is never silently re-derived at runtime.
+    /// Collision geometry is authored source and is deliberately unavailable
+    /// to a runtime document. Its conservative envelope is derived once by the
+    /// source compiler, then persisted as a value or explicit `null`.
     fn validate_footprint(&self) -> Result<(), ModelError> {
-        let compiled = crate::footprint::compile(
-            &self.structure,
-            &self.component_instances,
-            &self.component_types,
-        );
-        let Some(stored) = self.footprint else {
-            return Ok(());
-        };
-        let Some(expected) = compiled? else {
-            return Err(ModelError::FootprintRadius);
-        };
-        FootprintEnvelope::new(stored.radius_m, stored.clearance_m)?;
-        let tolerance = expected.required_radius_m().max(1.0) * 1.0e-12;
-        if stored.required_radius_m() + tolerance < expected.required_radius_m() {
-            return Err(ModelError::FootprintRadius);
+        if let Some(footprint) = self.footprint {
+            FootprintEnvelope::new(footprint.radius_m)?;
         }
         Ok(())
     }
@@ -1586,24 +1579,25 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_robot_wire_without_a_footprint_defaults_to_unavailable() {
+    fn robot_wire_requires_an_explicit_footprint_value_or_null() {
         let robot = robot_with(&[]);
         let mut value = serde_json::to_value(&robot).expect("robot serializes");
+        assert!(value["footprint"].is_null());
         value
             .as_object_mut()
             .expect("robot wire is an object")
             .remove("footprint");
-        let decoded: Robot = serde_json::from_value(value).expect("legacy robot decodes");
-        assert_eq!(decoded.footprint_envelope(), None);
+        assert!(serde_json::from_value::<Robot>(value).is_err());
     }
 
     #[test]
-    fn a_tampered_smaller_footprint_is_rejected_on_robot_deserialize() {
+    fn runtime_deserialize_checks_envelope_invariants_without_rederiving_geometry() {
         let robot = robot_with_structure(robot_structure_with_collision(), &[]);
         assert_eq!(robot.footprint_envelope().unwrap().radius_m, 0.5);
         let mut value = serde_json::to_value(&robot).expect("robot serializes");
         value["footprint"]["radius_m"] = json!(0.1);
-        assert!(serde_json::from_value::<Robot>(value).is_err());
+        let decoded: Robot = serde_json::from_value(value).expect("finite stored radius is valid");
+        assert_eq!(decoded.footprint_envelope().unwrap().radius_m, 0.1);
     }
 
     fn reference(component: &str, capability: &str) -> CapabilityRef {

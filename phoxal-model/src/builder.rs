@@ -1771,6 +1771,7 @@ mod tests {
         Collision, Dynamics, Inertial, Joint, JointLimit, Kinematics, Link, Material, Mimic,
         RobotBuilder, Visual,
     };
+    use crate::asset::AssetId;
     use crate::component::capability::{
         Capability, CapabilityKind, Motor, MotorCommand, StructuralTarget,
     };
@@ -2392,6 +2393,39 @@ mod tests {
             Err(ModelError::Structure(
                 StructureError::UnknownJointLink { .. }
             ))
+        ));
+        // The source compiler owns the conservative footprint derivation;
+        // unsupported collision geometry must not be turned into a missing
+        // envelope for a runtime to discover later.
+        assert!(matches!(
+            RobotBuilder::new("rover")
+                .link(Link {
+                    name: "chassis",
+                    collisions: vec![Collision::new(Geometry::Mesh {
+                        asset: AssetId::new("meshes/chassis.stl").expect("normalized asset id"),
+                        scale: None,
+                    })],
+                    ..Link::default()
+                })
+                .build(),
+            Err(ModelError::FootprintMesh { .. })
+        ));
+        assert!(matches!(
+            RobotBuilder::new("rover")
+                .joint(Joint {
+                    name: "arm_joint",
+                    kind: JointKind::Revolute,
+                    parent: "base_link",
+                    child: "arm",
+                    ..Joint::default()
+                })
+                .link(Link {
+                    name: "arm",
+                    collisions: vec![Collision::new(Geometry::Sphere { radius: 0.1 })],
+                    ..Link::default()
+                })
+                .build(),
+            Err(ModelError::FootprintMovableJoint { .. })
         ));
     }
 

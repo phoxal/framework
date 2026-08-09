@@ -182,8 +182,8 @@ pub(crate) trait DetectorHead {
     fn detect(&mut self, input: DetectorInput<'_>) -> Result<Vec<RawDetection>, DetectorFailure>;
 }
 
-/// The default head. No model backend is linked, so it reports nothing rather
-/// than inventing detections; the participant still publishes camera health.
+/// The default head. No model backend is linked, so it explicitly reports that
+/// no detection result is available.
 pub(crate) struct PlaceholderDetector;
 
 impl DetectorHead for PlaceholderDetector {
@@ -192,7 +192,7 @@ impl DetectorHead for PlaceholderDetector {
     }
 
     fn detect(&mut self, _input: DetectorInput<'_>) -> Result<Vec<RawDetection>, DetectorFailure> {
-        Ok(Vec::new())
+        Err(DetectorFailure::BackendUnavailable)
     }
 }
 
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_detector_emits_no_detections() {
+    fn placeholder_detector_reports_backend_unavailable() {
         let mut detector = PlaceholderDetector;
         let camera = api::component::camera::Frame {
             width: 2,
@@ -226,7 +226,7 @@ mod tests {
             data: vec![0; 12],
         };
 
-        let detections = detector
+        let error = detector
             .detect(DetectorInput {
                 camera: &camera,
                 depth: None,
@@ -234,9 +234,9 @@ mod tests {
                 stamp_ns: 123,
                 localization: None,
             })
-            .unwrap();
+            .unwrap_err();
 
-        assert!(detections.is_empty());
+        assert_eq!(error, DetectorFailure::BackendUnavailable);
         assert_eq!(detector.detector_name(), "deterministic-placeholder");
     }
 

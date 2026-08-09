@@ -555,21 +555,15 @@ mod tests {
     }
 
     #[test]
-    fn detection_batch_keeps_camera_capture_time_when_step_is_later() {
+    fn placeholder_backend_does_not_produce_a_healthy_empty_batch() {
         let captured_at = TimeWindow::exact(instant(100));
         let mut state = state(Some(Captured {
             body: camera(),
             captured_at: Some(captured_at),
         }));
-        let (_, batch_captured_at, detections) =
-            state.detect(instant(100 + 250_000_000)).unwrap().unwrap();
+        let error = state.detect(instant(100 + 250_000_000)).unwrap_err();
 
-        assert_eq!(batch_captured_at, captured_at);
-        assert!(detections.is_empty(), "empty placeholder output is healthy");
-        assert_ne!(
-            batch_captured_at,
-            TimeWindow::exact(instant(100 + 250_000_000))
-        );
+        assert_eq!(error, DetectorFailure::BackendUnavailable);
     }
 
     #[test]
