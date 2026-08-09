@@ -277,7 +277,7 @@ fn motor_commands_reject_nonfinite_values_during_deserialization() {
 #[test]
 fn video_open_source_is_canonical_and_validated_during_deserialization() {
     let request = api::video::OpenRequest {
-        source: crate::VideoSourceRef::parse("front_camera.rgb").unwrap(),
+        source: api::video::VideoSourceRef::parse("front_camera.rgb").unwrap(),
         width_px: Some(640),
         height_px: Some(480),
     };
@@ -309,7 +309,7 @@ fn video_open_source_is_canonical_and_validated_during_deserialization() {
 #[test]
 fn perception_source_capture_preserves_source_and_capture_window() {
     let body = api::perception::Detections {
-        source: crate::SourceRef::parse("front_camera.rgb").unwrap(),
+        source: api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
         captured_at: phoxal_bus::TimeWindow::exact(instant(42)),
         detections: Vec::new(),
     };
@@ -604,7 +604,7 @@ fn domain_bodies_round_trip_through_messagepack() {
         detector: "legacy-detector".to_string(),
     });
     round_trip(&api::perception::Detections {
-        source: crate::SourceRef::parse("front_camera.rgb").unwrap(),
+        source: api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
         captured_at: phoxal_bus::TimeWindow::exact(instant(7)),
         detections: vec![api::perception::Detection {
             class_id: "crate".to_string(),

@@ -3,7 +3,6 @@
 
 use crate::domains::v0_2::map::GridWireError;
 
-pub use crate::domains::v0_1::safety::ConstraintSource;
 /// Why safety is stopping or limiting body motion in v0.2. The
 /// map/footprint reasons are deliberately distinct so a fail
 /// closed decision remains diagnosable without parsing text.
@@ -47,6 +46,15 @@ pub enum ConstraintSourceKind {
     Battery,
     Footprint,
     Operator,
+}
+
+/// Typed origin of one constraint, using the current revision's provenance categories.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConstraintSource {
+    pub kind: ConstraintSourceKind,
+    pub participant_id: String,
+    pub component_id: Option<String>,
+    pub capability_id: Option<String>,
 }
 
 /// A constraint is one shape only: a `Limited` item carries
