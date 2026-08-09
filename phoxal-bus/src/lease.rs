@@ -397,7 +397,12 @@ impl FixedSourceAdmission {
             }
             ParticipantReadyStatus::Lost => {
                 self.ready.remove(&source.producer);
-                self.ready_generation = self.ready_generation.saturating_add(1);
+                let Some(next_generation) = self.ready_generation.checked_add(1) else {
+                    self.ready_overflow = true;
+                    self.active = None;
+                    return;
+                };
+                self.ready_generation = next_generation;
                 if self
                     .active
                     .is_some_and(|(producer, _)| producer == source.producer)
@@ -918,6 +923,24 @@ mod tests {
             admission.offer(Some(&identity), 1),
             LeaseDecision::Acquired,
             "only a fresh ingress observation may establish the new incarnation"
+        );
+    }
+
+    #[test]
+    fn fixed_source_admission_generation_exhaustion_fails_closed() {
+        let expected = participant("navigation");
+        let identity = source_identity(&expected, producer(23));
+        let mut admission = FixedSourceAdmission::new(expected);
+        admission.update_ready(&identity, ParticipantReadyStatus::Ready);
+        assert_eq!(admission.offer(Some(&identity), 1), LeaseDecision::Acquired);
+
+        admission.ready_generation = u64::MAX;
+        admission.update_ready(&identity, ParticipantReadyStatus::Lost);
+
+        assert!(!admission.is_current(Some(&identity), 1));
+        assert_eq!(
+            admission.offer(Some(&identity), 2),
+            LeaseDecision::Rejected(LeaseRejection::ReadyStateOverflow)
         );
     }
 
