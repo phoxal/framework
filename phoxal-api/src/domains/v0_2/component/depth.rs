@@ -1,4 +1,5 @@
 //! Checked v0.2 depth frames.
+#![allow(clippy::collapsible_if, clippy::too_many_arguments)]
 
 #[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,5 +139,26 @@ impl TryFrom<FrameWire> for Frame {
             v.exposure,
             v.calibration,
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_checks_shape() {
+        assert!(
+            Frame::try_new(
+                vec![1],
+                Encoding::U16Millimeters,
+                InvalidSamplePolicy::ZeroIsInvalid,
+                2,
+                1,
+                None,
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
     }
 }

@@ -35,12 +35,16 @@ impl Sample {
             && longitude.is_finite()
             && (-180.0..=180.0).contains(&longitude)
             && altitude.is_finite()
-            && position_covariance
-                .iter()
-                .all(|v| v.is_finite() && *v >= 0.0))
+            && position_covariance.iter().all(|v| v.is_finite())
+            && position_covariance[0] >= 0.0
+            && position_covariance[4] >= 0.0
+            && position_covariance[8] >= 0.0
+            && (position_covariance[1] - position_covariance[3]).abs() <= 1e-12
+            && (position_covariance[2] - position_covariance[6]).abs() <= 1e-12
+            && (position_covariance[5] - position_covariance[7]).abs() <= 1e-12)
         {
             return Err(InvalidSample(
-                "GNSS position must be finite and bounded; covariance must be finite and nonnegative",
+                "GNSS position must be finite and bounded; covariance must be finite, symmetric, and have nonnegative variance",
             ));
         }
         Ok(Self {
@@ -55,5 +59,16 @@ impl TryFrom<SampleWire> for Sample {
     type Error = InvalidSample;
     fn try_from(v: SampleWire) -> Result<Self, Self::Error> {
         Self::try_new(v.latitude, v.longitude, v.altitude, v.position_covariance)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_bounds_coordinates_and_covariance() {
+        assert!(Sample::try_new(90.1, 0.0, 0.0, [0.0; 9]).is_err());
+        assert!(
+            Sample::try_new(0.0, 0.0, 0.0, [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]).is_err()
+        );
     }
 }

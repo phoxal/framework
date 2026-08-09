@@ -1,4 +1,5 @@
 //! Checked v0.2 lidar scans. Invalid range returns are explicit, never NaN.
+#![allow(clippy::collapsible_if)]
 
 #[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -174,5 +175,32 @@ impl TryFrom<ScanWire> for Scan {
             }
             ScanWire::Points(p) => Self::points(p.points, p.limits, p.quality, p.health),
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_rejects_nan_and_counts_explicit_invalids() {
+        assert!(
+            Scan::ranges(
+                vec![RangeSample::Valid(f32::NAN)],
+                None,
+                None,
+                None,
+                SensorHealth::Nominal
+            )
+            .is_err()
+        );
+        assert!(
+            Scan::ranges(
+                vec![RangeSample::Valid(1.0), RangeSample::Invalid],
+                None,
+                None,
+                Some(ScanQuality { valid_points: 1 }),
+                SensorHealth::Nominal
+            )
+            .is_ok()
+        );
     }
 }

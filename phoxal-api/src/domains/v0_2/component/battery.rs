@@ -50,3 +50,12 @@ impl TryFrom<StateWire> for State {
         Self::try_new(v.voltage_v, v.current_a, v.charge_ratio)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_bounds_charge_and_voltage() {
+        assert!(State::try_new(-1.0, 0.0, 0.5).is_err());
+        assert!(State::try_new(1.0, 0.0, 1.01).is_err());
+    }
+}

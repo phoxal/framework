@@ -31,3 +31,11 @@ impl TryFrom<SampleWire> for Sample {
         Self::try_new(v.magnetic_field)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_rejects_nonfinite() {
+        assert!(Sample::try_new([f32::NEG_INFINITY, 0.0, 0.0]).is_err());
+    }
+}

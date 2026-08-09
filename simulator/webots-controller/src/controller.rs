@@ -118,8 +118,7 @@ mod tests {
     use phoxal::Participant;
     use phoxal::api;
     use phoxal_bus::{
-        BusConfig, BusOwner, MeasurementPublisher, SampleReceiver, StreamReceiver,
-        TimelineAuthority,
+        BusConfig, BusOwner, SamplePublisher, SampleReceiver, StreamReceiver, TimelineAuthority,
     };
     use std::time::Duration;
 
@@ -169,7 +168,7 @@ mod tests {
             )
             .await
             .expect("encoder subscriber should attach");
-        let encoder_publisher = MeasurementPublisher::new(
+        let encoder_publisher = SamplePublisher::new(
             bus.clone(),
             &api::topic::owner()
                 .component("left_drive")

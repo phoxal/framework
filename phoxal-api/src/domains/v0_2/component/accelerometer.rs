@@ -33,3 +33,11 @@ impl TryFrom<SampleWire> for Sample {
         Self::try_new(v.linear_acceleration)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_rejects_nonfinite() {
+        assert!(Sample::try_new([f32::NAN, 0.0, 0.0]).is_err());
+    }
+}

@@ -681,6 +681,10 @@ fn rejects_json_and_messagepack<T: DeserializeOwned>(value: serde_json::Value) {
 
 #[test]
 fn v0_2_sensor_wires_reject_malformed_json_and_messagepack() {
+    rejects_json_and_messagepack::<api::component::camera::Frame>(serde_json::json!({
+        "width": 0, "height": 1, "encoding": "jpeg", "intrinsics": null, "distortion": null,
+        "exposure": null, "calibration": null, "data": []
+    }));
     rejects_json_and_messagepack::<api::component::depth::Frame>(serde_json::json!({
         "samples_mm": [], "encoding": "u16_millimeters", "invalid_sample_policy": "zero_is_invalid",
         "width": 0, "height": 1, "intrinsics": null, "distortion": null, "exposure": null, "calibration": null
@@ -698,10 +702,22 @@ fn v0_2_sensor_wires_reject_malformed_json_and_messagepack() {
         "orientation": [2.0,0.0,0.0,0.0], "angular_velocity_radps": [0.0,0.0,0.0], "linear_acceleration_mps2": [0.0,0.0,0.0],
         "covariance": null, "noise_density": null, "sensor_frame_id": null, "health": "nominal", "bias": null
     }));
+    rejects_json_and_messagepack::<api::component::accelerometer::Sample>(
+        serde_json::json!({"linear_acceleration": [0.0, 0.0]}),
+    );
+    rejects_json_and_messagepack::<api::component::gyroscope::Sample>(
+        serde_json::json!({"angular_velocity": [0.0, 0.0]}),
+    );
+    rejects_json_and_messagepack::<api::component::magnetometer::Sample>(
+        serde_json::json!({"magnetic_field": [0.0, 0.0]}),
+    );
     rejects_json_and_messagepack::<api::component::encoder::Sample>(
         serde_json::json!({"position_rad": 0.0, "velocity_radps": "bad"}),
     );
     rejects_json_and_messagepack::<api::component::mmwave::Scan>(
         serde_json::json!({"detections": [{"position": [0.0,0.0,0.0], "velocity": [0.0,0.0,0.0], "snr": "bad"}]}),
+    );
+    rejects_json_and_messagepack::<api::component::lidar::Scan>(
+        serde_json::json!({"kind": "ranges"}),
     );
 }

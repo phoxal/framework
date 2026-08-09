@@ -41,7 +41,7 @@ impl BatterySpec {
         energy_j: f64,
         previous: Option<(f64, u64)>,
         time_ns: u64,
-    ) -> api::component::battery::State {
+    ) -> Result<api::component::battery::State> {
         let charge_ratio = (energy_j / self.full_energy_j()).clamp(0.0, 1.0);
         // Current is what the pack is actually delivering: the energy it lost
         // over the elapsed window, at the pack's nominal voltage. Positive is
@@ -61,7 +61,7 @@ impl BatterySpec {
             current_a as f32,
             charge_ratio as f32,
         )
-        .expect("validated Webots battery specification and reading")
+        .map_err(anyhow::Error::from)
     }
 }
 
@@ -123,7 +123,7 @@ impl SimulatedSensor for NativeBattery {
             }
             return Ok(None);
         }
-        let state = self.spec.state(energy_j, self.last, step.time_ns);
+        let state = self.spec.state(energy_j, self.last, step.time_ns)?;
         self.last = Some((energy_j, step.time_ns));
         Ok(Some(state))
     }
@@ -153,9 +153,9 @@ mod tests {
     fn charge_ratio_is_energy_over_a_full_pack() {
         let spec = spec();
         let full = spec.full_energy_j();
-        assert_eq!(spec.state(full, None, 0).charge_ratio, 1.0);
-        assert_eq!(spec.state(full / 2.0, None, 0).charge_ratio, 0.5);
-        assert_eq!(spec.state(0.0, None, 0).charge_ratio, 0.0);
+        assert_eq!(spec.state(full, None, 0).unwrap().charge_ratio, 1.0);
+        assert_eq!(spec.state(full / 2.0, None, 0).unwrap().charge_ratio, 0.5);
+        assert_eq!(spec.state(0.0, None, 0).unwrap().charge_ratio, 0.0);
     }
 
     /// A world may recharge past the declared capacity, or the author may
@@ -165,14 +165,16 @@ mod tests {
     fn a_pack_over_its_declared_capacity_still_reads_full() {
         let spec = spec();
         let over = spec.full_energy_j() * 2.0;
-        assert_eq!(spec.state(over, None, 0).charge_ratio, 1.0);
+        assert_eq!(spec.state(over, None, 0).unwrap().charge_ratio, 1.0);
     }
 
     #[test]
     fn current_is_the_energy_lost_over_the_window_at_nominal_voltage() {
         let spec = spec();
         // 160 J lost in one second at 16 V is 160 W, so 10 A.
-        let state = spec.state(1_000.0, Some((1_160.0, 0)), 1_000_000_000);
+        let state = spec
+            .state(1_000.0, Some((1_160.0, 0)), 1_000_000_000)
+            .unwrap();
         assert!((state.current_a - 10.0).abs() < 1e-3);
         assert_eq!(state.voltage_v, 16.0);
     }
@@ -180,13 +182,21 @@ mod tests {
     #[test]
     fn a_charging_pack_reports_negative_current() {
         let spec = spec();
-        let state = spec.state(1_160.0, Some((1_000.0, 0)), 1_000_000_000);
+        let state = spec
+            .state(1_160.0, Some((1_000.0, 0)), 1_000_000_000)
+            .unwrap();
         assert!(state.current_a < 0.0);
     }
 
     #[test]
     fn the_first_reading_has_no_window_to_differentiate() {
-        assert_eq!(spec().state(1_000.0, None, 0).current_a, 0.0);
-        assert_eq!(spec().state(1_000.0, Some((2_000.0, 5)), 5).current_a, 0.0);
+        assert_eq!(spec().state(1_000.0, None, 0).unwrap().current_a, 0.0);
+        assert_eq!(
+            spec()
+                .state(1_000.0, Some((2_000.0, 5)), 5)
+                .unwrap()
+                .current_a,
+            0.0
+        );
     }
 }

@@ -38,3 +38,12 @@ impl TryFrom<SampleWire> for Sample {
         Self::try_new(v.position_rad, v.velocity_radps)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_rejects_nonfinite() {
+        assert!(Sample::try_new(f64::NAN, 0.0).is_err());
+        assert!(Sample::try_new(0.0, f32::NAN).is_err());
+    }
+}

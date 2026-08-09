@@ -1,4 +1,5 @@
 //! v0.2 camera payloads with checked image and calibration shapes.
+#![allow(clippy::collapsible_if, clippy::too_many_arguments)]
 
 #[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -162,5 +163,13 @@ impl TryFrom<FrameWire> for Frame {
             value.calibration,
             value.data,
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_checks_raw_shape() {
+        assert!(Frame::try_new(2, 2, Encoding::Rgb8, None, None, None, None, vec![0; 3]).is_err());
     }
 }

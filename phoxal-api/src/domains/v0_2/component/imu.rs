@@ -1,4 +1,5 @@
 //! Checked v0.2 IMU samples.
+#![allow(clippy::too_many_arguments)]
 
 #[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,5 +117,25 @@ impl TryFrom<SampleWire> for Sample {
             v.health,
             v.bias,
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_requires_unit_quaternion() {
+        assert!(
+            Sample::try_new(
+                Some([2.0, 0.0, 0.0, 0.0]),
+                [0.0; 3],
+                [0.0; 3],
+                None,
+                None,
+                None,
+                SensorHealth::Nominal,
+                None
+            )
+            .is_err()
+        );
     }
 }

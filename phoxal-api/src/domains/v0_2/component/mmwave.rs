@@ -1,5 +1,7 @@
 //! Checked v0.2 mmWave scans.
 
+const MAX_DETECTIONS: usize = 4_096;
+
 #[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Detection {
     pub position: [f32; 3],
@@ -25,6 +27,9 @@ impl std::fmt::Display for InvalidScan {
 impl std::error::Error for InvalidScan {}
 impl Scan {
     pub fn try_new(detections: Vec<Detection>) -> Result<Self, InvalidScan> {
+        if detections.len() > MAX_DETECTIONS {
+            return Err(InvalidScan("mmWave scan exceeds the detection bound"));
+        }
         if detections.iter().any(|d| {
             !d.position
                 .iter()
@@ -43,5 +48,34 @@ impl TryFrom<ScanWire> for Scan {
     type Error = InvalidScan;
     fn try_from(v: ScanWire) -> Result<Self, Self::Error> {
         Self::try_new(v.detections)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_rejects_nonfinite_detection() {
+        assert!(
+            Scan::try_new(vec![Detection {
+                position: [f32::NAN, 0.0, 0.0],
+                velocity: [0.0; 3],
+                snr: 0.0
+            }])
+            .is_err()
+        );
+    }
+    #[test]
+    fn constructor_bounds_detection_count() {
+        assert!(
+            Scan::try_new(vec![
+                Detection {
+                    position: [0.0; 3],
+                    velocity: [0.0; 3],
+                    snr: 0.0
+                };
+                MAX_DETECTIONS + 1
+            ])
+            .is_err()
+        );
     }
 }

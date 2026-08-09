@@ -100,7 +100,7 @@ where
     S::Endpoint: MeasurementContract<Payload = S::Sample>,
 {
     device: S,
-    publisher: MeasurementPublisher<S::Endpoint>,
+    publisher: SamplePublisher<S::Endpoint>,
 }
 
 impl<S: SimulatedSensor> SensorChannel<S>
@@ -120,7 +120,7 @@ where
     fn read_into(
         &mut self,
         step: SensorStep,
-        wrap: fn(MeasurementPublisher<S::Endpoint>, S::Sample) -> PendingPublish,
+        wrap: fn(SamplePublisher<S::Endpoint>, S::Sample) -> PendingPublish,
         pending: &mut Vec<PendingPublish>,
     ) -> Result<()> {
         if let Some(sample) = self.device.read_if_due(step)? {
@@ -200,51 +200,51 @@ struct BatteryChannel {
 /// publishes on.
 pub(crate) enum PendingPublish {
     Encoder(
-        MeasurementPublisher<api::endpoint::component::encoder::SampleEndpoint>,
+        SamplePublisher<api::endpoint::component::encoder::SampleEndpoint>,
         api::component::encoder::Sample,
     ),
     Imu(
-        MeasurementPublisher<api::endpoint::component::imu::SampleEndpoint>,
+        SamplePublisher<api::endpoint::component::imu::SampleEndpoint>,
         api::component::imu::Sample,
     ),
     Accelerometer(
-        MeasurementPublisher<api::endpoint::component::accelerometer::SampleEndpoint>,
+        SamplePublisher<api::endpoint::component::accelerometer::SampleEndpoint>,
         api::component::accelerometer::Sample,
     ),
     Gyroscope(
-        MeasurementPublisher<api::endpoint::component::gyroscope::SampleEndpoint>,
+        SamplePublisher<api::endpoint::component::gyroscope::SampleEndpoint>,
         api::component::gyroscope::Sample,
     ),
     Range(
-        MeasurementPublisher<api::endpoint::component::range::SampleEndpoint>,
+        SamplePublisher<api::endpoint::component::range::SampleEndpoint>,
         api::component::range::Sample,
     ),
     Camera(
-        MeasurementPublisher<api::endpoint::component::camera::FrameEndpoint>,
+        SamplePublisher<api::endpoint::component::camera::FrameEndpoint>,
         api::component::camera::Frame,
     ),
     Depth(
-        MeasurementPublisher<api::endpoint::component::depth::FrameEndpoint>,
+        SamplePublisher<api::endpoint::component::depth::FrameEndpoint>,
         api::component::depth::Frame,
     ),
     Gnss(
-        MeasurementPublisher<api::endpoint::component::gnss::SampleEndpoint>,
+        SamplePublisher<api::endpoint::component::gnss::SampleEndpoint>,
         api::component::gnss::Sample,
     ),
     Magnetometer(
-        MeasurementPublisher<api::endpoint::component::magnetometer::SampleEndpoint>,
+        SamplePublisher<api::endpoint::component::magnetometer::SampleEndpoint>,
         api::component::magnetometer::Sample,
     ),
     Lidar(
-        MeasurementPublisher<api::endpoint::component::lidar::ScanEndpoint>,
+        SamplePublisher<api::endpoint::component::lidar::ScanEndpoint>,
         api::component::lidar::Scan,
     ),
     Mmwave(
-        MeasurementPublisher<api::endpoint::component::mmwave::ScanEndpoint>,
+        SamplePublisher<api::endpoint::component::mmwave::ScanEndpoint>,
         api::component::mmwave::Scan,
     ),
     Microphone(
-        MeasurementPublisher<api::endpoint::component::microphone::FrameEndpoint>,
+        SamplePublisher<api::endpoint::component::microphone::FrameEndpoint>,
         api::component::microphone::Frame,
     ),
     Battery(
@@ -359,54 +359,53 @@ impl CapabilityChannel {
             }),
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.encoder(id)?.sample())?,
+                publisher: ctx.sample_publisher(component()?.encoder(id)?.sample())?,
             }),
             CapabilitySpec::Imu(spec) => CapabilityBinding::Imu(SensorChannel {
                 device: NativeImu::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.imu(id)?.sample())?,
+                publisher: ctx.sample_publisher(component()?.imu(id)?.sample())?,
             }),
             CapabilitySpec::Accelerometer(spec) => {
                 CapabilityBinding::Accelerometer(SensorChannel {
                     device: NativeAccelerometer::new(webots, spec)?,
-                    publisher: ctx
-                        .measurement_publisher(component()?.accelerometer(id)?.sample())?,
+                    publisher: ctx.sample_publisher(component()?.accelerometer(id)?.sample())?,
                 })
             }
             CapabilitySpec::Gyroscope(spec) => CapabilityBinding::Gyroscope(SensorChannel {
                 device: NativeGyroscope::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.gyroscope(id)?.sample())?,
+                publisher: ctx.sample_publisher(component()?.gyroscope(id)?.sample())?,
             }),
             CapabilitySpec::Range(spec) => CapabilityBinding::Range(SensorChannel {
                 device: NativeRange::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.range(id)?.sample())?,
+                publisher: ctx.sample_publisher(component()?.range(id)?.sample())?,
             }),
             CapabilitySpec::Camera(spec) => CapabilityBinding::Camera(SensorChannel {
                 device: NativeCamera::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.camera(id)?.frame())?,
+                publisher: ctx.sample_publisher(component()?.camera(id)?.frame())?,
             }),
             CapabilitySpec::Depth(spec) => CapabilityBinding::Depth(SensorChannel {
                 device: NativeDepth::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.depth(id)?.frame())?,
+                publisher: ctx.sample_publisher(component()?.depth(id)?.frame())?,
             }),
             CapabilitySpec::Gnss(spec) => CapabilityBinding::Gnss(SensorChannel {
                 device: NativeGnss::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.gnss(id)?.sample())?,
+                publisher: ctx.sample_publisher(component()?.gnss(id)?.sample())?,
             }),
             CapabilitySpec::Magnetometer(spec) => CapabilityBinding::Magnetometer(SensorChannel {
                 device: NativeMagnetometer::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.magnetometer(id)?.sample())?,
+                publisher: ctx.sample_publisher(component()?.magnetometer(id)?.sample())?,
             }),
             CapabilitySpec::Lidar(spec) => CapabilityBinding::Lidar(SensorChannel {
                 device: NativeLidar::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.lidar(id)?.scan())?,
+                publisher: ctx.sample_publisher(component()?.lidar(id)?.scan())?,
             }),
             CapabilitySpec::Mmwave(spec) => CapabilityBinding::Mmwave(SensorChannel {
                 device: NativeMmwave::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.mmwave(id)?.scan())?,
+                publisher: ctx.sample_publisher(component()?.mmwave(id)?.scan())?,
             }),
             CapabilitySpec::Microphone(spec) => CapabilityBinding::Microphone(SensorChannel {
                 device: NativeMicrophone::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component()?.microphone(id)?.frame())?,
+                publisher: ctx.sample_publisher(component()?.microphone(id)?.frame())?,
             }),
             CapabilitySpec::Battery(spec) => CapabilityBinding::Battery(BatteryChannel {
                 device: NativeBattery::new(spec)?,

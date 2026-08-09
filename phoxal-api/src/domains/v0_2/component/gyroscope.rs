@@ -31,3 +31,11 @@ impl TryFrom<SampleWire> for Sample {
         Self::try_new(v.angular_velocity)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_rejects_nonfinite() {
+        assert!(Sample::try_new([f32::INFINITY, 0.0, 0.0]).is_err());
+    }
+}

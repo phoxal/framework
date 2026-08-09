@@ -1,4 +1,5 @@
 //! Checked v0.2 range samples.
+#![allow(clippy::collapsible_if)]
 
 #[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,5 +86,36 @@ impl TryFrom<SampleWire> for Sample {
     type Error = InvalidSample;
     fn try_from(v: SampleWire) -> Result<Self, Self::Error> {
         Self::try_new(v.distance_m, v.limits, v.quality, v.health)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn constructor_requires_ordered_containing_limits() {
+        assert!(
+            Sample::try_new(
+                2.0,
+                Some(Limits {
+                    min_m: 3.0,
+                    max_m: 1.0
+                }),
+                None,
+                SensorHealth::Nominal
+            )
+            .is_err()
+        );
+        assert!(
+            Sample::try_new(
+                2.0,
+                Some(Limits {
+                    min_m: 0.0,
+                    max_m: 1.0
+                }),
+                None,
+                SensorHealth::Nominal
+            )
+            .is_err()
+        );
     }
 }
