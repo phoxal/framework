@@ -75,7 +75,7 @@ fn navigation_rejects_invalid_request_operation_pose_path_and_frontier() {
     assert!(crate::domains::v0_2::navigation::NavigationOperationId::new(producer(), 0).is_none());
     let operation = crate::domains::v0_2::navigation::NavigationOperationId::new(producer(), 1)
         .expect("nonzero operation sequence");
-    let mut candidate = serde_json::to_value(&operation).unwrap();
+    let mut candidate = serde_json::to_value(operation).unwrap();
     let object = candidate.as_object_mut().unwrap();
     object.insert("linear_x_mps".into(), Value::Null);
     object.insert("angular_z_radps".into(), json!(0.0));

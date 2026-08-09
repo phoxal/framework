@@ -464,8 +464,8 @@ mod tests {
                 .await
                 .expect("the second execution subscriber dials the same router");
         let other_publisher =
-            StatePublisher::<Target>::new(other_publishing.clone(), &pub_topic).unwrap();
-        let other_latest = Latest::<Target>::new(&other_subscribing, &sub_topic)
+            StatePublisher::<TargetEndpoint>::new(other_publishing.clone(), &pub_topic).unwrap();
+        let other_latest = Latest::<TargetEndpoint>::new(&other_subscribing, &sub_topic)
             .await
             .unwrap();
 
