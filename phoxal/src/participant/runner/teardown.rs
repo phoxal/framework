@@ -37,8 +37,7 @@ pub(crate) struct TeardownReport {
     pub(crate) shutdown_timed_out: bool,
     pub(crate) unjoined_tasks: Vec<String>,
     pub(crate) task_errors: Vec<anyhow::Error>,
-    pub(crate) bus_close_error: Option<anyhow::Error>,
-    pub(crate) bus_close_report: Option<phoxal_bus::BusCloseReport>,
+    pub(crate) bus_close: Option<phoxal_bus::BusCloseReport>,
 }
 
 impl TeardownReport {
@@ -47,9 +46,8 @@ impl TeardownReport {
             && !self.shutdown_timed_out
             && self.unjoined_tasks.is_empty()
             && self.task_errors.is_empty()
-            && self.bus_close_error.is_none()
             && self
-                .bus_close_report
+                .bus_close
                 .as_ref()
                 .is_none_or(phoxal_bus::BusCloseReport::is_clean)
     }
@@ -78,10 +76,7 @@ impl std::fmt::Display for TeardownReport {
             let errors: Vec<_> = self.task_errors.iter().map(ToString::to_string).collect();
             item("task-errors", &format_args!("{errors:?}"))?;
         }
-        if let Some(error) = &self.bus_close_error {
-            item("bus-close", error)?;
-        }
-        if let Some(report) = &self.bus_close_report
+        if let Some(report) = &self.bus_close
             && !report.is_clean()
         {
             item("bus-close-report", report)?;
@@ -128,9 +123,10 @@ impl TeardownReport {
             .map(|error| error.as_ref() as _)
             .or_else(|| self.task_errors.first().map(|error| error.as_ref() as _))
             .or_else(|| {
-                self.bus_close_error
+                self.bus_close
                     .as_ref()
-                    .map(|error| error.as_ref() as _)
+                    .filter(|report| !report.is_clean())
+                    .map(|report| report as &(dyn std::error::Error + 'static))
             })
             .or_else(|| {
                 (!self.unjoined_tasks.is_empty())
@@ -540,7 +536,7 @@ mod tests {
         let result = combine::<()>(
             Ok(()),
             TeardownReport {
-                bus_close_report: Some(phoxal_bus::BusCloseReport {
+                bus_close: Some(phoxal_bus::BusCloseReport {
                     transport_error_count: 3,
                     transport_errors: vec!["first failure".to_string()],
                     transport_errors_truncated: 2,
@@ -555,7 +551,7 @@ mod tests {
             .expect("close evidence must retain the terminal structure");
         let close = terminal
             .teardown
-            .bus_close_report
+            .bus_close
             .as_ref()
             .expect("the structured close report must remain attached");
         assert_eq!(close.transport_error_count, 3);

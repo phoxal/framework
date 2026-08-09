@@ -48,7 +48,7 @@ mod tests {
         let result =
             phoxal::testing::run_test_harness::<ZedF9p, _>(&bus, launch, std::future::pending())
                 .await;
-        owner.close().await.expect("the in-process test bus closes");
+        owner.close().await;
 
         let error = result.expect_err("setup must reject an unavailable hardware backend");
         assert_eq!(error.to_string(), BACKEND_UNAVAILABLE);

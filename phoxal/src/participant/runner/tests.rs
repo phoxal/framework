@@ -15,7 +15,7 @@ use crate::participant::managed::{
 };
 use crate::participant::scheduler::AnyStepScheduler;
 use phoxal_bundle::ParticipantClock;
-use phoxal_bus::{BusConfig, BusOwner};
+use phoxal_bus::{BusConfig, BusFault, BusOwner};
 use phoxal_runtime_contract::identity::ParticipantId;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -145,6 +145,17 @@ fn loop_exits_report_actionable_failures() {
         format!("{returned}"),
         "managed task \"io-pump\" exited unexpectedly"
     );
+
+    let bus = LoopExit::BusFaulted(BusFault::WorkerExited {
+        worker: "subscription:drive/target".to_string(),
+    })
+    .into_result()
+    .expect_err("an owner-owned bus worker exit is terminal");
+    assert!(matches!(
+        bus.downcast_ref::<ParticipantFault>(),
+        Some(ParticipantFault::Bus(BusFault::WorkerExited { .. }))
+    ));
+    assert!(format!("{bus}").contains("bus transport failed"));
 
     assert!(LoopExit::ShutdownRequested.into_result().is_ok());
 }

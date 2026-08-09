@@ -500,10 +500,10 @@ mod tests {
             other_publishing.producer()
         );
 
-        publishing_owner.close().await.unwrap();
-        subscribing_owner.close().await.unwrap();
-        other_publishing_owner.close().await.unwrap();
-        other_subscribing_owner.close().await.unwrap();
+        publishing_owner.close().await;
+        subscribing_owner.close().await;
+        other_publishing_owner.close().await;
+        other_subscribing_owner.close().await;
         router.close().await.unwrap();
     }
 
@@ -542,7 +542,7 @@ mod tests {
         .await
         .expect("the reported endpoint must be the one that actually accepts");
 
-        owner.close().await.unwrap();
+        owner.close().await;
         router.close().await.unwrap();
     }
 

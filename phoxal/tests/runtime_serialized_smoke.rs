@@ -137,5 +137,5 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
     .await
     .expect("runner and smoke client should finish");
     runner_result.expect("runner should shut down cleanly");
-    owner.close().await.expect("close smoke bus");
+    owner.close().await;
 }

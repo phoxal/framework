@@ -49,6 +49,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             RUNTIME_PERFORMANCE_TICK_INTERVAL,
         );
         beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let bus = self.bus.clone();
 
         loop {
             tokio::select! {
@@ -60,6 +61,14 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                 // steady query backlog.
                 biased;
                 _ = shutdown.wait() => return LoopExit::ShutdownRequested,
+                fault = bus.wait_for_fatal() => {
+                    tracing::error!(
+                        target: "phoxal.runtime",
+                        failure = %fault,
+                        "bus transport worker failed; faulting the participant"
+                    );
+                    return LoopExit::BusFaulted(fault);
+                }
                 exit = self.managed_tasks.next_unexpected_exit() => {
                     tracing::error!(
                         target: "phoxal.runtime",

@@ -89,7 +89,10 @@ pub use runtime_metrics::{
     RuntimeBufferKind, RuntimeDirection, RuntimeMetricKey, RuntimeMetricSnapshot,
 };
 pub use server::{IncomingQuery, ServerQueryable};
-pub use session::{BusCloseReport, BusCloseTimeout, BusConfig, BusHandle, BusHealth, BusOwner};
+pub use session::{
+    BusCloseReport, BusCloseTimeout, BusConfig, BusFault, BusHandle, BusHealth, BusOwner,
+    BusTerminal,
+};
 pub use time::{
     CaptureStamp, LocalInstant, RetiredTimelines, RobotInstant, RobotTimeError, TimeWindow, Timed,
     TimelineMismatch, WallTimestamp,

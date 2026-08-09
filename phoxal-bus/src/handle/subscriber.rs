@@ -2,7 +2,7 @@
 //! ring, plus the background subscription task all three share.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use crate::handle::decode_sample;
 use crate::lock::lock;
 use crate::metadata::BusMetadata;
 use crate::runtime_metrics::RuntimeMetricHandle;
-use crate::session::BusHandle;
+use crate::session::{BusFault, BusHandle};
 use crate::time::{LocalInstant, RetiredTimelines, TimeWindow};
 use crate::topic::{Subscribe, Topic};
 
@@ -686,10 +686,12 @@ fn terminal_error(terminal: ReceiveTerminal) -> BusError {
 /// explicitly joins it during close.
 struct SubscriptionGuard {
     cancel: Arc<Notify>,
+    expected: Arc<AtomicBool>,
 }
 
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
+        self.expected.store(true, Ordering::Release);
         self.cancel.notify_one();
     }
 }
@@ -725,6 +727,7 @@ where
     let shutdown_bus = bus.clone();
     let cancel = Arc::new(Notify::new());
     let cancel_task = Arc::clone(&cancel);
+    let expected = Arc::new(AtomicBool::new(false));
     let terminal_task = Arc::clone(&terminal);
 
     let task = tokio::spawn(async move {
@@ -743,7 +746,12 @@ where
                 result = subscriber.recv_async() => match result {
                     Ok(sample) => sample,
                     Err(error) => {
-                        terminal_task.set(ReceiveTerminal::Transport(error.to_string()));
+                        let error = error.to_string();
+                        terminal_task.set(ReceiveTerminal::Transport(error.clone()));
+                        health_bus.signal_fatal(BusFault::SubscriptionReceive {
+                            topic: topic_owned.clone(),
+                            error,
+                        });
                         break;
                     }
                 }
@@ -782,14 +790,18 @@ where
         }
     });
 
-    if let Err(task) = bus.register_worker(task) {
+    if let Err(task) = bus.register_named_worker(
+        format!("subscription:{topic_key}"),
+        Arc::clone(&expected),
+        task,
+    ) {
         // Close won the registration race. Its shutdown notification is
         // already published, so the worker exits cooperatively and this setup
         // path joins it before returning the typed terminal error.
         let _ = task.await;
         return Err(BusError::Closed);
     }
-    Ok(SubscriptionGuard { cancel })
+    Ok(SubscriptionGuard { cancel, expected })
 }
 
 #[cfg(test)]
@@ -922,7 +934,7 @@ mod tests {
             .await
             .expect("a non-Clone body still has a retained-state subscription");
         assert!(latest.observed().is_none());
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     #[test]
@@ -1050,7 +1062,7 @@ mod tests {
             "every subscription stamps its own observation instant"
         );
 
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     #[serial]
@@ -1174,7 +1186,7 @@ mod tests {
             "quarantine churn and retired samples must not inflate bus health"
         );
 
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     /// A command expresses no robot time, so its envelope carries none - and a
@@ -1203,7 +1215,7 @@ mod tests {
         assert_eq!(observed.metadata.produced_at, None);
         assert_eq!(observed.timeline(), None);
 
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     #[test]

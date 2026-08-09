@@ -47,5 +47,5 @@ async fn a_protocol_topic_composes_under_the_execution_scoped_root() {
         format!("phoxal/{execution}/supervisor/connect/hello")
     );
 
-    owner.close().await.expect("close in-process bus");
+    owner.close().await;
 }

@@ -18,7 +18,7 @@ use crate::participant::scheduler::simulation::SimulationClockHandle;
 use crate::participant::scheduler::{AnyStepScheduler, StepSchedule};
 use phoxal_bundle::ParticipantClock;
 use phoxal_bundle::ParticipantRuntimeInputs;
-use phoxal_bus::{BusHandle, BusOwner, ParticipantReadyToken};
+use phoxal_bus::{BusFault, BusHandle, BusOwner, ParticipantReadyToken};
 use phoxal_runtime_contract::identity::ParticipantId;
 
 use super::ShutdownController;
@@ -53,6 +53,9 @@ pub(crate) enum LoopExit {
     ShutdownRequested,
     /// A runner-owned task violated its completion policy.
     ManagedTaskFaulted(ManagedTaskExit),
+    /// An owner-owned bus worker exited unexpectedly, so continuing with
+    /// frozen transport input would make Ready untrustworthy.
+    BusFaulted(BusFault),
     /// The clock stopped being trustworthy, so no further step could be timed.
     ClockDisciplineLost(TimeUnsynchronized),
     /// `Participant::reset` refused the replacement world history.
@@ -71,6 +74,7 @@ impl LoopExit {
         match self {
             Self::ShutdownRequested => Ok(()),
             Self::ManagedTaskFaulted(exit) => Err(ParticipantFault::ManagedTask(exit).into()),
+            Self::BusFaulted(fault) => Err(ParticipantFault::Bus(fault).into()),
             Self::ClockDisciplineLost(reason) => {
                 Err(ParticipantFault::Clock(ClockDisciplineLost { reason }).into())
             }
@@ -92,6 +96,7 @@ pub(crate) struct ClockDisciplineLost {
 #[derive(Debug)]
 pub(crate) enum ParticipantFault {
     ManagedTask(ManagedTaskExit),
+    Bus(BusFault),
     Clock(ClockDisciplineLost),
     Reset(anyhow::Error),
     Step(anyhow::Error),
@@ -102,6 +107,7 @@ impl std::fmt::Display for ParticipantFault {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ManagedTask(error) => error.fmt(formatter),
+            Self::Bus(error) => write!(formatter, "bus transport failed: {error}"),
             Self::Clock(error) => error.fmt(formatter),
             Self::Reset(error) => write!(formatter, "reset failed: {error}"),
             Self::Step(error) => write!(formatter, "step failed: {error}"),
@@ -114,6 +120,7 @@ impl std::error::Error for ParticipantFault {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ManagedTask(error) => Some(error),
+            Self::Bus(error) => Some(error),
             Self::Clock(error) => Some(error),
             Self::Reset(error) | Self::Step(error) | Self::Query(error) => Some(error.as_ref()),
         }
@@ -394,6 +401,15 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                 let report = abandon_startup(ctx.take_managed_tasks(), deadline).await;
                 return startup_terminal(Ok(()), report, deadline, session);
             }
+            fault = bus.wait_for_fatal() => {
+                let deadline = ShutdownDeadline::from_now(shutdown_grace);
+                let error = abandon_setup(
+                    ctx.take_managed_tasks(),
+                    ParticipantFault::Bus(fault).into(),
+                    deadline,
+                ).await;
+                return StartOutcome::Terminal { result: Err(error), deadline, session };
+            }
             result = setup => result,
         } {
             Ok(pair) => pair,
@@ -425,6 +441,17 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     &mut state,
                     shutdown_grace,
                     Ok(()),
+                    session,
+                ).await;
+            }
+            fault = bus.wait_for_fatal() => {
+                return startup_teardown(
+                    managed_tasks,
+                    &participant,
+                    &api,
+                    &mut state,
+                    shutdown_grace,
+                    Err(ParticipantFault::Bus(fault).into()),
                     session,
                 ).await;
             }
@@ -484,6 +511,21 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             )
             .await;
         }
+        if let phoxal_bus::BusTerminal::Fatal(fault) = bus.terminal() {
+            if let Some(queries) = queries.take() {
+                queries.close();
+            }
+            return startup_teardown(
+                managed_tasks,
+                &participant,
+                &api,
+                &mut state,
+                shutdown_grace,
+                Err(ParticipantFault::Bus(fault).into()),
+                session,
+            )
+            .await;
+        }
         // Ready acquisition is itself a lifecycle boundary. Race the bus
         // declaration against already-supervised task completion so a
         // Critical setup/query failure cannot win the await and briefly make
@@ -521,6 +563,20 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                         &mut state,
                         shutdown_grace,
                         Ok(()),
+                        session,
+                    ).await;
+                }
+                fault = bus.wait_for_fatal() => {
+                    if let Some(queries) = queries.take() {
+                        queries.close();
+                    }
+                    return startup_teardown(
+                        managed_tasks,
+                        &participant,
+                        &api,
+                        &mut state,
+                        shutdown_grace,
+                        Err(ParticipantFault::Bus(fault).into()),
                         session,
                     ).await;
                 }
@@ -631,8 +687,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         .run(&participant, &api, &mut state)
         .await;
         let close_report = close_session(session, deadline).await;
-        report.bus_close_error = close_report.bus_close_error;
-        report.bus_close_report = close_report.bus_close_report;
+        report.bus_close = close_report.bus_close;
         report
     }
 }
@@ -645,16 +700,14 @@ async fn close_session(session: BusLease, deadline: ShutdownDeadline) -> Teardow
     #[cfg(not(feature = "test-harness"))]
     let BusLease::Owned(owner) = session;
 
-    match owner.close_until(deadline.instant()).await {
-        Ok(close) if close.is_clean() => TeardownReport::default(),
-        Ok(close) => TeardownReport {
-            bus_close_report: Some(close),
+    let close = owner.close_until(deadline.instant()).await;
+    if close.is_clean() {
+        TeardownReport::default()
+    } else {
+        TeardownReport {
+            bus_close: Some(close),
             ..TeardownReport::default()
-        },
-        Err(error) => TeardownReport {
-            bus_close_error: Some(error.into()),
-            ..TeardownReport::default()
-        },
+        }
     }
 }
 

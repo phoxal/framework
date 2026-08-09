@@ -267,7 +267,7 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("closed")).await.unwrap();
         let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
         let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
-        owner.close().await.unwrap();
+        owner.close().await;
 
         let error = publisher
             .publish(
@@ -293,6 +293,6 @@ mod tests {
             .send(StreamChunk(vec![0; OUTBOUND_MAX_BYTES + 1]))
             .expect_err("an oversized stream chunk must not be accepted");
         assert!(matches!(error, BusError::WouldBlock { .. }));
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 }

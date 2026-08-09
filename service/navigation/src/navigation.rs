@@ -1047,7 +1047,7 @@ mod tests {
 
         let (runner_result, ()) = tokio::join!(runner, client);
         runner_result.expect("navigation runner completed cleanly");
-        owner.close().await.expect("close shared bus");
+        owner.close().await;
     }
 
     fn request_id(value: &str) -> api::navigation::RequestId {

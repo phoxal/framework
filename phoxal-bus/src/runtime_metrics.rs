@@ -524,6 +524,6 @@ mod tests {
         assert_eq!(subscriber_row.decode_errors, 1);
 
         drop(subscriber);
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 }

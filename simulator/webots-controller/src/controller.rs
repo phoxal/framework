@@ -211,6 +211,6 @@ mod tests {
             encoder.metadata.sequence < clock.metadata.sequence,
             "all completed-world outputs must enqueue before the matching clock"
         );
-        owner.close().await.expect("bus should close");
+        owner.close().await;
     }
 }
