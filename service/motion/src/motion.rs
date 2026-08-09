@@ -120,7 +120,7 @@ pub(crate) struct MotionState {
     manual: ExclusiveProducerLease<api::motion::ManualCommand>,
     manual_observed_at: Option<LocalInstant>,
     last_autonomous: Option<Timed<api::navigation::Candidate>>,
-    last_autonomous_offer: Option<(phoxal::bus::ProducerId, u64)>,
+    last_autonomous_offer: Option<NavigationOfferKey>,
     autonomous_admission: Arc<Mutex<FixedSourceAdmission>>,
     autonomous_authority: Arc<Mutex<FixedSourceLease<api::navigation::Candidate>>>,
     estop: EmergencyStopLatch,
@@ -129,6 +129,19 @@ pub(crate) struct MotionState {
 
 #[phoxal::service(state = MotionState, api = Api)]
 pub(crate) struct Motion;
+
+type NavigationOfferKey = (phoxal::bus::ProducerId, u64, u64);
+
+fn current_navigation_offer_key(
+    admission: &FixedSourceAdmission,
+    source: Option<&phoxal::bus::ParticipantSourceIdentity>,
+    sequence: u64,
+) -> Option<NavigationOfferKey> {
+    if !admission.is_current(source, sequence) {
+        return None;
+    }
+    Some((source?.producer, sequence, admission.ready_generation()))
+}
 
 impl Participant for Motion {
     async fn setup(
@@ -310,15 +323,17 @@ impl Participant for Motion {
             && let Some(at) = observed.metadata.produced_exactly_at()
         {
             let source = observed.metadata.source.participant_source();
-            let identity = source.map(|source| (source.producer, observed.metadata.sequence));
-            let currently_admitted = {
+            let offer_key = {
                 let Ok(admission) = state.autonomous_admission.lock() else {
                     bail!("navigation admission lock was poisoned");
                 };
-                admission.is_current(source, observed.metadata.sequence)
+                current_navigation_offer_key(&admission, source, observed.metadata.sequence)
             };
-            let mut accepted_for_liveness = state.last_autonomous_offer == identity;
-            if currently_admitted && state.last_autonomous_offer != identity {
+            let mut accepted_for_liveness =
+                offer_key.is_some() && state.last_autonomous_offer == offer_key;
+            if let Some(offer_key) = offer_key
+                && state.last_autonomous_offer != Some(offer_key)
+            {
                 let Ok(mut authority) = state.autonomous_authority.lock() else {
                     bail!("navigation authority lock was poisoned");
                 };
@@ -328,7 +343,7 @@ impl Participant for Motion {
                     observed.observed_at,
                     observed.body.clone(),
                 );
-                state.last_autonomous_offer = identity;
+                state.last_autonomous_offer = Some(offer_key);
                 accepted_for_liveness = !matches!(decision, LeaseDecision::Rejected(_));
                 if let LeaseDecision::Rejected(rejection) = decision {
                     tracing::warn!(
@@ -434,7 +449,11 @@ impl Participant for Motion {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::{LeaseRejection, ProducerId, SourceAttribution, TimelineId};
+    use phoxal::bus::{
+        FixedSourceAdmission, FixedSourceLease, LeaseDecision, LeaseRejection, ParticipantId,
+        ParticipantReadyStatus, ParticipantSourceIdentity, ProducerId, SourceAttribution,
+        TimelineId,
+    };
 
     use super::*;
 
@@ -455,8 +474,72 @@ mod tests {
         TimelineId::from_raw(1).expect("test timeline must be nonzero")
     }
 
+    fn navigation_source(producer: ProducerId) -> ParticipantSourceIdentity {
+        ParticipantSourceIdentity::new(
+            ParticipantId::new("navigation").expect("valid navigation participant"),
+            producer,
+        )
+    }
+
     fn at(ticks: u64) -> RobotInstant {
         RobotInstant::new(line(), ticks)
+    }
+
+    #[test]
+    fn navigation_ready_loss_requires_fresh_same_sequence_for_liveness() {
+        let source = navigation_source(producer(22));
+        let observed_at = LocalInstant::from_boot_ns(0);
+        let mut admission = FixedSourceAdmission::new(source.participant.clone());
+        let mut authority = FixedSourceLease::new(
+            "navigation/candidate",
+            source.participant.clone(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        admission.update_ready(&source, ParticipantReadyStatus::Ready);
+        authority.update_ready(&source, ParticipantReadyStatus::Ready);
+
+        assert_eq!(admission.offer(Some(&source), 7), LeaseDecision::Acquired);
+        let mut last_offer = Some(
+            current_navigation_offer_key(&admission, Some(&source), 7)
+                .expect("the first candidate is current"),
+        );
+        assert_eq!(
+            authority.offer(Some(&source), 7, observed_at, "T1"),
+            LeaseDecision::Acquired
+        );
+
+        // Ready loss invalidates the retained candidate immediately. The
+        // step-facing StateView may still expose T1, but it must not reacquire
+        // the lease after Ready returns.
+        admission.update_ready(&source, ParticipantReadyStatus::Lost);
+        authority.update_ready(&source, ParticipantReadyStatus::Lost);
+        admission.update_ready(&source, ParticipantReadyStatus::Ready);
+        authority.update_ready(&source, ParticipantReadyStatus::Ready);
+        assert!(current_navigation_offer_key(&admission, Some(&source), 7).is_none());
+        assert_eq!(
+            authority.live(observed_at, at(0)),
+            None,
+            "retained T1 must not become live again"
+        );
+        assert!(
+            last_offer.is_some(),
+            "the old marker remains historical evidence"
+        );
+
+        // A fresh ingress publication with the same producer and sequence has
+        // a new Ready generation and therefore receives a new offer key.
+        assert_eq!(admission.offer(Some(&source), 7), LeaseDecision::Acquired);
+        let fresh_offer = current_navigation_offer_key(&admission, Some(&source), 7)
+            .expect("fresh ingress is current");
+        assert_ne!(last_offer, Some(fresh_offer));
+        assert_eq!(
+            authority.offer(Some(&source), 7, observed_at, "fresh"),
+            LeaseDecision::Acquired
+        );
+        last_offer = Some(fresh_offer);
+        assert_eq!(authority.live(observed_at, at(0)), Some(&"fresh"));
+        assert_eq!(last_offer, Some(fresh_offer));
     }
 
     fn estop(index: u8) -> CapabilityRef {

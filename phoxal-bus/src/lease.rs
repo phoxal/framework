@@ -357,6 +357,7 @@ pub struct FixedSourceAdmission {
     ready: HashSet<ProducerId>,
     ready_overflow: bool,
     active: Option<(ProducerId, u64)>,
+    ready_generation: u64,
 }
 
 impl FixedSourceAdmission {
@@ -367,6 +368,7 @@ impl FixedSourceAdmission {
             ready: HashSet::new(),
             ready_overflow: false,
             active: None,
+            ready_generation: 0,
         }
     }
 
@@ -395,6 +397,7 @@ impl FixedSourceAdmission {
             }
             ParticipantReadyStatus::Lost => {
                 self.ready.remove(&source.producer);
+                self.ready_generation = self.ready_generation.saturating_add(1);
                 if self
                     .active
                     .is_some_and(|(producer, _)| producer == source.producer)
@@ -418,6 +421,11 @@ impl FixedSourceAdmission {
     /// Number of currently Ready producers for the participant.
     pub fn ready_count(&self) -> usize {
         self.ready.len()
+    }
+
+    /// The Ready incarnation generation used to fence retained observations.
+    pub fn ready_generation(&self) -> u64 {
+        self.ready_generation
     }
 
     /// Whether this exact observation is the current admitted value.
