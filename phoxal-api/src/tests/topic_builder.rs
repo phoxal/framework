@@ -71,38 +71,6 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/simulation/clock"
     );
     assert_eq!(
-        api::topic::client()
-            .logs("drive")
-            .expect("valid participant segment")
-            .topic()
-            .key(),
-        "v0.1/logs/drive"
-    );
-    assert_eq!(
-        api::topic::client().supervisor().log().snapshot().key(),
-        "v0.1/supervisor/log/snapshot"
-    );
-    assert_eq!(
-        api::topic::client().supervisor().log().follow().key(),
-        "v0.1/supervisor/log/follow"
-    );
-    assert_eq!(
-        api::topic::client().supervisor().telemetry().rollup().key(),
-        "v0.1/supervisor/telemetry/rollup"
-    );
-    assert_eq!(
-        api::topic::client()
-            .supervisor()
-            .telemetry()
-            .snapshot()
-            .key(),
-        "v0.1/supervisor/telemetry/snapshot"
-    );
-    assert_eq!(
-        api::topic::client().supervisor().telemetry().follow().key(),
-        "v0.1/supervisor/telemetry/follow"
-    );
-    assert_eq!(
         api::topic::client().perception().detections().key(),
         "v0.1/perception/detections"
     );
@@ -112,10 +80,6 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/map/revision"
     );
     assert_eq!(api::topic::client().map().submap().key(), "v0.1/map/submap");
-    assert_eq!(
-        api::topic::client().supervisor().asset().get().key(),
-        "v0.1/supervisor/asset/get"
-    );
     assert_eq!(
         api::topic::client().odometry().state().key(),
         "v0.1/odometry/state"
@@ -141,24 +105,8 @@ fn owner_builder_produces_identical_keys() {
         api::topic::owner().drive().target().key(),
         "v0.1/drive/target"
     );
-    assert_eq!(
-        api::topic::owner().supervisor().log().snapshot().key(),
-        "v0.1/supervisor/log/snapshot"
-    );
-    assert_eq!(
-        api::topic::owner().supervisor().telemetry().rollup().key(),
-        "v0.1/supervisor/telemetry/rollup"
-    );
     assert_eq!(api::topic::owner().map().submap().key(), "v0.1/map/submap");
     assert_eq!(api::topic::owner().video().open().key(), "v0.1/video/open");
-    assert_eq!(
-        api::topic::owner()
-            .logs("drive")
-            .expect("valid participant segment")
-            .topic()
-            .key(),
-        "v0.1/logs/drive"
-    );
     // Dynamic node path: the owner builder fills carried vars the same way.
     assert_eq!(
         api::topic::owner()

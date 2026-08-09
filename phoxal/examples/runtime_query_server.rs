@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use phoxal::api;
 use phoxal::prelude::*;
+use phoxal_supervisor_api::supervisor;
 
 struct Api;
 
@@ -27,7 +27,7 @@ impl Participant for AssetStore {
     ) -> Result<(Self::State, Self::Api)> {
         let mut assets = BTreeMap::new();
         assets.insert("map.pgm".to_string(), vec![0x50, 0x35, 0x0a]);
-        ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)?;
+        ctx.query(supervisor::topic::owner().asset().get(), Self::get)?;
         Ok((AssetStoreState { assets }, Api))
     }
 }
@@ -37,14 +37,14 @@ impl AssetStore {
         &self,
         _api: &Api,
         _query: QueryContext,
-        request: api::supervisor::asset::GetRequest,
+        request: supervisor::asset::GetRequest,
         state: &mut AssetStoreState,
-    ) -> QueryResult<api::supervisor::asset::GetResponse> {
+    ) -> QueryResult<supervisor::asset::GetResponse> {
         match state.assets.get(&request.path) {
-            Some(bytes) => Ok(api::supervisor::asset::GetResponse::Found {
+            Some(bytes) => Ok(supervisor::asset::GetResponse::Found {
                 bytes: bytes.clone(),
             }),
-            None => Ok(api::supervisor::asset::GetResponse::Missing),
+            None => Ok(supervisor::asset::GetResponse::Missing),
         }
     }
 }

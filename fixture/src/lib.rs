@@ -22,7 +22,7 @@ use phoxal_model::identity::ComponentInstanceId;
 use phoxal_model::{Clock, Robot};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind, ParticipantSchemas};
-use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
+use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
 use tempfile::TempDir;
 
 fn authored_root() -> &'static Path {
@@ -131,7 +131,7 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
                     ParticipantContract {
                         id: artifact_id.clone(),
                         kind,
-                        api: RobotApi::V0_2,
+                        api: RobotApiVersion::new(0, 2),
                         schemas: ParticipantSchemas {
                             bus: BusAbi::V0,
                             launch: LaunchAbi::V0,

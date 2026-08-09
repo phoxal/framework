@@ -617,7 +617,7 @@ pub fn expand_participant(
         #[doc(hidden)]
         const #metadata_const_ident: &'static str =
             #phoxal::__private::compatibility::participant_metadata_json!(
-                api = #phoxal::__private::compatibility::API,
+                api = #phoxal::__private::compatibility::API_TOKEN,
                 bus = #phoxal::__private::compatibility::BUS,
                 launch = #phoxal::__private::compatibility::LAUNCH,
                 runtime = #phoxal::__private::compatibility::RUNTIME,

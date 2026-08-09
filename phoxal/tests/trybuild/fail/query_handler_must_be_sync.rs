@@ -1,4 +1,5 @@
 use phoxal::api;
+use phoxal_supervisor_api::supervisor;
 use phoxal::prelude::*;
 
 struct Api;
@@ -12,7 +13,7 @@ impl Participant for AsyncQueryHandler {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)?;
+        ctx.query(supervisor::topic::owner().asset().get(), Self::get)?;
         Ok(((), Api))
     }
 }
@@ -22,10 +23,10 @@ impl AsyncQueryHandler {
         &self,
         _api: &Api,
         _query: QueryContext,
-        _request: api::supervisor::asset::GetRequest,
+        _request: supervisor::asset::GetRequest,
         _state: &mut (),
-    ) -> QueryResult<api::supervisor::asset::GetResponse> {
-        Ok(api::supervisor::asset::GetResponse::Missing)
+    ) -> QueryResult<supervisor::asset::GetResponse> {
+        Ok(supervisor::asset::GetResponse::Missing)
     }
 }
 

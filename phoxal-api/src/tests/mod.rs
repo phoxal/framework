@@ -17,7 +17,6 @@
 mod behavior;
 mod macro_fixtures;
 mod revision;
-mod runtime_metric_parity;
 mod topic_builder;
 mod topic_keys;
 mod wire_bodies;

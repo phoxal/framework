@@ -38,34 +38,6 @@ fn contract_body_topic_is_version_qualified() {
         <api::simulation::Clock as ContractBody>::TOPIC,
         "v0.1/simulation/clock"
     );
-    assert_eq!(
-        <api::logs::Event as ContractBody>::TOPIC,
-        "v0.1/logs/{participant_id}"
-    );
-    assert_eq!(
-        <api::supervisor::log::SnapshotRequest as ContractBody>::TOPIC,
-        "v0.1/supervisor/log/snapshot"
-    );
-    assert_eq!(
-        <api::supervisor::log::Snapshot as ContractBody>::TOPIC,
-        "v0.1/supervisor/log/snapshot"
-    );
-    assert_eq!(
-        <api::supervisor::log::Follow as ContractBody>::TOPIC,
-        "v0.1/supervisor/log/follow"
-    );
-    assert_eq!(
-        <api::supervisor::telemetry::Rollup as ContractBody>::TOPIC,
-        "v0.1/supervisor/telemetry/rollup"
-    );
-    assert_eq!(
-        <api::supervisor::telemetry::Snapshot as ContractBody>::TOPIC,
-        "v0.1/supervisor/telemetry/snapshot"
-    );
-    assert_eq!(
-        <api::supervisor::telemetry::Follow as ContractBody>::TOPIC,
-        "v0.1/supervisor/telemetry/follow"
-    );
 }
 
 /// A dynamic node contributes a `{var}` placeholder to the documented key, at

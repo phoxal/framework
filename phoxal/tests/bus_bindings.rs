@@ -13,6 +13,7 @@ use phoxal::bus::{
     BusMetadata, CodecId, ContractBody, ParticipantSourceIdentity, ProducerId, RobotInstant,
     SourceAttribution, TimeWindow, TimelineId,
 };
+use phoxal_supervisor_api::supervisor;
 
 #[test]
 fn encoding_string_carries_only_the_codec() {
@@ -28,7 +29,7 @@ fn contract_body_topic_is_version_qualified_on_the_real_tree() {
         "v0.2/drive/target"
     );
     assert_eq!(
-        <api::supervisor::asset::GetRequest as ContractBody>::TOPIC,
+        <supervisor::asset::GetRequest as ContractBody>::TOPIC,
         "v0.2/supervisor/asset/get"
     );
 }

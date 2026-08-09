@@ -309,10 +309,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub fn querier<
-        Req: ContractBody<Api = R::ContractApi>,
-        Resp: ContractBody<Api = R::ContractApi>,
-    >(
+    pub fn querier<Req: ContractBody, Resp: ContractBody>(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
     ) -> crate::Result<Querier<Req, Resp>> {
@@ -329,8 +326,8 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         handler: H,
     ) -> crate::Result<()>
     where
-        Req: ContractBody<Api = R::ContractApi>,
-        Resp: ContractBody<Api = R::ContractApi>,
+        Req: ContractBody,
+        Resp: ContractBody,
         H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,

@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use crate::api;
 use phoxal_bus::{
     BusHandle, DiagnosticPublisher, RobotInstant, RuntimeBufferKind, RuntimeDirection,
     RuntimeMetricSnapshot,
 };
+use phoxal_supervisor_api::supervisor;
 
 use crate::participant::duration_nanos;
 use crate::participant::scheduler::StepSchedule;
@@ -16,12 +16,12 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<DiagnosticPublisher<api::supervisor::telemetry::Rollup>>,
+    publisher: Option<DiagnosticPublisher<supervisor::telemetry::Rollup>>,
 }
 
 impl RuntimePerformancePublisher {
     pub(crate) fn attach(bus: BusHandle) -> Self {
-        let topic = api::topic::owner().supervisor().telemetry().rollup();
+        let topic = supervisor::topic::owner().telemetry().rollup();
         let publisher = DiagnosticPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(
@@ -34,7 +34,7 @@ impl RuntimePerformancePublisher {
         Self { publisher }
     }
 
-    pub(crate) fn publish(&self, body: api::supervisor::telemetry::Rollup) {
+    pub(crate) fn publish(&self, body: supervisor::telemetry::Rollup) {
         let Some(publisher) = &self.publisher else {
             return;
         };
@@ -91,14 +91,11 @@ impl RuntimePerformance {
         }
     }
 
-    pub(crate) fn take_rollup(
-        &mut self,
-        bus: &BusHandle,
-    ) -> Option<api::supervisor::telemetry::Rollup> {
+    pub(crate) fn take_rollup(&mut self, bus: &BusHandle) -> Option<supervisor::telemetry::Rollup> {
         let now = Instant::now();
         let elapsed = self.take_elapsed(now)?;
         let topics = TopicRows::from_snapshots(bus.take_runtime_metrics().ok()?, elapsed);
-        Some(api::supervisor::telemetry::Rollup {
+        Some(supervisor::telemetry::Rollup {
             window_ns: duration_nanos(elapsed),
             step: self.step.as_mut().map(StepWindow::take),
             topics: topics.rows,
@@ -197,9 +194,9 @@ impl StepWindow {
         }
     }
 
-    fn take(&mut self) -> api::supervisor::RuntimeStep {
+    fn take(&mut self) -> supervisor::runtime::Step {
         let attempts = self.completed.saturating_add(self.errors);
-        let body = api::supervisor::RuntimeStep {
+        let body = supervisor::runtime::Step {
             target_period_ns: duration_nanos(self.target_period),
             completed: self.completed,
             errors: self.errors,
@@ -229,8 +226,8 @@ impl StepWindow {
 /// overflow row, so reading `rows` without `overflow` understates what the
 /// window measured.
 struct TopicRows {
-    rows: Vec<api::supervisor::RuntimeTopic>,
-    overflow: Option<api::supervisor::RuntimeTopic>,
+    rows: Vec<supervisor::runtime::Topic>,
+    overflow: Option<supervisor::runtime::Topic>,
 }
 
 impl TopicRows {
@@ -256,15 +253,15 @@ impl TopicRows {
                 overflow: None,
             };
         }
-        let mut overflow = api::supervisor::RuntimeTopic {
+        let mut overflow = supervisor::runtime::Topic {
             // The overflow row is not one topic, one direction or one buffer, so
             // it names none of them: `Mixed` exists on the wire for exactly this
             // row and nothing measures it.
             topic: String::new(),
-            direction: api::supervisor::RuntimeDirection::Mixed,
-            buffer_kind: api::supervisor::RuntimeBufferKind::Mixed,
+            direction: supervisor::runtime::Direction::Mixed,
+            buffer_kind: supervisor::runtime::BufferKind::Mixed,
             count: 0,
-            rate_hz: 0.0,
+            rate_millihz: 0,
             drops: 0,
             latest_overwrites: 0,
             bounded_evictions: 0,
@@ -294,7 +291,7 @@ impl TopicRows {
                 .timeline_filtered
                 .saturating_add(row.timeline_filtered);
         }
-        overflow.rate_hz = rate(overflow.count, elapsed);
+        overflow.rate_millihz = rate_millihz(overflow.count, elapsed);
         TopicRows {
             rows,
             overflow: Some(overflow),
@@ -303,27 +300,22 @@ impl TopicRows {
 
     /// One internal snapshot as the wire row a supervisor reads.
     ///
-    /// `phoxal-bus` owns the internal accounting vocabulary and `phoxal-api`
-    /// owns the serialized enums, so this pairing is the only place the two
-    /// meet. `phoxal-api`'s own `runtime_metric_parity` tests are what keep a
-    /// variant from being added on one side and nowhere else.
-    fn wire_row(
-        snapshot: RuntimeMetricSnapshot,
-        elapsed: Duration,
-    ) -> api::supervisor::RuntimeTopic {
-        api::supervisor::RuntimeTopic {
+    /// `phoxal-bus` owns the internal accounting vocabulary and the process
+    /// protocol owns its serialized representation; this is their only join.
+    fn wire_row(snapshot: RuntimeMetricSnapshot, elapsed: Duration) -> supervisor::runtime::Topic {
+        supervisor::runtime::Topic {
             topic: snapshot.key.topic,
             direction: match snapshot.key.direction {
-                RuntimeDirection::Publish => api::supervisor::RuntimeDirection::Publish,
-                RuntimeDirection::Subscribe => api::supervisor::RuntimeDirection::Subscribe,
+                RuntimeDirection::Publish => supervisor::runtime::Direction::Publish,
+                RuntimeDirection::Subscribe => supervisor::runtime::Direction::Subscribe,
             },
             buffer_kind: match snapshot.key.buffer_kind {
-                RuntimeBufferKind::Outbound => api::supervisor::RuntimeBufferKind::Outbound,
-                RuntimeBufferKind::Latest => api::supervisor::RuntimeBufferKind::Latest,
-                RuntimeBufferKind::Subscriber => api::supervisor::RuntimeBufferKind::Subscriber,
+                RuntimeBufferKind::Outbound => supervisor::runtime::BufferKind::Outbound,
+                RuntimeBufferKind::Latest => supervisor::runtime::BufferKind::Latest,
+                RuntimeBufferKind::Subscriber => supervisor::runtime::BufferKind::Subscriber,
             },
             count: snapshot.count,
-            rate_hz: rate(snapshot.count, elapsed),
+            rate_millihz: rate_millihz(snapshot.count, elapsed),
             drops: snapshot.drops,
             latest_overwrites: snapshot.latest_overwrites,
             bounded_evictions: snapshot.bounded_evictions,
@@ -337,11 +329,13 @@ impl TopicRows {
     }
 }
 
-fn rate(count: u64, elapsed: Duration) -> f32 {
+fn rate_millihz(count: u64, elapsed: Duration) -> u64 {
     if elapsed.is_zero() {
-        return 0.0;
+        return 0;
     }
-    (count as f64 / elapsed.as_secs_f64()) as f32
+    count
+        .saturating_mul(1_000_000_000_000)
+        .saturating_div(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
 }
 
 fn mean(total: u128, count: u64) -> u64 {

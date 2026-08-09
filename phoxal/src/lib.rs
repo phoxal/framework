@@ -319,10 +319,14 @@ pub mod __private {
     /// inferred from package names or a service registry.
     pub mod compatibility {
         use phoxal_runtime_contract::metadata::ParticipantRequirement;
-        use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApi, RuntimeSchema};
+        use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
 
         /// The train-selected API revision (`phoxal::api`).
-        pub const API: RobotApi = RobotApi::V0_2;
+        pub const API: RobotApiVersion = phoxal_api::RobotApi::LATEST.version();
+        /// The generated catalogue's canonical token for the train-selected
+        /// robot API. The embedded metadata writer needs a const string while
+        /// the process-facing contract remains the validated value above.
+        pub const API_TOKEN: &str = phoxal_api::RobotApi::LATEST.as_str();
         /// The bus wire ABI.
         pub const BUS: BusAbi = BusAbi::V0;
         /// The process launch compatibility identity.

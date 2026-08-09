@@ -5,6 +5,7 @@
 use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
+use phoxal_supervisor_api::supervisor;
 
 #[derive(Clone)]
 struct Grid {
@@ -126,10 +127,7 @@ impl Participant for SerializedMap {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(
-            api::topic::owner().supervisor().asset().get(),
-            Self::get_asset,
-        )?;
+        ctx.query(supervisor::topic::owner().asset().get(), Self::get_asset)?;
         ctx.query(api::topic::owner().map().submap(), Self::submap)?;
         Ok((
             MapState {
@@ -166,16 +164,16 @@ impl SerializedMap {
         &self,
         _api: &Api,
         _query: QueryContext,
-        request: api::supervisor::asset::GetRequest,
+        request: supervisor::asset::GetRequest,
         state: &mut MapState,
-    ) -> QueryResult<api::supervisor::asset::GetResponse> {
+    ) -> QueryResult<supervisor::asset::GetResponse> {
         state.rev = state.rev.saturating_add(1);
         if request.path == "map.cells" {
-            Ok(api::supervisor::asset::GetResponse::Found {
+            Ok(supervisor::asset::GetResponse::Found {
                 bytes: state.grid.cells.clone(),
             })
         } else {
-            Ok(api::supervisor::asset::GetResponse::Missing)
+            Ok(supervisor::asset::GetResponse::Missing)
         }
     }
 

@@ -143,9 +143,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::QueryRegistration;
-    use crate::api;
     use crate::bus::{Codec, MessagePack, QueryCode, QueryFailure};
     use crate::prelude::*;
+    use phoxal_supervisor_api::supervisor;
 
     struct Api;
 
@@ -173,13 +173,13 @@ mod tests {
             &self,
             _api: &Api,
             query: QueryContext,
-            request: api::supervisor::asset::GetRequest,
+            request: supervisor::asset::GetRequest,
             state: &mut QueryState,
-        ) -> QueryResult<api::supervisor::asset::GetResponse> {
+        ) -> QueryResult<supervisor::asset::GetResponse> {
             state.calls.push(request.path.clone());
             state.requesters.push(query.producer());
             if request.path == "ok" {
-                Ok(api::supervisor::asset::GetResponse::Found {
+                Ok(supervisor::asset::GetResponse::Found {
                     bytes: vec![1, 2, 3],
                 })
             } else {
@@ -202,7 +202,7 @@ mod tests {
         let second_producer =
             phoxal_bus::ProducerId::try_from((1_u128 << 124) | 2).expect("canonical test producer");
 
-        let first = MessagePack::encode(&api::supervisor::asset::GetRequest {
+        let first = MessagePack::encode(&supervisor::asset::GetRequest {
             path: "ok".to_string(),
         })
         .unwrap();
@@ -215,14 +215,13 @@ mod tests {
                 first,
             )
             .unwrap();
-        let response: api::supervisor::asset::GetResponse =
-            MessagePack::decode(&reply.payload).unwrap();
+        let response: supervisor::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
         assert!(matches!(
             response,
-            api::supervisor::asset::GetResponse::Found { .. }
+            supervisor::asset::GetResponse::Found { .. }
         ));
 
-        let second = MessagePack::encode(&api::supervisor::asset::GetRequest {
+        let second = MessagePack::encode(&supervisor::asset::GetRequest {
             path: "missing".to_string(),
         })
         .unwrap();

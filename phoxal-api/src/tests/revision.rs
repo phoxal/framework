@@ -2,7 +2,7 @@
 
 use phoxal_bus::{ApiVersion, ContractBody, DeliveryFamily, TopicRole};
 
-use crate::v0_1 as api;
+use crate::{RobotApi, v0_1 as api};
 
 #[test]
 fn v0_2_is_the_train_selected_revision_while_v0_1_remains_immutable() {
@@ -18,7 +18,7 @@ fn v0_2_is_the_train_selected_revision_while_v0_1_remains_immutable() {
 #[test]
 fn the_declared_api_identity_namespaces_the_train_selected_revision() {
     assert_eq!(
-        phoxal_runtime_contract::version::RobotApi::V0_2.as_str(),
+        RobotApi::V0_2.as_str(),
         format!(
             "phoxal/robot-api/{}",
             <crate::latest::Api as ApiVersion>::ID
@@ -113,10 +113,6 @@ fn navigation_result_is_an_owner_event_with_ordered_delivery_only_in_v0_2() {
 fn temporal_roles_can_override_transport_delivery() {
     assert_eq!(
         <crate::latest::simulation::Clock as ContractBody>::DELIVERY,
-        DeliveryFamily::Stream
-    );
-    assert_eq!(
-        <crate::latest::logs::Event as ContractBody>::DELIVERY,
         DeliveryFamily::Stream
     );
     assert_eq!(
