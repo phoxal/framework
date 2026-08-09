@@ -1,5 +1,0 @@
-error: expected semantic descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`
- --> tests/trybuild/fail/api_command_state.rs:8:29
-  |
-8 |             command target: State<Payload>;
-  |                             ^^^^^

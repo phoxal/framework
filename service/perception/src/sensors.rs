@@ -106,14 +106,14 @@ mod tests {
                 .camera_topic()
                 .expect("compiled camera bindings are valid key segments")
                 .key()
-                == "v0.2/component/front_camera/camera/rgb/frame"
+                == "v0.1/component/front_camera/camera/rgb/frame"
         }));
         assert_eq!(
             depths[0]
                 .depth_topic()
                 .expect("compiled depth bindings are valid key segments")
                 .key(),
-            "v0.2/component/front_camera/depth/depth/frame"
+            "v0.1/component/front_camera/depth/depth/frame"
         );
     }
 }

@@ -1,0 +1,31 @@
+error: endpoint `target` is declared more than once in this fragment
+  --> tests/trybuild/fail/fragment_duplicate_endpoint.rs:9:17
+   |
+ 9 |           command target: Setpoint<Target>;
+   |                   ^^^^^^
+...
+13 | / phoxal_api_tree! {
+14 | |     output generated;
+15 | |     source crate;
+16 | |     versions { latest version v1_0; }
+17 | |     fragments { drive; }
+18 | | }
+   | |_- in this macro invocation
+   |
+   = note: this error originates in the macro `drive::__phoxal_api_fragment_collect` which comes from the expansion of the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: first declaration is here
+  --> tests/trybuild/fail/fragment_duplicate_endpoint.rs:8:17
+   |
+ 8 |           command target: Setpoint<Target>;
+   |                   ^^^^^^
+...
+13 | / phoxal_api_tree! {
+14 | |     output generated;
+15 | |     source crate;
+16 | |     versions { latest version v1_0; }
+17 | |     fragments { drive; }
+18 | | }
+   | |_- in this macro invocation
+   |
+   = note: this error originates in the macro `drive::__phoxal_api_fragment_collect` which comes from the expansion of the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)

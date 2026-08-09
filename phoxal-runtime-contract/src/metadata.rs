@@ -141,7 +141,7 @@ mod tests {
 
     fn record(fields: &str) -> Vec<u8> {
         format!(
-            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},"requirement":null,{fields}}}"#
+            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{SCHEMAS},"requirement":null,{fields}}}"#
         )
         .into_bytes()
     }
@@ -153,7 +153,7 @@ mod tests {
         ))
         .expect("the exact document a role macro embeds must parse");
 
-        assert_eq!(contract.api, RobotApiVersion::new(0, 2));
+        assert_eq!(contract.api, RobotApiVersion::new(0, 1));
         assert_eq!(contract.schemas.bus, BusAbi::V0);
         assert_eq!(contract.schemas.launch, LaunchAbi::V0);
         assert_eq!(contract.schemas.runtime, RuntimeSchema::V0);

@@ -24,11 +24,11 @@ impl OccupancyGrid {
     /// deliberately absent from this function: a partial window is allowed,
     /// and reconstructing an origin from a request would put cells at the
     /// wrong world coordinates.
-    pub(crate) fn from_submap(response: api::domains::v0_2::map::SubmapResponse) -> Option<Self> {
+    pub(crate) fn from_submap(response: api::map::SubmapResponse) -> Option<Self> {
         let window = match response {
-            api::domains::v0_2::map::SubmapResponse::Window(window)
-            | api::domains::v0_2::map::SubmapResponse::Partial { window } => window,
-            api::domains::v0_2::map::SubmapResponse::OutOfBounds { .. } => return None,
+            api::map::SubmapResponse::Window(window)
+            | api::map::SubmapResponse::Partial { window } => window,
+            api::map::SubmapResponse::OutOfBounds { .. } => return None,
         };
         let cell_count = cell_count(window.width, window.height)?;
         let resolution = f64::from(window.resolution_m);
@@ -353,40 +353,39 @@ mod tests {
     /// ranked.
     #[test]
     fn submap_detection_and_scoring_preserve_cluster_size_and_score() {
-        let response =
-            api::domains::v0_2::map::SubmapResponse::Window(api::domains::v0_2::map::GridWindow {
-                frame_id: "map".to_string(),
-                origin_pose: api::map::Pose {
-                    x_m: 0.0,
-                    y_m: 0.0,
-                    yaw_rad: 0.0,
-                },
-                cell_origin: api::map::Point { x_m: 0.0, y_m: 0.0 },
-                width: 3,
-                height: 2,
-                resolution_m: 1.0,
-                cells: vec![
-                    api::map::Occupancy::Free,
-                    api::map::Occupancy::Free,
-                    api::map::Occupancy::Unknown,
-                    api::map::Occupancy::Free,
-                    api::map::Occupancy::Free,
-                    api::map::Occupancy::Unknown,
-                ],
-                revision: 1,
-                requested: api::map::Bounds {
-                    min_x_m: 0.0,
-                    min_y_m: 0.0,
-                    max_x_m: 3.0,
-                    max_y_m: 2.0,
-                },
-                covered: api::map::Bounds {
-                    min_x_m: 0.0,
-                    min_y_m: 0.0,
-                    max_x_m: 3.0,
-                    max_y_m: 2.0,
-                },
-            });
+        let response = api::map::SubmapResponse::Window(api::map::GridWindow {
+            frame_id: "map".to_string(),
+            origin_pose: api::map::Pose {
+                x_m: 0.0,
+                y_m: 0.0,
+                yaw_rad: 0.0,
+            },
+            cell_origin: api::map::Point { x_m: 0.0, y_m: 0.0 },
+            width: 3,
+            height: 2,
+            resolution_m: 1.0,
+            cells: vec![
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Unknown,
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Free,
+                api::map::Occupancy::Unknown,
+            ],
+            revision: 1,
+            requested: api::map::Bounds {
+                min_x_m: 0.0,
+                min_y_m: 0.0,
+                max_x_m: 3.0,
+                max_y_m: 2.0,
+            },
+            covered: api::map::Bounds {
+                min_x_m: 0.0,
+                min_y_m: 0.0,
+                max_x_m: 3.0,
+                max_y_m: 2.0,
+            },
+        });
 
         let grid = OccupancyGrid::from_submap(response).unwrap();
         let ranked = grid.score_frontiers(grid.detect_frontiers(), (0.5, 0.5));

@@ -1,13 +1,15 @@
-//! Expansion for [`crate::phoxal_api`] and [`crate::phoxal_protocol`].
+//! Expansion for modular Robot API fragments and [`crate::phoxal_protocol`].
 //!
 //! Both macros declare endpoint topology over normal Rust payload types. The
-//! generated output owns endpoint descriptors, topic builders, and contract
-//! manifests; payload definitions remain in their domain modules. API mode has
-//! version materialization and one selected latest revision. Protocol mode has
-//! one editable, protocol-rooted endpoint tree without a revision axis.
+//! generated output owns endpoint descriptors, topic builders, and endpoint
+//! catalogues while revision facades re-export their authored payloads.
+//! Fragment collection materializes Robot API revisions before this shared
+//! generator sees them; protocol mode has one editable, protocol-rooted
+//! endpoint tree without a revision axis.
 
 mod bodies;
 mod builders;
+mod fragments;
 mod grammar;
 mod manifest;
 mod model;
@@ -16,186 +18,166 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::Ident;
 
-use grammar::{PROTOCOL_HAS_NO_DELTAS, VERSION_HAS_NO_PARENT};
 use manifest::ManifestVersion;
-use model::{MaterializedTree, Node, Protocol, Version};
+use model::{ConcreteVersion, MaterializedTree, Protocol};
 
-/// Expand only a robot API tree. Protocol declarations deliberately have a
-/// separate proc-macro entry point so an API source cannot acquire
-/// protocol-mode semantics by accident.
-pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
-    match syn::parse2(input)? {
-        ApiTree::Api { versions, latest } => ApiTree::expand_api(&versions, &latest, true),
-        ApiTree::Protocols(_) => Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "`phoxal_api!` accepts only `version` revisions; use `phoxal_protocol!` for protocol trees",
-        )),
-    }
-}
+pub(crate) use fragments::{
+    expand_fragment, expand_fragment_group, expand_group_collector, expand_materialized,
+    expand_tree,
+};
 
 /// Expand only protocol trees. Keeping this entry point distinct from
 /// [`expand_api`] makes the protocol-mode boundary explicit at the call site.
 pub fn expand_protocol(input: TokenStream) -> syn::Result<TokenStream> {
-    match syn::parse2(input)? {
-        ApiTree::Protocols(protocols) => ApiTree::expand_protocols(&protocols),
-        ApiTree::Api { .. } => Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "`phoxal_protocol!` accepts only `protocol` trees; use `phoxal_api!` for version revisions",
-        )),
-    }
+    let protocols: grammar::ProtocolInput = syn::parse2(input)?;
+    expand_protocols(&protocols.0)
 }
 
-/// One semantic declaration, in exactly one mode.
-enum ApiTree {
-    Api {
-        versions: Vec<Version>,
-        latest: Ident,
-    },
-    Protocols(Vec<Protocol>),
-}
-
-impl ApiTree {
-    fn expand_protocols(protocols: &[Protocol]) -> syn::Result<TokenStream> {
-        let mut output = TokenStream::new();
-        let mut manifests = Vec::new();
-        let mut declared = std::collections::BTreeSet::new();
-        for protocol in protocols {
-            let id = protocol.name.to_string();
-            if !declared.insert(id.clone()) {
-                return Err(syn::Error::new_spanned(
-                    &protocol.name,
-                    format!("duplicate protocol tree `{id}`"),
-                ));
-            }
-            Node::reject_delta_forms(&protocol.nodes, &[], PROTOCOL_HAS_NO_DELTAS)?;
-            let tree = MaterializedTree {
-                module: protocol.name.clone(),
-                doc: format!("Protocol tree `{id}`."),
-                id,
-                nodes: protocol.nodes.clone(),
-            };
-            manifests.push(ManifestVersion::of(&tree));
-            output.extend(tree.expand());
-        }
-        let manifest = ManifestVersion::expand_manifest(&manifests);
-        Ok(quote! { #manifest #output })
-    }
-
-    fn expand_api(
-        versions: &[Version],
-        latest: &Ident,
-        emit_catalogue: bool,
-    ) -> syn::Result<TokenStream> {
-        let mut output = TokenStream::new();
-        let mut manifests = Vec::new();
-        let mut materialized = std::collections::BTreeMap::<String, Vec<Node>>::new();
-        for version in versions {
-            let name = version.name.to_string();
-            if materialized.contains_key(&name) {
-                return Err(syn::Error::new_spanned(
-                    &version.name,
-                    format!("duplicate API revision `{}`", version.name),
-                ));
-            }
-            if emit_catalogue && version.latest && !version.latest_prefix {
-                return Err(syn::Error::new_spanned(
-                    &version.name,
-                    "strict `phoxal_api!` requires `latest version vM.m ...`",
-                ));
-            }
-            let nodes = match &version.parent {
-                Some(parent) => {
-                    let base = materialized.get(&parent.to_string()).ok_or_else(|| {
-                        syn::Error::new_spanned(
-                            parent,
-                            "an `extends` parent must be a concrete revision declared earlier",
-                        )
-                    })?;
-                    version.materialize_from(base, parent)?
-                }
-                None => {
-                    Node::reject_delta_forms(
-                        &version.nodes,
-                        &version.removals,
-                        VERSION_HAS_NO_PARENT,
-                    )?;
-                    version.nodes.clone()
-                }
-            };
-            let tree = MaterializedTree {
-                module: version.name.clone(),
-                id: version.wire_id.clone(),
-                doc: format!("Concrete API revision `{}`.", version.wire_id),
-                nodes,
-            };
-            manifests.push(ManifestVersion::of(&tree));
-            output.extend(tree.expand());
-            materialized.insert(name, tree.nodes);
-        }
-        if !materialized.contains_key(&latest.to_string()) {
+fn expand_protocols(protocols: &[Protocol]) -> syn::Result<TokenStream> {
+    let mut output = TokenStream::new();
+    let mut manifests = Vec::new();
+    let mut declared = std::collections::BTreeSet::new();
+    for protocol in protocols {
+        let id = protocol.name.to_string();
+        if !declared.insert(id.clone()) {
             return Err(syn::Error::new_spanned(
-                latest,
-                "`latest` must name a declared concrete API revision",
+                &protocol.name,
+                format!("duplicate protocol tree `{id}`"),
             ));
         }
-        let manifest = ManifestVersion::expand_manifest(&manifests);
-        let catalogue = emit_catalogue.then(|| {
-            let declarations = versions.iter().map(|version| {
-                format_ident!("V{}", version.name.to_string().trim_start_matches('v'))
-            });
-            let names = versions.iter().map(|version| {
+        let tree = MaterializedTree {
+            module: protocol.name.clone(),
+            doc: format!("Protocol tree `{id}`."),
+            id,
+            source: None,
+            nodes: protocol.nodes.clone(),
+        };
+        manifests.push(ManifestVersion::of(&tree));
+        output.extend(tree.expand());
+    }
+    let manifest = ManifestVersion::expand_manifest(&manifests);
+    Ok(quote! { #manifest #output })
+}
+
+fn expand_api(
+    versions: &[ConcreteVersion],
+    latest: &Ident,
+    source: &syn::Path,
+) -> syn::Result<TokenStream> {
+    let mut output = TokenStream::new();
+    let mut manifests = Vec::new();
+    let mut declared = std::collections::BTreeSet::new();
+    for version in versions {
+        let name = version.name.to_string();
+        if !declared.insert(name) {
+            return Err(syn::Error::new_spanned(
+                &version.name,
+                format!("duplicate API revision `{}`", version.name),
+            ));
+        }
+        let tree = MaterializedTree {
+            module: version.name.clone(),
+            id: version.wire_id.clone(),
+            doc: format!("Concrete API revision `{}`.", version.wire_id),
+            source: Some(source.clone()),
+            nodes: version.nodes.clone(),
+        };
+        manifests.push(ManifestVersion::of(&tree));
+        output.extend(tree.expand());
+    }
+    if !declared.contains(&latest.to_string()) {
+        return Err(syn::Error::new_spanned(
+            latest,
+            "`latest` must name a declared concrete API revision",
+        ));
+    }
+    let manifest = ManifestVersion::expand_manifest(&manifests);
+    let catalogue = {
+        let declarations = versions
+            .iter()
+            .map(|version| format_ident!("V{}", version.name.to_string().trim_start_matches('v')));
+        let names = versions.iter().map(|version| {
+            let variant = format_ident!("V{}", version.name.to_string().trim_start_matches('v'));
+            quote! { RobotApi::#variant }
+        });
+        let process_ids = versions.iter().map(|version| {
+            let variant = format_ident!("V{}", version.name.to_string().trim_start_matches('v'));
+            let process_id = format!("phoxal/robot-api/{}", version.wire_id);
+            quote! { Self::#variant => #process_id }
+        });
+        let versions_by_value = versions.iter().map(|version| {
                 let variant = format_ident!("V{}", version.name.to_string().trim_start_matches('v'));
-                quote! { RobotApi::#variant }
-            });
-            let process_ids = versions.iter().map(|version| {
-                let variant = format_ident!("V{}", version.name.to_string().trim_start_matches('v'));
-                let process_id = format!("phoxal/robot-api/{}", version.wire_id);
-                quote! { Self::#variant => #process_id }
-            });
-            let versions_by_value = versions.iter().map(|version| {
-                let variant = format_ident!("V{}", version.name.to_string().trim_start_matches('v'));
-                let Some((major, minor)) = version.wire_id[1..].split_once('.') else {
-                    unreachable!("validated revision has a dotted wire id")
-                };
-                let major: u16 = major
-                    .parse()
-                    .unwrap_or_else(|_| unreachable!("validated major revision"));
-                let minor: u16 = minor
-                    .parse()
-                    .unwrap_or_else(|_| unreachable!("validated minor revision"));
+                let major = version.major;
+                let minor = version.minor;
                 quote! { Self::#variant => ::phoxal_runtime_contract::version::RobotApiVersion::new(#major, #minor) }
             });
-            let latest_variant = format_ident!("V{}", latest.to_string().trim_start_matches('v'));
-            quote! {
-                #[doc(hidden)]
-                #[allow(non_camel_case_types)]
-                #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-                pub enum RobotApi { #(#declarations),* }
-                impl RobotApi {
-                    pub const fn as_str(self) -> &'static str { match self { #(#process_ids),* } }
-                    pub const fn version(self) -> ::phoxal_runtime_contract::version::RobotApiVersion {
-                        match self { #(#versions_by_value),* }
-                    }
-                    pub fn from_version(version: ::phoxal_runtime_contract::version::RobotApiVersion) -> Option<Self> {
-                        Self::ALL.iter().copied().find(|candidate| candidate.version() == version)
-                    }
-                    pub const ALL: &'static [Self] = &[#(#names),*];
-                    pub const LATEST: Self = Self::#latest_variant;
+        let latest_variant = format_ident!("V{}", latest.to_string().trim_start_matches('v'));
+        quote! {
+            /// One exact Robot API revision implemented by this crate.
+            #[allow(non_camel_case_types)]
+            #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+            pub enum RobotApi { #(#declarations),* }
+            impl RobotApi {
+                /// The canonical process-boundary identity.
+                pub const fn as_str(self) -> &'static str { match self { #(#process_ids),* } }
+                /// The open process-contract value for this implemented revision.
+                pub const fn version(self) -> ::phoxal_runtime_contract::version::RobotApiVersion {
+                    match self { #(#versions_by_value),* }
+                }
+                /// Select the exact implemented revision, if this crate contains it.
+                #[must_use]
+                pub fn from_version(version: ::phoxal_runtime_contract::version::RobotApiVersion) -> Option<Self> {
+                    Self::ALL.iter().copied().find(|candidate| candidate.version() == version)
+                }
+                /// Every exact revision implemented by this crate.
+                pub const ALL: &'static [Self] = &[#(#names),*];
+                /// The revision selected by the release train facade.
+                pub const LATEST: Self = Self::#latest_variant;
+            }
+
+            /// An open Robot API version that this generated catalogue does not implement.
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            pub struct UnsupportedRobotApi {
+                version: ::phoxal_runtime_contract::version::RobotApiVersion,
+            }
+
+            impl UnsupportedRobotApi {
+                /// The exact version advertised by the remote robot.
+                #[must_use]
+                pub const fn version(self) -> ::phoxal_runtime_contract::version::RobotApiVersion {
+                    self.version
                 }
             }
-        });
-        Ok(quote! {
-            #manifest
-            #output
-            #catalogue
-            pub use #latest as latest;
-        })
-    }
+
+            impl ::std::fmt::Display for UnsupportedRobotApi {
+                fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                    write!(formatter, "unsupported Robot API `{}`", self.version)
+                }
+            }
+
+            impl ::std::error::Error for UnsupportedRobotApi {}
+
+            impl ::std::convert::TryFrom<::phoxal_runtime_contract::version::RobotApiVersion> for RobotApi {
+                type Error = UnsupportedRobotApi;
+
+                fn try_from(version: ::phoxal_runtime_contract::version::RobotApiVersion) -> Result<Self, Self::Error> {
+                    Self::from_version(version).ok_or(UnsupportedRobotApi { version })
+                }
+            }
+        }
+    };
+    Ok(quote! {
+        #manifest
+        #output
+        #catalogue
+        #[allow(unused_imports)]
+        pub use #latest as latest;
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_api, expand_protocol};
+    use super::expand_protocol;
     use proc_macro2::TokenStream;
     use quote::quote;
 
@@ -208,56 +190,6 @@ mod tests {
     }
 
     #[test]
-    fn api_descriptors_and_builders_share_versioned_keys() {
-        let expanded = compact(
-            expand_api(quote! {
-                latest version v0.2 { drive { command target: Setpoint<crate::Target>; } }
-            })
-            .expect("API expands"),
-        );
-        assert!(expanded.contains("const TOPIC : & 'static str = \"v0.2/drive/target\""));
-        assert!(expanded.contains("Topic :: new_static (\"v0.2/drive/target\")"));
-        assert!(expanded.contains("EndpointKind :: Setpoint"));
-    }
-
-    #[test]
-    fn revisions_materialize_descriptor_deltas() {
-        let input = quote! {
-            version v0.1 { data { topic state: State<crate::State>; } }
-            latest version v0.2 extends v0.1 {
-                data { replace topic state: Sample<crate::Sample>; }
-            }
-        };
-        let first = compact(expand_api(input.clone()).expect("first expansion"));
-        assert_eq!(first, compact(expand_api(input).expect("second expansion")));
-        assert!(first.contains("v0.2/data/state"));
-        assert!(first.contains("EndpointKind :: Sample"));
-    }
-
-    #[test]
-    fn a_materialized_revision_prefers_its_own_same_named_payload() {
-        let expanded = compact(
-            expand_api(quote! {
-                version v0.9 {
-                    data { topic old: State<crate::versions::v0_9::data::State>; }
-                }
-                latest version v1.0 extends v0.9 {
-                    data { topic new: State<crate::versions::v1_0::data::State>; }
-                }
-            })
-            .expect("API expands"),
-        );
-        assert!(expanded.contains("pub use crate :: versions :: v1_0 :: data :: State as State"));
-        assert_eq!(
-            expanded
-                .matches("pub use crate :: versions :: v0_9 :: data :: State as State")
-                .count(),
-            1,
-            "the inherited payload alias belongs only to its original revision",
-        );
-    }
-
-    #[test]
     fn protocols_keep_their_own_root() {
         let expanded = compact(
             expand_protocol(quote! {
@@ -267,14 +199,5 @@ mod tests {
         );
         assert!(expanded.contains("supervisor/logs"));
         assert!(expanded.contains("const ID : & 'static str = \"supervisor\""));
-    }
-
-    #[test]
-    fn authored_bodies_are_rejected_at_the_grammar_boundary() {
-        let error = expand_api(quote! {
-            latest version v0.2 { drive { struct Target; } }
-        })
-        .expect_err("tree-local payloads are unsupported");
-        assert!(error.to_string().contains("ordinary Rust domain types"));
     }
 }

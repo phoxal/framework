@@ -1,5 +1,0 @@
-error: `replace` is only valid inside a revision that `extends` another revision
- --> tests/trybuild/fail/api_replace_without_parent.rs:5:17
-  |
-5 |         replace data {}
-  |                 ^^^^

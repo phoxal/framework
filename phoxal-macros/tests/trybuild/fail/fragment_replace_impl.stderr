@@ -1,0 +1,5 @@
+error: payload types and implementations are ordinary sibling Rust items; only endpoints can be replaced
+ --> tests/trybuild/fail/fragment_replace_impl.rs:6:17
+  |
+6 |         replace impl Target {}
+  |                 ^^^^

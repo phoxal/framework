@@ -223,9 +223,9 @@ mod tests {
 
     #[test]
     fn robot_api_is_open_but_canonical() {
-        let known = RobotApiVersion::new(0, 2);
+        let known = RobotApiVersion::new(0, 1);
         let future = RobotApiVersion::new(42, 7);
-        assert_eq!(known.to_string(), "phoxal/robot-api/v0.2");
+        assert_eq!(known.to_string(), "phoxal/robot-api/v0.1");
         assert_eq!(
             serde_json::from_str::<RobotApiVersion>("\"phoxal/robot-api/v42.7\"").unwrap(),
             future

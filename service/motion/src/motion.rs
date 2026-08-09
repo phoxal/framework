@@ -124,7 +124,7 @@ pub(crate) struct MotionState {
     autonomous_admission: Arc<Mutex<FixedSourceAdmission>>,
     autonomous_authority: Arc<Mutex<FixedSourceLease<api::navigation::Candidate>>>,
     estop: EmergencyStopLatch,
-    last_safety_constraints: Option<Timed<api::domains::v0_2::safety::MotionConstraints>>,
+    last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
 }
 
 #[phoxal::service(state = MotionState, api = Api)]
@@ -411,7 +411,7 @@ impl Participant for Motion {
         api.drive.send(drive_target)?;
         api.state.publish(
             &step.token,
-            api::domains::v0_2::motion::State {
+            api::motion::State {
                 decision: arbitration.decision,
                 manual_observed_age_ns: manual_observed_age_ns(state.manual_observed_at, host_now),
                 autonomous_candidate_age_ns: candidate_age_ns(state.last_autonomous.as_ref(), now),

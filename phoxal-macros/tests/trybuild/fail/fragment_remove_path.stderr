@@ -1,0 +1,5 @@
+error: only endpoints can be removed; use `remove endpoint <name>;`
+ --> tests/trybuild/fail/fragment_remove_path.rs:6:16
+  |
+6 |         remove drive::target;
+  |                ^^^^^

@@ -1,5 +1,0 @@
-error: expected semantic descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`
- --> tests/trybuild/fail/api_unknown_descriptor.rs:8:26
-  |
-8 |             topic state: Snapshot<Payload>;
-  |                          ^^^^^^^^

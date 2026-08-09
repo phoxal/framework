@@ -1,16 +1,16 @@
 //! Versioned robot-domain payloads and their semantic endpoints.
 //!
-//! Payload structs and enums are ordinary Rust types in version/domain modules.
-//! They own serde shape, construction invariants, and domain behavior; they do
-//! not know their topic or delivery policy. The [`phoxal_api!`] declaration maps
-//! those payloads onto generated endpoint descriptors and deterministic typed
-//! topic builders.
+//! Payload structs, enums, implementations, and tests are ordinary Rust items
+//! in version-first modules. A sibling [`phoxal_api_fragment!`] declares only
+//! that module's endpoints. Payloads own serde shape, construction invariants,
+//! and domain behavior; they do not know their topic or delivery policy.
+//! [`phoxal_api_tree!`] materializes deterministic descriptors and typed topic
+//! builders, then re-exports the authored payloads through each revision.
 //!
-//! Normal robot participants use the train-selected [`latest`] facade (reexported
-//! as `phoxal::api`). External compatibility clients may deliberately select a
-//! maintained concrete revision such as [`v0_1`] or [`v0_2`]. Every materialized
-//! revision is complete and independent at runtime: inheritance exists only in
-//! macro authoring.
+//! Normal robot participants use the train-selected [`latest`] facade
+//! (reexported as `phoxal::api`). This pre-v1 train currently has one maintained
+//! concrete revision, [`v0_1`]. Every materialized revision is complete and
+//! independent at runtime: inheritance exists only in macro authoring.
 //!
 //! Endpoint semantics are fixed by the declaration: `State`, `Sample`, `Event`,
 //! `Stream`, `Setpoint`, or bounded query. Source identity, robot/capture time,
@@ -21,10 +21,5 @@
 //! and supervisor process protocols have separate owners.
 
 mod api;
-pub use api::*;
-pub use phoxal_macros::phoxal_api;
-
-pub mod domains;
-
-#[cfg(test)]
-mod tests;
+pub use api::generated::*;
+pub use phoxal_macros::{phoxal_api_fragment, phoxal_api_fragment_group, phoxal_api_tree};

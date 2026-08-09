@@ -2094,12 +2094,12 @@ mod tests {
     fn stream_positions_surface_gaps_and_reject_regressions() {
         let positions = Mutex::new(HashMap::new());
         assert!(matches!(
-            classify_stream("v0.2/test/stream", &positions, stream_observed(1, Some(0)))
+            classify_stream("v0.1/test/stream", &positions, stream_observed(1, Some(0)))
                 .expect("first position is ordered"),
             StreamEvent::Item(Observed { body: 1, .. })
         ));
 
-        let gap = classify_stream("v0.2/test/stream", &positions, stream_observed(3, Some(2)))
+        let gap = classify_stream("v0.1/test/stream", &positions, stream_observed(3, Some(2)))
             .expect("a forward gap is explicit evidence, not a decode failure");
         assert!(matches!(
             gap,
@@ -2111,7 +2111,7 @@ mod tests {
         ));
 
         let regression =
-            classify_stream("v0.2/test/stream", &positions, stream_observed(2, Some(1)))
+            classify_stream("v0.1/test/stream", &positions, stream_observed(2, Some(1)))
                 .expect_err("a repeated or reversed position is never ordered stream data");
         assert!(matches!(
             regression,
@@ -2127,12 +2127,12 @@ mod tests {
     fn a_late_stream_subscription_establishes_its_first_observed_position() {
         let positions = Mutex::new(HashMap::new());
         assert!(matches!(
-            classify_stream("v0.2/test/stream", &positions, stream_observed(1, Some(41)),)
+            classify_stream("v0.1/test/stream", &positions, stream_observed(1, Some(41)),)
                 .expect("traffic before subscription is not receiver-observed loss"),
             StreamEvent::Item(Observed { body: 1, .. })
         ));
         assert!(matches!(
-            classify_stream("v0.2/test/stream", &positions, stream_observed(2, Some(43)),)
+            classify_stream("v0.1/test/stream", &positions, stream_observed(2, Some(43)),)
                 .expect("a discontinuity after the baseline is explicit"),
             StreamEvent::Gap {
                 expected: 42,
@@ -2145,7 +2145,7 @@ mod tests {
     #[test]
     fn a_stream_sample_without_a_position_is_rejected() {
         let error = classify_stream(
-            "v0.2/test/stream",
+            "v0.1/test/stream",
             &Mutex::new(HashMap::new()),
             stream_observed(1, None),
         )
@@ -2162,7 +2162,7 @@ mod tests {
                 producer: producer(u128::try_from(source + 1).expect("source index")),
                 label: None,
             };
-            classify_stream("v0.2/test/stream", &positions, item)
+            classify_stream("v0.1/test/stream", &positions, item)
                 .expect("the fixed source bound admits each first source");
         }
 
@@ -2171,7 +2171,7 @@ mod tests {
             producer: producer(u128::try_from(MAX_STREAM_SOURCES + 1).expect("source index")),
             label: None,
         };
-        let error = classify_stream("v0.2/test/stream", &positions, extra)
+        let error = classify_stream("v0.1/test/stream", &positions, extra)
             .expect_err("a new source beyond the fixed history bound must terminate");
         assert!(matches!(
             error,
@@ -2186,7 +2186,7 @@ mod tests {
     #[test]
     fn too_many_stream_sources_is_typed_terminal_evidence() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.2/test/stream", DEFAULT_ORDERED_CAPACITY);
+        let metric = metrics.register_subscriber("v0.1/test/stream", DEFAULT_ORDERED_CAPACITY);
         let terminal = Arc::new(TerminalState::new());
         let receiver = StreamReceiver::<OrderedEndpoint> {
             inner: Subscriber {
@@ -2195,7 +2195,7 @@ mod tests {
                     RingPolicy::Refuse,
                     metric,
                     Arc::clone(&terminal),
-                    "v0.2/test/stream",
+                    "v0.1/test/stream",
                 )),
                 terminal: Arc::clone(&terminal),
                 _guard: Arc::new(SubscriptionGuard {
@@ -2203,7 +2203,7 @@ mod tests {
                     expected: Arc::new(AtomicBool::new(false)),
                 }),
             },
-            topic: "v0.2/test/stream".to_string(),
+            topic: "v0.1/test/stream".to_string(),
             next_positions: Mutex::new(HashMap::new()),
         };
         for source in 0..MAX_STREAM_SOURCES {
@@ -2314,14 +2314,14 @@ mod tests {
     #[test]
     fn stream_quarantine_refuses_saturation_without_evicting_an_accepted_chunk() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.2/test/stream", 2);
+        let metric = metrics.register_subscriber("v0.1/test/stream", 2);
         let terminal = Arc::new(TerminalState::new());
         let ring = Ring::new(
             2,
             RingPolicy::Refuse,
             metric,
             Arc::clone(&terminal),
-            "v0.2/test/stream",
+            "v0.1/test/stream",
         );
         ring.retain_timeline(timeline(1));
 

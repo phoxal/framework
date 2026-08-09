@@ -131,7 +131,7 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
                     ParticipantContract {
                         id: artifact_id.clone(),
                         kind,
-                        api: RobotApiVersion::new(0, 2),
+                        api: RobotApiVersion::new(0, 1),
                         schemas: ParticipantSchemas {
                             bus: BusAbi::V0,
                             launch: LaunchAbi::V0,

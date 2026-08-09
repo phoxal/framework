@@ -40,7 +40,7 @@ fn document() -> StagedBytes {
         ParticipantContract {
             id: artifact_id.clone(),
             kind: ParticipantKind::Service,
-            api: RobotApiVersion::new(0, 2),
+            api: RobotApiVersion::new(0, 1),
             schemas: ParticipantSchemas {
                 bus: BusAbi::V0,
                 launch: LaunchAbi::V0,
@@ -67,7 +67,7 @@ fn document() -> StagedBytes {
         ParticipantContract {
             id: brain_id.clone(),
             kind: ParticipantKind::Brain,
-            api: RobotApiVersion::new(0, 2),
+            api: RobotApiVersion::new(0, 1),
             schemas: ParticipantSchemas {
                 bus: BusAbi::V0,
                 launch: LaunchAbi::V0,
@@ -107,7 +107,7 @@ fn document() -> StagedBytes {
 #[test]
 fn runtime_rejects_mixed_robot_api_artifacts_and_exposes_the_selected_api() {
     let (document, _, _) = document();
-    assert_eq!(document.robot_api(), RobotApiVersion::new(0, 2));
+    assert_eq!(document.robot_api(), RobotApiVersion::new(0, 1));
 
     let RuntimeDocument::V0(mut runtime) = document;
     let drive = ParticipantArtifactId::new("drive").expect("drive artifact id");
@@ -128,7 +128,7 @@ fn runtime_rejects_mixed_robot_api_artifacts_and_exposes_the_selected_api() {
         ),
         Err(DocumentError::MixedRobotApi { expected, actual, .. })
             if expected == RobotApiVersion::new(0, 3)
-                && actual == RobotApiVersion::new(0, 2)
+                && actual == RobotApiVersion::new(0, 1)
     ));
 }
 

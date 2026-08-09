@@ -1,10 +1,5 @@
-error: `phoxal_protocol!` accepts only `protocol` trees; use `phoxal_api!` for version revisions
- --> tests/trybuild/fail/protocol_version_in_protocol.rs:3:1
+error: `phoxal_protocol!` accepts only `protocol <name> { ... }` trees; use `phoxal_api_tree!` plus fragments for Robot API revisions
+ --> tests/trybuild/fail/protocol_version_in_protocol.rs:4:5
   |
-3 | / phoxal_protocol! {
-4 | |     version v0_1 {}
-5 | |     latest v0_1;
-6 | | }
-  | |_^
-  |
-  = note: this error originates in the macro `phoxal_protocol` (in Nightly builds, run with -Z macro-backtrace for more info)
+4 |     version v0_1 {}
+  |     ^^^^^^^

@@ -2,8 +2,8 @@
 //!
 //! Three macro families make up the authoring surface:
 //!
-//! - [`phoxal_api!`] - declares concrete robot API revisions over ordinary Rust
-//!   payload modules, generating endpoint descriptors and topic builders.
+//! - [`phoxal_api_tree!`], [`phoxal_api_fragment!`], and
+//!   [`phoxal_api_fragment_group!`] - author modular Robot API contracts.
 //! - [`phoxal_protocol!`] - declares process-boundary protocol endpoints over
 //!   ordinary Rust payload modules, with protocol-relative keys.
 //! - [`derive@Config`] - derives the config schema embedded in participant
@@ -24,13 +24,51 @@ mod authoring;
 
 use proc_macro::TokenStream;
 
-/// Declare the versioned robot API surface. This is the normal authoring
-/// entry point; protocol trees use [`phoxal_protocol!`] instead.
+/// Declare the semantic endpoints for one version-first Robot API module.
+///
+/// Payload types, implementations, and tests remain ordinary sibling Rust
+/// items. Endpoint bodies name a local payload type; the root tree's `source`
+/// path qualifies that name during materialization.
 #[proc_macro]
-pub fn phoxal_api(input: TokenStream) -> TokenStream {
-    api_tree::expand_api(input.into())
+pub fn phoxal_api_fragment(input: TokenStream) -> TokenStream {
+    api_tree::expand_fragment(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+/// Relay child fragment registration without contributing a semantic path.
+#[proc_macro]
+pub fn phoxal_api_fragment_group(input: TokenStream) -> TokenStream {
+    api_tree::expand_fragment_group(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Materialize declared Robot API versions from registered endpoint fragments.
+///
+/// The `source` path names the module containing the version-first authored
+/// tree, such as `crate::api` for `crate::api::v0_1::drive::Target`.
+#[proc_macro]
+pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
+    api_tree::expand_tree(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Collector-chain target; public only because proc-macro exports must be.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __phoxal_api_materialize(input: TokenStream) -> TokenStream {
+    api_tree::expand_materialized(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Nested group collector target; public only for macro expansion plumbing.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __phoxal_api_define_group(input: TokenStream) -> TokenStream {
+    api_tree::expand_group_collector(input.into()).into()
 }
 
 /// Declare a process-boundary protocol surface without a revision/latest

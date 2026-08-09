@@ -1,5 +1,0 @@
-error: `remove` is only valid inside a revision that `extends` another revision
- --> tests/trybuild/fail/api_delta_without_parent.rs:6:16
-  |
-6 |         remove old;
-  |                ^^^

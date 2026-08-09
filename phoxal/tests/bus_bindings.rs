@@ -18,13 +18,13 @@ fn encoding_string_carries_only_the_codec() {
     assert_eq!(CodecId::MessagePack.encoding_string(), "phoxal/v0;codec=1");
 }
 
-/// The revision is folded into the wire key, so the current v0.2 contract
-/// publishes on a key that cannot collide with the immutable v0.1 contract.
+/// The revision is folded into the wire key, so concrete Robot API revisions
+/// cannot collide on transport keys.
 #[test]
 fn endpoint_topic_is_version_qualified_on_the_real_tree() {
     assert_eq!(
         <api::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
-        "v0.2/drive/target"
+        "v0.1/drive/target"
     );
     assert_eq!(
         <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::TOPIC,

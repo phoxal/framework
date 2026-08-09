@@ -134,7 +134,7 @@ mod tests {
     const CONFIG_SCHEMA: &str = r#"{"type":"null"}"#;
 
     const EMBEDDED: &str = participant_metadata_json!(
-        api = "phoxal/robot-api/v0.2",
+        api = "phoxal/robot-api/v0.1",
         bus = BusAbi::V0,
         launch = LaunchAbi::V0,
         runtime = RuntimeSchema::V0,
@@ -147,7 +147,7 @@ mod tests {
     fn typed_record() -> ParticipantMetadataRecord<'static> {
         ParticipantMetadataRecord::V0 {
             contract: ParticipantContractRecord {
-                api: RobotApiVersion::new(0, 2),
+                api: RobotApiVersion::new(0, 1),
                 schemas: ParticipantSchemas {
                     bus: BusAbi::V0,
                     launch: LaunchAbi::V0,
@@ -175,7 +175,7 @@ mod tests {
             .expect("the writer's own output must satisfy the parser");
         let contract = metadata.contract();
 
-        assert_eq!(contract.api, RobotApiVersion::new(0, 2));
+        assert_eq!(contract.api, RobotApiVersion::new(0, 1));
         assert_eq!(contract.schemas.bus, BusAbi::V0);
         assert_eq!(contract.schemas.launch, LaunchAbi::V0);
         assert_eq!(contract.schemas.runtime, RuntimeSchema::V0);

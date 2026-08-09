@@ -33,7 +33,7 @@ error[E0277]: the trait bound `phoxal::api::drive::StateEndpoint: StreamDelivery
              StreamEndpoint
              phoxal::api::joint::StateEndpoint
              phoxal::runtime::simulation::ClockEndpoint
-             phoxal_api::api::v0_1::joint::StateEndpoint
+             phoxal_api::api::joint::StateEndpoint
              phoxal_supervisor_api::supervisor::log::FollowEndpoint
              phoxal_supervisor_api::supervisor::logs::TopicEndpoint
              phoxal_supervisor_api::supervisor::telemetry::FollowEndpoint

@@ -92,7 +92,7 @@ struct CachedFrontier {
 /// runner observed at a step; responses that no longer match those authorities
 /// are rejected when the next step incorporates them.
 async fn frontier_map_worker(
-    map_submap: Querier<api::map::SubmapRequest, api::domains::v0_2::map::SubmapResponse>,
+    map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
     mut requests: tokio::sync::mpsc::Receiver<FrontierIoRequest>,
     results: tokio::sync::mpsc::Sender<FrontierIoResult>,
 ) -> Result<()> {
@@ -109,13 +109,9 @@ async fn frontier_map_worker(
         {
             Ok(response) => {
                 let response_revision = match &response {
-                    api::domains::v0_2::map::SubmapResponse::Window(window)
-                    | api::domains::v0_2::map::SubmapResponse::Partial { window } => {
-                        window.revision
-                    }
-                    api::domains::v0_2::map::SubmapResponse::OutOfBounds { revision, .. } => {
-                        *revision
-                    }
+                    api::map::SubmapResponse::Window(window)
+                    | api::map::SubmapResponse::Partial { window } => window.revision,
+                    api::map::SubmapResponse::OutOfBounds { revision, .. } => *revision,
                 };
                 if response_revision != request.revision {
                     Err(format!(
