@@ -102,9 +102,7 @@ impl MotorBinding {
     fn topic(
         &self,
     ) -> Result<
-        phoxal::bus::Topic<
-            phoxal::bus::Publish<api::endpoint::component::motor::CommandEndpoint>,
-        >,
+        phoxal::bus::Topic<phoxal::bus::Publish<api::endpoint::component::motor::CommandEndpoint>>,
     > {
         Ok(api::topic::client()
             .component(&self.reference.component_id)?
