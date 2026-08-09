@@ -49,6 +49,10 @@ tracing-subscriber = { workspace = true }
 # robot is; a versionless dev-dependency is stripped on publish.
 phoxal-fixture = { workspace = true }
 phoxal-bundle = { workspace = true }
+# Enables only the bus's hidden worker-failure injection while this crate's
+# unit tests prove Ready revocation and teardown. Production dependencies keep
+# the feature off.
+phoxal-bus = { workspace = true, features = ["test-harness"] }
 jsonschema = { workspace = true }
 # Test-only: raising SIGINT/SIGTERM at the test process is the only honest way to
 # prove the runner's shutdown trigger covers the signal a supervisor stops with.

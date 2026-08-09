@@ -851,8 +851,6 @@ impl BusHandle {
             }
         };
 
-        metric.enqueue_started();
-        metric.record_message();
         if let Some(replaced) = admission.replaced {
             replaced.metric.enqueue_finished();
             replaced.metric.record_latest_overwrite();
@@ -875,6 +873,11 @@ impl BusHandle {
                 "sample outbound lane evicted oldest values"
             );
         }
+        // Replacement/eviction and new admission are one scheduler mutation.
+        // Retire old depth first so high-water never reports capacity + 1 for
+        // a queue state that could not actually exist.
+        metric.enqueue_started();
+        metric.record_message();
         if family == DeliveryFamily::Stream {
             scheduler.commit_stream_position(&key);
         }

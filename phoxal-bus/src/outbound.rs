@@ -60,7 +60,9 @@ pub(crate) struct Admission {
 /// One scheduler with semantically distinct storage lanes.
 pub(crate) struct OutboundScheduler {
     state: BTreeMap<String, Outbound>,
+    state_order: VecDeque<String>,
     setpoint: BTreeMap<String, Outbound>,
+    setpoint_order: VecDeque<String>,
     sample: VecDeque<Outbound>,
     stream: VecDeque<Outbound>,
     queued_bytes: usize,
@@ -76,7 +78,9 @@ impl OutboundScheduler {
     pub(crate) fn new(lane_capacity: usize, max_bytes: usize) -> Self {
         Self {
             state: BTreeMap::new(),
+            state_order: VecDeque::new(),
             setpoint: BTreeMap::new(),
+            setpoint_order: VecDeque::new(),
             sample: VecDeque::with_capacity(lane_capacity),
             stream: VecDeque::with_capacity(lane_capacity),
             queued_bytes: 0,
@@ -153,10 +157,10 @@ impl OutboundScheduler {
         outbound: Outbound,
         state: bool,
     ) -> std::result::Result<Admission, OutboundBound> {
-        let map = if state {
-            &mut self.state
+        let (map, order) = if state {
+            (&mut self.state, &mut self.state_order)
         } else {
-            &mut self.setpoint
+            (&mut self.setpoint, &mut self.setpoint_order)
         };
         let old_bytes = map.get(&outbound.key).map_or(0, |old| old.bytes);
         let Some(bytes_without_old) = self.queued_bytes.checked_sub(old_bytes) else {
@@ -170,6 +174,9 @@ impl OutboundScheduler {
         }
 
         let key = outbound.key.clone();
+        if !map.contains_key(&key) {
+            order.push_back(key.clone());
+        }
         let replaced = map.insert(key, outbound);
         self.queued_bytes = next_bytes;
         Ok(Admission {
@@ -258,8 +265,8 @@ impl OutboundScheduler {
         for offset in 0..4 {
             let lane = (self.next_lane + offset) % 4;
             let item = match lane {
-                0 => pop_map(&mut self.state),
-                1 => pop_map(&mut self.setpoint),
+                0 => pop_map(&mut self.state, &mut self.state_order),
+                1 => pop_map(&mut self.setpoint, &mut self.setpoint_order),
                 2 => self.sample.pop_front(),
                 3 => self.stream.pop_front(),
                 _ => None,
@@ -274,9 +281,13 @@ impl OutboundScheduler {
     }
 }
 
-fn pop_map(map: &mut BTreeMap<String, Outbound>) -> Option<Outbound> {
-    let key = map.keys().next()?.clone();
-    map.remove(&key)
+fn pop_map(map: &mut BTreeMap<String, Outbound>, order: &mut VecDeque<String>) -> Option<Outbound> {
+    while let Some(key) = order.pop_front() {
+        if let Some(outbound) = map.remove(&key) {
+            return Some(outbound);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -330,6 +341,38 @@ mod tests {
             .expect("newer setpoint admission");
         assert_eq!(result.replaced.map(|old| body(&old)), Some(1));
         assert_eq!(body(&scheduler.pop_next().expect("newest setpoint")), 2);
+    }
+
+    #[test]
+    fn continuously_refreshed_coalesced_topic_cannot_starve_its_sibling() {
+        let metrics = RuntimeMetrics::default();
+        let mut scheduler = OutboundScheduler::new(4, 1024);
+        scheduler
+            .admit(outbound(&metrics, DeliveryFamily::State, "a", 1))
+            .unwrap();
+        scheduler
+            .admit(outbound(&metrics, DeliveryFamily::State, "z", 2))
+            .unwrap();
+        for value in 3..20 {
+            scheduler
+                .admit(outbound(&metrics, DeliveryFamily::State, "a", value))
+                .unwrap();
+        }
+
+        let first = scheduler.pop_next().expect("first coalesced topic");
+        assert_eq!(first.key, "a");
+        scheduler
+            .admit(outbound(&metrics, DeliveryFamily::State, "a", 20))
+            .unwrap();
+        assert_eq!(
+            scheduler.pop_next().expect("waiting sibling").key,
+            "z",
+            "re-admitting the first topic must enqueue behind the sibling"
+        );
+        assert_eq!(
+            scheduler.pop_next().expect("refreshed first topic").key,
+            "a"
+        );
     }
 
     #[test]

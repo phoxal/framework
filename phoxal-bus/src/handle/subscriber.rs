@@ -242,7 +242,7 @@ impl<B> Clone for Latest<B> {
 impl<B: ContractBody> Latest<B> {
     /// Build a keep-last view over a topic.
     ///
-    /// The author-facing path is `ctx.latest(...)` in `Participant::setup`.
+    /// The author-facing path is `ctx.state_view(...)` in `Participant::setup`.
     /// `pub` only because the generated api tree and the runner live in other
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
@@ -389,12 +389,7 @@ impl<B: ContractBody> Subscriber<B> {
     /// in other crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
-        if B::DELIVERY == DeliveryFamily::Stream
-            && topic
-                .key()
-                .split('/')
-                .any(|segment| segment == "*" || segment == "**")
-        {
+        if B::DELIVERY == DeliveryFamily::Stream && topic.key().contains('*') {
             return Err(BusError::invalid_key(topic.key(), KeyProblem::Wildcard));
         }
         // Buffering is a contract property, not a tuning knob each caller can
@@ -1420,18 +1415,20 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("wildcard-stream"))
             .await
             .unwrap();
-        let topic = Topic::<Subscribe<OrderedChunk>>::new_owned("nonclone/stream/*".to_string());
-        let error = match StreamReceiver::new(&bus, &topic).await {
-            Ok(_) => panic!("one position tracker cannot mix concrete stream topics"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error,
-            BusError::InvalidKey {
-                problem: KeyProblem::Wildcard,
-                ..
-            }
-        ));
+        for key in ["nonclone/stream/*", "nonclone/stream/foo$*/bar"] {
+            let topic = Topic::<Subscribe<OrderedChunk>>::new_owned(key.to_string());
+            let error = match StreamReceiver::new(&bus, &topic).await {
+                Ok(_) => panic!("one position tracker cannot mix concrete stream topics"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                BusError::InvalidKey {
+                    problem: KeyProblem::Wildcard,
+                    ..
+                }
+            ));
+        }
         owner.close().await;
     }
 

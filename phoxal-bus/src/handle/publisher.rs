@@ -239,14 +239,16 @@ impl<B: DiagnosticContract> DiagnosticPublisher<B> {
 mod tests {
     use super::*;
     use crate::contract::{
-        ApiVersion, DeliveryFamily, MeasurementContract, StateContract, StreamContract, TopicRole,
+        ApiVersion, CommandContract, DeliveryFamily, MeasurementContract, SetpointDeliveryContract,
+        StateContract, StreamContract, TopicRole,
     };
     use crate::error::BusError;
+    use crate::handle::subscriber::SetpointReceiver;
     use crate::runtime_metrics::RuntimeBufferKind;
     use crate::session::{BusOwner, OUTBOUND_CAPACITY, OUTBOUND_MAX_BYTES};
     use crate::test_support::{Target, participant_config, step};
     use crate::time::CaptureStamp;
-    use crate::topic::Topic;
+    use crate::topic::{Subscribe, Topic};
     use serial_test::serial;
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -300,6 +302,22 @@ mod tests {
 
     impl MeasurementContract for SampleChunk {}
 
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct SetpointChunk(u16);
+
+    impl ContractBody for SetpointChunk {
+        type Api = StreamApi;
+        const NAME: &'static str = "stream-test::Setpoint";
+        const VERSION: &'static str = "stream-test";
+        const CONTRACT: &'static str = "Setpoint";
+        const TOPIC: &'static str = "stream-test/setpoint";
+        const ROLE: TopicRole = TopicRole::Command;
+        const DELIVERY: DeliveryFamily = DeliveryFamily::Setpoint;
+    }
+
+    impl CommandContract for SetpointChunk {}
+    impl SetpointDeliveryContract for SetpointChunk {}
+
     /// A publish after close is a real loss, and the caller has to be able to
     /// see it: silently succeeding would let a participant believe it had
     /// reported state it never sent.
@@ -344,18 +362,29 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("semantic-admission"))
             .await
             .unwrap();
-        let pause = bus
-            .test_pause_outbound_drain()
-            .await
-            .expect("test drain can be held before admission");
         let state =
             StatePublisher::<StateChunk>::new(bus.clone(), &Topic::new_static(StateChunk::TOPIC))
                 .unwrap();
+        let setpoint = CommandPublisher::<SetpointChunk>::new(
+            bus.clone(),
+            &Topic::new_static(SetpointChunk::TOPIC),
+        )
+        .unwrap();
+        let setpoint_receiver = SetpointReceiver::new(
+            &bus,
+            &Topic::<Subscribe<SetpointChunk>>::new_static(SetpointChunk::TOPIC),
+        )
+        .await
+        .unwrap();
         let sample = MeasurementPublisher::<SampleChunk>::new(
             bus.clone(),
             &Topic::new_static(SampleChunk::TOPIC),
         )
         .unwrap();
+        let pause = bus
+            .test_pause_outbound_drain()
+            .await
+            .expect("test drain can be held before admission");
         let stream = StreamPublisher::<StreamChunk>::new(
             bus.clone(),
             &Topic::new_static(StreamChunk::TOPIC),
@@ -366,6 +395,9 @@ mod tests {
             state
                 .publish(&step(1, value), StateChunk(value as u16))
                 .unwrap();
+        }
+        for value in 0..3 {
+            setpoint.send(SetpointChunk(value)).unwrap();
         }
         for value in 0..=OUTBOUND_CAPACITY {
             sample
@@ -404,8 +436,16 @@ mod tests {
         };
         assert_eq!(row(StateChunk::TOPIC).count, 3);
         assert_eq!(row(StateChunk::TOPIC).latest_overwrites, 2);
+        assert_eq!(row(StateChunk::TOPIC).high_water_depth, 1);
+        assert_eq!(row(SetpointChunk::TOPIC).count, 3);
+        assert_eq!(row(SetpointChunk::TOPIC).latest_overwrites, 2);
+        assert_eq!(row(SetpointChunk::TOPIC).high_water_depth, 1);
         assert_eq!(row(SampleChunk::TOPIC).count, OUTBOUND_CAPACITY as u64 + 1);
         assert_eq!(row(SampleChunk::TOPIC).bounded_evictions, 1);
+        assert_eq!(
+            row(SampleChunk::TOPIC).high_water_depth,
+            OUTBOUND_CAPACITY as u64
+        );
         assert_eq!(row(StreamChunk::TOPIC).count, OUTBOUND_CAPACITY as u64);
         assert_eq!(row(StreamChunk::TOPIC).drops, 1);
         assert_eq!(
@@ -417,6 +457,12 @@ mod tests {
         );
 
         drop(pause);
+        let delivered =
+            tokio::time::timeout(std::time::Duration::from_secs(2), setpoint_receiver.recv())
+                .await
+                .expect("the drain must deliver the coalesced setpoint")
+                .expect("setpoint receive remains healthy");
+        assert_eq!(delivered.body.0, 2);
         owner
             .close_until(tokio::time::Instant::now() + std::time::Duration::from_secs(10))
             .await;
