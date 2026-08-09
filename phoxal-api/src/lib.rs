@@ -919,26 +919,6 @@ phoxal_api_tree! {
             query open: OpenRequest => OpenOutcome;
         }
 
-        simulation {
-            /// The authoritative advancing simulation clock. Publication means
-            /// the world advanced; silence means it did not.
-            ///
-            /// The timeline and instant ride in the envelope, like every other
-            /// `state`-shaped publication - the world authority stamps them with
-            /// a world step token. The body carries only the step counter, which
-            /// is not derivable from the envelope.
-            struct Clock {
-                step: u64,
-            }
-
-            // `world_clock`, not `state`: only the world-authority participant
-            // (`#[phoxal::simulator]`) may publish it, enforced at compile time
-            // by the disjoint `WorldClockContract` this role generates instead
-            // of `StateContract`; see
-            // `phoxal_bus::contract::WorldClockContract`'s docs.
-            topic clock: world_clock Clock delivery stream;
-        }
-
         // Per-instance component capabilities: framework participant / driver
         // territory. `component(instance)` selects a manifest-declared component;
         // each child `kind(capability)` is a self-contained node whose key is

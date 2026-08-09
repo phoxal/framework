@@ -14,7 +14,7 @@ use crate::bus::{
     SamplePublisher, SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract,
     SetpointPublisher, SetpointReceiver, StateContract, StateDeliveryContract, StatePublisher,
     StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher, StreamReceiver,
-    Subscribe, TimelineId, Topic, WorldClockContract,
+    Subscribe, TimelineId, Topic,
 };
 use crate::model::Robot;
 use crate::participant::api::Participant;
@@ -409,11 +409,13 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
         Ok(TimelineAuthority::mint(timeline)?)
     }
 
-    pub fn world_clock_publisher<B: WorldClockContract<Api = R::ContractApi>>(
+    pub fn world_clock_publisher(
         &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<WorldClockPublisher<B>> {
-        Ok(WorldClockPublisher::mint(self.bus.clone(), &topic)?)
+    ) -> crate::Result<WorldClockPublisher<crate::runtime::simulation::ClockEndpoint>> {
+        Ok(WorldClockPublisher::mint(
+            self.bus.clone(),
+            &crate::runtime::simulation::owner_topic(),
+        )?)
     }
 }
 

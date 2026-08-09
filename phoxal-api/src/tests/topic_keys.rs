@@ -34,10 +34,6 @@ fn contract_body_topic_is_version_qualified() {
         <api::localize::LocalizationState as ContractBody>::TOPIC,
         "v0.1/localize/state"
     );
-    assert_eq!(
-        <api::simulation::Clock as ContractBody>::TOPIC,
-        "v0.1/simulation/clock"
-    );
 }
 
 /// A dynamic node contributes a `{var}` placeholder to the documented key, at

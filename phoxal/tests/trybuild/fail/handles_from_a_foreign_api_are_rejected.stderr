@@ -1,16 +1,11 @@
-error[E0271]: type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
+error[E0271]: type mismatch resolving `<ForeignState as EndpointDescriptor>::Api == Api`
   --> tests/trybuild/fail/handles_from_a_foreign_api_are_rejected.rs:43:46
    |
 43 |         let _publisher = ctx.state_publisher(topic)?;
-   |                              --------------- ^^^^^ type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
+   |                              --------------- ^^^^^ expected `Api`, found `ForeignApi`
    |                              |
    |                              required by a bound introduced by this call
    |
-note: expected this to be `Api`
-  --> tests/trybuild/fail/handles_from_a_foreign_api_are_rejected.rs:22:16
-   |
-22 |     type Api = ForeignApi;
-   |                ^^^^^^^^^^
 note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
   --> src/participant/context.rs
    |

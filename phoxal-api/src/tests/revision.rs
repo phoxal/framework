@@ -110,18 +110,6 @@ fn navigation_result_is_an_owner_event_with_ordered_delivery_only_in_v0_2() {
 }
 
 #[test]
-fn temporal_roles_can_override_transport_delivery() {
-    assert_eq!(
-        <crate::latest::simulation::Clock as ContractBody>::DELIVERY,
-        DeliveryFamily::Stream
-    );
-    assert_eq!(
-        <crate::latest::joint::JointState as ContractBody>::DELIVERY,
-        DeliveryFamily::Stream
-    );
-}
-
-#[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     assert_eq!(
         crate::API_CONTRACT_MANIFEST.len(),
@@ -151,14 +139,6 @@ fn generated_contract_manifest_lists_contract_shapes() {
     assert_eq!(
         battery_state.topic,
         "v0.1/component/{instance}/battery/{capability}/state"
-    );
-
-    assert!(
-        version
-            .contracts
-            .iter()
-            .any(|contract| contract.family == "v0.1::simulation::Clock"),
-        "v0.1::simulation::Clock should be in the v0.1 manifest entry"
     );
 
     let current = crate::API_CONTRACT_MANIFEST

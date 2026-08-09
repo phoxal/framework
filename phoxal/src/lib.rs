@@ -154,6 +154,12 @@ pub mod geometry;
 mod participant;
 mod sample_schedule;
 
+/// Framework-owned transport hand contracts. This module is hidden from the
+/// authoring documentation because these endpoints are runtime plumbing, not
+/// robot API declarations.
+#[doc(hidden)]
+pub mod runtime;
+
 /// Explicit in-process participant testing support.
 #[cfg(feature = "test-harness")]
 pub mod testing;

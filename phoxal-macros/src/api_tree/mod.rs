@@ -20,18 +20,6 @@
 //! `topic self: state <Body>;` binds the body to the node path itself instead of
 //! appending a leaf segment, for framework infrastructure topics such as
 //! `logs/{participant_id}`.
-//!
-//! `topic <leaf>: world_clock <Body>;` is a fifth, framework-reserved role: it
-//! wire-brands and reports `ROLE` exactly like `state` (owner publishes, client
-//! subscribes), but the generated body implements `WorldClockContract` instead
-//! of `StateContract`, so the ordinary `state_publisher` builder every
-//! participant has cannot name it; the only documented builder is
-//! `phoxal::SetupContext::world_clock_publisher`,
-//! gated on the sealed world-authority surface. There is exactly one production use -
-//! `simulation::Clock` - and no reason for a second. This role exists to close
-//! the accidental route to minting world time; it is not an absolute seal, and
-//! `TimelineAuthority`'s docs state the exact strength of the guarantee
-//! described by `TimelineAuthority`'s public contract.
 //! A revision may extend exactly one earlier revision. The child is materialized
 //! as a complete concrete tree; inherited definitions are regenerated under the
 //! child's identity, while `replace` and `remove` make deltas explicit. Exactly

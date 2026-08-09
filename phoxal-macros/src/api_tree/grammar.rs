@@ -29,7 +29,6 @@ mod kw {
     syn::custom_keyword!(setpoint);
     syn::custom_keyword!(event);
     syn::custom_keyword!(query);
-    syn::custom_keyword!(world_clock);
 }
 
 /// The diagnostic for an invocation that reaches a `protocol` tree from inside
@@ -553,22 +552,10 @@ impl Parse for TopicDef {
                 TopicRole::Query,
                 false,
             )
-        } else if input.peek(kw::world_clock) {
-            // Framework-reserved: see `TopicRole::WorldClock`'s docs. There is
-            // exactly one production use (`simulation::Clock` in
-            // `phoxal-api/src/lib.rs`) and no reason for a second.
-            input.parse::<kw::world_clock>()?;
-            let body: Ident = input.parse()?;
-            (
-                TopicKind::PubSub(BodyPath::from_ident(body)),
-                TopicRole::WorldClock,
-                true,
-            )
         } else {
             return Err(input.error(
                 "expected a topic role: `command <Body>`, `stream <Body>`, `state <Body>`, `event <Body>`, \
-                 `measurement <Body>`, `diagnostic <Body>`, `world_clock <Body>` \
-                 (framework-reserved), or `query <Req> => <Resp>`",
+                 `measurement <Body>`, `diagnostic <Body>`, or `query <Req> => <Resp>`",
             ));
         };
         let delivery = if input.peek(kw::delivery) {

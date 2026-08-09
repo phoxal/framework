@@ -1,10 +1,10 @@
 error[E0599]: the method `component` exists for mutable reference `&mut phoxal::SetupContext<PrivilegedBrain>`, but its trait bounds were not satisfied
-  --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:16:30
+  --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:15:30
    |
- 8 | struct PrivilegedBrain;
+ 7 | struct PrivilegedBrain;
    | ---------------------- doesn't satisfy `_: ComponentBoundSurface`
 ...
-16 |         let _component = ctx.component()?;
+15 |         let _component = ctx.component()?;
    |                              ^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<PrivilegedBrain>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
@@ -16,12 +16,12 @@ note: the trait `phoxal::__private::surface::ComponentBoundSurface` must be impl
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0599]: the method `timeline_authority` exists for mutable reference `&mut phoxal::SetupContext<PrivilegedBrain>`, but its trait bounds were not satisfied
-  --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:17:30
+  --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:16:30
    |
- 8 | struct PrivilegedBrain;
+ 7 | struct PrivilegedBrain;
    | ---------------------- doesn't satisfy `_: WorldAuthoritySurface`
 ...
-17 |         let _authority = ctx.timeline_authority(TimelineId::mint())?;
+16 |         let _authority = ctx.timeline_authority(TimelineId::mint())?;
    |                              ^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<PrivilegedBrain>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
@@ -33,17 +33,13 @@ note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be impl
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0599]: the method `world_clock_publisher` exists for mutable reference `&mut phoxal::SetupContext<PrivilegedBrain>`, but its trait bounds were not satisfied
-  --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:19:14
+  --> tests/trybuild/fail/brain_has_no_privileged_capabilities.rs:17:26
    |
- 8 |   struct PrivilegedBrain;
-   |   ---------------------- doesn't satisfy `_: WorldAuthoritySurface`
+ 7 | struct PrivilegedBrain;
+   | ---------------------- doesn't satisfy `_: WorldAuthoritySurface`
 ...
-18 |           let _clock = ctx
-   |  ______________________-
-19 | |             .world_clock_publisher(api::topic::owner().simulation().clock())?;
-   | |             -^^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<PrivilegedBrain>` due to unsatisfied trait bounds
-   | |_____________|
-   |
+17 |         let _clock = ctx.world_clock_publisher()?;
+   |                          ^^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<PrivilegedBrain>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
            `PrivilegedBrain: phoxal::__private::surface::WorldAuthoritySurface`

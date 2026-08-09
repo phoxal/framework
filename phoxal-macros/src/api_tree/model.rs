@@ -141,13 +141,6 @@ impl TopicLeaf {
 /// The semantic and temporal role of a topic, mirroring `phoxal_bus::TopicRole`.
 /// Parsed from the role keyword and threaded into the generated
 /// `ContractBody::ROLE` const and temporal-role marker impl.
-///
-/// `WorldClock` is a macro-internal refinement with no `phoxal_bus::TopicRole`
-/// variant of its own: `bus_variant` reports `TopicRole::State` for it exactly
-/// like `State`, but `marker_trait` emits the disjoint `WorldClockContract`
-/// instead of `StateContract`, which is what makes the world clock reject the
-/// ordinary, unrestricted publisher builder at compile time (see
-/// `phoxal_bus::contract::WorldClockContract`'s docs).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TopicRole {
     Command,
@@ -157,7 +150,6 @@ pub(super) enum TopicRole {
     Measurement,
     Diagnostic,
     Query,
-    WorldClock,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -206,7 +198,7 @@ impl TopicRole {
         match self {
             TopicRole::Command => quote! { ::phoxal_bus::TopicRole::Command },
             TopicRole::Stream => quote! { ::phoxal_bus::TopicRole::Stream },
-            TopicRole::State | TopicRole::Event | TopicRole::WorldClock => {
+            TopicRole::State | TopicRole::Event => {
                 quote! { ::phoxal_bus::TopicRole::State }
             }
             TopicRole::Measurement => quote! { ::phoxal_bus::TopicRole::Measurement },
@@ -220,7 +212,7 @@ impl TopicRole {
         match self {
             TopicRole::Command => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
             TopicRole::Stream => quote! { ::phoxal_bus::DeliveryFamily::Stream },
-            TopicRole::State | TopicRole::WorldClock | TopicRole::Diagnostic => {
+            TopicRole::State | TopicRole::Diagnostic => {
                 quote! { ::phoxal_bus::DeliveryFamily::State }
             }
             TopicRole::Event => quote! { ::phoxal_bus::DeliveryFamily::Stream },
@@ -230,8 +222,8 @@ impl TopicRole {
     }
 
     /// The transport marker emitted independently from the temporal role
-    /// marker. This lets an event, diagnostic, or world-clock body opt into
-    /// ordered delivery without inventing another temporal role.
+    /// marker. This lets an event or diagnostic body opt into ordered delivery
+    /// without inventing another temporal role.
     pub(super) fn delivery_marker_trait(self) -> TokenStream {
         match self {
             TopicRole::Command => quote! { ::phoxal_bus::SetpointDeliveryContract },
@@ -239,7 +231,7 @@ impl TopicRole {
                 quote! { ::phoxal_bus::StreamDeliveryContract }
             }
             TopicRole::Measurement => quote! { ::phoxal_bus::SampleDeliveryContract },
-            TopicRole::State | TopicRole::WorldClock | TopicRole::Diagnostic => {
+            TopicRole::State | TopicRole::Diagnostic => {
                 quote! { ::phoxal_bus::StateDeliveryContract }
             }
             TopicRole::Query => {
@@ -258,7 +250,6 @@ impl TopicRole {
             TopicRole::State | TopicRole::Event => Some(quote! { ::phoxal_bus::StateContract }),
             TopicRole::Measurement => Some(quote! { ::phoxal_bus::MeasurementContract }),
             TopicRole::Diagnostic => Some(quote! { ::phoxal_bus::DiagnosticContract }),
-            TopicRole::WorldClock => Some(quote! { ::phoxal_bus::WorldClockContract }),
             TopicRole::Query => None,
         }
     }

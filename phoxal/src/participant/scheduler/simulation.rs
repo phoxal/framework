@@ -17,7 +17,7 @@ use phoxal_bus::RetiredTimelines;
 /// # The live seam
 ///
 /// The simulation controller is the authoritative owner of the
-/// `simulation/clock` state topic. In simulation mode the participant runner
+/// `runtime/simulation/clock` hand. In simulation mode the participant runner
 /// subscribes that topic and forwards each observed [`RobotInstant`] into this
 /// scheduler through [`SimulationClockHandle::advance`]. Tests drive the same
 /// handle directly, so live and deterministic test paths share the scheduler
@@ -35,7 +35,7 @@ pub(crate) struct SimulationScheduler {
     /// participant has no `Participant::step` schedule.
     period: Option<Duration>,
     /// Keeps the watch channel open even when the runner has not wired an
-    /// external `simulation/clock` feed yet. Without this, dropping the
+    /// external `runtime/simulation/clock` feed yet. Without this, dropping the
     /// returned handle would close the channel and make waits resolve
     /// immediately instead of waiting for logical time.
     _tx_keepalive: watch::Sender<Option<RobotInstant>>,
@@ -58,7 +58,7 @@ pub(crate) enum SimulationClockAdvance {
 /// A cloneable handle that advances the logical time a
 /// [`SimulationScheduler`] observes.
 ///
-/// This is the seam a live `simulation/clock` bus subscription attaches to
+/// This is the seam a live `runtime/simulation/clock` bus subscription attaches to
 /// (see [`SimulationScheduler`] docs): a subscriber task calls
 /// [`advance`](Self::advance) once per received sample. Tests use the same
 /// method to drive the scheduler deterministically, with no bus and no real
@@ -226,7 +226,7 @@ mod tests {
         for step in 1..=5u64 {
             let target = lt(step * 10);
             // Drive robot time forward from a concurrent task, exactly like
-            // the live `simulation/clock` subscriber does.
+            // the live `runtime/simulation/clock` subscriber does.
             let handle = handle.clone();
             let advancer = tokio::spawn(async move { handle.advance(target) });
             let tick = scheduler.wait_until(target).await;

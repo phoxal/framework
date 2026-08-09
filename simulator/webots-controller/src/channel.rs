@@ -10,8 +10,8 @@
 use anyhow::Result;
 use phoxal::api;
 use phoxal::bus::{
-    CaptureStamp, ContractBody, FixedSourceLease, LocalInstant, MeasurementContract, ParticipantId,
-    ParticipantReadyEvents, StepStamp, WorldStepToken,
+    CaptureStamp, ContractBody, EndpointDescriptor, FixedSourceLease, LocalInstant,
+    MeasurementContract, ParticipantId, ParticipantReadyEvents, StepStamp, WorldStepToken,
 };
 use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
@@ -43,13 +43,15 @@ const MOTOR_SOURCE_SILENCE: Duration = Duration::from_millis(150);
 /// before deciding which held command to apply.  Coalescing before authority
 /// would let a later packet from an unauthorised producer erase Drive's
 /// already-pending intent.
-trait CommandBacklog<B> {
+trait CommandBacklog<B: EndpointDescriptor<Payload = B>> {
     /// Every queued value, in receiver order, including trusted transport
     /// provenance for fixed-source authority admission.
     fn take_all_observed(&self) -> Result<Vec<Observed<B>>>;
 }
 
-impl<B: ContractBody + SetpointDeliveryContract> CommandBacklog<B> for SetpointReceiver<B> {
+impl<B: ContractBody + SetpointDeliveryContract + EndpointDescriptor<Payload = B>> CommandBacklog<B>
+    for SetpointReceiver<B>
+{
     fn take_all_observed(&self) -> Result<Vec<Observed<B>>> {
         let mut pending = Vec::new();
         while let Some(observed) = self.try_recv() {

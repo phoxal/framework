@@ -173,7 +173,7 @@ impl AnyStepScheduler {
     /// clock and nothing external feeds it. Simulation mode returns
     /// [`Some`] handle, which is the attachment point anything producing a
     /// [`RobotInstant`] drives the scheduler through - the runner's live
-    /// `simulation/clock` subscription, a test, a REPL.
+    /// `runtime/simulation/clock` subscription, a test, a REPL.
     pub(crate) fn for_clock_mode(
         clock_mode: ParticipantClock,
         schedule: Option<StepSchedule>,

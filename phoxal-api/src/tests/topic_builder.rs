@@ -67,10 +67,6 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/motion/manual"
     );
     assert_eq!(
-        api::topic::client().simulation().clock().key(),
-        "v0.1/simulation/clock"
-    );
-    assert_eq!(
         api::topic::client().perception().detections().key(),
         "v0.1/perception/detections"
     );

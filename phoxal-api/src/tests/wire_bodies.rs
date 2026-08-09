@@ -625,18 +625,6 @@ fn domain_bodies_round_trip_through_messagepack() {
     round_trip(&api::video::OpenOutcome::Unavailable);
 }
 
-/// The clock body is the step counter and nothing else: its timeline and
-/// instant ride in the envelope, stamped by the world authority.
-#[test]
-fn simulation_clock_body_carries_only_the_step_counter() {
-    let clock = api::simulation::Clock { step: 100 };
-    assert_eq!(
-        serde_json::to_value(&clock).unwrap(),
-        serde_json::json!({ "step": 100_u64 })
-    );
-    round_trip(&clock);
-}
-
 #[test]
 fn component_capability_bodies_round_trip_through_messagepack() {
     let imu = api::component::imu::Sample {
