@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use phoxal::api;
-use phoxal::bus::{ContractBody, SampleDeliveryContract, StateDeliveryContract};
+use phoxal::bus::{EndpointDescriptor, SampleDeliveryContract, StateDeliveryContract};
 use phoxal::model::FootprintEnvelope;
 use phoxal::model::component::capability::{Capability, CapabilityRole};
 use phoxal::model::identity::CapabilityRef;
@@ -51,14 +51,14 @@ const OPERATOR_PARTICIPANT_ID: &str = "operator";
 const RANGE_PARTICIPANT_ID: &str = "range-provider";
 
 /// One declared component capability and the subscription carrying its samples.
-struct BoundSampleInput<B> {
+struct BoundSampleInput<E: EndpointDescriptor> {
     reference: CapabilityRef,
-    samples: SampleReceiver<B>,
+    samples: SampleReceiver<E>,
 }
 
-struct BoundStateInput<B> {
+struct BoundStateInput<E: EndpointDescriptor> {
     reference: CapabilityRef,
-    samples: StateView<B>,
+    samples: StateView<E>,
 }
 
 /// Health evidence retained from the runner-owned map query loop. A failed
@@ -824,9 +824,9 @@ impl Participant for Safety {
 /// fail closed" rule in one place. An empty drain leaves the retained sample
 /// alone - it is the freshness gate, not the arrival of a newer sample, that
 /// decides when a held value stops counting.
-fn retain_newest_stamped<T: ContractBody + SampleDeliveryContract>(
-    slot: &mut Option<Timed<T>>,
-    subscriber: &SampleReceiver<T>,
+fn retain_newest_stamped<E: SampleDeliveryContract>(
+    slot: &mut Option<Timed<E::Payload>>,
+    subscriber: &SampleReceiver<E>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
         if let Some(at) = observed.metadata.produced_exactly_at() {
@@ -835,10 +835,12 @@ fn retain_newest_stamped<T: ContractBody + SampleDeliveryContract>(
     }
 }
 
-fn retain_newest_view<T: ContractBody + Clone + StateDeliveryContract>(
-    slot: &mut Option<Timed<T>>,
-    view: &StateView<T>,
-) {
+fn retain_newest_view<E: StateDeliveryContract>(
+    slot: &mut Option<Timed<E::Payload>>,
+    view: &StateView<E>,
+) where
+    E::Payload: Clone,
+{
     if let Some(observed) = view.observed()
         && let Some(at) = observed.metadata.produced_exactly_at()
     {

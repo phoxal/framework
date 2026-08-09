@@ -420,9 +420,9 @@ fn valid_camera_frame(frame: &api::component::camera::Frame) -> bool {
 /// A sample published without one cannot be aged against this step's clock, so
 /// it is dropped rather than held as if it were current; that leaves the
 /// previous slot untouched, which the freshness gate will then age out.
-fn drain_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscriber: &SampleReceiver<B>,
-    slot: &mut Option<Timed<B>>,
+fn drain_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscriber: &SampleReceiver<E>,
+    slot: &mut Option<Timed<E::Payload>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
         if let Some(at) = observed.metadata.produced_exactly_at() {
@@ -435,9 +435,9 @@ fn drain_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
 /// caller can publish an explicit invalid-input health reason. The old helper
 /// above remains exact-only for depth/localization consumers that still need an
 /// exact robot instant for their existing math.
-fn drain_capture_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscriber: &SampleReceiver<B>,
-    slot: &mut Option<Captured<B>>,
+fn drain_capture_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscriber: &SampleReceiver<E>,
+    slot: &mut Option<Captured<E::Payload>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
         *slot = Some(Captured {
@@ -449,18 +449,18 @@ fn drain_capture_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
 
 /// [`drain_latest`] across index-coupled subscribers and slots, one slot per
 /// bound sensor.
-fn drain_latest_per_source<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscribers: &[SampleReceiver<B>],
-    slots: &mut [Option<Timed<B>>],
+fn drain_latest_per_source<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscribers: &[SampleReceiver<E>],
+    slots: &mut [Option<Timed<E::Payload>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {
         drain_latest(subscriber, slot);
     }
 }
 
-fn drain_capture_latest_per_source<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
-    subscribers: &[SampleReceiver<B>],
-    slots: &mut [Option<Captured<B>>],
+fn drain_capture_latest_per_source<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+    subscribers: &[SampleReceiver<E>],
+    slots: &mut [Option<Captured<E::Payload>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {
         drain_capture_latest(subscriber, slot);
