@@ -1,12 +1,10 @@
 //! Bus-ABI golden bindings against the train-selected API tree.
 //!
-//! The pure bus mechanics (encoding-string parsing, the codec fast-reject in
-//! `decode_sample`, codec round-trips, key-root validation) are unit tested in
-//! the `phoxal-bus` crate against a hand-written `ContractBody`. These pin the
-//! *engine-level* binding instead: that the `phoxal_api_tree!` generated
-//! `ContractBody`/`ApiVersion` impls for the train-selected revision flow through `phoxal::bus`
-//! exactly as published, and that `TOPIC` is version-qualified. That makes them
-//! integration tests against the real API tree, not bus unit tests.
+//! The pure bus mechanics (encoding-string parsing, codec fast-rejects,
+//! codec round-trips, and key-root validation) are unit tested in the
+//! `phoxal-bus` crate. These integration tests pin the generated endpoint
+//! descriptors for the train-selected API and prove that their versioned
+//! topics and metadata wire format reach the participant facade unchanged.
 
 use phoxal::api;
 use phoxal::bus::{
@@ -23,7 +21,7 @@ fn encoding_string_carries_only_the_codec() {
 /// The revision is folded into the wire key, so the current v0.2 contract
 /// publishes on a key that cannot collide with the immutable v0.1 contract.
 #[test]
-fn contract_body_topic_is_version_qualified_on_the_real_tree() {
+fn endpoint_topic_is_version_qualified_on_the_real_tree() {
     assert_eq!(
         <api::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
         "v0.2/drive/target"
@@ -35,7 +33,7 @@ fn contract_body_topic_is_version_qualified_on_the_real_tree() {
 }
 
 #[test]
-fn bus_metadata_for_a_real_body_round_trips() {
+fn bus_metadata_for_a_real_endpoint_round_trips() {
     let timeline = TimelineId::mint();
     let meta = BusMetadata {
         codec: CodecId::MessagePack.as_u8(),

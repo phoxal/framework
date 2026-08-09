@@ -109,8 +109,8 @@ impl Grid {
 }
 
 struct Api {
-    localize: StateView<api::localize::LocalizationState>,
-    revision: StatePublisher<api::map::Revision>,
+    localize: StateView<api::endpoint::localize::StateEndpoint>,
+    revision: StatePublisher<api::endpoint::map::RevisionEndpoint>,
 }
 
 struct MapState {

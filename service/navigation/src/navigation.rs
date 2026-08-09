@@ -746,8 +746,8 @@ mod tests {
         let first_id = first.next_operation_id().unwrap();
         let second_id = second.next_operation_id().unwrap();
         assert_ne!(first_id, second_id);
-        assert_eq!(first_id.sequence, second_id.sequence);
-        assert_ne!(first_id.producer, second_id.producer);
+        assert_eq!(first_id.sequence(), second_id.sequence());
+        assert_ne!(first_id.producer(), second_id.producer());
     }
 
     #[test]
@@ -756,8 +756,8 @@ mod tests {
         let first = state.next_operation_id().unwrap();
         state.reset();
         let second = state.next_operation_id().unwrap();
-        assert_eq!(first.producer, second.producer);
-        assert_eq!(second.sequence, first.sequence + 1);
+        assert_eq!(first.producer(), second.producer());
+        assert_eq!(second.sequence(), first.sequence() + 1);
     }
 
     #[test]
@@ -917,17 +917,17 @@ mod tests {
             Duration::from_secs(2),
         )
         .expect("build cancel querier");
-        let localization = StatePublisher::<api::localize::LocalizationState>::new(
+        let localization = StatePublisher::<api::endpoint::localize::StateEndpoint>::new(
             bus.clone(),
             &api::topic::owner().localize().state(),
         )
         .expect("build localization publisher");
-        let map_revision = StatePublisher::<api::map::Revision>::new(
+        let map_revision = StatePublisher::<api::endpoint::map::RevisionEndpoint>::new(
             bus.clone(),
             &api::topic::owner().map().revision(),
         )
         .expect("build map revision publisher");
-        let results = StreamReceiver::<api::navigation::Result>::new(
+        let results = StreamReceiver::<api::endpoint::navigation::ResultEndpoint>::new(
             &bus,
             &api::topic::client().navigation().result(),
         )
