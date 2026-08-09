@@ -1,15 +1,15 @@
-//! The role-bounded publisher handles.
+//! The endpoint-kind publisher handles.
 //!
 //! Each handle wraps the same private `Outbox` publish path - encode, build
-//! provenance, enqueue - and differs only in the contract marker it is bounded
+//! provenance, enqueue - and differs only in the endpoint marker it is bounded
 //! by and the robot time that marker permits it to express.
 
 use std::marker::PhantomData;
 
 use crate::abi::{Codec, MessagePack};
 use crate::contract::{
-    CommandContract, ContractBody, DeliveryFamily, DiagnosticContract, MeasurementContract,
-    StateContract, StreamContract, WorldClockContract,
+    DeliveryFamily, DiagnosticContract, EndpointDescriptor, EventContract, SampleContract,
+    SetpointContract, StateContract, StreamContract, WorldClockContract,
 };
 use crate::error::{BusError, Result};
 use crate::handle::stamp::StepStamp;
@@ -19,37 +19,37 @@ use crate::time::{CaptureStamp, TimeWindow};
 use crate::topic::{Publish, Topic};
 
 /// The shared publish path: encode, build provenance, enqueue. Private, so the
-/// only public way to reach it is through a role-bounded publisher.
-struct Outbox<B> {
+/// only public way to reach it is through an endpoint-kind publisher.
+struct Outbox<E> {
     bus: BusHandle,
     key: String,
     family: DeliveryFamily,
     metric: RuntimeMetricHandle,
-    _body: PhantomData<fn() -> B>,
+    _endpoint: PhantomData<fn() -> E>,
 }
 
 // Manual (not `#[derive(Clone)]`) so cloning never spuriously requires
-// `B: Clone` - every field it actually holds is `Clone` regardless of `B`. All
+// `E: Clone` - every field it actually holds is `Clone` regardless of `E`. All
 // real operations take `&self`, so a clone is just a second handle to the same
 // publish key on the same session (the runner's `Arc<Self::Api>`
 // snapshot-sharing relies on every `Api` field type being cheaply `Clone` this
 // way).
-impl<B> Clone for Outbox<B> {
+impl<E> Clone for Outbox<E> {
     fn clone(&self) -> Self {
         Outbox {
             bus: self.bus.clone(),
             key: self.key.clone(),
             family: self.family,
             metric: self.metric.clone(),
-            _body: PhantomData,
+            _endpoint: PhantomData,
         }
     }
 }
 
-impl<B: ContractBody> Outbox<B> {
-    fn new(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
+impl<E: EndpointDescriptor> Outbox<E> {
+    fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
         let topic_key = topic.publish_key()?;
-        let family = B::DELIVERY;
+        let family = E::KIND.delivery_family();
         let metric = bus
             .runtime_metrics()?
             .register_outbound(topic_key, outbound_capacity(family));
@@ -59,14 +59,14 @@ impl<B: ContractBody> Outbox<B> {
             key,
             family,
             metric,
-            _body: PhantomData,
+            _endpoint: PhantomData,
         })
     }
 
     /// Encode `body`, build the [`BusMetadata`](crate::metadata::BusMetadata),
     /// and admit it to the family-specific outbound lane. Returns immediately;
     /// no publisher path blocks the step loop.
-    fn emit(&self, produced_at: Option<TimeWindow>, body: B) -> Result<()> {
+    fn emit(&self, produced_at: Option<TimeWindow>, body: E::Payload) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
         let metadata = self.bus.metadata(produced_at)?;
         self.bus.enqueue(
@@ -95,15 +95,15 @@ macro_rules! role_publisher {
         /// The role marker is a bound on the *type*, not just on its methods,
         /// so naming the wrong publisher for a contract is rejected where the
         /// `Api` struct declares the field - the earliest and clearest place.
-        pub struct $name<B: $bound>(Outbox<B>);
+        pub struct $name<E: $bound>(Outbox<E>);
 
-        impl<B: $bound> Clone for $name<B> {
+        impl<E: $bound> Clone for $name<E> {
             fn clone(&self) -> Self {
                 $name(self.0.clone())
             }
         }
 
-        impl<B: $bound> $name<B> {
+        impl<E: $bound> $name<E> {
             /// Build the handle over a topic.
             ///
             /// The author-facing path is the matching `ctx.*_publisher(...)`
@@ -112,7 +112,7 @@ macro_rules! role_publisher {
             /// [`crate::handle::stamp`]'s module docs for the full statement of
             /// what that does and does not close.
             #[doc(hidden)]
-            pub fn new(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
+            pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
                 Ok($name(Outbox::new(bus, topic)?))
             }
         }
@@ -132,8 +132,8 @@ role_publisher!(
 );
 
 role_publisher!(
-    MeasurementPublisher,
-    MeasurementContract,
+    SamplePublisher,
+    SampleContract,
     "Publishes a sensor observation with its capture stamp.\n\nThe driver owns \
      mapping its device clock into robot time - including reset, drift, \
      wraparound, batching, and exposure-versus-readout semantics - and says so \
@@ -142,9 +142,9 @@ role_publisher!(
 );
 
 role_publisher!(
-    CommandPublisher,
-    CommandContract,
-    "Sends a command.\n\nA command is a request, not an observation: it \
+    SetpointPublisher,
+    SetpointContract,
+    "Sends a setpoint.\n\nA setpoint is actionable intent, not an observation: it \
      expresses no robot time. The owning service stamps its own observation and \
      applies the result at a logical step."
 );
@@ -180,9 +180,9 @@ impl<B: WorldClockContract> Clone for WorldClockPublisher<B> {
     }
 }
 
-impl<B: StateContract> StatePublisher<B> {
+impl<E: StateContract> StatePublisher<E> {
     /// Publish `body` as the state this step produced.
-    pub fn publish(&self, step: &impl StepStamp, body: B) -> Result<()> {
+    pub fn publish(&self, step: &impl StepStamp, body: E::Payload) -> Result<()> {
         self.0.emit(Some(TimeWindow::exact(step.instant())), body)
     }
 }
@@ -199,28 +199,28 @@ impl<B: WorldClockContract> WorldClockPublisher<B> {
     }
 
     /// Publish `body` as the state this step produced.
-    pub fn publish(&self, step: &impl StepStamp, body: B) -> Result<()> {
+    pub fn publish(&self, step: &impl StepStamp, body: B::Payload) -> Result<()> {
         self.0.emit(Some(TimeWindow::exact(step.instant())), body)
     }
 }
 
-impl<B: MeasurementContract> MeasurementPublisher<B> {
+impl<E: SampleContract> SamplePublisher<E> {
     /// Publish `body` as captured at `stamp`.
-    pub fn publish(&self, stamp: CaptureStamp, body: B) -> Result<()> {
+    pub fn publish(&self, stamp: CaptureStamp, body: E::Payload) -> Result<()> {
         self.0.emit(stamp.into_window(), body)
     }
 }
 
-impl<B: CommandContract> CommandPublisher<B> {
+impl<E: SetpointContract> SetpointPublisher<E> {
     /// Send `body` to the contract's owning service.
-    pub fn send(&self, body: B) -> Result<()> {
+    pub fn send(&self, body: E::Payload) -> Result<()> {
         self.0.emit(None, body)
     }
 }
 
-impl<B: StreamContract> StreamPublisher<B> {
+impl<E: StreamContract> StreamPublisher<E> {
     /// Send one ordered stream chunk without blocking the step loop.
-    pub fn send(&self, body: B) -> Result<()> {
+    pub fn send(&self, body: E::Payload) -> Result<()> {
         self.0.emit(None, body).map_err(|error| match error {
             BusError::Saturated { topic, .. } => BusError::WouldBlock { topic },
             error => error,
@@ -228,10 +228,45 @@ impl<B: StreamContract> StreamPublisher<B> {
     }
 }
 
-impl<B: DiagnosticContract> DiagnosticPublisher<B> {
+impl<E: DiagnosticContract> DiagnosticPublisher<E> {
     /// Publish `body`.
-    pub fn publish(&self, body: B) -> Result<()> {
+    pub fn publish(&self, body: E::Payload) -> Result<()> {
         self.0.emit(None, body)
+    }
+}
+
+/// Transitional pre-#1002 name for [`SamplePublisher`].
+pub type MeasurementPublisher<E> = SamplePublisher<E>;
+
+/// Transitional pre-#1002 name for [`SetpointPublisher`].
+pub type CommandPublisher<E> = SetpointPublisher<E>;
+
+/// Publishes a state-temporal event at a logical step. Events use ordered
+/// stream admission, so a receiver can observe order and explicit gaps while
+/// the event payload remains a plain serde value.
+pub struct EventPublisher<E: EventContract>(Outbox<E>);
+
+impl<E: EventContract> Clone for EventPublisher<E> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<E: EventContract> EventPublisher<E> {
+    /// Build an event publisher over a generated endpoint topic.
+    #[doc(hidden)]
+    pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
+        Ok(Self(Outbox::new(bus, topic)?))
+    }
+
+    /// Publish the event produced at this logical step.
+    pub fn publish(&self, step: &impl StepStamp, body: E::Payload) -> Result<()> {
+        self.0
+            .emit(Some(TimeWindow::exact(step.instant())), body)
+            .map_err(|error| match error {
+                BusError::Saturated { topic, .. } => BusError::WouldBlock { topic },
+                error => error,
+            })
     }
 }
 
@@ -239,8 +274,8 @@ impl<B: DiagnosticContract> DiagnosticPublisher<B> {
 mod tests {
     use super::*;
     use crate::contract::{
-        ApiVersion, CommandContract, DeliveryFamily, MeasurementContract, SetpointDeliveryContract,
-        StateContract, StreamContract, TopicRole,
+        ApiVersion, CommandContract, ContractBody, DeliveryFamily, MeasurementContract,
+        SetpointDeliveryContract, StateContract, StreamContract, TopicRole,
     };
     use crate::error::BusError;
     use crate::handle::subscriber::SetpointReceiver;
@@ -347,7 +382,7 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("stream-would-block"))
             .await
             .unwrap();
-        let topic = Topic::<Publish<StreamChunk>>::new_static(StreamChunk::TOPIC);
+        let topic = Topic::<Publish<StreamChunk>>::new_static(<StreamChunk as ContractBody>::TOPIC);
         let publisher = StreamPublisher::<StreamChunk>::new(bus.clone(), &topic).unwrap();
         let error = publisher
             .send(StreamChunk(vec![0; OUTBOUND_MAX_BYTES + 1]))
@@ -362,23 +397,25 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("semantic-admission"))
             .await
             .unwrap();
-        let state =
-            StatePublisher::<StateChunk>::new(bus.clone(), &Topic::new_static(StateChunk::TOPIC))
-                .unwrap();
+        let state = StatePublisher::<StateChunk>::new(
+            bus.clone(),
+            &Topic::new_static(<StateChunk as ContractBody>::TOPIC),
+        )
+        .unwrap();
         let setpoint = CommandPublisher::<SetpointChunk>::new(
             bus.clone(),
-            &Topic::new_static(SetpointChunk::TOPIC),
+            &Topic::new_static(<SetpointChunk as ContractBody>::TOPIC),
         )
         .unwrap();
         let setpoint_receiver = SetpointReceiver::new(
             &bus,
-            &Topic::<Subscribe<SetpointChunk>>::new_static(SetpointChunk::TOPIC),
+            &Topic::<Subscribe<SetpointChunk>>::new_static(<SetpointChunk as ContractBody>::TOPIC),
         )
         .await
         .unwrap();
         let sample = MeasurementPublisher::<SampleChunk>::new(
             bus.clone(),
-            &Topic::new_static(SampleChunk::TOPIC),
+            &Topic::new_static(<SampleChunk as ContractBody>::TOPIC),
         )
         .unwrap();
         let pause = bus
@@ -387,7 +424,7 @@ mod tests {
             .expect("test drain can be held before admission");
         let stream = StreamPublisher::<StreamChunk>::new(
             bus.clone(),
-            &Topic::new_static(StreamChunk::TOPIC),
+            &Topic::new_static(<StreamChunk as ContractBody>::TOPIC),
         )
         .unwrap();
 
@@ -412,7 +449,7 @@ mod tests {
             BusError::WouldBlock { .. }
         ));
 
-        let full_stream_key = bus.full_key(StreamChunk::TOPIC);
+        let full_stream_key = bus.full_key(<StreamChunk as ContractBody>::TOPIC);
         let positions: Vec<_> = bus
             .test_queued_stream_metadata(&full_stream_key)
             .into_iter()
@@ -434,20 +471,38 @@ mod tests {
                 })
                 .expect("publisher metric row")
         };
-        assert_eq!(row(StateChunk::TOPIC).count, 3);
-        assert_eq!(row(StateChunk::TOPIC).latest_overwrites, 2);
-        assert_eq!(row(StateChunk::TOPIC).high_water_depth, 1);
-        assert_eq!(row(SetpointChunk::TOPIC).count, 3);
-        assert_eq!(row(SetpointChunk::TOPIC).latest_overwrites, 2);
-        assert_eq!(row(SetpointChunk::TOPIC).high_water_depth, 1);
-        assert_eq!(row(SampleChunk::TOPIC).count, OUTBOUND_CAPACITY as u64 + 1);
-        assert_eq!(row(SampleChunk::TOPIC).bounded_evictions, 1);
+        assert_eq!(row(<StateChunk as ContractBody>::TOPIC).count, 3);
         assert_eq!(
-            row(SampleChunk::TOPIC).high_water_depth,
+            row(<StateChunk as ContractBody>::TOPIC).latest_overwrites,
+            2
+        );
+        assert_eq!(row(<StateChunk as ContractBody>::TOPIC).high_water_depth, 1);
+        assert_eq!(row(<SetpointChunk as ContractBody>::TOPIC).count, 3);
+        assert_eq!(
+            row(<SetpointChunk as ContractBody>::TOPIC).latest_overwrites,
+            2
+        );
+        assert_eq!(
+            row(<SetpointChunk as ContractBody>::TOPIC).high_water_depth,
+            1
+        );
+        assert_eq!(
+            row(<SampleChunk as ContractBody>::TOPIC).count,
+            OUTBOUND_CAPACITY as u64 + 1
+        );
+        assert_eq!(
+            row(<SampleChunk as ContractBody>::TOPIC).bounded_evictions,
+            1
+        );
+        assert_eq!(
+            row(<SampleChunk as ContractBody>::TOPIC).high_water_depth,
             OUTBOUND_CAPACITY as u64
         );
-        assert_eq!(row(StreamChunk::TOPIC).count, OUTBOUND_CAPACITY as u64);
-        assert_eq!(row(StreamChunk::TOPIC).drops, 1);
+        assert_eq!(
+            row(<StreamChunk as ContractBody>::TOPIC).count,
+            OUTBOUND_CAPACITY as u64
+        );
+        assert_eq!(row(<StreamChunk as ContractBody>::TOPIC).drops, 1);
         assert_eq!(
             bus.health()
                 .outbound_drops

@@ -4,13 +4,14 @@
 //!
 //! - [`stamp`] - the step tokens that let a publisher express robot time, and
 //!   the timeline authority that mints world steps.
-//! - [`publisher`] - the four role-bounded publisher handles, plus the
-//!   framework's own world-clock publisher.
+//! - [`publisher`] - the endpoint-kind publisher handles, plus the framework's
+//!   own world-clock publisher.
 //! - [`subscriber`] - the receiving side: [`Observed`](subscriber::Observed),
 //!   [`StateView`](subscriber::StateView), and the delivery-specific
 //!   [`SetpointReceiver`](subscriber::SetpointReceiver),
 //!   [`SampleReceiver`](subscriber::SampleReceiver), and
-//!   [`StreamReceiver`](subscriber::StreamReceiver).
+//!   [`StreamReceiver`](subscriber::StreamReceiver), plus ordered
+//!   [`EventReceiver`](subscriber::EventReceiver).
 //! - [`querier`] - the caller side of the request/response leg.
 //!
 //! This module itself owns only the vocabulary all four share: turning one
@@ -29,11 +30,11 @@
 //!   [`WorldStepToken`](stamp::WorldStepToken) a
 //!   [`TimelineAuthority`](stamp::TimelineAuthority) mints for the world
 //!   authority alone.
-//! - [`MeasurementPublisher<B>`](publisher::MeasurementPublisher) publishes with
+//! - [`SamplePublisher<B>`](publisher::SamplePublisher) publishes with
 //!   a [`CaptureStamp`](crate::time::CaptureStamp) the driver derived from its
 //!   device clock, and honestly represents an untranslated capture rather than
 //!   inventing one.
-//! - [`CommandPublisher<B>`](publisher::CommandPublisher) and
+//! - [`SetpointPublisher<B>`](publisher::SetpointPublisher) and
 //!   [`DiagnosticPublisher<B>`](publisher::DiagnosticPublisher) express no robot
 //!   time at all.
 //!
@@ -81,20 +82,20 @@ pub mod subscriber;
 use zenoh::sample::Sample;
 
 use crate::abi::{Codec, CodecId, EncodingError, EncodingMetadata, MessagePack};
-use crate::contract::ContractBody;
+use crate::contract::EndpointDescriptor;
 use crate::error::{BusError, MetadataProblem, Result};
 use crate::metadata::BusMetadata;
 
-/// Decode one Zenoh sample into a body of `B`, validating the codec before
+/// Decode one Zenoh sample into the payload of endpoint `E`, validating the codec before
 /// touching the payload.
 ///
 /// Contract identity is not checked here: it is guaranteed by the Zenoh key
 /// itself, and this function is only ever invoked for samples received on a
-/// subscription already scoped to `B`'s version-qualified topic.
-pub(crate) fn decode_sample<B: ContractBody>(
+/// subscription already scoped to `E`'s version-qualified topic.
+pub(crate) fn decode_sample<E: EndpointDescriptor>(
     sample: &Sample,
     topic: &str,
-) -> Result<(B, BusMetadata)> {
+) -> Result<(E::Payload, BusMetadata)> {
     let malformed = |problem: MetadataProblem| BusError::metadata(topic, problem);
 
     let encoding: EncodingMetadata = sample
@@ -128,7 +129,7 @@ pub(crate) fn decode_sample<B: ContractBody>(
         });
     }
 
-    let body = MessagePack::decode::<B>(sample.payload().to_bytes().as_ref())?;
+    let body = MessagePack::decode::<E::Payload>(sample.payload().to_bytes().as_ref())?;
     Ok((body, metadata))
 }
 

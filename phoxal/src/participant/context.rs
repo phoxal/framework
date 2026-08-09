@@ -8,12 +8,13 @@ use std::time::Duration;
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
 use crate::ParticipantAssetResolver;
 use crate::bus::{
-    AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
-    DiagnosticContract, DiagnosticPublisher, MeasurementContract, MeasurementPublisher, Observed,
-    Publish, Querier, RobotInstant, SampleDeliveryContract, SampleReceiver, ServeQuery,
-    SetpointDeliveryContract, SetpointReceiver, StateContract, StateDeliveryContract,
-    StatePublisher, StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher,
-    StreamReceiver, Subscribe, TimelineId, Topic, WorldClockContract,
+    AskQuery, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
+    DiagnosticPublisher, EventContract, EventPublisher, EventReceiver, MeasurementPublisher,
+    Observed, Publish, Querier, RobotInstant, SampleContract, SampleDeliveryContract,
+    SamplePublisher, SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract,
+    SetpointPublisher, SetpointReceiver, StateContract, StateDeliveryContract, StatePublisher,
+    StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher, StreamReceiver,
+    Subscribe, TimelineId, Topic, WorldClockContract,
 };
 use crate::model::Robot;
 use crate::participant::api::Participant;
@@ -214,18 +215,39 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(StatePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn measurement_publisher<B: MeasurementContract<Api = R::ContractApi>>(
+    pub fn sample_publisher<B: SampleContract<Api = R::ContractApi>>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<SamplePublisher<B>> {
+        Ok(SamplePublisher::new(self.bus.clone(), &topic)?)
+    }
+
+    pub fn measurement_publisher<B: SampleContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<MeasurementPublisher<B>> {
-        Ok(MeasurementPublisher::new(self.bus.clone(), &topic)?)
+        Ok(self.sample_publisher(topic)?)
     }
 
-    pub fn command_publisher<B: CommandContract<Api = R::ContractApi>>(
+    pub fn setpoint_publisher<B: SetpointContract<Api = R::ContractApi>>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<SetpointPublisher<B>> {
+        Ok(SetpointPublisher::new(self.bus.clone(), &topic)?)
+    }
+
+    pub fn command_publisher<B: SetpointContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<CommandPublisher<B>> {
-        Ok(CommandPublisher::new(self.bus.clone(), &topic)?)
+        Ok(self.setpoint_publisher(topic)?)
+    }
+
+    pub fn event_publisher<B: EventContract<Api = R::ContractApi>>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<EventPublisher<B>> {
+        Ok(EventPublisher::new(self.bus.clone(), &topic)?)
     }
 
     pub fn stream_publisher<B: StreamContract<Api = R::ContractApi>>(
@@ -259,7 +281,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     #[doc(hidden)]
     pub async fn state_view_with_admission<
         B: StateDeliveryContract<Api = R::ContractApi>,
-        F: Fn(&Observed<B>) -> bool + Send + Sync + 'static,
+        F: Fn(&Observed<B::Payload>) -> bool + Send + Sync + 'static,
     >(
         &mut self,
         topic: Topic<Subscribe<B>>,
@@ -278,6 +300,18 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<SetpointReceiver<B>> {
         let handle = SetpointReceiver::new(&self.bus, &topic).await?;
+        let retained = handle.timeline_retention();
+        self.register_timeline_retention(move |timeline| {
+            retained.retain(timeline);
+        });
+        Ok(handle)
+    }
+
+    pub async fn event_receiver<B: EventContract<Api = R::ContractApi>>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<EventReceiver<B>> {
+        let handle = EventReceiver::new(&self.bus, &topic).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
             retained.retain(timeline);
