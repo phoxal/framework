@@ -381,7 +381,7 @@ pub trait ContractBody:
     const DELIVERY: DeliveryFamily;
 }
 
-/// Compatibility descriptor for the pre-#1002 body-owned contract surface.
+/// Compatibility descriptor for the legacy body-owned contract surface.
 ///
 /// Keeping this implementation here lets the bus migrate independently from
 /// the generated API crate: old bodies remain usable as `EndpointDescriptor`s,

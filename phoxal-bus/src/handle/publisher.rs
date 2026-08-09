@@ -235,10 +235,10 @@ impl<E: DiagnosticContract> DiagnosticPublisher<E> {
     }
 }
 
-/// Transitional pre-#1002 name for [`SamplePublisher`].
+/// Transitional legacy name for [`SamplePublisher`].
 pub type MeasurementPublisher<E> = SamplePublisher<E>;
 
-/// Transitional pre-#1002 name for [`SetpointPublisher`].
+/// Transitional legacy name for [`SetpointPublisher`].
 pub type CommandPublisher<E> = SetpointPublisher<E>;
 
 /// Publishes a state-temporal event at a logical step. Events use ordered
