@@ -42,7 +42,7 @@ const COMPONENT_ESTOP_STALE: Duration = Duration::from_secs(1);
 /// One declared emergency stop and the subscription carrying its state.
 struct BoundEmergencyStop {
     reference: CapabilityRef,
-    state: StateView<api::component::emergency_stop::StateEndpoint>,
+    state: StateView<api::endpoint::component::emergency_stop::StateEndpoint>,
 }
 
 /// Aggregated emergency-stop state across every declared component.
@@ -105,14 +105,14 @@ impl EmergencyStopLatch {
 }
 
 pub(crate) struct Api {
-    manual: SetpointReceiver<api::motion::ManualEndpoint>,
-    autonomous: StateView<api::navigation::CandidateEndpoint>,
+    manual: SetpointReceiver<api::endpoint::motion::ManualEndpoint>,
+    autonomous: StateView<api::endpoint::navigation::CandidateEndpoint>,
     _navigation_ready: phoxal::bus::ParticipantReadyObserver,
     _safety_ready: phoxal::bus::ParticipantReadyObserver,
     component_estops: Vec<BoundEmergencyStop>,
-    safety_constraints: StateView<api::safety::ConstraintsEndpoint>,
-    drive: SetpointPublisher<api::drive::TargetEndpoint>,
-    state: StatePublisher<api::motion::StateEndpoint>,
+    safety_constraints: StateView<api::endpoint::safety::ConstraintsEndpoint>,
+    drive: SetpointPublisher<api::endpoint::drive::TargetEndpoint>,
+    state: StatePublisher<api::endpoint::motion::StateEndpoint>,
 }
 
 pub(crate) struct MotionState {

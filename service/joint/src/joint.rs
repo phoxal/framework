@@ -102,7 +102,7 @@ struct BoundEncoder {
 
 pub(crate) struct Api {
     encoders: Vec<BoundEncoder>,
-    states: BTreeMap<JointId, EventPublisher<api::joint::StateEndpoint>>,
+    states: BTreeMap<JointId, EventPublisher<api::endpoint::joint::StateEndpoint>>,
 }
 
 #[phoxal::service(api = Api)]

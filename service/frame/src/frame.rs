@@ -37,8 +37,8 @@ struct TrackedJoint {
 
 pub(crate) struct Api {
     joints: Vec<TrackedJoint>,
-    tree: StatePublisher<api::frame::TreeEndpoint>,
-    static_pub: StatePublisher<api::frame::StaticTransformsEndpoint>,
+    tree: StatePublisher<api::endpoint::frame::TreeEndpoint>,
+    static_pub: StatePublisher<api::endpoint::frame::StaticTransformsEndpoint>,
 }
 
 /// The transform tree: the fixed edges, the parent and joint each frame hangs

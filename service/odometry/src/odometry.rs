@@ -119,7 +119,7 @@ impl Pose {
 pub(crate) struct Api {
     left: Vec<BoundEncoder>,
     right: Vec<BoundEncoder>,
-    state: StatePublisher<api::odometry::StateEndpoint>,
+    state: StatePublisher<api::endpoint::odometry::StateEndpoint>,
 }
 
 pub(crate) struct OdometryState {

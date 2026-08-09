@@ -18,8 +18,8 @@ use phoxal::prelude::*;
 const LOCALIZE_STALE: Duration = Duration::from_secs(1);
 
 pub(crate) struct Api {
-    odometry: StateView<api::odometry::StateEndpoint>,
-    state: StatePublisher<api::localize::StateEndpoint>,
+    odometry: StateView<api::endpoint::odometry::StateEndpoint>,
+    state: StatePublisher<api::endpoint::localize::StateEndpoint>,
 }
 
 pub(crate) struct LocalizeState {

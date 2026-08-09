@@ -45,7 +45,7 @@
 //! use phoxal::prelude::*;
 //!
 //! struct Api {
-//!     state:  StateView<api::drive::State>,         // keep-last view of the drive state
+//!     state:  StateView<api::endpoint::drive::StateEndpoint>, // keep-last drive state
 //!     target: SetpointPublisher<api::endpoint::drive::TargetEndpoint>, // commanded drive target
 //! }
 //!

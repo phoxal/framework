@@ -39,13 +39,13 @@ struct CompletedOperation {
 }
 
 pub(crate) struct Api {
-    localize: StateView<api::localize::StateEndpoint>,
-    map_revision: StateView<api::map::RevisionEndpoint>,
+    localize: StateView<api::endpoint::localize::StateEndpoint>,
+    map_revision: StateView<api::endpoint::map::RevisionEndpoint>,
     frontier_requests: tokio::sync::mpsc::Sender<FrontierIoRequest>,
-    state: StatePublisher<api::navigation::StateEndpoint>,
-    progress: StatePublisher<api::navigation::ProgressEndpoint>,
-    result: EventPublisher<api::navigation::ResultEndpoint>,
-    candidate: StatePublisher<api::navigation::CandidateEndpoint>,
+    state: StatePublisher<api::endpoint::navigation::StateEndpoint>,
+    progress: StatePublisher<api::endpoint::navigation::ProgressEndpoint>,
+    result: EventPublisher<api::endpoint::navigation::ResultEndpoint>,
+    candidate: StatePublisher<api::endpoint::navigation::CandidateEndpoint>,
 }
 
 pub(crate) struct NavigationState {
