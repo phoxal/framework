@@ -111,7 +111,7 @@ pub(crate) struct Api {
     _safety_ready: phoxal::bus::ParticipantReadyObserver,
     component_estops: Vec<BoundEmergencyStop>,
     safety_constraints: StateView<api::safety::ConstraintsEndpoint>,
-    drive: CommandPublisher<api::drive::TargetEndpoint>,
+    drive: SetpointPublisher<api::drive::TargetEndpoint>,
     state: StatePublisher<api::motion::StateEndpoint>,
 }
 
@@ -258,7 +258,7 @@ impl Participant for Motion {
                         },
                     )
                     .await?,
-                drive: ctx.command_publisher(api::topic::client().drive().target())?,
+                drive: ctx.setpoint_publisher(api::topic::client().drive().target())?,
                 state: ctx.state_publisher(api::topic::owner().motion().state())?,
             },
         ))
