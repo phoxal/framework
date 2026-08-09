@@ -2,7 +2,6 @@
 //! capabilities to subscribe to, and resolves each to its mount frame.
 
 use phoxal::Result;
-use phoxal::SourceRef;
 use phoxal::api;
 use phoxal::model::Robot;
 use phoxal::model::component::capability::Capability;
@@ -12,7 +11,7 @@ use phoxal::model::identity::{CapabilityRef, ComponentInstanceId, LinkId};
 pub(crate) struct SensorBinding {
     pub(crate) capability: CapabilityRef,
     /// The validated dotted source identity carried by perception batches.
-    pub(crate) source: SourceRef,
+    pub(crate) source: api::perception::SourceRef,
     /// The link the capability is mounted on, which is the frame its
     /// observations are expressed in.
     pub(crate) frame_id: LinkId,
@@ -40,7 +39,7 @@ impl SensorBinding {
             .into_iter()
             .map(|capability| -> Result<Self> {
                 Ok(Self {
-                    source: SourceRef::parse(capability.to_string())?,
+                    source: api::perception::SourceRef::parse(capability.to_string())?,
                     frame_id: robot.link_target_frame(&capability)?,
                     capability,
                 })

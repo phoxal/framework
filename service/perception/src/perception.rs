@@ -303,7 +303,7 @@ impl PerceptionState {
         now: RobotInstant,
     ) -> Result<
         Option<(
-            phoxal::SourceRef,
+            api::perception::SourceRef,
             TimeWindow,
             Vec<api::perception::Detection>,
         )>,
@@ -469,7 +469,6 @@ fn drain_capture_latest_per_source<B: phoxal::bus::ContractBody + SampleDelivery
 
 #[cfg(test)]
 mod tests {
-    use phoxal::SourceRef;
     use phoxal::bus::{RobotInstant, TimeWindow, Timed, TimelineId};
     use phoxal::model::identity::{CapabilityId, CapabilityRef, ComponentInstanceId, LinkId};
 
@@ -491,7 +490,7 @@ mod tests {
         let component = ComponentInstanceId::new("front_camera").unwrap();
         let capability = CapabilityId::new("rgb").unwrap();
         SensorBinding {
-            source: SourceRef::parse("front_camera.rgb").unwrap(),
+            source: api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
             capability: CapabilityRef::new(component, capability),
             frame_id: LinkId::new("camera_link"),
         }
