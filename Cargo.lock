@@ -2484,6 +2484,7 @@ version = "0.55.0"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
+ "phoxal-runtime-contract",
  "rmp-serde",
  "serde",
 ]
