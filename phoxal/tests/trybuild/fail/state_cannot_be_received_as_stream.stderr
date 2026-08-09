@@ -1,0 +1,66 @@
+error[E0277]: the trait bound `phoxal::api::drive::State: StreamDeliveryContract` is not satisfied
+  --> tests/trybuild/fail/state_cannot_be_received_as_stream.rs:14:30
+   |
+14 |             .stream_receiver(api::topic::client().drive().state())
+   |              --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamDeliveryContract` is not implemented for `phoxal::api::drive::State`
+   |              |
+   |              required by a bound introduced by this call
+   |
+   = help: the following other types implement trait `StreamDeliveryContract`:
+             Chunk
+             Event
+             JointState
+             phoxal::api::navigation::Result
+             phoxal::api::simulation::Clock
+             phoxal_api::v0_1::joint::JointState
+             phoxal_api::v0_1::logs::Event
+             phoxal_api::v0_1::simulation::Clock
+note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
+  --> src/participant/context.rs
+   |
+   |     pub async fn stream_receiver<B: StreamDeliveryContract<Api = R::ContractApi>>(
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::stream_receiver`
+
+error[E0277]: the trait bound `phoxal::api::drive::State: StreamDeliveryContract` is not satisfied
+  --> tests/trybuild/fail/state_cannot_be_received_as_stream.rs:13:22
+   |
+13 |           let _state = ctx
+   |  ______________________^
+14 | |             .stream_receiver(api::topic::client().drive().state())
+   | |__________________________________________________________________^ the trait `StreamDeliveryContract` is not implemented for `phoxal::api::drive::State`
+   |
+   = help: the following other types implement trait `StreamDeliveryContract`:
+             Chunk
+             Event
+             JointState
+             phoxal::api::navigation::Result
+             phoxal::api::simulation::Clock
+             phoxal_api::v0_1::joint::JointState
+             phoxal_api::v0_1::logs::Event
+             phoxal_api::v0_1::simulation::Clock
+note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
+  --> src/participant/context.rs
+   |
+   |     pub async fn stream_receiver<B: StreamDeliveryContract<Api = R::ContractApi>>(
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::stream_receiver`
+
+error[E0277]: the trait bound `phoxal::api::drive::State: StreamDeliveryContract` is not satisfied
+  --> tests/trybuild/fail/state_cannot_be_received_as_stream.rs:15:14
+   |
+15 |             .await?;
+   |              ^^^^^ the trait `StreamDeliveryContract` is not implemented for `phoxal::api::drive::State`
+   |
+   = help: the following other types implement trait `StreamDeliveryContract`:
+             Chunk
+             Event
+             JointState
+             phoxal::api::navigation::Result
+             phoxal::api::simulation::Clock
+             phoxal_api::v0_1::joint::JointState
+             phoxal_api::v0_1::logs::Event
+             phoxal_api::v0_1::simulation::Clock
+note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
+  --> src/participant/context.rs
+   |
+   |     pub async fn stream_receiver<B: StreamDeliveryContract<Api = R::ContractApi>>(
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::stream_receiver`

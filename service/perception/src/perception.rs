@@ -30,9 +30,9 @@ const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_nanos(
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 
 pub(crate) struct Api {
-    cameras: Vec<Subscriber<api::component::camera::Frame>>,
-    depths: Vec<Subscriber<api::component::depth::Frame>>,
-    localization: Subscriber<api::localize::LocalizationState>,
+    cameras: Vec<SampleReceiver<api::component::camera::Frame>>,
+    depths: Vec<SampleReceiver<api::component::depth::Frame>>,
+    localization: StateView<api::localize::LocalizationState>,
     detections: StatePublisher<api::perception::Detections>,
     state: StatePublisher<api::perception::State>,
 }
@@ -91,16 +91,16 @@ impl Participant for Perception {
 
         let mut cameras = Vec::with_capacity(camera_sources.len());
         for source in &camera_sources {
-            cameras.push(ctx.subscriber(source.camera_topic()).await?);
+            cameras.push(ctx.sample_receiver(source.camera_topic()?).await?);
         }
 
         let mut depths = Vec::with_capacity(depth_sources.len());
         for source in &depth_sources {
-            depths.push(ctx.subscriber(source.depth_topic()).await?);
+            depths.push(ctx.sample_receiver(source.depth_topic()?).await?);
         }
 
         let localization = ctx
-            .subscriber(api::topic::client().localize().state())
+            .state_view(api::topic::client().localize().state())
             .await?;
         // Perception OWNS the `perception` node (detections + state telemetry)
         // -> owner builder; sensor frames and `localize/state` are
@@ -187,7 +187,11 @@ impl PerceptionState {
     fn drain_inputs(&mut self, api: &Api) {
         drain_capture_latest_per_source(&api.cameras, &mut self.latest_cameras);
         drain_latest_per_source(&api.depths, &mut self.latest_depths);
-        drain_latest(&api.localization, &mut self.latest_localization);
+        if let Some(observed) = api.localization.observed()
+            && let Some(at) = observed.metadata.produced_exactly_at()
+        {
+            self.latest_localization = Some(Timed::new(observed.body.clone(), at));
+        }
     }
 
     /// Classify the camera input without collapsing missing, stale, and
@@ -416,8 +420,8 @@ fn valid_camera_frame(frame: &api::component::camera::Frame) -> bool {
 /// A sample published without one cannot be aged against this step's clock, so
 /// it is dropped rather than held as if it were current; that leaves the
 /// previous slot untouched, which the freshness gate will then age out.
-fn drain_latest<B: phoxal::bus::ContractBody>(
-    subscriber: &Subscriber<B>,
+fn drain_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
+    subscriber: &SampleReceiver<B>,
     slot: &mut Option<Timed<B>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
@@ -431,8 +435,8 @@ fn drain_latest<B: phoxal::bus::ContractBody>(
 /// caller can publish an explicit invalid-input health reason. The old helper
 /// above remains exact-only for depth/localization consumers that still need an
 /// exact robot instant for their existing math.
-fn drain_capture_latest<B: phoxal::bus::ContractBody>(
-    subscriber: &Subscriber<B>,
+fn drain_capture_latest<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
+    subscriber: &SampleReceiver<B>,
     slot: &mut Option<Captured<B>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
@@ -445,8 +449,8 @@ fn drain_capture_latest<B: phoxal::bus::ContractBody>(
 
 /// [`drain_latest`] across index-coupled subscribers and slots, one slot per
 /// bound sensor.
-fn drain_latest_per_source<B: phoxal::bus::ContractBody>(
-    subscribers: &[Subscriber<B>],
+fn drain_latest_per_source<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
+    subscribers: &[SampleReceiver<B>],
     slots: &mut [Option<Timed<B>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {
@@ -454,8 +458,8 @@ fn drain_latest_per_source<B: phoxal::bus::ContractBody>(
     }
 }
 
-fn drain_capture_latest_per_source<B: phoxal::bus::ContractBody>(
-    subscribers: &[Subscriber<B>],
+fn drain_capture_latest_per_source<B: phoxal::bus::ContractBody + SampleDeliveryContract>(
+    subscribers: &[SampleReceiver<B>],
     slots: &mut [Option<Captured<B>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {

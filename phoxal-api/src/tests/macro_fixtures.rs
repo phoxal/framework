@@ -22,7 +22,12 @@ mod reused_var_name {
 
     #[test]
     fn nested_reused_var_carries_each_level_independently() {
-        let topic = v0_1::topic::client().outer("a").inner("b").event();
+        let topic = v0_1::topic::client()
+            .outer("a")
+            .expect("valid outer segment")
+            .inner("b")
+            .expect("valid inner segment")
+            .event();
         assert_eq!(topic.key(), "v0.1/outer/a/inner/b/event");
     }
 }
@@ -153,7 +158,11 @@ mod protocol_tree {
             "fixture/run/{execution}/progress"
         );
         assert_eq!(
-            fixture::topic::client().run("x7f").progress().key(),
+            fixture::topic::client()
+                .run("x7f")
+                .expect("valid run segment")
+                .progress()
+                .key(),
             "fixture/run/x7f/progress"
         );
         // A query's request and response share the one key, as in API mode.
@@ -171,11 +180,31 @@ mod protocol_tree {
         assert_publish(fixture::topic::client().connect().hello());
         assert_subscribe(fixture::topic::owner().connect().hello());
 
-        assert_subscribe(fixture::topic::client().run("x7f").progress());
-        assert_publish(fixture::topic::owner().run("x7f").progress());
+        assert_subscribe(
+            fixture::topic::client()
+                .run("x7f")
+                .expect("valid run segment")
+                .progress(),
+        );
+        assert_publish(
+            fixture::topic::owner()
+                .run("x7f")
+                .expect("valid run segment")
+                .progress(),
+        );
 
-        assert_ask(fixture::topic::client().run("x7f").snapshot());
-        assert_serve(fixture::topic::owner().run("x7f").snapshot());
+        assert_ask(
+            fixture::topic::client()
+                .run("x7f")
+                .expect("valid run segment")
+                .snapshot(),
+        );
+        assert_serve(
+            fixture::topic::owner()
+                .run("x7f")
+                .expect("valid run segment")
+                .snapshot(),
+        );
     }
 
     /// The schema tag is inside the payload, where the developer put it - the

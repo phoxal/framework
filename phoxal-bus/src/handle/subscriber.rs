@@ -1,8 +1,8 @@
 //! The receiving side: a decoded sample, a keep-last-1 view, and a drop-oldest
 //! ring, plus the background subscription task all three share.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,12 +11,12 @@ use tokio::sync::Notify;
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::contract::{ContractBody, DeliveryFamily};
-use crate::error::{BusError, Result};
+use crate::error::{BusError, KeyProblem, Result};
 use crate::handle::decode_sample;
 use crate::lock::lock;
 use crate::metadata::BusMetadata;
 use crate::runtime_metrics::RuntimeMetricHandle;
-use crate::session::BusHandle;
+use crate::session::{BusFault, BusHandle};
 use crate::time::{LocalInstant, RetiredTimelines, TimeWindow};
 use crate::topic::{Subscribe, Topic};
 
@@ -33,6 +33,18 @@ pub enum ReceiveTerminal {
     Closed,
     /// The transport reported a terminal failure.
     Transport(String),
+}
+
+/// Runner-owned timeline retention callback for a receive handle. This is
+/// cloneable as framework plumbing, while the destructive receiver itself is
+/// intentionally not cloneable on the author surface.
+#[derive(Clone)]
+pub struct TimelineRetention(Arc<dyn Fn(TimelineId) + Send + Sync>);
+
+impl TimelineRetention {
+    pub fn retain(&self, timeline: TimelineId) {
+        (self.0)(timeline);
+    }
 }
 
 struct TerminalState {
@@ -94,18 +106,16 @@ impl<B> Observed<B> {
     }
 }
 
-/// Keep-last-1 view of a topic: the most recently received sample, provenance
+/// Internal keep-last-1 view of a topic used by [`StateView`]: the most recently received sample, provenance
 /// included.
 ///
 /// A background task overwrites a single slot with each decoded sample, so a
-/// reader always sees current state and never a backlog. Use this when only the
-/// latest value matters (the common case for periodic state); reach for
-/// [`Subscriber`] when a bounded history is useful. Decode failures are counted
+/// reader always sees current state and never a backlog. Decode failures are counted
 /// and logged, not stored. Once a timeline barrier is active, possible
 /// replacement timelines are kept in a separate bounded quarantine and remain
 /// invisible until their matching timeline is activated. The subscription lives
-/// until the `Latest` is dropped.
-pub struct Latest<B> {
+/// until the internal view is dropped.
+pub(crate) struct Latest<B> {
     state: Arc<Mutex<LatestState<B>>>,
     metric: RuntimeMetricHandle,
     terminal: Arc<TerminalState>,
@@ -232,7 +242,7 @@ impl<B> Clone for Latest<B> {
 impl<B: ContractBody> Latest<B> {
     /// Build a keep-last view over a topic.
     ///
-    /// The author-facing path is `ctx.latest(...)` in `Participant::setup`.
+    /// The author-facing path is `ctx.state_view(...)` in `Participant::setup`.
     /// `pub` only because the generated api tree and the runner live in other
     /// crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
@@ -317,25 +327,33 @@ impl<B: ContractBody> Latest<B> {
         self.metric.record_timeline_filtered(filtered);
         self.metric.record_latest_depth(occupied);
     }
+
+    pub(crate) fn retention_handle(&self) -> TimelineRetention
+    where
+        B: 'static,
+    {
+        let retained = self.clone();
+        TimelineRetention(Arc::new(move |timeline| retained.retain_timeline(timeline)))
+    }
 }
 
-/// A drop-oldest ring subscription of observed samples.
+/// Internal ring subscription used by the delivery-specific receiver wrappers.
 ///
 /// A background task pushes each decoded sample onto a bounded ring (the depth
 /// is set at construction). When a slow consumer lets the ring fill, the oldest
 /// buffered sample is evicted and `inbound_drops` is bumped - the newest sample
 /// always wins, the backlog never grows without bound. Use this when a short
-/// history is useful; reach for [`Latest`] when only current state matters.
+/// history is useful; [`StateView`] is used when only current state matters.
 /// Decode failures are counted + logged, not buffered. Once a timeline barrier
 /// is active, possible replacement timelines are kept in separate bounded rings
 /// and remain invisible until their matching timeline is activated. The
-/// subscription lives until the last clone of the `Subscriber` is dropped.
+/// subscription lives until the last internal owner is dropped.
 ///
-/// # Cloning shares one queue - `recv`/`try_recv` compete
+/// # Internal cloning shares one queue - `recv`/`try_recv` compete
 ///
-/// [`Clone`] is cheap (both fields are `Arc`, so a clone shares the one
-/// background decode task and the one backing ring), but unlike [`Latest`] a
-/// `Subscriber` is a **destructive** view: [`recv`](Self::recv)/
+/// The private implementation is cheap to clone (both fields are `Arc`, so a
+/// clone shares the one background decode task and the one backing ring), but
+/// it is a **destructive** view: [`recv`](Self::recv)/
 /// [`try_recv`](Self::try_recv) *pop* from the shared ring, delivering each
 /// buffered sample to exactly one caller. So two clones of one `Subscriber`
 /// are two **competing consumers** of the same queue, not two independent
@@ -343,12 +361,9 @@ impl<B: ContractBody> Latest<B> {
 /// it. That is a correctness question for whoever holds the clones, not a
 /// memory-safety one.
 ///
-/// Prefer [`Latest`] whenever a value needs to be read from more than one place
-/// (its `.observed()` is a non-destructive clone from one mutex-serialized
-/// retained slot, so every clone sees the same current value); reserve sharing a
-/// `Subscriber` clone for a deliberate "first clone to poll wins" work-queue
-/// fan-out.
-pub struct Subscriber<B> {
+/// The public `SetpointReceiver`, `SampleReceiver`, and `StreamReceiver` types
+/// intentionally do not expose this clone operation.
+pub(crate) struct Subscriber<B> {
     ring: Arc<Ring<B>>,
     terminal: Arc<TerminalState>,
     _guard: Arc<SubscriptionGuard>,
@@ -370,11 +385,13 @@ impl<B> Clone for Subscriber<B> {
 impl<B: ContractBody> Subscriber<B> {
     /// Build a drop-oldest ring over a topic.
     ///
-    /// The author-facing path is `ctx.subscriber(...)` in `Participant::setup`.
-    /// `pub` only because the generated api tree and the runner live in other
-    /// crates; see [`crate::handle::stamp`]'s module docs.
+    /// `pub` only because the delivery-specific wrappers and the runner live
+    /// in other crates; see [`crate::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        if B::DELIVERY == DeliveryFamily::Stream && topic.key().contains('*') {
+            return Err(BusError::invalid_key(topic.key(), KeyProblem::Wildcard));
+        }
         // Buffering is a contract property, not a tuning knob each caller can
         // guess at. State and setpoint observations retain one newest value;
         // ordered samples and streams use the bounded sample window.
@@ -383,7 +400,19 @@ impl<B: ContractBody> Subscriber<B> {
             .runtime_metrics()?
             .register_subscriber(topic.key(), depth);
         let terminal = Arc::new(TerminalState::new());
-        let ring = Arc::new(Ring::new(depth, metric.clone(), Arc::clone(&terminal)));
+        let policy = match B::DELIVERY {
+            DeliveryFamily::Stream => RingPolicy::Refuse,
+            DeliveryFamily::State
+            | DeliveryFamily::Setpoint
+            | DeliveryFamily::Sample
+            | DeliveryFamily::Query => RingPolicy::DropOldest,
+        };
+        let ring = Arc::new(Ring::new(
+            depth,
+            policy,
+            metric.clone(),
+            Arc::clone(&terminal),
+        ));
         let push = Arc::clone(&ring);
         let drops = bus.clone();
         let topic_owned = topic.key().to_string();
@@ -393,6 +422,12 @@ impl<B: ContractBody> Subscriber<B> {
             move |observed| {
                 let outcome = push.push(observed);
                 if !outcome.accepted {
+                    if outcome.saturated {
+                        drops.signal_fatal(BusFault::SubscriptionReceive {
+                            topic: topic_owned.clone(),
+                            error: "ordered stream receive buffer saturated".to_string(),
+                        });
+                    }
                     return;
                 }
                 if let Some(timeline) = outcome.new_pending_timeline {
@@ -462,6 +497,267 @@ impl<B: ContractBody> Subscriber<B> {
     pub fn retain_timeline(&self, timeline: TimelineId) {
         self.ring.retain_timeline(timeline);
     }
+
+    pub(crate) fn retention_handle(&self) -> TimelineRetention
+    where
+        B: 'static,
+    {
+        let retained = self.clone();
+        TimelineRetention(Arc::new(move |timeline| retained.retain_timeline(timeline)))
+    }
+}
+
+/// Delivery-specific keep-newest view for a state contract.
+#[derive(Clone)]
+pub struct StateView<B> {
+    inner: Latest<B>,
+}
+
+impl<B: crate::contract::StateDeliveryContract> StateView<B> {
+    /// Construct the state view for a typed subscription.
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Latest::new(bus, topic).await?,
+        })
+    }
+
+    pub fn observed(&self) -> Option<Arc<Observed<B>>> {
+        self.inner.observed()
+    }
+
+    pub fn latest(&self) -> Option<B>
+    where
+        B: Clone,
+    {
+        self.inner.latest()
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
+}
+
+/// Delivery-specific receiver for newest-actionable setpoints.
+pub struct SetpointReceiver<B> {
+    inner: Subscriber<B>,
+}
+
+impl<B: crate::contract::SetpointDeliveryContract> SetpointReceiver<B> {
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Subscriber::new(bus, topic).await?,
+        })
+    }
+
+    pub async fn recv(&self) -> Result<Observed<B>> {
+        self.inner.recv().await
+    }
+
+    pub fn try_recv(&self) -> Option<Observed<B>> {
+        self.inner.try_recv()
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
+}
+
+/// Delivery-specific bounded ordered sample receiver.
+pub struct SampleReceiver<B> {
+    inner: Subscriber<B>,
+}
+
+impl<B: crate::contract::SampleDeliveryContract> SampleReceiver<B> {
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Subscriber::new(bus, topic).await?,
+        })
+    }
+
+    pub async fn recv(&self) -> Result<Observed<B>> {
+        self.inner.recv().await
+    }
+
+    pub fn try_recv(&self) -> Option<Observed<B>> {
+        self.inner.try_recv()
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.inner.dropped()
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
+}
+
+/// Delivery-specific ordered stream receiver.
+pub struct StreamReceiver<B> {
+    inner: Subscriber<B>,
+    topic: String,
+    next_positions: Mutex<HashMap<crate::ProducerId, Option<u64>>>,
+}
+
+/// One ordered stream observation, including explicit gap evidence.
+#[derive(Debug)]
+pub enum StreamEvent<B> {
+    Item(Observed<B>),
+    Gap {
+        expected: u64,
+        observed: u64,
+        item: Observed<B>,
+    },
+}
+
+impl<B: crate::contract::StreamDeliveryContract> StreamReceiver<B> {
+    #[doc(hidden)]
+    pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<B>>) -> Result<Self> {
+        Ok(Self {
+            inner: Subscriber::new(bus, topic).await?,
+            topic: topic.key().to_string(),
+            next_positions: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Receive the next ordered item or explicit gap evidence.
+    pub async fn recv_event(&self) -> Result<StreamEvent<B>> {
+        let observed = self.inner.recv().await?;
+        self.classify(observed)
+    }
+
+    /// Receive the next item, failing rather than hiding a detected gap.
+    pub async fn recv(&self) -> Result<Observed<B>> {
+        match self.recv_event().await? {
+            StreamEvent::Item(observed) => Ok(observed),
+            StreamEvent::Gap {
+                expected,
+                observed,
+                item,
+            } => Err(BusError::StreamGap {
+                topic: self.topic.clone(),
+                producer: item.metadata.source.producer(),
+                expected,
+                observed,
+            }),
+        }
+    }
+
+    /// Take the next buffered stream event without waiting.
+    pub fn try_recv_event(&self) -> Result<Option<StreamEvent<B>>> {
+        self.inner
+            .try_recv()
+            .map(|observed| self.classify(observed))
+            .transpose()
+    }
+
+    /// Take the next item, failing rather than hiding a detected gap.
+    pub fn try_recv(&self) -> Result<Option<Observed<B>>> {
+        match self.try_recv_event()? {
+            Some(StreamEvent::Item(observed)) => Ok(Some(observed)),
+            Some(StreamEvent::Gap {
+                expected,
+                observed,
+                item,
+            }) => Err(BusError::StreamGap {
+                topic: self.topic.clone(),
+                producer: item.metadata.source.producer(),
+                expected,
+                observed,
+            }),
+            None => Ok(None),
+        }
+    }
+
+    pub fn terminal(&self) -> Option<ReceiveTerminal> {
+        self.inner.terminal()
+    }
+
+    #[doc(hidden)]
+    pub fn retain_timeline(&self, timeline: TimelineId) {
+        self.inner.retain_timeline(timeline);
+    }
+
+    #[doc(hidden)]
+    pub fn timeline_retention(&self) -> TimelineRetention {
+        self.inner.retention_handle()
+    }
+
+    fn classify(&self, item: Observed<B>) -> Result<StreamEvent<B>> {
+        classify_stream(&self.topic, &self.next_positions, item)
+    }
+}
+
+fn classify_stream<B>(
+    topic: &str,
+    next_positions: &Mutex<HashMap<crate::ProducerId, Option<u64>>>,
+    item: Observed<B>,
+) -> Result<StreamEvent<B>> {
+    let producer = item.metadata.source.producer();
+    let observed = item
+        .metadata
+        .stream_position
+        .as_ref()
+        .ok_or_else(|| BusError::MissingStreamPosition {
+            topic: topic.to_string(),
+        })?
+        .sequence;
+    let mut positions = lock(next_positions);
+    let Some(next) = positions.get_mut(&producer) else {
+        positions.insert(producer, observed.checked_add(1));
+        return Ok(StreamEvent::Item(item));
+    };
+    let expected = (*next).ok_or(BusError::SequenceExhausted)?;
+    if observed == expected {
+        *next = observed.checked_add(1);
+        Ok(StreamEvent::Item(item))
+    } else if observed > expected {
+        *next = observed.checked_add(1);
+        Ok(StreamEvent::Gap {
+            expected,
+            observed,
+            item,
+        })
+    } else {
+        Err(BusError::StreamPositionRegressed {
+            topic: topic.to_string(),
+            producer,
+            expected,
+            observed,
+        })
+    }
 }
 
 const DEFAULT_ORDERED_CAPACITY: usize = 32;
@@ -477,9 +773,16 @@ struct Ring<B> {
     state: Mutex<RingState<B>>,
     notify: Notify,
     cap: usize,
+    policy: RingPolicy,
     dropped: AtomicU64,
     metric: RuntimeMetricHandle,
     terminal: Arc<TerminalState>,
+}
+
+#[derive(Clone, Copy)]
+enum RingPolicy {
+    DropOldest,
+    Refuse,
 }
 
 struct RingState<B> {
@@ -497,11 +800,17 @@ struct PendingTimeline<B> {
 struct RingPush {
     accepted: bool,
     evicted: bool,
+    saturated: bool,
     new_pending_timeline: Option<TimelineId>,
 }
 
 impl<B> Ring<B> {
-    fn new(cap: usize, metric: RuntimeMetricHandle, terminal: Arc<TerminalState>) -> Self {
+    fn new(
+        cap: usize,
+        policy: RingPolicy,
+        metric: RuntimeMetricHandle,
+        terminal: Arc<TerminalState>,
+    ) -> Self {
         Ring {
             state: Mutex::new(RingState {
                 active_timeline: None,
@@ -511,6 +820,7 @@ impl<B> Ring<B> {
             }),
             notify: Notify::new(),
             cap,
+            policy,
             dropped: AtomicU64::new(0),
             metric,
             terminal,
@@ -531,6 +841,7 @@ impl<B> Ring<B> {
                 return RingPush {
                     accepted: false,
                     evicted: false,
+                    saturated: false,
                     new_pending_timeline: None,
                 };
             }
@@ -543,12 +854,23 @@ impl<B> Ring<B> {
             let pending_index = match pending_index {
                 Some(index) => index,
                 None => {
-                    if state.pending.len() == PENDING_TIMELINE_CAPACITY
-                        && let Some(removed) = state.pending.pop_front()
-                    {
-                        self.metric.record_timeline_filtered(
-                            u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
-                        );
+                    if state.pending.len() == PENDING_TIMELINE_CAPACITY {
+                        if matches!(self.policy, RingPolicy::Refuse) {
+                            self.terminal.set(ReceiveTerminal::Transport(
+                                "stream receiver timeline quarantine saturated".to_string(),
+                            ));
+                            return RingPush {
+                                accepted: false,
+                                evicted: false,
+                                saturated: true,
+                                new_pending_timeline: None,
+                            };
+                        }
+                        if let Some(removed) = state.pending.pop_front() {
+                            self.metric.record_timeline_filtered(
+                                u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
+                            );
+                        }
                     }
                     state.pending.push_back(PendingTimeline {
                         timeline,
@@ -560,6 +882,17 @@ impl<B> Ring<B> {
             };
             let pending = &mut state.pending[pending_index];
             if pending.buf.len() == self.cap {
+                if matches!(self.policy, RingPolicy::Refuse) {
+                    self.terminal.set(ReceiveTerminal::Transport(
+                        "stream receiver timeline quarantine saturated".to_string(),
+                    ));
+                    return RingPush {
+                        accepted: false,
+                        evicted: false,
+                        saturated: true,
+                        new_pending_timeline: None,
+                    };
+                }
                 pending.buf.pop_front();
                 self.metric.record_timeline_filtered(1);
             }
@@ -568,12 +901,24 @@ impl<B> Ring<B> {
             return RingPush {
                 accepted: true,
                 evicted: false,
+                saturated: false,
                 new_pending_timeline,
             };
         }
 
         let mut dropped = false;
         if state.buf.len() == self.cap {
+            if matches!(self.policy, RingPolicy::Refuse) {
+                self.terminal.set(ReceiveTerminal::Transport(
+                    "stream receiver buffer saturated".to_string(),
+                ));
+                return RingPush {
+                    accepted: false,
+                    evicted: false,
+                    saturated: true,
+                    new_pending_timeline: None,
+                };
+            }
             state.buf.pop_front();
             dropped = true;
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -588,6 +933,7 @@ impl<B> Ring<B> {
         RingPush {
             accepted: true,
             evicted: dropped,
+            saturated: false,
             new_pending_timeline: None,
         }
     }
@@ -686,10 +1032,12 @@ fn terminal_error(terminal: ReceiveTerminal) -> BusError {
 /// explicitly joins it during close.
 struct SubscriptionGuard {
     cancel: Arc<Notify>,
+    expected: Arc<AtomicBool>,
 }
 
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
+        self.expected.store(true, Ordering::Release);
         self.cancel.notify_one();
     }
 }
@@ -725,6 +1073,7 @@ where
     let shutdown_bus = bus.clone();
     let cancel = Arc::new(Notify::new());
     let cancel_task = Arc::clone(&cancel);
+    let expected = Arc::new(AtomicBool::new(false));
     let terminal_task = Arc::clone(&terminal);
 
     let task = tokio::spawn(async move {
@@ -743,7 +1092,12 @@ where
                 result = subscriber.recv_async() => match result {
                     Ok(sample) => sample,
                     Err(error) => {
-                        terminal_task.set(ReceiveTerminal::Transport(error.to_string()));
+                        let error = error.to_string();
+                        terminal_task.set(ReceiveTerminal::Transport(error.clone()));
+                        health_bus.signal_fatal(BusFault::SubscriptionReceive {
+                            topic: topic_owned.clone(),
+                            error,
+                        });
                         break;
                     }
                 }
@@ -782,14 +1136,18 @@ where
         }
     });
 
-    if let Err(task) = bus.register_worker(task) {
+    if let Err(task) = bus.register_named_worker(
+        format!("subscription:{topic_key}"),
+        Arc::clone(&expected),
+        task,
+    ) {
         // Close won the registration race. Its shutdown notification is
         // already published, so the worker exits cooperatively and this setup
         // path joins it before returning the typed terminal error.
         let _ = task.await;
         return Err(BusError::Closed);
     }
-    Ok(SubscriptionGuard { cancel })
+    Ok(SubscriptionGuard { cancel, expected })
 }
 
 #[cfg(test)]
@@ -800,7 +1158,10 @@ mod tests {
     use serial_test::serial;
 
     use crate::abi::CodecId;
-    use crate::contract::{ApiVersion, ContractBody, DeliveryFamily, StateContract, TopicRole};
+    use crate::contract::{
+        ApiVersion, ContractBody, DeliveryFamily, StateContract, StreamContract,
+        StreamDeliveryContract, TopicRole,
+    };
     use crate::handle::publisher::{CommandPublisher, StatePublisher};
     use crate::metadata::{ParticipantSourceIdentity, SourceAttribution};
     use crate::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
@@ -832,12 +1193,29 @@ mod tests {
 
     impl StateContract for NonCloneBody {}
 
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct OrderedChunk(u8);
+
+    impl ContractBody for OrderedChunk {
+        type Api = NonCloneApi;
+        const NAME: &'static str = "nonclone::stream::Chunk";
+        const VERSION: &'static str = "nonclone";
+        const CONTRACT: &'static str = "stream::Chunk";
+        const TOPIC: &'static str = "nonclone/stream/chunk";
+        const ROLE: TopicRole = TopicRole::Stream;
+        const DELIVERY: DeliveryFamily = DeliveryFamily::Stream;
+    }
+
+    impl StreamContract for OrderedChunk {}
+    impl StreamDeliveryContract for OrderedChunk {}
+
     fn observed(body: u8, line: Option<u64>) -> Observed<u8> {
         Observed {
             body,
             metadata: BusMetadata {
                 codec: CodecId::MessagePack.as_u8(),
                 sequence: u64::from(body),
+                stream_position: None,
                 produced_at: line
                     .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
                 source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
@@ -850,11 +1228,86 @@ mod tests {
         }
     }
 
+    fn stream_observed(body: u8, position: Option<u64>) -> Observed<u8> {
+        let mut observed = observed(body, None);
+        observed.metadata.stream_position =
+            position.map(|sequence| crate::metadata::StreamPosition { sequence });
+        observed
+    }
+
+    #[test]
+    fn stream_positions_surface_gaps_and_reject_regressions() {
+        let positions = Mutex::new(HashMap::new());
+        assert!(matches!(
+            classify_stream("v0.2/test/stream", &positions, stream_observed(1, Some(0)))
+                .expect("first position is ordered"),
+            StreamEvent::Item(Observed { body: 1, .. })
+        ));
+
+        let gap = classify_stream("v0.2/test/stream", &positions, stream_observed(3, Some(2)))
+            .expect("a forward gap is explicit evidence, not a decode failure");
+        assert!(matches!(
+            gap,
+            StreamEvent::Gap {
+                expected: 1,
+                observed: 2,
+                item: Observed { body: 3, .. },
+            }
+        ));
+
+        let regression =
+            classify_stream("v0.2/test/stream", &positions, stream_observed(2, Some(1)))
+                .expect_err("a repeated or reversed position is never ordered stream data");
+        assert!(matches!(
+            regression,
+            BusError::StreamPositionRegressed {
+                expected: 3,
+                observed: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_late_stream_subscription_establishes_its_first_observed_position() {
+        let positions = Mutex::new(HashMap::new());
+        assert!(matches!(
+            classify_stream("v0.2/test/stream", &positions, stream_observed(1, Some(41)),)
+                .expect("traffic before subscription is not receiver-observed loss"),
+            StreamEvent::Item(Observed { body: 1, .. })
+        ));
+        assert!(matches!(
+            classify_stream("v0.2/test/stream", &positions, stream_observed(2, Some(43)),)
+                .expect("a discontinuity after the baseline is explicit"),
+            StreamEvent::Gap {
+                expected: 42,
+                observed: 43,
+                item: Observed { body: 2, .. },
+            }
+        ));
+    }
+
+    #[test]
+    fn a_stream_sample_without_a_position_is_rejected() {
+        let error = classify_stream(
+            "v0.2/test/stream",
+            &Mutex::new(HashMap::new()),
+            stream_observed(1, None),
+        )
+        .expect_err("stream delivery requires a per-topic position");
+        assert!(matches!(error, BusError::MissingStreamPosition { .. }));
+    }
+
     #[test]
     fn ring_counts_each_drop_oldest_eviction_cumulatively() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 1);
-        let ring = Ring::new(1, metric, Arc::new(TerminalState::new()));
+        let ring = Ring::new(
+            1,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::new(TerminalState::new()),
+        );
         let first = ring.push(observed(1, None));
         assert!(first.accepted);
         assert!(!first.evicted);
@@ -876,12 +1329,43 @@ mod tests {
         assert_eq!(row.high_water_depth, 1);
     }
 
+    #[test]
+    fn stream_quarantine_refuses_saturation_without_evicting_an_accepted_chunk() {
+        let metrics = RuntimeMetrics::default();
+        let metric = metrics.register_subscriber("v0.2/test/stream", 2);
+        let terminal = Arc::new(TerminalState::new());
+        let ring = Ring::new(2, RingPolicy::Refuse, metric, Arc::clone(&terminal));
+        ring.retain_timeline(timeline(1));
+
+        assert!(ring.push(observed(1, Some(2))).accepted);
+        assert!(ring.push(observed(2, Some(2))).accepted);
+        assert!(
+            !ring.push(observed(3, Some(2))).accepted,
+            "the third foreign-world chunk must be refused, not replace the first"
+        );
+        assert!(matches!(
+            terminal.get(),
+            Some(ReceiveTerminal::Transport(error))
+                if error.contains("timeline quarantine saturated")
+        ));
+
+        ring.retain_timeline(timeline(2));
+        assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(1));
+        assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(2));
+        assert!(ring.try_pop().is_none());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_terminal_receive_wakes_a_waiter_without_abort() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 1);
         let terminal = Arc::new(TerminalState::new());
-        let ring = Arc::new(Ring::<u8>::new(1, metric, Arc::clone(&terminal)));
+        let ring = Arc::new(Ring::<u8>::new(
+            1,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::clone(&terminal),
+        ));
         let waiting = {
             let ring = Arc::clone(&ring);
             tokio::spawn(async move { ring.recv().await })
@@ -922,14 +1406,42 @@ mod tests {
             .await
             .expect("a non-Clone body still has a retained-state subscription");
         assert!(latest.observed().is_none());
-        owner.close().await.unwrap();
+        owner.close().await;
+    }
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_stream_receiver_rejects_a_wildcard_before_transport() {
+        let (owner, bus) = BusOwner::open(participant_config("wildcard-stream"))
+            .await
+            .unwrap();
+        for key in ["nonclone/stream/*", "nonclone/stream/foo$*/bar"] {
+            let topic = Topic::<Subscribe<OrderedChunk>>::new_owned(key.to_string());
+            let error = match StreamReceiver::new(&bus, &topic).await {
+                Ok(_) => panic!("one position tracker cannot mix concrete stream topics"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                BusError::InvalidKey {
+                    problem: KeyProblem::Wildcard,
+                    ..
+                }
+            ));
+        }
+        owner.close().await;
     }
 
     #[test]
     fn a_sample_expressing_no_robot_time_survives_every_timeline_barrier() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/command", 4);
-        let ring = Ring::new(4, metric, Arc::new(TerminalState::new()));
+        let ring = Ring::new(
+            4,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::new(TerminalState::new()),
+        );
         ring.retain_timeline(timeline(1));
         assert!(ring.push(observed(1, None)).accepted);
         // A reset does not discard a command: it belongs to no world history.
@@ -1050,7 +1562,7 @@ mod tests {
             "every subscription stamps its own observation instant"
         );
 
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     #[serial]
@@ -1152,14 +1664,14 @@ mod tests {
             "late samples from a replaced timeline must be rejected"
         );
         let metrics = bus.take_runtime_metrics().unwrap();
-        assert_eq!(
-            metrics
-                .iter()
-                .filter(|row| row.key.direction == RuntimeDirection::Subscribe)
-                .map(|row| row.timeline_filtered)
-                .sum::<u64>(),
-            5,
-            "quarantine replacement, the replaced Latest value, and both handles' late samples must be disclosed"
+        let timeline_filtered = metrics
+            .iter()
+            .filter(|row| row.key.direction == RuntimeDirection::Subscribe)
+            .map(|row| row.timeline_filtered)
+            .sum::<u64>();
+        assert!(
+            matches!(timeline_filtered, 3 | 5),
+            "coalescing may collapse the two unsent replacement states, but all timeline filtering must be disclosed: {timeline_filtered}"
         );
         assert!(
             metrics
@@ -1174,7 +1686,7 @@ mod tests {
             "quarantine churn and retired samples must not inflate bus health"
         );
 
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     /// A command expresses no robot time, so its envelope carries none - and a
@@ -1203,14 +1715,19 @@ mod tests {
         assert_eq!(observed.metadata.produced_at, None);
         assert_eq!(observed.timeline(), None);
 
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     #[test]
     fn subscriber_activation_is_safe_when_replacement_ingress_races_the_clock() {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 4);
-        let ring = Arc::new(Ring::new(4, metric, Arc::new(TerminalState::new())));
+        let ring = Arc::new(Ring::new(
+            4,
+            RingPolicy::DropOldest,
+            metric,
+            Arc::new(TerminalState::new()),
+        ));
         assert!(ring.push(observed(1, Some(1))).accepted);
         ring.retain_timeline(timeline(1));
         assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(1));

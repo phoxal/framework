@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use phoxal::api;
-use phoxal::bus::ContractBody;
+use phoxal::bus::{ContractBody, SampleDeliveryContract, StateDeliveryContract};
 use phoxal::model::FootprintEnvelope;
 use phoxal::model::component::capability::Capability;
 use phoxal::model::identity::CapabilityRef;
@@ -48,9 +48,14 @@ const OPERATOR_PARTICIPANT_ID: &str = "operator";
 const RANGE_PARTICIPANT_ID: &str = "range-provider";
 
 /// One declared component capability and the subscription carrying its samples.
-struct BoundInput<B> {
+struct BoundSampleInput<B> {
     reference: CapabilityRef,
-    samples: Subscriber<B>,
+    samples: SampleReceiver<B>,
+}
+
+struct BoundStateInput<B> {
+    reference: CapabilityRef,
+    samples: StateView<B>,
 }
 
 /// Health evidence retained from the runner-owned map query loop. A failed
@@ -517,13 +522,13 @@ impl WorldInputs {
 }
 
 pub(crate) struct Api {
-    localization: Subscriber<api::localize::LocalizationState>,
-    map: Subscriber<api::map::Revision>,
+    localization: StateView<api::localize::LocalizationState>,
+    map: StateView<api::map::Revision>,
     map_events: std::sync::Mutex<mpsc::Receiver<MapQueryEvent>>,
     map_epoch: Arc<AtomicU64>,
-    drive: Subscriber<api::drive::State>,
-    batteries: Vec<BoundInput<api::component::battery::State>>,
-    ranges: Vec<BoundInput<api::component::range::Sample>>,
+    drive: StateView<api::drive::State>,
+    batteries: Vec<BoundStateInput<api::component::battery::State>>,
+    ranges: Vec<BoundSampleInput<api::component::range::Sample>>,
     constraints: StatePublisher<api::safety::MotionConstraints>,
     state: StatePublisher<api::safety::State>,
 }
@@ -552,13 +557,13 @@ impl Participant for Safety {
 
         let mut ranges = Vec::with_capacity(range_refs.len());
         for reference in &range_refs {
-            ranges.push(BoundInput {
+            ranges.push(BoundSampleInput {
                 reference: reference.clone(),
                 samples: ctx
-                    .subscriber(
+                    .sample_receiver(
                         api::topic::client()
-                            .component(&reference.component_id)
-                            .range(&reference.capability_id)
+                            .component(&reference.component_id)?
+                            .range(&reference.capability_id)?
                             .sample(),
                     )
                     .await?,
@@ -566,13 +571,13 @@ impl Participant for Safety {
         }
         let mut batteries = Vec::with_capacity(battery_refs.len());
         for reference in &battery_refs {
-            batteries.push(BoundInput {
+            batteries.push(BoundStateInput {
                 reference: reference.clone(),
                 samples: ctx
-                    .subscriber(
+                    .state_view(
                         api::topic::client()
-                            .component(&reference.component_id)
-                            .battery(&reference.capability_id)
+                            .component(&reference.component_id)?
+                            .battery(&reference.capability_id)?
                             .state(),
                     )
                     .await?,
@@ -651,14 +656,14 @@ impl Participant for Safety {
             },
             Api {
                 localization: ctx
-                    .subscriber(api::topic::client().localize().state())
+                    .state_view(api::topic::client().localize().state())
                     .await?,
                 map: ctx
-                    .subscriber(api::topic::client().map().revision())
+                    .state_view(api::topic::client().map().revision())
                     .await?,
                 map_events: std::sync::Mutex::new(map_events),
                 map_epoch,
-                drive: ctx.subscriber(api::topic::client().drive().state()).await?,
+                drive: ctx.state_view(api::topic::client().drive().state()).await?,
                 batteries,
                 ranges,
                 constraints: ctx.state_publisher(api::topic::owner().safety().constraints())?,
@@ -690,12 +695,12 @@ impl Participant for Safety {
             };
             bail!("the host boot clock could not be read");
         };
-        retain_newest_stamped(&mut state.inputs.localization, &api.localization);
-        retain_newest_stamped(&mut state.inputs.map, &api.map);
-        retain_newest_stamped(&mut state.inputs.drive, &api.drive);
+        retain_newest_view(&mut state.inputs.localization, &api.localization);
+        retain_newest_view(&mut state.inputs.map, &api.map);
+        retain_newest_view(&mut state.inputs.drive, &api.drive);
         for bound in &api.batteries {
             if let Some(slot) = state.inputs.batteries.get_mut(&bound.reference) {
-                retain_newest_stamped(slot, &bound.samples);
+                retain_newest_view(slot, &bound.samples);
             }
         }
         for bound in &api.ranges {
@@ -809,11 +814,25 @@ impl Participant for Safety {
 /// fail closed" rule in one place. An empty drain leaves the retained sample
 /// alone - it is the freshness gate, not the arrival of a newer sample, that
 /// decides when a held value stops counting.
-fn retain_newest_stamped<T: ContractBody>(slot: &mut Option<Timed<T>>, subscriber: &Subscriber<T>) {
+fn retain_newest_stamped<T: ContractBody + SampleDeliveryContract>(
+    slot: &mut Option<Timed<T>>,
+    subscriber: &SampleReceiver<T>,
+) {
     while let Some(observed) = subscriber.try_recv() {
         if let Some(at) = observed.metadata.produced_exactly_at() {
             *slot = Some(Timed::new(observed.body, at));
         }
+    }
+}
+
+fn retain_newest_view<T: ContractBody + Clone + StateDeliveryContract>(
+    slot: &mut Option<Timed<T>>,
+    view: &StateView<T>,
+) {
+    if let Some(observed) = view.observed()
+        && let Some(at) = observed.metadata.produced_exactly_at()
+    {
+        *slot = Some(Timed::new(observed.body.clone(), at));
     }
 }
 

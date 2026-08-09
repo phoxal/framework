@@ -117,7 +117,10 @@ mod tests {
     use crate::channel::PendingPublish;
     use phoxal::__private::ParticipantSpec;
     use phoxal::Participant;
-    use phoxal_bus::{BusConfig, BusOwner, MeasurementPublisher, Subscriber, TimelineAuthority};
+    use phoxal_bus::{
+        BusConfig, BusOwner, MeasurementPublisher, SampleReceiver, StreamReceiver,
+        TimelineAuthority,
+    };
     use std::time::Duration;
 
     #[test]
@@ -148,17 +151,19 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let clock_subscriber = Subscriber::<api::simulation::Clock>::new(
+        let clock_subscriber = StreamReceiver::<api::simulation::Clock>::new(
             &bus,
             &api::topic::client().simulation().clock(),
         )
         .await
         .expect("clock subscriber should attach");
-        let encoder_subscriber = Subscriber::<api::component::encoder::Sample>::new(
+        let encoder_subscriber = SampleReceiver::<api::component::encoder::Sample>::new(
             &bus,
             &api::topic::client()
                 .component("left_drive")
+                .expect("valid component segment")
                 .encoder("encoder")
+                .expect("valid capability segment")
                 .sample(),
         )
         .await
@@ -167,7 +172,9 @@ mod tests {
             bus.clone(),
             &api::topic::owner()
                 .component("left_drive")
+                .expect("valid component segment")
                 .encoder("encoder")
+                .expect("valid capability segment")
                 .sample(),
         )
         .expect("encoder publisher should attach");
@@ -211,6 +218,6 @@ mod tests {
             encoder.metadata.sequence < clock.metadata.sequence,
             "all completed-world outputs must enqueue before the matching clock"
         );
-        owner.close().await.expect("bus should close");
+        owner.close().await;
     }
 }

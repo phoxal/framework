@@ -16,7 +16,7 @@
 //! - **A typed contract bus.** Every message is a plain serde body bound to one
 //!   version-qualified contract name. Handles are body-typed
 //!   ([`StatePublisher<T>`](bus::StatePublisher),
-//!   [`Subscriber<T>`](bus::Subscriber), [`Latest<T>`](bus::Latest),
+//!   [`StateView<T>`](bus::StateView), [`SampleReceiver<T>`](bus::SampleReceiver),
 //!   [`Querier<Req, Resp>`](bus::Querier)), so the compiler - not a late check -
 //!   rejects sending the wrong type on a topic. Publishing is additionally
 //!   gated by the contract's *temporal* role: the robot time a publisher can
@@ -45,7 +45,7 @@
 //! use phoxal::prelude::*;
 //!
 //! struct Api {
-//!     state:  Latest<api::drive::State>,            // keep-last view of the drive state
+//!     state:  StateView<api::drive::State>,         // keep-last view of the drive state
 //!     target: CommandPublisher<api::drive::Target>, // commanded drive target
 //! }
 //!
@@ -59,7 +59,7 @@
 //!         _config: Self::Config,
 //!     ) -> Result<(Self::State, Self::Api)> {
 //!         Ok(((), Api {
-//!             state:  ctx.latest(api::topic::client().drive().state()).await?,
+//!             state:  ctx.state_view(api::topic::client().drive().state()).await?,
 //!             target: ctx.command_publisher(api::topic::client().drive().target())?,
 //!         }))
 //!     }
@@ -185,14 +185,16 @@ pub mod bus {
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
         CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
         DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, FixedSourceLease,
-        LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LocalInstant,
-        MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack, Observed,
-        ParticipantId, ParticipantReadyEvent, ParticipantReadyEvents, ParticipantReadyStatus,
-        ParticipantSourceIdentity, ProducerId, Publish, Querier, QueryCode, QueryError,
-        QueryFailure, QueryResult, Result, RobotInstant, RobotTimeError, ServeQuery,
-        SourceAttribution, SourceLabel, StateContract, StatePublisher, StepStamp, StepToken,
-        StreamContract, StreamPublisher, Subscribe, Subscriber, TimeWindow, Timed, TimelineId,
-        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
+        KeySegment, KeySegmentError, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection,
+        LocalInstant, MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack,
+        Observed, ParticipantId, ParticipantReadyEvent, ParticipantReadyEvents,
+        ParticipantReadyStatus, ParticipantSourceIdentity, ProducerId, Publish, Querier, QueryCode,
+        QueryError, QueryFailure, QueryResult, ReceiveTerminal, Result, RobotInstant,
+        RobotTimeError, SampleDeliveryContract, SampleReceiver, ServeQuery,
+        SetpointDeliveryContract, SetpointReceiver, SourceAttribution, SourceLabel, StateContract,
+        StateDeliveryContract, StatePublisher, StateView, StepStamp, StepToken, StreamContract,
+        StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimeWindow, Timed,
+        TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
         WorldClockContract, WorldStepToken,
     };
 }
@@ -274,9 +276,10 @@ pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{
         CaptureStamp, CommandPublisher, DiagnosticPublisher, ExclusiveProducerLease,
-        FixedSourceLease, Latest, LeaseDecision, LocalInstant, MeasurementPublisher, Observed,
-        Querier, QueryError, QueryResult, RobotInstant, StatePublisher, Subscriber, TimeWindow,
-        Timed, TimelineId,
+        FixedSourceLease, LeaseDecision, LocalInstant, MeasurementPublisher, Observed, Querier,
+        QueryError, QueryResult, RobotInstant, SampleDeliveryContract, SampleReceiver,
+        SetpointDeliveryContract, SetpointReceiver, StateDeliveryContract, StatePublisher,
+        StateView, StreamDeliveryContract, StreamReceiver, TimeWindow, Timed, TimelineId,
     };
     pub use crate::{
         AssetId, ManagedTaskPolicy, Participant, ParticipantAssetResolver, QueryContext,

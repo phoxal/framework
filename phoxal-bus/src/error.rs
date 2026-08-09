@@ -88,9 +88,10 @@ pub enum BusError {
         problem: MetadataProblem,
     },
 
-    /// The outbound queue was saturated; the sample was dropped rather than
-    /// blocking the step loop.
-    #[error("outbound queue saturated on '{topic}' ({bound} bound); sample dropped")]
+    /// An ordered outbound lane was saturated; the value was refused rather
+    /// than blocking the step loop. State and setpoint replacement do not use
+    /// this error while their new value fits the global byte bound.
+    #[error("outbound {bound} bound on '{topic}'; value was not accepted")]
     Saturated {
         /// The version-qualified topic key.
         topic: String,
@@ -105,6 +106,32 @@ pub enum BusError {
     WouldBlock {
         /// The version-qualified topic key.
         topic: String,
+    },
+
+    /// An ordered stream skipped one or more positions for this receiver.
+    #[error(
+        "stream gap on '{topic}' from producer {producer}: expected position {expected}, observed {observed}"
+    )]
+    StreamGap {
+        topic: String,
+        producer: ProducerId,
+        expected: u64,
+        observed: u64,
+    },
+
+    /// An ordered stream sample omitted its required per-topic position.
+    #[error("stream sample on '{topic}' has no stream position")]
+    MissingStreamPosition { topic: String },
+
+    /// An ordered stream repeated or regressed a position.
+    #[error(
+        "stream position regressed on '{topic}' from producer {producer}: expected at least {expected}, observed {observed}"
+    )]
+    StreamPositionRegressed {
+        topic: String,
+        producer: ProducerId,
+        expected: u64,
+        observed: u64,
     },
 
     /// A Zenoh session id is not a legal Phoxal identity. Something is
@@ -199,7 +226,7 @@ pub enum MetadataProblem {
 /// Which bound of the outbound queue a publish hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutboundBound {
-    /// The queue already holds its maximum number of samples.
+    /// The ordered lane already holds its maximum number of values.
     Sample,
     /// The queue already holds its maximum number of bytes.
     Byte,

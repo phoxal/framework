@@ -215,6 +215,6 @@ mod tests {
             other => panic!("expected unsupported codec 99, got {other:?}"),
         }
 
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 }

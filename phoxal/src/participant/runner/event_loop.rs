@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::api;
-use crate::bus::{LocalInstant, RobotInstant, StepToken, Subscriber, TimelineId};
+use crate::bus::{LocalInstant, RobotInstant, StepToken, StreamReceiver, TimelineId};
 use crate::participant::api::Participant;
 use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
@@ -49,6 +49,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             RUNTIME_PERFORMANCE_TICK_INTERVAL,
         );
         beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let bus = self.bus.clone();
 
         loop {
             tokio::select! {
@@ -60,6 +61,14 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                 // steady query backlog.
                 biased;
                 _ = shutdown.wait() => return LoopExit::ShutdownRequested,
+                fault = bus.wait_for_fatal() => {
+                    tracing::error!(
+                        target: "phoxal.runtime",
+                        failure = %fault,
+                        "bus transport worker failed; faulting the participant"
+                    );
+                    return LoopExit::BusFaulted(fault);
+                }
                 exit = self.managed_tasks.next_unexpected_exit() => {
                     tracing::error!(
                         target: "phoxal.runtime",
@@ -238,7 +247,7 @@ pub(crate) async fn simulation_clock_feed(
     handle: SimulationClockHandle,
 ) -> crate::Result<()> {
     let topic = api::topic::client().simulation().clock();
-    let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic).await {
+    let subscriber = match StreamReceiver::<api::simulation::Clock>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),
     };

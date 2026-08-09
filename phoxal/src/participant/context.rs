@@ -9,9 +9,11 @@ use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuth
 use crate::ParticipantAssetResolver;
 use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
-    DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
-    Publish, Querier, RobotInstant, ServeQuery, StateContract, StatePublisher, StepToken,
-    StreamContract, StreamPublisher, Subscribe, Subscriber, TimelineId, Topic, WorldClockContract,
+    DiagnosticContract, DiagnosticPublisher, MeasurementContract, MeasurementPublisher, Publish,
+    Querier, RobotInstant, SampleDeliveryContract, SampleReceiver, ServeQuery,
+    SetpointDeliveryContract, SetpointReceiver, StateContract, StateDeliveryContract,
+    StatePublisher, StateView, StepToken, StreamContract, StreamDeliveryContract, StreamPublisher,
+    StreamReceiver, Subscribe, TimelineId, Topic, WorldClockContract,
 };
 use crate::model::Robot;
 use crate::participant::api::Participant;
@@ -216,26 +218,50 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(DiagnosticPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn latest<B: ContractBody<Api = R::ContractApi>>(
+    pub async fn state_view<B: StateDeliveryContract<Api = R::ContractApi>>(
         &mut self,
         topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<Latest<B>> {
-        let handle = Latest::new(&self.bus, &topic).await?;
-        let retained = handle.clone();
+    ) -> crate::Result<StateView<B>> {
+        let handle = StateView::new(&self.bus, &topic).await?;
+        let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
-            retained.retain_timeline(timeline);
+            retained.retain(timeline);
         });
         Ok(handle)
     }
 
-    pub async fn subscriber<B: ContractBody<Api = R::ContractApi>>(
+    pub async fn setpoint_receiver<B: SetpointDeliveryContract<Api = R::ContractApi>>(
         &mut self,
         topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<Subscriber<B>> {
-        let handle = Subscriber::new(&self.bus, &topic).await?;
-        let retained = handle.clone();
+    ) -> crate::Result<SetpointReceiver<B>> {
+        let handle = SetpointReceiver::new(&self.bus, &topic).await?;
+        let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
-            retained.retain_timeline(timeline);
+            retained.retain(timeline);
+        });
+        Ok(handle)
+    }
+
+    pub async fn sample_receiver<B: SampleDeliveryContract<Api = R::ContractApi>>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<SampleReceiver<B>> {
+        let handle = SampleReceiver::new(&self.bus, &topic).await?;
+        let retained = handle.timeline_retention();
+        self.register_timeline_retention(move |timeline| {
+            retained.retain(timeline);
+        });
+        Ok(handle)
+    }
+
+    pub async fn stream_receiver<B: StreamDeliveryContract<Api = R::ContractApi>>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<StreamReceiver<B>> {
+        let handle = StreamReceiver::new(&self.bus, &topic).await?;
+        let retained = handle.timeline_retention();
+        self.register_timeline_retention(move |timeline| {
+            retained.retain(timeline);
         });
         Ok(handle)
     }

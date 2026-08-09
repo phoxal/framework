@@ -137,6 +137,7 @@ pub(crate) fn metadata() -> BusMetadata {
     BusMetadata {
         codec: CodecId::MessagePack.as_u8(),
         sequence: 7,
+        stream_position: None,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline(1), 42))),
         source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
             phoxal_runtime_contract::identity::ParticipantId::new("tester")

@@ -32,7 +32,7 @@ const BUFFER_MAX_ENTRIES: usize = 16_384;
 /// the frame the folded transform is buffered under.
 struct TrackedJoint {
     joint: DynamicJoint,
-    states: Subscriber<api::joint::JointState>,
+    states: StreamReceiver<api::joint::JointState>,
 }
 
 pub(crate) struct Api {
@@ -65,7 +65,7 @@ impl Participant for Frame {
         let mut buffers = BTreeMap::new();
         for dynamic in config.dynamic_joints {
             let states = ctx
-                .subscriber(api::topic::client().joint(&dynamic.joint_id).state())
+                .stream_receiver(api::topic::client().joint(&dynamic.joint_id)?.state())
                 .await?;
             buffers.insert(
                 dynamic.child_frame_id.clone(),
@@ -112,7 +112,7 @@ impl Participant for Frame {
     #[phoxal::step(hz = 50)]
     fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         for tracked in &api.joints {
-            while let Some(observed) = tracked.states.try_recv() {
+            while let Some(observed) = tracked.states.try_recv()? {
                 let Some(at) = observed.metadata.produced_exactly_at() else {
                     continue;
                 };

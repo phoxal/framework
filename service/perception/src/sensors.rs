@@ -56,20 +56,22 @@ impl SensorBinding {
     // them), so these are the client `Subscribe` side from the public builder.
     pub(crate) fn camera_topic(
         &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>> {
-        api::topic::client()
-            .component(&self.capability.component_id)
-            .camera(&self.capability.capability_id)
-            .frame()
+    ) -> phoxal::Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>>>
+    {
+        Ok(api::topic::client()
+            .component(&self.capability.component_id)?
+            .camera(&self.capability.capability_id)?
+            .frame())
     }
 
     pub(crate) fn depth_topic(
         &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::depth::Frame>> {
-        api::topic::client()
-            .component(&self.capability.component_id)
-            .depth(&self.capability.capability_id)
-            .frame()
+    ) -> phoxal::Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::depth::Frame>>>
+    {
+        Ok(api::topic::client()
+            .component(&self.capability.component_id)?
+            .depth(&self.capability.capability_id)?
+            .frame())
     }
 }
 
@@ -98,12 +100,18 @@ mod tests {
 
         assert_eq!(cameras.len(), 3);
         assert_eq!(depths.len(), 1);
-        assert!(
-            cameras.iter().any(|camera| camera.camera_topic().key()
-                == "v0.2/component/front_camera/camera/rgb/frame")
-        );
+        assert!(cameras.iter().any(|camera| {
+            camera
+                .camera_topic()
+                .expect("compiled camera bindings are valid key segments")
+                .key()
+                == "v0.2/component/front_camera/camera/rgb/frame"
+        }));
         assert_eq!(
-            depths[0].depth_topic().key(),
+            depths[0]
+                .depth_topic()
+                .expect("compiled depth bindings are valid key segments")
+                .key(),
             "v0.2/component/front_camera/depth/depth/frame"
         );
     }

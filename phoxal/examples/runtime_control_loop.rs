@@ -12,7 +12,7 @@ use phoxal::prelude::*;
 
 struct Api {
     // Keep-last-1 view of the observed drive state.
-    state: Latest<api::drive::State>,
+    state: StateView<api::drive::State>,
     // Publishes the commanded target.
     target: CommandPublisher<api::drive::Target>,
 }
@@ -29,7 +29,7 @@ impl Participant for AvoidObstacles {
         Ok((
             (),
             Api {
-                state: ctx.latest(api::topic::client().drive().state()).await?,
+                state: ctx.state_view(api::topic::client().drive().state()).await?,
                 target: ctx.command_publisher(api::topic::client().drive().target())?,
             },
         ))

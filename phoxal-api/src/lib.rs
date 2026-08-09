@@ -490,7 +490,7 @@ phoxal_api_tree! {
                 effort_nm: Option<f64>,
             }
 
-            topic state: state JointState;
+            topic state: state JointState delivery stream;
         }
 
         frame {
@@ -862,7 +862,7 @@ phoxal_api_tree! {
                 truncated: u32,
             }
 
-            topic self: diagnostic Event;
+            topic self: diagnostic Event delivery stream;
         }
 
         perception {
@@ -934,7 +934,7 @@ phoxal_api_tree! {
             // by the disjoint `WorldClockContract` this role generates instead
             // of `StateContract`; see
             // `phoxal_bus::contract::WorldClockContract`'s docs.
-            topic clock: world_clock Clock;
+            topic clock: world_clock Clock delivery stream;
         }
 
         // Per-instance component capabilities: framework participant / driver

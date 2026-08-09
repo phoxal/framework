@@ -564,8 +564,8 @@ mod tests {
         assert!(lost, "undeclaring the token must be reported as loss");
 
         drop(observer);
-        observing_owner.close().await.unwrap();
-        declaring_owner.close().await.unwrap();
+        observing_owner.close().await;
+        declaring_owner.close().await;
         router.close().await.unwrap();
     }
 
@@ -608,7 +608,7 @@ mod tests {
         );
 
         drop(observer);
-        observing_owner.close().await.unwrap();
+        observing_owner.close().await;
         router.close().await.unwrap();
     }
 
@@ -685,8 +685,8 @@ mod tests {
             "a dropped observer must not receive further changes"
         );
 
-        observing_owner.close().await.unwrap();
-        declaring_owner.close().await.unwrap();
+        observing_owner.close().await;
+        declaring_owner.close().await;
         router.close().await.unwrap();
     }
 }

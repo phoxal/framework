@@ -39,8 +39,8 @@ struct CompletedOperation {
 }
 
 pub(crate) struct Api {
-    localize: Subscriber<api::localize::LocalizationState>,
-    map_revision: Subscriber<api::map::Revision>,
+    localize: StateView<api::localize::LocalizationState>,
+    map_revision: StateView<api::map::Revision>,
     frontier_requests: tokio::sync::mpsc::Sender<FrontierIoRequest>,
     state: StatePublisher<api::navigation::State>,
     progress: StatePublisher<api::navigation::Progress>,
@@ -319,10 +319,10 @@ impl Participant for Navigation {
             NavigationState::with_frontier_results(ctx.producer(), frontier_results),
             Api {
                 localize: ctx
-                    .subscriber(api::topic::client().localize().state())
+                    .state_view(api::topic::client().localize().state())
                     .await?,
                 map_revision: ctx
-                    .subscriber(api::topic::client().map().revision())
+                    .state_view(api::topic::client().map().revision())
                     .await?,
                 frontier_requests,
                 state: ctx.state_publisher(api::topic::owner().navigation().state())?,
@@ -337,15 +337,15 @@ impl Participant for Navigation {
     fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
         let now = step.now();
         state.last_time = Some(now);
-        while let Some(received) = api.localize.try_recv() {
-            if let Some(at) = received.metadata.produced_exactly_at() {
-                state.last_localize = Some(Timed::new(received.body, at));
-            }
+        if let Some(received) = api.localize.observed()
+            && let Some(at) = received.metadata.produced_exactly_at()
+        {
+            state.last_localize = Some(Timed::new(received.body.clone(), at));
         }
-        while let Some(received) = api.map_revision.try_recv() {
-            if let Some(at) = received.metadata.produced_exactly_at() {
-                state.last_map_revision = Some(Timed::new(received.body, at));
-            }
+        if let Some(received) = api.map_revision.observed()
+            && let Some(at) = received.metadata.produced_exactly_at()
+        {
+            state.last_map_revision = Some(Timed::new(received.body.clone(), at));
         }
 
         // Map submap is transport IO, so its result is incorporated only at a
@@ -728,7 +728,7 @@ mod tests {
     use std::time::Duration;
 
     use phoxal::testing::{ClockSource, TestClock, TestHarness, run_test_harness_with_clock};
-    use phoxal_bus::{BusConfig, BusOwner, Querier, StatePublisher, StepToken, Subscriber};
+    use phoxal_bus::{BusConfig, BusOwner, Querier, StatePublisher, StepToken};
 
     use super::*;
 
@@ -930,7 +930,7 @@ mod tests {
             &api::topic::owner().map().revision(),
         )
         .expect("build map revision publisher");
-        let results = Subscriber::<api::navigation::Result>::new(
+        let results = StreamReceiver::<api::navigation::Result>::new(
             &bus,
             &api::topic::client().navigation().result(),
         )
@@ -1047,7 +1047,7 @@ mod tests {
 
         let (runner_result, ()) = tokio::join!(runner, client);
         runner_result.expect("navigation runner completed cleanly");
-        owner.close().await.expect("close shared bus");
+        owner.close().await;
     }
 
     fn request_id(value: &str) -> api::navigation::RequestId {
@@ -1071,7 +1071,7 @@ mod tests {
     }
 
     async fn await_result(
-        results: &Subscriber<api::navigation::Result>,
+        results: &StreamReceiver<api::navigation::Result>,
         operation_id: api::navigation::NavigationOperationId,
     ) -> api::navigation::Result {
         tokio::time::timeout(Duration::from_secs(2), async {

@@ -229,7 +229,7 @@ mod tests {
         }
 
         server_task.await.unwrap();
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     /// The caller-side deadline is the querier's own, not Zenoh's: a handler
@@ -264,7 +264,7 @@ mod tests {
         }
 
         server_task.await.unwrap();
-        owner.close().await.unwrap();
+        owner.close().await;
     }
 
     #[serial]
@@ -296,7 +296,7 @@ mod tests {
         });
         seen_rx.await.expect("the query reached the responder");
 
-        let report = owner.close().await.unwrap();
+        let report = owner.close().await;
         assert!(report.timed_out.iter().any(|timeout| {
             matches!(timeout, crate::BusCloseTimeout::Operations(count) if *count > 0)
         }));

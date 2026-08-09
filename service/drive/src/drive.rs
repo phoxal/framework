@@ -99,11 +99,13 @@ impl MotorBinding {
     /// The dynamic per-instance motor-command topic for this binding. Drive
     /// CLIENT-publishes motor commands (the motor driver owns/subscribes them), so
     /// this is the `Publish` side from the public builder.
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Publish<api::component::motor::Command>> {
-        api::topic::client()
-            .component(&self.reference.component_id)
-            .motor(&self.reference.capability_id)
-            .command()
+    fn topic(
+        &self,
+    ) -> Result<phoxal::bus::Topic<phoxal::bus::Publish<api::component::motor::Command>>> {
+        Ok(api::topic::client()
+            .component(&self.reference.component_id)?
+            .motor(&self.reference.capability_id)?
+            .command())
     }
 
     /// `wheel_radps` as this motor's own command, turned the way the robot
@@ -354,7 +356,7 @@ impl DriveConfig {
 }
 
 pub(crate) struct Api {
-    target: Subscriber<api::drive::Target>,
+    target: SetpointReceiver<api::drive::Target>,
     ready: phoxal::bus::ParticipantReadyEvents,
     state: StatePublisher<api::drive::State>,
     left_motors: Vec<BoundMotor>,
@@ -440,17 +442,19 @@ impl Participant for Drive {
 
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner builder.
-        let target = ctx.subscriber(api::topic::owner().drive().target()).await?;
+        let target = ctx
+            .setpoint_receiver(api::topic::owner().drive().target())
+            .await?;
         let state = ctx.state_publisher(api::topic::owner().drive().state())?;
 
         let mut left_motors = Vec::with_capacity(config.left.len());
         for binding in config.left {
-            let publisher = ctx.command_publisher(binding.topic())?;
+            let publisher = ctx.command_publisher(binding.topic()?)?;
             left_motors.push(BoundMotor { binding, publisher });
         }
         let mut right_motors = Vec::with_capacity(config.right.len());
         for binding in config.right {
-            let publisher = ctx.command_publisher(binding.topic())?;
+            let publisher = ctx.command_publisher(binding.topic()?)?;
             right_motors.push(BoundMotor { binding, publisher });
         }
 
@@ -858,7 +862,9 @@ mod tests {
         assert_eq!(config.right.len(), 2);
         assert_eq!(config.kinematics.wheel_radius_m, 0.1);
         // Each binding resolves to a concrete dynamic motor topic.
-        let topic = config.left[0].topic();
+        let topic = config.left[0]
+            .topic()
+            .expect("compiled motor bindings are valid key segments");
         assert!(topic.key().starts_with("v0.2/component/"));
         assert!(topic.key().ends_with("/command"));
     }

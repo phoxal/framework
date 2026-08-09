@@ -71,7 +71,11 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/simulation/clock"
     );
     assert_eq!(
-        api::topic::client().logs("drive").topic().key(),
+        api::topic::client()
+            .logs("drive")
+            .expect("valid participant segment")
+            .topic()
+            .key(),
         "v0.1/logs/drive"
     );
     assert_eq!(
@@ -148,12 +152,20 @@ fn owner_builder_produces_identical_keys() {
     assert_eq!(api::topic::owner().map().submap().key(), "v0.1/map/submap");
     assert_eq!(api::topic::owner().video().open().key(), "v0.1/video/open");
     assert_eq!(
-        api::topic::owner().logs("drive").topic().key(),
+        api::topic::owner()
+            .logs("drive")
+            .expect("valid participant segment")
+            .topic()
+            .key(),
         "v0.1/logs/drive"
     );
     // Dynamic node path: the owner builder fills carried vars the same way.
     assert_eq!(
-        api::topic::owner().joint("elbow").state().key(),
+        api::topic::owner()
+            .joint("elbow")
+            .expect("valid joint segment")
+            .state()
+            .key(),
         "v0.1/joint/elbow/state"
     );
 }
@@ -161,12 +173,18 @@ fn owner_builder_produces_identical_keys() {
 #[test]
 fn dynamic_topic_builder_fills_the_key_from_node_vars() {
     assert_eq!(
-        api::topic::client().joint("elbow").state().key(),
+        api::topic::client()
+            .joint("elbow")
+            .expect("valid joint segment")
+            .state()
+            .key(),
         "v0.1/joint/elbow/state"
     );
     let topic = api::topic::client()
         .component("front_left_drive")
+        .expect("valid component segment")
         .motor("motor")
+        .expect("valid capability segment")
         .command();
     assert_eq!(
         topic.key(),
@@ -174,7 +192,9 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
     );
     let enc = api::topic::client()
         .component("front_left_drive")
+        .expect("valid component segment")
         .encoder("encoder")
+        .expect("valid capability segment")
         .sample();
     assert_eq!(
         enc.key(),
@@ -187,7 +207,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("imu0")
+            .expect("valid component segment")
             .accelerometer("accel")
+            .expect("valid capability segment")
             .sample()
             .key(),
         "v0.1/component/imu0/accelerometer/accel/sample"
@@ -195,7 +217,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("imu0")
+            .expect("valid component segment")
             .gyroscope("gyro")
+            .expect("valid capability segment")
             .sample()
             .key(),
         "v0.1/component/imu0/gyroscope/gyro/sample"
@@ -203,7 +227,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("imu0")
+            .expect("valid component segment")
             .magnetometer("mag")
+            .expect("valid capability segment")
             .sample()
             .key(),
         "v0.1/component/imu0/magnetometer/mag/sample"
@@ -211,7 +237,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("imu0")
+            .expect("valid component segment")
             .imu("imu")
+            .expect("valid capability segment")
             .sample()
             .key(),
         "v0.1/component/imu0/imu/imu/sample"
@@ -219,7 +247,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("base")
+            .expect("valid component segment")
             .range("front_tof")
+            .expect("valid capability segment")
             .sample()
             .key(),
         "v0.1/component/base/range/front_tof/sample"
@@ -227,7 +257,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("gps")
+            .expect("valid component segment")
             .gnss("gnss")
+            .expect("valid capability segment")
             .sample()
             .key(),
         "v0.1/component/gps/gnss/gnss/sample"
@@ -235,7 +267,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("head")
+            .expect("valid component segment")
             .camera("front")
+            .expect("valid capability segment")
             .frame()
             .key(),
         "v0.1/component/head/camera/front/frame"
@@ -243,7 +277,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("head")
+            .expect("valid component segment")
             .depth("front_depth")
+            .expect("valid capability segment")
             .frame()
             .key(),
         "v0.1/component/head/depth/front_depth/frame"
@@ -251,7 +287,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("front_lidar")
+            .expect("valid component segment")
             .lidar("scan")
+            .expect("valid capability segment")
             .scan()
             .key(),
         "v0.1/component/front_lidar/lidar/scan/scan"
@@ -259,7 +297,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("radar")
+            .expect("valid component segment")
             .mmwave("mmwave")
+            .expect("valid capability segment")
             .scan()
             .key(),
         "v0.1/component/radar/mmwave/mmwave/scan"
@@ -267,7 +307,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("head")
+            .expect("valid component segment")
             .microphone("mic")
+            .expect("valid capability segment")
             .frame()
             .key(),
         "v0.1/component/head/microphone/mic/frame"
@@ -275,7 +317,9 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("status_panel")
+            .expect("valid component segment")
             .led("status")
+            .expect("valid capability segment")
             .command()
             .key(),
         "v0.1/component/status_panel/led/status/command"
@@ -283,24 +327,26 @@ fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
         api::topic::client()
             .component("safety_panel")
+            .expect("valid component segment")
             .emergency_stop("estop")
+            .expect("valid capability segment")
             .state()
             .key(),
         "v0.1/component/safety_panel/emergency_stop/estop/state"
     );
 }
 
-/// A wildcard fills a dynamic segment for subscription only: it names a set of
-/// keys, and publishing to a set is not a thing a publisher can mean.
 #[test]
-fn dynamic_topic_wildcard_is_subscribe_only() {
+fn dynamic_topic_segments_reject_wildcards_before_topic_creation() {
     let concrete = api::topic::client()
         .component("base")
+        .expect("valid component segment")
         .motor("motor")
+        .expect("valid capability segment")
         .command();
     assert!(concrete.publish_key().is_ok());
 
-    let wildcard = api::topic::client().component("*").motor("motor").command();
-    assert_eq!(wildcard.key(), "v0.1/component/*/motor/motor/command");
-    assert!(wildcard.publish_key().is_err());
+    for invalid in ["", "a/b", "*", "**"] {
+        assert!(api::topic::client().component(invalid).is_err());
+    }
 }

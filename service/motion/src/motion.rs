@@ -41,7 +41,7 @@ const COMPONENT_ESTOP_STALE: Duration = Duration::from_secs(1);
 /// One declared emergency stop and the subscription carrying its state.
 struct BoundEmergencyStop {
     reference: CapabilityRef,
-    state: Subscriber<api::component::emergency_stop::State>,
+    state: StateView<api::component::emergency_stop::State>,
 }
 
 /// Aggregated emergency-stop state across every declared component.
@@ -104,11 +104,11 @@ impl EmergencyStopLatch {
 }
 
 pub(crate) struct Api {
-    manual: Subscriber<api::motion::ManualCommand>,
-    autonomous: Subscriber<api::navigation::Candidate>,
+    manual: SetpointReceiver<api::motion::ManualCommand>,
+    autonomous: StateView<api::navigation::Candidate>,
     navigation_ready: phoxal::bus::ParticipantReadyEvents,
     component_estops: Vec<BoundEmergencyStop>,
-    safety_constraints: Subscriber<api::safety::MotionConstraints>,
+    safety_constraints: StateView<api::safety::MotionConstraints>,
     drive: CommandPublisher<api::drive::Target>,
     state: StatePublisher<api::motion::State>,
 }
@@ -145,10 +145,10 @@ impl Participant for Motion {
             component_estops.push(BoundEmergencyStop {
                 reference: reference.clone(),
                 state: ctx
-                    .subscriber(
+                    .state_view(
                         api::topic::client()
-                            .component(&reference.component_id)
-                            .emergency_stop(&reference.capability_id)
+                            .component(&reference.component_id)?
+                            .emergency_stop(&reference.capability_id)?
                             .state(),
                     )
                     .await?,
@@ -172,15 +172,15 @@ impl Participant for Motion {
             },
             Api {
                 manual: ctx
-                    .subscriber(api::topic::owner().motion().manual())
+                    .setpoint_receiver(api::topic::owner().motion().manual())
                     .await?,
                 autonomous: ctx
-                    .subscriber(api::topic::client().navigation().candidate())
+                    .state_view(api::topic::client().navigation().candidate())
                     .await?,
                 navigation_ready,
                 component_estops,
                 safety_constraints: ctx
-                    .subscriber(api::topic::client().safety().constraints())
+                    .state_view(api::topic::client().safety().constraints())
                     .await?,
                 drive: ctx.command_publisher(api::topic::client().drive().target())?,
                 state: ctx.state_publisher(api::topic::owner().motion().state())?,
@@ -246,36 +246,36 @@ impl Participant for Motion {
                 _ => state.manual_observed_at = Some(observed_at),
             }
         }
-        while let Some(observed) = api.autonomous.try_recv() {
-            if let Some(at) = observed.metadata.produced_exactly_at() {
-                let body = observed.body;
-                let decision = state.autonomous_authority.offer(
-                    observed.metadata.source.participant_source(),
-                    observed.metadata.sequence,
-                    observed.observed_at,
-                    body.clone(),
-                );
-                if !matches!(decision, LeaseDecision::Rejected(_)) {
-                    state.last_autonomous = Some(Timed::new(body, at));
-                }
+        if let Some(observed) = api.autonomous.observed()
+            && let Some(at) = observed.metadata.produced_exactly_at()
+        {
+            let body = observed.body.clone();
+            let decision = state.autonomous_authority.offer(
+                observed.metadata.source.participant_source(),
+                observed.metadata.sequence,
+                observed.observed_at,
+                body.clone(),
+            );
+            if !matches!(decision, LeaseDecision::Rejected(_)) {
+                state.last_autonomous = Some(Timed::new(body, at));
             }
         }
         if state.autonomous_authority.live(host_now, now).is_none() {
             state.last_autonomous = None;
         }
         for bound in &api.component_estops {
-            while let Some(observed) = bound.state.try_recv() {
-                if let Some(at) = observed.metadata.produced_exactly_at() {
-                    state
-                        .estop
-                        .set_component(&bound.reference, observed.body.engaged, at);
-                }
+            if let Some(observed) = bound.state.observed()
+                && let Some(at) = observed.metadata.produced_exactly_at()
+            {
+                state
+                    .estop
+                    .set_component(&bound.reference, observed.body.engaged, at);
             }
         }
-        while let Some(observed) = api.safety_constraints.try_recv() {
-            if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_safety_constraints = Some(Timed::new(observed.body, at));
-            }
+        if let Some(observed) = api.safety_constraints.observed()
+            && let Some(at) = observed.metadata.produced_exactly_at()
+        {
+            state.last_safety_constraints = Some(Timed::new(observed.body.clone(), at));
         }
 
         let safety_runtime = if state

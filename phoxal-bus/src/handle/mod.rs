@@ -7,8 +7,10 @@
 //! - [`publisher`] - the four role-bounded publisher handles, plus the
 //!   framework's own world-clock publisher.
 //! - [`subscriber`] - the receiving side: [`Observed`](subscriber::Observed),
-//!   the keep-last-1 [`Latest`](subscriber::Latest), and the drop-oldest
-//!   [`Subscriber`](subscriber::Subscriber).
+//!   [`StateView`](subscriber::StateView), and the delivery-specific
+//!   [`SetpointReceiver`](subscriber::SetpointReceiver),
+//!   [`SampleReceiver`](subscriber::SampleReceiver), and
+//!   [`StreamReceiver`](subscriber::StreamReceiver).
 //! - [`querier`] - the caller side of the request/response leg.
 //!
 //! This module itself owns only the vocabulary all four share: turning one
@@ -43,21 +45,25 @@
 //! than outside it. Observation time is process-local and receiver-specific, so
 //! it rides on [`Observed`](subscriber::Observed) and never on the wire.
 //!
-//! # Periodic-state QoS
+//! # Delivery-family QoS
 //!
-//! Pub/sub here is tuned for periodic state streams, where the freshest sample
-//! matters more than every sample arriving. Both ends shed load instead of
-//! blocking or growing without bound:
+//! Pub/sub admission is selected by the contract's
+//! [`crate::DeliveryFamily`]. Every
+//! publish returns immediately and the one session-owned drain remains the
+//! only Zenoh publisher:
 //!
-//! - **Publish never blocks.** Every publish MessagePack-encodes the body and
-//!   enqueues it on the bounded outbound queue, returning immediately. A
-//!   saturated queue (sample or byte bound) drops the sample, bumps
-//!   `outbound_drops`, and returns [`BusError::Saturated`] so the caller can
-//!   observe the loss - it never stalls the step loop. Publishing is therefore a
-//!   plain synchronous call: there is nothing to await.
-//! - **Receivers bound their backlog.** `Latest<B>` keeps only the last sample;
-//!   `Subscriber<B>` keeps a drop-oldest ring, evicting the oldest buffered
-//!   sample and bumping `inbound_drops` when a slow consumer lets the ring fill.
+//! - **State and setpoint** keep one newest unsent value per concrete topic.
+//! - **Sample** keeps a bounded ordered lane and evicts its oldest values with
+//!   explicit loss evidence when the lane is full.
+//! - **Stream** keeps a bounded ordered lane and returns [`BusError::WouldBlock`]
+//!   rather than silently evicting an older chunk.
+//! - A body or ordered lane that cannot fit returns [`BusError::Saturated`]
+//!   (stream publishers translate that to `WouldBlock`) without stalling the
+//!   step loop.
+//! - **Receivers bind their backlog by contract.** `StateView<B>` keeps only
+//!   the last sample, setpoints retain one actionable value, samples use a
+//!   bounded drop-oldest ring with loss evidence, and streams refuse to evict
+//!   an older chunk when their ring is saturated.
 //!
 //! Contract identity lives entirely in the Zenoh key - the version is folded
 //! into `<Body as ContractBody>::TOPIC` - so a receiver's per-key subscription

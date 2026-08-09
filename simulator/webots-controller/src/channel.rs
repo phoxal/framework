@@ -48,39 +48,65 @@ const MOTOR_SOURCE_SILENCE: Duration = Duration::from_millis(150);
 /// so a speaker takes every one in order.
 trait CommandBacklog<B> {
     /// The newest queued value; everything it supersedes is dropped.
-    fn take_newest(&self) -> Option<B>;
+    fn take_newest(&self) -> Result<Option<B>>;
 
     /// Everything queued, oldest first.
-    fn take_all(&self) -> Vec<B>;
+    fn take_all(&self) -> Result<Vec<B>>;
 
     /// The newest body together with the trusted transport provenance that
     /// decides whether an actuator may apply it.
-    fn take_newest_observed(&self) -> Option<Observed<B>>;
+    fn take_newest_observed(&self) -> Result<Option<Observed<B>>>;
 }
 
-impl<B: ContractBody> CommandBacklog<B> for Subscriber<B> {
-    fn take_newest(&self) -> Option<B> {
+impl<B: ContractBody + SetpointDeliveryContract> CommandBacklog<B> for SetpointReceiver<B> {
+    fn take_newest(&self) -> Result<Option<B>> {
         let mut newest = None;
         while let Some(received) = self.try_recv() {
             newest = Some(received.body);
         }
-        newest
+        Ok(newest)
     }
 
-    fn take_all(&self) -> Vec<B> {
+    fn take_all(&self) -> Result<Vec<B>> {
         let mut received = Vec::new();
         while let Some(message) = self.try_recv() {
             received.push(message.body);
         }
-        received
+        Ok(received)
     }
 
-    fn take_newest_observed(&self) -> Option<Observed<B>> {
+    fn take_newest_observed(&self) -> Result<Option<Observed<B>>> {
         let mut newest = None;
         while let Some(received) = self.try_recv() {
             newest = Some(received);
         }
-        newest
+        Ok(newest)
+    }
+}
+
+impl<B: ContractBody + StreamDeliveryContract> CommandBacklog<B> for StreamReceiver<B> {
+    fn take_newest(&self) -> Result<Option<B>> {
+        let mut newest = None;
+        while let Some(received) = self.try_recv()? {
+            newest = Some(received.body);
+        }
+        Ok(newest)
+    }
+
+    fn take_all(&self) -> Result<Vec<B>> {
+        let mut received = Vec::new();
+        while let Some(message) = self.try_recv()? {
+            received.push(message.body);
+        }
+        Ok(received)
+    }
+
+    fn take_newest_observed(&self) -> Result<Option<Observed<B>>> {
+        let mut newest = None;
+        while let Some(received) = self.try_recv()? {
+            newest = Some(received);
+        }
+        Ok(newest)
     }
 }
 
@@ -90,7 +116,9 @@ trait SimulatedActuator {
     type Command: ContractBody + Clone;
 
     /// Apply everything the graph sent since the previous step.
-    fn apply_backlog(&mut self, commands: &Subscriber<Self::Command>) -> Result<()>;
+    type Receiver: CommandBacklog<Self::Command>;
+
+    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()>;
 
     /// Apply one already-admitted command body.
     fn apply_body(&mut self, command: Self::Command) -> Result<()>;
@@ -104,9 +132,10 @@ trait SimulatedActuator {
 
 impl SimulatedActuator for NativeMotor {
     type Command = api::component::motor::Command;
+    type Receiver = SetpointReceiver<Self::Command>;
 
-    fn apply_backlog(&mut self, commands: &Subscriber<Self::Command>) -> Result<()> {
-        match commands.take_newest() {
+    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
+        match commands.take_newest()? {
             Some(command) => self.apply(&command),
             None => Ok(()),
         }
@@ -123,9 +152,10 @@ impl SimulatedActuator for NativeMotor {
 
 impl SimulatedActuator for NativeLed {
     type Command = api::component::led::Command;
+    type Receiver = SetpointReceiver<Self::Command>;
 
-    fn apply_backlog(&mut self, commands: &Subscriber<Self::Command>) -> Result<()> {
-        match commands.take_newest() {
+    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
+        match commands.take_newest()? {
             Some(command) => self.apply(&command),
             None => Ok(()),
         }
@@ -138,11 +168,12 @@ impl SimulatedActuator for NativeLed {
 
 impl SimulatedActuator for NativeSpeaker {
     type Command = api::component::speaker::Chunk;
+    type Receiver = StreamReceiver<Self::Command>;
 
-    fn apply_backlog(&mut self, commands: &Subscriber<Self::Command>) -> Result<()> {
+    fn apply_backlog(&mut self, commands: &Self::Receiver) -> Result<()> {
         // Audio chunks move rather than copy: a stream is large, and nothing
         // downstream needs them again.
-        for chunk in commands.take_all() {
+        for chunk in commands.take_all()? {
             self.apply(chunk)?;
         }
         Ok(())
@@ -196,7 +227,7 @@ where
 /// An actuator device and the subscriber carrying what the graph asked of it.
 struct ActuatorChannel<A: SimulatedActuator> {
     device: A,
-    commands: Subscriber<A::Command>,
+    commands: A::Receiver,
     authority: Option<FixedSourceLease<A::Command>>,
     ready: Option<ParticipantReadyEvents>,
 }
@@ -219,11 +250,11 @@ impl<A: SimulatedActuator> ActuatorChannel<A> {
             // retained motor command is still live.  Drain and park before
             // the next Webots step; the runner will surface the latched clock
             // fault as a participant failure.
-            self.commands.take_all();
+            self.commands.take_all()?;
             authority.clear();
             return self.device.park();
         };
-        match self.commands.take_newest_observed() {
+        match self.commands.take_newest_observed()? {
             Some(observed) => {
                 let body = observed.body;
                 let accepted = matches!(
@@ -249,7 +280,7 @@ impl<A: SimulatedActuator> ActuatorChannel<A> {
     fn park(&mut self) -> Result<()> {
         // Whatever the graph sent that the stopped loop will never apply goes
         // with it; leaving it queued would apply it to a later world.
-        self.commands.take_all();
+        self.commands.take_all()?;
         self.device.park()
     }
 }
@@ -382,7 +413,7 @@ pub(crate) struct CapabilityChannel {
 enum CapabilityBinding {
     Motor(ActuatorChannel<NativeMotor>),
     Led(ActuatorChannel<NativeLed>),
-    Speaker(ActuatorChannel<NativeSpeaker>),
+    Speaker(Box<ActuatorChannel<NativeSpeaker>>),
     Encoder(SensorChannel<NativeEncoder>),
     Imu(SensorChannel<NativeImu>),
     Accelerometer(SensorChannel<NativeAccelerometer>),
@@ -414,7 +445,9 @@ impl CapabilityChannel {
         let binding = match spec {
             CapabilitySpec::Motor(spec) => CapabilityBinding::Motor(ActuatorChannel {
                 device: NativeMotor::new(webots, spec)?,
-                commands: ctx.subscriber(component().motor(id).command()).await?,
+                commands: ctx
+                    .setpoint_receiver(component()?.motor(id)?.command())
+                    .await?,
                 authority: Some(FixedSourceLease::new(
                     "component/motor/command",
                     ParticipantId::new("drive")?,
@@ -425,69 +458,76 @@ impl CapabilityChannel {
             }),
             CapabilitySpec::Led(led) => CapabilityBinding::Led(ActuatorChannel {
                 device: NativeLed::new(webots, led)?,
-                commands: ctx.subscriber(component().led(id).command()).await?,
+                commands: ctx
+                    .setpoint_receiver(component()?.led(id)?.command())
+                    .await?,
                 authority: None,
                 ready: None,
             }),
-            CapabilitySpec::Speaker(speaker) => CapabilityBinding::Speaker(ActuatorChannel {
-                device: NativeSpeaker::new(webots, speaker)?,
-                commands: ctx.subscriber(component().speaker(id).stream()).await?,
-                authority: None,
-                ready: None,
-            }),
+            CapabilitySpec::Speaker(speaker) => {
+                CapabilityBinding::Speaker(Box::new(ActuatorChannel {
+                    device: NativeSpeaker::new(webots, speaker)?,
+                    commands: ctx
+                        .stream_receiver(component()?.speaker(id)?.stream())
+                        .await?,
+                    authority: None,
+                    ready: None,
+                }))
+            }
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().encoder(id).sample())?,
+                publisher: ctx.measurement_publisher(component()?.encoder(id)?.sample())?,
             }),
             CapabilitySpec::Imu(spec) => CapabilityBinding::Imu(SensorChannel {
                 device: NativeImu::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().imu(id).sample())?,
+                publisher: ctx.measurement_publisher(component()?.imu(id)?.sample())?,
             }),
             CapabilitySpec::Accelerometer(spec) => {
                 CapabilityBinding::Accelerometer(SensorChannel {
                     device: NativeAccelerometer::new(webots, spec)?,
-                    publisher: ctx.measurement_publisher(component().accelerometer(id).sample())?,
+                    publisher: ctx
+                        .measurement_publisher(component()?.accelerometer(id)?.sample())?,
                 })
             }
             CapabilitySpec::Gyroscope(spec) => CapabilityBinding::Gyroscope(SensorChannel {
                 device: NativeGyroscope::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().gyroscope(id).sample())?,
+                publisher: ctx.measurement_publisher(component()?.gyroscope(id)?.sample())?,
             }),
             CapabilitySpec::Range(spec) => CapabilityBinding::Range(SensorChannel {
                 device: NativeRange::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().range(id).sample())?,
+                publisher: ctx.measurement_publisher(component()?.range(id)?.sample())?,
             }),
             CapabilitySpec::Camera(spec) => CapabilityBinding::Camera(SensorChannel {
                 device: NativeCamera::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().camera(id).frame())?,
+                publisher: ctx.measurement_publisher(component()?.camera(id)?.frame())?,
             }),
             CapabilitySpec::Depth(spec) => CapabilityBinding::Depth(SensorChannel {
                 device: NativeDepth::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().depth(id).frame())?,
+                publisher: ctx.measurement_publisher(component()?.depth(id)?.frame())?,
             }),
             CapabilitySpec::Gnss(spec) => CapabilityBinding::Gnss(SensorChannel {
                 device: NativeGnss::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().gnss(id).sample())?,
+                publisher: ctx.measurement_publisher(component()?.gnss(id)?.sample())?,
             }),
             CapabilitySpec::Magnetometer(spec) => CapabilityBinding::Magnetometer(SensorChannel {
                 device: NativeMagnetometer::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().magnetometer(id).sample())?,
+                publisher: ctx.measurement_publisher(component()?.magnetometer(id)?.sample())?,
             }),
             CapabilitySpec::Lidar(spec) => CapabilityBinding::Lidar(SensorChannel {
                 device: NativeLidar::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().lidar(id).scan())?,
+                publisher: ctx.measurement_publisher(component()?.lidar(id)?.scan())?,
             }),
             CapabilitySpec::Mmwave(spec) => CapabilityBinding::Mmwave(SensorChannel {
                 device: NativeMmwave::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().mmwave(id).scan())?,
+                publisher: ctx.measurement_publisher(component()?.mmwave(id)?.scan())?,
             }),
             CapabilitySpec::Microphone(spec) => CapabilityBinding::Microphone(SensorChannel {
                 device: NativeMicrophone::new(webots, spec)?,
-                publisher: ctx.measurement_publisher(component().microphone(id).frame())?,
+                publisher: ctx.measurement_publisher(component()?.microphone(id)?.frame())?,
             }),
             CapabilitySpec::Battery(spec) => CapabilityBinding::Battery(BatteryChannel {
                 device: NativeBattery::new(spec)?,
-                publisher: ctx.state_publisher(component().battery(id).state())?,
+                publisher: ctx.state_publisher(component()?.battery(id)?.state())?,
             }),
         };
         Ok(Self { reference, binding })

@@ -18,7 +18,7 @@ use phoxal::prelude::*;
 const LOCALIZE_STALE: Duration = Duration::from_secs(1);
 
 pub(crate) struct Api {
-    odometry: Subscriber<api::odometry::State>,
+    odometry: StateView<api::odometry::State>,
     state: StatePublisher<api::localize::LocalizationState>,
 }
 
@@ -37,7 +37,7 @@ impl Participant for Localize {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let odometry = ctx
-            .subscriber(api::topic::client().odometry().state())
+            .state_view(api::topic::client().odometry().state())
             .await?;
         let state = ctx.state_publisher(api::topic::owner().localize().state())?;
 
@@ -56,10 +56,10 @@ impl Participant for Localize {
 
     #[phoxal::step(hz = 20)]
     fn step(&self, api: &Self::Api, step: StepContext, state: &mut Self::State) -> Result<()> {
-        while let Some(observed) = api.odometry.try_recv() {
-            if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_odometry = Some(Timed::new(observed.body, at));
-            }
+        if let Some(observed) = api.odometry.observed()
+            && let Some(at) = observed.metadata.produced_exactly_at()
+        {
+            state.last_odometry = Some(Timed::new(observed.body.clone(), at));
         }
 
         // Publish only from a real, finite, fresh odometry sample, so consumers
