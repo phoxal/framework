@@ -63,7 +63,7 @@ impl<B: Payload, E: SetpointDeliveryContract<Payload = B>> CommandBacklog<B, E>
 
 /// A Webots device the graph drives.
 trait SimulatedActuator {
-    /// The contract body this device is commanded with.
+    /// The endpoint payload this device is commanded with.
     type Command: Payload + Clone;
 
     /// The command receiver bound to this actuator.

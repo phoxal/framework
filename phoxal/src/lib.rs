@@ -14,7 +14,7 @@
 //! Three ideas hold it together:
 //!
 //! - **A typed contract bus.** Every message is a plain serde body bound to one
-//!   version-qualified contract name. Handles are body-typed
+//!   version-qualified contract name. Handles are endpoint-typed
 //!   ([`StatePublisher<T>`](bus::StatePublisher),
 //!   [`StateView<T>`](bus::StateView), [`SampleReceiver<T>`](bus::SampleReceiver),
 //!   [`Querier<Req, Resp>`](bus::Querier)), so the compiler - not a late check -
@@ -129,7 +129,7 @@
 //!   [`StepContext`], and [`Result`].
 //! - [`bus`] - the typed contract vocabulary normal participants need: the
 //!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
-//!   the four non-interchangeable time types, body-typed handles, and
+//!   the four non-interchangeable time types, endpoint-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
 //! - [`model`] - immutable canonical runtime robot facts supplied from the
 //!   finalized `runtime.json`; bundle assembly and host-side reading live in
@@ -174,7 +174,7 @@ pub mod api {
 ///
 /// This is the bus surface a checked participant browses: the contract traits,
 /// the codec, the [`BusMetadata`](bus::BusMetadata) attachment, the four
-/// non-interchangeable time types, the body-typed handles, and side-branded
+/// non-interchangeable time types, the endpoint-typed handles, and side-branded
 /// [`Topic`](bus::Topic) values. Participants build their IO through
 /// [`SetupContext`] and the api-local topic builders, so session construction,
 /// ownership, raw handles, incoming queries, and server queryables have no

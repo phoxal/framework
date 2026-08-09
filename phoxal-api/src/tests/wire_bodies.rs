@@ -278,7 +278,7 @@ fn motor_commands_reject_nonfinite_values_during_deserialization() {
 #[test]
 fn video_open_source_is_canonical_and_validated_during_deserialization() {
     let request = api::video::OpenRequest {
-        source: api::video::VideoSourceRef::parse("front_camera.rgb").unwrap(),
+        source: api::video::SourceRef::parse("front_camera.rgb").unwrap(),
         width_px: Some(640),
         height_px: Some(480),
     };

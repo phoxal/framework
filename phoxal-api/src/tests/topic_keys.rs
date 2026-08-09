@@ -9,7 +9,7 @@ use crate::v0_1 as api;
 /// same version-qualified contract share a key that cannot collide with any
 /// other version's contract of the same leaf name.
 #[test]
-fn contract_body_topic_is_version_qualified() {
+fn endpoint_topic_is_version_qualified() {
     assert_eq!(
         <api::endpoint::drive::StateEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/drive/state"
@@ -39,7 +39,7 @@ fn contract_body_topic_is_version_qualified() {
 /// A dynamic node contributes a `{var}` placeholder to the documented key, at
 /// the position it occupies in the node path.
 #[test]
-fn dynamic_topic_contract_body_topic_is_derived_from_node_path() {
+fn dynamic_endpoint_topic_is_derived_from_node_path() {
     assert_eq!(
         <api::endpoint::component::motor::CommandEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/component/{instance}/motor/{capability}/command"

@@ -1,6 +1,6 @@
 //! Canonical component-capability source references shared by wire domains.
 
-/// The exact camera capability reference accepted by `video/open`.
+/// An exact component-capability source reference.
 ///
 /// This is API-owned because the contract crate intentionally does not depend
 /// upward on the runtime model. It has the same canonical dotted spelling as
@@ -10,19 +10,11 @@
     serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(try_from = "String", into = "String")]
-pub struct VideoSourceRef(String);
+pub struct SourceRef(String);
 
-/// A validated dotted capability source reference.
-///
-/// This is the generic form of [`VideoSourceRef`]. The older name remains a
-/// type alias so the published v0.1 video request keeps the same Rust and wire
-/// surface while newer contracts can reuse the exact same validation without
-/// depending on the runtime model crate.
-pub type SourceRef = VideoSourceRef;
-
-impl VideoSourceRef {
+impl SourceRef {
     /// Construct an already validated wire reference.
-    pub fn parse(value: impl Into<String>) -> Result<Self, InvalidVideoSourceRef> {
+    pub fn parse(value: impl Into<String>) -> Result<Self, InvalidSourceRef> {
         value.into().try_into()
     }
 
@@ -33,44 +25,41 @@ impl VideoSourceRef {
     }
 }
 
-/// Why a `VideoSourceRef` failed its exact wire grammar.
+/// Why a [`SourceRef`] failed its exact wire grammar.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidVideoSourceRef(String);
+pub struct InvalidSourceRef(String);
 
-/// Generic spelling of the validation error for [`SourceRef`].
-pub type InvalidSourceRef = InvalidVideoSourceRef;
-
-impl std::fmt::Display for InvalidVideoSourceRef {
+impl std::fmt::Display for InvalidSourceRef {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "invalid video source reference '{}'; expected component.capability",
+            "invalid source reference '{}'; expected component.capability",
             self.0
         )
     }
 }
 
-impl std::error::Error for InvalidVideoSourceRef {}
+impl std::error::Error for InvalidSourceRef {}
 
-impl TryFrom<String> for VideoSourceRef {
-    type Error = InvalidVideoSourceRef;
+impl TryFrom<String> for SourceRef {
+    type Error = InvalidSourceRef;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let Some((component, capability)) = value.split_once('.') else {
-            return Err(InvalidVideoSourceRef(value));
+            return Err(InvalidSourceRef(value));
         };
         if value.matches('.').count() != 1
             || !valid_video_source_segment(component)
             || !valid_video_source_segment(capability)
         {
-            return Err(InvalidVideoSourceRef(value));
+            return Err(InvalidSourceRef(value));
         }
         Ok(Self(value))
     }
 }
 
-impl From<VideoSourceRef> for String {
-    fn from(value: VideoSourceRef) -> Self {
+impl From<SourceRef> for String {
+    fn from(value: SourceRef) -> Self {
         value.0
     }
 }

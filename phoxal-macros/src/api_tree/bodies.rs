@@ -16,7 +16,7 @@ impl MaterializedTree {
         let mod_name = &self.module;
         let mut node_mods = TokenStream::new();
         for node in &self.nodes {
-            node_mods.extend(node.expand_module(&self.id, "", ""));
+            node_mods.extend(node.expand_module(&self.id, &self.module, "", ""));
         }
 
         let topic_mod = self.expand_topic_module();
@@ -65,7 +65,13 @@ impl MaterializedTree {
 
 impl Node {
     /// Emit one version-local domain facade and the descriptors it owns.
-    fn expand_module(&self, tree_id: &str, family_prefix: &str, key_prefix: &str) -> TokenStream {
+    fn expand_module(
+        &self,
+        tree_id: &str,
+        tree_module: &syn::Ident,
+        family_prefix: &str,
+        key_prefix: &str,
+    ) -> TokenStream {
         let name = &self.name;
         let family_path = self.family_path(family_prefix);
         let node_key_prefix = self.key_prefix(key_prefix);
@@ -86,7 +92,7 @@ impl Node {
                 TopicKind::PubSub(body) => {
                     let payload = &body.path;
                     collect_external_parent(&mut external_parents, payload);
-                    register_semantic_alias(&mut semantic_aliases, payload);
+                    register_semantic_alias(&mut semantic_aliases, payload, tree_module);
                     let delivery_marker = topic.semantic.delivery_marker_trait();
                     let temporal_marker = topic
                         .semantic
@@ -114,8 +120,8 @@ impl Node {
                     let response = &response.path;
                     collect_external_parent(&mut external_parents, request);
                     collect_external_parent(&mut external_parents, response);
-                    register_semantic_alias(&mut semantic_aliases, request);
-                    register_semantic_alias(&mut semantic_aliases, response);
+                    register_semantic_alias(&mut semantic_aliases, request, tree_module);
+                    register_semantic_alias(&mut semantic_aliases, response, tree_module);
                     descriptors.extend(quote! {
                         #[derive(Clone, Copy, Debug)]
                         pub struct #endpoint;
@@ -152,7 +158,7 @@ impl Node {
         let child_mods = self
             .children
             .iter()
-            .map(|child| child.expand_module(tree_id, &family_path, &node_key_prefix))
+            .map(|child| child.expand_module(tree_id, tree_module, &family_path, &node_key_prefix))
             .collect::<TokenStream>();
 
         quote! {
@@ -221,36 +227,25 @@ fn collect_external_parent(
 fn register_semantic_alias(
     aliases: &mut std::collections::BTreeMap<String, syn::Path>,
     path: &syn::Path,
+    tree_module: &syn::Ident,
 ) {
     let Some(last) = path.segments.last() else {
         return;
     };
     let name = last.ident.to_string();
-    let prefer = is_current_version_path(path);
+    let prefer = is_materialized_tree_path(path, tree_module);
     if aliases
         .get(&name)
-        .is_none_or(|existing| prefer && !is_current_version_path(existing))
+        .is_none_or(|existing| prefer && !is_materialized_tree_path(existing, tree_module))
     {
         aliases.insert(name, path.clone());
     }
 }
 
-fn is_current_version_path(path: &syn::Path) -> bool {
-    let mut segments = path.segments.iter();
-    let prefix = [
-        segments.next(),
-        segments.next(),
-        segments.next(),
-        segments.next(),
-    ];
-    prefix
-        .into_iter()
-        .zip(["crate", "domains", "v0_2", ""])
-        .all(|(segment, expected)| {
-            if expected.is_empty() {
-                segment.is_some()
-            } else {
-                segment.is_some_and(|segment| segment.ident == expected)
-            }
-        })
+fn is_materialized_tree_path(path: &syn::Path, tree_module: &syn::Ident) -> bool {
+    path.segments
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|segment| segment.ident == *tree_module)
 }

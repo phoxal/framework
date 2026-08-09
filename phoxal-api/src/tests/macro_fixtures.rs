@@ -1,6 +1,6 @@
-/// The #1002 semantic surface keeps payload ownership in ordinary Rust
-/// modules. The macro only materializes revision-local aliases, descriptors,
-/// and builders around those paths.
+/// The semantic surface keeps payload ownership in ordinary Rust modules. The
+/// macro only materializes revision-local aliases, descriptors, and builders
+/// around those paths.
 mod semantic_surface {
     use phoxal_bus::{
         ApiVersion, EndpointDescriptor, QueryEndpointDescriptor, SampleDeliveryContract,

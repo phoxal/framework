@@ -1,5 +1,5 @@
-error: legacy topic roles `measurement` and `diagnostic` are only available to `phoxal_api_tree!`; use `state`, `sample`, or `event` with an explicit delivery family
- --> tests/trybuild/fail/api_legacy_roles.rs:8:19
+error: expected a semantic endpoint descriptor: `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`
+ --> tests/trybuild/fail/api_legacy_roles.rs:8:27
   |
 8 |             topic sample: measurement Body;
-  |                   ^^^^^^
+  |                           ^^^^^^^^^^^

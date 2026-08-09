@@ -146,8 +146,7 @@ mod tests {
 
     fn request(source: &str) -> api::video::OpenRequest {
         api::video::OpenRequest {
-            source: api::video::VideoSourceRef::parse(source)
-                .expect("test source must be canonical"),
+            source: api::video::SourceRef::parse(source).expect("test source must be canonical"),
             width_px: None,
             height_px: None,
         }
@@ -205,7 +204,7 @@ mod tests {
     #[test]
     fn typed_source_rejects_stream_and_bare_capability_aliases() {
         for alias in ["front_camera_rgb", "rgb", " front_camera.rgb "] {
-            assert!(api::video::VideoSourceRef::parse(alias).is_err(), "{alias}");
+            assert!(api::video::SourceRef::parse(alias).is_err(), "{alias}");
         }
     }
 
@@ -226,7 +225,7 @@ mod tests {
     fn open_rejects_zero_dimensions() {
         let err = state_with(vec![source()])
             .open(&api::video::OpenRequest {
-                source: api::video::VideoSourceRef::parse("front_camera.rgb").unwrap(),
+                source: api::video::SourceRef::parse("front_camera.rgb").unwrap(),
                 width_px: Some(0),
                 height_px: Some(240),
             })
@@ -239,7 +238,7 @@ mod tests {
     fn open_rejects_dimensions_above_the_native_camera_size() {
         let err = state_with(vec![source()])
             .open(&api::video::OpenRequest {
-                source: api::video::VideoSourceRef::parse("front_camera.rgb").unwrap(),
+                source: api::video::SourceRef::parse("front_camera.rgb").unwrap(),
                 width_px: Some(1920),
                 height_px: None,
             })

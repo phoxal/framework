@@ -235,6 +235,29 @@ mod tests {
     }
 
     #[test]
+    fn a_materialized_revision_prefers_its_own_same_named_payload() {
+        let expanded = compact(
+            expand_api(quote! {
+                version v0.9 {
+                    data { topic old: State<crate::versions::v0_9::data::State>; }
+                }
+                latest version v1.0 extends v0.9 {
+                    data { topic new: State<crate::versions::v1_0::data::State>; }
+                }
+            })
+            .expect("API expands"),
+        );
+        assert!(expanded.contains("pub use crate :: versions :: v1_0 :: data :: State as State"));
+        assert_eq!(
+            expanded
+                .matches("pub use crate :: versions :: v0_9 :: data :: State as State")
+                .count(),
+            1,
+            "the inherited payload alias belongs only to its original revision",
+        );
+    }
+
+    #[test]
     fn protocols_keep_their_own_root() {
         let expanded = compact(
             expand_protocol(quote! {

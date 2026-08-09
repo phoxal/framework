@@ -67,10 +67,13 @@ impl SimulatedSensor for NativeDepth {
 
 fn meters_to_u16_mm(meters: f32) -> u16 {
     if !meters.is_finite() || meters <= 0.0 {
-        0
-    } else {
-        (meters * 1000.0).round().clamp(1.0, f32::from(u16::MAX)) as u16
+        return 0;
     }
+    let millimeters = (meters * 1000.0).round();
+    if !(1.0..=f32::from(u16::MAX)).contains(&millimeters) {
+        return 0;
+    }
+    millimeters as u16
 }
 
 #[cfg(test)]
@@ -78,8 +81,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn meters_to_u16_mm_rounds_and_clamps() {
+    fn meters_to_u16_mm_rounds_and_marks_unrepresentable_values_invalid() {
         assert_eq!(meters_to_u16_mm(1.25), 1250);
         assert_eq!(meters_to_u16_mm(f32::NAN), 0);
+        assert_eq!(meters_to_u16_mm(0.0001), 0);
+        assert_eq!(meters_to_u16_mm(70.0), 0);
     }
 }

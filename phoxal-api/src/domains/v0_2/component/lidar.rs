@@ -151,6 +151,26 @@ impl Scan {
         {
             return Err(InvalidScan("lidar points must be finite"));
         }
+        if points
+            .iter()
+            .filter_map(|point| match point {
+                PointSample::Valid(value) => Some(value),
+                PointSample::Invalid => None,
+            })
+            .any(|point| {
+                limits.is_some_and(|limits| {
+                    let norm_m = (f64::from(point[0]).powi(2)
+                        + f64::from(point[1]).powi(2)
+                        + f64::from(point[2]).powi(2))
+                    .sqrt();
+                    norm_m < f64::from(limits.min_m) || norm_m > f64::from(limits.max_m)
+                })
+            })
+        {
+            return Err(InvalidScan(
+                "lidar valid points must be inside radial limits",
+            ));
+        }
         let valid = points
             .iter()
             .filter(|point| matches!(point, PointSample::Valid(_)))
@@ -199,6 +219,32 @@ mod tests {
                 None,
                 Some(ScanQuality { valid_points: 1 }),
                 SensorHealth::Nominal
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cartesian_points_must_obey_the_declared_radial_limits() {
+        let limits = Some(RangeLimits {
+            min_m: 0.5,
+            max_m: 2.0,
+        });
+        assert!(
+            Scan::points(
+                vec![PointSample::Valid([3.0, 0.0, 0.0])],
+                limits,
+                None,
+                SensorHealth::Nominal,
+            )
+            .is_err()
+        );
+        assert!(
+            Scan::points(
+                vec![PointSample::Valid([1.0, 1.0, 0.0])],
+                limits,
+                None,
+                SensorHealth::Nominal,
             )
             .is_ok()
         );

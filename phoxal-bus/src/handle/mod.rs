@@ -1,4 +1,4 @@
-//! Body-typed handles over the version-qualified bus boundary.
+//! Endpoint-typed handles over the version-qualified bus boundary.
 //!
 //! The handles are grouped by what they own:
 //!

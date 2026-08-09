@@ -43,7 +43,7 @@ pub(crate) struct SensorStep {
 /// declares a publish rate, the controller resolves it to a logical-time
 /// deadline schedule once at setup, and every family applies it the same way.
 pub(crate) trait SimulatedSensor {
-    /// The contract body this device produces.
+    /// The endpoint payload this device produces.
     type Sample: phoxal::bus::Payload;
     /// The endpoint carrying [`Self::Sample`].
     type Endpoint: phoxal::bus::EndpointDescriptor<Payload = Self::Sample>;

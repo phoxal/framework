@@ -1,5 +1,5 @@
-error: `phoxal_api!` declares endpoints over normal Rust domain types; move this struct/enum into the version/domain module
- --> tests/trybuild/fail/api_authored_body.rs:6:20
+error: semantic API/protocol trees declare endpoints over ordinary Rust domain types; move this struct/enum into its domain module
+ --> tests/trybuild/fail/api_authored_body.rs:6:13
   |
 6 |             struct Body { value: u8 }
-  |                    ^^^^
+  |             ^^^^^^

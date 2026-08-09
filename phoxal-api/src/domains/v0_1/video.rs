@@ -2,7 +2,7 @@
 #![allow(legacy_derive_helpers)]
 
 #[allow(unused_imports)]
-pub use crate::domains::source::{InvalidVideoSourceRef, VideoSourceRef};
+pub use crate::domains::source::{InvalidSourceRef, SourceRef};
 
 /// Ask to open a video stream for one exact camera capability at an
 /// optional size. The pre-v1 backend currently has no encoded
@@ -10,7 +10,7 @@ pub use crate::domains::source::{InvalidVideoSourceRef, VideoSourceRef};
 /// fabricating a stream identity or lifecycle.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OpenRequest {
-    pub source: VideoSourceRef,
+    pub source: SourceRef,
     pub width_px: Option<u32>,
     pub height_px: Option<u32>,
 }
