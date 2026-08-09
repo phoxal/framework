@@ -148,7 +148,7 @@ impl RobotApi {
     }
 }
 
-mod behavior;
+mod domains;
 
 /// The exact camera capability reference accepted by `video/open`.
 ///

@@ -197,3 +197,4 @@ impl v0_2::navigation::RequestId {
 impl v0_2::component::encoder::Sample {
     pub const STALE_AFTER: Duration = Duration::from_millis(200);
 }
+
