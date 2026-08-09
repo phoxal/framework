@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0](https://github.com/phoxal/framework/compare/phoxal-runtime-contract-v0.55.0...phoxal-runtime-contract-v0.56.0) - 2026-08-09
+
+### Added
+
+- *(api)* [**breaking**] simplify modular Robot API authoring ([#422](https://github.com/phoxal/framework/pull/422))
+- *(bundle)* [**breaking**] separate runtime artifacts from participant instances ([#418](https://github.com/phoxal/framework/pull/418))
+- *(launch)* [**breaking**] enforce strict supervised argv ([#413](https://github.com/phoxal/framework/pull/413))
+- *(bus)* [**breaking**] enforce owner handles and delivery semantics ([#410](https://github.com/phoxal/framework/pull/410))
+- *(api)* [**breaking**] enforce control wire-state invariants
+- *(bundle)* [**breaking**] persist validated runtime documents
+- *(model)* [**breaking**] remove namespace identity ([#400](https://github.com/phoxal/framework/pull/400))
+
+### Fixed
+
+- *(identity)* [**breaking**] enforce execution and source ownership ([#417](https://github.com/phoxal/framework/pull/417))
+- *(runtime)* [**breaking**] enforce static drive topology and motor modes
+
+### Other
+
+- [**breaking**] mechanical code-quality cleanup across the framework ([#398](https://github.com/phoxal/framework/pull/398))
+
 ## [0.55.0](https://github.com/phoxal/framework/compare/phoxal-runtime-contract-v0.54.0...phoxal-runtime-contract-v0.55.0) - 2026-08-06
 
 ### Added
