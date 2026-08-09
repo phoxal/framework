@@ -43,6 +43,8 @@ pub mod session;
 pub mod time;
 pub mod topic;
 
+mod outbound;
+
 #[cfg(test)]
 mod test_support;
 
@@ -85,6 +87,7 @@ pub use liveliness::{
 };
 pub use metadata::{
     BusMetadata, ParticipantSourceIdentity, SourceAttribution, SourceLabel, SourceLabelError,
+    StreamPosition,
 };
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
 #[cfg(feature = "router")]

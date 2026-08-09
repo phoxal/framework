@@ -38,7 +38,7 @@ pub enum RuntimeDirection {
 /// Which bounded buffer a row describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeBufferKind {
-    /// The one session-wide outbound publish queue, viewed per topic.
+    /// The session-owned semantic outbound scheduler, viewed per topic.
     Outbound,
     /// A keep-last-1 slot.
     Latest,
@@ -133,9 +133,7 @@ impl RuntimeMetricHandle {
     pub(crate) fn record_latest(&self, overwrote: bool) {
         self.record_message();
         if overwrote {
-            self.counters
-                .latest_overwrites
-                .fetch_add(1, Ordering::Relaxed);
+            self.record_latest_overwrite();
         }
         // Latest is one occupied slot, not a one-item backlog.
         self.set_inbound_depth(1);
@@ -165,6 +163,24 @@ impl RuntimeMetricHandle {
 
     pub(crate) fn record_subscriber_pop(&self, current_depth: usize) {
         self.set_inbound_depth(u64::try_from(current_depth).unwrap_or(u64::MAX));
+    }
+
+    /// A coalesced outbound state/setpoint value replaced an older unsent
+    /// value. The existing `latest_overwrites` field is intentionally reused:
+    /// it is the wire-facing evidence for any keep-newest slot, regardless of
+    /// whether the slot is on the publish or receive side.
+    pub(crate) fn record_latest_overwrite(&self) {
+        self.counters
+            .latest_overwrites
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A bounded ordered outbound sample was evicted to admit a newer sample.
+    pub(crate) fn record_bounded_eviction(&self) {
+        self.counters
+            .bounded_evictions
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_drop();
     }
 
     pub(crate) fn enqueue_started(&self) {
@@ -215,9 +231,9 @@ pub(crate) struct RuntimeMetrics {
 
 impl RuntimeMetrics {
     pub(crate) fn register_outbound(&self, topic: &str, capacity: usize) -> RuntimeMetricHandle {
-        // Every outbound topic is a per-row view of the same process queue.
-        // Capacity is therefore repeated, never added across publishers/rows.
-        // The queue's separate byte bound is intentionally not a v1 metric.
+        // Every outbound topic is a per-row view of its semantic scheduler
+        // lane. Capacity is therefore repeated, never added across publisher
+        // handles/rows. The scheduler's global byte bound is not a v1 row.
         self.register(
             RuntimeMetricKey {
                 topic: topic.to_string(),
@@ -453,6 +469,19 @@ mod tests {
                     },
                 )
                 .unwrap();
+            // State admission is intentionally coalescing. Wait for each
+            // value to reach the receiver before publishing the next one so
+            // this live metrics test measures three completed publications,
+            // rather than racing the scheduler's newest-value slot.
+            for _ in 0..50 {
+                if latest
+                    .latest()
+                    .is_some_and(|sample| sample.linear_x_mps == value)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
         for _ in 0..50 {
             if latest

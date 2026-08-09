@@ -88,9 +88,10 @@ pub enum BusError {
         problem: MetadataProblem,
     },
 
-    /// The outbound queue was saturated; the sample was dropped rather than
-    /// blocking the step loop.
-    #[error("outbound queue saturated on '{topic}' ({bound} bound); sample dropped")]
+    /// An ordered outbound lane was saturated; the value was refused rather
+    /// than blocking the step loop. State and setpoint replacement do not use
+    /// this error while their new value fits the global byte bound.
+    #[error("outbound {bound} bound on '{topic}'; value was not accepted")]
     Saturated {
         /// The version-qualified topic key.
         topic: String,
@@ -199,7 +200,7 @@ pub enum MetadataProblem {
 /// Which bound of the outbound queue a publish hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutboundBound {
-    /// The queue already holds its maximum number of samples.
+    /// The ordered lane already holds its maximum number of values.
     Sample,
     /// The queue already holds its maximum number of bytes.
     Byte,

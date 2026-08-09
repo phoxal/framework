@@ -8,10 +8,10 @@ use std::marker::PhantomData;
 
 use crate::abi::{Codec, MessagePack};
 use crate::contract::{
-    CommandContract, ContractBody, DiagnosticContract, MeasurementContract, StateContract,
-    StreamContract, WorldClockContract,
+    CommandContract, ContractBody, DeliveryFamily, DiagnosticContract, MeasurementContract,
+    StateContract, StreamContract, WorldClockContract,
 };
-use crate::error::{BusError, MetadataProblem, Result};
+use crate::error::{BusError, Result};
 use crate::handle::stamp::StepStamp;
 use crate::runtime_metrics::RuntimeMetricHandle;
 use crate::session::{BusHandle, OUTBOUND_CAPACITY};
@@ -23,6 +23,7 @@ use crate::topic::{Publish, Topic};
 struct Outbox<B> {
     bus: BusHandle,
     key: String,
+    family: DeliveryFamily,
     metric: RuntimeMetricHandle,
     _body: PhantomData<fn() -> B>,
 }
@@ -38,6 +39,7 @@ impl<B> Clone for Outbox<B> {
         Outbox {
             bus: self.bus.clone(),
             key: self.key.clone(),
+            family: self.family,
             metric: self.metric.clone(),
             _body: PhantomData,
         }
@@ -47,36 +49,42 @@ impl<B> Clone for Outbox<B> {
 impl<B: ContractBody> Outbox<B> {
     fn new(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
         let topic_key = topic.publish_key()?;
+        let family = B::DELIVERY;
         let metric = bus
             .runtime_metrics()?
-            .register_outbound(topic_key, OUTBOUND_CAPACITY);
+            .register_outbound(topic_key, outbound_capacity(family));
         let key = bus.full_key(topic_key);
         Ok(Outbox {
             bus,
             key,
+            family,
             metric,
             _body: PhantomData,
         })
     }
 
     /// Encode `body`, build the [`BusMetadata`](crate::metadata::BusMetadata),
-    /// and enqueue it. Returns immediately. A saturated outbound queue (sample
-    /// or byte bound) returns [`BusError::Saturated`](crate::error::BusError) -
-    /// the sample was dropped and `outbound_drops` bumped - so the caller can
-    /// observe the loss; a closed session returns `Closed`.
+    /// and admit it to the family-specific outbound lane. Returns immediately;
+    /// no publisher path blocks the step loop.
     fn emit(&self, produced_at: Option<TimeWindow>, body: B) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
         let metadata = self.bus.metadata(produced_at)?;
-        let attachment = metadata
-            .encode()
-            .map_err(|e| crate::error::BusError::metadata(&self.key, MetadataProblem::Encode(e)))?;
         self.bus.enqueue(
             self.key.clone(),
             MessagePack::ID.encoding_string(),
-            attachment,
             payload,
+            metadata,
+            self.family,
             self.metric.clone(),
         )
+    }
+}
+
+const fn outbound_capacity(family: DeliveryFamily) -> usize {
+    match family {
+        DeliveryFamily::State | DeliveryFamily::Setpoint => 1,
+        DeliveryFamily::Sample | DeliveryFamily::Stream => OUTBOUND_CAPACITY,
+        DeliveryFamily::Query => 1,
     }
 }
 

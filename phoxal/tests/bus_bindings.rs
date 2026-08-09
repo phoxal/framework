@@ -39,6 +39,7 @@ fn bus_metadata_for_a_real_body_round_trips() {
     let meta = BusMetadata {
         codec: CodecId::MessagePack.as_u8(),
         sequence: 9,
+        stream_position: None,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
         source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
             phoxal_bus::ParticipantId::new("tester").expect("test participant"),

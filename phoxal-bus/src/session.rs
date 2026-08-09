@@ -18,16 +18,20 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, ProducerId};
-use tokio::sync::{Notify, mpsc, watch};
+use tokio::sync::{Notify, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::config::ZenohId;
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::abi::truncate_utf8;
+use crate::contract::DeliveryFamily;
 use crate::error::{BusError, KeyProblem, OutboundBound, Result, SessionIdRole};
 use crate::lock::lock;
-use crate::metadata::{BusMetadata, MAX_SOURCE_LABEL_BYTES, SourceAttribution, SourceLabel};
+use crate::metadata::{
+    BusMetadata, MAX_SOURCE_LABEL_BYTES, SourceAttribution, SourceLabel, StreamPosition,
+};
+use crate::outbound::{Outbound, OutboundScheduler};
 use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
 use crate::time::TimeWindow;
 
@@ -36,14 +40,14 @@ use crate::time::TimeWindow;
 /// sharing the same Zenoh fabric.
 const BUS_KEY_PREFIX: &str = "phoxal";
 
-/// Capacity (in samples) of the runner-owned outbound queue. A publish that would
-/// exceed this drops the sample and bumps the drop counter - it never blocks the
-/// step loop.
+/// Capacity (in samples) of each ordered outbound lane. Coalesced state and
+/// setpoint lanes retain one pending slot per concrete topic instead.
 pub(crate) const OUTBOUND_CAPACITY: usize = 1024;
 
 /// Byte bound of the outbound queue. The queue is bounded in samples AND bytes,
 /// because either alone lets a conforming publisher exhaust the other. A publish
-/// that would exceed it is dropped + counted rather than blocking.
+/// A sample/stream admission that would exceed it is refused or, for samples,
+/// evicts older sample values until the newest item fits; no caller blocks.
 pub(crate) const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Connection inputs for opening a bus session.
@@ -120,20 +124,19 @@ impl BusConfig {
 /// Live health counters for one session.
 #[derive(Debug, Default)]
 pub struct BusHealth {
-    /// Samples dropped because the outbound queue was full.
+    /// Samples or ordered chunks refused/evicted because an outbound lane was
+    /// bounded. Coalesced state/setpoint replacement is not a drop.
     pub outbound_drops: AtomicU64,
+    /// Asynchronous Zenoh publication failures observed by the drain task.
+    /// These are live evidence; the bounded close report retains the detailed
+    /// text for terminal diagnostics.
+    pub transport_failures: AtomicU64,
     /// Inbound samples dropped because the ring was full (slow consumer).
     pub inbound_drops: AtomicU64,
     /// Inbound samples that failed to decode. Contract identity lives in the
     /// Zenoh key, so a receiver's per-key subscription is the whole
     /// fast-reject and a decode failure is the only remaining rejection.
     pub decode_errors: AtomicU64,
-    /// Asynchronous Zenoh publication failures observed by this owner.
-    ///
-    /// These failures are live evidence, not a process fault by themselves:
-    /// a transient failed put must be visible immediately but does not make a
-    /// participant unable to execute its safety shutdown.
-    pub transport_failures: AtomicU64,
 }
 
 /// Why an owner-owned transport worker made the bus unusable.
@@ -178,20 +181,11 @@ pub enum BusTerminal {
     Fatal(BusFault),
 }
 
-struct Outbound {
-    key: String,
-    encoding: String,
-    attachment: Vec<u8>,
-    payload: Vec<u8>,
-    bytes: usize,
-    metric: RuntimeMetricHandle,
-}
-
 struct BusInner {
     session: zenoh::Session,
     identity: Arc<BusIdentity>,
-    outbound: mpsc::Sender<Outbound>,
-    queued_bytes: AtomicUsize,
+    outbound: std::sync::Mutex<OutboundScheduler>,
+    outbound_notify: Notify,
     admission: std::sync::Mutex<()>,
     closing: AtomicBool,
     shutdown: Notify,
@@ -445,7 +439,6 @@ impl BusOwner {
             });
         }
 
-        let (tx, rx) = mpsc::channel::<Outbound>(OUTBOUND_CAPACITY);
         let drain_session = session.clone();
         let workers = Arc::new(BusWorkerGroup::new());
         let (terminal, terminal_rx) = watch::channel(BusTerminal::Open);
@@ -460,8 +453,11 @@ impl BusOwner {
                 health: BusHealth::default(),
                 runtime_metrics: Arc::new(RuntimeMetrics::default()),
             }),
-            outbound: tx,
-            queued_bytes: AtomicUsize::new(0),
+            outbound: std::sync::Mutex::new(OutboundScheduler::new(
+                OUTBOUND_CAPACITY,
+                OUTBOUND_MAX_BYTES,
+            )),
+            outbound_notify: Notify::new(),
             admission: std::sync::Mutex::new(()),
             closing: AtomicBool::new(false),
             shutdown: Notify::new(),
@@ -474,7 +470,7 @@ impl BusOwner {
             in_flight_notify: Notify::new(),
         });
 
-        let drain = tokio::spawn(drain_loop(drain_session, rx, Arc::downgrade(&inner)));
+        let drain = tokio::spawn(drain_loop(drain_session, Arc::downgrade(&inner)));
         *lock(&inner.drain) = Some(drain);
         let reaper = tokio::spawn(worker_reaper(Arc::clone(&workers), Arc::downgrade(&inner)));
         *lock(&workers.reaper) = Some(reaper);
@@ -586,6 +582,7 @@ impl BusHandle {
         Ok(BusMetadata {
             codec: crate::abi::CodecId::MessagePack.as_u8(),
             sequence: self.next_sequence()?,
+            stream_position: None,
             produced_at,
             source: self.identity.attribution.clone(),
         })
@@ -724,15 +721,17 @@ impl BusHandle {
         allocate_sequence(&self.identity.seq)
     }
 
-    /// Non-blocking enqueue onto the outbound queue. A full queue (samples or
-    /// bytes) drops the sample, bumps the drop counter, and returns
-    /// `Saturated` - it never blocks the step loop.
+    /// Non-blocking semantic admission onto the outbound scheduler. State and
+    /// setpoint values replace one unsent value per topic; samples evict the
+    /// oldest bounded values with evidence; streams refuse admission rather
+    /// than evicting. No path blocks the step loop.
     pub(crate) fn enqueue(
         &self,
         key: String,
         encoding: String,
-        attachment: Vec<u8>,
         payload: Vec<u8>,
+        mut metadata: BusMetadata,
+        family: DeliveryFamily,
         metric: RuntimeMetricHandle,
     ) -> Result<()> {
         // Admission and close share one short critical section. This is the
@@ -743,44 +742,66 @@ impl BusHandle {
         if inner.closing.load(Ordering::Acquire) {
             return Err(BusError::Closed);
         }
-        let bytes = key.len() + encoding.len() + attachment.len() + payload.len();
-
-        // Atomically reserve the bytes *before* making the item visible to the
-        // drain. A CAS loop makes the limit a global invariant across cloned
-        // Bus publishers; add-then-check would let concurrent callers each
-        // observe an individually valid pre-add value and collectively exceed it.
-        if !reserve_outbound_bytes(&inner.queued_bytes, bytes) {
-            metric.record_drop();
-            return Err(self.dropped(&key, OutboundBound::Byte));
+        let mut scheduler = lock(&inner.outbound);
+        if family == DeliveryFamily::Stream {
+            metadata.stream_position = Some(StreamPosition {
+                sequence: scheduler.next_stream_position(&key),
+            });
         }
-
-        metric.enqueue_started();
-
-        let outbound = Outbound {
-            key,
+        let attachment = metadata.encode().map_err(|error| {
+            BusError::metadata(&key, crate::error::MetadataProblem::Encode(error))
+        })?;
+        let outbound = Outbound::new(
+            key.clone(),
             encoding,
             attachment,
             payload,
-            bytes,
-            metric: metric.clone(),
+            metric.clone(),
+            family,
+        )
+        .ok_or_else(|| {
+            metric.record_drop();
+            self.dropped(&key, OutboundBound::Byte)
+        })?;
+
+        let admission = match scheduler.admit(outbound) {
+            Ok(admission) => admission,
+            Err(bound) => {
+                metric.record_drop();
+                return Err(self.dropped(&key, bound));
+            }
         };
-        match inner.outbound.try_send(outbound) {
-            Ok(()) => {
-                metric.record_message();
-                Ok(())
-            }
-            Err(mpsc::error::TrySendError::Full(out)) => {
-                inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
-                out.metric.enqueue_finished();
-                out.metric.record_drop();
-                Err(self.dropped(&out.key, OutboundBound::Sample))
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
-                metric.enqueue_finished();
-                Err(BusError::Closed)
-            }
+
+        metric.enqueue_started();
+        metric.record_message();
+        if let Some(replaced) = admission.replaced {
+            replaced.metric.enqueue_finished();
+            replaced.metric.record_latest_overwrite();
         }
+        if !admission.evicted.is_empty() {
+            let evicted = u64::try_from(admission.evicted.len()).unwrap_or(u64::MAX);
+            for old in admission.evicted {
+                old.metric.enqueue_finished();
+                old.metric.record_bounded_eviction();
+            }
+            self.identity
+                .health
+                .outbound_drops
+                .fetch_add(evicted, Ordering::Relaxed);
+            tracing::warn!(
+                target: "phoxal.bus",
+                participant = ?self.identity.attribution.participant(),
+                key = %key,
+                count = evicted,
+                "sample outbound lane evicted oldest values"
+            );
+        }
+        if family == DeliveryFamily::Stream {
+            scheduler.commit_stream_position(&key);
+        }
+        drop(scheduler);
+        inner.outbound_notify.notify_one();
+        Ok(())
     }
 
     fn dropped(&self, key: &str, bound: OutboundBound) -> BusError {
@@ -1043,45 +1064,27 @@ fn allocate_sequence(seq: &AtomicU64) -> Result<u64> {
     .map_err(|_| BusError::SequenceExhausted)
 }
 
-fn reserve_outbound_bytes(queued: &AtomicUsize, bytes: usize) -> bool {
-    queued
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            current
-                .checked_add(bytes)
-                .filter(|next| *next <= OUTBOUND_MAX_BYTES)
-        })
-        .is_ok()
-}
-
-async fn drain_loop(
-    session: zenoh::Session,
-    mut rx: mpsc::Receiver<Outbound>,
-    owner: Weak<BusInner>,
-) {
+async fn drain_loop(session: zenoh::Session, owner: Weak<BusInner>) {
     loop {
         let Some(inner) = owner.upgrade() else {
             return;
         };
+        let next = { lock(&inner.outbound).pop_next() };
+        if let Some(out) = next {
+            out.metric.enqueue_finished();
+            put(&session, out, &inner).await;
+            continue;
+        }
+        if inner.closing.load(Ordering::Acquire) {
+            break;
+        }
         tokio::select! {
-            // Shutdown wins over draining so a steady publish stream cannot starve
-            // close: on shutdown, flush the finite already-queued set, then stop.
+            // Shutdown wins over waiting so a steady publish stream cannot
+            // starve close. Once closing is set, the next loop drains the
+            // finite accepted scheduler contents and exits when empty.
             biased;
-            _ = inner.shutdown.notified() => {
-                while let Ok(out) = rx.try_recv() {
-                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
-                    out.metric.enqueue_finished();
-                    put(&session, out, &inner).await;
-                }
-                break;
-            }
-            msg = rx.recv() => match msg {
-                Some(out) => {
-                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
-                    out.metric.enqueue_finished();
-                    put(&session, out, &inner).await;
-                }
-                None => break,
-            },
+            _ = inner.shutdown.notified() => {}
+            _ = inner.outbound_notify.notified() => {}
         }
     }
 }
@@ -1155,6 +1158,11 @@ async fn put(session: &zenoh::Session, out: Outbound, inner: &Arc<BusInner>) {
         Ok(key) => key,
         Err(e) => {
             let error = format!("invalid publish key '{}': {e}", out.key);
+            inner
+                .identity
+                .health
+                .transport_failures
+                .fetch_add(1, Ordering::Relaxed);
             record_transport_error(inner, error.clone());
             tracing::error!(target: "phoxal.bus", key = %out.key, error = %error, "invalid publish key");
             return;
@@ -1167,6 +1175,11 @@ async fn put(session: &zenoh::Session, out: Outbound, inner: &Arc<BusInner>) {
         .await
     {
         let error = format!("publish on '{}' failed: {e}", out.key);
+        inner
+            .identity
+            .health
+            .transport_failures
+            .fetch_add(1, Ordering::Relaxed);
         record_transport_error(inner, error.clone());
         tracing::warn!(target: "phoxal.bus", key = %out.key, error = %error, "publish failed");
     }
@@ -1300,8 +1313,6 @@ fn zenoh_config(connect_endpoints: &[String], producer: ProducerId) -> Result<ze
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Barrier;
-    use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
     use serial_test::serial;
@@ -1314,31 +1325,6 @@ mod tests {
 
     fn test_producer(value: u128) -> ProducerId {
         ProducerId::try_from((1_u128 << 124) | value).expect("canonical test producer")
-    }
-
-    #[test]
-    fn concurrent_byte_reservations_never_exceed_the_global_limit() {
-        const CALLERS: usize = 8;
-        let queued = AtomicUsize::new(0);
-        let accepted = AtomicUsize::new(0);
-        let barrier = Barrier::new(CALLERS);
-        let bytes = OUTBOUND_MAX_BYTES / 2 + 1;
-
-        std::thread::scope(|scope| {
-            for _ in 0..CALLERS {
-                scope.spawn(|| {
-                    barrier.wait();
-                    if reserve_outbound_bytes(&queued, bytes) {
-                        accepted.fetch_add(1, Ordering::Relaxed);
-                    }
-                });
-            }
-        });
-
-        assert_eq!(accepted.load(Ordering::Relaxed), 1);
-        assert_eq!(queued.load(Ordering::Relaxed), bytes);
-        assert!(queued.load(Ordering::Relaxed) <= OUTBOUND_MAX_BYTES);
-        assert!(!reserve_outbound_bytes(&queued, usize::MAX));
     }
 
     #[test]

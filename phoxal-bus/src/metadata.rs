@@ -8,10 +8,11 @@
 //!
 //! Provenance is a [`SourceAttribution`] plus a per-producer sequence, and the
 //! production instant is an explicit `Option<`[`TimeWindow`]`>` - a sample that
-//! expresses no robot time carries `None`, never a sentinel. Participant and
-//! producer identity are one source pair; external sources carry the producer
-//! with an optional bounded diagnostic label. No admissibility decision reads
-//! the diagnostic label.
+//! expresses no robot time carries `None`, never a sentinel. Stream contracts
+//! additionally carry an optional position scoped to that producer and
+//! concrete topic. Participant and producer identity are one source pair;
+//! external sources carry the producer with an optional bounded diagnostic
+//! label. No admissibility decision reads the diagnostic label.
 //!
 //! Receiver-side observation time is deliberately absent: it is process-local
 //! and receiver-specific, so it belongs on
@@ -142,6 +143,20 @@ impl SourceAttribution {
     }
 }
 
+/// An ordered position for one stream topic from one producer.
+///
+/// The ordinary [`BusMetadata::sequence`] is intentionally producer-wide: it
+/// is used for freshness and authority across all contracts. A stream cannot
+/// use that counter for gap detection because another topic may consume a
+/// position in between two chunks. The bus therefore attaches this separate
+/// position only to stream publications, keyed by the concrete topic at each
+/// receiver.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamPosition {
+    /// The zero-based position of this accepted stream chunk.
+    pub sequence: u64,
+}
+
 /// Per-sample metadata carried in the Zenoh attachment (MessagePack-encoded).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusMetadata {
@@ -150,6 +165,11 @@ pub struct BusMetadata {
     /// This producer's monotonically increasing sample sequence, starting at
     /// zero for every fresh process.
     pub sequence: u64,
+    /// The per-producer, per-topic position for an ordered stream publication.
+    /// Older attachments may omit this field; a stream receiver treats that as
+    /// missing stream evidence rather than inventing an ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_position: Option<StreamPosition>,
     /// When this sample's content was produced in robot time, if it expresses
     /// robot time at all. Commands and diagnostics carry `None`.
     pub produced_at: Option<TimeWindow>,
@@ -208,6 +228,7 @@ mod tests {
         BusMetadata {
             codec: CodecId::MessagePack.as_u8(),
             sequence: 7,
+            stream_position: None,
             produced_at,
             source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
                 ParticipantId::new("unit").expect("test participant"),
@@ -236,6 +257,16 @@ mod tests {
         assert_eq!(decoded, original);
         assert_eq!(decoded.produced_at, None);
         assert_eq!(decoded.produced_exactly_at(), None);
+    }
+
+    #[test]
+    fn stream_position_round_trips_without_changing_ordinary_sequence() {
+        let mut original = metadata(None);
+        original.stream_position = Some(StreamPosition { sequence: 41 });
+        let decoded = BusMetadata::decode(&encoded(&original)).unwrap();
+        assert_eq!(decoded, original);
+        assert_eq!(decoded.sequence, 7);
+        assert_eq!(decoded.stream_position.unwrap().sequence, 41);
     }
 
     #[test]
