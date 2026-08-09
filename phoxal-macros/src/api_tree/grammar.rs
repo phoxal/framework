@@ -1,14 +1,13 @@
-//! The `phoxal_api_tree!` grammar: the keyword table and every `Parse` impl
+//! The semantic API/protocol grammar: the keyword table and every `Parse` impl
 //! that turns an invocation's tokens into the [`super::model`] tree, plus the
 //! diagnostics that name why a form is not accepted where it was written.
 
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, ItemEnum, ItemStruct, Token};
+use syn::{Ident, Token};
 
 use super::ApiTree;
 use super::model::{
-    BodyPath, Node, Protocol, Removal, TopicDef, TopicKind, TopicLeaf, TopicRole, TypeDef,
-    TypeItem, Version,
+    BodyPath, Node, Protocol, Removal, SemanticKind, TopicDef, TopicKind, TopicLeaf, Version,
 };
 
 mod kw {
@@ -35,7 +34,7 @@ mod kw {
 /// the other mode. The protocol-first direction has its own wording at the top
 /// of [`ApiTree::parse`]; this is every other direction, so a misplaced
 /// `protocol` never lands on the generic "expected a child node" error.
-const MODES_DO_NOT_MIX: &str = "a `protocol <name> { … }` tree stands alone at the top of its own `phoxal_api_tree!` \
+const MODES_DO_NOT_MIX: &str = "a `protocol <name> { … }` tree stands alone at the top of its own semantic macro \
      invocation: it has no `version` revisions and no `latest` selection, so the two modes never \
      mix in one invocation";
 
@@ -93,7 +92,7 @@ impl Parse for ApiTree {
         }
         if versions.is_empty() {
             return Err(input.error(
-                "phoxal_api_tree! requires at least one `version` block or one \
+                "the semantic API/protocol macros require at least one `version` block or one \
                  `protocol <name> { … }` tree",
             ));
         }
@@ -291,7 +290,6 @@ impl Parse for Node {
 
         let body;
         syn::braced!(body in input);
-        let mut types = Vec::new();
         let mut topics = Vec::new();
         let mut children = Vec::new();
         let mut removals = Vec::new();
@@ -326,22 +324,10 @@ impl Parse for Node {
                 let mut topic: TopicDef = body.parse()?;
                 topic.replace = replace_item;
                 topics.push(topic);
-            } else if body.peek(Token![struct]) {
-                let mut item: ItemStruct = body.parse()?;
-                item.attrs = attrs;
-                item.vis = syn::Visibility::Public(syn::token::Pub::default());
-                types.push(TypeDef {
-                    replace: replace_item,
-                    item: TypeItem::Struct(item),
-                });
-            } else if body.peek(Token![enum]) {
-                let mut item: ItemEnum = body.parse()?;
-                item.attrs = attrs;
-                item.vis = syn::Visibility::Public(syn::token::Pub::default());
-                types.push(TypeDef {
-                    replace: replace_item,
-                    item: TypeItem::Enum(item),
-                });
+            } else if body.peek(Token![struct]) || body.peek(Token![enum]) {
+                return Err(body.error(
+                    "semantic API/protocol trees declare endpoints over ordinary Rust domain types; move this struct/enum into its domain module",
+                ));
             } else if body.peek(Ident)
                 && (body.peek2(syn::token::Paren) || body.peek2(syn::token::Brace))
             {
@@ -359,7 +345,7 @@ impl Parse for Node {
                 return Err(body.error(MODES_DO_NOT_MIX));
             } else {
                 return Err(body.error(
-                    "expected `struct`, `enum`, `topic …;`, or a child node `name { … }` / \
+                    "expected an endpoint declaration or a child node `name { … }` / \
                      `name(var) { … }` inside an API node block",
                 ));
             }
@@ -368,7 +354,6 @@ impl Parse for Node {
             name,
             replace,
             var,
-            types,
             topics,
             children,
             removals,
@@ -381,9 +366,7 @@ impl Parse for TopicDef {
         // New endpoint direction is part of the declaration prefix:
         // `topic frame: Sample<Frame>` publishes from the owner,
         // `command target: Setpoint<Target>` is consumed by the owner, and
-        // `query start: Req => Resp` is request/reply. The old
-        // `topic frame: state Frame` form remains parseable only through the
-        // compatibility macro entry point.
+        // `query start: Req => Resp` is request/reply.
         let prefix = if input.peek(kw::topic) {
             input.parse::<kw::topic>()?;
             0u8
@@ -412,9 +395,7 @@ impl Parse for TopicDef {
                 replace: false,
                 leaf,
                 kind: TopicKind::Query { request, response },
-                role: TopicRole::Query,
-                delivery: None,
-                legacy: false,
+                semantic: SemanticKind::Query,
                 owner_publishes: true,
             });
         }
@@ -437,12 +418,12 @@ impl Parse for TopicDef {
                 input.parse::<Token![<]>()?;
                 let body = parse_body_path(input)?;
                 input.parse::<Token![>]>()?;
-                let (role, owner_publishes) = match descriptor.to_string().as_str() {
-                    "State" if prefix == 0 => (TopicRole::State, true),
-                    "Sample" if prefix == 0 => (TopicRole::Measurement, true),
-                    "Event" if prefix == 0 => (TopicRole::Event, true),
-                    "Stream" => (TopicRole::Stream, prefix == 0),
-                    "Setpoint" if prefix == 1 => (TopicRole::Command, false),
+                let (semantic, owner_publishes) = match descriptor.to_string().as_str() {
+                    "State" if prefix == 0 => (SemanticKind::State, true),
+                    "Sample" if prefix == 0 => (SemanticKind::Sample, true),
+                    "Event" if prefix == 0 => (SemanticKind::Event, true),
+                    "Stream" => (SemanticKind::Stream, prefix == 0),
+                    "Setpoint" if prefix == 1 => (SemanticKind::Setpoint, false),
                     _ => {
                         return Err(syn::Error::new_spanned(
                             descriptor,
@@ -455,9 +436,7 @@ impl Parse for TopicDef {
                     replace: false,
                     leaf,
                     kind: TopicKind::PubSub(body),
-                    role,
-                    delivery: None,
-                    legacy: false,
+                    semantic,
                     owner_publishes,
                 });
             }

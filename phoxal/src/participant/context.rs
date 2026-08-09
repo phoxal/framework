@@ -241,7 +241,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(StreamPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn state_view<B: StateDeliveryContract<Api = R::ContractApi>>(
+    pub async fn state_view<
+        B: StateContract<Api = R::ContractApi> + StateDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<StateView<B>> {
@@ -257,7 +259,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     /// keep-last slot coalesces observations.
     #[doc(hidden)]
     pub async fn state_view_with_admission<
-        B: StateDeliveryContract<Api = R::ContractApi>,
+        B: StateContract<Api = R::ContractApi> + StateDeliveryContract<Api = R::ContractApi>,
         F: Fn(&Observed<B::Payload>) -> bool + Send + Sync + 'static,
     >(
         &mut self,
@@ -272,7 +274,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn setpoint_receiver<B: SetpointDeliveryContract<Api = R::ContractApi>>(
+    pub async fn setpoint_receiver<
+        B: SetpointContract<Api = R::ContractApi> + SetpointDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<SetpointReceiver<B>> {
@@ -296,7 +300,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn sample_receiver<B: SampleDeliveryContract<Api = R::ContractApi>>(
+    pub async fn sample_receiver<
+        B: SampleContract<Api = R::ContractApi> + SampleDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<SampleReceiver<B>> {
@@ -308,7 +314,9 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn stream_receiver<B: StreamDeliveryContract<Api = R::ContractApi>>(
+    pub async fn stream_receiver<
+        B: StreamContract<Api = R::ContractApi> + StreamDeliveryContract<Api = R::ContractApi>,
+    >(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<StreamReceiver<B>> {

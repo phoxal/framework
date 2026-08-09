@@ -1016,7 +1016,7 @@ mod tests {
     /// attribute to the train-selected facade, never named by the author. Every
     /// `SetupContext` builder is bounded on this associated type, so a
     /// participant that reached for a second API revision - or another
-    /// `phoxal_api_tree!` tree - fails to compile rather than embedding an
+    /// unrelated semantic API tree - fails to compile rather than embedding an
     /// `api` claim its handles contradict.
     #[test]
     fn every_role_fixes_its_contract_api_to_the_train_selected_facade() {

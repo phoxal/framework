@@ -1,5 +1,5 @@
-//! The tree model: the nodes, wire bodies, topics, and roles one
-//! `phoxal_api_tree!` invocation declares, plus the delta algebra that
+//! The tree model: the nodes and endpoint descriptors one semantic macro
+//! invocation declares, plus the delta algebra that
 //! materializes an `extends` child into a complete concrete tree.
 //!
 //! Nothing here emits a module or a builder - the model is what the grammar
@@ -7,8 +7,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::visit_mut::{self, VisitMut};
-use syn::{Ident, ItemEnum, ItemStruct};
+use syn::Ident;
 
 use super::grammar::VERSION_HAS_NO_PARENT;
 
@@ -45,7 +44,7 @@ pub(super) struct Version {
 }
 
 /// One node in the api tree: a `name { … }` (static) or `name(var) { … }`
-/// (dynamic) block that may hold types, topics, and nested child nodes.
+/// (dynamic) block that may hold endpoint declarations and nested child nodes.
 #[derive(Clone)]
 pub(super) struct Node {
     pub(super) name: Ident,
@@ -54,22 +53,9 @@ pub(super) struct Node {
     /// present, the node contributes `name/{var}` to keys and a var-taking builder
     /// method.
     pub(super) var: Option<Ident>,
-    pub(super) types: Vec<TypeDef>,
     pub(super) topics: Vec<TopicDef>,
     pub(super) children: Vec<Node>,
     pub(super) removals: Vec<Removal>,
-}
-
-#[derive(Clone)]
-pub(super) struct TypeDef {
-    pub(super) replace: bool,
-    pub(super) item: TypeItem,
-}
-
-#[derive(Clone)]
-pub(super) enum TypeItem {
-    Struct(ItemStruct),
-    Enum(ItemEnum),
 }
 
 #[derive(Clone)]
@@ -77,29 +63,10 @@ pub(super) struct TopicDef {
     pub(super) replace: bool,
     pub(super) leaf: TopicLeaf,
     pub(super) kind: TopicKind,
-    /// The semantic and temporal role declared by the topic's role keyword.
-    /// `command`, `stream`, `state`, `event`, `measurement`, and `diagnostic` all produce a
-    /// [`TopicKind::PubSub`] on the wire, while `query` produces a
-    /// [`TopicKind::Query`]. The role selects the SIDE BRAND in the generated
-    /// builders: per (role, side) a leaf returns `Publish` / `Subscribe` /
-    /// `AskQuery` / `ServeQuery`, so the public (client) and owner builders
-    /// return different branded topics. It is also emitted as
-    /// `ContractBody::ROLE` plus the matching temporal-role marker impl, which
-    /// is what fixes the robot time a publisher of the body can express. The
-    /// optional `delivery` clause changes only the transport family, allowing
-    /// temporal roles such as `event` to use ordered stream delivery without
-    /// inventing a new temporal role.
-    pub(super) role: TopicRole,
-    /// Optional transport override. Temporal role and side branding continue
-    /// to come from `role`; this field only changes delivery admission/storage.
-    pub(super) delivery: Option<DeliveryOverride>,
-    /// True only for pre-#1002 role spellings that the compatibility macro
-    /// still accepts. The public `phoxal_api!` entry point rejects these so new
-    /// source uses the independent semantic vocabulary.
-    pub(super) legacy: bool,
-    /// Whether the owner publishes this endpoint. New semantic declarations
-    /// carry direction explicitly (`topic` vs `command`); legacy roles derive
-    /// it from `TopicRole`.
+    /// The endpoint semantic determines temporal capability and transport
+    /// family. Direction is separately explicit in the source grammar.
+    pub(super) semantic: SemanticKind,
+    /// Whether the endpoint owner publishes its payload.
     pub(super) owner_publishes: bool,
 }
 
@@ -141,25 +108,15 @@ impl TopicLeaf {
     }
 }
 
-/// The semantic and temporal role of a topic, mirroring `phoxal_bus::TopicRole`.
-/// Parsed from the role keyword and threaded into the generated
-/// `ContractBody::ROLE` const and temporal-role marker impl.
+/// One fixed semantic endpoint category from the public macro grammar.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum TopicRole {
-    Command,
+pub(super) enum SemanticKind {
+    Setpoint,
     Stream,
     State,
     Event,
-    Measurement,
-    Query,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum DeliveryOverride {
-    State,
     Sample,
-    Setpoint,
-    Stream,
+    Query,
 }
 
 impl TopicDef {
@@ -181,26 +138,13 @@ impl TopicDef {
     }
 
     pub(super) fn endpoint_kind(&self) -> TokenStream {
-        match &self.kind {
-            TopicKind::Query { .. } => quote! { ::phoxal_bus::EndpointKind::Query },
-            TopicKind::PubSub(_) => match self.delivery.unwrap_or_else(|| match self.role {
-                TopicRole::State => DeliveryOverride::State,
-                TopicRole::Measurement => DeliveryOverride::Sample,
-                TopicRole::Command => DeliveryOverride::Setpoint,
-                TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
-                TopicRole::Query => unreachable!("query is not a pub/sub endpoint"),
-            }) {
-                DeliveryOverride::State => quote! { ::phoxal_bus::EndpointKind::State },
-                DeliveryOverride::Sample => quote! { ::phoxal_bus::EndpointKind::Sample },
-                DeliveryOverride::Setpoint => quote! { ::phoxal_bus::EndpointKind::Setpoint },
-                DeliveryOverride::Stream => {
-                    if self.role == TopicRole::Event {
-                        quote! { ::phoxal_bus::EndpointKind::Event }
-                    } else {
-                        quote! { ::phoxal_bus::EndpointKind::Stream }
-                    }
-                }
-            },
+        match self.semantic {
+            SemanticKind::State => quote! { ::phoxal_bus::EndpointKind::State },
+            SemanticKind::Sample => quote! { ::phoxal_bus::EndpointKind::Sample },
+            SemanticKind::Event => quote! { ::phoxal_bus::EndpointKind::Event },
+            SemanticKind::Stream => quote! { ::phoxal_bus::EndpointKind::Stream },
+            SemanticKind::Setpoint => quote! { ::phoxal_bus::EndpointKind::Setpoint },
+            SemanticKind::Query => quote! { ::phoxal_bus::EndpointKind::Query },
         }
     }
 
@@ -209,21 +153,13 @@ impl TopicDef {
     /// Keep this beside [`endpoint_kind`](Self::endpoint_kind) so the emitted
     /// enum value and the fingerprint input cannot drift apart.
     pub(super) fn endpoint_kind_name(&self) -> &'static str {
-        match &self.kind {
-            TopicKind::Query { .. } => "Query",
-            TopicKind::PubSub(_) => match self.delivery.unwrap_or_else(|| match self.role {
-                TopicRole::State => DeliveryOverride::State,
-                TopicRole::Measurement => DeliveryOverride::Sample,
-                TopicRole::Command => DeliveryOverride::Setpoint,
-                TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
-                TopicRole::Query => unreachable!("query is not a pub/sub endpoint"),
-            }) {
-                DeliveryOverride::State => "State",
-                DeliveryOverride::Sample => "Sample",
-                DeliveryOverride::Setpoint => "Setpoint",
-                DeliveryOverride::Stream if self.role == TopicRole::Event => "Event",
-                DeliveryOverride::Stream => "Stream",
-            },
+        match self.semantic {
+            SemanticKind::State => "State",
+            SemanticKind::Sample => "Sample",
+            SemanticKind::Event => "Event",
+            SemanticKind::Stream => "Stream",
+            SemanticKind::Setpoint => "Setpoint",
+            SemanticKind::Query => "Query",
         }
     }
 
@@ -232,76 +168,35 @@ impl TopicDef {
     /// generated manifest cannot accidentally classify an overridden topic by
     /// its temporal role.
     pub(super) fn delivery_family(&self) -> TokenStream {
-        self.delivery
-            .map(DeliveryOverride::bus_variant)
-            .unwrap_or_else(|| self.role.bus_delivery())
+        self.semantic.delivery_family()
     }
 
     /// The stable manifest spelling for the transport family.
     pub(super) fn delivery_family_name(&self) -> &'static str {
-        if self.delivery.is_none() && self.role == TopicRole::Query {
-            return "Query";
-        }
-        match self.delivery.unwrap_or_else(|| match self.role {
-            TopicRole::State => DeliveryOverride::State,
-            TopicRole::Measurement => DeliveryOverride::Sample,
-            TopicRole::Command => DeliveryOverride::Setpoint,
-            TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
-            TopicRole::Query => unreachable!("query delivery handled above"),
-        }) {
-            DeliveryOverride::State => "State",
-            DeliveryOverride::Sample => "Sample",
-            DeliveryOverride::Setpoint => "Setpoint",
-            DeliveryOverride::Stream => "Stream",
-        }
+        self.semantic.delivery_family_name()
     }
 }
 
-impl DeliveryOverride {
-    pub(super) fn bus_variant(self) -> TokenStream {
+impl SemanticKind {
+    /// The transport family selected by this endpoint semantic.
+    pub(super) fn delivery_family(self) -> TokenStream {
         match self {
             Self::State => quote! { ::phoxal_bus::DeliveryFamily::State },
             Self::Sample => quote! { ::phoxal_bus::DeliveryFamily::Sample },
             Self::Setpoint => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
-            Self::Stream => quote! { ::phoxal_bus::DeliveryFamily::Stream },
-        }
-    }
-
-    pub(super) fn marker_trait(self) -> TokenStream {
-        match self {
-            Self::State => quote! { ::phoxal_bus::StateDeliveryContract },
-            Self::Sample => quote! { ::phoxal_bus::SampleDeliveryContract },
-            Self::Setpoint => quote! { ::phoxal_bus::SetpointDeliveryContract },
-            Self::Stream => quote! { ::phoxal_bus::StreamDeliveryContract },
-        }
-    }
-}
-
-impl TopicRole {
-    /// The `phoxal_bus::TopicRole` variant path this role maps to.
-    pub(super) fn bus_variant(self) -> TokenStream {
-        match self {
-            TopicRole::Command => quote! { ::phoxal_bus::TopicRole::Command },
-            TopicRole::Stream => quote! { ::phoxal_bus::TopicRole::Stream },
-            TopicRole::State | TopicRole::Event => {
-                quote! { ::phoxal_bus::TopicRole::State }
-            }
-            TopicRole::Measurement => quote! { ::phoxal_bus::TopicRole::Measurement },
-            TopicRole::Query => quote! { ::phoxal_bus::TopicRole::Query },
+            Self::Stream | Self::Event => quote! { ::phoxal_bus::DeliveryFamily::Stream },
+            Self::Query => quote! { ::phoxal_bus::DeliveryFamily::Query },
         }
     }
 
     /// The transport semantic family independent of temporal stamping.
-    pub(super) fn bus_delivery(self) -> TokenStream {
+    pub(super) fn delivery_family_name(self) -> &'static str {
         match self {
-            TopicRole::Command => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
-            TopicRole::Stream => quote! { ::phoxal_bus::DeliveryFamily::Stream },
-            TopicRole::State => {
-                quote! { ::phoxal_bus::DeliveryFamily::State }
-            }
-            TopicRole::Event => quote! { ::phoxal_bus::DeliveryFamily::Stream },
-            TopicRole::Measurement => quote! { ::phoxal_bus::DeliveryFamily::Sample },
-            TopicRole::Query => quote! { ::phoxal_bus::DeliveryFamily::Query },
+            Self::State => "State",
+            Self::Sample => "Sample",
+            Self::Setpoint => "Setpoint",
+            Self::Stream | Self::Event => "Stream",
+            Self::Query => "Query",
         }
     }
 
@@ -310,45 +205,28 @@ impl TopicRole {
     /// without inventing another temporal role.
     pub(super) fn delivery_marker_trait(self) -> TokenStream {
         match self {
-            TopicRole::Command => quote! { ::phoxal_bus::SetpointDeliveryContract },
-            TopicRole::Stream | TopicRole::Event => {
+            Self::Setpoint => quote! { ::phoxal_bus::SetpointDeliveryContract },
+            Self::Stream | Self::Event => {
                 quote! { ::phoxal_bus::StreamDeliveryContract }
             }
-            TopicRole::Measurement => quote! { ::phoxal_bus::SampleDeliveryContract },
-            TopicRole::State => {
+            Self::Sample => quote! { ::phoxal_bus::SampleDeliveryContract },
+            Self::State => {
                 quote! { ::phoxal_bus::StateDeliveryContract }
             }
-            TopicRole::Query => {
+            Self::Query => {
                 unreachable!("query bodies have no pub/sub delivery marker")
             }
         }
     }
 
-    /// The temporal-role marker trait a body of this role implements. `query`
-    /// has none: a request/response leg expresses no robot time and is served
-    /// through the runner, not a publisher handle.
-    pub(super) fn marker_trait(self) -> Option<TokenStream> {
-        match self {
-            TopicRole::Command => Some(quote! { ::phoxal_bus::CommandContract }),
-            TopicRole::Stream => Some(quote! { ::phoxal_bus::StreamContract }),
-            TopicRole::State | TopicRole::Event => Some(quote! { ::phoxal_bus::StateContract }),
-            TopicRole::Measurement => Some(quote! { ::phoxal_bus::MeasurementContract }),
-            TopicRole::Query => None,
-        }
-    }
-
-    /// The direct endpoint-kind marker for semantic descriptors. The legacy
-    /// body marker remains available above until the robot consumers finish
-    /// migration; semantic endpoints must not depend on its compatibility
-    /// bridges.
     pub(super) fn semantic_marker_trait(self) -> Option<TokenStream> {
         match self {
-            TopicRole::Command => Some(quote! { ::phoxal_bus::SetpointContract }),
-            TopicRole::Stream => Some(quote! { ::phoxal_bus::StreamContract }),
-            TopicRole::State => Some(quote! { ::phoxal_bus::StateContract }),
-            TopicRole::Event => Some(quote! { ::phoxal_bus::EventContract }),
-            TopicRole::Measurement => Some(quote! { ::phoxal_bus::SampleContract }),
-            TopicRole::Query => None,
+            Self::Setpoint => Some(quote! { ::phoxal_bus::SetpointContract }),
+            Self::Stream => Some(quote! { ::phoxal_bus::StreamContract }),
+            Self::State => Some(quote! { ::phoxal_bus::StateContract }),
+            Self::Event => Some(quote! { ::phoxal_bus::EventContract }),
+            Self::Sample => Some(quote! { ::phoxal_bus::SampleContract }),
+            Self::Query => None,
         }
     }
 }
@@ -371,14 +249,6 @@ pub(super) struct BodyPath {
 }
 
 impl BodyPath {
-    pub(super) fn leaf_name(&self) -> String {
-        self.path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string())
-            .unwrap_or_else(|| "Body".to_string())
-    }
-
     /// A deterministic source identity for manifest/fingerprint evidence.
     ///
     /// The path is intentionally retained as authored rather than reduced to
@@ -403,25 +273,19 @@ pub(super) struct MaterializedTree {
     pub(super) nodes: Vec<Node>,
 }
 
-impl TypeDef {
-    pub(super) fn ident(&self) -> &Ident {
-        match &self.item {
-            TypeItem::Struct(item) => &item.ident,
-            TypeItem::Enum(item) => &item.ident,
-        }
-    }
-}
-
 impl Version {
     /// Materialize this revision against its parent's already-concrete tree:
-    /// inherit everything, re-root inherited absolute paths onto this revision,
-    /// apply the `remove` deltas, then merge the additions and `replace`s.
+    /// inherit everything, apply the `remove` deltas, then merge additions and
+    /// `replace`s.
     ///
     /// `parent` is passed alongside `base` because only the caller that looked
     /// `base` up knows which declared revision it came from.
-    pub(super) fn materialize_from(&self, base: &[Node], parent: &Ident) -> syn::Result<Vec<Node>> {
+    pub(super) fn materialize_from(
+        &self,
+        base: &[Node],
+        _parent: &Ident,
+    ) -> syn::Result<Vec<Node>> {
         let mut nodes = base.to_vec();
-        Node::reroot_revision_paths(&mut nodes, parent, &self.name);
         for removal in &self.removals {
             Node::remove_path_in(&mut nodes, &removal.head, &removal.rest)?;
         }
@@ -475,14 +339,6 @@ impl Node {
                     format!("`remove` {reason}"),
                 ));
             }
-            for ty in &node.types {
-                if ty.replace {
-                    return Err(syn::Error::new_spanned(
-                        ty.ident(),
-                        format!("`replace` {reason}"),
-                    ));
-                }
-            }
             for topic in &node.topics {
                 if topic.replace {
                     return Err(syn::Error::new_spanned(
@@ -494,74 +350,6 @@ impl Node {
             Node::reject_delta_forms(&node.children, &[], reason)?;
         }
         Ok(())
-    }
-
-    pub(super) fn reject_legacy_roles(nodes: &[Node]) -> syn::Result<()> {
-        for node in nodes {
-            for topic in &node.topics {
-                if topic.legacy {
-                    return Err(syn::Error::new_spanned(
-                        topic.leaf.method_ident(),
-                        "legacy topic roles `measurement` and `diagnostic` are only available to `phoxal_api_tree!`; use `state`, `sample`, or `event` with an explicit delivery family",
-                    ));
-                }
-            }
-            Self::reject_legacy_roles(&node.children)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn reject_authored_types(nodes: &[Node]) -> syn::Result<()> {
-        for node in nodes {
-            if let Some(type_def) = node.types.first() {
-                return Err(syn::Error::new_spanned(
-                    type_def.ident(),
-                    "`phoxal_api!` declares endpoints over normal Rust domain types; move this struct/enum into the version/domain module",
-                ));
-            }
-            Self::reject_authored_types(&node.children)?;
-        }
-        Ok(())
-    }
-
-    /// Re-root absolute paths authored against the parent revision when its types
-    /// are materialized into a child. Without this pass, an inherited body such as
-    /// `struct Page { cursor: crate::v0_1::tool::Cursor }` would keep referring to
-    /// the parent's `Cursor` even after the child explicitly replaced that type.
-    fn reroot_revision_paths(nodes: &mut [Node], parent: &Ident, child: &Ident) {
-        struct RevisionPathRewriter<'a> {
-            parent: &'a Ident,
-            child: &'a Ident,
-        }
-
-        impl VisitMut for RevisionPathRewriter<'_> {
-            fn visit_path_mut(&mut self, path: &mut syn::Path) {
-                let mut segments = path.segments.iter_mut();
-                if segments
-                    .next()
-                    .is_some_and(|segment| segment.ident == "crate")
-                    && let Some(revision) = segments.next()
-                    && revision.ident == *self.parent
-                {
-                    revision.ident = self.child.clone();
-                }
-                visit_mut::visit_path_mut(self, path);
-            }
-        }
-
-        fn rewrite_nodes(nodes: &mut [Node], rewriter: &mut RevisionPathRewriter<'_>) {
-            for node in nodes {
-                for ty in &mut node.types {
-                    match &mut ty.item {
-                        TypeItem::Struct(item) => rewriter.visit_item_struct_mut(item),
-                        TypeItem::Enum(item) => rewriter.visit_item_enum_mut(item),
-                    }
-                }
-                rewrite_nodes(&mut node.children, rewriter);
-            }
-        }
-
-        rewrite_nodes(nodes, &mut RevisionPathRewriter { parent, child });
     }
 
     /// Merge a delta node list into an inherited one. A same-named node is
@@ -601,8 +389,8 @@ impl Node {
         Ok(())
     }
 
-    /// Merge one delta node into its inherited counterpart. A same-path type or
-    /// topic must be explicitly `replace`d: silently shadowing an inherited
+    /// Merge one delta node into its inherited counterpart. A same-path topic
+    /// must be explicitly `replace`d: silently shadowing an inherited
     /// declaration would change the contract without saying so.
     fn merge(&mut self, delta: &Node) -> syn::Result<()> {
         if self.var.as_ref().map(Ident::to_string) != delta.var.as_ref().map(Ident::to_string) {
@@ -613,30 +401,6 @@ impl Node {
         }
         for removal in &delta.removals {
             self.remove_path(&removal.head, &removal.rest)?;
-        }
-        for delta_type in &delta.types {
-            let ident = delta_type.ident();
-            let existing = self.types.iter().position(|item| item.ident() == ident);
-            match (existing, delta_type.replace) {
-                (Some(index), true) => {
-                    let mut replacement = delta_type.clone();
-                    replacement.replace = false;
-                    self.types[index] = replacement;
-                }
-                (Some(_), false) => {
-                    return Err(syn::Error::new_spanned(
-                        ident,
-                        "inherited type already exists; prefix the declaration with `replace`",
-                    ));
-                }
-                (None, true) => {
-                    return Err(syn::Error::new_spanned(
-                        ident,
-                        "`replace` type target does not exist in the parent revision",
-                    ));
-                }
-                (None, false) => self.types.push(delta_type.clone()),
-            }
         }
         for delta_topic in &delta.topics {
             let ident = delta_topic.leaf.method_ident();
@@ -685,7 +449,7 @@ impl Node {
     }
 
     /// Apply one `remove` path relative to this node. The final segment must
-    /// name exactly one of this node's types, topics, or children - an
+    /// name exactly one of this node's topics or children - an
     /// ambiguous name is rejected rather than guessed at.
     fn remove_path(&mut self, head: &Ident, rest: &[Ident]) -> syn::Result<()> {
         if let Some((next, rest)) = rest.split_first() {
@@ -697,15 +461,12 @@ impl Node {
             };
             return child.remove_path(next, rest);
         }
-        let type_index = self.types.iter().position(|item| item.ident() == head);
         let topic_index = self
             .topics
             .iter()
             .position(|item| item.leaf.method_ident() == *head);
         let child_index = self.children.iter().position(|item| item.name == *head);
-        let matches = usize::from(type_index.is_some())
-            + usize::from(topic_index.is_some())
-            + usize::from(child_index.is_some());
+        let matches = usize::from(topic_index.is_some()) + usize::from(child_index.is_some());
         if matches != 1 {
             return Err(syn::Error::new_spanned(
                 head,
@@ -716,9 +477,7 @@ impl Node {
                 },
             ));
         }
-        if let Some(index) = type_index {
-            self.types.remove(index);
-        } else if let Some(index) = topic_index {
+        if let Some(index) = topic_index {
             self.topics.remove(index);
         } else if let Some(index) = child_index {
             self.children.remove(index);

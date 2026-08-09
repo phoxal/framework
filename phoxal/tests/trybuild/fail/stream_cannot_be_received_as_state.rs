@@ -10,9 +10,7 @@ impl Participant for WrongStreamReceiver {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let _result = ctx
-            .state_view(api::topic::client().navigation().result())
-            .await?;
+        let _result = ctx.state_view(api::topic::client().navigation().result());
         Ok(((), ()))
     }
 }

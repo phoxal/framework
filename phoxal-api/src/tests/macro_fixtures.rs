@@ -188,6 +188,7 @@ mod protocol_tree {
         ApiVersion, AskQuery, EndpointDescriptor, Publish, QueryEndpointDescriptor, ServeQuery,
         Subscribe, Topic,
     };
+    use phoxal_macros::phoxal_protocol;
 
     mod payload {
         pub mod connect {
@@ -219,7 +220,7 @@ mod protocol_tree {
         }
     }
 
-    crate::phoxal_protocol! {
+    phoxal_protocol! {
         protocol fixture {
             connect {
                 command hello: Setpoint<crate::tests::macro_fixtures::protocol_tree::payload::connect::Hello>;
