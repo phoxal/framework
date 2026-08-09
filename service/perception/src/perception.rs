@@ -153,14 +153,18 @@ impl Participant for Perception {
             CameraInput::Invalid => unhealthy(api::perception::HealthReason::InvalidCamera)?,
             CameraInput::Ready => match state.detect(now) {
                 Ok(Some((source, captured_at, detections))) => {
-                    let batch = match api::perception::Detections::try_new(
-                        source,
-                        captured_at,
-                        detections,
-                    ) {
-                        Ok(batch) => batch,
-                        Err(_) => unhealthy(api::perception::HealthReason::DetectorFailure)?,
-                    };
+                    let batch =
+                        match api::perception::Detections::try_new(source, captured_at, detections)
+                        {
+                            Ok(batch) => batch,
+                            Err(_) => {
+                                api.state.publish(
+                                    &step.token,
+                                    unhealthy(api::perception::HealthReason::DetectorFailure)?,
+                                )?;
+                                return Ok(());
+                            }
+                        };
                     if let Err(error) = api.detections.publish(&step.token, batch) {
                         // A publication failure is terminal for this cycle. If
                         // the state channel is still available, report that
