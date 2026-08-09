@@ -5,7 +5,7 @@
 //! The parallel topic-builder tree is emitted by [`super::builders`] and
 //! spliced into the same tree module here.
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::ItemStruct;
 

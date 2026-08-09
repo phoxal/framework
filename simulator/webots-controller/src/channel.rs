@@ -10,8 +10,8 @@
 use anyhow::Result;
 use phoxal::api;
 use phoxal::bus::{
-    CaptureStamp, EndpointDescriptor, FixedSourceLease, LocalInstant, MeasurementContract,
-    ParticipantId, ParticipantReadyEvents, Payload, StepStamp, WorldStepToken,
+    CaptureStamp, EndpointDescriptor, FixedSourceLease, LocalInstant, ParticipantId,
+    ParticipantReadyEvents, Payload, SampleContract, StepStamp, WorldStepToken,
 };
 use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
@@ -97,7 +97,7 @@ impl SimulatedActuator for NativeMotor {
 /// A sensor device and the measurement handle it publishes on.
 struct SensorChannel<S: SimulatedSensor>
 where
-    S::Endpoint: MeasurementContract<Payload = S::Sample>,
+    S::Endpoint: SampleContract<Payload = S::Sample>,
 {
     device: S,
     publisher: SamplePublisher<S::Endpoint>,
@@ -105,7 +105,7 @@ where
 
 impl<S: SimulatedSensor> SensorChannel<S>
 where
-    S::Endpoint: MeasurementContract<Payload = S::Sample>,
+    S::Endpoint: SampleContract<Payload = S::Sample>,
 {
     fn reset(&mut self, logical_time_ns: u64) -> Result<()> {
         self.device.reset(logical_time_ns)
