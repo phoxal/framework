@@ -420,6 +420,22 @@ impl FixedSourceAdmission {
         self.ready.len()
     }
 
+    /// Whether this exact observation is the current admitted value.
+    ///
+    /// This is intentionally a read-only check. A retained state sample must
+    /// not re-enter authority merely because Ready disappeared and later
+    /// returned; only a fresh ingress call to [`Self::offer`] may establish a
+    /// new active observation.
+    pub fn is_current(&self, source: Option<&ParticipantSourceIdentity>, sequence: u64) -> bool {
+        let Some(source) = source else {
+            return false;
+        };
+        !self.ready_overflow
+            && self.ready.len() == 1
+            && self.ready.contains(&source.producer)
+            && self.active == Some((source.producer, sequence))
+    }
+
     /// Admit a participant-attributed observation before keep-last coalescing.
     pub fn offer(
         &mut self,
@@ -876,6 +892,61 @@ mod tests {
             );
         }
         assert_eq!(keep_last, Some("candidate A"));
+    }
+
+    #[test]
+    fn fixed_source_admission_requires_fresh_publication_after_ready_reappears() {
+        let expected = participant("navigation");
+        let identity = source_identity(&expected, producer(20));
+        let mut admission = FixedSourceAdmission::new(expected);
+        admission.update_ready(&identity, ParticipantReadyStatus::Ready);
+        assert_eq!(admission.offer(Some(&identity), 1), LeaseDecision::Acquired);
+        assert!(admission.is_current(Some(&identity), 1));
+
+        admission.update_ready(&identity, ParticipantReadyStatus::Lost);
+        admission.update_ready(&identity, ParticipantReadyStatus::Ready);
+        assert!(!admission.is_current(Some(&identity), 1));
+        assert_eq!(
+            admission.offer(Some(&identity), 1),
+            LeaseDecision::Acquired,
+            "only a fresh ingress observation may establish the new incarnation"
+        );
+    }
+
+    #[test]
+    fn fixed_source_admission_and_liveness_lease_promote_t2_after_reset() {
+        let expected = participant("navigation");
+        let identity = source_identity(&expected, producer(21));
+        let at = LocalInstant::from_boot_ns(0);
+        let line = TimelineId::mint();
+        let mut admission = FixedSourceAdmission::new(expected.clone());
+        let mut lease = FixedSourceLease::new(
+            "navigation/candidate",
+            expected,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        admission.update_ready(&identity, ParticipantReadyStatus::Ready);
+        lease.update_ready(&identity, ParticipantReadyStatus::Ready);
+
+        assert_eq!(admission.offer(Some(&identity), 1), LeaseDecision::Acquired);
+        assert_eq!(
+            lease.offer(Some(&identity), 1, at, "T1 candidate"),
+            LeaseDecision::Acquired
+        );
+
+        // T2 is admitted into a replacement-timeline quarantine, while the
+        // body-holding lease still owns the active T1 value.
+        assert_eq!(admission.offer(Some(&identity), 2), LeaseDecision::Renewed);
+        lease.clear();
+        assert_eq!(
+            lease.offer(Some(&identity), 2, at, "T2 candidate"),
+            LeaseDecision::Renewed
+        );
+        assert_eq!(
+            lease.live(at, RobotInstant::new(line, 0)),
+            Some(&"T2 candidate")
+        );
     }
 
     #[test]

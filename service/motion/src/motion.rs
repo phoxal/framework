@@ -120,6 +120,8 @@ pub(crate) struct MotionState {
     manual: ExclusiveProducerLease<api::motion::ManualCommand>,
     manual_observed_at: Option<LocalInstant>,
     last_autonomous: Option<Timed<api::navigation::Candidate>>,
+    last_autonomous_offer: Option<(phoxal::bus::ProducerId, u64)>,
+    autonomous_admission: Arc<Mutex<FixedSourceAdmission>>,
     autonomous_authority: Arc<Mutex<FixedSourceLease<api::navigation::Candidate>>>,
     estop: EmergencyStopLatch,
     last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
@@ -143,15 +145,21 @@ impl Participant for Motion {
             AUTONOMOUS_SILENCE,
             AUTONOMOUS_HOLD,
         )));
+        let navigation_admission =
+            Arc::new(Mutex::new(FixedSourceAdmission::new(navigation.clone())));
         let ready_authority = Arc::clone(&navigation_authority);
+        let ready_admission = Arc::clone(&navigation_admission);
         let navigation_ready = ctx
             .observe_participant_ready_for(&navigation, move |event| {
                 if let Ok(mut authority) = ready_authority.lock() {
                     authority.update_ready_event(&event);
                 }
+                if let Ok(mut admission) = ready_admission.lock() {
+                    admission.update_ready_event(&event);
+                }
             })
             .await?;
-        let navigation_admission = Arc::clone(&navigation_authority);
+        let candidate_admission = Arc::clone(&navigation_admission);
         let safety = phoxal::bus::ParticipantId::new("safety")
             .map_err(|error| anyhow::anyhow!("invalid fixed safety participant id: {error}"))?;
         let limits = robot.motion().limits().validate()?;
@@ -190,6 +198,8 @@ impl Participant for Motion {
                 manual: ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
                 manual_observed_at: None,
                 last_autonomous: None,
+                last_autonomous_offer: None,
+                autonomous_admission: navigation_admission,
                 autonomous_authority: navigation_authority,
                 estop: EmergencyStopLatch::new(estops),
                 last_safety_constraints: None,
@@ -202,15 +212,13 @@ impl Participant for Motion {
                     .state_view_with_admission(
                         api::topic::client().navigation().candidate(),
                         move |observed| {
-                            let Ok(mut authority) = navigation_admission.lock() else {
+                            let Ok(mut admission) = candidate_admission.lock() else {
                                 return false;
                             };
                             matches!(
-                                authority.offer(
+                                admission.offer(
                                     observed.metadata.source.participant_source(),
                                     observed.metadata.sequence,
-                                    observed.observed_at,
-                                    observed.body.clone(),
                                 ),
                                 LeaseDecision::Acquired | LeaseDecision::Renewed
                             )
@@ -245,6 +253,7 @@ impl Participant for Motion {
 
     fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.last_autonomous = None;
+        state.last_autonomous_offer = None;
         let Ok(mut authority) = state.autonomous_authority.lock() else {
             return Err(anyhow::anyhow!("navigation authority lock was poisoned"));
         };
@@ -300,7 +309,38 @@ impl Participant for Motion {
         if let Some(observed) = api.autonomous.observed()
             && let Some(at) = observed.metadata.produced_exactly_at()
         {
-            state.last_autonomous = Some(Timed::new(observed.body.clone(), at));
+            let source = observed.metadata.source.participant_source();
+            let identity = source.map(|source| (source.producer, observed.metadata.sequence));
+            let currently_admitted = {
+                let Ok(admission) = state.autonomous_admission.lock() else {
+                    bail!("navigation admission lock was poisoned");
+                };
+                admission.is_current(source, observed.metadata.sequence)
+            };
+            let mut accepted_for_liveness = state.last_autonomous_offer == identity;
+            if currently_admitted && state.last_autonomous_offer != identity {
+                let Ok(mut authority) = state.autonomous_authority.lock() else {
+                    bail!("navigation authority lock was poisoned");
+                };
+                let decision = authority.offer(
+                    source,
+                    observed.metadata.sequence,
+                    observed.observed_at,
+                    observed.body.clone(),
+                );
+                state.last_autonomous_offer = identity;
+                accepted_for_liveness = !matches!(decision, LeaseDecision::Rejected(_));
+                if let LeaseDecision::Rejected(rejection) = decision {
+                    tracing::warn!(
+                        target: "phoxal.motion",
+                        error = %rejection,
+                        "rejected visible navigation candidate"
+                    );
+                }
+            }
+            if accepted_for_liveness {
+                state.last_autonomous = Some(Timed::new(observed.body.clone(), at));
+            }
         }
         let navigation_live = {
             let Ok(mut authority) = state.autonomous_authority.lock() else {
