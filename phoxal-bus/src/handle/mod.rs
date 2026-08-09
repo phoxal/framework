@@ -35,8 +35,8 @@
 //!   device clock, and honestly represents an untranslated capture rather than
 //!   inventing one.
 //! - [`SetpointPublisher<B>`](publisher::SetpointPublisher) and
-//!   [`DiagnosticPublisher<B>`](publisher::DiagnosticPublisher) express no robot
-//!   time at all.
+//!   [`StreamPublisher<B>`](publisher::StreamPublisher) express no robot time
+//!   at all.
 //!
 //! # Receiving is bus-stamped
 //!
@@ -67,7 +67,7 @@
 //!   an older chunk when their ring is saturated.
 //!
 //! Contract identity lives entirely in the Zenoh key - the version is folded
-//! into `<Body as ContractBody>::TOPIC` - so a receiver's per-key subscription
+//! into `<Endpoint as EndpointDescriptor>::TOPIC` - so a receiver's per-key subscription
 //! is the fast-reject, and the decode path only still validates the codec. A
 //! decode failure is counted (`decode_errors`) + logged as a health signal,
 //! never a silent accept. Timeline-aware handles separately count purged or
@@ -141,14 +141,14 @@ pub(crate) fn decode_payload<B: Payload>(sample: &Sample, topic: &str) -> Result
 mod tests {
     use super::*;
     use crate::abi::CodecError;
-    use crate::test_support::{Target, sample, sample_with, sample_with_encoding};
+    use crate::test_support::{Target, TargetEndpoint, sample, sample_with, sample_with_encoding};
 
     const TOPIC: &str = "yTEST/drive/target";
 
     #[test]
     fn decode_accepts_a_matching_sample() {
         let sample = sample(CodecId::MessagePack.as_u8());
-        let (body, metadata) = decode_sample::<Target>(&sample, TOPIC).unwrap();
+        let (body, metadata) = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap();
         assert_eq!(body.linear_x_mps, 1.0);
         assert_eq!(metadata.codec, CodecId::MessagePack.as_u8());
     }
@@ -169,7 +169,7 @@ mod tests {
             payload,
         );
 
-        let error = decode_sample::<Target>(&sample, TOPIC).unwrap_err();
+        let error = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap_err();
         assert!(matches!(
             error,
             BusError::UnsupportedCodec { codec: 99, .. }
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_unsupported_codec() {
-        let error = decode_sample::<Target>(&sample(99), TOPIC).unwrap_err();
+        let error = decode_sample::<TargetEndpoint>(&sample(99), TOPIC).unwrap_err();
         assert!(matches!(
             error,
             BusError::UnsupportedCodec { codec: 99, .. }
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn decode_rejects_corrupt_payload() {
         let sample = sample_with(CodecId::MessagePack.as_u8(), vec![0xc1, 0xc1, 0xc1]);
-        let error = decode_sample::<Target>(&sample, TOPIC).unwrap_err();
+        let error = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap_err();
         assert!(matches!(error, BusError::Codec(CodecError::Decode(_))));
     }
 }

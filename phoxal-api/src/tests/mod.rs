@@ -2,7 +2,7 @@
 //!
 //! These are unit tests rather than integration tests for one concrete reason:
 //! the curation tests in [`revision`] read `API_CONTRACT_MANIFEST`, the tree's
-//! own `#[cfg(test)]` self-enumeration, which `phoxal_api_tree!` deliberately
+//! own `#[cfg(test)]` self-enumeration, which `phoxal_api!` deliberately
 //! emits only into test builds so it never becomes public API surface. An
 //! integration test target compiles this crate without `cfg(test)` and cannot
 //! see it, so moving these out would mean either dropping the curation tests or

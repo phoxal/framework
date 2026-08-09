@@ -69,21 +69,21 @@ impl PointTracker {
                 self.best_track_for(detection, observed_at_ns, &assigned_track_indices)
             {
                 let track = &mut self.tracks[track_index];
-                track.position_m = detection.position_m;
-                track.class_id.clone_from(&detection.class_id);
+                track.position_m = detection.position_m();
+                track.class_id = detection.class_id().to_string();
                 track.last_seen_ns = observed_at_ns;
-                detection.track_id = Some(track.track_id);
+                detection.set_track_id(Some(track.track_id));
                 assigned_track_indices.push(track_index);
             } else {
                 let track_id = self.next_track_id;
                 self.next_track_id = self.next_track_id.saturating_add(1);
                 self.tracks.push(Track {
                     track_id,
-                    class_id: detection.class_id.clone(),
-                    position_m: detection.position_m,
+                    class_id: detection.class_id().to_string(),
+                    position_m: detection.position_m(),
                     last_seen_ns: observed_at_ns,
                 });
-                detection.track_id = Some(track_id);
+                detection.set_track_id(Some(track_id));
                 assigned_track_indices.push(self.tracks.len() - 1);
             }
         }
@@ -106,12 +106,12 @@ impl PointTracker {
             .enumerate()
             .filter(|(index, track)| {
                 !assigned_track_indices.contains(index)
-                    && track.class_id == detection.class_id
+                    && track.class_id == detection.class_id()
                     && observed_at_ns.saturating_sub(track.last_seen_ns)
                         <= self.config.association_window_ns
             })
             .filter_map(|(index, track)| {
-                let distance_m = track.distance_m_to(detection.position_m);
+                let distance_m = track.distance_m_to(detection.position_m());
                 (distance_m <= self.config.association_max_distance_m)
                     .then_some((index, distance_m))
             })
@@ -151,15 +151,15 @@ mod tests {
         });
         let mut first = vec![detection([1.0, 0.0, 0.0])];
         tracker.update(&mut first, 100);
-        let first_id = first[0].track_id;
+        let first_id = first[0].track_id();
 
         let mut nearby = vec![detection([1.2, 0.0, 0.0])];
         tracker.update(&mut nearby, 200);
-        assert_eq!(nearby[0].track_id, first_id);
+        assert_eq!(nearby[0].track_id(), first_id);
 
         let mut distant = vec![detection([5.0, 0.0, 0.0])];
         tracker.update(&mut distant, 300);
-        assert_ne!(distant[0].track_id, first_id);
+        assert_ne!(distant[0].track_id(), first_id);
     }
 
     /// Association is 3-D: a detection directly above a track is a different
@@ -176,6 +176,6 @@ mod tests {
         let mut above = vec![detection([1.0, 0.0, 1.0])];
         tracker.update(&mut above, 200);
 
-        assert_ne!(above[0].track_id, ground[0].track_id);
+        assert_ne!(above[0].track_id(), ground[0].track_id());
     }
 }

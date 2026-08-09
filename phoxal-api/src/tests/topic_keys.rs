@@ -1,4 +1,4 @@
-//! `ContractBody::TOPIC` composition: how a node's path in the tree becomes a
+//! Endpoint key composition: how a node's path in the tree becomes a
 //! wire key.
 
 use phoxal_bus::EndpointDescriptor;

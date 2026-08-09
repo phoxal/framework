@@ -1,21 +1,19 @@
 //! The wire-body side of a generated tree: the tree module and its `Api`
-//! marker, one `pub mod` per node holding that node's tree-local bodies, and
-//! the `ContractBody` impls that bind each body to its wire key.
+//! marker, node facades, and endpoint descriptors that bind ordinary payloads
+//! to their wire keys.
 //!
 //! The parallel topic-builder tree is emitted by [`super::builders`] and
 //! spliced into the same tree module here.
 
+use super::model::{MaterializedTree, Node, TopicKind, TopicRole};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::ItemStruct;
-
-use super::model::{MaterializedTree, Node, TopicKind, TopicRole, TypeItem};
 
 impl MaterializedTree {
     /// Emit this tree's module: the zero-variant `Api` marker that keeps one
     /// tree's bodies from being mistaken for another's, one node module per
     /// top-level node, and the api-local `topic` builder module.
-    pub(super) fn expand(&self, semantic: bool) -> TokenStream {
+    pub(super) fn expand(&self) -> TokenStream {
         let mod_name = &self.module;
 
         // Node modules (types + ContractBody impls), recursive. The family
@@ -26,11 +24,11 @@ impl MaterializedTree {
         // the wire key, so two trees can never collide.
         let mut node_mods = TokenStream::new();
         for node in &self.nodes {
-            node_mods.extend(node.expand_module(&self.id, "", "", semantic));
+            node_mods.extend(node.expand_module(&self.id, "", ""));
         }
 
-        let topic_mod = self.expand_topic_module(semantic);
-        let endpoint_mod = self.expand_endpoint_module(semantic);
+        let topic_mod = self.expand_topic_module(true);
+        let endpoint_mod = self.expand_endpoint_module(true);
         let module_doc = &self.doc;
         let id = &self.id;
 
@@ -79,10 +77,7 @@ impl MaterializedTree {
 }
 
 impl Node {
-    /// Emit a `pub mod <name>` for this node. The module carries the node's
-    /// types, the `ContractBody` impls for its topics, and - recursively - its
-    /// child node modules. Dynamic variables never appear in the module path:
-    /// they are topic params, not type-path segments.
+    /// Emit one version-local facade module for this node and its descendants.
     ///
     /// `tree_id` is the tree's identity (the dotted revision `"v0.1"`, or a
     /// protocol name), threaded down so every emitted `TOPIC` carries it.
@@ -90,37 +85,12 @@ impl Node {
     /// root); `key_prefix` is the `/`-joined ancestor key segments (`name` or
     /// `name/{var}`, empty at the root). The node appends its own contribution
     /// to each.
-    fn expand_module(
-        &self,
-        tree_id: &str,
-        family_prefix: &str,
-        key_prefix: &str,
-        semantic: bool,
-    ) -> TokenStream {
+    fn expand_module(&self, tree_id: &str, family_prefix: &str, key_prefix: &str) -> TokenStream {
         let name = &self.name;
-
-        // Generated wire bodies remain convenient to construct and copy for
-        // the current API. `ContractBody` itself does not require `Clone`, so
-        // custom large bodies can opt out; retained transport state is shared
-        // through `Arc`.
-        let derives =
-            quote!(#[derive(Clone, Debug, PartialEq, ::serde::Serialize, ::serde::Deserialize)]);
+        let semantic = true;
 
         let family_path = self.family_path(family_prefix);
         let node_key_prefix = self.key_prefix(key_prefix);
-
-        let mut types = TokenStream::new();
-        for ty in self.types.iter().filter(|_| !semantic) {
-            match &ty.item {
-                TypeItem::Struct(item) => {
-                    let item = with_pub_fields(item.clone());
-                    types.extend(quote! { #derives #item });
-                }
-                TypeItem::Enum(item) => {
-                    types.extend(quote! { #derives #item });
-                }
-            }
-        }
 
         let mut impls = TokenStream::new();
         let mut external_aliases = TokenStream::new();
@@ -326,12 +296,7 @@ impl Node {
         // Child node modules, one level deeper.
         let mut child_mods = TokenStream::new();
         for child in &self.children {
-            child_mods.extend(child.expand_module(
-                tree_id,
-                &family_path,
-                &node_key_prefix,
-                semantic,
-            ));
+            child_mods.extend(child.expand_module(tree_id, &family_path, &node_key_prefix));
         }
 
         for body_path in semantic_aliases.values() {
@@ -360,7 +325,6 @@ impl Node {
                 #[doc(hidden)]
                 pub use super::__PhoxalApiMarker;
 
-                #types
                 #external_parent_imports
                 #external_aliases
                 #impls
@@ -459,19 +423,4 @@ fn is_current_version_path(path: &syn::Path) -> bool {
                 segment.is_some_and(|segment| segment.ident == expected)
             }
         })
-}
-
-/// Make inherited fields public so participant code in other crates can construct
-/// and read ordinary wire bodies directly. An explicitly narrower visibility is
-/// preserved for bodies whose constructors/accessors own an invariant (for
-/// example, finite control targets).
-fn with_pub_fields(mut item: ItemStruct) -> ItemStruct {
-    if let syn::Fields::Named(named) = &mut item.fields {
-        for field in &mut named.named {
-            if matches!(field.vis, syn::Visibility::Inherited) {
-                field.vis = syn::Visibility::Public(syn::token::Pub::default());
-            }
-        }
-    }
-    item
 }

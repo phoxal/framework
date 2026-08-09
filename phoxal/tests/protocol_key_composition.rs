@@ -1,6 +1,6 @@
 //! The composed form of a protocol key, proven end to end.
 //!
-//! `phoxal_api_tree!`'s protocol mode emits *relative* keys whose leading
+//! `phoxal_protocol!` emits *relative* keys whose leading
 //! segment is the protocol name, and the bus session mounts everything under
 //! `phoxal/<execution-id>`. Each half is unit tested in its own crate, and
 //! neither can see the composed key that the macro rustdoc advertises, so a
@@ -22,7 +22,7 @@ mod payload {
 phoxal_protocol! {
     protocol supervisor {
         connect {
-            topic hello: command crate::payload::Hello;
+            command hello: Setpoint<crate::payload::Hello>;
         }
     }
 }

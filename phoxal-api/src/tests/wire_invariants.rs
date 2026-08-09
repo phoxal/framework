@@ -1,6 +1,8 @@
 use phoxal_bus::ProducerId;
 use serde_json::{Value, json};
 
+use super::instant;
+
 fn rejects_on_both_codecs<T>(value: Value)
 where
     T: serde::de::DeserializeOwned,
@@ -93,4 +95,90 @@ fn navigation_rejects_invalid_request_operation_pose_path_and_frontier() {
         "score": 2.0,
         "size": 1,
     }));
+}
+
+#[test]
+fn perception_rejects_invalid_detection_values_on_both_codecs() {
+    for malformed in [
+        json!({
+            "class_id": "",
+            "confidence": 0.5,
+            "position_m": [0.0, 0.0, 0.0],
+            "frame_id": "camera",
+            "track_id": null,
+        }),
+        json!({
+            "class_id": "crate",
+            "confidence": 1.5,
+            "position_m": [0.0, 0.0, 0.0],
+            "frame_id": "camera",
+            "track_id": null,
+        }),
+        json!({
+            "class_id": "crate",
+            "confidence": 0.5,
+            "position_m": [null, 0.0, 0.0],
+            "frame_id": "camera",
+            "track_id": null,
+        }),
+        json!({
+            "class_id": "crate",
+            "confidence": 0.5,
+            "position_m": [0.0, 0.0, 0.0],
+            "frame_id": "camera/link",
+            "track_id": null,
+        }),
+    ] {
+        rejects_on_both_codecs::<crate::domains::v0_2::perception::Detection>(malformed);
+    }
+}
+
+#[test]
+fn perception_rejects_unbounded_batches_and_detector_identity_on_both_codecs() {
+    let detection = crate::domains::v0_2::perception::Detection::try_new(
+        "crate",
+        0.5,
+        [0.0, 0.0, 0.0],
+        "camera",
+    )
+    .unwrap();
+    let body = crate::domains::v0_2::perception::Detections::try_new(
+        crate::domains::v0_2::perception::SourceRef::parse("front_camera.rgb").unwrap(),
+        phoxal_bus::TimeWindow::exact(instant(7)),
+        Vec::new(),
+    )
+    .unwrap();
+    let mut malformed = serde_json::to_value(body).unwrap();
+    malformed["detections"] = Value::Array(
+        std::iter::repeat_with(|| serde_json::to_value(&detection).unwrap())
+            .take(4_097)
+            .collect(),
+    );
+    rejects_on_both_codecs::<crate::domains::v0_2::perception::Detections>(malformed);
+
+    rejects_on_both_codecs::<crate::domains::v0_2::perception::State>(json!({
+        "Healthy": {"detector": ""}
+    }));
+    rejects_on_both_codecs::<crate::domains::v0_2::perception::State>(json!({
+        "Unhealthy": {"detector": "detector/name", "reason": "stale_camera"}
+    }));
+}
+
+#[test]
+fn perception_constructors_enforce_the_same_bounds_as_deserialization() {
+    use crate::domains::v0_2::perception::{Detection, Detections, InvalidDetections, State};
+
+    assert!(Detection::try_new("crate", -0.1, [0.0; 3], "camera").is_err());
+    assert!(Detection::try_new("crate", 0.5, [f64::NAN; 3], "camera").is_err());
+    assert!(Detection::try_new("crate", 0.5, [0.0; 3], "").is_err());
+    assert!(State::healthy("detector/name").is_err());
+
+    let detection = Detection::try_new("crate", 0.5, [0.0; 3], "camera").unwrap();
+    let error = Detections::try_new(
+        crate::domains::v0_2::perception::SourceRef::parse("front_camera.rgb").unwrap(),
+        phoxal_bus::TimeWindow::exact(instant(7)),
+        vec![detection; 4_097],
+    )
+    .unwrap_err();
+    assert_eq!(error, InvalidDetections::TooManyDetections);
 }

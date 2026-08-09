@@ -46,8 +46,11 @@ pub(crate) struct RawDetection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DetectionValidationError {
     EmptyClassId,
+    InvalidClassId,
     EmptyFrameId,
+    InvalidFrameId,
     NonFiniteConfidence,
+    ConfidenceOutOfRange,
     NonFinitePosition,
     NonFiniteLocalization,
     NonFiniteTransformedPosition,
@@ -57,8 +60,11 @@ impl fmt::Display for DetectionValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::EmptyClassId => "detector output has an empty class id",
+            Self::InvalidClassId => "detector output has an invalid class id",
             Self::EmptyFrameId => "detection has an empty frame id",
+            Self::InvalidFrameId => "detection has an invalid frame id",
             Self::NonFiniteConfidence => "detector confidence is not finite",
+            Self::ConfidenceOutOfRange => "detector confidence is outside [0, 1]",
             Self::NonFinitePosition => "detector position is not finite",
             Self::NonFiniteLocalization => "localization transform input is not finite",
             Self::NonFiniteTransformedPosition => "transformed detection position is not finite",
@@ -97,6 +103,11 @@ impl RawDetection {
         localization: Option<&api::localize::LocalizationState>,
     ) -> Result<api::perception::Detection, DetectorFailure> {
         self.validate().map_err(DetectorFailure::InvalidOutput)?;
+        if source_frame_id.is_empty() {
+            return Err(DetectorFailure::InvalidOutput(
+                DetectionValidationError::EmptyFrameId,
+            ));
+        }
         let (position_m, frame_id) = match localization {
             Some(localization) => (
                 local_to_map_position(self.position_m, localization)
@@ -105,14 +116,13 @@ impl RawDetection {
             ),
             None => (self.position_m, source_frame_id.to_string()),
         };
-        let detection = api::perception::Detection {
-            class_id: self.class_id,
-            confidence: self.confidence,
+        let detection = api::perception::Detection::try_new(
+            self.class_id,
+            self.confidence,
             position_m,
             frame_id,
-            track_id: None,
-        };
-        validate_detection(&detection).map_err(DetectorFailure::InvalidOutput)?;
+        )
+        .map_err(|error| DetectorFailure::InvalidOutput(error.into()))?;
         Ok(detection)
     }
 
@@ -122,6 +132,9 @@ impl RawDetection {
         }
         if !self.confidence.is_finite() {
             return Err(DetectionValidationError::NonFiniteConfidence);
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err(DetectionValidationError::ConfidenceOutOfRange);
         }
         if !self.position_m.into_iter().all(f64::is_finite) {
             return Err(DetectionValidationError::NonFinitePosition);
@@ -159,22 +172,15 @@ fn local_to_map_position(
         .ok_or(DetectionValidationError::NonFiniteTransformedPosition)
 }
 
-fn validate_detection(
-    detection: &api::perception::Detection,
-) -> Result<(), DetectionValidationError> {
-    if detection.class_id.is_empty() {
-        return Err(DetectionValidationError::EmptyClassId);
+impl From<api::perception::InvalidDetection> for DetectionValidationError {
+    fn from(error: api::perception::InvalidDetection) -> Self {
+        match error {
+            api::perception::InvalidDetection::InvalidClassId => Self::InvalidClassId,
+            api::perception::InvalidDetection::InvalidConfidence => Self::ConfidenceOutOfRange,
+            api::perception::InvalidDetection::InvalidPosition => Self::NonFinitePosition,
+            api::perception::InvalidDetection::InvalidFrameId => Self::InvalidFrameId,
+        }
     }
-    if detection.frame_id.is_empty() {
-        return Err(DetectionValidationError::EmptyFrameId);
-    }
-    if !detection.confidence.is_finite() {
-        return Err(DetectionValidationError::NonFiniteConfidence);
-    }
-    if !detection.position_m.into_iter().all(f64::is_finite) {
-        return Err(DetectionValidationError::NonFinitePosition);
-    }
-    Ok(())
 }
 
 pub(crate) trait DetectorHead {
@@ -253,10 +259,10 @@ mod tests {
             .try_into_detection("camera", Some(&localization))
             .unwrap();
 
-        assert_eq!(detection.frame_id, "map");
-        assert!((detection.position_m[0] - 2.0).abs() < 1e-9);
-        assert!((detection.position_m[1] - 4.0).abs() < 1e-9);
-        assert_eq!(detection.position_m[2], 0.5);
+        assert_eq!(detection.frame_id(), "map");
+        assert!((detection.position_m()[0] - 2.0).abs() < 1e-9);
+        assert!((detection.position_m()[1] - 4.0).abs() < 1e-9);
+        assert_eq!(detection.position_m()[2], 0.5);
     }
 
     #[test]
@@ -265,9 +271,9 @@ mod tests {
             .try_into_detection("front_camera__rgb_link", None)
             .unwrap();
 
-        assert_eq!(detection.frame_id, "front_camera__rgb_link");
-        assert_eq!(detection.position_m, [1.0, -2.0, 0.5]);
-        assert_eq!(detection.track_id, None);
+        assert_eq!(detection.frame_id(), "front_camera__rgb_link");
+        assert_eq!(detection.position_m(), [1.0, -2.0, 0.5]);
+        assert_eq!(detection.track_id(), None);
     }
 
     #[test]
@@ -298,6 +304,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn raw_outputs_reject_bounded_contract_violations() {
+        for confidence in [-0.01, 1.01] {
+            let error = RawDetection {
+                confidence,
+                ..raw([1.0, 2.0, 3.0])
+            }
+            .try_into_detection("camera", None)
+            .unwrap_err();
+            assert_eq!(
+                error,
+                DetectorFailure::InvalidOutput(DetectionValidationError::ConfidenceOutOfRange)
+            );
+        }
+
+        let error = RawDetection {
+            class_id: "class/name".to_string(),
+            ..raw([1.0, 2.0, 3.0])
+        }
+        .try_into_detection("camera", None)
+        .unwrap_err();
+        assert_eq!(
+            error,
+            DetectorFailure::InvalidOutput(DetectionValidationError::InvalidClassId)
+        );
+
+        let error = raw([1.0, 2.0, 3.0])
+            .try_into_detection("camera/frame", None)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            DetectorFailure::InvalidOutput(DetectionValidationError::InvalidFrameId)
+        );
     }
 
     #[test]

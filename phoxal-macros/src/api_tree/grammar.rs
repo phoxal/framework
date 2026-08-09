@@ -7,8 +7,8 @@ use syn::{Ident, ItemEnum, ItemStruct, Token};
 
 use super::ApiTree;
 use super::model::{
-    BodyPath, DeliveryOverride, Node, Protocol, Removal, TopicDef, TopicKind, TopicLeaf, TopicRole,
-    TypeDef, TypeItem, Version,
+    BodyPath, Node, Protocol, Removal, TopicDef, TopicKind, TopicLeaf, TopicRole, TypeDef,
+    TypeItem, Version,
 };
 
 mod kw {
@@ -466,105 +466,9 @@ impl Parse for TopicDef {
                 "semantic endpoint descriptors must carry one payload type in angle brackets",
             ));
         }
-        if prefix != 0 {
-            return Err(input.error("command endpoints require `Setpoint<T>` or `Stream<T>`; query endpoints use `Req => Resp`"));
-        }
-        // Every topic declares a role. `command`, `stream`, `state`, `event`,
-        // `measurement`, and `diagnostic` carry a single pub/sub body and differ
-        // by role; `query`
-        // carries request/response. The role rides alongside the kind and
-        // selects the side brand in the generated builders: a `command` leaf is
-        // `Publish` on the public builder and `Subscribe` on the owner builder;
-        // every owner-published role is the reverse.
-        let (kind, role, legacy) = if input.peek(kw::command) {
-            input.parse::<kw::command>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::Command, false)
-        } else if input.peek(kw::stream) {
-            input.parse::<kw::stream>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::Stream, false)
-        } else if input.peek(kw::state) {
-            input.parse::<kw::state>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::State, false)
-        } else if input.peek(kw::sample) {
-            // The semantic grammar names the transport family directly. The
-            // legacy `measurement` spelling is intentionally kept below only
-            // for the compatibility tree while generated contracts converge
-            // on the independent `DELIVERY` marker.
-            input.parse::<kw::sample>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::Measurement, false)
-        } else if input.peek(kw::event) {
-            input.parse::<kw::event>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::Event, false)
-        } else if input.peek(kw::setpoint) {
-            input.parse::<kw::setpoint>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::Command, false)
-        } else if input.peek(kw::measurement) {
-            input.parse::<kw::measurement>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::Measurement, true)
-        } else if input.peek(kw::diagnostic) {
-            input.parse::<kw::diagnostic>()?;
-            let body = parse_body_path(input)?;
-            (TopicKind::PubSub(body), TopicRole::Diagnostic, true)
-        } else if input.peek(kw::query) {
-            input.parse::<kw::query>()?;
-            let request = parse_body_path(input)?;
-            input.parse::<Token![=>]>()?;
-            let response = parse_body_path(input)?;
-            (
-                TopicKind::Query { request, response },
-                TopicRole::Query,
-                false,
-            )
-        } else {
-            return Err(input.error(
-                "expected a topic role: `command <Body>`, `stream <Body>`, `state <Body>`, `event <Body>`, \
-                 `measurement <Body>`, `diagnostic <Body>`, or `query <Req> => <Resp>`",
-            ));
-        };
-        let delivery = if input.peek(kw::delivery) {
-            input.parse::<kw::delivery>()?;
-            if input.peek(kw::state) {
-                input.parse::<kw::state>()?;
-                Some(DeliveryOverride::State)
-            } else if input.peek(kw::sample) {
-                input.parse::<kw::sample>()?;
-                Some(DeliveryOverride::Sample)
-            } else if input.peek(kw::setpoint) {
-                input.parse::<kw::setpoint>()?;
-                Some(DeliveryOverride::Setpoint)
-            } else if input.peek(kw::stream) {
-                input.parse::<kw::stream>()?;
-                Some(DeliveryOverride::Stream)
-            } else {
-                return Err(input.error(
-                    "expected a delivery override: `state`, `sample`, `setpoint`, or `stream`",
-                ));
-            }
-        } else {
-            None
-        };
-        if delivery.is_some() && matches!(&kind, TopicKind::Query { .. }) {
-            return Err(input.error(
-                "delivery overrides apply to pub/sub topics; queries use their direct request/reply transport",
-            ));
-        }
-        input.parse::<Token![;]>()?;
-        Ok(TopicDef {
-            replace: false,
-            leaf,
-            kind,
-            role,
-            delivery,
-            legacy,
-            owner_publishes: role.owner_publishes(),
-        })
+        Err(input.error(
+            "expected a semantic endpoint descriptor: `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`",
+        ))
     }
 }
 

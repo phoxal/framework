@@ -309,16 +309,17 @@ fn video_open_source_is_canonical_and_validated_during_deserialization() {
 
 #[test]
 fn perception_source_capture_preserves_source_and_capture_window() {
-    let body = api::perception::Detections {
-        source: api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
-        captured_at: phoxal_bus::TimeWindow::exact(instant(42)),
-        detections: Vec::new(),
-    };
+    let body = api::perception::Detections::try_new(
+        api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
+        phoxal_bus::TimeWindow::exact(instant(42)),
+        Vec::new(),
+    )
+    .unwrap();
     let json = serde_json::to_value(&body).unwrap();
     assert_eq!(json["source"], "front_camera.rgb");
     assert_eq!(
         json["captured_at"],
-        serde_json::to_value(body.captured_at).unwrap()
+        serde_json::to_value(body.captured_at()).unwrap()
     );
     round_trip(&body);
 
@@ -596,24 +597,26 @@ fn domain_bodies_round_trip_through_messagepack() {
         healthy: true,
         detector: "legacy-detector".to_string(),
     });
-    round_trip(&api::perception::Detections {
-        source: api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
-        captured_at: phoxal_bus::TimeWindow::exact(instant(7)),
-        detections: vec![api::perception::Detection {
-            class_id: "crate".to_string(),
-            confidence: 0.8,
-            position_m: [1.0, 2.0, 3.0],
-            frame_id: "camera_link".to_string(),
-            track_id: Some(6),
-        }],
-    });
-    round_trip(&api::perception::State::Healthy {
-        detector: "deterministic-placeholder".to_string(),
-    });
-    round_trip(&api::perception::State::Unhealthy {
-        detector: "deterministic-placeholder".to_string(),
-        reason: api::perception::HealthReason::StaleCamera,
-    });
+    let detection =
+        api::perception::Detection::try_new("crate", 0.8, [1.0, 2.0, 3.0], "camera_link").unwrap();
+    let mut detection = detection;
+    detection.set_track_id(Some(6));
+    round_trip(
+        &api::perception::Detections::try_new(
+            api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
+            phoxal_bus::TimeWindow::exact(instant(7)),
+            vec![detection],
+        )
+        .unwrap(),
+    );
+    round_trip(&api::perception::State::healthy("deterministic-placeholder").unwrap());
+    round_trip(
+        &api::perception::State::unhealthy(
+            "deterministic-placeholder",
+            api::perception::HealthReason::StaleCamera,
+        )
+        .unwrap(),
+    );
     round_trip(&api::video::OpenOutcome::Unsupported);
     round_trip(&api::video::OpenOutcome::Unavailable);
 }

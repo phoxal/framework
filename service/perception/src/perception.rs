@@ -142,39 +142,39 @@ impl Participant for Perception {
 
         let now = step.now();
         let detector = state.detector.detector_name().to_string();
-        let unhealthy = |reason| api::perception::State::Unhealthy {
-            detector: detector.clone(),
-            reason,
-        };
+        let unhealthy = |reason| api::perception::State::unhealthy(detector.clone(), reason);
 
         // State is deliberately published on every cycle, including when all
         // cameras have disappeared. A missing or stale input is not allowed to
         // become a silent gap that downstream consumers mistake for health.
         let state_body = match state.camera_input(now) {
-            CameraInput::Missing => unhealthy(api::perception::HealthReason::MissingCamera),
-            CameraInput::Stale => unhealthy(api::perception::HealthReason::StaleCamera),
-            CameraInput::Invalid => unhealthy(api::perception::HealthReason::InvalidCamera),
+            CameraInput::Missing => unhealthy(api::perception::HealthReason::MissingCamera)?,
+            CameraInput::Stale => unhealthy(api::perception::HealthReason::StaleCamera)?,
+            CameraInput::Invalid => unhealthy(api::perception::HealthReason::InvalidCamera)?,
             CameraInput::Ready => match state.detect(now) {
                 Ok(Some((source, captured_at, detections))) => {
-                    let batch = api::perception::Detections {
+                    let batch = match api::perception::Detections::try_new(
                         source,
                         captured_at,
                         detections,
+                    ) {
+                        Ok(batch) => batch,
+                        Err(_) => unhealthy(api::perception::HealthReason::DetectorFailure)?,
                     };
                     if let Err(error) = api.detections.publish(&step.token, batch) {
                         // A publication failure is terminal for this cycle. If
                         // the state channel is still available, report that
                         // loss explicitly before returning the original error.
-                        let failure = unhealthy(api::perception::HealthReason::PublicationFailure);
+                        let failure = unhealthy(api::perception::HealthReason::PublicationFailure)?;
                         return preserve_detection_publication_error(
                             error,
                             api.state.publish(&step.token, failure),
                         );
                     }
-                    api::perception::State::Healthy { detector }
+                    api::perception::State::healthy(detector.clone())?
                 }
-                Ok(None) => unhealthy(api::perception::HealthReason::InvalidCamera),
-                Err(error) => unhealthy(detector_health_reason(error)),
+                Ok(None) => unhealthy(api::perception::HealthReason::InvalidCamera)?,
+                Err(error) => unhealthy(detector_health_reason(error))?,
             },
         };
 
@@ -469,6 +469,7 @@ fn drain_capture_latest_per_source<E: phoxal::bus::EndpointDescriptor + SampleDe
 
 #[cfg(test)]
 mod tests {
+    use phoxal::api;
     use phoxal::bus::{RobotInstant, TimeWindow, Timed, TimelineId};
     use phoxal::model::identity::{CapabilityId, CapabilityRef, ComponentInstanceId, LinkId};
 

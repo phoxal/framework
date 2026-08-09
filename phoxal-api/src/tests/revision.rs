@@ -139,7 +139,7 @@ fn generated_contract_manifest_lists_contract_shapes() {
     );
 
     // A contract under two dynamic nodes carries both placeholders in the key
-    // the manifest reports, exactly as `ContractBody::TOPIC` does.
+    // the manifest reports, exactly as the endpoint descriptor does.
     let battery_state = version
         .contracts
         .iter()

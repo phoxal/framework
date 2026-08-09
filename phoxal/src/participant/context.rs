@@ -8,13 +8,12 @@ use std::time::Duration;
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
 use crate::ParticipantAssetResolver;
 use crate::bus::{
-    AskQuery, CommandPublisher, DEFAULT_QUERY_TIMEOUT, DiagnosticContract, DiagnosticPublisher,
-    EventContract, EventPublisher, EventReceiver, MeasurementPublisher, Observed, Publish, Querier,
-    QueryEndpointDescriptor, RobotInstant, SampleContract, SampleDeliveryContract, SamplePublisher,
-    SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract, SetpointPublisher,
-    SetpointReceiver, StateContract, StateDeliveryContract, StatePublisher, StateView, StepToken,
-    StreamContract, StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimelineId,
-    Topic,
+    AskQuery, DEFAULT_QUERY_TIMEOUT, EventContract, EventPublisher, EventReceiver, Observed,
+    Publish, Querier, QueryEndpointDescriptor, RobotInstant, SampleContract,
+    SampleDeliveryContract, SamplePublisher, SampleReceiver, ServeQuery, SetpointContract,
+    SetpointDeliveryContract, SetpointPublisher, SetpointReceiver, StateContract,
+    StateDeliveryContract, StatePublisher, StateView, StepToken, StreamContract,
+    StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimelineId, Topic,
 };
 use crate::model::Robot;
 use crate::participant::api::Participant;
@@ -201,12 +200,11 @@ impl<R: Participant> SetupContext<R> {
     }
 }
 
-/// Every typed-IO builder below binds its body's `ContractBody::Api` to
+/// Every typed-IO builder below binds its endpoint descriptor's `Api` to
 /// `R::ContractApi`, the one revision the role attribute fixed for this
-/// participant. A body from any other API - a second revision, or another
-/// `phoxal_api_tree!` tree such as a process-boundary protocol - is a compile
-/// error at the builder call, not a runtime mismatch: this is what makes the
-/// `api` field of the participant's embedded metadata record truthful.
+/// participant. A descriptor from any other API revision is a compile error at
+/// the builder call, not a runtime mismatch: this is what makes the `api`
+/// field of the participant's embedded metadata record truthful.
 impl<R: Participant + TypedIoSurface> SetupContext<R> {
     pub fn state_publisher<B: StateContract<Api = R::ContractApi>>(
         &self,
@@ -222,25 +220,11 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(SamplePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn measurement_publisher<B: SampleContract<Api = R::ContractApi>>(
-        &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<MeasurementPublisher<B>> {
-        Ok(self.sample_publisher(topic)?)
-    }
-
     pub fn setpoint_publisher<B: SetpointContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<SetpointPublisher<B>> {
         Ok(SetpointPublisher::new(self.bus.clone(), &topic)?)
-    }
-
-    pub fn command_publisher<B: SetpointContract<Api = R::ContractApi>>(
-        &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<CommandPublisher<B>> {
-        Ok(self.setpoint_publisher(topic)?)
     }
 
     pub fn event_publisher<B: EventContract<Api = R::ContractApi>>(
@@ -255,13 +239,6 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         topic: Topic<Publish<B>>,
     ) -> crate::Result<StreamPublisher<B>> {
         Ok(StreamPublisher::new(self.bus.clone(), &topic)?)
-    }
-
-    pub fn diagnostic_publisher<B: DiagnosticContract<Api = R::ContractApi>>(
-        &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<DiagnosticPublisher<B>> {
-        Ok(DiagnosticPublisher::new(self.bus.clone(), &topic)?)
     }
 
     pub async fn state_view<B: StateDeliveryContract<Api = R::ContractApi>>(

@@ -170,31 +170,9 @@ pub mod payload {
         #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct SnapshotRequest {}
 
-        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-        pub struct Timestamp {
-            pub unix_seconds: i64,
-            pub nanos: u32,
-        }
-
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        pub enum Level {
-            Error,
-            Warn,
-            Info,
-            Debug,
-            Trace,
-        }
-
-        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-        #[serde(untagged)]
-        pub enum LogValue {
-            Bool(bool),
-            I64(i64),
-            U64(u64),
-            F64(f64),
-            String(String),
-        }
+        /// Logs use the same timestamp, severity and finite-value vocabulary
+        /// at ingestion and when the supervisor later serves retained records.
+        pub use crate::payload::logs::{Level, LogValue, Timestamp};
 
         #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct Record {
@@ -243,7 +221,7 @@ pub mod payload {
 phoxal_protocol! {
     protocol supervisor {
         logs(participant_id) {
-            topic self: diagnostic crate::payload::logs::Event delivery stream;
+            topic self: Stream<crate::payload::logs::Event>;
         }
 
         runtime {
@@ -252,18 +230,18 @@ phoxal_protocol! {
         }
 
         telemetry {
-            topic rollup: diagnostic crate::payload::telemetry::Rollup;
-            topic snapshot: query crate::payload::telemetry::SnapshotRequest => crate::payload::telemetry::Snapshot;
-            topic follow: diagnostic crate::payload::telemetry::Follow;
+            topic rollup: Stream<crate::payload::telemetry::Rollup>;
+            query snapshot: crate::payload::telemetry::SnapshotRequest => crate::payload::telemetry::Snapshot;
+            topic follow: Stream<crate::payload::telemetry::Follow>;
         }
 
         log {
-            topic snapshot: query crate::payload::log::SnapshotRequest => crate::payload::log::Snapshot;
-            topic follow: diagnostic crate::payload::log::Follow;
+            query snapshot: crate::payload::log::SnapshotRequest => crate::payload::log::Snapshot;
+            topic follow: Stream<crate::payload::log::Follow>;
         }
 
         asset {
-            topic get: query crate::payload::asset::GetRequest => crate::payload::asset::GetResponse;
+            query get: crate::payload::asset::GetRequest => crate::payload::asset::GetResponse;
         }
     }
 }
@@ -286,7 +264,7 @@ mod tests {
         );
         assert_eq!(
             <supervisor::endpoint::telemetry::RollupEndpoint as EndpointDescriptor>::KIND,
-            EndpointKind::State
+            EndpointKind::Stream
         );
         assert_eq!(
             <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::KIND,
@@ -299,5 +277,6 @@ mod tests {
         let encoded = rmp_serde::to_vec_named(&supervisor::logs::LogValue::F64(f64::NAN))
             .expect("messagepack permits a non-finite test input");
         assert!(rmp_serde::from_slice::<supervisor::logs::LogValue>(&encoded).is_err());
+        assert!(rmp_serde::from_slice::<supervisor::log::LogValue>(&encoded).is_err());
     }
 }

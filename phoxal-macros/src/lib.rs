@@ -6,8 +6,6 @@
 //!   payload modules, generating endpoint descriptors and topic builders.
 //! - [`phoxal_protocol!`] - declares process-boundary protocol endpoints over
 //!   ordinary Rust payload modules, with protocol-relative keys.
-//! - [`phoxal_api_tree!`] - retains the legacy authored-body tree for the
-//!   compatibility migration.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
@@ -19,123 +17,12 @@
 //! The participant authoring macros (`macro@service` / `macro@driver` /
 //! `macro@simulator` / `macro@brain` / `macro@step`) reference the framework
 //! through `::phoxal::…`; the engine crate makes that path resolve to itself with
-//! `extern crate self as phoxal;`. The
-//! `phoxal_api_tree!` output instead targets the bus ABI floor directly as
-//! `::phoxal_bus`, since it is invoked in the `phoxal-api` crate, which does not
-//! depend on the engine.
+//! `extern crate self as phoxal;`.
 
 mod api_tree;
 mod authoring;
 
 use proc_macro::TokenStream;
-
-/// Declare a compatibility tree of wire bodies + typed topics, in one of two modes.
-///
-/// **API mode** (`version`) is the robot API: one invocation owns one or more
-/// `version vM_N { … }` blocks and exactly one final `latest vM_N;`
-/// declaration. A child may `extends` one earlier parent; inherited definitions
-/// are fully materialized with the child's concrete identity. Additions are
-/// direct and same-path changes require explicit `replace` or `remove`.
-///
-/// **Protocol mode** (`protocol`) is a process-boundary protocol such as the
-/// supervisor's: one invocation owns one or more `protocol <name> { … }` trees,
-/// with no revision axis at all - no `latest`, no `extends`/`replace`/`remove`,
-/// and no version segment in the keys. See *Protocol mode* below. The two modes
-/// are disjoint; one invocation is either one or the other.
-///
-/// The generated tree references the bus ABI floor as `::phoxal_bus`.
-///
-/// # Node grammar
-///
-/// A tree body is a tree of **nodes**. A node is either static (`name { … }`)
-/// or dynamic (`name(var) { … }`, binding exactly one variable), and may nest to
-/// any depth. Inside a node block, in any order:
-///
-/// - `struct …` / `enum …` - a legacy version-local wire body. New API and
-///   protocol declarations keep payloads in ordinary Rust modules and use
-///   endpoint descriptors instead.
-/// - `topic <leaf>: command <Body>;` - a pub/sub topic the owning service
-///   subscribes (a control input).
-/// - `topic <leaf>: stream <Body>;` - a pub/sub topic the owning service
-///   subscribes (ordered chunks with explicit saturation/close evidence).
-/// - `topic <leaf>: state <Body>;` - a pub/sub topic the owning service publishes
-///   (telemetry/output). Same wire shape as `command`, but the side-branded
-///   builders give it the inverse brand (see *Generated topic builders* below).
-/// - `topic <leaf>: query <Req> => <Resp>;` - a request/response topic.
-/// - a child node (`name { … }` / `name(var) { … }`).
-///
-/// Doc-comments and attributes attach to the next `struct`/`enum`; `topic`
-/// declarations and child nodes take none.
-///
-/// # What each topic derives from its node path
-///
-/// A topic carries no per-topic params; its identity is derived from the path of
-/// nodes enclosing it:
-///
-/// - **`TOPIC`** (the wire key) - the version, then the `/`-joined node
-///   segments plus the leaf, where a static node contributes `name` and a
-///   dynamic node contributes `name/{var}` (e.g.
-///   `v0.1/component/{instance}/motor/{capability}/command`). Folding the
-///   version into the key makes differently-versioned contracts physically
-///   distinct Zenoh keys.
-/// - **body type path** - `phoxal_api::vM_N::<node>::…::<Body>`; variables never
-///   appear in the module path.
-///
-/// A topic is dynamic when its node path contains at least one `(var)` node, and
-/// static otherwise.
-///
-/// # Generated topic builders
-///
-/// Each version also gets an api-local `topic` module emitted with BOTH side
-/// trees. `topic::client()` returns a `Root` for the PUBLIC **client** side;
-/// `topic::owner()` returns a `Root` for the OWNER side. Both
-/// have a method per node that walks the identical
-/// tree (a dynamic node's method takes its variable as `impl Display`) and a leaf
-/// method that returns a typed `bus::Topic<Kind>` with the key formatted from the
-/// carried variables. The leaf brand is side-specific: on the client side a
-/// `command` leaf is `Publish<Body>`, a `state` leaf is `Subscribe<Body>`, and a
-/// `query` leaf is `AskQuery<E>`; on the owner side those flip to
-/// `Subscribe<Body>` / `Publish<Body>` / `ServeQuery<E>`.
-///
-/// # Protocol mode
-///
-/// ```text
-/// phoxal_protocol! {
-///     protocol supervisor {
-///         connect {
-///             topic hello: command crate::payload::Hello;
-///         }
-///         run(execution) {
-///             topic snapshot: query crate::payload::SnapshotRequest
-///                 => crate::payload::Snapshot;
-///         }
-///     }
-/// }
-/// ```
-///
-/// Node grammar, roles, query typing, dynamic segments, and both builder trees
-/// are exactly as above. What differs:
-///
-/// - keys are **relative**: no `v0.1/` segment. The leading segment is the
-///   protocol name, which is the same slot the dotted revision fills in API
-///   mode, so a protocol topic composes under the bus's execution-scoped root
-///   (`phoxal/<execution-id>/supervisor/connect/hello`) the same way a robot
-///   API topic does;
-/// - there is no revision history: `latest`, `extends`, `replace`, and `remove`
-///   are all rejected. Pre-1.0, edit the declaration in place;
-/// - the **developer owns the payload's schema version**. A document that
-///   crosses a process boundary is authored as a serde-tagged enum in the
-///   ordinary payload module; this macro never reads its shape or mints a
-///   version;
-/// - the generated marker's `ApiVersion::ID` is the protocol name, while each
-///   generated endpoint descriptor owns its endpoint identity and points at
-///   the ordinary payload type.
-#[proc_macro]
-pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
-    api_tree::expand(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
 
 /// Declare the versioned robot API surface. This is the normal authoring
 /// entry point; protocol trees use [`phoxal_protocol!`] instead.

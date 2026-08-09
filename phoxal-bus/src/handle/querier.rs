@@ -167,25 +167,9 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    use crate::EndpointDescriptor;
     use crate::query::QueryCode;
     use crate::session::BusOwner;
-    use crate::test_support::{GetRequest, GetResponse, participant_config};
-
-    struct GetEndpoint;
-    impl EndpointDescriptor for GetEndpoint {
-        type Api = <GetRequest as crate::contract::ContractBody>::Api;
-        type Payload = GetRequest;
-        const NAME: &'static str = "test::GetEndpoint";
-        const VERSION: &'static str = "test";
-        const CONTRACT: &'static str = "asset::get";
-        const TOPIC: &'static str = "yTEST/asset/get";
-        const KIND: crate::contract::EndpointKind = crate::contract::EndpointKind::Query;
-    }
-    impl QueryEndpointDescriptor for GetEndpoint {
-        type Request = GetRequest;
-        type Response = GetResponse;
-    }
+    use crate::test_support::{GetEndpoint, GetRequest, GetResponse, participant_config};
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

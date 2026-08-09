@@ -329,11 +329,11 @@ mod tests {
     use zenoh::key_expr::OwnedKeyExpr;
 
     use crate::abi::CodecId;
-    use crate::contract::ContractBody;
+    use crate::contract::EndpointDescriptor;
     use crate::handle::publisher::StatePublisher;
     use crate::handle::subscriber::{Latest, Subscriber};
     use crate::session::BusOwner;
-    use crate::test_support::{Target, metadata, participant_config, step};
+    use crate::test_support::{Target, TargetEndpoint, metadata, participant_config, step};
     use crate::topic::{Publish, Subscribe, Topic};
 
     /// Every variant here has to reach the wire.
@@ -448,11 +448,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_rows() {
         let (owner, bus) = BusOwner::open(participant_config("metrics")).await.unwrap();
-        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
-        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic).await.unwrap();
+        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<TargetEndpoint>::new(&bus, &sub_topic)
+            .await
+            .unwrap();
+        let subscriber = Subscriber::<TargetEndpoint>::new(&bus, &sub_topic)
+            .await
+            .unwrap();
 
         // Declarations are retained even before any traffic.
         let quiet = bus.take_runtime_metrics().unwrap();
@@ -503,7 +507,7 @@ mod tests {
         bus.session()
             .unwrap()
             .put(
-                OwnedKeyExpr::new(bus.full_key(<Target as ContractBody>::TOPIC)).unwrap(),
+                OwnedKeyExpr::new(bus.full_key(TargetEndpoint::TOPIC)).unwrap(),
                 vec![0xc1_u8],
             )
             .encoding(Encoding::from(CodecId::MessagePack.encoding_string()))
@@ -528,7 +532,7 @@ mod tests {
             .find(|row| row.key.direction == RuntimeDirection::Publish)
             .unwrap();
         assert_eq!(outbound.key.buffer_kind, RuntimeBufferKind::Outbound);
-        assert_eq!(outbound.key.topic, <Target as ContractBody>::TOPIC);
+        assert_eq!(outbound.key.topic, TargetEndpoint::TOPIC);
         assert_eq!(outbound.count, 3);
 
         let latest_row = rows

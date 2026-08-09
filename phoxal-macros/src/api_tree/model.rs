@@ -151,7 +151,6 @@ pub(super) enum TopicRole {
     State,
     Event,
     Measurement,
-    Diagnostic,
     Query,
 }
 
@@ -185,7 +184,7 @@ impl TopicDef {
         match &self.kind {
             TopicKind::Query { .. } => quote! { ::phoxal_bus::EndpointKind::Query },
             TopicKind::PubSub(_) => match self.delivery.unwrap_or_else(|| match self.role {
-                TopicRole::State | TopicRole::Diagnostic => DeliveryOverride::State,
+                TopicRole::State => DeliveryOverride::State,
                 TopicRole::Measurement => DeliveryOverride::Sample,
                 TopicRole::Command => DeliveryOverride::Setpoint,
                 TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
@@ -213,7 +212,7 @@ impl TopicDef {
         match &self.kind {
             TopicKind::Query { .. } => "Query",
             TopicKind::PubSub(_) => match self.delivery.unwrap_or_else(|| match self.role {
-                TopicRole::State | TopicRole::Diagnostic => DeliveryOverride::State,
+                TopicRole::State => DeliveryOverride::State,
                 TopicRole::Measurement => DeliveryOverride::Sample,
                 TopicRole::Command => DeliveryOverride::Setpoint,
                 TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
@@ -244,7 +243,7 @@ impl TopicDef {
             return "Query";
         }
         match self.delivery.unwrap_or_else(|| match self.role {
-            TopicRole::State | TopicRole::Diagnostic => DeliveryOverride::State,
+            TopicRole::State => DeliveryOverride::State,
             TopicRole::Measurement => DeliveryOverride::Sample,
             TopicRole::Command => DeliveryOverride::Setpoint,
             TopicRole::Stream | TopicRole::Event => DeliveryOverride::Stream,
@@ -288,7 +287,6 @@ impl TopicRole {
                 quote! { ::phoxal_bus::TopicRole::State }
             }
             TopicRole::Measurement => quote! { ::phoxal_bus::TopicRole::Measurement },
-            TopicRole::Diagnostic => quote! { ::phoxal_bus::TopicRole::Diagnostic },
             TopicRole::Query => quote! { ::phoxal_bus::TopicRole::Query },
         }
     }
@@ -298,7 +296,7 @@ impl TopicRole {
         match self {
             TopicRole::Command => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
             TopicRole::Stream => quote! { ::phoxal_bus::DeliveryFamily::Stream },
-            TopicRole::State | TopicRole::Diagnostic => {
+            TopicRole::State => {
                 quote! { ::phoxal_bus::DeliveryFamily::State }
             }
             TopicRole::Event => quote! { ::phoxal_bus::DeliveryFamily::Stream },
@@ -317,7 +315,7 @@ impl TopicRole {
                 quote! { ::phoxal_bus::StreamDeliveryContract }
             }
             TopicRole::Measurement => quote! { ::phoxal_bus::SampleDeliveryContract },
-            TopicRole::State | TopicRole::Diagnostic => {
+            TopicRole::State => {
                 quote! { ::phoxal_bus::StateDeliveryContract }
             }
             TopicRole::Query => {
@@ -335,7 +333,6 @@ impl TopicRole {
             TopicRole::Stream => Some(quote! { ::phoxal_bus::StreamContract }),
             TopicRole::State | TopicRole::Event => Some(quote! { ::phoxal_bus::StateContract }),
             TopicRole::Measurement => Some(quote! { ::phoxal_bus::MeasurementContract }),
-            TopicRole::Diagnostic => Some(quote! { ::phoxal_bus::DiagnosticContract }),
             TopicRole::Query => None,
         }
     }
@@ -351,15 +348,8 @@ impl TopicRole {
             TopicRole::State => Some(quote! { ::phoxal_bus::StateContract }),
             TopicRole::Event => Some(quote! { ::phoxal_bus::EventContract }),
             TopicRole::Measurement => Some(quote! { ::phoxal_bus::SampleContract }),
-            TopicRole::Diagnostic => Some(quote! { ::phoxal_bus::DiagnosticContract }),
             TopicRole::Query => None,
         }
-    }
-
-    /// Whether the owning participant publishes this role (as opposed to
-    /// subscribing it).
-    pub(super) fn owner_publishes(self) -> bool {
-        !matches!(self, TopicRole::Command | TopicRole::Stream)
     }
 }
 

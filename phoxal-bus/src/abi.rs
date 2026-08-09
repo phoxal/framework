@@ -2,7 +2,7 @@
 //! codec that id selects.
 //!
 //! A version-qualified Zenoh key carries wire identity
-//! (`<Body as ContractBody>::TOPIC`, e.g. `v0.1/drive/target`), while the
+//! (`<Endpoint as EndpointDescriptor>::TOPIC`, e.g. `v0.1/drive/target`), while the
 //! encoding string records the codec. A receiver therefore sees only samples
 //! for its subscribed contract key and validates their encoding.
 //!

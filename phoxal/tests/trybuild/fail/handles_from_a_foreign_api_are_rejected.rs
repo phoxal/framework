@@ -1,12 +1,12 @@
 // A participant declares one API (`ParticipantSpec::ContractApi`, fixed by the
 // role attribute to the train-selected facade), and every handle it builds must
 // come from that API. A body bound to any other `ApiVersion` - a second
-// revision, or another `phoxal_api_tree!` tree such as a process-boundary
+// revision, or another semantic protocol tree such as a process-boundary
 // protocol - is rejected at the builder call, which is what makes the `api`
 // field of the participant's embedded metadata record a checked statement.
 use phoxal::bus::{
-    ApiVersion, EndpointDescriptor, EndpointKind, Publish, StateContract,
-    StateDeliveryContract, Topic,
+    ApiVersion, EndpointDescriptor, EndpointKind, Publish, StateContract, StateDeliveryContract,
+    Topic,
 };
 use phoxal::prelude::*;
 
@@ -43,8 +43,7 @@ impl Participant for MixedApi {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let topic: Topic<Publish<ForeignStateEndpoint>> =
-            Topic::new_static("foreign/drive/state");
+        let topic: Topic<Publish<ForeignStateEndpoint>> = Topic::new_static("foreign/drive/state");
         let _publisher = ctx.state_publisher(topic)?;
         Ok(((), ()))
     }

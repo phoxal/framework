@@ -1,74 +1,3 @@
-//! Standalone `phoxal_api_tree!` invocations that exercise the generator on
-//! shapes the production tree does not contain, and prove a nested invocation
-//! stays self-contained.
-
-/// A nested dynamic tree that reuses the same var name across levels. This
-/// module must *compile*: it proves the builder's positional field storage
-/// (`__seg0`, `__seg1`) does not collide into duplicate struct fields, and that
-/// each level's value is carried independently (a regression would fail to build
-/// or collapse the key).
-mod reused_var_name {
-    crate::phoxal_api_tree! {
-        version v0_1 {
-            outer(id) {
-                inner(id) {
-                    struct Body { x: u8 }
-                    topic event: state Body;
-                }
-            }
-        }
-        latest v0_1;
-    }
-
-    #[test]
-    fn nested_reused_var_carries_each_level_independently() {
-        let topic = v0_1::topic::client()
-            .outer("a")
-            .expect("valid outer segment")
-            .inner("b")
-            .expect("valid inner segment")
-            .event();
-        assert_eq!(topic.key(), "v0.1/outer/a/inner/b/event");
-    }
-}
-
-/// A standalone API revision used to exercise the macro independently of the
-/// production tree.
-mod standalone_version {
-    use phoxal_bus::{ApiVersion, ContractBody};
-
-    crate::phoxal_api_tree! {
-        version v0_1 {
-            sample {
-                struct Body { value: u8, note: Option<String> }
-                topic body: state Body;
-            }
-        }
-        latest v0_1;
-    }
-
-    #[test]
-    fn standalone_version_expands_and_round_trips() {
-        assert_eq!(<v0_1::Api as ApiVersion>::ID, "v0.1");
-        assert_eq!(
-            <v0_1::sample::Body as ContractBody>::TOPIC,
-            "v0.1/sample/body"
-        );
-        assert_eq!(
-            v0_1::topic::client().sample().body().key(),
-            "v0.1/sample/body"
-        );
-
-        let body = v0_1::sample::Body {
-            value: 7,
-            note: Some("standalone".to_string()),
-        };
-        let bytes = rmp_serde::to_vec_named(&body).unwrap();
-        let decoded: v0_1::sample::Body = rmp_serde::from_slice(&bytes).unwrap();
-        assert_eq!(body, decoded);
-    }
-}
-
 /// The #1002 semantic surface keeps payload ownership in ordinary Rust
 /// modules. The macro only materializes revision-local aliases, descriptors,
 /// and builders around those paths.
@@ -293,12 +222,12 @@ mod protocol_tree {
     crate::phoxal_protocol! {
         protocol fixture {
             connect {
-                topic hello: command crate::tests::macro_fixtures::protocol_tree::payload::connect::Hello;
+                command hello: Setpoint<crate::tests::macro_fixtures::protocol_tree::payload::connect::Hello>;
             }
 
             run(execution) {
-                topic snapshot: query crate::tests::macro_fixtures::protocol_tree::payload::run::SnapshotRequest => crate::tests::macro_fixtures::protocol_tree::payload::run::Snapshot;
-                topic progress: state crate::tests::macro_fixtures::protocol_tree::payload::run::Progress;
+                query snapshot: crate::tests::macro_fixtures::protocol_tree::payload::run::SnapshotRequest => crate::tests::macro_fixtures::protocol_tree::payload::run::Snapshot;
+                topic progress: Stream<crate::tests::macro_fixtures::protocol_tree::payload::run::Progress>;
             }
         }
     }

@@ -166,11 +166,6 @@ use grammar::{PROTOCOL_HAS_NO_DELTAS, VERSION_HAS_NO_PARENT};
 use manifest::ManifestVersion;
 use model::{MaterializedTree, Node, Protocol, Version};
 
-pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
-    let tree: ApiTree = syn::parse2(input)?;
-    tree.expand()
-}
-
 /// Expand only a robot API tree. Protocol declarations deliberately have a
 /// separate proc-macro entry point so an API source file cannot accidentally
 /// acquire protocol-mode semantics (or vice versa).
@@ -204,7 +199,7 @@ pub fn expand_protocol(input: TokenStream) -> syn::Result<TokenStream> {
     }
 }
 
-/// One `phoxal_api_tree!` invocation, in exactly one of its two modes.
+/// One semantic API/protocol declaration, in exactly one of its two modes.
 ///
 /// The modes are disjoint by construction: a robot API tree is a revision
 /// history with a selected `latest`, and a protocol tree is a single flat
@@ -222,13 +217,6 @@ enum ApiTree {
 }
 
 impl ApiTree {
-    fn expand(&self) -> syn::Result<TokenStream> {
-        match self {
-            ApiTree::Api { versions, latest } => Self::expand_api(versions, latest, false),
-            ApiTree::Protocols(protocols) => Self::expand_protocols(protocols),
-        }
-    }
-
     fn expand_protocols(protocols: &[Protocol]) -> syn::Result<TokenStream> {
         let mut out = TokenStream::new();
         let mut manifest_trees = Vec::new();
@@ -255,7 +243,7 @@ impl ApiTree {
             // Protocol payloads live in ordinary modules just like robot API
             // payloads. The generated tree owns only endpoint descriptors and
             // builders; it never re-mints the wire bodies.
-            out.extend(tree.expand(true));
+            out.extend(tree.expand());
         }
         let manifest = ManifestVersion::expand_manifest(&manifest_trees);
         Ok(quote! {
@@ -315,7 +303,7 @@ impl ApiTree {
                 nodes,
             };
             manifest_versions.push(ManifestVersion::of(&concrete));
-            out.extend(concrete.expand(emit_catalogue));
+            out.extend(concrete.expand());
             materialized.insert(name, concrete.nodes);
         }
         if !materialized.contains_key(&latest.to_string()) {

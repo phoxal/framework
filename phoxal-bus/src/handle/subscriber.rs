@@ -1632,16 +1632,19 @@ mod tests {
 
     use crate::abi::CodecId;
     use crate::contract::{
-        ApiVersion, ContractBody, DeliveryFamily, StateContract, StreamContract,
-        StreamDeliveryContract, TopicRole,
+        ApiVersion, EndpointDescriptor, EndpointKind, StateContract, StreamContract,
+        StreamDeliveryContract,
     };
-    use crate::handle::publisher::{CommandPublisher, StatePublisher};
+    use crate::handle::publisher::{SetpointPublisher, StatePublisher};
     use crate::lease::{FixedSourceLease, LeaseDecision, LeaseRejection};
     use crate::liveliness::ParticipantReadyStatus;
     use crate::metadata::{ParticipantSourceIdentity, SourceAttribution};
     use crate::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
     use crate::session::BusOwner;
-    use crate::test_support::{Manual, Target, participant_config, producer, step, timeline};
+    use crate::test_support::{
+        Manual, ManualEndpoint, Target, TargetEndpoint, participant_config, producer, step,
+        timeline,
+    };
     use crate::time::RobotInstant;
     use crate::topic::{Publish, Subscribe};
     use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
@@ -1657,33 +1660,35 @@ mod tests {
         const ID: &'static str = "nonclone";
     }
 
-    impl ContractBody for NonCloneBody {
+    struct NonCloneEndpoint;
+    impl EndpointDescriptor for NonCloneEndpoint {
         type Api = NonCloneApi;
+        type Payload = NonCloneBody;
         const NAME: &'static str = "nonclone::state::Body";
         const VERSION: &'static str = "nonclone";
         const CONTRACT: &'static str = "state::Body";
         const TOPIC: &'static str = "nonclone/state";
-        const ROLE: TopicRole = TopicRole::State;
-        const DELIVERY: DeliveryFamily = DeliveryFamily::State;
+        const KIND: EndpointKind = EndpointKind::State;
     }
 
-    impl StateContract for NonCloneBody {}
+    impl StateContract for NonCloneEndpoint {}
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct OrderedChunk(u8);
 
-    impl ContractBody for OrderedChunk {
+    struct OrderedEndpoint;
+    impl EndpointDescriptor for OrderedEndpoint {
         type Api = NonCloneApi;
+        type Payload = OrderedChunk;
         const NAME: &'static str = "nonclone::stream::Chunk";
         const VERSION: &'static str = "nonclone";
         const CONTRACT: &'static str = "stream::Chunk";
         const TOPIC: &'static str = "nonclone/stream/chunk";
-        const ROLE: TopicRole = TopicRole::Stream;
-        const DELIVERY: DeliveryFamily = DeliveryFamily::Stream;
+        const KIND: EndpointKind = EndpointKind::Stream;
     }
 
-    impl StreamContract for OrderedChunk {}
-    impl StreamDeliveryContract for OrderedChunk {}
+    impl StreamContract for OrderedEndpoint {}
+    impl StreamDeliveryContract for OrderedEndpoint {}
 
     fn observed(body: u8, line: Option<u64>) -> Observed<u8> {
         Observed {
@@ -2183,7 +2188,7 @@ mod tests {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.2/test/stream", DEFAULT_ORDERED_CAPACITY);
         let terminal = Arc::new(TerminalState::new());
-        let receiver = StreamReceiver::<OrderedChunk> {
+        let receiver = StreamReceiver::<OrderedEndpoint> {
             inner: Subscriber {
                 ring: Arc::new(Ring::new(
                     DEFAULT_ORDERED_CAPACITY,
@@ -2388,9 +2393,8 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("nonclone"))
             .await
             .unwrap();
-        let topic =
-            Topic::<Subscribe<NonCloneBody>>::new_static(<NonCloneBody as ContractBody>::TOPIC);
-        let latest = Latest::<NonCloneBody>::new(&bus, &topic)
+        let topic = Topic::<Subscribe<NonCloneEndpoint>>::new_static(NonCloneEndpoint::TOPIC);
+        let latest = Latest::<NonCloneEndpoint>::new(&bus, &topic)
             .await
             .expect("a non-Clone body still has a retained-state subscription");
         assert!(latest.observed().is_none());
@@ -2404,7 +2408,7 @@ mod tests {
             .await
             .unwrap();
         for key in ["nonclone/stream/*", "nonclone/stream/foo$*/bar"] {
-            let topic = Topic::<Subscribe<OrderedChunk>>::new_owned(key.to_string());
+            let topic = Topic::<Subscribe<OrderedEndpoint>>::new_owned(key.to_string());
             let error = match StreamReceiver::new(&bus, &topic).await {
                 Ok(_) => panic!("one position tracker cannot mix concrete stream topics"),
                 Err(error) => error,
@@ -2512,11 +2516,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_publisher_to_latest_round_trip() {
         let (owner, bus) = BusOwner::open(participant_config("rt")).await.unwrap();
-        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
 
-        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<TargetEndpoint>::new(&bus, &sub_topic)
+            .await
+            .unwrap();
 
         let published_at = step(1, 100);
         publisher
@@ -2560,10 +2566,10 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("state-admission"))
             .await
             .unwrap();
-        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<Target>::new_with_admission(&bus, &sub_topic, |observed| {
+        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<TargetEndpoint>::new_with_admission(&bus, &sub_topic, |observed| {
             observed.body.linear_x_mps > 0.0
         })
         .await
@@ -2611,11 +2617,15 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("timeline-barrier"))
             .await
             .unwrap();
-        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
-        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic).await.unwrap();
+        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<TargetEndpoint>::new(&bus, &sub_topic)
+            .await
+            .unwrap();
+        let subscriber = Subscriber::<TargetEndpoint>::new(&bus, &sub_topic)
+            .await
+            .unwrap();
 
         let old_timeline = timeline(6);
         publisher
@@ -2737,10 +2747,12 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("commands"))
             .await
             .unwrap();
-        let pub_topic = Topic::<Publish<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
-        let commands = CommandPublisher::<Manual>::new(bus.clone(), &pub_topic).unwrap();
-        let subscriber = Subscriber::<Manual>::new(&bus, &sub_topic).await.unwrap();
+        let pub_topic = Topic::<Publish<ManualEndpoint>>::new_static(ManualEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<ManualEndpoint>>::new_static(ManualEndpoint::TOPIC);
+        let commands = SetpointPublisher::<ManualEndpoint>::new(bus.clone(), &pub_topic).unwrap();
+        let subscriber = Subscriber::<ManualEndpoint>::new(&bus, &sub_topic)
+            .await
+            .unwrap();
         subscriber.retain_timeline(timeline(1));
 
         commands.send(Manual { linear_x_mps: 0.4 }).unwrap();

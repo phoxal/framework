@@ -217,11 +217,11 @@ mod tests {
 
     use serial_test::serial;
 
-    use crate::contract::ContractBody;
+    use crate::contract::EndpointDescriptor;
     use crate::handle::publisher::StatePublisher;
     use crate::handle::subscriber::Latest;
     use crate::session::{BusConfig, BusOwner};
-    use crate::test_support::{Target, socket_endpoint, step};
+    use crate::test_support::{Target, TargetEndpoint, socket_endpoint, step};
     use crate::topic::{Publish, Subscribe, Topic};
 
     const ENDPOINT: &str = "tcp/127.0.0.1:7447";
@@ -411,10 +411,11 @@ mod tests {
             "the two sides must be genuinely separate sessions for this to prove relay"
         );
 
-        let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let publisher = StatePublisher::<Target>::new(publishing.clone(), &pub_topic).unwrap();
-        let latest = Latest::<Target>::new(&subscribing, &sub_topic)
+        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let publisher =
+            StatePublisher::<TargetEndpoint>::new(publishing.clone(), &pub_topic).unwrap();
+        let latest = Latest::<TargetEndpoint>::new(&subscribing, &sub_topic)
             .await
             .unwrap();
 

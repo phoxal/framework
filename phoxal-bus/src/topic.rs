@@ -132,7 +132,7 @@ impl<Kind> Topic<Kind> {
     ///
     /// # Why this is `pub`
     ///
-    /// The `phoxal_api_tree!` macro expands in the `phoxal-api` crate, where the
+    /// The `phoxal_api!` macro expands in the `phoxal-api` crate, where the
     /// versioned APIs live, and its generated builders call this over each
     /// contract's canonical key. Generated code in a downstream crate needs a
     /// `pub` constructor, and Rust has no visibility between "this crate" and

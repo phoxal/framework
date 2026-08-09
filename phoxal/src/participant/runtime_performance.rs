@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use phoxal_bus::{
-    BusHandle, DiagnosticPublisher, RobotInstant, RuntimeBufferKind, RuntimeDirection,
-    RuntimeMetricSnapshot,
+    BusHandle, RobotInstant, RuntimeBufferKind, RuntimeDirection, RuntimeMetricSnapshot,
+    StreamPublisher,
 };
 use phoxal_supervisor_api::{payload, supervisor};
 
@@ -16,13 +16,13 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<DiagnosticPublisher<supervisor::endpoint::telemetry::RollupEndpoint>>,
+    publisher: Option<StreamPublisher<supervisor::endpoint::telemetry::RollupEndpoint>>,
 }
 
 impl RuntimePerformancePublisher {
     pub(crate) fn attach(bus: BusHandle) -> Self {
         let topic = supervisor::topic::owner().telemetry().rollup();
-        let publisher = DiagnosticPublisher::new(bus, &topic)
+        let publisher = StreamPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(
                     target: "phoxal.runtime",
@@ -38,7 +38,7 @@ impl RuntimePerformancePublisher {
         let Some(publisher) = &self.publisher else {
             return;
         };
-        if let Err(error) = publisher.publish(body) {
+        if let Err(error) = publisher.send(body) {
             tracing::warn!(
                 target: "phoxal.runtime",
                 error = %error,

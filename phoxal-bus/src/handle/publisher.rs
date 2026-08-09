@@ -8,8 +8,8 @@ use std::marker::PhantomData;
 
 use crate::abi::{Codec, MessagePack};
 use crate::contract::{
-    DeliveryFamily, DiagnosticContract, EndpointDescriptor, EventContract, SampleContract,
-    SetpointContract, StateContract, StreamContract, WorldClockContract,
+    DeliveryFamily, EndpointDescriptor, EventContract, SampleContract, SetpointContract,
+    StateContract, StreamContract, WorldClockContract,
 };
 use crate::error::{BusError, Result};
 use crate::handle::stamp::StepStamp;
@@ -155,13 +155,6 @@ role_publisher!(
     "Publishes ordered stream chunks.\n\nThe bounded bus queue reports saturation as a typed error and close as `Closed`; a chunk is never silently discarded."
 );
 
-role_publisher!(
-    DiagnosticPublisher,
-    DiagnosticContract,
-    "Publishes an output that describes the participant rather than the world \
-     (health, logs, runtime evidence). It expresses no robot time."
-);
-
 /// Publishes the framework's own world-clock contract at a logical step.
 ///
 /// A near-twin of [`StatePublisher`] - same step-stamped publish path - kept
@@ -228,19 +221,6 @@ impl<E: StreamContract> StreamPublisher<E> {
     }
 }
 
-impl<E: DiagnosticContract> DiagnosticPublisher<E> {
-    /// Publish `body`.
-    pub fn publish(&self, body: E::Payload) -> Result<()> {
-        self.0.emit(None, body)
-    }
-}
-
-/// Transitional legacy name for [`SamplePublisher`].
-pub type MeasurementPublisher<E> = SamplePublisher<E>;
-
-/// Transitional legacy name for [`SetpointPublisher`].
-pub type CommandPublisher<E> = SetpointPublisher<E>;
-
 /// Publishes a state-temporal event at a logical step. Events use ordered
 /// stream admission, so a receiver can observe order and explicit gaps while
 /// the event payload remains a plain serde value.
@@ -274,14 +254,14 @@ impl<E: EventContract> EventPublisher<E> {
 mod tests {
     use super::*;
     use crate::contract::{
-        ApiVersion, CommandContract, ContractBody, DeliveryFamily, MeasurementContract,
-        SetpointDeliveryContract, StateContract, StreamContract, TopicRole,
+        ApiVersion, EndpointDescriptor, EndpointKind, SampleContract, SetpointContract,
+        SetpointDeliveryContract, StateContract, StreamContract,
     };
     use crate::error::BusError;
     use crate::handle::subscriber::SetpointReceiver;
     use crate::runtime_metrics::RuntimeBufferKind;
     use crate::session::{BusOwner, OUTBOUND_CAPACITY, OUTBOUND_MAX_BYTES};
-    use crate::test_support::{Target, participant_config, step};
+    use crate::test_support::{Target, TargetEndpoint, participant_config, step};
     use crate::time::CaptureStamp;
     use crate::topic::{Subscribe, Topic};
     use serial_test::serial;
@@ -295,63 +275,67 @@ mod tests {
         const ID: &'static str = "stream-test";
     }
 
-    impl ContractBody for StreamChunk {
+    struct StreamEndpoint;
+    impl EndpointDescriptor for StreamEndpoint {
         type Api = StreamApi;
+        type Payload = StreamChunk;
         const NAME: &'static str = "stream-test::Chunk";
         const VERSION: &'static str = "stream-test";
         const CONTRACT: &'static str = "Chunk";
         const TOPIC: &'static str = "stream-test/chunk";
-        const ROLE: TopicRole = TopicRole::Stream;
-        const DELIVERY: DeliveryFamily = DeliveryFamily::Stream;
+        const KIND: EndpointKind = EndpointKind::Stream;
     }
 
-    impl StreamContract for StreamChunk {}
+    impl StreamContract for StreamEndpoint {}
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct StateChunk(u16);
 
-    impl ContractBody for StateChunk {
+    struct StateEndpoint;
+    impl EndpointDescriptor for StateEndpoint {
         type Api = StreamApi;
+        type Payload = StateChunk;
         const NAME: &'static str = "stream-test::State";
         const VERSION: &'static str = "stream-test";
         const CONTRACT: &'static str = "State";
         const TOPIC: &'static str = "stream-test/state";
-        const ROLE: TopicRole = TopicRole::State;
-        const DELIVERY: DeliveryFamily = DeliveryFamily::State;
+        const KIND: EndpointKind = EndpointKind::State;
     }
 
-    impl StateContract for StateChunk {}
+    impl StateContract for StateEndpoint {}
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct SampleChunk(u16);
 
-    impl ContractBody for SampleChunk {
+    struct SampleEndpoint;
+    impl EndpointDescriptor for SampleEndpoint {
         type Api = StreamApi;
+        type Payload = SampleChunk;
         const NAME: &'static str = "stream-test::Sample";
         const VERSION: &'static str = "stream-test";
         const CONTRACT: &'static str = "Sample";
         const TOPIC: &'static str = "stream-test/sample";
-        const ROLE: TopicRole = TopicRole::Measurement;
-        const DELIVERY: DeliveryFamily = DeliveryFamily::Sample;
+        const KIND: EndpointKind = EndpointKind::Sample;
     }
 
-    impl MeasurementContract for SampleChunk {}
+    impl SampleContract for SampleEndpoint {}
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct SetpointChunk(u16);
 
-    impl ContractBody for SetpointChunk {
+    struct SetpointEndpoint;
+    impl EndpointDescriptor for SetpointEndpoint {
         type Api = StreamApi;
+        type Payload = SetpointChunk;
         const NAME: &'static str = "stream-test::Setpoint";
         const VERSION: &'static str = "stream-test";
         const CONTRACT: &'static str = "Setpoint";
         const TOPIC: &'static str = "stream-test/setpoint";
-        const ROLE: TopicRole = TopicRole::Command;
-        const DELIVERY: DeliveryFamily = DeliveryFamily::Setpoint;
+        const KIND: EndpointKind = EndpointKind::Setpoint;
     }
 
-    impl CommandContract for SetpointChunk {}
-    impl SetpointDeliveryContract for SetpointChunk {}
+    impl SetpointContract for SetpointEndpoint {}
+    impl SetpointDeliveryContract for SetpointEndpoint {}
 
     /// A publish after close is a real loss, and the caller has to be able to
     /// see it: silently succeeding would let a participant believe it had
@@ -360,8 +344,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn publishing_on_a_closed_bus_reports_the_loss() {
         let (owner, bus) = BusOwner::open(participant_config("closed")).await.unwrap();
-        let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
-        let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
+        let topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &topic).unwrap();
         owner.close().await;
 
         let error = publisher
@@ -382,8 +366,8 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("stream-would-block"))
             .await
             .unwrap();
-        let topic = Topic::<Publish<StreamChunk>>::new_static(<StreamChunk as ContractBody>::TOPIC);
-        let publisher = StreamPublisher::<StreamChunk>::new(bus.clone(), &topic).unwrap();
+        let topic = Topic::<Publish<StreamEndpoint>>::new_static(StreamEndpoint::TOPIC);
+        let publisher = StreamPublisher::<StreamEndpoint>::new(bus.clone(), &topic).unwrap();
         let error = publisher
             .send(StreamChunk(vec![0; OUTBOUND_MAX_BYTES + 1]))
             .expect_err("an oversized stream chunk must not be accepted");
@@ -397,34 +381,34 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("semantic-admission"))
             .await
             .unwrap();
-        let state = StatePublisher::<StateChunk>::new(
+        let state = StatePublisher::<StateEndpoint>::new(
             bus.clone(),
-            &Topic::new_static(<StateChunk as ContractBody>::TOPIC),
+            &Topic::new_static(StateEndpoint::TOPIC),
         )
         .unwrap();
-        let setpoint = CommandPublisher::<SetpointChunk>::new(
+        let setpoint = SetpointPublisher::<SetpointEndpoint>::new(
             bus.clone(),
-            &Topic::new_static(<SetpointChunk as ContractBody>::TOPIC),
+            &Topic::new_static(SetpointEndpoint::TOPIC),
         )
         .unwrap();
         let setpoint_receiver = SetpointReceiver::new(
             &bus,
-            &Topic::<Subscribe<SetpointChunk>>::new_static(<SetpointChunk as ContractBody>::TOPIC),
+            &Topic::<Subscribe<SetpointEndpoint>>::new_static(SetpointEndpoint::TOPIC),
         )
         .await
         .unwrap();
-        let sample = MeasurementPublisher::<SampleChunk>::new(
+        let sample = SamplePublisher::<SampleEndpoint>::new(
             bus.clone(),
-            &Topic::new_static(<SampleChunk as ContractBody>::TOPIC),
+            &Topic::new_static(SampleEndpoint::TOPIC),
         )
         .unwrap();
         let pause = bus
             .test_pause_outbound_drain()
             .await
             .expect("test drain can be held before admission");
-        let stream = StreamPublisher::<StreamChunk>::new(
+        let stream = StreamPublisher::<StreamEndpoint>::new(
             bus.clone(),
-            &Topic::new_static(<StreamChunk as ContractBody>::TOPIC),
+            &Topic::new_static(StreamEndpoint::TOPIC),
         )
         .unwrap();
 
@@ -449,7 +433,7 @@ mod tests {
             BusError::WouldBlock { .. }
         ));
 
-        let full_stream_key = bus.full_key(<StreamChunk as ContractBody>::TOPIC);
+        let full_stream_key = bus.full_key(StreamEndpoint::TOPIC);
         let positions: Vec<_> = bus
             .test_queued_stream_metadata(&full_stream_key)
             .into_iter()
@@ -471,38 +455,23 @@ mod tests {
                 })
                 .expect("publisher metric row")
         };
-        assert_eq!(row(<StateChunk as ContractBody>::TOPIC).count, 3);
+        assert_eq!(row(StateEndpoint::TOPIC).count, 3);
+        assert_eq!(row(StateEndpoint::TOPIC).latest_overwrites, 2);
+        assert_eq!(row(StateEndpoint::TOPIC).high_water_depth, 1);
+        assert_eq!(row(SetpointEndpoint::TOPIC).count, 3);
+        assert_eq!(row(SetpointEndpoint::TOPIC).latest_overwrites, 2);
+        assert_eq!(row(SetpointEndpoint::TOPIC).high_water_depth, 1);
         assert_eq!(
-            row(<StateChunk as ContractBody>::TOPIC).latest_overwrites,
-            2
-        );
-        assert_eq!(row(<StateChunk as ContractBody>::TOPIC).high_water_depth, 1);
-        assert_eq!(row(<SetpointChunk as ContractBody>::TOPIC).count, 3);
-        assert_eq!(
-            row(<SetpointChunk as ContractBody>::TOPIC).latest_overwrites,
-            2
-        );
-        assert_eq!(
-            row(<SetpointChunk as ContractBody>::TOPIC).high_water_depth,
-            1
-        );
-        assert_eq!(
-            row(<SampleChunk as ContractBody>::TOPIC).count,
+            row(SampleEndpoint::TOPIC).count,
             OUTBOUND_CAPACITY as u64 + 1
         );
+        assert_eq!(row(SampleEndpoint::TOPIC).bounded_evictions, 1);
         assert_eq!(
-            row(<SampleChunk as ContractBody>::TOPIC).bounded_evictions,
-            1
-        );
-        assert_eq!(
-            row(<SampleChunk as ContractBody>::TOPIC).high_water_depth,
+            row(SampleEndpoint::TOPIC).high_water_depth,
             OUTBOUND_CAPACITY as u64
         );
-        assert_eq!(
-            row(<StreamChunk as ContractBody>::TOPIC).count,
-            OUTBOUND_CAPACITY as u64
-        );
-        assert_eq!(row(<StreamChunk as ContractBody>::TOPIC).drops, 1);
+        assert_eq!(row(StreamEndpoint::TOPIC).count, OUTBOUND_CAPACITY as u64);
+        assert_eq!(row(StreamEndpoint::TOPIC).drops, 1);
         assert_eq!(
             bus.health()
                 .outbound_drops

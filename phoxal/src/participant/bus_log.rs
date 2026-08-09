@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::participant::lock;
-use phoxal_bus::{BusHandle, DiagnosticPublisher};
+use phoxal_bus::{BusHandle, StreamPublisher};
 use phoxal_supervisor_api::supervisor;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
@@ -405,8 +405,7 @@ async fn drain_loop(
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
     let topic = supervisor::topic::owner().logs(&participant_id)?.topic();
-    let publisher =
-        DiagnosticPublisher::<supervisor::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
+    let publisher = StreamPublisher::<supervisor::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let dropped = state.take_dropped();
@@ -414,7 +413,7 @@ async fn drain_loop(
         seq = seq.wrapping_add(1);
         let result = IN_BUS_LOG_PUBLISH.with(|guard| {
             guard.set(true);
-            let result = publisher.publish(event);
+            let result = publisher.send(event);
             guard.set(false);
             result
         });
