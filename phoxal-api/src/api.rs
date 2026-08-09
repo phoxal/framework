@@ -147,6 +147,39 @@ phoxal_api! {
             camera(capability) {
                 replace topic frame: Sample<crate::domains::v0_2::component::camera::Frame>;
             }
+            encoder(capability) {
+                replace topic sample: Sample<crate::domains::v0_2::component::encoder::Sample>;
+            }
+            accelerometer(capability) {
+                replace topic sample: Sample<crate::domains::v0_2::component::accelerometer::Sample>;
+            }
+            gyroscope(capability) {
+                replace topic sample: Sample<crate::domains::v0_2::component::gyroscope::Sample>;
+            }
+            magnetometer(capability) {
+                replace topic sample: Sample<crate::domains::v0_2::component::magnetometer::Sample>;
+            }
+            imu(capability) {
+                replace topic sample: Sample<crate::domains::v0_2::component::imu::Sample>;
+            }
+            range(capability) {
+                replace topic sample: Sample<crate::domains::v0_2::component::range::Sample>;
+            }
+            gnss(capability) {
+                replace topic sample: Sample<crate::domains::v0_2::component::gnss::Sample>;
+            }
+            depth(capability) {
+                replace topic frame: Sample<crate::domains::v0_2::component::depth::Frame>;
+            }
+            lidar(capability) {
+                replace topic scan: Sample<crate::domains::v0_2::component::lidar::Scan>;
+            }
+            mmwave(capability) {
+                replace topic scan: Sample<crate::domains::v0_2::component::mmwave::Scan>;
+            }
+            battery(capability) {
+                replace topic state: State<crate::domains::v0_2::component::battery::State>;
+            }
         }
     }
 }
