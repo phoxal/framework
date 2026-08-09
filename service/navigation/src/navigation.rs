@@ -927,7 +927,7 @@ mod tests {
             &api::topic::owner().map().revision(),
         )
         .expect("build map revision publisher");
-        let results = StreamReceiver::<api::endpoint::navigation::ResultEndpoint>::new(
+        let results = EventReceiver::<api::endpoint::navigation::ResultEndpoint>::new(
             &bus,
             &api::topic::client().navigation().result(),
         )
@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     async fn await_result(
-        results: &StreamReceiver<api::navigation::ResultEndpoint>,
+        results: &EventReceiver<api::endpoint::navigation::ResultEndpoint>,
         operation_id: api::navigation::NavigationOperationId,
     ) -> api::navigation::Result {
         tokio::time::timeout(Duration::from_secs(2), async {
