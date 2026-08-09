@@ -1,7 +1,7 @@
 //! `ContractBody::TOPIC` composition: how a node's path in the tree becomes a
 //! wire key.
 
-use phoxal_bus::ContractBody;
+use phoxal_bus::EndpointDescriptor;
 
 use crate::v0_1 as api;
 
@@ -11,27 +11,27 @@ use crate::v0_1 as api;
 #[test]
 fn contract_body_topic_is_version_qualified() {
     assert_eq!(
-        <api::drive::State as ContractBody>::TOPIC,
+        <api::endpoint::drive::StateEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/drive/state"
     );
     assert_eq!(
-        <api::drive::Target as ContractBody>::TOPIC,
+        <api::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/drive/target"
     );
     assert_eq!(
-        <api::navigation::State as ContractBody>::TOPIC,
+        <api::endpoint::navigation::StateEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/navigation/state"
     );
     assert_eq!(
-        <api::joint::JointState as ContractBody>::TOPIC,
+        <api::endpoint::joint::StateEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/joint/{joint}/state"
     );
     assert_eq!(
-        <api::video::OpenOutcome as ContractBody>::TOPIC,
+        <api::endpoint::video::OpenEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/video/open"
     );
     assert_eq!(
-        <api::localize::LocalizationState as ContractBody>::TOPIC,
+        <api::endpoint::localize::StateEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/localize/state"
     );
 }
@@ -41,19 +41,19 @@ fn contract_body_topic_is_version_qualified() {
 #[test]
 fn dynamic_topic_contract_body_topic_is_derived_from_node_path() {
     assert_eq!(
-        <api::component::motor::Command as ContractBody>::TOPIC,
+        <api::endpoint::component::motor::CommandEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/component/{instance}/motor/{capability}/command"
     );
     assert_eq!(
-        <api::component::imu::Sample as ContractBody>::TOPIC,
+        <api::endpoint::component::imu::SampleEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/component/{instance}/imu/{capability}/sample"
     );
     assert_eq!(
-        <api::component::camera::Frame as ContractBody>::TOPIC,
+        <api::endpoint::component::camera::FrameEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/component/{instance}/camera/{capability}/frame"
     );
     assert_eq!(
-        <api::component::encoder::Sample as ContractBody>::TOPIC,
+        <api::endpoint::component::encoder::SampleEndpoint as EndpointDescriptor>::TOPIC,
         "v0.1/component/{instance}/encoder/{capability}/sample"
     );
 }
@@ -61,19 +61,19 @@ fn dynamic_topic_contract_body_topic_is_derived_from_node_path() {
 #[test]
 fn current_control_contracts_use_the_v0_2_keyspace() {
     assert_eq!(
-        <crate::v0_2::drive::Target as ContractBody>::TOPIC,
+        <crate::v0_2::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
         "v0.2/drive/target"
     );
     assert_eq!(
-        <crate::v0_2::drive::State as ContractBody>::TOPIC,
+        <crate::v0_2::endpoint::drive::StateEndpoint as EndpointDescriptor>::TOPIC,
         "v0.2/drive/state"
     );
     assert_eq!(
-        <crate::v0_2::motion::ManualCommand as ContractBody>::TOPIC,
+        <crate::v0_2::endpoint::motion::ManualEndpoint as EndpointDescriptor>::TOPIC,
         "v0.2/motion/manual"
     );
     assert_eq!(
-        <crate::v0_2::motion::State as ContractBody>::TOPIC,
+        <crate::v0_2::endpoint::motion::StateEndpoint as EndpointDescriptor>::TOPIC,
         "v0.2/motion/state"
     );
 }

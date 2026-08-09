@@ -1,6 +1,6 @@
 //! The revision the train selects, and the curated inventory of what it declares.
 
-use phoxal_bus::{ApiVersion, ContractBody, DeliveryFamily, TopicRole};
+use phoxal_bus::{ApiVersion, EndpointDescriptor, EndpointKind, TopicRole};
 
 use crate::{RobotApi, v0_1 as api};
 
@@ -91,22 +91,18 @@ fn every_stream_topic_is_classified() {
 
 #[test]
 fn speaker_chunk_changes_from_command_to_stream_only_in_v0_2() {
-    type V1 = crate::v0_1::component::speaker::Chunk;
-    type V2 = crate::v0_2::component::speaker::Chunk;
-    assert_eq!(<V1 as ContractBody>::ROLE, TopicRole::Command);
-    assert_eq!(<V1 as ContractBody>::DELIVERY, DeliveryFamily::Setpoint);
-    assert_eq!(<V2 as ContractBody>::ROLE, TopicRole::Stream);
-    assert_eq!(<V2 as ContractBody>::DELIVERY, DeliveryFamily::Stream);
+    type V1 = crate::v0_1::endpoint::component::speaker::StreamEndpoint;
+    type V2 = crate::v0_2::endpoint::component::speaker::StreamEndpoint;
+    assert_eq!(<V1 as EndpointDescriptor>::KIND, EndpointKind::Setpoint);
+    assert_eq!(<V2 as EndpointDescriptor>::KIND, EndpointKind::Stream);
 }
 
 #[test]
 fn navigation_result_is_an_owner_event_with_ordered_delivery_only_in_v0_2() {
-    type V1 = crate::v0_1::navigation::Result;
-    type V2 = crate::v0_2::navigation::Result;
-    assert_eq!(<V1 as ContractBody>::ROLE, TopicRole::State);
-    assert_eq!(<V1 as ContractBody>::DELIVERY, DeliveryFamily::State);
-    assert_eq!(<V2 as ContractBody>::ROLE, TopicRole::State);
-    assert_eq!(<V2 as ContractBody>::DELIVERY, DeliveryFamily::Stream);
+    type V1 = crate::v0_1::endpoint::navigation::ResultEndpoint;
+    type V2 = crate::v0_2::endpoint::navigation::ResultEndpoint;
+    assert_eq!(<V1 as EndpointDescriptor>::KIND, EndpointKind::State);
+    assert_eq!(<V2 as EndpointDescriptor>::KIND, EndpointKind::Event);
 }
 
 #[test]
