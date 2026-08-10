@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.1](https://github.com/phoxal/framework/compare/v0.58.0...v0.58.1) - 2026-08-10
+
+### Fixed
+
+- keep the origin-anchored clock for stepless real participants ([#433](https://github.com/phoxal/framework/pull/433))
+
 ## [0.58.0](https://github.com/phoxal/framework/compare/v0.57.0...v0.58.0) - 2026-08-10
 
 ### Fixed
