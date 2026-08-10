@@ -19,7 +19,9 @@ use anyhow::{Context, Result, bail};
 use cargo_metadata::semver::Version;
 use cargo_metadata::{MetadataCommand, Target, TargetKind};
 
-use crate::{EXCLUDED_TOP_LEVEL_DIRS, LIBRARY_CRATE_DIRS};
+use crate::{
+    EXCLUDED_TOP_LEVEL_DIRS, FACADE, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, library_package_name,
+};
 
 /// Official Phoxal packages always use this provider segment in their public
 /// `package` identity (`phoxal/<name>`). Third-party packages use their own
@@ -409,10 +411,32 @@ impl ManifestClassification {
         if EXCLUDED_TOP_LEVEL_DIRS.contains(&top_level) {
             return Ok(Self::Excluded);
         }
-        if LIBRARY_CRATE_DIRS.contains(&top_level)
-            && components.as_slice() == [top_level, "Cargo.toml"]
-        {
+
+        let [directory @ .., "Cargo.toml"] = components.as_slice() else {
+            bail!(
+                "workspace package manifest {} is not named Cargo.toml",
+                relative.display()
+            );
+        };
+        let directory = directory.join("/");
+        if LIBRARY_CRATE_DIRS.contains(&directory.as_str()) {
             return Ok(Self::Excluded);
+        }
+        // A manifest under the library root that the list does not name is a
+        // violation rather than a package the grammar says nothing about:
+        // `crates/` is reserved for the workspace's own libraries, and a
+        // package sitting there unlisted would be skipped by every rule in
+        // this crate.
+        if top_level == LIBRARY_CRATE_ROOT {
+            bail!(
+                "workspace package manifest {} is under '{LIBRARY_CRATE_ROOT}/' but is not a \
+                 listed library crate; a library crate is the package '{}' at \
+                 '{directory}', and must be added to LIBRARY_CRATE_DIRS",
+                relative.display(),
+                library_package_name(&directory).unwrap_or_else(|| format!(
+                    "{FACADE}-<suffix>' at '{LIBRARY_CRATE_ROOT}/<suffix>"
+                ))
+            );
         }
 
         let Ok(kind) = ArtifactKind::try_from(top_level) else {
@@ -673,6 +697,10 @@ mod tests {
             ManifestClassification::Excluded
         );
         assert_eq!(
+            classify("crates/api/Cargo.toml")?,
+            ManifestClassification::Excluded
+        );
+        assert_eq!(
             classify("workspace-policy/Cargo.toml")?,
             ManifestClassification::Excluded
         );
@@ -681,6 +709,28 @@ mod tests {
             ManifestClassification::Excluded
         );
         Ok(())
+    }
+
+    /// `crates/` is reserved for the workspace's own libraries. A package
+    /// parked there without being listed would be silently skipped by every
+    /// rule in this crate, so the grammar rejects it instead of ignoring it.
+    #[test]
+    fn an_unlisted_package_under_the_library_root_is_an_error() {
+        let err = classify("crates/rogue/Cargo.toml").unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "is not a listed library crate; a library crate is the package \
+                          'phoxal-rogue' at 'crates/rogue'"
+            ),
+            "{err}"
+        );
+
+        let err = classify("crates/api/inner/Cargo.toml").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("phoxal-<suffix>' at 'crates/<suffix>"),
+            "a package nested deeper than one level names no library crate: {err}"
+        );
     }
 
     #[test]

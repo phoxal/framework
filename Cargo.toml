@@ -18,14 +18,14 @@ resolver = "3"
 members = [
     "fixture",
     "phoxal",
-    "phoxal-api",
-    "phoxal-bus",
-    "phoxal-bundle",
-    "phoxal-model",
-    "phoxal-manifest",
-    "phoxal-runtime-contract",
-    "phoxal-supervisor-api",
-    "phoxal-macros",
+    "crates/api",
+    "crates/bus",
+    "crates/bundle",
+    "crates/model",
+    "crates/manifest",
+    "crates/runtime-contract",
+    "crates/supervisor-api",
+    "crates/macros",
     "components/bno085",
     "components/ddsm115",
     "components/oak_d_lite",
@@ -53,14 +53,14 @@ members = [
 default-members = [
     "fixture",
     "phoxal",
-    "phoxal-api",
-    "phoxal-bus",
-    "phoxal-bundle",
-    "phoxal-model",
-    "phoxal-manifest",
-    "phoxal-runtime-contract",
-    "phoxal-supervisor-api",
-    "phoxal-macros",
+    "crates/api",
+    "crates/bus",
+    "crates/bundle",
+    "crates/model",
+    "crates/manifest",
+    "crates/runtime-contract",
+    "crates/supervisor-api",
+    "crates/macros",
     "components/bno085",
     "components/ddsm115",
     "components/oak_d_lite",
@@ -146,14 +146,14 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service and component crates' dependency on `phoxal`.
 phoxal = { path = "phoxal", version = "=0.56.2" }
-phoxal-api = { path = "phoxal-api", version = "=0.56.2" }
-phoxal-bus = { path = "phoxal-bus", version = "=0.56.2" }
-phoxal-bundle = { path = "phoxal-bundle", version = "=0.56.2" }
-phoxal-model = { path = "phoxal-model", version = "=0.56.2" }
-phoxal-manifest = { path = "phoxal-manifest", version = "=0.56.2" }
-phoxal-runtime-contract = { path = "phoxal-runtime-contract", version = "=0.56.2" }
-phoxal-supervisor-api = { path = "phoxal-supervisor-api", version = "=0.56.2" }
-phoxal-macros = { path = "phoxal-macros", version = "=0.56.2" }
+phoxal-api = { path = "crates/api", version = "=0.56.2" }
+phoxal-bus = { path = "crates/bus", version = "=0.56.2" }
+phoxal-bundle = { path = "crates/bundle", version = "=0.56.2" }
+phoxal-model = { path = "crates/model", version = "=0.56.2" }
+phoxal-manifest = { path = "crates/manifest", version = "=0.56.2" }
+phoxal-runtime-contract = { path = "crates/runtime-contract", version = "=0.56.2" }
+phoxal-supervisor-api = { path = "crates/supervisor-api", version = "=0.56.2" }
+phoxal-macros = { path = "crates/macros", version = "=0.56.2" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.

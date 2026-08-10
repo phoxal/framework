@@ -32,7 +32,7 @@ ignore = [
     # RUSTSEC-2023-0071 (Marvin timing side channel): no fixed rsa release
     # exists. rsa is pulled in by zenoh-transport's auth_pubkey feature, which
     # transport_multilink requires at compile time. Phoxal never configures
-    # zenoh public-key auth at runtime (phoxal-bus/src/session.rs builds the
+    # zenoh public-key auth at runtime (crates/bus/src/session.rs builds the
     # config programmatically), so no RSA operations run in our deployments.
     # Remove once the rsa crate ships a constant-time fix and zenoh adopts it.
     "RUSTSEC-2023-0071",

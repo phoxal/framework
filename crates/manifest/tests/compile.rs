@@ -11,8 +11,9 @@ use phoxal_manifest::{CompileError, SourceSet};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("manifest crate has a workspace parent")
+        .ancestors()
+        .nth(2)
+        .expect("this crate sits at crates/<name> under the workspace root")
         .to_path_buf()
 }
 

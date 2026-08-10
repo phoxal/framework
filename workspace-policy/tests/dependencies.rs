@@ -7,7 +7,7 @@ use std::fs;
 use anyhow::{Context, Result};
 use cargo_metadata::{DependencyKind, MetadataCommand};
 use workspace_policy::artifact::ArtifactKind;
-use workspace_policy::{LIBRARY_CRATE_DIRS, workspace_root};
+use workspace_policy::{is_library_package, workspace_root};
 
 fn workspace_metadata() -> Result<cargo_metadata::Metadata> {
     MetadataCommand::new()
@@ -96,11 +96,11 @@ fn public_library_dependency_direction_is_exact() -> Result<()> {
     for package in metadata
         .packages
         .iter()
-        .filter(|package| LIBRARY_CRATE_DIRS.contains(&package.name.as_str()))
+        .filter(|package| is_library_package(package.name.as_str()))
     {
         for dependency in package.dependencies.iter().filter(|dependency| {
             dependency.kind == DependencyKind::Normal
-                && LIBRARY_CRATE_DIRS.contains(&dependency.name.as_str())
+                && is_library_package(dependency.name.as_str())
         }) {
             actual.push((package.name.as_str(), dependency.name.as_str()));
         }

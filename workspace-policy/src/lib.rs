@@ -20,9 +20,15 @@ pub mod artifact;
 pub mod comment_reference;
 pub mod tracked_source;
 
+/// The directory holding every library crate that carries a name suffix.
+pub const LIBRARY_CRATE_ROOT: &str = "crates";
+
+/// The facade crate, which is both a directory at the workspace root and the
+/// package name every other library crate prefixes itself with.
+pub const FACADE: &str = "phoxal";
+
 /// The directories holding the workspace's public library crates, one crate
-/// each, directly under the workspace root. A library crate's directory name
-/// is its `package.name`.
+/// each, as paths relative to the workspace root.
 ///
 /// These are outside the artifact grammar: they are libraries, not official
 /// artifact packages, so discovery must skip them rather than reject them.
@@ -31,15 +37,53 @@ pub mod tracked_source;
 /// entry would silently turn that crate into a grammar violation.
 pub const LIBRARY_CRATE_DIRS: [&str; 9] = [
     "phoxal",
-    "phoxal-api",
-    "phoxal-bus",
-    "phoxal-bundle",
-    "phoxal-macros",
-    "phoxal-manifest",
-    "phoxal-model",
-    "phoxal-runtime-contract",
-    "phoxal-supervisor-api",
+    "crates/api",
+    "crates/bundle",
+    "crates/bus",
+    "crates/macros",
+    "crates/manifest",
+    "crates/model",
+    "crates/runtime-contract",
+    "crates/supervisor-api",
 ];
+
+/// The package a library crate directory must hold, or `None` for a directory
+/// that names no library crate location.
+///
+/// One rule, no exceptions: a library crate is `phoxal-<suffix>` and lives at
+/// `crates/<suffix>`. The facade is the single crate whose name carries no
+/// suffix, so it is the single crate that does not live in the suffix
+/// directory; it sits at the workspace root as `phoxal/`. That falls out of
+/// the rule rather than carving a hole in it.
+///
+/// This is the whole reason the directory can be shortened at all. `crates/`
+/// already says `phoxal`, so repeating it in every child would be the
+/// provider spelled twice on one path.
+pub fn library_package_name(directory: &str) -> Option<String> {
+    if directory == FACADE {
+        return Some(FACADE.to_owned());
+    }
+    let suffix = directory
+        .strip_prefix(LIBRARY_CRATE_ROOT)?
+        .strip_prefix('/')?;
+    // A library crate is one directory deep and no deeper: `crates/api/inner`
+    // would be a second package hiding under the first one's name.
+    if suffix.is_empty() || suffix.contains('/') {
+        return None;
+    }
+    Some(format!("{FACADE}-{suffix}"))
+}
+
+/// Whether a package name is one of the workspace's public library crates.
+///
+/// Derived from [`LIBRARY_CRATE_DIRS`] through the same rule rather than
+/// listed a second time, so the directories stay the single place a library
+/// crate is declared.
+pub fn is_library_package(package_name: &str) -> bool {
+    LIBRARY_CRATE_DIRS
+        .iter()
+        .any(|directory| library_package_name(directory).as_deref() == Some(package_name))
+}
 
 /// Top-level directories whose package is never published: this policy crate
 /// itself, and the fixture robot the document-loading tests stage.
@@ -108,9 +152,11 @@ mod tests {
                 continue;
             }
             assert_eq!(
-                directory,
-                package.name.as_str(),
-                "a library crate's directory must be its package name"
+                library_package_name(directory).as_deref(),
+                Some(package.name.as_str()),
+                "library crate {directory} does not hold the package its \
+                 directory names; a library crate is `phoxal-<suffix>` at \
+                 `crates/<suffix>`, or the facade `phoxal` at the root"
             );
             discovered.push(directory.to_owned());
         }
@@ -123,5 +169,41 @@ mod tests {
             "LIBRARY_CRATE_DIRS drifted from the workspace members"
         );
         Ok(())
+    }
+
+    /// The rule is stated once as a function, so the cases that must *not*
+    /// resolve are as much a part of it as the cases that must. A directory
+    /// deeper than one level is the interesting one: it would otherwise let a
+    /// second package hide under the first one's name.
+    #[test]
+    fn a_library_crate_directory_names_exactly_one_package() {
+        assert_eq!(library_package_name("phoxal").as_deref(), Some("phoxal"));
+        assert_eq!(
+            library_package_name("crates/api").as_deref(),
+            Some("phoxal-api")
+        );
+        assert_eq!(
+            library_package_name("crates/runtime-contract").as_deref(),
+            Some("phoxal-runtime-contract")
+        );
+
+        assert_eq!(library_package_name("crates"), None);
+        assert_eq!(library_package_name("crates/"), None);
+        assert_eq!(library_package_name("crates/api/inner"), None);
+        assert_eq!(library_package_name("phoxal-api"), None);
+        assert_eq!(library_package_name("services/drive"), None);
+        assert_eq!(library_package_name("cratesfoo"), None);
+    }
+
+    /// Every listed directory must satisfy the rule, so the list cannot become
+    /// a place to smuggle a crate past it.
+    #[test]
+    fn every_listed_library_crate_directory_obeys_the_rule() {
+        for directory in LIBRARY_CRATE_DIRS {
+            assert!(
+                library_package_name(directory).is_some(),
+                "{directory} is listed as a library crate but names no package"
+            );
+        }
     }
 }

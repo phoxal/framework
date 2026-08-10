@@ -313,7 +313,7 @@ impl ParticipantKind {
 /// (`expand_participant`'s `#metadata_const_ident`, via `concatcp!`, which
 /// concatenates raw `&str` values with no escaping), and it is used as a
 /// literal Zenoh key segment (a Liveliness token's participant segment,
-/// `phoxal-bus/src/liveliness.rs`'s `validate_participant`; a dynamic
+/// `crates/bus/src/liveliness.rs`'s `validate_participant`; a dynamic
 /// `{participant_id}` topic var, e.g. `phoxal/src/participant/bus_log.rs`'s
 /// `logs(&participant_id)`). A `"`, `\`, control character, or `/` in the id
 /// would corrupt the JSON or split the key, so this rejects at compile time

@@ -26,7 +26,7 @@ use serde_json::Value;
 use workspace_policy::workspace_root;
 
 /// The two linker-section names a participant's embedded metadata can live
-/// under (`phoxal-macros/src/authoring.rs`'s `link_section_attrs`):
+/// under (`crates/macros/src/authoring.rs`'s `link_section_attrs`):
 /// `.phoxal_meta` on ELF, `__phoxal_meta` on Mach-O (`object`'s `ObjectSection`
 /// name match ignores the `__DATA` segment qualifier). Duplicated here rather
 /// than imported: no framework-side crate reads object files, and the only
