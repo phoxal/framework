@@ -188,22 +188,48 @@ mod tests {
         assert!(SupervisedLaunch::try_parse_from(invalid_origin).is_err());
     }
 
+    /// The process boundary is exactly this flag set under exactly these
+    /// spellings. A renamed long option or parser alias would create a second
+    /// launch contract even if the Rust field remained unchanged.
     #[test]
-    fn rejected_legacy_launch_fields_have_no_parser_aliases() {
-        for field in [
-            "--robot",
-            "--robot-id",
-            "--namespace",
-            "--producer-id",
-            "--config",
-            "--clock",
-            "--component-instance",
-        ] {
-            let mut argv = args();
-            argv.extend([field, "value"]);
-            let error = SupervisedLaunch::try_parse_from(argv)
-                .expect_err("legacy launch fields must be unknown");
-            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{field}");
+    fn the_long_flag_set_is_exactly_the_supervisor_owned_fields() {
+        let command = SupervisedLaunch::command();
+        let mut longs = command
+            .get_arguments()
+            .filter_map(clap::Arg::get_long)
+            .collect::<Vec<_>>();
+        longs.sort_unstable();
+        assert_eq!(
+            longs,
+            [
+                "bundle-root",
+                "connect",
+                "execution-id",
+                "execution-origin",
+                "participant-id",
+                "shutdown-grace-ms",
+            ]
+        );
+        for argument in command.get_arguments() {
+            assert!(
+                argument
+                    .get_all_aliases()
+                    .is_none_or(|aliases| aliases.is_empty()),
+                "{} declares a parser alias",
+                argument.get_id()
+            );
+            assert!(
+                argument.get_short().is_none(),
+                "{} declares a short flag; the launch contract is long-only",
+                argument.get_id()
+            );
+            assert!(
+                argument
+                    .get_all_short_aliases()
+                    .is_none_or(|aliases| aliases.is_empty()),
+                "{} declares a short parser alias",
+                argument.get_id()
+            );
         }
     }
 

@@ -8,8 +8,9 @@
 //! be a test target under `cargo test --workspace`.
 //!
 //! Each rule lives in the module that owns it: [`artifact`] owns the package
-//! grammar, [`comment_reference`] owns what a comment may name. This root owns
-//! only the two facts both of them need, the workspace layout.
+//! grammar, [`comment_reference`] owns what a comment may name, and
+//! [`tracked_source`] owns what counts as committed source for repository-wide
+//! scans. This root owns only the workspace facts they share.
 
 use std::path::Path;
 
@@ -17,6 +18,7 @@ use anyhow::{Context, Result};
 
 pub mod artifact;
 pub mod comment_reference;
+pub mod tracked_source;
 
 /// The directories holding the workspace's public library crates, one crate
 /// each, directly under the workspace root. A library crate's directory name

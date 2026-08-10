@@ -23,13 +23,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::tracked_source;
+
 /// The owner whose trackers are this project's own. A reference into them is
 /// history, so it is rejected even when it is fully qualified.
 const PROJECT_OWNER: &str = "phoxal";
-
-/// Directories a source scan never descends into: build output and version
-/// control state, neither of which is committed source.
-const SKIPPED_DIRS: [&str; 2] = ["target", ".git"];
 
 /// Comment syntax a scanned file is written in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,43 +93,21 @@ impl CommentReference {
             .collect()
     }
 
-    /// Every rejected reference in the comments of every scannable file under
-    /// `root`, reported with paths relative to `root`.
+    /// Every rejected reference in the comments of every Git-tracked scannable
+    /// file under `root`, reported with paths relative to `root`.
+    ///
+    /// An unstaged new file is outside the index; staging it brings it under
+    /// this rule before review or commit.
     pub fn scan_tree(root: &Path) -> Result<Vec<Self>> {
         let mut found = Vec::new();
-        let mut pending = vec![root.to_path_buf()];
-        while let Some(directory) = pending.pop() {
-            let entries = fs::read_dir(&directory)
-                .with_context(|| format!("failed to read {}", directory.display()))?;
-            for entry in entries {
-                let entry = entry.with_context(|| {
-                    format!("failed to read an entry in {}", directory.display())
-                })?;
-                let path = entry.path();
-                let file_type = entry
-                    .file_type()
-                    .with_context(|| format!("failed to stat {}", path.display()))?;
-                if file_type.is_symlink() {
-                    continue;
-                }
-                if file_type.is_dir() {
-                    let name = entry.file_name();
-                    if !SKIPPED_DIRS
-                        .iter()
-                        .any(|skipped| OsStr::new(skipped) == name)
-                    {
-                        pending.push(path);
-                    }
-                    continue;
-                }
-                let Some(syntax) = CommentSyntax::for_path(&path) else {
-                    continue;
-                };
-                let source = fs::read_to_string(&path)
-                    .with_context(|| format!("failed to read {}", path.display()))?;
-                let relative = path.strip_prefix(root).unwrap_or(&path);
-                found.extend(Self::scan_source(relative, &source, syntax));
-            }
+        for relative in tracked_source::files(root)? {
+            let Some(syntax) = CommentSyntax::for_path(&relative) else {
+                continue;
+            };
+            let path = root.join(&relative);
+            let source = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            found.extend(Self::scan_source(&relative, &source, syntax));
         }
         found.sort_by(|left, right| {
             left.path
