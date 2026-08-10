@@ -144,6 +144,34 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
     }
 }
 
+/// Select the runner's timestamp clock from the scheduler shape and the
+/// launch-validated clock.
+///
+/// A disabled scheduler does not mean a disabled clock: a stepless real
+/// participant still dates the state it serves, so it keeps the
+/// origin-anchored clock the launch validated. Only a clockless participant,
+/// which expresses no robot time, runs without one.
+pub(crate) fn runner_clock<C: ClockSource>(
+    scheduler: &AnyStepScheduler,
+    clock: Option<C>,
+) -> Result<RunnerClock<C>, ClockDisciplineLost> {
+    match scheduler {
+        AnyStepScheduler::Simulation(simulation) => {
+            Ok(RunnerClock::Simulation(simulation.simulation_clock()))
+        }
+        AnyStepScheduler::Real(_) => match clock {
+            Some(clock) => Ok(RunnerClock::Delegated(clock)),
+            None => Err(ClockDisciplineLost {
+                reason: TimeUnsynchronized::MissingOrigin,
+            }),
+        },
+        AnyStepScheduler::Disabled => Ok(match clock {
+            Some(clock) => RunnerClock::Delegated(clock),
+            None => RunnerClock::Disabled,
+        }),
+    }
+}
+
 /// Framework tasks that must be registered before setup can declare Ready.
 pub(crate) struct RunnerTasks {
     pub(crate) simulation_clock: Option<SimulationClockHandle>,
@@ -274,27 +302,18 @@ where
                 return result;
             }
         };
-    let effective_clock = match &scheduler {
-        AnyStepScheduler::Simulation(simulation) => {
-            RunnerClock::Simulation(simulation.simulation_clock())
+    let effective_clock = match runner_clock(&scheduler, clock) {
+        Ok(clock) => clock,
+        Err(error) => {
+            let result = close_session_with_result(
+                Err(error.into()),
+                session,
+                ShutdownDeadline::from_now(shutdown_grace),
+            )
+            .await;
+            bus_logs.shutdown();
+            return result;
         }
-        AnyStepScheduler::Real(_) => {
-            let Some(clock) = clock else {
-                let result = close_session_with_result(
-                    Err(ClockDisciplineLost {
-                        reason: TimeUnsynchronized::MissingOrigin,
-                    }
-                    .into()),
-                    session,
-                    ShutdownDeadline::from_now(shutdown_grace),
-                )
-                .await;
-                bus_logs.shutdown();
-                return result;
-            };
-            RunnerClock::Delegated(clock)
-        }
-        AnyStepScheduler::Disabled => RunnerClock::Disabled,
     };
     let start = Runner::<R, C>::start(
         StartInputs {
