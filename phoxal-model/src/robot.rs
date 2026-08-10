@@ -18,20 +18,7 @@ use crate::identity::{
 };
 use crate::simulation::Simulation;
 use crate::structure::{Joint, JointKind, Structure};
-
-/// The time domain this robot runs on.
-///
-/// Authored documents omit it and get [`Clock::Real`]; finalization writes the
-/// resolved value explicitly, so a finalized bundle never leaves it implicit.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Clock {
-    /// Host wall/monotonic time driven by real hardware.
-    #[default]
-    Real,
-    /// Time published by a simulation world authority.
-    Simulated,
-}
+pub use phoxal_runtime_contract::clock::Clock;
 
 /// One resolved component instance in the canonical robot.
 #[derive(Debug, Clone, serde::Serialize)]

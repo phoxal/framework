@@ -22,6 +22,7 @@
 //! management, not bus identity; they stay in the supervisor and never reach the
 //! wire.
 
+use std::borrow::Borrow;
 use std::fmt;
 use std::num::NonZeroU64;
 
@@ -34,13 +35,134 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// source compiler. A participant id is read by a process that may not have
 /// any authored sources installed, so validating it cannot require the
 /// compiler or its identifier types.
-fn is_participant_token(value: &str) -> bool {
+/// Whether a value is one normalized topology token.
+///
+/// Process and source-model identifiers use this one predicate so their
+/// accepted alphabets cannot drift across crate boundaries.
+#[must_use]
+pub fn is_topology_token(value: &str) -> bool {
     !value.is_empty()
         && value.chars().all(|character| {
             character.is_ascii_lowercase()
                 || character.is_ascii_digit()
                 || matches!(character, '_' | '-')
         })
+}
+
+macro_rules! topology_identifier {
+    ($(#[$doc:meta])* $name:ident, $error:ident, $kind:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub struct $name(String);
+
+        impl $name {
+            /// Validate and construct the identifier.
+            pub fn new(value: impl Into<String>) -> Result<Self, TopologyIdError> {
+                let value = value.into();
+                if is_topology_token(&value) {
+                    Ok(Self(value))
+                } else {
+                    Err(TopologyIdError::$error(value))
+                }
+            }
+
+            /// What this identifier names, used in diagnostics.
+            pub const KIND: &'static str = $kind;
+
+            /// The canonical wire token.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl PartialEq<str> for $name {
+            fn eq(&self, other: &str) -> bool {
+                self.as_str() == other
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.as_str() == *other
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = TopologyIdError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::new(value)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = TopologyIdError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::new(value)
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+topology_identifier!(
+    /// The canonical stable identity of one compiled robot.
+    RobotId,
+    Robot,
+    "robot id"
+);
+
+topology_identifier!(
+    /// The identity of one component instance in the compiled robot.
+    ComponentInstanceId,
+    ComponentInstance,
+    "component instance id"
+);
+
+/// A topology identifier that is not one normalized token.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TopologyIdError {
+    #[error("robot id must be a non-empty normalized token, got {0:?}")]
+    Robot(String),
+    #[error("component instance id must be a non-empty normalized token, got {0:?}")]
+    ComponentInstance(String),
 }
 
 /// The identity of one participant instance in a compiled runtime topology.
@@ -56,7 +178,7 @@ impl ParticipantId {
     /// Validate and construct a participant id.
     pub fn new(value: impl Into<String>) -> Result<Self, ParticipantIdError> {
         let value = value.into();
-        if is_participant_token(&value) {
+        if is_topology_token(&value) {
             Ok(Self(value))
         } else {
             Err(ParticipantIdError(value))
@@ -133,7 +255,7 @@ impl ParticipantArtifactId {
     /// Validate and construct an artifact id.
     pub fn new(value: impl Into<String>) -> Result<Self, ParticipantArtifactIdError> {
         let value = value.into();
-        if is_participant_token(&value) {
+        if is_topology_token(&value) {
             Ok(Self(value))
         } else {
             Err(ParticipantArtifactIdError(value))
@@ -484,6 +606,34 @@ const fn is_lowercase_hex(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn topology_ids_share_one_grammar_and_bare_string_wire_form() {
+        let robot = RobotId::new("warehouse_rover").expect("canonical robot id");
+        let component =
+            ComponentInstanceId::new("front-lidar").expect("canonical component instance");
+        assert_eq!(RobotId::KIND, "robot id");
+        assert_eq!(ComponentInstanceId::KIND, "component instance id");
+        assert_eq!(
+            serde_json::to_string(&robot).unwrap(),
+            "\"warehouse_rover\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ComponentInstanceId>("\"front-lidar\"").unwrap(),
+            component
+        );
+
+        assert_eq!(
+            RobotId::new("Warehouse Rover"),
+            Err(TopologyIdError::Robot("Warehouse Rover".to_string()))
+        );
+        assert_eq!(
+            ComponentInstanceId::new("front/lidar"),
+            Err(TopologyIdError::ComponentInstance(
+                "front/lidar".to_string()
+            ))
+        );
+    }
 
     #[test]
     fn participant_ids_are_typed_canonical_tokens() {

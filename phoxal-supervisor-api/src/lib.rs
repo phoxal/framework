@@ -3,9 +3,31 @@
 //! This surface is intentionally independent of the robot API revision. A
 //! process can therefore report an unknown-but-valid `RobotApiVersion` without
 //! requiring a robot-domain compatibility adapter.
+//!
+//! The crate root is the canonical facade for execution state and control
+//! values. Payload carrier modules remain available for generated endpoint
+//! signatures; consumers should import shared values from this root.
 
 use phoxal_macros::phoxal_protocol;
 use serde::Deserialize;
+
+pub use phoxal_runtime_contract::clock::Clock;
+pub use phoxal_runtime_contract::identity::RobotId;
+
+mod execution;
+pub use execution::{
+    Command, CommandOutcome, CommandRejection, DaemonFailure, DaemonFailureReason, DesiredState,
+    Detail, DiagnosticText, ExitStatus, Lifecycle, MAX_DETAIL_BYTES, MAX_PROCESSES,
+    MAX_STDERR_TAIL_BYTES, Process, ProcessFailure, ProcessFailureKind, ProcessState, Snapshot,
+    SnapshotDocument, SnapshotError, StartupStep, StartupStepKind, StartupStepState, StderrTail,
+    WallTime, WallTimeError,
+};
+
+/// Execution-scoped supervisor presence lease. This is a Liveliness key, not
+/// an endpoint payload, and therefore deliberately sits outside the endpoint
+/// manifest. It composes under one already-known execution root and signals
+/// loss of that execution's control-plane authority; it performs no discovery.
+pub const PRESENCE_KEY: &str = "supervisor/presence";
 
 pub(crate) fn deserialize_finite_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
@@ -24,6 +46,34 @@ where
 /// Ordinary protocol payloads. The generated `supervisor` module below owns
 /// endpoint descriptors and topic builders; these modules own only wire data.
 pub mod payload {
+    pub mod snapshot {
+        #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct CurrentRequest {}
+
+        /// Query this once before subscribing so a late joiner has a baseline;
+        /// then apply every value received from the snapshot stream.
+        pub type Current = crate::SnapshotDocument;
+        /// A complete replacement snapshot published after the baseline.
+        pub type Update = crate::SnapshotDocument;
+    }
+
+    pub mod command {
+        #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(tag = "schema")]
+        pub enum Request {
+            #[serde(rename = "phoxal/supervisor-control/request/v0")]
+            V0 { command: crate::Command },
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(tag = "schema")]
+        pub enum Reply {
+            #[serde(rename = "phoxal/supervisor-control/reply/v0")]
+            V0 { outcome: crate::CommandOutcome },
+        }
+    }
+
     pub mod logs {
         #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct Timestamp {
@@ -66,6 +116,7 @@ pub mod payload {
     }
 
     pub mod runtime {
+        use crate::{Clock, RobotId};
         use phoxal_runtime_contract::version::RobotApiVersion;
 
         /// Empty request for the immutable facts of one running bundle.
@@ -78,6 +129,8 @@ pub mod payload {
         #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         pub struct Info {
+            pub robot: RobotId,
+            pub clock: Clock,
             pub robot_api: RobotApiVersion,
         }
 
@@ -243,6 +296,15 @@ phoxal_protocol! {
             query info: crate::payload::runtime::InfoRequest => crate::payload::runtime::Info;
         }
 
+        snapshot {
+            topic self: Stream<crate::payload::snapshot::Update>;
+            query current: crate::payload::snapshot::CurrentRequest => crate::payload::snapshot::Current;
+        }
+
+        control {
+            query self: crate::payload::command::Request => crate::payload::command::Reply;
+        }
+
         telemetry {
             topic rollup: Stream<crate::payload::telemetry::Rollup>;
             query snapshot: crate::payload::telemetry::SnapshotRequest => crate::payload::telemetry::Snapshot;
@@ -281,12 +343,39 @@ mod tests {
             "supervisor/runtime/info"
         );
         assert_eq!(
+            <supervisor::endpoint::snapshot::TopicEndpoint as EndpointDescriptor>::TOPIC,
+            "supervisor/snapshot"
+        );
+        assert_eq!(
+            <supervisor::endpoint::control::TopicEndpoint as EndpointDescriptor>::TOPIC,
+            "supervisor/control"
+        );
+        assert_eq!(
             <supervisor::endpoint::telemetry::RollupEndpoint as EndpointDescriptor>::KIND,
             EndpointKind::Stream
         );
         assert_eq!(
             <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::KIND,
             EndpointKind::Query
+        );
+        assert_eq!(
+            <supervisor::endpoint::snapshot::TopicEndpoint as EndpointDescriptor>::KIND,
+            EndpointKind::Stream
+        );
+        assert_eq!(
+            <supervisor::endpoint::snapshot::CurrentEndpoint as EndpointDescriptor>::TOPIC,
+            "supervisor/snapshot/current"
+        );
+        assert_eq!(
+            <supervisor::endpoint::control::TopicEndpoint as EndpointDescriptor>::KIND,
+            EndpointKind::Query
+        );
+        assert!(
+            crate::API_CONTRACT_MANIFEST
+                .iter()
+                .flat_map(|version| version.contracts)
+                .all(|contract| contract.topic != crate::PRESENCE_KEY),
+            "the presence lease must not collide with any protocol endpoint"
         );
     }
 
@@ -301,6 +390,8 @@ mod tests {
     #[test]
     fn runtime_info_preserves_an_unknown_robot_api_for_client_dispatch() {
         let encoded = rmp_serde::to_vec_named(&supervisor::runtime::Info {
+            robot: phoxal_runtime_contract::identity::RobotId::new("rover").unwrap(),
+            clock: phoxal_runtime_contract::clock::Clock::Real,
             robot_api: phoxal_runtime_contract::version::RobotApiVersion::new(42, 7),
         })
         .unwrap();
@@ -308,6 +399,29 @@ mod tests {
         assert_eq!(
             decoded.robot_api,
             phoxal_runtime_contract::version::RobotApiVersion::new(42, 7)
+        );
+    }
+
+    #[test]
+    fn control_documents_round_trip_with_explicit_schema_tags() {
+        let request = supervisor::control::Request::V0 {
+            command: crate::Command::Stop {
+                expected_revision: 17,
+            },
+        };
+        let encoded = rmp_serde::to_vec_named(&request).unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<supervisor::control::Request>(&encoded).unwrap(),
+            request
+        );
+
+        let reply = supervisor::control::Reply::V0 {
+            outcome: crate::CommandOutcome::Accepted { at_revision: 18 },
+        };
+        let encoded = rmp_serde::to_vec_named(&reply).unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<supervisor::control::Reply>(&encoded).unwrap(),
+            reply
         );
     }
 }

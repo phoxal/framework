@@ -10,6 +10,8 @@ use std::fmt;
 
 use crate::error::{IdentifierKind, ModelError};
 
+pub use phoxal_runtime_contract::identity::{ComponentInstanceId, RobotId};
+
 /// The separator that joins a component instance id to a component-local
 /// structural id when a component's structure is flattened into the robot's.
 ///
@@ -29,12 +31,7 @@ pub const MODULE_INSTANCE_SEPARATOR: &str = "__";
 /// distinct authored identifiers collide into a single runtime identity.
 #[must_use]
 pub fn is_valid_token(value: &str) -> bool {
-    !value.is_empty()
-        && value.chars().all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '_' | '-')
-        })
+    phoxal_runtime_contract::identity::is_topology_token(value)
 }
 
 /// Declare a newtype whose values are exactly the strings [`is_valid_token`]
@@ -143,21 +140,9 @@ macro_rules! token_identifier {
 }
 
 token_identifier!(
-    /// The robot's own stable identity.
-    RobotId,
-    IdentifierKind::RobotId
-);
-
-token_identifier!(
     /// The identity of a component *type* - one authored component definition.
     ComponentTypeId,
     IdentifierKind::ComponentType
-);
-
-token_identifier!(
-    /// The identity of one component *instance* mounted on the robot.
-    ComponentInstanceId,
-    IdentifierKind::ComponentInstance
 );
 
 token_identifier!(

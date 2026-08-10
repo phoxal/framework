@@ -193,6 +193,9 @@ pub enum KeyProblem {
     /// observation to a selector would silently watch keys nobody asked about.
     #[error("must be concrete: a wildcard is not a key")]
     Wildcard,
+    /// A key is reserved for a narrower authority-specific declaration API.
+    #[error("uses an authority-reserved key prefix")]
+    ReservedPrefix,
     /// A label that would exceed the wire budget reserved for it.
     #[error("exceeds the {limit}-byte limit")]
     TooLong {

@@ -169,6 +169,21 @@ pub struct ParticipantReadyToken {
     source: ParticipantSourceIdentity,
 }
 
+/// Keeps one infrastructure-owned exact Liveliness key declared until drop.
+/// Participant readiness uses [`ParticipantReadyToken`] instead; this token is
+/// for execution-scoped authorities such as the supervisor presence lease.
+pub struct KeyLivelinessToken {
+    _token: zenoh::liveliness::LivelinessToken,
+    relative_key: String,
+}
+
+impl KeyLivelinessToken {
+    /// The exact key below this token's execution root.
+    pub fn relative_key(&self) -> &str {
+        &self.relative_key
+    }
+}
+
 impl ParticipantReadyToken {
     /// The participant/source pair represented by this lease.
     pub fn source(&self) -> &ParticipantSourceIdentity {
@@ -243,6 +258,31 @@ impl KeyLivelinessObserver {
 }
 
 impl BusOwner {
+    /// Declare one exact execution-scoped infrastructure presence lease.
+    ///
+    /// The key must be a concrete relative key. This cannot mint participant
+    /// Ready authority; that producer-qualified contract has its own method.
+    pub async fn declare_liveliness_key(&self, relative_key: &str) -> Result<KeyLivelinessToken> {
+        validate_relative_key(relative_key)?;
+        if relative_key.starts_with(PARTICIPANT_LIVELINESS_PREFIX) {
+            return Err(BusError::invalid_key(
+                relative_key,
+                KeyProblem::ReservedPrefix,
+            ));
+        }
+        let bus = self.handle();
+        let token = bus
+            .session()?
+            .liveliness()
+            .declare_token(bus.full_key(relative_key))
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        Ok(KeyLivelinessToken {
+            _token: token,
+            relative_key: relative_key.to_string(),
+        })
+    }
+
     /// Declare this bus participant's Ready lease. Call only after setup succeeds.
     pub async fn declare_participant_ready(&self) -> Result<ParticipantReadyToken> {
         let bus = self.handle();
@@ -565,7 +605,7 @@ mod tests {
         assert!(!selected.includes(&navigation.key));
     }
 
-    /// The supervisor's identity token is one exact key, and a client attaching
+    /// The supervisor's presence token is one exact key, and a client attaching
     /// mid-run has to learn both that it is already there and, later, that it is
     /// gone. Neither half is answerable from the participant-scoped observer.
     ///
@@ -582,7 +622,7 @@ mod tests {
         use crate::session::BusConfig;
         use crate::test_support::socket_endpoint;
 
-        let (_dir, endpoint) = socket_endpoint("phoxal-identity-");
+        let (_dir, endpoint) = socket_endpoint("phoxal-presence-");
         let execution = phoxal_runtime_contract::identity::ExecutionId::mint();
         let router = crate::router::Router::open(execution, std::slice::from_ref(&endpoint), None)
             .await
@@ -598,21 +638,26 @@ mod tests {
         };
 
         // The declaring side goes first, so the observer genuinely attaches late.
-        let (declaring_owner, declaring) = BusOwner::open(session("supervisor")).await.unwrap();
-        let token = declaring
-            .session()
-            .unwrap()
-            .liveliness()
-            .declare_token(declaring.full_key("supervisor/identity"))
+        let (declaring_owner, _declaring) = BusOwner::open(session("supervisor")).await.unwrap();
+        let token = declaring_owner
+            .declare_liveliness_key("supervisor/presence")
             .await
-            .expect("the supervisor declares its identity token");
+            .expect("the supervisor declares its presence token");
+        assert_eq!(token.relative_key(), "supervisor/presence");
+        assert!(
+            declaring_owner
+                .declare_liveliness_key("liveliness/participants/drive/producer")
+                .await
+                .is_err(),
+            "infrastructure leases cannot mint participant Ready authority"
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let (observing_owner, observing) = BusOwner::open(session("client")).await.unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
         let observer = observing
-            .observe_liveliness_key("supervisor/identity", move |status| {
+            .observe_liveliness_key("supervisor/presence", move |status| {
                 crate::lock::lock(&recorder).push(status);
             })
             .await
@@ -650,7 +695,7 @@ mod tests {
         use crate::session::BusConfig;
         use crate::test_support::socket_endpoint;
 
-        let (_dir, endpoint) = socket_endpoint("phoxal-identity-absent-");
+        let (_dir, endpoint) = socket_endpoint("phoxal-presence-absent-");
         let execution = phoxal_runtime_contract::identity::ExecutionId::mint();
         let router = crate::router::Router::open(execution, std::slice::from_ref(&endpoint), None)
             .await
@@ -665,7 +710,7 @@ mod tests {
         .await
         .unwrap();
         let observer = observing
-            .observe_liveliness_key("supervisor/identity", |_| {})
+            .observe_liveliness_key("supervisor/presence", |_| {})
             .await
             .expect("an absent token is still an observable key");
         assert_eq!(observer.initial(), LivelinessStatus::Lost);
@@ -713,13 +758,13 @@ mod tests {
                 vec![endpoint.clone()],
             )
         };
-        let (declaring_owner, declaring) = BusOwner::open(session("supervisor")).await.unwrap();
+        let (declaring_owner, _declaring) = BusOwner::open(session("supervisor")).await.unwrap();
         let (observing_owner, observing) = BusOwner::open(session("client")).await.unwrap();
 
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
         let observer = observing
-            .observe_liveliness_key("supervisor/identity", move |_| {
+            .observe_liveliness_key("supervisor/presence", move |_| {
                 counter.fetch_add(1, Ordering::Relaxed);
             })
             .await
@@ -727,13 +772,10 @@ mod tests {
         assert_eq!(observer.initial(), LivelinessStatus::Lost);
 
         // Prove the subscription is live: a first declaration must reach it.
-        let token = declaring
-            .session()
-            .unwrap()
-            .liveliness()
-            .declare_token(declaring.full_key("supervisor/identity"))
+        let token = declaring_owner
+            .declare_liveliness_key("supervisor/presence")
             .await
-            .expect("the supervisor declares its identity token");
+            .expect("the supervisor declares its presence token");
         let mut delivered = false;
         for _ in 0..100 {
             if calls.load(Ordering::Relaxed) > 0 {
