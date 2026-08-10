@@ -43,10 +43,14 @@ members = [
     "services/video",
     "simulators/webots-controller",
     "workspace-policy",
+    "xtask",
 ]
-# Keep the internal automation crate out of plain root cargo builds.
+# Keep the internal automation crates out of plain root cargo builds:
+# `workspace-policy` exists to be a test target, and `xtask` is the command
+# runner a maintainer invokes by name. Both are still built and tested by the
+# `--workspace` commands CI runs.
 # Invariant: default-members must contain every workspace member except
-# workspace-policy.
+# workspace-policy and xtask.
 # When adding a workspace member, add it to both members and default-members;
 # otherwise plain cargo build/test silently skips it.
 default-members = [

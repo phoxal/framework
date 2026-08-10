@@ -2,9 +2,9 @@
 # grammar every official package must obey, plus a handful of hygiene guards that
 # assert facts about the workspace as a whole.
 #
-# This crate has no command, and is deliberately not called `xtask`: that name
-# promises a `cargo xtask` command runner. What is left is a library that
-# exists to be a test target, so `cargo test --workspace` enforces the policy.
+# This crate has no command: the `cargo xtask` command runner lives in `xtask/`,
+# and this is a library that exists to be a test target, so `cargo test
+# --workspace` enforces the policy.
 [package]
 name = "workspace-policy"
 version.workspace = true
