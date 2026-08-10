@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.57.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.56.2...phoxal-bundle-v0.57.0) - 2026-08-10
+
+### Added
+
+- [**breaking**] make the framework train version the single compatibility identity ([#429](https://github.com/phoxal/framework/pull/429))
+
 ## [0.56.2](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.56.1...phoxal-bundle-v0.56.2) - 2026-08-10
 
 ### Added
