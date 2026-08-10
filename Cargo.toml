@@ -16,7 +16,7 @@ resolver = "3"
 # surface (components/<name> also carries the component definition: component.yaml,
 # structure.urdf, simulation.yaml).
 members = [
-    "fixture",
+    "crates/fixture",
     "phoxal",
     "crates/api",
     "crates/bus",
@@ -51,7 +51,7 @@ members = [
 # When adding a workspace member, add it to both members and default-members;
 # otherwise plain cargo build/test silently skips it.
 default-members = [
-    "fixture",
+    "crates/fixture",
     "phoxal",
     "crates/api",
     "crates/bus",
@@ -157,7 +157,7 @@ phoxal-macros = { path = "crates/macros", version = "=0.56.2" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.
-phoxal-fixture = { path = "fixture" }
+phoxal-fixture = { path = "crates/fixture" }
 
 [workspace.lints.rust]
 unused = "warn"

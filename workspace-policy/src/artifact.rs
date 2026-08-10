@@ -20,7 +20,7 @@ use cargo_metadata::semver::Version;
 use cargo_metadata::{MetadataCommand, Target, TargetKind};
 
 use crate::{
-    EXCLUDED_TOP_LEVEL_DIRS, FACADE, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, library_package_name,
+    FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, library_package_name,
 };
 
 /// Official Phoxal packages always use this provider segment in their public
@@ -385,8 +385,8 @@ impl Workspace {
 enum ManifestClassification {
     /// An official artifact package, at the exact path its kind and id require.
     Artifact { kind: ArtifactKind, id: ArtifactId },
-    /// A path the grammar deliberately says nothing about: a library crate at
-    /// its own root, this policy crate, or a manifest fixture.
+    /// A path the grammar deliberately says nothing about: a listed library
+    /// crate, published or internal, or this policy crate.
     Excluded,
     /// Any other workspace member. Discovery skips it exactly as it skips
     /// `Excluded`; the two stay distinct so a test can tell an intended
@@ -408,10 +408,6 @@ impl ManifestClassification {
             bail!("manifest path {} is empty", relative.display());
         };
 
-        if EXCLUDED_TOP_LEVEL_DIRS.contains(&top_level) {
-            return Ok(Self::Excluded);
-        }
-
         let [directory @ .., "Cargo.toml"] = components.as_slice() else {
             bail!(
                 "workspace package manifest {} is not named Cargo.toml",
@@ -419,10 +415,12 @@ impl ManifestClassification {
             );
         };
         let directory = directory.join("/");
-        if LIBRARY_CRATE_DIRS.contains(&directory.as_str()) {
+        if LIBRARY_CRATE_DIRS.contains(&directory.as_str())
+            || INTERNAL_CRATE_DIRS.contains(&directory.as_str())
+        {
             return Ok(Self::Excluded);
         }
-        // A manifest under the library root that the list does not name is a
+        // A manifest under the library root that neither list names is a
         // violation rather than a package the grammar says nothing about:
         // `crates/` is reserved for the workspace's own libraries, and a
         // package sitting there unlisted would be skipped by every rule in
@@ -431,7 +429,8 @@ impl ManifestClassification {
             bail!(
                 "workspace package manifest {} is under '{LIBRARY_CRATE_ROOT}/' but is not a \
                  listed library crate; a library crate is the package '{}' at \
-                 '{directory}', and must be added to LIBRARY_CRATE_DIRS",
+                 '{directory}', and must be added to LIBRARY_CRATE_DIRS or \
+                 INTERNAL_CRATE_DIRS",
                 relative.display(),
                 library_package_name(&directory).unwrap_or_else(|| format!(
                     "{FACADE}-<suffix>' at '{LIBRARY_CRATE_ROOT}/<suffix>"
@@ -691,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn library_policy_and_fixture_paths_are_excluded() -> Result<()> {
+    fn library_and_policy_crate_paths_are_excluded() -> Result<()> {
         assert_eq!(
             classify("phoxal/Cargo.toml")?,
             ManifestClassification::Excluded
@@ -701,12 +700,25 @@ mod tests {
             ManifestClassification::Excluded
         );
         assert_eq!(
-            classify("workspace-policy/Cargo.toml")?,
+            classify("crates/fixture/Cargo.toml")?,
             ManifestClassification::Excluded
         );
         assert_eq!(
-            classify("fixture/components/foo/Cargo.toml")?,
+            classify("workspace-policy/Cargo.toml")?,
             ManifestClassification::Excluded
+        );
+        Ok(())
+    }
+
+    /// `fixture/` holds authored documents and no packages at all, so the
+    /// grammar has nothing to say about anything under it. It used to be an
+    /// explicit exclusion because a crate lived there too; the exclusion went
+    /// away with the crate.
+    #[test]
+    fn the_authored_fixture_tree_names_no_package() -> Result<()> {
+        assert_eq!(
+            classify("fixture/components/foo/Cargo.toml")?,
+            ManifestClassification::NonArtifact
         );
         Ok(())
     }

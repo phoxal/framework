@@ -45,9 +45,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-# The tests load the workspace fixture robot. It is staged by a shared,
-# never-published crate so the eight consumers cannot drift on what that
-# robot is; a versionless dev-dependency is stripped on publish.
+# The tests load the workspace fixture robot as a finalized bundle. Staging it
+# is a crate rather than a test helper because both a unit test in `src/` and
+# an integration test in `tests/` need it, and a dev-dependency is the only
+# thing both can reach; a versionless one is stripped on publish.
 phoxal-fixture = { workspace = true }
 phoxal-bundle = { workspace = true }
 # Enables only the bus's hidden worker-failure injection while this crate's

@@ -1,8 +1,9 @@
 [package]
-# The directory is named for the authored documents it holds, which every other
-# crate's tests read by path; the package is the code that stages them. That is
-# why this is the one workspace member whose directory is not its package name,
-# and why `workspace-policy` exempts it.
+# The authored documents this stages are not here: they are at `fixture/` in
+# the workspace root, where the tests that need documents rather than a bundle
+# read them by path. Splitting the two is what lets this crate obey the
+# library rule like any other - `phoxal-fixture` at `crates/fixture` - instead
+# of being the one member `workspace-policy` had to exempt.
 name = "phoxal-fixture"
 edition.workspace = true
 rust-version.workspace = true
