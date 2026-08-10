@@ -45,9 +45,31 @@ impl ArtifactKind {
     /// Every kind, in the order discovery reports artifacts.
     pub const ALL: [Self; 3] = [Self::Service, Self::Component, Self::Simulator];
 
-    /// The top-level directory this kind's packages live under, which is also
-    /// the leading segment of both of their names.
+    /// The top-level directory this kind's packages live under.
+    ///
+    /// This is a repository-layout fact and nothing else. It is deliberately
+    /// *not* the leading segment of the package names, which
+    /// [`Self::name_segment`] owns: the directory holds many artifacts and so
+    /// reads plural, while a name segment qualifies exactly one and so reads
+    /// singular. The two are pinned to each other by
+    /// `the_directory_and_name_segment_of_every_kind_are_pinned`, which is
+    /// what keeps a rename of either from silently moving the other.
     pub fn directory(self) -> &'static str {
+        match self {
+            Self::Service => "service",
+            Self::Component => "component",
+            Self::Simulator => "simulator",
+        }
+    }
+
+    /// The leading segment of both of this kind's names: `service` in
+    /// `phoxal/service-drive` and in `phoxal-service-drive`.
+    ///
+    /// This is published identity. It reaches crates.io, the `phoxal`
+    /// registry, and every robot manifest that names an artifact, so it is
+    /// frozen independently of where the sources happen to sit in this
+    /// repository.
+    pub fn name_segment(self) -> &'static str {
         match self {
             Self::Service => "service",
             Self::Component => "component",
@@ -75,7 +97,7 @@ impl ArtifactKind {
     fn from_package_name(package_name: &str) -> Option<(Self, ArtifactId)> {
         let tail = package_name.strip_prefix(PHOXAL_PACKAGE_PREFIX)?;
         Self::ALL.into_iter().find_map(|kind| {
-            let id = tail.strip_prefix(kind.directory())?.strip_prefix('-')?;
+            let id = tail.strip_prefix(kind.name_segment())?.strip_prefix('-')?;
             Some((kind, ArtifactId::new(id).ok()?))
         })
     }
@@ -83,7 +105,7 @@ impl ArtifactKind {
     /// The shared tail of both names: `service-drive` in `phoxal/service-drive`
     /// and in `phoxal-service-drive`.
     fn package_segment(self, id: &ArtifactId) -> String {
-        format!("{}-{id}", self.directory())
+        format!("{}-{id}", self.name_segment())
     }
 
     /// A package's name is a function of the directory it lives in, so a
@@ -393,9 +415,9 @@ impl ManifestClassification {
         let [_, id, "Cargo.toml"] = components.as_slice() else {
             bail!(
                 "workspace package manifest {} is nested under artifact root '{top_level}'; \
-                 official artifacts must live exactly at \
-                 {{service,component,simulator}}/<id>/Cargo.toml",
-                relative.display()
+                 official artifacts must live exactly at {{{}}}/<id>/Cargo.toml",
+                relative.display(),
+                ArtifactKind::ALL.map(ArtifactKind::directory).join(",")
             );
         };
 
@@ -479,6 +501,25 @@ mod tests {
     #[test]
     fn the_crate_prefix_spells_the_provider() {
         assert_eq!(PHOXAL_PACKAGE_PREFIX, format!("{PHOXAL_PROVIDER}-"));
+    }
+
+    /// The directory an artifact's sources sit in and the segment its names
+    /// are built from are two independent facts: one is repository layout, the
+    /// other is published identity. Nothing derives one from the other, so
+    /// this is the only thing standing between a layout change and a silent
+    /// rename of every published package. Both columns are spelled out in
+    /// full, because a rule that computed one from the other would be the
+    /// coupling this test exists to prevent.
+    #[test]
+    fn the_directory_and_name_segment_of_every_kind_are_pinned() {
+        assert_eq!(
+            ArtifactKind::ALL.map(|kind| (kind.directory(), kind.name_segment())),
+            [
+                ("service", "service"),
+                ("component", "component"),
+                ("simulator", "simulator"),
+            ]
+        );
     }
 
     /// `Display` and `TryFrom` are one mapping written twice, so every variant
