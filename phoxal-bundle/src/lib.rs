@@ -48,4 +48,4 @@ pub const ASSETS_DIR: &str = "assets";
 /// The supervisor-only binary directory.
 pub const BIN_DIR: &str = "bin";
 #[cfg(test)]
-mod tests;
+mod bundle_boundary_tests;

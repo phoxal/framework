@@ -784,136 +784,30 @@ robot:
         );
     }
 
-    /// Bus transport is the router's configuration, reached through
-    /// `router.config`, not a second authored transport section.
-    #[test]
-    fn a_root_bus_section_is_rejected() {
-        let error = Manifest::parse(&minimal_manifest(
-            r#"bus:
-  listen: ["tcp/127.0.0.1:7447"]
-"#,
-        ))
-        .expect_err("a bus: section is not part of the grammar");
-
-        assert!(
-            format!("{error:#}").contains("unknown field `bus`"),
-            "got: {error:#}"
-        );
-    }
-
-    #[test]
-    fn robot_section_rejects_identity_wrapper() {
-        let error = Manifest::parse(
-            r#"
-schema: phoxal/robot/v0
-robot:
-  identity:
-    id: test-bot
-  motion_limits:
-    max_linear_speed_mps: 0.6
-    max_angular_speed_radps: 2.0
-  kinematic:
-    kind: omnidirectional
-    actuators: []
-    encoders: []
-  components: {}
-"#,
-        )
-        .expect_err("nested identity: wrapper should not parse");
-
-        assert!(
-            format!("{error:#}").contains("missing field `id`")
-                || format!("{error:#}").contains("unknown field `identity`"),
-            "got: {error:#}"
-        );
-    }
-
-    #[test]
-    fn robot_section_rejects_namespace() {
-        let error = Manifest::parse(
-            r#"
-schema: phoxal/robot/v0
-robot:
-  id: test-bot
-  namespace: dev
-  motion_limits:
-    max_linear_speed_mps: 0.6
-    max_angular_speed_radps: 2.0
-  kinematic:
-    kind: omnidirectional
-    actuators: []
-    encoders: []
-  components: {}
-"#,
-        )
-        .expect_err("robot.namespace is not part of the robot identity grammar");
-
-        assert!(
-            format!("{error:#}").contains("unknown field `namespace`"),
-            "got: {error:#}"
-        );
-    }
-
-    #[test]
-    fn robot_section_rejects_motion_wrapper() {
-        let error = Manifest::parse(
-            r#"
-schema: phoxal/robot/v0
-robot:
-  id: test-bot
-  motion:
-    kinematic:
-      kind: omnidirectional
-      actuators: []
-      encoders: []
-  components: {}
-"#,
-        )
-        .expect_err("motion: wrapper should not parse");
-
-        assert!(
-            format!("{error:#}").contains("unknown field `motion`")
-                || format!("{error:#}").contains("missing field `kinematic`"),
-            "got: {error:#}"
-        );
-    }
-
     /// The document grammar is closed: a root key the DTO does not declare is
-    /// rejected rather than ignored, whatever it is called. `tools:`,
-    /// `behavior:` and `artifacts:` are named explicitly because each one was a
-    /// plausible declaration an author might still reach for.
+    /// rejected rather than ignored.
     #[test]
     fn an_undeclared_root_key_is_rejected() {
-        for (key, document) in [
-            ("phoxal_artifacts", "phoxal_artifacts:\n  channel: stable\n"),
-            ("phoxal_participants", "phoxal_participants: {}\n"),
-            (
-                "tools",
-                "tools:\n  lidar-viz:\n    config:\n      port: 9000\n",
-            ),
-            (
-                "behavior",
-                "behavior:\n  root: system.root\n  autostart: true\n",
-            ),
-        ] {
-            let error = Manifest::parse(&minimal_manifest(document))
-                .expect_err("an undeclared root key must not parse");
-            assert!(
-                error
-                    .to_string()
-                    .contains(&format!("unknown field `{key}`")),
-                "got: {error}"
-            );
-        }
+        let error = Manifest::parse(&minimal_manifest("unknown_section: {}\n"))
+            .expect_err("an undeclared root key must not parse");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `unknown_section`"),
+            "got: {error}"
+        );
     }
 
+    /// The robot grammar is closed independently of the document root, so an
+    /// undeclared robot key cannot be silently dropped during deserialization.
     #[test]
-    fn manifest_rejects_version_discriminator() {
+    fn an_undeclared_robot_key_is_rejected() {
         let error = Manifest::parse(
             r#"
-version: legacy
+schema: phoxal/robot/v0
 robot:
   id: test-bot
+  unknown_key: {}
   motion_limits:
     max_linear_speed_mps: 0.6
     max_angular_speed_radps: 2.0
@@ -924,9 +818,77 @@ robot:
   components: {}
 "#,
         )
-        .expect_err("a version discriminator is not the schema tag");
+        .expect_err("an undeclared robot key must not parse");
 
-        assert!(format!("{error:#}").contains("schema"), "got: {error:#}");
+        assert!(
+            format!("{error:#}").contains("unknown field `unknown_key`"),
+            "got: {error:#}"
+        );
+    }
+
+    /// Every authored section closes its own grammar, not only the document
+    /// root, so a typo at any depth fails instead of being silently dropped.
+    #[test]
+    fn an_undeclared_key_in_each_nested_section_is_rejected() {
+        let documents = [
+            (
+                "services",
+                minimal_manifest("services:\n  autonomy:\n    unknown_key: {}\n"),
+            ),
+            ("router", minimal_manifest("router:\n  unknown_key: {}\n")),
+            (
+                "components.drive",
+                r#"
+schema: phoxal/robot/v0
+robot:
+  id: test-bot
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+  components:
+    drive:
+      component: ddsm115
+      mount_link: drive_mount
+      unknown_key: {}
+"#
+                .to_owned(),
+            ),
+            (
+                "components.drive.driver",
+                r#"
+schema: phoxal/robot/v0
+robot:
+  id: test-bot
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+  components:
+    drive:
+      component: ddsm115
+      mount_link: drive_mount
+      driver:
+        connection: { type: can, bus: 0, node_id: 1 }
+        unknown_key: {}
+"#
+                .to_owned(),
+            ),
+        ];
+        for (section, document) in documents {
+            let error =
+                Manifest::parse(&document).expect_err("an undeclared nested key must not parse");
+            assert!(
+                format!("{error:#}").contains("unknown field `unknown_key`"),
+                "{section}: got: {error:#}"
+            );
+        }
     }
 
     #[test]
@@ -943,82 +905,6 @@ robot:
         let message = error.to_string();
         assert!(message.contains("services.brain is reserved"), "{message}");
         assert!(message.contains("#[phoxal::brain]"), "{message}");
-    }
-
-    /// `components:` maps instance ids straight to instances; there is no
-    /// intermediate `sources:` / `instances:` split for an author to write.
-    #[test]
-    fn components_sources_nesting_is_rejected() {
-        let error = Manifest::parse(
-            r#"
-schema: phoxal/robot/v0
-robot:
-  id: test-bot
-  motion_limits:
-    max_linear_speed_mps: 0.6
-    max_angular_speed_radps: 2.0
-  kinematic:
-    kind: omnidirectional
-    actuators: []
-    encoders: []
-  components:
-    sources: {}
-    instances: {}
-"#,
-        )
-        .expect_err("components.sources/.instances nesting is not the component map");
-
-        assert!(
-            format!("{error:#}").contains("component")
-                || format!("{error:#}").contains("missing field"),
-            "got: {error:#}"
-        );
-    }
-
-    #[test]
-    fn component_driver_rejects_image_field() {
-        let error = Manifest::parse(
-            r#"
-schema: phoxal/robot/v0
-robot:
-  id: test-bot
-  motion_limits:
-    max_linear_speed_mps: 0.6
-    max_angular_speed_radps: 2.0
-  kinematic:
-    kind: omnidirectional
-    actuators: []
-    encoders: []
-  components:
-    drive:
-      component: ddsm115
-      mount_link: drive_mount
-      driver:
-        image: phoxal/component-ddsm115-driver:v0.1.5
-        connection: { type: can, bus: 0, node_id: 1 }
-"#,
-        )
-        .expect_err("driver.image is not part of the driver grammar");
-
-        assert!(
-            format!("{error:#}").contains("unknown field `image`"),
-            "got: {error:#}"
-        );
-    }
-
-    /// Cargo owns source selection and workspace membership owns service
-    /// discovery, so neither has an authored key here.
-    #[test]
-    fn source_selection_keys_are_rejected() {
-        let artifacts = Manifest::parse(&minimal_manifest("artifacts:\n  pins: {}\n"))
-            .expect_err("Cargo owns source selection");
-        assert!(format!("{artifacts:#}").contains("unknown field `artifacts`"));
-
-        let service_path = Manifest::parse(&minimal_manifest(
-            "services:\n  autonomy:\n    path: services/autonomy\n",
-        ))
-        .expect_err("workspace membership owns service discovery");
-        assert!(format!("{service_path:#}").contains("unknown field `path`"));
     }
 
     #[test]

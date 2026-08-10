@@ -1,4 +1,12 @@
 //! Bundle boundary regression tests.
+//!
+//! These stay in one crate-root unit target because they exercise the complete
+//! persisted-bundle boundary across document validation, atomic writing,
+//! descriptor-pinned filesystem access, selection, and verified reading. The
+//! filesystem race assertions deliberately use crate-private seams that a
+//! public integration test cannot reach; splitting the shared staged-bundle
+//! fixture among the implementation modules would duplicate the boundary it
+//! proves.
 
 use std::collections::BTreeMap;
 use std::io::Read;
