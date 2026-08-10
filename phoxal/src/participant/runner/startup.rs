@@ -24,7 +24,6 @@ use phoxal_runtime_contract::origin::ExecutionOrigin;
 use phoxal_runtime_contract::version::FrameworkVersion;
 
 use super::ShutdownController;
-use super::executable::verify_current_executable;
 use super::inputs::{participant_config, participant_inputs_for_launch};
 use super::lifecycle::{self, BusLease};
 
@@ -150,7 +149,6 @@ where
             bundle.artifact().contract().id
         );
     }
-    verify_current_executable(bundle.artifact().digest())?;
     // Deserialize the selected config while the process is still local. A
     // custom `Deserialize` implementation may reject a value that its JSON
     // Schema accepts; that must not become a transport-visible startup error.

@@ -144,9 +144,9 @@ pub struct ParticipantBundle {
 
 impl ParticipantBundle {
     /// Open one participant's selected runtime inputs without hashing unrelated
-    /// indexed files or trusting the staged executable path. The supervised
-    /// runner separately hashes its already-running executable against the
-    /// selected artifact digest before it opens the bus.
+    /// indexed files. Binary integrity is the supervisor's concern: the daemon
+    /// digest-verifies every staged executable when it opens the bundle, and a
+    /// launched participant proves its identity through its embedded contract.
     pub fn open(root: impl AsRef<Path>, id: &ParticipantId) -> Result<Self, BundleError> {
         let root = BundleRoot::open(root.as_ref())?;
         let document = read_runtime_document(&root)?;

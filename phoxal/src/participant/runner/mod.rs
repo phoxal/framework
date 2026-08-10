@@ -4,8 +4,7 @@
 //! all local launch validation before opening the bus, [`lifecycle`] owns
 //! setup/Ready/teardown resources, and [`event_loop`] owns the serialized
 //! scheduler loop. Query ingress/reply transport, process signals, teardown,
-//! bundle inputs, and executable verification each stay in their focused
-//! modules.
+//! and bundle inputs each stay in their focused modules.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -25,7 +24,6 @@ use crate::testing::TestHarness;
 use phoxal_bundle::ParticipantClock;
 
 pub(crate) mod event_loop;
-pub(crate) mod executable;
 pub(crate) mod inputs;
 pub(crate) mod lifecycle;
 pub(crate) mod query;
