@@ -179,9 +179,34 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
 
+  compatibility:
+    name: gate the train on contract compatibility
+    needs: prepare
+    # The last point at which the promise can still be kept: crates.io and the
+    # registry are both immutable, so a train that under-states its contract
+    # changes has to be refused before the first publication, not after.
+    #
+    # A registry-only resume is exempt, and that is not a hole. Its libraries
+    # are already live, which makes the published surfaces this candidate's own
+    # - the comparison would be against itself, and the only verdict it could
+    # reach is that the version equals its baseline, which is a shortfall no
+    # release can repair. `crates == 'true'` is exactly the state where an
+    # immutable crates.io publication is still ahead of us; the surfaces that
+    # the resumed executables were built against were gated when that train's
+    # libraries went out.
+    if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.crates == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # The same source the publish legs package: on this path that is the
+      # prepared release commit, which is the ref that triggered the run.
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Check the train against the published contract surfaces
+        run: cargo xtask compatibility check-release
+
   publish-crates:
     name: publish crates.io libraries
-    needs: prepare
+    needs: [prepare, compatibility]
     if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.crates == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -222,11 +247,16 @@ jobs:
 
   publish-registry:
     name: publish executables to the phoxal registry
-    needs: [prepare, publish-crates]
-    # `always()` so a registry-only resume runs with publish-crates skipped,
-    # while a real failure of that job still stops this one.
+    needs: [prepare, compatibility, publish-crates]
+    # `always()` so a registry-only resume runs with both of those jobs skipped,
+    # while a real failure of either still stops this one. The gate is named
+    # here as well as in `needs`: under `always()` a failed gate merely *skips*
+    # publish-crates, so testing that job alone would let the executables out
+    # behind a refused train.
     if: >-
       always() && needs.prepare.outputs.publish == 'true'
+      && needs.compatibility.result != 'failure'
+      && needs.compatibility.result != 'cancelled'
       && needs.publish-crates.result != 'failure'
       && needs.publish-crates.result != 'cancelled'
     runs-on: ubuntu-latest

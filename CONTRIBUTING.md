@@ -30,6 +30,25 @@ Add it automatically with `git commit -s`.
 
 Commit messages must follow
 [Conventional Commits](https://www.conventionalcommits.org/).
+The pull request title follows them too: it is what the release automation reads
+to size the next train.
+
+### Wire-touching changes carry the breaking marker
+
+Before 1.0 the minor *is* the compatibility line, because SemVer gives a 0.x
+release no major axis to break on.
+So any change to a wire contract - an endpoint, a schema-tagged document, an
+out-of-body envelope, an exact wire constant, a launch contract - must carry the
+breaking marker (`feat!:`, `refactor!:`), a purely additive one included.
+The train version is the single compatibility identity peers match on, so an
+endpoint that exists in only one of two trains has to move that line just as a
+removed one does.
+A plain `feat:` or `fix:` prepares a patch train, and the release PR's
+compatibility gate fails a candidate version too small for what its contracts
+changed.
+
+Run `cargo xtask compatibility report` to see the impact of a change before
+pushing it; every pull request runs the same report.
 
 ## Build prerequisites
 

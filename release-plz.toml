@@ -13,7 +13,17 @@
 release_always = true
 dependencies_update = false
 pr_name = "chore(release): release v{{ version }}"
-semver_check = false
+
+# cargo-semver-checks compares each library against its own published version
+# and, when it finds a break, forces the release PR to a breaking bump whatever
+# the commit types said - so a Rust API break can no longer be released as a
+# patch because nobody wrote `!`. It is the Rust-API half of the promise; the
+# wire half is `cargo xtask compatibility check-release`.
+#
+# No per-package override is needed: release-plz only runs the check on packages
+# that contain a library, and every executable published to the `phoxal`
+# registry is bin-only, so all 17 are skipped on their own.
+semver_check = true
 
 # --- crates.io libraries ----------------------------------------------------
 #
