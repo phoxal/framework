@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.56.1](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.56.0...phoxal-bundle-v0.56.1) - 2026-08-10
+
+### Other
+
+- enforce final framework hygiene ([#423](https://github.com/phoxal/framework/pull/423))
+
 ## [0.56.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.55.0...phoxal-bundle-v0.56.0) - 2026-08-09
 
 ### Added
