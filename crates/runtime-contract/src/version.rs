@@ -209,8 +209,8 @@ impl<'de> Deserialize<'de> for FrameworkVersion {
 ///
 /// Its canonical wire spelling is `phoxal/robot-api/v<major>.<minor>`. This
 /// type is retired by the API-family migration and is no longer part of any
-/// participant's compatibility declaration; it remains only while the generated
-/// API catalogue and the supervisor runtime report still name a revision.
+/// participant's compatibility declaration; it remains only while the
+/// supervisor runtime report still names a revision.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RobotApiVersion {
     major: u16,

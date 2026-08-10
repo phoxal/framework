@@ -1,0 +1,5 @@
+error: a fragment path starts at one semantic contract family: `robot`, `runtime`, `supervisor`
+ --> tests/trybuild/fail/fragment_unknown_family.rs:4:10
+  |
+4 |     path telemetry / drive;
+  |          ^^^^^^^^^

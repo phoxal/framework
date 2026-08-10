@@ -2,7 +2,7 @@
 //! whose behavior it exercises.
 //!
 //! What this module owns is a stand-in endpoint surface: a hand-written
-//! [`ApiVersion`] plus plain payloads and endpoint descriptors. `phoxal-bus`
+//! [`ApiFamily`] plus plain payloads and endpoint descriptors. `phoxal-bus`
 //! is the ABI floor and must be testable without a concrete generated API.
 //! Several modules (`abi`, `handle`, `session`, `server`, `router`) need the
 //! same stand-in endpoints to exercise a real end-to-end path, so they are
@@ -18,7 +18,7 @@ use zenoh::sample::{Sample, SampleBuilder};
 
 use crate::abi::CodecId;
 use crate::contract::{
-    ApiVersion, EndpointDescriptor, EndpointKind, QueryEndpointDescriptor, SetpointContract,
+    ApiFamily, EndpointDescriptor, EndpointKind, QueryEndpointDescriptor, SetpointContract,
     StateContract,
 };
 use crate::handle::stamp::StepToken;
@@ -29,7 +29,7 @@ use crate::time::{RobotInstant, TimeWindow};
 /// The stand-in API identity used by test endpoint descriptors.
 pub(crate) enum TestApi {}
 
-impl ApiVersion for TestApi {
+impl ApiFamily for TestApi {
     const ID: &'static str = "yTEST";
 }
 
@@ -47,7 +47,7 @@ impl EndpointDescriptor for TargetEndpoint {
     type Api = TestApi;
     type Payload = Target;
     const NAME: &'static str = "yTEST::drive::Target";
-    const VERSION: &'static str = "yTEST";
+    const FAMILY: &'static str = "yTEST";
     const CONTRACT: &'static str = "drive::Target";
     const TOPIC: &'static str = "yTEST/drive/target";
     const KIND: EndpointKind = EndpointKind::State;
@@ -68,7 +68,7 @@ impl EndpointDescriptor for ManualEndpoint {
     type Api = TestApi;
     type Payload = Manual;
     const NAME: &'static str = "yTEST::motion::Manual";
-    const VERSION: &'static str = "yTEST";
+    const FAMILY: &'static str = "yTEST";
     const CONTRACT: &'static str = "motion::Manual";
     const TOPIC: &'static str = "yTEST/motion/manual";
     const KIND: EndpointKind = EndpointKind::Setpoint;
@@ -88,7 +88,7 @@ impl EndpointDescriptor for GetEndpoint {
     type Api = TestApi;
     type Payload = GetRequest;
     const NAME: &'static str = "yTEST::asset::GetRequest";
-    const VERSION: &'static str = "yTEST";
+    const FAMILY: &'static str = "yTEST";
     const CONTRACT: &'static str = "asset::GetRequest";
     const TOPIC: &'static str = "yTEST/asset/get";
     const KIND: EndpointKind = EndpointKind::Query;

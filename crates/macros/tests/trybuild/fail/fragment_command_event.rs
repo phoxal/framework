@@ -1,8 +1,7 @@
 use phoxal_macros::phoxal_api_fragment;
 
 phoxal_api_fragment! {
-    path drive;
-    version v1_0;
+    path robot / drive;
         command target: Event<Target>;
 }
 

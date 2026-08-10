@@ -14,7 +14,7 @@ use crate::participant::context::QueryContext;
 /// A successful server reply: the encoded plain `Resp` body.
 ///
 /// The reply carries no contract identity of its own, because the request
-/// already arrived on `Resp`'s version-qualified topic key - a receiver that
+/// already arrived on `Resp`'s family-rooted topic key - a receiver that
 /// got the reply knows what it asked for.
 #[derive(Debug)]
 pub(crate) struct ServerReply {
@@ -183,10 +183,8 @@ mod tests {
 
     #[test]
     fn typed_query_dispatch_decodes_mutates_and_encodes() {
-        let registration = QueryRegistration::new(
-            "v0.1/supervisor/asset/get".to_string(),
-            QueryParticipant::get,
-        );
+        let registration =
+            QueryRegistration::new("supervisor/asset/get".to_string(), QueryParticipant::get);
         let participant = QueryParticipant;
         let api = Api;
         let mut state = QueryState::default();

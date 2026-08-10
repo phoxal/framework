@@ -74,7 +74,7 @@ pub enum BusError {
         /// the ids that are *not* a [`CodecId`](crate::abi::CodecId) that reach
         /// here.
         codec: u8,
-        /// The version-qualified topic key it arrived on.
+        /// The family-rooted topic key it arrived on.
         topic: String,
     },
 
@@ -82,7 +82,7 @@ pub enum BusError {
     /// was missing or malformed.
     #[error("invalid bus metadata on '{topic}': {problem}")]
     Metadata {
-        /// The version-qualified topic key.
+        /// The family-rooted topic key.
         topic: String,
         /// Which part of the envelope was wrong.
         problem: MetadataProblem,
@@ -93,7 +93,7 @@ pub enum BusError {
     /// this error while their new value fits the global byte bound.
     #[error("outbound {bound} bound on '{topic}'; value was not accepted")]
     Saturated {
-        /// The version-qualified topic key.
+        /// The family-rooted topic key.
         topic: String,
         /// Which of the queue's two bounds was hit.
         bound: OutboundBound,
@@ -104,7 +104,7 @@ pub enum BusError {
     /// the loss explicitly.
     #[error("stream would block on '{topic}'")]
     WouldBlock {
-        /// The version-qualified topic key.
+        /// The family-rooted topic key.
         topic: String,
     },
 

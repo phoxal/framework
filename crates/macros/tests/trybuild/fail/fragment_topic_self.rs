@@ -1,8 +1,7 @@
 use phoxal_macros::phoxal_api_fragment;
 
 phoxal_api_fragment! {
-    path logs;
-    version v1_0;
+    path robot / logs;
     topic self: Stream<Event>;
 }
 

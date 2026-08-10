@@ -867,7 +867,7 @@ mod tests {
         let topic = config.left[0]
             .topic()
             .expect("compiled motor bindings are valid key segments");
-        assert!(topic.key().starts_with("v0.1/component/"));
+        assert!(topic.key().starts_with("robot/component/"));
         assert!(topic.key().ends_with("/command"));
     }
 

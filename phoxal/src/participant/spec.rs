@@ -16,17 +16,16 @@ pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The participant id (`id = "…"`, default derived from the crate's
     /// `CARGO_PKG_NAME`; see `#[phoxal::service]`'s docs).
     const ID: &'static str;
-    /// The single API revision every typed handle this participant builds must
-    /// come from. Role attributes fix it to the train-selected facade
-    /// (`phoxal::api::Api`); there is no participant-local choice.
+    /// The single contract family every typed handle this participant builds
+    /// must come from. Role attributes fix it to the participant-authoring
+    /// facade (`phoxal::api::Api`, the `robot` family); there is no
+    /// participant-local choice.
     ///
     /// Every [`SetupContext`](crate::SetupContext) builder is bounded on it, so
-    /// one participant physically cannot construct handles from two API
-    /// revisions - which is what makes the `api` field of its embedded
-    /// `.phoxal_meta` record a true statement about the process rather than a
-    /// declaration nothing checks.
+    /// one participant physically cannot construct handles from two contract
+    /// families.
     #[doc(hidden)]
-    type ContractApi: crate::bus::ApiVersion;
+    type ContractApi: crate::bus::ApiFamily;
     /// The participant's typed config (`robot.yaml` input).
     type Config: ParticipantConfig;
     /// Mutable runtime state, owned only by the serialized event loop.

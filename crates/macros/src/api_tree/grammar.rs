@@ -1,4 +1,4 @@
-//! The semantic API/protocol grammar: the keyword table and every `Parse` impl
+//! The semantic family/protocol grammar: the keyword table and every `Parse` impl
 //! that turns an invocation's tokens into the [`super::model`] tree, plus the
 //! diagnostics that name why a form is not accepted where it was written.
 
@@ -9,8 +9,6 @@ use super::model::{BodyPath, Node, Protocol, SemanticKind, TopicDef, TopicKind, 
 
 mod kw {
     syn::custom_keyword!(protocol);
-    syn::custom_keyword!(remove);
-    syn::custom_keyword!(replace);
     syn::custom_keyword!(topic);
     syn::custom_keyword!(command);
     syn::custom_keyword!(stream);
@@ -22,23 +20,6 @@ mod kw {
     syn::custom_keyword!(query);
 }
 
-/// The diagnostic for an invocation that nests a `protocol` tree inside
-/// another protocol node.
-const MODES_DO_NOT_MIX: &str = "a `protocol <name> { … }` tree stands alone at the top of its own semantic macro \
-     invocation: it has no `version` revisions and no `latest` selection, so the two modes never \
-     mix in one invocation";
-
-/// The diagnostic tail for a `replace`/`remove` inside a revision that has no
-/// parent to delta against.
-pub(super) const VERSION_HAS_NO_PARENT: &str =
-    "is only valid inside a revision that `extends` another revision";
-
-/// The diagnostic tail for a `replace`/`remove` inside a protocol tree. A
-/// protocol has no revision history at all, so there is nothing to delta - the
-/// declaration is edited in place.
-pub(super) const PROTOCOL_HAS_NO_DELTAS: &str = "is not valid inside a `protocol` tree: a protocol has no revision history, so edit the \
-     declaration in place";
-
 pub(super) struct ProtocolInput(pub(super) Vec<Protocol>);
 
 impl Parse for ProtocolInput {
@@ -46,7 +27,7 @@ impl Parse for ProtocolInput {
         if !input.peek(kw::protocol) {
             return Err(input.error(
                 "`phoxal_protocol!` accepts only `protocol <name> { ... }` trees; use \
-                 `phoxal_api_tree!` plus fragments for Robot API revisions",
+                 `phoxal_api_tree!` plus fragments for semantic contract families",
             ));
         }
         let mut protocols = Vec::new();
@@ -85,9 +66,6 @@ impl Parse for Protocol {
         syn::braced!(body in input);
         let mut nodes = Vec::new();
         while !body.is_empty() {
-            if body.peek(kw::remove) {
-                return Err(body.error(format!("`remove` {PROTOCOL_HAS_NO_DELTAS}")));
-            }
             nodes.push(body.parse()?);
         }
         Ok(Protocol { name, nodes })
@@ -96,16 +74,6 @@ impl Parse for Protocol {
 
 impl Parse for Node {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        if input.peek(kw::replace) {
-            input.parse::<kw::replace>()?;
-            return Err(input.error(format!("`replace` {PROTOCOL_HAS_NO_DELTAS}")));
-        }
-        // `protocol <name> {` here is a protocol tree nested inside another
-        // tree. A node literally called `protocol` is followed by `{` or `(`,
-        // never by a second identifier, so this only catches the mix-up.
-        if input.peek(kw::protocol) && input.peek2(Ident) {
-            return Err(input.error(MODES_DO_NOT_MIX));
-        }
         let name: Ident = input.parse()?;
         // Optional `(var)` makes the node dynamic.
         let var = if input.peek(syn::token::Paren) {
@@ -130,19 +98,7 @@ impl Parse for Node {
             // Leading doc-comments / attributes apply to the next item; `topic`
             // declarations take none.
             let attrs = body.call(syn::Attribute::parse_outer)?;
-            if body.peek(kw::replace) {
-                body.parse::<kw::replace>()?;
-                return Err(body.error(format!("`replace` {PROTOCOL_HAS_NO_DELTAS}")));
-            }
-            if body.peek(kw::remove) {
-                if let Some(attr) = attrs.first() {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "attributes are not allowed on a `remove` declaration",
-                    ));
-                }
-                return Err(body.error(format!("`remove` {PROTOCOL_HAS_NO_DELTAS}")));
-            } else if body.peek(kw::topic) || body.peek(kw::command) || body.peek(kw::query) {
+            if body.peek(kw::topic) || body.peek(kw::command) || body.peek(kw::query) {
                 if let Some(attr) = attrs.first() {
                     return Err(syn::Error::new_spanned(
                         attr,
@@ -152,7 +108,7 @@ impl Parse for Node {
                 topics.push(body.parse()?);
             } else if body.peek(Token![struct]) || body.peek(Token![enum]) {
                 return Err(body.error(
-                    "semantic API/protocol trees declare endpoints over ordinary Rust domain types; move this struct/enum into its domain module",
+                    "semantic family/protocol trees declare endpoints over ordinary Rust domain types; move this struct/enum into its domain module",
                 ));
             } else if body.peek(Ident)
                 && (body.peek2(syn::token::Paren) || body.peek2(syn::token::Brace))
@@ -165,12 +121,10 @@ impl Parse for Node {
                     ));
                 }
                 children.push(body.parse()?);
-            } else if body.peek(kw::protocol) && body.peek2(Ident) {
-                return Err(body.error(MODES_DO_NOT_MIX));
             } else {
                 return Err(body.error(
                     "expected an endpoint declaration or a child node `name { … }` / \
-                     `name(var) { … }` inside an API node block",
+                     `name(var) { … }` inside a node block",
                 ));
             }
         }
@@ -214,7 +168,6 @@ impl Parse for TopicDef {
             let response = parse_body_path(input)?;
             input.parse::<Token![;]>()?;
             return Ok(TopicDef {
-                replace: false,
                 leaf,
                 kind: TopicKind::Query { request, response },
                 semantic: SemanticKind::Query,
@@ -253,7 +206,6 @@ impl Parse for TopicDef {
                 };
                 input.parse::<Token![;]>()?;
                 return Ok(TopicDef {
-                    replace: false,
                     leaf,
                     kind: TopicKind::PubSub(body),
                     semantic,

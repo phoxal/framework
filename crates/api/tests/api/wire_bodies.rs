@@ -3,7 +3,7 @@
 //! rather than silently reinterpreted.
 
 use super::{instant, round_trip};
-use crate::v0_1 as api;
+use crate::robot as api;
 use serde::de::DeserializeOwned;
 
 fn producer(value: u128) -> phoxal_bus::ProducerId {
@@ -130,7 +130,7 @@ fn valid_grid_window() -> api::map::GridWindow {
 }
 
 #[test]
-fn v0_1_grid_window_is_self_describing_and_validated_on_deserialize() {
+fn grid_window_is_self_describing_and_validated_on_deserialize() {
     let response = api::map::SubmapResponse::Window(valid_grid_window());
     round_trip(&response);
 
@@ -623,7 +623,7 @@ fn rejects_json_and_messagepack<T: DeserializeOwned>(value: serde_json::Value) {
 }
 
 #[test]
-fn v0_1_sensor_wires_reject_malformed_json_and_messagepack() {
+fn sensor_wires_reject_malformed_json_and_messagepack() {
     rejects_json_and_messagepack::<api::component::camera::Frame>(serde_json::json!({
         "width": 0, "height": 1, "encoding": "jpeg", "intrinsics": null, "distortion": null,
         "exposure": null, "calibration": null, "data": []

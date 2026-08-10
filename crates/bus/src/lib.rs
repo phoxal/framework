@@ -12,7 +12,7 @@
 //! - a plain MessagePack body payload.
 //!
 //! There is no Phoxal frame independent of Zenoh and no version tag in the
-//! body. Identity lives entirely in the key: different version-qualified
+//! body. Identity lives entirely in the key: different family-rooted
 //! contract names are different keys and physically cannot collide, so a
 //! receiver's per-key subscription is the whole fast-reject.
 //!
@@ -61,7 +61,7 @@ pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, Producer
 
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
-    ApiVersion, DeliveryFamily, Endpoint, EndpointDescriptor, EndpointKind, EventContract, Payload,
+    ApiFamily, DeliveryFamily, Endpoint, EndpointDescriptor, EndpointKind, EventContract, Payload,
     QueryEndpointDescriptor, SampleContract, SampleDeliveryContract, SetpointContract,
     SetpointDeliveryContract, StateContract, StateDeliveryContract, StreamContract,
     StreamDeliveryContract, WorldClockContract,

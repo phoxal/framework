@@ -201,10 +201,9 @@ impl<R: Participant> SetupContext<R> {
 }
 
 /// Every typed-IO builder below binds its endpoint descriptor's `Api` to
-/// `R::ContractApi`, the one revision the role attribute fixed for this
-/// participant. A descriptor from any other API revision is a compile error at
-/// the builder call, not a runtime mismatch: this is what makes the `api`
-/// field of the participant's embedded metadata record truthful.
+/// `R::ContractApi`, the one contract family the role attribute fixed for this
+/// participant. A descriptor from any other family is a compile error at the
+/// builder call, not a runtime mismatch.
 impl<R: Participant + TypedIoSurface> SetupContext<R> {
     pub fn state_publisher<B: StateContract<Api = R::ContractApi>>(
         &self,

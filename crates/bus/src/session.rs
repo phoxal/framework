@@ -783,7 +783,7 @@ impl BusHandle {
         })
     }
 
-    /// Compose a full bus key from a version-qualified topic key.
+    /// Compose a full bus key from a family-rooted topic key.
     pub fn full_key(&self, topic_key: &str) -> String {
         format!("{}/{}", self.identity.root, topic_key)
     }

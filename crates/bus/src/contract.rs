@@ -1,28 +1,33 @@
-//! The contract primitive traits: the API-version marker and endpoint
+//! The contract primitive traits: the contract-family marker and endpoint
 //! descriptors.
 //!
-//! These are the two traits the bus client is generic over - the ABI floor every
-//! API revisions and process protocols use ordinary Rust payloads plus one
-//! generated descriptor per endpoint. This crate owns the shared ABI traits;
-//! `phoxal-api` and `phoxal-supervisor-api` own their concrete declarations.
+//! These are the two traits the bus client is generic over - the ABI floor
+//! every contract family and process protocol uses ordinary Rust payloads plus
+//! one generated descriptor per endpoint. This crate owns the shared ABI
+//! traits; `phoxal-api` and `phoxal-supervisor-api` own their concrete
+//! declarations.
 
 /// Marker trait identifying one generated contract tree.
 ///
-/// Implemented only by the zero-variant `enum Api {}` that
-/// `phoxal_api_tree!` generates inside each tree module. The [`ID`] is the
-/// dotted wire revision (`"v0.1"`) for a robot API revision, and the protocol
-/// name (`"supervisor"`) for a `protocol` tree - in both cases the tree's
-/// identity and the leading segment of every key it declares. It is carried in
-/// bus metadata as informational provenance, never in the wire body.
+/// Implemented only by the zero-variant `enum Api {}` that `phoxal_api_tree!`
+/// generates inside each tree module. The [`ID`] is a semantic contract
+/// namespace: the family (`"robot"`) for a fragment tree, the protocol name
+/// (`"supervisor"`) for a `protocol` tree - in both cases the tree's identity
+/// and the leading segment of every key it declares. It is carried in bus
+/// metadata as informational provenance, never in the wire body.
+///
+/// A family names meaning, not a revision. Compatibility between two
+/// participants is the framework train version they were built from, compared
+/// for exact equality, so no key or descriptor carries a per-API version.
 ///
 /// The marker's job is the same in both modes: it keeps one tree's bodies from
 /// standing in for another's at compile time. `ParticipantSpec::ContractApi`
 /// pins a participant to exactly one of them.
 ///
-/// [`ID`]: ApiVersion::ID
-pub trait ApiVersion: 'static {
-    /// The tree's wire identifier: a dotted revision such as `"v0.1"` (Rust
-    /// module `v0_1`), or a protocol name such as `"supervisor"`.
+/// [`ID`]: ApiFamily::ID
+pub trait ApiFamily: 'static {
+    /// The tree's wire identifier: a semantic family such as `"robot"`, or a
+    /// protocol name such as `"supervisor"`.
     const ID: &'static str;
 }
 
@@ -99,17 +104,17 @@ impl EndpointKind {
 /// The API tree generator emits one descriptor per endpoint and implements the
 /// semantic marker appropriate to [`EndpointDescriptor::KIND`].
 pub trait EndpointDescriptor: 'static {
-    /// The API tree or protocol this endpoint belongs to.
-    type Api: ApiVersion;
+    /// The contract family or protocol this endpoint belongs to.
+    type Api: ApiFamily;
     /// The plain serde payload carried by this endpoint.
     type Payload: Payload;
-    /// Version-qualified endpoint identity.
+    /// Family-qualified endpoint identity.
     const NAME: &'static str;
-    /// Endpoint tree identity, such as `"v0.1"` or `"supervisor"`.
-    const VERSION: &'static str;
+    /// Endpoint tree identity, such as `"robot"` or `"supervisor"`.
+    const FAMILY: &'static str;
     /// Stable endpoint path within its tree.
     const CONTRACT: &'static str;
-    /// Version-qualified concrete wire key template.
+    /// Family-rooted concrete wire key template.
     const TOPIC: &'static str;
     /// Fixed semantic endpoint kind.
     const KIND: EndpointKind;
@@ -117,10 +122,8 @@ pub trait EndpointDescriptor: 'static {
 
 /// Descriptor for a typed request/reply endpoint.
 ///
-/// A semantic API endpoint owns both payload paths while remaining one
-/// zero-sized type in the generated API. Compatibility trees also generate
-/// this descriptor for query topics so typed request/reply handles have one
-/// stable shape during migration.
+/// A semantic endpoint owns both payload paths while remaining one zero-sized
+/// type in the generated tree.
 pub trait QueryEndpointDescriptor: EndpointDescriptor {
     /// Request payload decoded from the query.
     type Request: Payload;
@@ -212,7 +215,7 @@ mod tests {
 
     enum TestApi {}
 
-    impl ApiVersion for TestApi {
+    impl ApiFamily for TestApi {
         const ID: &'static str = "endpoint-test";
     }
 
@@ -224,7 +227,7 @@ mod tests {
         type Payload = SharedPayload;
 
         const NAME: &'static str = "endpoint-test::state";
-        const VERSION: &'static str = "endpoint-test";
+        const FAMILY: &'static str = "endpoint-test";
         const CONTRACT: &'static str = "state";
         const TOPIC: &'static str = "endpoint-test/state";
         const KIND: EndpointKind = EndpointKind::State;
@@ -238,7 +241,7 @@ mod tests {
         type Payload = SharedPayload;
 
         const NAME: &'static str = "endpoint-test::event";
-        const VERSION: &'static str = "endpoint-test";
+        const FAMILY: &'static str = "endpoint-test";
         const CONTRACT: &'static str = "event";
         const TOPIC: &'static str = "endpoint-test/event";
         const KIND: EndpointKind = EndpointKind::Event;

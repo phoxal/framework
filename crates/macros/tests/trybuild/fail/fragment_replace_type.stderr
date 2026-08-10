@@ -1,5 +1,0 @@
-error: payload types and implementations are ordinary sibling Rust items; only endpoints can be replaced
- --> tests/trybuild/fail/fragment_replace_type.rs:6:17
-  |
-6 |         replace struct Target;
-  |                 ^^^^^^

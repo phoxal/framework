@@ -1,15 +1,16 @@
-/// Fragment groups collect version-first source modules without filesystem
-/// scanning, and an overlay replaces only the endpoint it changes.
+/// Fragment groups collect source modules without filesystem scanning, and
+/// every relayed fragment lands in the tree of the family its path roots at.
 mod fragment_collection {
     use std::any::TypeId;
 
     use phoxal_bus::{EndpointDescriptor, EndpointKind};
 
-    // The source prefix deliberately has the same identifier as the child
-    // revision. Provenance must use the exact segment after this prefix.
-    pub mod v1_1 {
+    // The source prefix deliberately ends with the same identifier as the
+    // family root. Payload provenance must use the exact segments after this
+    // prefix, never the last segment of the prefix itself.
+    pub mod robot {
         pub mod source {
-            pub mod v1_0 {
+            pub mod robot {
                 pub mod component {
                     pub mod motor {
                         #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -27,153 +28,65 @@ mod fragment_collection {
                         }
 
                         crate::phoxal_api_fragment! {
-                            path component(instance) / motor(capability);
-                            version v1_0;
+                            path robot / component(instance) / motor(capability);
                             command command: Setpoint<Command>;
                             topic status: State<Status>;
                         }
                     }
                 }
-            }
 
-            pub mod v1_1 {
-                pub mod component {
-                    pub mod motor {
-                        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-                        pub enum Command {
-                            Position(f32),
-                            Velocity(f32),
-                            Stop,
-                        }
+                pub mod drive {
+                    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                    pub struct Target {
+                        pub speed: f32,
+                    }
 
-                        #[expect(dead_code, reason = "duplicate support-name facade regression")]
-                        pub struct Support(pub u16);
-
-                        crate::phoxal_api_fragment! {
-                            path component(instance) / motor(capability);
-                            version v1_1;
-                            replace command command: Setpoint<Command>;
-                        }
+                    crate::phoxal_api_fragment! {
+                        path robot / drive;
+                        command target: Setpoint<Target>;
                     }
                 }
             }
         }
     }
 
-    mod component {
-        pub(super) use super::v1_1::source::v1_0::component::motor as base;
-        pub(super) use super::v1_1::source::v1_1::component::motor as overlay;
+    mod relay {
+        pub(super) use super::robot::source::robot::component::motor;
+        pub(super) use super::robot::source::robot::drive;
 
         crate::phoxal_api_fragment_group! {
-            fragments { base; overlay; }
+            fragments { motor; drive; }
         }
     }
 
     crate::phoxal_api_tree! {
         output generated;
-        source crate::macro_fixtures::fragment_collection::v1_1::source;
-        versions {
-            version v1_0;
-            latest version v1_1 extends v1_0;
-        }
-        fragments { component; }
+        source crate::macro_fixtures::fragment_collection::robot::source;
+        fragments { relay; }
     }
 
     #[test]
-    fn group_and_overlay_materialize_distinct_payloads() {
-        type Old = generated::v1_0::component::motor::Command;
-        type New = generated::v1_1::component::motor::Command;
-        let _: Old = Old::Stop;
-        let _: New = New::Stop;
-        assert_ne!(TypeId::of::<Old>(), TypeId::of::<New>());
+    fn a_relayed_group_materializes_every_fragment_into_one_family() {
         assert_eq!(
-            <generated::v1_1::endpoint::component::motor::CommandEndpoint as EndpointDescriptor>::KIND,
+            <generated::robot::endpoint::component::motor::CommandEndpoint as EndpointDescriptor>::KIND,
             EndpointKind::Setpoint,
         );
         assert_eq!(
-            <generated::v1_1::endpoint::component::motor::CommandEndpoint as EndpointDescriptor>::TOPIC,
-            "v1.1/component/{instance}/motor/{capability}/command",
+            <generated::robot::endpoint::component::motor::CommandEndpoint as EndpointDescriptor>::TOPIC,
+            "robot/component/{instance}/motor/{capability}/command",
         );
         assert_eq!(
-            TypeId::of::<generated::v1_0::component::motor::Status>(),
-            TypeId::of::<<generated::v1_1::endpoint::component::motor::StatusEndpoint as EndpointDescriptor>::Payload>(),
+            <generated::robot::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
+            "robot/drive/target",
         );
         assert_eq!(
-            TypeId::of::<generated::v1_1::component::motor::Support>(),
-            TypeId::of::<v1_1::source::v1_1::component::motor::Support>(),
+            TypeId::of::<robot::source::robot::component::motor::Status>(),
+            TypeId::of::<<generated::robot::endpoint::component::motor::StatusEndpoint as EndpointDescriptor>::Payload>(),
         );
-    }
-}
-
-/// Endpoint add/remove/inherit is the complete revision delta algebra. An
-/// unchanged inherited endpoint keeps the parent revision's Rust payload type.
-mod endpoint_delta_algebra {
-    use std::any::TypeId;
-
-    pub mod source {
-        pub mod v1_0 {
-            pub mod data {
-                #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-                pub struct Shared {
-                    pub value: u8,
-                }
-                #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-                #[expect(dead_code, reason = "removed endpoint fixture payload")]
-                pub struct Retired {
-                    pub value: u8,
-                }
-
-                crate::phoxal_api_fragment! {
-                    path data;
-                    version v1_0;
-                    topic shared: State<Shared>;
-                    topic retired: State<Retired>;
-                }
-            }
-        }
-
-        pub mod v1_1 {
-            pub mod data {
-                #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-                #[expect(dead_code, reason = "added endpoint fixture payload")]
-                pub struct Added {
-                    pub value: u16,
-                }
-
-                crate::phoxal_api_fragment! {
-                    path data;
-                    version v1_1;
-                    remove endpoint retired;
-                    topic added: State<Added>;
-                }
-            }
-        }
-    }
-
-    crate::phoxal_api_tree! {
-        output generated;
-        source crate::macro_fixtures::endpoint_delta_algebra::source;
-        versions {
-            version v1_0;
-            latest version v1_1 extends v1_0;
-        }
-        fragments { source::v1_0::data; source::v1_1::data; }
-    }
-
-    #[test]
-    fn remove_add_and_inheritance_materialize_together() {
         assert_eq!(
-            TypeId::of::<generated::v1_0::data::Shared>(),
-            TypeId::of::<generated::v1_1::data::Shared>(),
+            TypeId::of::<generated::robot::component::motor::Support>(),
+            TypeId::of::<robot::source::robot::component::motor::Support>(),
         );
-        let endpoints = generated::API_CONTRACT_MANIFEST[1]
-            .contracts
-            .iter()
-            .map(|contract| contract.endpoint)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert!(endpoints.contains("v1.1::data::SharedEndpoint"));
-        assert!(endpoints.contains("v1.1::data::AddedEndpoint"));
-        assert!(!endpoints.contains("v1.1::data::RetiredEndpoint"));
     }
 }
 
@@ -183,14 +96,13 @@ mod fragment_order_independence {
         ($module:ident, $($fragment:path);+ $(;)?) => {
             mod $module {
                 pub mod source {
-                    pub mod v1_0 {
+                    pub mod robot {
                         pub mod alpha {
                             #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
                             #[expect(dead_code, reason = "order-only endpoint fixture payload")]
                             pub struct State { pub value: u8 }
                             crate::phoxal_api_fragment! {
-                                path alpha;
-                                version v1_0;
+                                path robot / alpha;
                                 topic state: State<State>;
                             }
                         }
@@ -199,8 +111,7 @@ mod fragment_order_independence {
                             #[expect(dead_code, reason = "order-only endpoint fixture payload")]
                             pub struct State { pub value: u16 }
                             crate::phoxal_api_fragment! {
-                                path beta;
-                                version v1_0;
+                                path robot / beta;
                                 topic state: State<State>;
                             }
                         }
@@ -209,15 +120,14 @@ mod fragment_order_independence {
                 crate::phoxal_api_tree! {
                     output generated;
                     source crate::macro_fixtures::fragment_order_independence::$module::source;
-                    versions { latest version v1_0; }
                     fragments { $($fragment;)+ }
                 }
             }
         };
     }
 
-    fixture!(forward, source::v1_0::alpha; source::v1_0::beta;);
-    fixture!(reverse, source::v1_0::beta; source::v1_0::alpha;);
+    fixture!(forward, source::robot::alpha; source::robot::beta;);
+    fixture!(reverse, source::robot::beta; source::robot::alpha;);
 
     #[test]
     fn listing_order_does_not_change_output_contract() {
@@ -237,12 +147,12 @@ mod fragment_order_independence {
 /// Ordinary sibling types can be shared by several endpoints and queries.
 mod semantic_surface {
     use phoxal_bus::{
-        ApiVersion, EndpointDescriptor, QueryEndpointDescriptor, SampleDeliveryContract,
+        ApiFamily, EndpointDescriptor, QueryEndpointDescriptor, SampleDeliveryContract,
         StateContract, StateDeliveryContract,
     };
 
     pub mod source {
-        pub mod v1_0 {
+        pub mod robot {
             pub mod data {
                 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
                 pub struct Supporting {
@@ -263,8 +173,7 @@ mod semantic_surface {
                 }
 
                 crate::phoxal_api_fragment! {
-                    path data;
-                    version v1_0;
+                    path robot / data;
                     topic mirror: State<SharedPayload>;
                     topic sample: Sample<SharedPayload>;
                     query lookup: QueryRequest => QueryResponse;
@@ -276,19 +185,18 @@ mod semantic_surface {
     crate::phoxal_api_tree! {
         output generated;
         source crate::macro_fixtures::semantic_surface::source;
-        versions { latest version v1_0; }
-        fragments { source::v1_0::data; }
+        fragments { source::robot::data; }
     }
 
     #[test]
-    fn semantic_descriptors_keep_payloads_and_latest_mapping() {
-        assert_eq!(<generated::v1_0::Api as ApiVersion>::ID, "v1.0");
-        type Mirror = generated::v1_0::endpoint::data::MirrorEndpoint;
-        type Sample = generated::v1_0::endpoint::data::SampleEndpoint;
-        type Lookup = generated::v1_0::endpoint::data::LookupEndpoint;
+    fn semantic_descriptors_keep_payloads_and_family_mapping() {
+        assert_eq!(<generated::robot::Api as ApiFamily>::ID, "robot");
+        type Mirror = generated::robot::endpoint::data::MirrorEndpoint;
+        type Sample = generated::robot::endpoint::data::SampleEndpoint;
+        type Lookup = generated::robot::endpoint::data::LookupEndpoint;
         fn state<E: StateContract + StateDeliveryContract>() {}
         fn sample<E: SampleDeliveryContract>() {}
-        fn shared<E: EndpointDescriptor<Payload = generated::v1_0::data::SharedPayload>>() {}
+        fn shared<E: EndpointDescriptor<Payload = generated::robot::data::SharedPayload>>() {}
         fn query<E: QueryEndpointDescriptor>() {}
         state::<Mirror>();
         sample::<Sample>();
@@ -338,7 +246,7 @@ mod semantic_forms {
     };
 
     pub mod source {
-        pub mod v1_0 {
+        pub mod robot {
             pub mod forms {
                 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
                 pub struct Payload {
@@ -354,8 +262,7 @@ mod semantic_forms {
                 }
 
                 crate::phoxal_api_fragment! {
-                    path forms;
-                    version v1_0;
+                    path robot / forms;
                     topic state: State<Payload>;
                     topic sample: Sample<Payload>;
                     topic event: Event<Payload>;
@@ -371,19 +278,18 @@ mod semantic_forms {
     crate::phoxal_api_tree! {
         output generated;
         source crate::macro_fixtures::semantic_forms::source;
-        versions { latest version v1_0; }
-        fragments { source::v1_0::forms; }
+        fragments { source::robot::forms; }
     }
 
     #[test]
     fn all_semantic_forms_have_expected_endpoint_kinds_and_markers() {
-        type State = generated::v1_0::endpoint::forms::StateEndpoint;
-        type Sample = generated::v1_0::endpoint::forms::SampleEndpoint;
-        type Event = generated::v1_0::endpoint::forms::EventEndpoint;
-        type Stream = generated::v1_0::endpoint::forms::StreamEndpoint;
-        type Setpoint = generated::v1_0::endpoint::forms::SetpointEndpoint;
-        type Chunks = generated::v1_0::endpoint::forms::ChunksEndpoint;
-        type Lookup = generated::v1_0::endpoint::forms::LookupEndpoint;
+        type State = generated::robot::endpoint::forms::StateEndpoint;
+        type Sample = generated::robot::endpoint::forms::SampleEndpoint;
+        type Event = generated::robot::endpoint::forms::EventEndpoint;
+        type Stream = generated::robot::endpoint::forms::StreamEndpoint;
+        type Setpoint = generated::robot::endpoint::forms::SetpointEndpoint;
+        type Chunks = generated::robot::endpoint::forms::ChunksEndpoint;
+        type Lookup = generated::robot::endpoint::forms::LookupEndpoint;
 
         fn state<E: StateContract + StateDeliveryContract>() {}
         fn sample<E: SampleDeliveryContract>() {}
@@ -412,10 +318,10 @@ mod semantic_forms {
 }
 
 /// A representative protocol tree. Protocol authoring remains separate from
-/// the version-first Robot API fragment system.
+/// the fragment system that assembles contract families.
 mod protocol_tree {
     use phoxal_bus::{
-        ApiVersion, AskQuery, EndpointDescriptor, Publish, QueryEndpointDescriptor, ServeQuery,
+        ApiFamily, AskQuery, EndpointDescriptor, Publish, QueryEndpointDescriptor, ServeQuery,
         Subscribe, Topic,
     };
     use phoxal_macros::phoxal_protocol;
@@ -469,8 +375,8 @@ mod protocol_tree {
     fn assert_serve<E: QueryEndpointDescriptor>(_topic: Topic<ServeQuery<E>>) {}
 
     #[test]
-    fn protocol_keys_carry_no_version_segment() {
-        assert_eq!(<fixture::Api as ApiVersion>::ID, "fixture");
+    fn protocol_keys_are_rooted_at_the_protocol_name() {
+        assert_eq!(<fixture::Api as ApiFamily>::ID, "fixture");
         assert_eq!(
             <fixture::endpoint::connect::HelloEndpoint as EndpointDescriptor>::TOPIC,
             "fixture/connect/hello"

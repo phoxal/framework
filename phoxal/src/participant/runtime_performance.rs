@@ -354,7 +354,7 @@ mod tests {
     fn row(index: usize) -> RuntimeMetricSnapshot {
         RuntimeMetricSnapshot {
             key: RuntimeMetricKey {
-                topic: format!("v0.1/test/{index:03}"),
+                topic: format!("robot/test/{index:03}"),
                 direction: RuntimeDirection::Publish,
                 buffer_kind: RuntimeBufferKind::Outbound,
             },
@@ -375,8 +375,8 @@ mod tests {
         let snapshots = (0..260).map(row).collect();
         let topics = TopicRows::from_snapshots(snapshots, Duration::from_secs(1));
         assert_eq!(topics.rows.len(), MAX_TOPIC_ROWS);
-        assert_eq!(topics.rows.first().unwrap().topic, "v0.1/test/000");
-        assert_eq!(topics.rows.last().unwrap().topic, "v0.1/test/255");
+        assert_eq!(topics.rows.first().unwrap().topic, "robot/test/000");
+        assert_eq!(topics.rows.last().unwrap().topic, "robot/test/255");
         let overflow = topics.overflow.expect("four rows should overflow");
         assert_eq!(overflow.overflowed_rows, 4);
         assert_eq!(overflow.count, 4);

@@ -1,25 +1,25 @@
 //! The api-local topic builders: that a built key equals the contract's
 //! documented key, on both sides and through dynamic segments.
 
-use crate::v0_1 as api;
+use crate::robot as api;
 
 #[test]
-fn current_control_topics_use_the_v0_1_keyspace() {
+fn current_control_topics_use_the_robot_family_keyspace() {
     assert_eq!(
-        crate::v0_1::topic::client().drive().target().key(),
-        "v0.1/drive/target"
+        crate::robot::topic::client().drive().target().key(),
+        "robot/drive/target"
     );
     assert_eq!(
-        crate::v0_1::topic::client().drive().state().key(),
-        "v0.1/drive/state"
+        crate::robot::topic::client().drive().state().key(),
+        "robot/drive/state"
     );
     assert_eq!(
-        crate::v0_1::topic::client().motion().manual().key(),
-        "v0.1/motion/manual"
+        crate::robot::topic::client().motion().manual().key(),
+        "robot/motion/manual"
     );
     assert_eq!(
-        crate::v0_1::topic::client().motion().state().key(),
-        "v0.1/motion/state"
+        crate::robot::topic::client().motion().state().key(),
+        "robot/motion/state"
     );
 }
 
@@ -27,54 +27,63 @@ fn current_control_topics_use_the_v0_1_keyspace() {
 fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         api::topic::client().drive().state().key(),
-        "v0.1/drive/state"
+        "robot/drive/state"
     );
     assert_eq!(
         api::topic::client().drive().target().key(),
-        "v0.1/drive/target"
+        "robot/drive/target"
     );
     assert_eq!(
         api::topic::client().navigation().state().key(),
-        "v0.1/navigation/state"
+        "robot/navigation/state"
     );
     assert_eq!(
         api::topic::client().navigation().result().key(),
-        "v0.1/navigation/result"
+        "robot/navigation/result"
     );
     assert_eq!(
         api::topic::client().safety().constraints().key(),
-        "v0.1/safety/constraints"
+        "robot/safety/constraints"
     );
     assert_eq!(
         api::topic::client().safety().state().key(),
-        "v0.1/safety/state"
+        "robot/safety/state"
     );
-    assert_eq!(api::topic::client().frame().tree().key(), "v0.1/frame/tree");
+    assert_eq!(
+        api::topic::client().frame().tree().key(),
+        "robot/frame/tree"
+    );
     assert_eq!(
         api::topic::client().frame().static_transforms().key(),
-        "v0.1/frame/static_transforms"
+        "robot/frame/static_transforms"
     );
     assert_eq!(
         api::topic::client().motion().manual().key(),
-        "v0.1/motion/manual"
+        "robot/motion/manual"
     );
     assert_eq!(
         api::topic::client().perception().detections().key(),
-        "v0.1/perception/detections"
+        "robot/perception/detections"
     );
-    assert_eq!(api::topic::client().video().open().key(), "v0.1/video/open");
+    assert_eq!(
+        api::topic::client().video().open().key(),
+        "robot/video/open"
+    );
     assert_eq!(
         api::topic::client().map().revision().key(),
-        "v0.1/map/revision"
+        "robot/map/revision"
     );
-    assert_eq!(api::topic::client().map().submap().key(), "v0.1/map/submap");
+    assert_eq!(
+        api::topic::client().map().submap().key(),
+        "robot/map/submap"
+    );
     assert_eq!(
         api::topic::client().odometry().state().key(),
-        "v0.1/odometry/state"
+        "robot/odometry/state"
     );
     assert_eq!(
         api::topic::client().localize().state().key(),
-        "v0.1/localize/state"
+        "robot/localize/state"
     );
 }
 
@@ -87,14 +96,14 @@ fn topic_builder_keys_match_contract_topics() {
 fn owner_builder_produces_identical_keys() {
     assert_eq!(
         api::topic::owner().drive().state().key(),
-        "v0.1/drive/state"
+        "robot/drive/state"
     );
     assert_eq!(
         api::topic::owner().drive().target().key(),
-        "v0.1/drive/target"
+        "robot/drive/target"
     );
-    assert_eq!(api::topic::owner().map().submap().key(), "v0.1/map/submap");
-    assert_eq!(api::topic::owner().video().open().key(), "v0.1/video/open");
+    assert_eq!(api::topic::owner().map().submap().key(), "robot/map/submap");
+    assert_eq!(api::topic::owner().video().open().key(), "robot/video/open");
     // Dynamic node path: the owner builder fills carried vars the same way.
     assert_eq!(
         api::topic::owner()
@@ -102,7 +111,7 @@ fn owner_builder_produces_identical_keys() {
             .expect("valid joint segment")
             .state()
             .key(),
-        "v0.1/joint/elbow/state"
+        "robot/joint/elbow/state"
     );
 }
 
@@ -114,7 +123,7 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
             .expect("valid joint segment")
             .state()
             .key(),
-        "v0.1/joint/elbow/state"
+        "robot/joint/elbow/state"
     );
     let topic = api::topic::client()
         .component("front_left_drive")
@@ -124,7 +133,7 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
         .command();
     assert_eq!(
         topic.key(),
-        "v0.1/component/front_left_drive/motor/motor/command"
+        "robot/component/front_left_drive/motor/motor/command"
     );
     let enc = api::topic::client()
         .component("front_left_drive")
@@ -134,7 +143,7 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
         .sample();
     assert_eq!(
         enc.key(),
-        "v0.1/component/front_left_drive/encoder/encoder/sample"
+        "robot/component/front_left_drive/encoder/encoder/sample"
     );
 }
 
@@ -148,7 +157,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .sample()
             .key(),
-        "v0.1/component/imu0/accelerometer/accel/sample"
+        "robot/component/imu0/accelerometer/accel/sample"
     );
     assert_eq!(
         api::topic::client()
@@ -158,7 +167,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .sample()
             .key(),
-        "v0.1/component/imu0/gyroscope/gyro/sample"
+        "robot/component/imu0/gyroscope/gyro/sample"
     );
     assert_eq!(
         api::topic::client()
@@ -168,7 +177,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .sample()
             .key(),
-        "v0.1/component/imu0/magnetometer/mag/sample"
+        "robot/component/imu0/magnetometer/mag/sample"
     );
     assert_eq!(
         api::topic::client()
@@ -178,7 +187,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .sample()
             .key(),
-        "v0.1/component/imu0/imu/imu/sample"
+        "robot/component/imu0/imu/imu/sample"
     );
     assert_eq!(
         api::topic::client()
@@ -188,7 +197,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .sample()
             .key(),
-        "v0.1/component/base/range/front_tof/sample"
+        "robot/component/base/range/front_tof/sample"
     );
     assert_eq!(
         api::topic::client()
@@ -198,7 +207,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .sample()
             .key(),
-        "v0.1/component/gps/gnss/gnss/sample"
+        "robot/component/gps/gnss/gnss/sample"
     );
     assert_eq!(
         api::topic::client()
@@ -208,7 +217,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .frame()
             .key(),
-        "v0.1/component/head/camera/front/frame"
+        "robot/component/head/camera/front/frame"
     );
     assert_eq!(
         api::topic::client()
@@ -218,7 +227,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .frame()
             .key(),
-        "v0.1/component/head/depth/front_depth/frame"
+        "robot/component/head/depth/front_depth/frame"
     );
     assert_eq!(
         api::topic::client()
@@ -228,7 +237,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .scan()
             .key(),
-        "v0.1/component/front_lidar/lidar/scan/scan"
+        "robot/component/front_lidar/lidar/scan/scan"
     );
     assert_eq!(
         api::topic::client()
@@ -238,7 +247,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .scan()
             .key(),
-        "v0.1/component/radar/mmwave/mmwave/scan"
+        "robot/component/radar/mmwave/mmwave/scan"
     );
     assert_eq!(
         api::topic::client()
@@ -248,7 +257,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .frame()
             .key(),
-        "v0.1/component/head/microphone/mic/frame"
+        "robot/component/head/microphone/mic/frame"
     );
     assert_eq!(
         api::topic::client()
@@ -258,7 +267,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .command()
             .key(),
-        "v0.1/component/status_panel/led/status/command"
+        "robot/component/status_panel/led/status/command"
     );
     assert_eq!(
         api::topic::client()
@@ -268,7 +277,7 @@ fn component_capability_topic_builders_fill_keys() {
             .expect("valid capability segment")
             .state()
             .key(),
-        "v0.1/component/safety_panel/emergency_stop/estop/state"
+        "robot/component/safety_panel/emergency_stop/estop/state"
     );
 }
 

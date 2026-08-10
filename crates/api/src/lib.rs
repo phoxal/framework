@@ -1,24 +1,24 @@
-//! Versioned robot-domain payloads and their semantic endpoints.
+//! The framework-owned wire-contract catalogue: robot-domain payloads and
+//! their semantic endpoints, grouped into families.
 //!
 //! Payload structs, enums, implementations, and tests are ordinary Rust items
-//! in version-first modules. A sibling [`phoxal_api_fragment!`] declares only
+//! in family-first modules. A sibling [`phoxal_api_fragment!`] declares only
 //! that module's endpoints. Payloads own serde shape, construction invariants,
 //! and domain behavior; they do not know their topic or delivery policy.
 //! [`phoxal_api_tree!`] materializes deterministic descriptors and typed topic
-//! builders, then re-exports the authored payloads through each revision.
+//! builders, then re-exports the authored payloads through each family.
 //!
-//! Normal robot participants use the train-selected [`latest`] facade
-//! (reexported as `phoxal::api`). This pre-v1 train currently has one maintained
-//! concrete revision, [`v0_1`]. Every materialized revision is complete and
-//! independent at runtime: inheritance exists only in macro authoring.
+//! A **family** is the first path segment of every fragment and the leading
+//! segment of every key it declares: it names a semantic contract namespace,
+//! not a revision. [`robot`] holds the contracts a robot participant authors
+//! against, and `phoxal::api` re-exports it. Compatibility is owned entirely by
+//! the framework train version each participant binary embeds, so no key,
+//! descriptor, or body carries a per-API version.
 //!
 //! Endpoint semantics are fixed by the declaration: `State`, `Sample`, `Event`,
 //! `Stream`, `Setpoint`, or bounded query. Source identity, robot/capture time,
 //! ordered positions, loss, gaps, and terminal evidence remain bus metadata and
 //! never become generated fields in a domain payload.
-//!
-//! This crate contains robot contracts only. Runtime/simulation infrastructure
-//! and supervisor process protocols have separate owners.
 
 mod api;
 pub use api::generated::*;

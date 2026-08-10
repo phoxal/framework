@@ -1,0 +1,5 @@
+error: fragments declare endpoints only; define payload types, implementations, and tests as ordinary sibling Rust items
+ --> tests/trybuild/fail/fragment_version_declaration.rs:5:5
+  |
+5 |     version v0_1;
+  |     ^^^^^^^

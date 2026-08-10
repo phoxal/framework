@@ -1,5 +1,5 @@
-error: Robot API endpoints require a named leaf; `self` is available only in protocol trees
- --> tests/trybuild/fail/fragment_topic_self.rs:6:11
+error: fragment endpoints require a named leaf; `self` is available only in protocol trees
+ --> tests/trybuild/fail/fragment_topic_self.rs:5:11
   |
-6 |     topic self: Stream<Event>;
+5 |     topic self: Stream<Event>;
   |           ^^^^

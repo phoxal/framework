@@ -1,13 +1,14 @@
 //! The wire ABI: the Zenoh encoding string, the codec id it names, and the body
 //! codec that id selects.
 //!
-//! A version-qualified Zenoh key carries wire identity
-//! (`<Endpoint as EndpointDescriptor>::TOPIC`, e.g. `v0.1/drive/target`), while the
-//! encoding string records the codec. A receiver therefore sees only samples
-//! for its subscribed contract key and validates their encoding.
+//! A family-rooted Zenoh key carries wire identity
+//! (`<Endpoint as EndpointDescriptor>::TOPIC`, e.g. `robot/drive/target`), while
+//! the encoding string records the codec. A receiver therefore sees only
+//! samples for its subscribed contract key and validates their encoding.
 //!
-//! The body is always the plain payload: the codec never adds a version
-//! envelope, because the version is already folded into the key.
+//! The body is always the plain payload: the codec never adds a compatibility
+//! envelope, because compatibility is the framework train version both peers
+//! were built from.
 //!
 //! This ABI has no identity of its own: the framework train version in every
 //! participant's embedded metadata record is the single compatibility identity,

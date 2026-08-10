@@ -580,10 +580,10 @@ pub fn expand_participant(
             const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
             const REQUIREMENT: Option<#phoxal::__private::ParticipantRequirement> = #requirement;
             const ID: &'static str = #id;
-            // The train-selected facade revision, spliced from the framework
-            // path rather than named by the author: a participant does not get
-            // to pick an API revision, and every handle it builds is bounded on
-            // this one.
+            // The participant-authoring facade family, spliced from the
+            // framework path rather than named by the author: a participant
+            // does not get to pick a contract family, and every handle it
+            // builds is bounded on this one.
             type ContractApi = #phoxal::api::Api;
             type Config = #config_ty;
             type State = #state_ty;
@@ -1011,14 +1011,13 @@ mod tests {
         }
     }
 
-    /// The API a participant's handles may come from is fixed by the role
-    /// attribute to the train-selected facade, never named by the author. Every
-    /// `SetupContext` builder is bounded on this associated type, so a
-    /// participant that reached for a second API revision - or another
-    /// unrelated semantic API tree - fails to compile rather than embedding an
-    /// `api` claim its handles contradict.
+    /// The contract family a participant's handles may come from is fixed by
+    /// the role attribute to the authoring facade, never named by the author.
+    /// Every `SetupContext` builder is bounded on this associated type, so a
+    /// participant that reached for another semantic contract tree fails to
+    /// compile.
     #[test]
-    fn every_role_fixes_its_contract_api_to_the_train_selected_facade() {
+    fn every_role_fixes_its_contract_api_to_the_authoring_facade() {
         for kind in [
             ParticipantKind::Service,
             ParticipantKind::Driver,
@@ -1030,7 +1029,7 @@ mod tests {
             );
             assert!(
                 expanded.contains("type ContractApi = :: phoxal :: api :: Api ;"),
-                "{} must fix ContractApi to the facade revision: {expanded}",
+                "{} must fix ContractApi to the facade family: {expanded}",
                 kind.attr_name()
             );
         }

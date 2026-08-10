@@ -1,16 +1,12 @@
-//! Modular authoring catalogue for the pre-v1 Robot API.
+//! Modular authoring catalogue for the framework-owned wire contracts.
 
-pub(crate) mod v0_1;
+pub(crate) mod robot;
 
 phoxal_macros::phoxal_api_tree! {
     output generated;
     source crate::api;
 
-    versions {
-        latest version v0_1;
-    }
-
     fragments {
-        v0_1;
+        robot;
     }
 }

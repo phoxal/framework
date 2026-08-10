@@ -99,7 +99,10 @@ fn retired_runtime_vocabulary_stays_absent() -> Result<()> {
 /// participant binary embeds, compared for exact equality. The per-boundary
 /// version enums that identity replaced - and the macro that declared them -
 /// must not return under their former exact identifiers, because a second
-/// identity is a second answer to a question that has one.
+/// identity is a second answer to a question that has one. Ordinary wire
+/// contracts are grouped by semantic family instead, so the generated revision
+/// catalogue and the marker trait that called a family a version are retired
+/// with them.
 #[test]
 fn retired_compatibility_identities_stay_absent() -> Result<()> {
     let root = workspace_root()?;
@@ -110,6 +113,8 @@ fn retired_compatibility_identities_stay_absent() -> Result<()> {
         ["Launch", "Abi"].concat(),
         ["Runtime", "Schema"].concat(),
         ["version_", "identity"].concat(),
+        ["Api", "Version"].concat(),
+        ["Unsupported", "RobotApi"].concat(),
     ];
 
     let mut violations = Vec::new();

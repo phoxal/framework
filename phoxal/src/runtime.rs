@@ -7,7 +7,7 @@
 /// The external simulation hand-off endpoints.
 pub mod simulation {
     use phoxal_bus::{
-        ApiVersion, EndpointDescriptor, EndpointKind, EventContract, Publish,
+        ApiFamily, EndpointDescriptor, EndpointKind, EventContract, Publish,
         StreamDeliveryContract, Subscribe, Topic, WorldClockContract,
     };
     use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ pub mod simulation {
     #[doc(hidden)]
     pub enum Api {}
 
-    impl ApiVersion for Api {
+    impl ApiFamily for Api {
         const ID: &'static str = "runtime";
     }
 
@@ -42,7 +42,7 @@ pub mod simulation {
         type Payload = Clock;
 
         const NAME: &'static str = "runtime::simulation::Clock";
-        const VERSION: &'static str = "runtime";
+        const FAMILY: &'static str = "runtime";
         const CONTRACT: &'static str = "simulation::Clock";
         const TOPIC: &'static str = "runtime/simulation/clock";
         const KIND: EndpointKind = EndpointKind::Event;
@@ -70,7 +70,7 @@ pub mod simulation {
 
         #[test]
         fn clock_hand_is_runtime_owned_and_ordered() {
-            assert_eq!(ClockEndpoint::VERSION, "runtime");
+            assert_eq!(ClockEndpoint::FAMILY, "runtime");
             assert_eq!(ClockEndpoint::TOPIC, "runtime/simulation/clock");
             assert_eq!(ClockEndpoint::KIND, EndpointKind::Event);
             assert_eq!(owner_topic().key(), client_topic().key());

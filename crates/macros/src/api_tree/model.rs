@@ -1,4 +1,4 @@
-//! The generated tree model shared by materialized Robot API revisions and
+//! The generated tree model shared by materialized contract families and
 //! process protocols.
 //!
 //! Nothing here emits a module or a builder - the model is what the grammar
@@ -10,24 +10,11 @@ use syn::Ident;
 
 /// One `protocol <name> { … }` tree.
 ///
-/// A protocol has no revision history and no version segment. Its `name` is
-/// both the generated module and the tree's identity, and it is the leading
-/// wire-key segment - exactly the slot the dotted revision occupies in API
-/// mode.
+/// Its `name` is both the generated module and the tree's identity, and it is
+/// the leading wire-key segment - exactly the slot a contract family occupies
+/// in fragment mode.
 pub(super) struct Protocol {
     pub(super) name: Ident,
-    pub(super) nodes: Vec<Node>,
-}
-
-/// One already-materialized Robot API revision. Fragment inheritance is
-/// resolved into endpoint maps before this representation is built.
-pub(super) struct ConcreteVersion {
-    pub(super) name: Ident,
-    /// The dotted wire spelling of `name` (`v0_1` -> `"v0.1"`), which is both
-    /// this revision's identity and its leading wire-key segment.
-    pub(super) wire_id: String,
-    pub(super) major: u16,
-    pub(super) minor: u16,
     pub(super) nodes: Vec<Node>,
 }
 
@@ -46,7 +33,6 @@ pub(super) struct Node {
 
 #[derive(Clone)]
 pub(super) struct TopicDef {
-    pub(super) replace: bool,
     pub(super) leaf: TopicLeaf,
     pub(super) kind: TopicKind,
     /// The endpoint semantic determines temporal capability and transport
@@ -66,8 +52,8 @@ pub(super) enum TopicLeaf {
 }
 
 impl TopicLeaf {
-    /// The builder method (and delta-matching) name for this leaf. A `self`
-    /// leaf has no segment of its own, so it is addressed as `topic`.
+    /// The builder method name for this leaf. A `self` leaf has no segment of
+    /// its own, so it is addressed as `topic`.
     pub(super) fn method_ident(&self) -> Ident {
         match self {
             TopicLeaf::Named(ident) => ident.clone(),
@@ -185,9 +171,9 @@ pub(super) enum TopicKind {
     },
 }
 
-/// A resolved payload path. Robot API fragments start with a local sibling
-/// type name and the tree materializer qualifies it; protocols accept complete
-/// Rust paths directly.
+/// A resolved payload path. Fragments start with a local sibling type name and
+/// the tree materializer qualifies it; protocols accept complete Rust paths
+/// directly.
 #[derive(Clone)]
 pub(super) struct BodyPath {
     pub(super) path: syn::Path,
@@ -202,17 +188,17 @@ impl BodyPath {
 
 /// One fully resolved tree ready to emit, from either mode.
 ///
-/// `id` is the tree's identity AND its leading wire-key segment: the dotted
-/// revision (`"v0.1"`) for an API revision, the protocol name (`"supervisor"`)
-/// for a protocol. Everything below this point is mode-agnostic - the two modes
+/// `id` is the tree's identity AND its leading wire-key segment: the semantic
+/// family (`"robot"`) in fragment mode, the protocol name (`"supervisor"`) for
+/// a protocol. Everything below this point is mode-agnostic - the two modes
 /// differ only in how a tree is parsed, validated, and identified, never in how
 /// its modules, bodies, or builders are shaped.
 pub(super) struct MaterializedTree {
     pub(super) module: Ident,
     pub(super) id: String,
     pub(super) doc: String,
-    /// Authored module prefix for Robot API payloads. Protocol payload paths
-    /// are already explicit and have no revision provenance to resolve.
+    /// Authored module prefix for fragment payloads. Protocol payload paths are
+    /// already explicit and have no provenance to resolve.
     pub(super) source: Option<syn::Path>,
     pub(super) nodes: Vec<Node>,
 }

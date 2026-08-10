@@ -27,11 +27,11 @@ impl MaterializedTree {
         quote! {
             #[doc = #module_doc]
             pub mod #mod_name {
-                /// Zero-variant marker identifying this tree: an API revision
-                /// in `version` mode or a protocol in `protocol` mode.
+                /// Zero-variant marker identifying this tree: a contract
+                /// family in fragment mode or a protocol in `protocol` mode.
                 #[derive(Clone, Copy, Debug)]
                 pub enum Api {}
-                impl ::phoxal_bus::ApiVersion for Api {
+                impl ::phoxal_bus::ApiFamily for Api {
                     const ID: &'static str = #id;
                 }
 
@@ -67,7 +67,7 @@ impl MaterializedTree {
 }
 
 impl Node {
-    /// Emit one version-local payload facade.
+    /// Emit one family-local payload facade.
     fn expand_module(&self, tree_module: &syn::Ident, source: Option<&syn::Path>) -> TokenStream {
         let name = &self.name;
         let mut external_aliases = TokenStream::new();
@@ -94,7 +94,7 @@ impl Node {
 
         let authoritative_parent = external_parents
             .values()
-            .find(|path| is_current_revision_path(path, tree_module, source))
+            .find(|path| is_current_family_path(path, tree_module, source))
             .or_else(|| external_parents.values().next());
         let authoritative_key = authoritative_parent.map(ToTokens::to_token_stream);
         for body_path in semantic_aliases.values() {
@@ -122,7 +122,7 @@ impl Node {
             .collect::<TokenStream>();
         quote! {
             pub mod #name {
-                /// Version-local payload facade for this endpoint node.
+                /// Family-local payload facade for this endpoint node.
 
                 #external_parent_import
                 #external_aliases
@@ -163,7 +163,7 @@ impl Node {
                             type Api = self::__PhoxalApiMarker;
                             type Payload = #payload;
                             const NAME: &'static str = #endpoint_name;
-                            const VERSION: &'static str = #tree_id;
+                            const FAMILY: &'static str = #tree_id;
                             const CONTRACT: &'static str = #endpoint_contract;
                             const TOPIC: &'static str = #key;
                             const KIND: ::phoxal_bus::EndpointKind = #endpoint_kind;
@@ -182,7 +182,7 @@ impl Node {
                             type Api = self::__PhoxalApiMarker;
                             type Payload = #request;
                             const NAME: &'static str = #endpoint_name;
-                            const VERSION: &'static str = #tree_id;
+                            const FAMILY: &'static str = #tree_id;
                             const CONTRACT: &'static str = #endpoint_contract;
                             const TOPIC: &'static str = #key;
                             const KIND: ::phoxal_bus::EndpointKind = #endpoint_kind;
@@ -243,16 +243,16 @@ fn register_semantic_alias(
         return;
     };
     let name = last.ident.to_string();
-    let prefer = is_current_revision_path(path, tree_module, source);
+    let prefer = is_current_family_path(path, tree_module, source);
     if aliases
         .get(&name)
-        .is_none_or(|existing| prefer && !is_current_revision_path(existing, tree_module, source))
+        .is_none_or(|existing| prefer && !is_current_family_path(existing, tree_module, source))
     {
         aliases.insert(name, path.clone());
     }
 }
 
-fn is_current_revision_path(
+fn is_current_family_path(
     path: &syn::Path,
     tree_module: &syn::Ident,
     source: Option<&syn::Path>,

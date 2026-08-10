@@ -1,10 +1,10 @@
-//! Bus-ABI golden bindings against the train-selected API tree.
+//! Bus-ABI golden bindings against the generated contract trees.
 //!
 //! The pure bus mechanics (encoding-string parsing, codec fast-rejects,
 //! codec round-trips, and key-root validation) are unit tested in the
 //! `phoxal-bus` crate. These integration tests pin the generated endpoint
-//! descriptors for the train-selected API and prove that their versioned
-//! topics and metadata wire format reach the participant facade unchanged.
+//! descriptors and prove that their family-rooted topics and metadata wire
+//! format reach the participant facade unchanged.
 
 use phoxal::api;
 use phoxal::bus::{
@@ -18,13 +18,13 @@ fn encoding_string_carries_only_the_codec() {
     assert_eq!(CodecId::MessagePack.encoding_string(), "phoxal/v0;codec=1");
 }
 
-/// The revision is folded into the wire key, so concrete Robot API revisions
-/// cannot collide on transport keys.
+/// Every tree roots its keys at its own semantic namespace, so contracts from
+/// different families cannot collide on transport keys.
 #[test]
-fn endpoint_topic_is_version_qualified_on_the_real_tree() {
+fn endpoint_topic_is_family_rooted_on_the_real_tree() {
     assert_eq!(
         <api::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
-        "v0.1/drive/target"
+        "robot/drive/target"
     );
     assert_eq!(
         <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::TOPIC,

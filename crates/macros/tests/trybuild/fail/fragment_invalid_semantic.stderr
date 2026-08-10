@@ -1,5 +1,5 @@
 error: expected semantic descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`
- --> tests/trybuild/fail/fragment_invalid_semantic.rs:6:25
+ --> tests/trybuild/fail/fragment_invalid_semantic.rs:5:25
   |
-6 |         command target: State<Target>;
+5 |         command target: State<Target>;
   |                         ^^^^^

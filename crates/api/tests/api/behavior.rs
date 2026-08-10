@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::v0_1 as api;
+use crate::robot as api;
 
 #[test]
 fn stopped_target_commands_no_motion() {
