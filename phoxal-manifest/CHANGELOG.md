@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.2](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.56.1...phoxal-manifest-v0.56.2) - 2026-08-10
+
+### Added
+
+- *(supervisor)* add execution control contract
+
 ## [0.56.1](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.56.0...phoxal-manifest-v0.56.1) - 2026-08-10
 
 ### Other
