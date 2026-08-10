@@ -28,7 +28,7 @@ fn sources(project_root: &Path) -> SourceSet {
             let root = if component_type == "wheel_drive" {
                 workspace.join("examples/hello-rover/components/wheel_drive")
             } else {
-                workspace.join("fixture/component").join(component_type)
+                workspace.join("fixture/components").join(component_type)
             };
             (component_type.to_string(), root)
         })
@@ -129,7 +129,7 @@ fn router_configuration_is_preserved_as_a_compiled_asset_fact() {
 fn missing_canonical_mesh_is_rejected_at_compile_time() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
-    let component_source = workspace.join("fixture/component/drive_motor");
+    let component_source = workspace.join("fixture/components/drive_motor");
     let component_root = tempfile::tempdir().unwrap();
     for file in ["component.yaml", "simulation.yaml", "structure.urdf"] {
         std::fs::copy(
@@ -156,7 +156,7 @@ fn missing_canonical_mesh_is_rejected_at_compile_time() {
 fn relative_material_texture_is_normalized_into_the_local_component_namespace() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
-    let component_source = workspace.join("fixture/component/drive_motor");
+    let component_source = workspace.join("fixture/components/drive_motor");
     let component_root = tempfile::tempdir().unwrap();
     for file in ["component.yaml", "simulation.yaml"] {
         std::fs::copy(

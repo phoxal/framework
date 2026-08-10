@@ -138,7 +138,7 @@
 //! - [`geometry`] and [`SampleSchedule`] - the small shared arithmetic every
 //!   official participant would otherwise reimplement.
 //! - The **official service set** ships alongside this crate in the workspace
-//!   `service/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
+//!   `services/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
 //!   participants authored on exactly this surface, useful as reference reading.
 
 // Generated macro output refers to the framework as `::phoxal::…`; make that path

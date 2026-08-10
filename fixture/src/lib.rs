@@ -78,7 +78,7 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
             .map(|component_type| {
                 (
                     component_type.to_string(),
-                    fixture.join("component").join(component_type),
+                    fixture.join("components").join(component_type),
                 )
             })
             .collect(),
