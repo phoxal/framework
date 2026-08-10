@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.1](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.56.0...phoxal-manifest-v0.56.1) - 2026-08-10
+
+### Other
+
+- enforce final framework hygiene ([#423](https://github.com/phoxal/framework/pull/423))
+
 ## [0.56.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.55.0...phoxal-manifest-v0.56.0) - 2026-08-09
 
 ### Added
