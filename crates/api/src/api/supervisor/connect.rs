@@ -22,7 +22,16 @@ pub const PRESENCE_KEY: &str = "supervisor/presence";
 /// `V0` is frozen for every future framework line. It carries no fields and
 /// never will: any argument would be a second thing the two peers must already
 /// agree on before they are allowed to disagree.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(tag = "schema")]
 pub enum ConnectRequest {
     #[serde(rename = "phoxal/supervisor-connect/v0")]
@@ -38,7 +47,16 @@ pub enum ConnectRequest {
 /// line can decode it and name the mismatch. Everything else a client wants is
 /// behind an ordinary endpoint that the client may only call once the trains
 /// agree.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(tag = "schema")]
 pub enum ConnectReply {
     #[serde(rename = "phoxal/supervisor-connect/v0")]
@@ -113,6 +131,50 @@ mod tests {
                 framework: FrameworkVersion::new(9, 9, 9),
             }
         );
+    }
+
+    /// The frozen documents are pinned as a wire shape too, not only as
+    /// literal JSON: the canonical rendering is what compatibility CI compares
+    /// against a published baseline, so a change to it has to be deliberate.
+    /// The reply also proves the derive composes with a hand-written
+    /// declaration from another crate - the framework version is one string,
+    /// never the three-field struct it is made of.
+    #[test]
+    fn the_bootstrap_documents_are_pinned_to_their_declared_wire_shape() {
+        use phoxal_runtime_contract::wire_schema::DescribeWire;
+
+        assert_eq!(
+            ConnectRequest::wire_schema().canonical_json(),
+            concat!(
+                r#"{"kind":"enum","representation":{"style":"internal","tag":"schema"},"#,
+                r#""variants":[{"body":{"fields":[],"kind":"struct"},"#,
+                r#""name":"phoxal/supervisor-connect/v0"}]}"#,
+            )
+        );
+        assert_eq!(
+            ConnectReply::wire_schema().canonical_json(),
+            concat!(
+                r#"{"kind":"enum","representation":{"style":"internal","tag":"schema"},"#,
+                r#""variants":[{"body":{"fields":[{"name":"framework","presence":"required",""#,
+                r#"schema":{"kind":"opaque","name":"FrameworkVersion","wire":{"kind":"string"}}}],"#,
+                r#""kind":"struct"},"name":"phoxal/supervisor-connect/v0"}]}"#,
+            )
+        );
+
+        for document in [
+            serde_json::to_value(ConnectRequest::V0 {}).expect("the request serializes"),
+            serde_json::to_value(ConnectReply::V0 {
+                framework: FrameworkVersion::CURRENT,
+            })
+            .expect("the reply serializes"),
+        ] {
+            let schema = if document.get("framework").is_some() {
+                ConnectReply::wire_schema()
+            } else {
+                ConnectRequest::wire_schema()
+            };
+            assert_eq!(schema.conforms(&document), Ok(()), "{document}");
+        }
     }
 
     /// The bus codec is MessagePack, so the freeze has to hold there too.

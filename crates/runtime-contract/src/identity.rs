@@ -28,6 +28,8 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::wire_schema::{DescribeWire, WireSchema};
+
 /// The grammar shared by the topology identities that appear in a persisted
 /// runtime document.
 ///
@@ -139,6 +141,14 @@ macro_rules! topology_identifier {
                 Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
             }
         }
+
+        impl DescribeWire for $name {
+            // Invariant: this states what the `Serialize` above writes - the
+            // bare canonical token as one string, with no wrapper.
+            fn wire_schema() -> WireSchema {
+                WireSchema::opaque(stringify!($name), WireSchema::String)
+            }
+        }
     };
 }
 
@@ -238,6 +248,14 @@ impl<'de> Deserialize<'de> for ParticipantId {
     }
 }
 
+impl DescribeWire for ParticipantId {
+    // Invariant: this states what the `Serialize` above writes - the bare
+    // canonical token as one string.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("ParticipantId", WireSchema::String)
+    }
+}
+
 /// Why a [`ParticipantId`] is not a valid instance token.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("participant id must be a non-empty lowercase token, got '{0}'")]
@@ -312,6 +330,14 @@ impl Serialize for ParticipantArtifactId {
 impl<'de> Deserialize<'de> for ParticipantArtifactId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl DescribeWire for ParticipantArtifactId {
+    // Invariant: this states what the `Serialize` above writes - the bare
+    // canonical token as one string.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("ParticipantArtifactId", WireSchema::String)
     }
 }
 
@@ -452,6 +478,14 @@ impl<'de> Deserialize<'de> for ExecutionId {
     }
 }
 
+impl DescribeWire for ExecutionId {
+    // Invariant: this states what the `Serialize` above writes - the rendered
+    // hexadecimal session identity as one string, never the `u128` behind it.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("ExecutionId", WireSchema::String)
+    }
+}
+
 /// One bus-session incarnation.
 ///
 /// The unique bus owner mints this identity and pins it into the Zenoh client
@@ -537,6 +571,15 @@ impl<'de> Deserialize<'de> for ProducerId {
     }
 }
 
+impl DescribeWire for ProducerId {
+    // Invariant: this states what the `Serialize` above writes - a byte string
+    // of the little-endian session value, which is a different wire shape from
+    // the hexadecimal text `Display` renders.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("ProducerId", WireSchema::Bytes)
+    }
+}
+
 /// One world history.
 ///
 /// An opaque epoch. Timelines compare only for equality: a replacement
@@ -586,6 +629,14 @@ impl fmt::Display for TimelineId {
 impl fmt::Debug for TimelineId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "TimelineId({self})")
+    }
+}
+
+impl DescribeWire for TimelineId {
+    // Invariant: this states what `#[serde(transparent)]` writes above - the
+    // bare 64-bit epoch, never the `t`-prefixed text `Display` renders.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("TimelineId", WireSchema::U64)
     }
 }
 
@@ -758,6 +809,49 @@ mod tests {
         let decoded: ProducerId = rmp_serde::from_slice(&encoded).unwrap();
         assert_eq!(decoded, producer);
         assert_ne!(producer, ProducerId::try_from((1_u128 << 124) | 1).unwrap());
+    }
+
+    /// Every identity here has a hand-written serializer, so each declared
+    /// wire shape is checked against a real serialized value rather than
+    /// asserted. Three of these are text, one is a byte string, and one is a
+    /// bare integer: nothing about the Rust type predicts which.
+    #[test]
+    fn each_declared_identity_shape_is_the_shape_its_serializer_writes() {
+        fn declared<T: Serialize + DescribeWire>(value: &T) -> WireSchema {
+            let json = serde_json::to_value(value).expect("the identity serializes");
+            let schema = T::wire_schema();
+            assert_eq!(schema.conforms(&json), Ok(()), "{json}");
+            schema
+        }
+
+        assert_eq!(
+            declared(&RobotId::new("rover").expect("canonical robot id")),
+            WireSchema::opaque("RobotId", WireSchema::String)
+        );
+        assert_eq!(
+            declared(&ComponentInstanceId::new("base").expect("canonical component")),
+            WireSchema::opaque("ComponentInstanceId", WireSchema::String)
+        );
+        assert_eq!(
+            declared(&ParticipantId::new("drive").expect("canonical participant")),
+            WireSchema::opaque("ParticipantId", WireSchema::String)
+        );
+        assert_eq!(
+            declared(&ParticipantArtifactId::new("drive").expect("canonical artifact")),
+            WireSchema::opaque("ParticipantArtifactId", WireSchema::String)
+        );
+        assert_eq!(
+            declared(&ExecutionId::mint()),
+            WireSchema::opaque("ExecutionId", WireSchema::String)
+        );
+        assert_eq!(
+            declared(&ProducerId::try_from(1_u128 << 124).expect("canonical producer")),
+            WireSchema::opaque("ProducerId", WireSchema::Bytes)
+        );
+        assert_eq!(
+            declared(&TimelineId::mint()),
+            WireSchema::opaque("TimelineId", WireSchema::U64)
+        );
     }
 
     #[test]

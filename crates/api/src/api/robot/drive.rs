@@ -1,4 +1,6 @@
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     TargetStale,
@@ -9,7 +11,9 @@ pub enum StopReason {
 }
 
 /// A finite requested or limited planar velocity.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     #[serde(deserialize_with = "crate::api::robot::drive::deserialize_finite_target_scalar")]
@@ -70,7 +74,9 @@ impl std::fmt::Display for InvalidTarget {
 impl std::error::Error for InvalidTarget {}
 
 /// The drive participant's exclusive control state.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum State {
     Active {
         target: Target,
@@ -102,4 +108,53 @@ phoxal_macros::phoxal_api_fragment! {
 
     command target: Setpoint<Target>;
     topic state: State<State>;
+}
+
+#[cfg(test)]
+mod tests {
+    use phoxal_runtime_contract::wire_schema::{DescribeWire, WireSchema};
+
+    use super::{State, StopReason, Target};
+
+    /// The control target's scalars stay plain `f32`s on the wire: the
+    /// finiteness hook beside them narrows what decodes and never changes what
+    /// is written, so it must not appear in the declared shape.
+    #[test]
+    fn a_decode_side_finiteness_hook_is_not_part_of_the_declared_shape() {
+        assert_eq!(
+            Target::wire_schema().canonical_json(),
+            concat!(
+                r#"{"fields":[{"name":"angular_z_radps","presence":"required","schema":{"kind":"f32"}},"#,
+                r#"{"name":"linear_x_mps","presence":"required","schema":{"kind":"f32"}}],"kind":"struct"}"#,
+            )
+        );
+        let json = serde_json::to_value(Target::stopped()).expect("a target serializes");
+        assert_eq!(Target::wire_schema().conforms(&json), Ok(()));
+    }
+
+    /// The externally tagged control state and the `snake_case` stop reasons
+    /// are read from the declaration, so a rename rule cannot mean one thing
+    /// here and another on the wire.
+    #[test]
+    fn the_declared_state_shape_is_the_shape_serde_writes() {
+        let state = State::Stopped {
+            target: Target::stopped(),
+            reason: StopReason::EmergencyStop,
+        };
+        let json = serde_json::to_value(&state).expect("a drive state serializes");
+        assert_eq!(State::wire_schema().conforms(&json), Ok(()));
+        assert!(json.get("Stopped").is_some(), "{json}");
+        assert_eq!(json["Stopped"]["reason"], "emergency_stop");
+
+        let reasons = StopReason::wire_schema();
+        let WireSchema::Enum { variants, .. } = &reasons else {
+            panic!("a stop reason is a sum type: {reasons:?}");
+        };
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.name == "emergency_stop"),
+            "{variants:?}"
+        );
+    }
 }

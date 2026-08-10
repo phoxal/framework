@@ -1,0 +1,10 @@
+error: #[derive(DescribeWire)] does not support `#[serde(flatten)]`: the flattened fields are decided by another type's declaration, so this one does not state its own wire shape; hand-implement `phoxal_runtime_contract::wire_schema::DescribeWire` beside this type's custom serializer and declare the wire form it writes
+  --> tests/trybuild/fail/wire_schema_flatten.rs:10:1
+   |
+10 | / #[allow(dead_code)]
+11 | | #[derive(phoxal_macros::DescribeWire)]
+12 | | struct Outer {
+13 | |     #[serde(flatten)]
+14 | |     inner: Inner,
+15 | | }
+   | |_^

@@ -19,6 +19,7 @@
 //! [`Observed`](crate::handle::subscriber::Observed), never on the wire.
 
 use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
+use phoxal_runtime_contract::wire_schema::{DescribeWire, WireSchema};
 use serde::{Deserialize, Serialize};
 
 use crate::abi::CodecId;
@@ -61,6 +62,15 @@ impl std::fmt::Display for SourceLabel {
 impl<'de> Deserialize<'de> for SourceLabel {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl DescribeWire for SourceLabel {
+    // Invariant: this states what `#[serde(transparent)]` writes above - the
+    // bounded diagnostic text as one string, with no wrapper. The bound itself
+    // is a decode rule, not a shape.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("SourceLabel", WireSchema::String)
     }
 }
 
@@ -223,6 +233,15 @@ mod tests {
     use phoxal_runtime_contract::identity::TimelineId;
 
     use crate::test_support::producer;
+
+    /// The label's serializer is hand-written, so the declared shape is checked
+    /// against a real serialized value rather than asserted.
+    #[test]
+    fn the_declared_label_shape_is_the_shape_its_serializer_writes() {
+        let label = SourceLabel::new("external-bridge").expect("a bounded label");
+        let json = serde_json::to_value(&label).expect("a label serializes");
+        assert_eq!(SourceLabel::wire_schema().conforms(&json), Ok(()));
+    }
 
     fn metadata(produced_at: Option<TimeWindow>) -> BusMetadata {
         BusMetadata {

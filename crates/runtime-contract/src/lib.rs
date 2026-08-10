@@ -17,6 +17,9 @@
 //! - [`emit`] - the one sanctioned writer of that record, in both of its
 //!   evaluation modes.
 //! - [`origin`] - the boot-anchored origin of one real execution.
+//! - [`wire_schema`] - the deterministic model of the shapes those contracts
+//!   put on the wire, which compatibility CI checks against published
+//!   baselines.
 
 pub mod clock;
 pub mod emit;
@@ -24,3 +27,4 @@ pub mod identity;
 pub mod metadata;
 pub mod origin;
 pub mod version;
+pub mod wire_schema;

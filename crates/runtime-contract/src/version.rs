@@ -19,6 +19,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::wire_schema::{DescribeWire, WireSchema};
+
 /// The framework train one binary was built from, and therefore the whole of
 /// what it claims about compatibility.
 ///
@@ -205,6 +207,15 @@ impl<'de> Deserialize<'de> for FrameworkVersion {
     }
 }
 
+impl DescribeWire for FrameworkVersion {
+    // Invariant: this states what the `Serialize` above writes - one string
+    // holding the canonical SemVer spelling, never the three-field struct the
+    // type is made of.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("FrameworkVersion", WireSchema::String)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +269,20 @@ mod tests {
         }
         assert!("0.57.2-rc.1".parse::<FrameworkVersion>().is_err());
         assert!("65536.0.0".parse::<FrameworkVersion>().is_err());
+    }
+
+    /// The declared wire shape and what the serializer writes are checked
+    /// against each other rather than asserted, so the hand-written
+    /// declaration cannot drift from the impl beside it.
+    #[test]
+    fn the_declared_wire_shape_is_the_shape_the_serializer_writes() {
+        let value = serde_json::to_value(FrameworkVersion::new(0, 57, 2))
+            .expect("a framework version serializes");
+        assert_eq!(FrameworkVersion::wire_schema().conforms(&value), Ok(()));
+        assert_eq!(
+            FrameworkVersion::wire_schema().canonical_json(),
+            r#"{"kind":"opaque","name":"FrameworkVersion","wire":{"kind":"string"}}"#
+        );
     }
 
     /// The const-evaluated constant and the crate version are the same fact,
