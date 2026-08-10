@@ -115,6 +115,7 @@ fn retired_compatibility_identities_stay_absent() -> Result<()> {
         ["version_", "identity"].concat(),
         ["Api", "Version"].concat(),
         ["Unsupported", "RobotApi"].concat(),
+        ["RobotApi", "Version"].concat(),
     ];
 
     let mut violations = Vec::new();

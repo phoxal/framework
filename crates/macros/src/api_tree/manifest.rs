@@ -1,11 +1,11 @@
-//! Generated endpoint catalogue for materialized family and protocol trees.
+//! Generated endpoint catalogue for materialized contract families.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::model::{MaterializedTree, Node, TopicKind};
 
-/// One tree (a contract family or a protocol) in the emitted manifest.
+/// One contract family in the emitted manifest.
 pub(super) struct ManifestFamily {
     name: String,
     contracts: Vec<ManifestContract>,
@@ -69,7 +69,7 @@ impl ManifestFamily {
         });
 
         quote! {
-            /// One generated family/protocol tree in the endpoint catalogue.
+            /// One generated contract family in the endpoint catalogue.
             #[doc(hidden)]
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub struct ApiContractManifestFamily {

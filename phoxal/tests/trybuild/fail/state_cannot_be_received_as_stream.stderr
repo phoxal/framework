@@ -1,17 +1,18 @@
-error[E0277]: the trait bound `phoxal::api::drive::StateEndpoint: StreamContract` is not satisfied
+error[E0277]: the trait bound `phoxal::api::endpoint::drive::StateEndpoint: StreamContract` is not satisfied
   --> tests/trybuild/fail/state_cannot_be_received_as_stream.rs:13:42
    |
 13 |         let _state = ctx.stream_receiver(api::topic::client().drive().state());
-   |                          --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamContract` is not implemented for `phoxal::api::drive::StateEndpoint`
+   |                          --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamContract` is not implemented for `phoxal::api::endpoint::drive::StateEndpoint`
    |                          |
    |                          required by a bound introduced by this call
    |
    = help: the following other types implement trait `StreamContract`:
              StreamEndpoint
-             phoxal_supervisor_api::supervisor::log::FollowEndpoint
-             phoxal_supervisor_api::supervisor::logs::TopicEndpoint
-             phoxal_supervisor_api::supervisor::telemetry::FollowEndpoint
-             phoxal_supervisor_api::supervisor::telemetry::RollupEndpoint
+             phoxal_api::api::generated::runtime::endpoint::logs::TopicEndpoint
+             phoxal_api::api::generated::runtime::endpoint::telemetry::TopicEndpoint
+             phoxal_api::api::generated::supervisor::endpoint::logs::FollowEndpoint
+             phoxal_api::api::generated::supervisor::endpoint::snapshot::TopicEndpoint
+             phoxal_api::api::generated::supervisor::endpoint::telemetry::FollowEndpoint
 note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
   --> src/participant/context.rs
    |
@@ -20,24 +21,24 @@ note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
    |         B: StreamContract<Api = R::ContractApi> + StreamDeliveryContract<Api = R::ContractApi>,
    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::stream_receiver`
 
-error[E0277]: the trait bound `phoxal::api::drive::StateEndpoint: StreamDeliveryContract` is not satisfied
+error[E0277]: the trait bound `phoxal::api::endpoint::drive::StateEndpoint: StreamDeliveryContract` is not satisfied
   --> tests/trybuild/fail/state_cannot_be_received_as_stream.rs:13:42
    |
 13 |         let _state = ctx.stream_receiver(api::topic::client().drive().state());
-   |                          --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamDeliveryContract` is not implemented for `phoxal::api::drive::StateEndpoint`
+   |                          --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamDeliveryContract` is not implemented for `phoxal::api::endpoint::drive::StateEndpoint`
    |                          |
    |                          required by a bound introduced by this call
    |
    = help: the following other types implement trait `StreamDeliveryContract`:
              ResultEndpoint
              StreamEndpoint
-             phoxal::api::joint::StateEndpoint
-             phoxal::runtime::simulation::ClockEndpoint
-             phoxal_api::api::joint::StateEndpoint
-             phoxal_supervisor_api::supervisor::log::FollowEndpoint
-             phoxal_supervisor_api::supervisor::logs::TopicEndpoint
-             phoxal_supervisor_api::supervisor::telemetry::FollowEndpoint
-             phoxal_supervisor_api::supervisor::telemetry::RollupEndpoint
+             phoxal::api::endpoint::joint::StateEndpoint
+             phoxal_api::api::generated::runtime::endpoint::logs::TopicEndpoint
+             phoxal_api::api::generated::runtime::endpoint::simulation::ClockEndpoint
+             phoxal_api::api::generated::runtime::endpoint::telemetry::TopicEndpoint
+             phoxal_api::api::generated::supervisor::endpoint::logs::FollowEndpoint
+             phoxal_api::api::generated::supervisor::endpoint::snapshot::TopicEndpoint
+             phoxal_api::api::generated::supervisor::endpoint::telemetry::FollowEndpoint
 note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
   --> src/participant/context.rs
    |

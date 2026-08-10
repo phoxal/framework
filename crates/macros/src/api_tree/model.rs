@@ -1,5 +1,4 @@
-//! The generated tree model shared by materialized contract families and
-//! process protocols.
+//! The generated tree model for materialized contract families.
 //!
 //! Nothing here emits a module or a builder - the model is what the grammar
 //! produces and what every codegen pass reads.
@@ -7,16 +6,6 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::Ident;
-
-/// One `protocol <name> { … }` tree.
-///
-/// Its `name` is both the generated module and the tree's identity, and it is
-/// the leading wire-key segment - exactly the slot a contract family occupies
-/// in fragment mode.
-pub(super) struct Protocol {
-    pub(super) name: Ident,
-    pub(super) nodes: Vec<Node>,
-}
 
 /// One node in the api tree: a `name { … }` (static) or `name(var) { … }`
 /// (dynamic) block that may hold endpoint declarations and nested child nodes.
@@ -46,8 +35,8 @@ pub(super) struct TopicDef {
 pub(super) enum TopicLeaf {
     Named(Ident),
     /// `topic self: …` - the body binds to the node path itself instead of
-    /// appending a leaf segment, for framework infrastructure topics such as
-    /// `logs/{participant_id}`.
+    /// appending a leaf segment, so a fragment whose whole path is the wire key
+    /// (`runtime/logs`, `supervisor/snapshot`) says so directly.
     Node,
 }
 
@@ -171,9 +160,8 @@ pub(super) enum TopicKind {
     },
 }
 
-/// A resolved payload path. Fragments start with a local sibling type name and
-/// the tree materializer qualifies it; protocols accept complete Rust paths
-/// directly.
+/// A resolved payload path. A fragment names a local sibling type and the tree
+/// materializer qualifies it against the fragment's own module path.
 #[derive(Clone)]
 pub(super) struct BodyPath {
     pub(super) path: syn::Path,
@@ -186,20 +174,16 @@ impl BodyPath {
     }
 }
 
-/// One fully resolved tree ready to emit, from either mode.
+/// One fully resolved family tree ready to emit.
 ///
 /// `id` is the tree's identity AND its leading wire-key segment: the semantic
-/// family (`"robot"`) in fragment mode, the protocol name (`"supervisor"`) for
-/// a protocol. Everything below this point is mode-agnostic - the two modes
-/// differ only in how a tree is parsed, validated, and identified, never in how
-/// its modules, bodies, or builders are shaped.
+/// family (`"robot"`, `"runtime"`, `"supervisor"`).
 pub(super) struct MaterializedTree {
     pub(super) module: Ident,
     pub(super) id: String,
     pub(super) doc: String,
-    /// Authored module prefix for fragment payloads. Protocol payload paths are
-    /// already explicit and have no provenance to resolve.
-    pub(super) source: Option<syn::Path>,
+    /// Authored module prefix the fragment payload names resolve against.
+    pub(super) source: syn::Path,
     pub(super) nodes: Vec<Node>,
 }
 

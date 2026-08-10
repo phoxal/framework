@@ -71,7 +71,6 @@ impl Parse for Fragment {
                         "attributes belong on payload items, not endpoint declarations",
                     ));
                 }
-                reject_node_topic(input)?;
                 endpoints.push(input.parse()?);
                 continue;
             }
@@ -89,19 +88,6 @@ fn endpoint_ahead(input: ParseStream<'_>) -> bool {
         return false;
     };
     matches!(prefix.to_string().as_str(), "topic" | "command" | "query")
-}
-
-fn reject_node_topic(input: ParseStream<'_>) -> syn::Result<()> {
-    let lookahead = input.fork();
-    let _: Ident = lookahead.parse()?;
-    if lookahead.peek(Token![self]) {
-        let node: Token![self] = lookahead.parse()?;
-        return Err(syn::Error::new_spanned(
-            node,
-            "fragment endpoints require a named leaf; `self` is available only in protocol trees",
-        ));
-    }
-    Ok(())
 }
 
 /// A fragment path roots at one semantic family and owns at least one segment
@@ -432,7 +418,7 @@ pub(crate) fn expand_materialized(input: TokenStream) -> syn::Result<TokenStream
             module,
             doc: format!("The `{name}` contract family."),
             id: name,
-            source: Some(source.clone()),
+            source: source.clone(),
             nodes,
         });
     }

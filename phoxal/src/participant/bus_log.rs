@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::participant::lock;
+use phoxal_api::runtime;
 use phoxal_bus::{BusHandle, StreamPublisher};
-use phoxal_supervisor_api::supervisor;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Metadata};
@@ -141,23 +141,23 @@ where
 
 #[derive(Clone, Debug)]
 struct LogRecord {
-    time: supervisor::logs::Timestamp,
-    level: supervisor::logs::Level,
+    time: runtime::logs::Timestamp,
+    level: runtime::logs::Level,
     target: String,
     message: String,
-    fields: BTreeMap<String, supervisor::logs::LogValue>,
+    fields: BTreeMap<String, runtime::logs::LogValue>,
     truncated: u32,
 }
 
 impl LogRecord {
     /// A tracing level as the wire enum names it.
-    fn wire_level(level: Level) -> supervisor::logs::Level {
+    fn wire_level(level: Level) -> runtime::logs::Level {
         match level {
-            Level::ERROR => supervisor::logs::Level::Error,
-            Level::WARN => supervisor::logs::Level::Warn,
-            Level::INFO => supervisor::logs::Level::Info,
-            Level::DEBUG => supervisor::logs::Level::Debug,
-            Level::TRACE => supervisor::logs::Level::Trace,
+            Level::ERROR => runtime::logs::Level::Error,
+            Level::WARN => runtime::logs::Level::Warn,
+            Level::INFO => runtime::logs::Level::Info,
+            Level::DEBUG => runtime::logs::Level::Debug,
+            Level::TRACE => runtime::logs::Level::Trace,
         }
     }
 
@@ -177,8 +177,8 @@ impl LogRecord {
         }
     }
 
-    fn into_event(self, seq: u64, dropped: u32) -> supervisor::logs::Event {
-        supervisor::logs::Event {
+    fn into_event(self, seq: u64, dropped: u32) -> runtime::logs::Event {
+        runtime::logs::Event {
             seq,
             time: self.time,
             level: self.level,
@@ -193,7 +193,7 @@ impl LogRecord {
 
 struct FieldVisitor {
     message: Option<String>,
-    fields: BTreeMap<String, supervisor::logs::LogValue>,
+    fields: BTreeMap<String, runtime::logs::LogValue>,
     remaining_text_bytes: usize,
     truncations: u32,
 }
@@ -218,7 +218,7 @@ impl FieldVisitor {
         bounded
     }
 
-    fn record_value(&mut self, field: &Field, mut value: supervisor::logs::LogValue) {
+    fn record_value(&mut self, field: &Field, mut value: runtime::logs::LogValue) {
         let name = field.name();
         if name == "message" {
             let message = log_value_to_string(&value);
@@ -229,7 +229,7 @@ impl FieldVisitor {
                 return;
             }
             let name = self.bounded(name, MAX_FIELD_NAME_BYTES);
-            if let supervisor::logs::LogValue::String(text) = &mut value {
+            if let runtime::logs::LogValue::String(text) = &mut value {
                 *text = self.bounded(text, MAX_FIELD_VALUE_BYTES);
             }
             self.fields.insert(name, value);
@@ -239,23 +239,23 @@ impl FieldVisitor {
 
 impl Visit for FieldVisitor {
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.record_value(field, supervisor::logs::LogValue::Bool(value));
+        self.record_value(field, runtime::logs::LogValue::Bool(value));
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.record_value(field, supervisor::logs::LogValue::I64(value));
+        self.record_value(field, runtime::logs::LogValue::I64(value));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.record_value(field, supervisor::logs::LogValue::U64(value));
+        self.record_value(field, runtime::logs::LogValue::U64(value));
     }
 
     fn record_f64(&mut self, field: &Field, value: f64) {
-        self.record_value(field, supervisor::logs::LogValue::F64(value));
+        self.record_value(field, runtime::logs::LogValue::F64(value));
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.record_value(field, supervisor::logs::LogValue::String(value.to_string()));
+        self.record_value(field, runtime::logs::LogValue::String(value.to_string()));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
@@ -269,7 +269,7 @@ impl Visit for FieldVisitor {
         if formatted.truncated {
             self.truncations = self.truncations.saturating_add(1);
         }
-        self.record_value(field, supervisor::logs::LogValue::String(formatted.value));
+        self.record_value(field, runtime::logs::LogValue::String(formatted.value));
     }
 }
 
@@ -337,19 +337,19 @@ pub(crate) fn init_tracing() {
     });
 }
 
-pub(crate) fn attach(bus: BusHandle, participant_id: &str) -> (BusLogGuard, BusLogTask) {
-    attach_with_capacity(bus, participant_id, DEFAULT_BUFFER_CAPACITY)
+/// Attach this process to the one shared `runtime/logs` stream.
+///
+/// The publisher takes no participant id: which participant produced a record
+/// is the bus envelope's source attribution, so nothing here can claim an
+/// origin the transport disagrees with.
+pub(crate) fn attach(bus: BusHandle) -> (BusLogGuard, BusLogTask) {
+    attach_with_capacity(bus, DEFAULT_BUFFER_CAPACITY)
 }
 
-fn attach_with_capacity(
-    bus: BusHandle,
-    participant_id: &str,
-    capacity: usize,
-) -> (BusLogGuard, BusLogTask) {
+fn attach_with_capacity(bus: BusHandle, capacity: usize) -> (BusLogGuard, BusLogTask) {
     let state = state();
     let (sender, receiver) = mpsc::channel(capacity.max(1));
     let token = state.install_sender(sender);
-    let participant_id = participant_id.to_string();
     (
         BusLogGuard {
             token,
@@ -358,7 +358,6 @@ fn attach_with_capacity(
         BusLogTask {
             state,
             bus,
-            participant_id,
             receiver,
         },
     )
@@ -388,24 +387,22 @@ impl Drop for BusLogGuard {
 pub(crate) struct BusLogTask {
     state: Arc<BusLogState>,
     bus: BusHandle,
-    participant_id: String,
     receiver: mpsc::Receiver<LogRecord>,
 }
 
 impl BusLogTask {
     pub(crate) async fn run(self) -> crate::Result<()> {
-        drain_loop(self.state, self.bus, self.participant_id, self.receiver).await
+        drain_loop(self.state, self.bus, self.receiver).await
     }
 }
 
 async fn drain_loop(
     state: Arc<BusLogState>,
     bus: BusHandle,
-    participant_id: String,
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
-    let topic = supervisor::topic::owner().logs(&participant_id)?.topic();
-    let publisher = StreamPublisher::<supervisor::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
+    let topic = runtime::topic::owner().logs().topic();
+    let publisher = StreamPublisher::<runtime::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let dropped = state.take_dropped();
@@ -432,15 +429,15 @@ fn target_is_filtered(target: &str) -> bool {
         || target.starts_with("phoxal.bus")
 }
 
-fn timestamp_now() -> supervisor::logs::Timestamp {
+fn timestamp_now() -> runtime::logs::Timestamp {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => supervisor::logs::Timestamp {
+        Ok(duration) => runtime::logs::Timestamp {
             unix_seconds: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
             nanos: duration.subsec_nanos(),
         },
         Err(error) => {
             let duration = error.duration();
-            supervisor::logs::Timestamp {
+            runtime::logs::Timestamp {
                 unix_seconds: -i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
                 nanos: duration.subsec_nanos(),
             }
@@ -448,13 +445,13 @@ fn timestamp_now() -> supervisor::logs::Timestamp {
     }
 }
 
-fn log_value_to_string(value: &supervisor::logs::LogValue) -> String {
+fn log_value_to_string(value: &runtime::logs::LogValue) -> String {
     match value {
-        supervisor::logs::LogValue::Bool(value) => value.to_string(),
-        supervisor::logs::LogValue::I64(value) => value.to_string(),
-        supervisor::logs::LogValue::U64(value) => value.to_string(),
-        supervisor::logs::LogValue::F64(value) => value.to_string(),
-        supervisor::logs::LogValue::String(value) => value.clone(),
+        runtime::logs::LogValue::Bool(value) => value.to_string(),
+        runtime::logs::LogValue::I64(value) => value.to_string(),
+        runtime::logs::LogValue::U64(value) => value.to_string(),
+        runtime::logs::LogValue::F64(value) => value.to_string(),
+        runtime::logs::LogValue::String(value) => value.clone(),
     }
 }
 
@@ -464,11 +461,11 @@ mod tests {
 
     fn record() -> LogRecord {
         LogRecord {
-            time: supervisor::logs::Timestamp {
+            time: runtime::logs::Timestamp {
                 unix_seconds: 1,
                 nanos: 2,
             },
-            level: supervisor::logs::Level::Info,
+            level: runtime::logs::Level::Info,
             target: "test".to_string(),
             message: "hello".to_string(),
             fields: BTreeMap::new(),
@@ -526,7 +523,7 @@ mod tests {
         assert_eq!(captured.message, "ready");
         assert!(matches!(
             captured.fields.get("marker"),
-            Some(supervisor::logs::LogValue::U64(7))
+            Some(runtime::logs::LogValue::U64(7))
         ));
         state.clear_sender(token);
     }
@@ -579,7 +576,7 @@ mod tests {
         let mut decisions = Vec::new();
         while let Ok(record) = receiver.try_recv() {
             assert_eq!(record.target, phoxal_bus::LEASE_TRACE_TARGET);
-            let Some(supervisor::logs::LogValue::String(decision)) = record.fields.get("decision")
+            let Some(runtime::logs::LogValue::String(decision)) = record.fields.get("decision")
             else {
                 panic!("every lease record names its decision: {record:?}");
             };
@@ -596,20 +593,20 @@ mod tests {
             .expect("expiry record");
         assert_eq!(
             expired.fields.get("producer"),
-            Some(&supervisor::logs::LogValue::String(first.to_string())),
+            Some(&runtime::logs::LogValue::String(first.to_string())),
             "an expiry names the command that died, not just the lease"
         );
         assert_eq!(
             expired.fields.get("sequence"),
-            Some(&supervisor::logs::LogValue::U64(1))
+            Some(&runtime::logs::LogValue::U64(1))
         );
         assert_eq!(
             expired.fields.get("observation"),
-            Some(&supervisor::logs::LogValue::U64(1))
+            Some(&runtime::logs::LogValue::U64(1))
         );
         assert!(decisions.iter().all(|(_, record)| {
             record.fields.get("input")
-                == Some(&supervisor::logs::LogValue::String(
+                == Some(&runtime::logs::LogValue::String(
                     "motion/manual".to_string(),
                 ))
         }));

@@ -205,86 +205,6 @@ impl<'de> Deserialize<'de> for FrameworkVersion {
     }
 }
 
-/// An exact, open robot API identity carried at the process boundary.
-///
-/// Its canonical wire spelling is `phoxal/robot-api/v<major>.<minor>`. This
-/// type is retired by the API-family migration and is no longer part of any
-/// participant's compatibility declaration; it remains only while the
-/// supervisor runtime report still names a revision.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RobotApiVersion {
-    major: u16,
-    minor: u16,
-}
-
-impl RobotApiVersion {
-    /// Construct one exact robot API version.
-    #[must_use]
-    pub const fn new(major: u16, minor: u16) -> Self {
-        Self { major, minor }
-    }
-
-    /// The API's major component.
-    #[must_use]
-    pub const fn major(self) -> u16 {
-        self.major
-    }
-
-    /// The API's minor component.
-    #[must_use]
-    pub const fn minor(self) -> u16 {
-        self.minor
-    }
-}
-
-impl std::fmt::Display for RobotApiVersion {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "phoxal/robot-api/v{}.{}", self.major, self.minor)
-    }
-}
-
-impl Serialize for RobotApiVersion {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for RobotApiVersion {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        const PREFIX: &str = "phoxal/robot-api/v";
-        let Some(version) = value.strip_prefix(PREFIX) else {
-            return Err(serde::de::Error::custom(format!(
-                "invalid robot API '{value}'; expected {PREFIX}<major>.<minor>"
-            )));
-        };
-        let Some((major, minor)) = version.split_once('.') else {
-            return Err(serde::de::Error::custom(format!(
-                "invalid robot API '{value}'; expected {PREFIX}<major>.<minor>"
-            )));
-        };
-        if major.is_empty()
-            || minor.is_empty()
-            || minor.contains('.')
-            || !major.bytes().all(|byte| byte.is_ascii_digit())
-            || !minor.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return Err(serde::de::Error::custom(format!(
-                "invalid robot API '{value}'; expected {PREFIX}<major>.<minor>"
-            )));
-        }
-        let major = major.parse().map_err(serde::de::Error::custom)?;
-        let minor = minor.parse().map_err(serde::de::Error::custom)?;
-        let parsed = Self::new(major, minor);
-        if parsed.to_string() != value {
-            return Err(serde::de::Error::custom(format!(
-                "robot API '{value}' is not canonical; expected '{parsed}'"
-            )));
-        }
-        Ok(parsed)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,18 +309,5 @@ mod tests {
         let later = FrameworkVersion::new(0, 57, 1);
         assert_eq!(earlier.compatibility_line(), later.compatibility_line());
         assert_ne!(earlier, later);
-    }
-
-    #[test]
-    fn robot_api_is_open_but_canonical() {
-        let known = RobotApiVersion::new(0, 1);
-        let future = RobotApiVersion::new(42, 7);
-        assert_eq!(known.to_string(), "phoxal/robot-api/v0.1");
-        assert_eq!(
-            serde_json::from_str::<RobotApiVersion>("\"phoxal/robot-api/v42.7\"").unwrap(),
-            future
-        );
-        assert!(serde_json::from_str::<RobotApiVersion>("\"phoxal/robot-api/v042.7\"").is_err());
-        assert!(serde_json::from_str::<RobotApiVersion>("\"phoxal/robot-api/v42\"").is_err());
     }
 }

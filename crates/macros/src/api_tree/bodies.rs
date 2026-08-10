@@ -1,4 +1,4 @@
-//! The descriptor side of a generated tree: the tree-local `Api` marker,
+//! The descriptor side of a generated family: the family-local `Api` marker,
 //! payload-only domain facades, and the separate endpoint descriptor tree that
 //! binds ordinary payloads to wire keys.
 //!
@@ -16,7 +16,7 @@ impl MaterializedTree {
         let mod_name = &self.module;
         let mut node_mods = TokenStream::new();
         for node in &self.nodes {
-            node_mods.extend(node.expand_module(&self.module, self.source.as_ref()));
+            node_mods.extend(node.expand_module(&self.module, &self.source));
         }
 
         let topic_mod = self.expand_topic_module();
@@ -27,8 +27,7 @@ impl MaterializedTree {
         quote! {
             #[doc = #module_doc]
             pub mod #mod_name {
-                /// Zero-variant marker identifying this tree: a contract
-                /// family in fragment mode or a protocol in `protocol` mode.
+                /// Zero-variant marker identifying this contract family.
                 #[derive(Clone, Copy, Debug)]
                 pub enum Api {}
                 impl ::phoxal_bus::ApiFamily for Api {
@@ -68,7 +67,7 @@ impl MaterializedTree {
 
 impl Node {
     /// Emit one family-local payload facade.
-    fn expand_module(&self, tree_module: &syn::Ident, source: Option<&syn::Path>) -> TokenStream {
+    fn expand_module(&self, tree_module: &syn::Ident, source: &syn::Path) -> TokenStream {
         let name = &self.name;
         let mut external_aliases = TokenStream::new();
         let mut external_parents = std::collections::BTreeMap::<String, syn::Path>::new();
@@ -232,13 +231,8 @@ fn register_semantic_alias(
     aliases: &mut std::collections::BTreeMap<String, syn::Path>,
     path: &syn::Path,
     tree_module: &syn::Ident,
-    source: Option<&syn::Path>,
+    source: &syn::Path,
 ) {
-    // Protocol trees may still use local one-segment paths. Re-exporting
-    // `Command as Command` would collide with their local definition.
-    if path.segments.len() == 1 {
-        return;
-    }
     let Some(last) = path.segments.last() else {
         return;
     };
@@ -252,14 +246,7 @@ fn register_semantic_alias(
     }
 }
 
-fn is_current_family_path(
-    path: &syn::Path,
-    tree_module: &syn::Ident,
-    source: Option<&syn::Path>,
-) -> bool {
-    let Some(source) = source else {
-        return false;
-    };
+fn is_current_family_path(path: &syn::Path, tree_module: &syn::Ident, source: &syn::Path) -> bool {
     if path.leading_colon.is_some() != source.leading_colon.is_some()
         || path.segments.len() <= source.segments.len()
         || !path

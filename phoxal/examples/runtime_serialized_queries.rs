@@ -5,7 +5,6 @@
 use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
-use phoxal_supervisor_api::supervisor;
 
 #[derive(Clone)]
 struct Grid {
@@ -127,7 +126,10 @@ impl Participant for SerializedMap {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().asset().get(), Self::get_asset)?;
+        ctx.query(
+            api::topic::owner().navigation().next_frontier(),
+            Self::next_frontier,
+        )?;
         ctx.query(api::topic::owner().map().submap(), Self::submap)?;
         Ok((
             MapState {
@@ -160,21 +162,40 @@ impl Participant for SerializedMap {
 }
 
 impl SerializedMap {
-    fn get_asset(
+    /// The second query reads the same serialized grid the submap query does,
+    /// so both answers describe one revision and cannot interleave.
+    fn next_frontier(
         &self,
         _api: &Api,
         _query: QueryContext,
-        request: supervisor::asset::GetRequest,
+        request: api::navigation::FrontierRequest,
         state: &mut MapState,
-    ) -> QueryResult<supervisor::asset::GetResponse> {
-        state.rev = state.rev.saturating_add(1);
-        if request.path == "map.cells" {
-            Ok(supervisor::asset::GetResponse::Found {
-                bytes: state.grid.cells.clone(),
-            })
-        } else {
-            Ok(supervisor::asset::GetResponse::Missing)
+    ) -> QueryResult<api::navigation::FrontierResponse> {
+        if request
+            .map_revision
+            .is_some_and(|revision| revision > state.rev)
+        {
+            return Err(QueryFailure::invalid_argument(
+                "requested map revision is ahead of this map",
+            ));
         }
+        let resolution = f64::from(state.grid.resolution_m);
+        let frontier = state
+            .grid
+            .cells
+            .iter()
+            .position(|cell| *cell == 255)
+            .and_then(|index| u32::try_from(index).ok())
+            .map(|index| api::navigation::Frontier {
+                x_m: f64::from(index % state.grid.width) * resolution,
+                y_m: f64::from(index / state.grid.width) * resolution,
+                score: 1.0,
+                size: 1,
+            });
+        Ok(api::navigation::FrontierResponse {
+            frontier,
+            map_revision: Some(state.rev),
+        })
     }
 
     fn submap(

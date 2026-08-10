@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
+use phoxal_api::runtime;
 use phoxal_bus::{
     BusHandle, RobotInstant, RuntimeBufferKind, RuntimeDirection, RuntimeMetricSnapshot,
     StreamPublisher,
 };
-use phoxal_supervisor_api::{payload, supervisor};
 
 use crate::participant::duration_nanos;
 use crate::participant::scheduler::StepSchedule;
@@ -16,12 +16,12 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<StreamPublisher<supervisor::endpoint::telemetry::RollupEndpoint>>,
+    publisher: Option<StreamPublisher<runtime::endpoint::telemetry::TopicEndpoint>>,
 }
 
 impl RuntimePerformancePublisher {
     pub(crate) fn attach(bus: BusHandle) -> Self {
-        let topic = supervisor::topic::owner().telemetry().rollup();
+        let topic = runtime::topic::owner().telemetry().topic();
         let publisher = StreamPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(
@@ -34,7 +34,7 @@ impl RuntimePerformancePublisher {
         Self { publisher }
     }
 
-    pub(crate) fn publish(&self, body: supervisor::telemetry::Rollup) {
+    pub(crate) fn publish(&self, body: runtime::telemetry::Rollup) {
         let Some(publisher) = &self.publisher else {
             return;
         };
@@ -91,11 +91,11 @@ impl RuntimePerformance {
         }
     }
 
-    pub(crate) fn take_rollup(&mut self, bus: &BusHandle) -> Option<supervisor::telemetry::Rollup> {
+    pub(crate) fn take_rollup(&mut self, bus: &BusHandle) -> Option<runtime::telemetry::Rollup> {
         let now = Instant::now();
         let elapsed = self.take_elapsed(now)?;
         let topics = TopicRows::from_snapshots(bus.take_runtime_metrics().ok()?, elapsed);
-        Some(supervisor::telemetry::Rollup {
+        Some(runtime::telemetry::Rollup {
             window_ns: duration_nanos(elapsed),
             step: self.step.as_mut().map(StepWindow::take),
             topics: topics.rows,
@@ -194,9 +194,9 @@ impl StepWindow {
         }
     }
 
-    fn take(&mut self) -> payload::runtime::Step {
+    fn take(&mut self) -> runtime::telemetry::Step {
         let attempts = self.completed.saturating_add(self.errors);
-        let body = payload::runtime::Step {
+        let body = runtime::telemetry::Step {
             target_period_ns: duration_nanos(self.target_period),
             completed: self.completed,
             errors: self.errors,
@@ -226,8 +226,8 @@ impl StepWindow {
 /// overflow row, so reading `rows` without `overflow` understates what the
 /// window measured.
 struct TopicRows {
-    rows: Vec<payload::runtime::Topic>,
-    overflow: Option<payload::runtime::Topic>,
+    rows: Vec<runtime::telemetry::Topic>,
+    overflow: Option<runtime::telemetry::Topic>,
 }
 
 impl TopicRows {
@@ -253,13 +253,13 @@ impl TopicRows {
                 overflow: None,
             };
         }
-        let mut overflow = payload::runtime::Topic {
+        let mut overflow = runtime::telemetry::Topic {
             // The overflow row is not one topic, one direction or one buffer, so
             // it names none of them: `Mixed` exists on the wire for exactly this
             // row and nothing measures it.
             topic: String::new(),
-            direction: payload::runtime::Direction::Mixed,
-            buffer_kind: payload::runtime::BufferKind::Mixed,
+            direction: runtime::telemetry::Direction::Mixed,
+            buffer_kind: runtime::telemetry::BufferKind::Mixed,
             count: 0,
             rate_millihz: 0,
             drops: 0,
@@ -300,19 +300,20 @@ impl TopicRows {
 
     /// One internal snapshot as the wire row a supervisor reads.
     ///
-    /// `phoxal-bus` owns the internal accounting vocabulary and the process
-    /// protocol owns its serialized representation; this is their only join.
-    fn wire_row(snapshot: RuntimeMetricSnapshot, elapsed: Duration) -> payload::runtime::Topic {
-        payload::runtime::Topic {
+    /// `phoxal-bus` owns the internal accounting vocabulary and the runtime
+    /// contract family owns its serialized representation; this is their only
+    /// join.
+    fn wire_row(snapshot: RuntimeMetricSnapshot, elapsed: Duration) -> runtime::telemetry::Topic {
+        runtime::telemetry::Topic {
             topic: snapshot.key.topic,
             direction: match snapshot.key.direction {
-                RuntimeDirection::Publish => payload::runtime::Direction::Publish,
-                RuntimeDirection::Subscribe => payload::runtime::Direction::Subscribe,
+                RuntimeDirection::Publish => runtime::telemetry::Direction::Publish,
+                RuntimeDirection::Subscribe => runtime::telemetry::Direction::Subscribe,
             },
             buffer_kind: match snapshot.key.buffer_kind {
-                RuntimeBufferKind::Outbound => payload::runtime::BufferKind::Outbound,
-                RuntimeBufferKind::Latest => payload::runtime::BufferKind::Latest,
-                RuntimeBufferKind::Subscriber => payload::runtime::BufferKind::Subscriber,
+                RuntimeBufferKind::Outbound => runtime::telemetry::BufferKind::Outbound,
+                RuntimeBufferKind::Latest => runtime::telemetry::BufferKind::Latest,
+                RuntimeBufferKind::Subscriber => runtime::telemetry::BufferKind::Subscriber,
             },
             count: snapshot.count,
             rate_millihz: rate_millihz(snapshot.count, elapsed),

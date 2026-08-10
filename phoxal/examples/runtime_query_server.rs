@@ -1,54 +1,68 @@
 //! A query-only participant with no scheduled step.
 //!
-//! `cargo run --example runtime_query_server` serves `asset/get`; the runner
-//! drives the queryable and serializes each call with lifecycle state.
+//! `cargo run --example runtime_query_server` serves `robot/frame/lookup`; the
+//! runner drives the queryable and serializes each call with lifecycle state.
 
 use std::collections::BTreeMap;
 
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_supervisor_api::supervisor;
 
 struct Api;
 
-struct AssetStoreState {
+struct FrameStoreState {
     // Runtime-private state - not a handle, so it lives on the participant
     // struct, not the `Api` struct.
-    assets: BTreeMap<String, Vec<u8>>,
+    transforms: BTreeMap<(String, String), api::frame::FrameTransform>,
 }
 
-#[phoxal::service(id = "asset-store", state = AssetStoreState, api = Api)]
-struct AssetStore;
+#[phoxal::service(id = "frame-store", state = FrameStoreState, api = Api)]
+struct FrameStore;
 
-impl Participant for AssetStore {
+impl Participant for FrameStore {
     async fn setup(
         &self,
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let mut assets = BTreeMap::new();
-        assets.insert("map.pgm".to_string(), vec![0x50, 0x35, 0x0a]);
-        ctx.query(supervisor::topic::owner().asset().get(), Self::get)?;
-        Ok((AssetStoreState { assets }, Api))
+        let mut transforms = BTreeMap::new();
+        transforms.insert(
+            ("base_link".to_string(), "lidar".to_string()),
+            api::frame::FrameTransform {
+                parent_frame_id: "base_link".to_string(),
+                child_frame_id: "lidar".to_string(),
+                translation_m: [0.12, 0.0, 0.30],
+                rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0],
+                stamp: None,
+            },
+        );
+        ctx.query(api::topic::owner().frame().lookup(), Self::lookup)?;
+        Ok((FrameStoreState { transforms }, Api))
     }
 }
 
-impl AssetStore {
-    fn get(
+impl FrameStore {
+    fn lookup(
         &self,
         _api: &Api,
         _query: QueryContext,
-        request: supervisor::asset::GetRequest,
-        state: &mut AssetStoreState,
-    ) -> QueryResult<supervisor::asset::GetResponse> {
-        match state.assets.get(&request.path) {
-            Some(bytes) => Ok(supervisor::asset::GetResponse::Found {
-                bytes: bytes.clone(),
-            }),
-            None => Ok(supervisor::asset::GetResponse::Missing),
-        }
+        request: api::frame::LookupRequest,
+        state: &mut FrameStoreState,
+    ) -> QueryResult<api::frame::LookupResponse> {
+        // An unknown pair is an answer, not a failure: the caller learns the
+        // store has no such transform without having to read an error string.
+        Ok(api::frame::LookupResponse {
+            transform: state
+                .transforms
+                .get(&(
+                    request.target_frame_id.clone(),
+                    request.source_frame_id.clone(),
+                ))
+                .cloned(),
+        })
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<AssetStore>()
+    phoxal::run::<FrameStore>()
 }

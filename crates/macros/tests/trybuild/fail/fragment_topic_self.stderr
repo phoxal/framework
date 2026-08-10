@@ -1,5 +1,0 @@
-error: fragment endpoints require a named leaf; `self` is available only in protocol trees
- --> tests/trybuild/fail/fragment_topic_self.rs:5:11
-  |
-5 |     topic self: Stream<Event>;
-  |           ^^^^

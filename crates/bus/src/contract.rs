@@ -2,32 +2,29 @@
 //! descriptors.
 //!
 //! These are the two traits the bus client is generic over - the ABI floor
-//! every contract family and process protocol uses ordinary Rust payloads plus
-//! one generated descriptor per endpoint. This crate owns the shared ABI
-//! traits; `phoxal-api` and `phoxal-supervisor-api` own their concrete
-//! declarations.
+//! every contract family uses: ordinary Rust payloads plus one generated
+//! descriptor per endpoint. This crate owns the shared ABI traits; `phoxal-api`
+//! owns every concrete declaration.
 
 /// Marker trait identifying one generated contract tree.
 ///
 /// Implemented only by the zero-variant `enum Api {}` that `phoxal_api_tree!`
-/// generates inside each tree module. The [`ID`] is a semantic contract
-/// namespace: the family (`"robot"`) for a fragment tree, the protocol name
-/// (`"supervisor"`) for a `protocol` tree - in both cases the tree's identity
-/// and the leading segment of every key it declares. It is carried in bus
-/// metadata as informational provenance, never in the wire body.
+/// generates inside each family module. The [`ID`] is a semantic contract
+/// namespace - `"robot"`, `"runtime"`, `"supervisor"` - and is both the tree's
+/// identity and the leading segment of every key it declares. It is carried in
+/// bus metadata as informational provenance, never in the wire body.
 ///
 /// A family names meaning, not a revision. Compatibility between two
 /// participants is the framework train version they were built from, compared
 /// for exact equality, so no key or descriptor carries a per-API version.
 ///
-/// The marker's job is the same in both modes: it keeps one tree's bodies from
-/// standing in for another's at compile time. `ParticipantSpec::ContractApi`
-/// pins a participant to exactly one of them.
+/// The marker keeps one family's bodies from standing in for another's at
+/// compile time. `ParticipantSpec::ContractApi` pins a participant to exactly
+/// one of them.
 ///
 /// [`ID`]: ApiFamily::ID
 pub trait ApiFamily: 'static {
-    /// The tree's wire identifier: a semantic family such as `"robot"`, or a
-    /// protocol name such as `"supervisor"`.
+    /// The family's wire identifier, such as `"robot"`.
     const ID: &'static str;
 }
 
@@ -104,7 +101,7 @@ impl EndpointKind {
 /// The API tree generator emits one descriptor per endpoint and implements the
 /// semantic marker appropriate to [`EndpointDescriptor::KIND`].
 pub trait EndpointDescriptor: 'static {
-    /// The contract family or protocol this endpoint belongs to.
+    /// The contract family this endpoint belongs to.
     type Api: ApiFamily;
     /// The plain serde payload carried by this endpoint.
     type Payload: Payload;

@@ -1,4 +1,13 @@
-//! Versioned supervisor execution state and acknowledged operations.
+//! Supervisor execution state and acknowledged operations, as wire values.
+//!
+//! `phoxald` owns the behavior these values describe - restart policy,
+//! lifecycle transitions, and what a command does to a running execution. This
+//! module owns only their shape, their bounds, and the invariants a peer may
+//! rely on after a successful decode.
+//!
+//! The snapshot fragment re-exports the state vocabulary and the command
+//! fragment re-exports the operation vocabulary, so each type has exactly one
+//! public path.
 
 use phoxal_runtime_contract::identity::{ComponentInstanceId, ParticipantId, ProducerId};
 use phoxal_runtime_contract::metadata::{MAX_RUNTIME_PARTICIPANTS, ParticipantKind};
@@ -79,8 +88,8 @@ pub type StderrTail = DiagnosticText<MAX_STDERR_TAIL_BYTES>;
 #[serde(rename_all = "snake_case")]
 pub enum DesiredState {
     Running,
-    /// Persisted projection-only state in this protocol revision. No remote
-    /// command changes one participant's desired state.
+    /// A projection-only state: no command on this contract changes one
+    /// participant's desired state.
     Stopped,
 }
 
@@ -103,7 +112,11 @@ pub enum ProcessState {
 pub enum ProcessFailureKind {
     Spawn,
     Exit,
+    /// Readiness never arrived within the supervisor's window.
     ReadinessTimeout,
+    /// Readiness arrived, but from a producer the supervisor is not waiting
+    /// for: a second incarnation of the same participant is claiming the slot.
+    ReadinessConflict,
     Cleanup,
     ControlPlane,
     #[serde(other)]
@@ -136,6 +149,25 @@ impl WallTime {
             unix_seconds,
             nanos,
         })
+    }
+
+    /// Convert a host wall-clock instant into the normalized wire form.
+    #[must_use]
+    pub fn from_system_time(value: std::time::SystemTime) -> Self {
+        match value.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+            Ok(since) => Self {
+                unix_seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+                nanos: since.subsec_nanos(),
+            },
+            Err(before) => {
+                let before = before.duration();
+                Self {
+                    unix_seconds: i64::try_from(before.as_secs())
+                        .map_or(i64::MIN, |seconds| -seconds - 1),
+                    nanos: 1_000_000_000 - before.subsec_nanos().max(1),
+                }
+            }
+        }
     }
 
     #[must_use]
@@ -426,7 +458,9 @@ impl Serialize for Snapshot {
     }
 }
 
-/// Versioned snapshot wire document.
+/// Snapshot wire document. The schema tag is a parse-time format
+/// discriminator: a reader refuses a tag it does not implement before it looks
+/// at any field.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "schema")]
 pub enum SnapshotDocument {
@@ -507,6 +541,9 @@ pub enum CommandRejection {
     RevisionStale,
     Busy,
     UnsupportedHostAction,
+    /// The supervisor's control channel is closing, so it accepts no further
+    /// operation on this execution.
+    ControlClosed,
     #[serde(other)]
     Unknown,
 }
@@ -740,6 +777,32 @@ mod tests {
         }
     }
 
+    /// A rejection reason a peer does not know must decode as `Unknown` rather
+    /// than fail the whole reply, and every reason this contract does know must
+    /// survive a round trip under its snake_case spelling.
+    #[test]
+    fn command_rejections_round_trip_and_absorb_an_unknown_reason() {
+        for reason in [
+            CommandRejection::UnknownParticipant,
+            CommandRejection::ProducerFenced,
+            CommandRejection::RevisionStale,
+            CommandRejection::Busy,
+            CommandRejection::UnsupportedHostAction,
+            CommandRejection::ControlClosed,
+        ] {
+            let encoded = rmp_serde::to_vec_named(&reason).expect("reason encodes");
+            assert_eq!(
+                rmp_serde::from_slice::<CommandRejection>(&encoded).expect("reason decodes"),
+                reason
+            );
+        }
+        let foreign = rmp_serde::to_vec_named("invented_by_a_newer_peer").unwrap();
+        assert_eq!(
+            rmp_serde::from_slice::<CommandRejection>(&foreign).unwrap(),
+            CommandRejection::Unknown
+        );
+    }
+
     #[test]
     fn wall_time_rejects_non_normalized_values_at_construction_and_decode() {
         assert!(WallTime::new(1, 1_000_000_000).is_err());
@@ -749,6 +812,22 @@ mod tests {
         }))
         .expect("fixture encodes");
         assert!(rmp_serde::from_slice::<WallTime>(&encoded).is_err());
+    }
+
+    /// The host clock conversion normalizes both directions around the epoch,
+    /// so a pre-epoch instant is still a decodable value.
+    #[test]
+    fn wall_time_from_a_host_instant_is_normalized_in_both_directions() {
+        let after = WallTime::from_system_time(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::new(7, 250),
+        );
+        assert_eq!((after.unix_seconds(), after.nanos()), (7, 250));
+
+        let before = WallTime::from_system_time(
+            std::time::SystemTime::UNIX_EPOCH - std::time::Duration::new(7, 250),
+        );
+        assert!(before.nanos() < 1_000_000_000);
+        assert_eq!(before.unix_seconds(), -8);
     }
 
     #[test]

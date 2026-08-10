@@ -4,8 +4,6 @@
 //!
 //! - [`phoxal_api_tree!`], [`phoxal_api_fragment!`], and
 //!   [`phoxal_api_fragment_group!`] - author modular contract families.
-//! - [`phoxal_protocol!`] - declares process-boundary protocol endpoints over
-//!   ordinary Rust payload modules, with protocol-relative keys.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
@@ -73,16 +71,6 @@ pub fn __phoxal_api_materialize(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn __phoxal_api_define_group(input: TokenStream) -> TokenStream {
     api_tree::expand_group_collector(input.into()).into()
-}
-
-/// Declare a process-boundary protocol surface, rooted at its own protocol
-/// name. Keeping protocol mode in its own macro prevents the two grammars from
-/// silently drifting into one another.
-#[proc_macro]
-pub fn phoxal_protocol(input: TokenStream) -> TokenStream {
-    api_tree::expand_protocol(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
 }
 
 /// Attach a positive, finite frequency to the ordinary

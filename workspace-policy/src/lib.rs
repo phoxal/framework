@@ -35,7 +35,7 @@ pub const FACADE: &str = "phoxal";
 /// `the_library_crate_list_matches_the_workspace_members` fails when a library
 /// crate is added to the workspace without being added here, because a missing
 /// entry would silently turn that crate into a grammar violation.
-pub const LIBRARY_CRATE_DIRS: [&str; 9] = [
+pub const LIBRARY_CRATE_DIRS: [&str; 8] = [
     "phoxal",
     "crates/api",
     "crates/bundle",
@@ -44,7 +44,6 @@ pub const LIBRARY_CRATE_DIRS: [&str; 9] = [
     "crates/manifest",
     "crates/model",
     "crates/runtime-contract",
-    "crates/supervisor-api",
 ];
 
 /// The package a library crate directory must hold, or `None` for a directory

@@ -1,8 +1,8 @@
 error[E0631]: type mismatch in function arguments
-  --> tests/trybuild/fail/query_request_mismatch.rs:16:61
+  --> tests/trybuild/fail/query_request_mismatch.rs:16:62
    |
-16 |           ctx.query(supervisor::topic::owner().asset().get(), Self::get)
-   |               -----                                           ^^^^^^^^^ expected due to this
+16 |           ctx.query(supervisor::topic::owner().bundle().get(), Self::get)
+   |               -----                                            ^^^^^^^^^ expected due to this
    |               |
    |               required by a bound introduced by this call
 ...
@@ -12,8 +12,8 @@ error[E0631]: type mismatch in function arguments
 26 | |         _query: QueryContext,
 27 | |         _request: api::map::SubmapRequest,
 28 | |         _state: &mut (),
-29 | |     ) -> QueryResult<supervisor::asset::GetResponse> {
-   | |____________________________________________________- found signature defined here
+29 | |     ) -> QueryResult<supervisor::bundle::GetResponse> {
+   | |_____________________________________________________- found signature defined here
    |
    = note: expected function signature `for<'a> fn(&'a BadRequest, &'a Api, phoxal::QueryContext, GetRequest, &'a mut ()) -> _`
               found function signature `fn(&BadRequest, &Api, phoxal::QueryContext, SubmapRequest, &mut ()) -> _`
@@ -34,5 +34,5 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    | |_____________________________________________________^ required by this bound in `SetupContext::<R>::query`
 help: consider wrapping the function in a closure
    |
-16 |         ctx.query(supervisor::topic::owner().asset().get(), |arg0: &'a BadRequest, arg1: &'a Api, arg2: phoxal::QueryContext, arg3: GetRequest, arg4: &'a mut ()| Self::get(arg0, arg1, arg2, /* SubmapRequest */, arg4))
-   |                                                             +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++          +++++++++++++++++++++++++++++++++++++++++++++
+16 |         ctx.query(supervisor::topic::owner().bundle().get(), |arg0: &'a BadRequest, arg1: &'a Api, arg2: phoxal::QueryContext, arg3: GetRequest, arg4: &'a mut ()| Self::get(arg0, arg1, arg2, /* SubmapRequest */, arg4))
+   |                                                              +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++          +++++++++++++++++++++++++++++++++++++++++++++

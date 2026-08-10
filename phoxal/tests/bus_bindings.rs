@@ -11,7 +11,7 @@ use phoxal::bus::{
     BusMetadata, CodecId, EndpointDescriptor, ParticipantSourceIdentity, ProducerId, RobotInstant,
     SourceAttribution, TimeWindow, TimelineId,
 };
-use phoxal_supervisor_api::supervisor;
+use phoxal_api::supervisor;
 
 #[test]
 fn encoding_string_carries_only_the_codec() {
@@ -27,8 +27,8 @@ fn endpoint_topic_is_family_rooted_on_the_real_tree() {
         "robot/drive/target"
     );
     assert_eq!(
-        <supervisor::endpoint::asset::GetEndpoint as EndpointDescriptor>::TOPIC,
-        "supervisor/asset/get"
+        <supervisor::endpoint::bundle::GetEndpoint as EndpointDescriptor>::TOPIC,
+        "supervisor/bundle/get"
     );
 }
 

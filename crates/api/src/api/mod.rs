@@ -1,6 +1,8 @@
 //! Modular authoring catalogue for the framework-owned wire contracts.
 
 pub(crate) mod robot;
+pub(crate) mod runtime;
+pub(crate) mod supervisor;
 
 phoxal_macros::phoxal_api_tree! {
     output generated;
@@ -8,5 +10,7 @@ phoxal_macros::phoxal_api_tree! {
 
     fragments {
         robot;
+        runtime;
+        supervisor;
     }
 }

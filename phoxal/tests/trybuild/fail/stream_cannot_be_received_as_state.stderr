@@ -14,7 +14,7 @@ error[E0277]: the trait bound `ResultEndpoint: StateContract` is not satisfied
              RevisionEndpoint
              StaticTransformsEndpoint
              TreeEndpoint
-             phoxal::api::component::battery::StateEndpoint
+             phoxal::api::endpoint::component::battery::StateEndpoint
            and $N others
 note: required by a bound in `phoxal::SetupContext::<R>::state_view`
   --> src/participant/context.rs
@@ -40,7 +40,7 @@ error[E0277]: the trait bound `ResultEndpoint: StateDeliveryContract` is not sat
              RevisionEndpoint
              StaticTransformsEndpoint
              TreeEndpoint
-             phoxal::api::component::battery::StateEndpoint
+             phoxal::api::endpoint::component::battery::StateEndpoint
            and $N others
 note: required by a bound in `phoxal::SetupContext::<R>::state_view`
   --> src/participant/context.rs
