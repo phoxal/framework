@@ -1,9 +1,16 @@
 //! Generated endpoint catalogue for materialized contract families.
+//!
+//! Two documents come out of the same collected endpoint list. The manifest is
+//! the const catalogue in-crate tests and tooling read; the contract surface is
+//! the machine-readable statement of the same topology for compatibility CI,
+//! carrying each endpoint's wire shapes instead of its type names. Building
+//! both from one traversal is what keeps them from ever describing different
+//! endpoint sets.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::model::{MaterializedTree, Node, TopicKind};
+use super::model::{BodyPath, MaterializedTree, Node, TopicKind};
 
 /// One contract family in the emitted manifest.
 pub(super) struct ManifestFamily {
@@ -14,11 +21,45 @@ pub(super) struct ManifestFamily {
 struct ManifestContract {
     endpoint: String,
     topic: String,
-    payload: Option<String>,
-    request: Option<String>,
-    response: Option<String>,
+    bodies: ManifestBodies,
     kind_tokens: TokenStream,
     delivery_tokens: TokenStream,
+}
+
+/// The bodies one endpoint carries.
+///
+/// This mirrors the source grammar's own split rather than three independent
+/// options, so "a pub/sub endpoint has no request" is a fact of the type and
+/// neither emitted document has a case that cannot happen.
+enum ManifestBodies {
+    PubSub(BodyPath),
+    Query {
+        request: BodyPath,
+        response: BodyPath,
+    },
+}
+
+impl ManifestBodies {
+    fn payload(&self) -> Option<&BodyPath> {
+        match self {
+            Self::PubSub(body) => Some(body),
+            Self::Query { .. } => None,
+        }
+    }
+
+    fn request(&self) -> Option<&BodyPath> {
+        match self {
+            Self::PubSub(_) => None,
+            Self::Query { request, .. } => Some(request),
+        }
+    }
+
+    fn response(&self) -> Option<&BodyPath> {
+        match self {
+            Self::PubSub(_) => None,
+            Self::Query { response, .. } => Some(response),
+        }
+    }
 }
 
 impl ManifestFamily {
@@ -38,14 +79,15 @@ impl ManifestFamily {
     }
 
     pub(super) fn expand_manifest(families: &[Self]) -> TokenStream {
+        let surface = Self::expand_contract_surface(families);
         let family_entries = families.iter().map(|family| {
             let name = &family.name;
             let contracts = family.contracts.iter().map(|contract| {
                 let endpoint = &contract.endpoint;
                 let topic = &contract.topic;
-                let payload = optional_string(&contract.payload);
-                let request = optional_string(&contract.request);
-                let response = optional_string(&contract.response);
+                let payload = optional_identity(contract.bodies.payload());
+                let request = optional_identity(contract.bodies.request());
+                let response = optional_identity(contract.bodies.response());
                 let kind = &contract.kind_tokens;
                 let delivery = &contract.delivery_tokens;
                 quote! {
@@ -93,13 +135,81 @@ impl ManifestFamily {
             /// Every endpoint declared by the materialized trees.
             #[doc(hidden)]
             pub const API_CONTRACT_MANIFEST: &[ApiContractManifestFamily] = &[#(#family_entries),*];
+
+            #surface
+        }
+    }
+
+    /// Emit the crate's contract surface: one record per endpoint, carrying the
+    /// wire schema of every body it names.
+    ///
+    /// The schemas are composed at call time rather than in a const, because a
+    /// `WireSchema` is an owned tree. What has to be deterministic is the
+    /// rendered output, and that follows from the record set and the canonical
+    /// rendering, not from when the tree is built.
+    fn expand_contract_surface(families: &[Self]) -> TokenStream {
+        let records = families.iter().flat_map(|family| {
+            let name = &family.name;
+            family.contracts.iter().map(move |contract| {
+                let topic = &contract.topic;
+                let kind = &contract.kind_tokens;
+                let delivery = &contract.delivery_tokens;
+                match &contract.bodies {
+                    ManifestBodies::PubSub(payload) => {
+                        let payload = wire_schema_of(payload);
+                        quote! {
+                            ::phoxal_runtime_contract::contract_surface::ContractRecord::topic(
+                                #name, #topic, #kind.as_str(), #delivery.as_str(), #payload,
+                            )
+                        }
+                    }
+                    ManifestBodies::Query { request, response } => {
+                        let request = wire_schema_of(request);
+                        let response = wire_schema_of(response);
+                        quote! {
+                            ::phoxal_runtime_contract::contract_surface::ContractRecord::query(
+                                #name, #topic, #kind.as_str(), #delivery.as_str(), #request, #response,
+                            )
+                        }
+                    }
+                }
+            })
+        });
+
+        quote! {
+            /// The contract surface this crate owns: every declared endpoint,
+            /// with the wire shape of every body it carries.
+            ///
+            /// Not public API. It exists so compatibility CI can read the
+            /// declared endpoint topology out of the crate that declares it.
+            #[doc(hidden)]
+            pub mod __compat {
+                /// The canonical rendering of this crate's contract surface.
+                #[must_use]
+                pub fn contract_surface() -> ::std::string::String {
+                    ::phoxal_runtime_contract::contract_surface::ContractSurface::new(
+                        ::std::vec![#(#records),*],
+                    )
+                    .canonical_json()
+                }
+            }
         }
     }
 }
 
-fn optional_string(value: &Option<String>) -> TokenStream {
+fn wire_schema_of(body: &BodyPath) -> TokenStream {
+    let path = &body.path;
+    quote! {
+        <#path as ::phoxal_runtime_contract::wire_schema::DescribeWire>::wire_schema()
+    }
+}
+
+fn optional_identity(value: Option<&BodyPath>) -> TokenStream {
     match value {
-        Some(value) => quote! { Some(#value) },
+        Some(value) => {
+            let identity = value.identity();
+            quote! { Some(#identity) }
+        }
         None => quote! { None },
     }
 }
@@ -121,25 +231,18 @@ fn collect(
             let endpoint_name = format!("{tree_id}::{family_path}::{endpoint}");
             let kind_tokens = topic.endpoint_kind();
             let delivery_tokens = topic.delivery_family();
-            contracts.push(match &topic.kind {
-                TopicKind::PubSub(body) => ManifestContract {
-                    endpoint: endpoint_name,
-                    topic: topic_key,
-                    payload: Some(body.identity()),
-                    request: None,
-                    response: None,
-                    kind_tokens,
-                    delivery_tokens,
+            contracts.push(ManifestContract {
+                endpoint: endpoint_name,
+                topic: topic_key,
+                bodies: match &topic.kind {
+                    TopicKind::PubSub(body) => ManifestBodies::PubSub(body.clone()),
+                    TopicKind::Query { request, response } => ManifestBodies::Query {
+                        request: request.clone(),
+                        response: response.clone(),
+                    },
                 },
-                TopicKind::Query { request, response } => ManifestContract {
-                    endpoint: endpoint_name,
-                    topic: topic_key,
-                    payload: None,
-                    request: Some(request.identity()),
-                    response: Some(response.identity()),
-                    kind_tokens,
-                    delivery_tokens,
-                },
+                kind_tokens,
+                delivery_tokens,
             });
         }
 

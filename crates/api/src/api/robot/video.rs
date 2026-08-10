@@ -4,7 +4,9 @@ use crate::api::robot::perception::SourceRef;
 /// optional size. The pre-v1 backend currently has no encoded
 /// transport, so the response reports that outcome instead of
 /// fabricating a stream identity or lifecycle.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct OpenRequest {
     pub source: SourceRef,
     pub width_px: Option<u32>,
@@ -12,7 +14,16 @@ pub struct OpenRequest {
 }
 
 /// Why a requested video stream could not be opened.
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OpenOutcome {
     /// The source exists, but no encoder/transport backend exists

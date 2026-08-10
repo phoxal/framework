@@ -109,3 +109,118 @@ pub use topic::{
     AskQuery, KeySegment, KeySegmentError, Publish, ServeQuery, Subscribe, Topic, TopicKind,
     WildcardPublish,
 };
+
+/// The contract surface this crate owns: the envelopes that ride beside a body
+/// and the exact wire text a peer has to spell.
+///
+/// Not public API. It exists so compatibility CI can read this crate's declared
+/// process boundary out of the crate itself.
+///
+/// Endpoints are deliberately absent: this crate owns the transport floor, and
+/// every concrete endpoint is declared by `phoxal-api`. So are
+/// [`DeliveryFamily`] and [`EndpointKind`], which are compile-time typing with
+/// no bytes of their own - they reach a surface only as the spelling on an
+/// endpoint record, which is where they actually decide something.
+#[doc(hidden)]
+pub mod __compat {
+    use phoxal_runtime_contract::contract_surface::{ContractRecord, ContractSurface};
+    use phoxal_runtime_contract::wire_schema::DescribeWire;
+
+    use crate::abi::CodecId;
+    use crate::liveliness::PARTICIPANT_LIVELINESS_PREFIX;
+    use crate::metadata::BusMetadata;
+    use crate::query::QueryFailure;
+    use crate::session::BUS_KEY_PREFIX;
+
+    /// The canonical rendering of this crate's contract surface.
+    #[must_use]
+    pub fn contract_surface() -> String {
+        ContractSurface::new([
+            // The per-sample attachment: provenance rides here rather than in
+            // the body, so it is a wire contract in its own right.
+            ContractRecord::envelope("BusMetadata", BusMetadata::wire_schema()),
+            // A handler error rides Zenoh's native error reply leg with this
+            // body, which no endpoint declaration mentions.
+            ContractRecord::envelope("QueryFailure", QueryFailure::wire_schema()),
+            // Every key this bus speaks is rooted at the execution, so a
+            // previous run's traffic lands elsewhere and cannot be observed as
+            // current.
+            ContractRecord::identifier(
+                "bus-key-root",
+                format!("{BUS_KEY_PREFIX}/{{execution}}"),
+            ),
+            ContractRecord::identifier(
+                "participant-ready-key",
+                format!(
+                    "{BUS_KEY_PREFIX}/{{execution}}/{PARTICIPANT_LIVELINESS_PREFIX}/{{participant}}/{{producer}}"
+                ),
+            ),
+            // The encoding string a receiver validates before it decodes.
+            ContractRecord::identifier("encoding", CodecId::MessagePack.encoding_string()),
+        ])
+        .canonical_json()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::contract_surface;
+
+        /// The surface is one deterministic JSON document naming every wire
+        /// fact this crate owns, so an accidentally empty or reordered surface
+        /// cannot pass.
+        #[test]
+        fn the_surface_names_every_bus_owned_wire_fact_deterministically() {
+            let rendered = contract_surface();
+            serde_json::from_str::<serde_json::Value>(&rendered).expect("the surface is JSON");
+            assert_eq!(contract_surface(), rendered);
+            for expected in [
+                r#""name":"BusMetadata""#,
+                r#""name":"QueryFailure""#,
+                r#""value":"phoxal/{execution}""#,
+                r#""value":"phoxal/{execution}/liveliness/participants/{participant}/{producer}""#,
+                r#""value":"phoxal/v0;codec=1""#,
+                // The attachment's own fields, so an empty envelope body fails.
+                r#""name":"produced_at""#,
+            ] {
+                assert!(
+                    rendered.contains(expected),
+                    "{expected} missing: {rendered}"
+                );
+            }
+        }
+
+        /// The declared envelope shapes are checked against real serialized
+        /// values, which is what keeps the surface honest about the bytes the
+        /// bus actually writes.
+        #[test]
+        fn the_declared_envelope_shapes_are_the_shapes_the_bus_writes() {
+            use phoxal_runtime_contract::identity::{ParticipantId, TimelineId};
+            use phoxal_runtime_contract::wire_schema::DescribeWire;
+
+            use crate::abi::CodecId;
+            use crate::metadata::{
+                BusMetadata, ParticipantSourceIdentity, SourceAttribution, StreamPosition,
+            };
+            use crate::query::{QueryCode, QueryFailure};
+            use crate::test_support::producer;
+            use crate::time::{RobotInstant, TimeWindow};
+
+            let metadata = BusMetadata {
+                codec: CodecId::MessagePack.as_u8(),
+                sequence: 3,
+                stream_position: Some(StreamPosition { sequence: 1 }),
+                produced_at: Some(TimeWindow::exact(RobotInstant::new(TimelineId::mint(), 8))),
+                source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
+                    ParticipantId::new("drive").expect("a participant id"),
+                    producer(1),
+                )),
+            };
+            let json = serde_json::to_value(&metadata).expect("the attachment serializes");
+            assert_eq!(BusMetadata::wire_schema().conforms(&json), Ok(()));
+
+            let failure = QueryFailure::new(QueryCode::NotFound, "no such entity");
+            let json = serde_json::to_value(&failure).expect("a query failure serializes");
+            assert_eq!(QueryFailure::wire_schema().conforms(&json), Ok(()));
+        }
+    }
+}

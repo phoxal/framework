@@ -4,6 +4,7 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use phoxal_runtime_contract::wire_schema::{DescribeWire, WireSchema};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -66,6 +67,14 @@ impl Serialize for BundlePath {
 impl<'de> Deserialize<'de> for BundlePath {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl DescribeWire for BundlePath {
+    // Invariant: this states what the `Serialize` above writes - the normalized
+    // forward-slash path as one string.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("BundlePath", WireSchema::String)
     }
 }
 
@@ -137,6 +146,43 @@ impl Serialize for Sha256Digest {
 impl<'de> Deserialize<'de> for Sha256Digest {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::parse(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl DescribeWire for Sha256Digest {
+    // Invariant: this states what the `Serialize` above writes - the canonical
+    // lowercase hexadecimal rendering as one string, never the 32 raw bytes the
+    // type holds.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("Sha256Digest", WireSchema::String)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both of these have hand-written serializers whose output shape the Rust
+    /// declaration does not predict - a digest is 32 bytes in memory and 64
+    /// characters on the wire - so the declared shape is checked against a real
+    /// serialized value.
+    #[test]
+    fn each_declared_shape_is_the_shape_its_serializer_writes() {
+        let path = BundlePath::new("bin/brain").expect("a canonical bundle path");
+        let path_json = serde_json::to_value(&path).expect("a bundle path serializes");
+        assert_eq!(BundlePath::wire_schema().conforms(&path_json), Ok(()));
+        assert_eq!(
+            BundlePath::wire_schema(),
+            WireSchema::opaque("BundlePath", WireSchema::String)
+        );
+
+        let digest = Sha256Digest::of(b"payload");
+        let digest_json = serde_json::to_value(digest).expect("a digest serializes");
+        assert_eq!(Sha256Digest::wire_schema().conforms(&digest_json), Ok(()));
+        assert_eq!(
+            Sha256Digest::wire_schema(),
+            WireSchema::opaque("Sha256Digest", WireSchema::String)
+        );
     }
 }
 

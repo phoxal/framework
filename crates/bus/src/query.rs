@@ -15,7 +15,9 @@ const MAX_QUERY_FAILURE_BYTES: usize = 64 * 1024;
 const MAX_QUERY_MESSAGE_BYTES: usize = 60 * 1024;
 
 /// The small, fixed set of handler error codes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryCode {
     /// The requested entity does not exist.
@@ -33,7 +35,7 @@ pub enum QueryCode {
 }
 
 /// A structured handler failure carried on the error reply leg.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryFailure {
     /// The fixed error code.
     pub code: QueryCode,

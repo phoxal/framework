@@ -17,7 +17,7 @@ use crate::error::{BusError, KeyProblem, Result};
 use crate::metadata::ParticipantSourceIdentity;
 use crate::session::{BusHandle, BusOwner};
 
-const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
+pub(crate) const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 
 /// One stable participant Ready key in the Zenoh Liveliness transport.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,0 +1,40 @@
+# The workspace's command runner, reached as `cargo xtask <verb>` through the
+# alias in `.cargo/config.toml`.
+#
+# It carries a binary and no library, so it sits outside the library-crate
+# grammar `workspace-policy` enforces, and it is absent from `release-plz.toml`
+# for the same reason the policy crate is: a `publish = false` package is
+# invisible to the publisher while still inheriting the one train version.
+#
+# It depends on no framework crate on purpose. The contract surfaces the
+# compatibility checker compares are read out of separately compiled probe
+# projects, so building the checker never builds the runtime stack it checks and
+# the checker can never report the surface it was itself compiled against.
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The release arithmetic is SemVer's own, so the ordering and the version
+# comparison come from the crate that defines them rather than being rewritten.
+semver = { version = "1.0.28", features = ["serde"] }
+# One plain HTTPS GET per crate against the sparse index. Default features minus
+# `gzip`: the index entries this reads are a few kilobytes, so negotiating
+# compression only adds a decoder to the dependency closure. `rustls` reuses the
+# TLS stack the workspace already links.
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
+
+[lints]
+workspace = true

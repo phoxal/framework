@@ -1,12 +1,16 @@
 /// A published map revision marker.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Revision {
     pub revision: u64,
     pub resolution_m: f32,
 }
 
 /// Request a rectangular submap window (map-frame metres).
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct SubmapRequest {
     pub min_x_m: f64,
     pub min_y_m: f64,
@@ -16,7 +20,9 @@ pub struct SubmapRequest {
 
 /// A finite world-space point used as the cell origin and pose
 /// translation in a self-describing grid response.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "crate::api::robot::map::GridPointWire")]
 pub struct Point {
     pub x_m: f64,
@@ -24,7 +30,9 @@ pub struct Point {
 }
 
 /// The map-frame pose of the grid's reference origin.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "crate::api::robot::map::GridPoseWire")]
 pub struct Pose {
     pub x_m: f64,
@@ -33,7 +41,9 @@ pub struct Pose {
 }
 
 /// Requested and covered map-frame bounds.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "crate::api::robot::map::GridBoundsWire")]
 pub struct Bounds {
     pub min_x_m: f64,
@@ -44,7 +54,9 @@ pub struct Bounds {
 
 /// Occupancy has a closed wire domain. Unknown is not treated as
 /// free by safety or navigation.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Occupancy {
     Free,
@@ -54,7 +66,9 @@ pub enum Occupancy {
 
 /// A revisioned map window whose origin, frame, extent and bounds
 /// travel with the cells themselves.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "crate::api::robot::map::GridWindowWire")]
 pub struct GridWindow {
     pub frame_id: String,
@@ -76,7 +90,9 @@ pub struct GridWindow {
 /// with explicit requested/covered bounds, or an explicit
 /// out-of-bounds result. A responder may not silently substitute
 /// a different extent for what was requested.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum SubmapResponse {
     Window(GridWindow),
     Partial {

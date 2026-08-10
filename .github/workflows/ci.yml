@@ -77,3 +77,85 @@ jobs:
         run: |
           cargo package -p phoxal-bus --features router --allow-dirty \
             --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/crates/runtime-contract'"
+
+  # What this pull request does to the wire contracts, stated where the author
+  # can see it. It never fails on the verdict: an ordinary branch is not setting
+  # a version, so there is no version for it to be judged against. The release
+  # PR is where the same comparison becomes a gate, one job below.
+  # The checker compiles the five contract crates and a probe against their
+  # published counterparts; that closure has no native build requirements, so
+  # these two jobs deliberately install no Webots.
+  compatibility-report:
+    name: compatibility report
+    if: >-
+      github.event_name == 'pull_request' &&
+      !startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Report the contract impact
+        shell: bash
+        env:
+          # Read through the environment: a title is arbitrary text and must
+          # never be expanded into the script itself.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # A Conventional Commit breaking marker is the author declaring a
+          # break, so the report is escalated to it. The checker sees structure
+          # only; the marker is how a reinterpreted unit or a flipped convention
+          # under an unchanged shape reaches the impact.
+          #
+          # The marker is `!` immediately before the colon, after the type and
+          # its optional scope. Held in a variable because a literal `\(` in an
+          # inline `=~` pattern is a parse error on older bash.
+          marker='^[a-zA-Z]+(\([^)]*\))?!:'
+          declared=unchanged
+          if [[ "$PR_TITLE" =~ $marker ]]; then
+            declared=breaking
+          fi
+          report="$(cargo xtask compatibility report --declared-impact "$declared")"
+          echo "$report"
+          {
+            echo "## Contract compatibility"
+            echo
+            echo '```'
+            echo "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The release PR carries the candidate train version, which makes it the one
+  # branch where the sufficiency of a version can be judged at all. A candidate
+  # too small for what its contracts changed fails here and cannot merge, so an
+  # under-sized train is refused before it is ever prepared for publication.
+  compatibility-release-candidate:
+    name: release candidate compatibility
+    if: >-
+      github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Check the candidate version against the published train
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The report goes to the summary whichever way the gate falls: the
+          # records behind a refusal are the reason to read it.
+          status=0
+          report="$(cargo xtask compatibility check-release)" || status=$?
+          echo "$report"
+          {
+            echo "## Release candidate compatibility"
+            echo
+            echo '```'
+            echo "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

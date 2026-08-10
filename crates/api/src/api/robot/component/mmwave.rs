@@ -1,12 +1,16 @@
 const MAX_DETECTIONS: usize = 4_096;
 
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Detection {
     pub position: [f32; 3],
     pub velocity: [f32; 3],
     pub snr: f32,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "ScanWire")]
 pub struct Scan {
     pub detections: Vec<Detection>,

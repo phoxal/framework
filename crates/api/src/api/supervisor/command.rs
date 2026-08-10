@@ -7,14 +7,25 @@
 
 pub use crate::api::supervisor::execution::{Command, CommandOutcome, CommandRejection};
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(tag = "schema")]
 pub enum Request {
     #[serde(rename = "phoxal/supervisor-control/request/v0")]
     V0 { command: Command },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(tag = "schema")]
 pub enum Reply {
     #[serde(rename = "phoxal/supervisor-control/reply/v0")]

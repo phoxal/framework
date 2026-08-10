@@ -1,5 +1,7 @@
 /// A per-actuator control command.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum Command {
     Position(
         #[serde(

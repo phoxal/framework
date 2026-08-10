@@ -79,11 +79,17 @@ fn public_library_dependency_direction_is_exact() -> Result<()> {
         ("phoxal-api", "phoxal-bus"),
         ("phoxal-api", "phoxal-macros"),
         ("phoxal-api", "phoxal-runtime-contract"),
+        // Every crate that owns a wire or document contract derives the wire
+        // shape of its own declarations, so the derive reaches each of them.
+        // The direction stays one-way: `phoxal-macros` depends on none of them.
+        ("phoxal-bundle", "phoxal-macros"),
         ("phoxal-bundle", "phoxal-model"),
         ("phoxal-bundle", "phoxal-runtime-contract"),
+        ("phoxal-bus", "phoxal-macros"),
         ("phoxal-bus", "phoxal-runtime-contract"),
         ("phoxal-manifest", "phoxal-model"),
         ("phoxal-manifest", "phoxal-runtime-contract"),
+        ("phoxal-model", "phoxal-macros"),
         // Canonical model identities originate in the process-contract layer
         // so runtime consumers do not need the authored model crate.
         ("phoxal-model", "phoxal-runtime-contract"),

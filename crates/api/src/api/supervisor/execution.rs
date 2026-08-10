@@ -11,6 +11,7 @@
 
 use phoxal_runtime_contract::identity::{ComponentInstanceId, ParticipantId, ProducerId};
 use phoxal_runtime_contract::metadata::{MAX_RUNTIME_PARTICIPANTS, ParticipantKind};
+use phoxal_runtime_contract::wire_schema::{DescribeWire, FieldPresence, WireField, WireSchema};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Maximum process rows in one snapshot, identical to the runtime bundle cap.
@@ -80,11 +81,23 @@ impl<'de, const MAX: usize> Deserialize<'de> for DiagnosticText<MAX> {
     }
 }
 
+impl<const MAX: usize> DescribeWire for DiagnosticText<MAX> {
+    // Invariant: this states what `#[serde(transparent)]` writes above - the
+    // text as one string. The byte budget is a decode rule and not a shape, so
+    // every bound shares the one wire form, which is why the declaration does
+    // not spell `MAX`.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("DiagnosticText", WireSchema::String)
+    }
+}
+
 pub type Detail = DiagnosticText<MAX_DETAIL_BYTES>;
 pub type StderrTail = DiagnosticText<MAX_STDERR_TAIL_BYTES>;
 
 /// What the supervisor intends for one persisted participant.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DesiredState {
     Running,
@@ -94,7 +107,9 @@ pub enum DesiredState {
 }
 
 /// What the supervisor currently observes for one persisted participant.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessState {
     Starting,
@@ -107,7 +122,9 @@ pub enum ProcessState {
 }
 
 /// The process operation that produced the most recent failure.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessFailureKind {
     Spawn,
@@ -124,7 +141,9 @@ pub enum ProcessFailureKind {
 }
 
 /// One unambiguous host exit cause.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(tag = "exit", rename_all = "snake_case")]
 pub enum ExitStatus {
     Code { code: i32 },
@@ -132,7 +151,7 @@ pub enum ExitStatus {
 }
 
 /// A normalized wall-clock diagnostic instant. Never used for runtime order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WallTime {
     unix_seconds: i64,
@@ -195,7 +214,7 @@ impl<'de> Deserialize<'de> for WallTime {
 }
 
 /// Evidence for one participant incarnation's most recent failure.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessFailure {
     pub kind: ProcessFailureKind,
@@ -236,7 +255,7 @@ impl ProcessFailure {
 }
 
 /// One process selected by the persisted runtime document.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Process {
     pub participant: ParticipantId,
@@ -252,7 +271,9 @@ pub struct Process {
 }
 
 /// Whole-execution lifecycle owned by the supervisor.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Lifecycle {
     Starting,
@@ -264,7 +285,19 @@ pub enum Lifecycle {
 }
 
 /// The fixed supervisor bootstrap sequence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StartupStepKind {
     Bundle,
@@ -277,7 +310,9 @@ impl StartupStepKind {
 }
 
 /// State of one supervisor startup step.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StartupStepState {
     Pending,
@@ -287,7 +322,7 @@ pub enum StartupStepState {
 }
 
 /// Progress for one fixed supervisor startup step.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StartupStep {
     pub kind: StartupStepKind,
@@ -297,7 +332,9 @@ pub struct StartupStep {
 }
 
 /// Why the execution failed when no single participant row is sufficient.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonFailureReason {
     InvalidBundle,
@@ -312,7 +349,7 @@ pub enum DaemonFailureReason {
 }
 
 /// Whole-execution failure evidence.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonFailure {
     pub reason: DaemonFailureReason,
@@ -458,10 +495,33 @@ impl Serialize for Snapshot {
     }
 }
 
+impl DescribeWire for Snapshot {
+    // Invariant: this states what the `Serialize` above writes through its
+    // `Wire` mirror - one map of those five fields, with `failure` decodable
+    // while absent because the mirror reads it as an `Option`. The relational
+    // rules `validate` enforces are decode-time admissibility, not shape.
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque(
+            "Snapshot",
+            WireSchema::structure([
+                WireField::required("revision", u64::wire_schema()),
+                WireField::required("lifecycle", Lifecycle::wire_schema()),
+                WireField::required("startup", <Vec<StartupStep>>::wire_schema()),
+                WireField::required("processes", <Vec<Process>>::wire_schema()),
+                WireField::new(
+                    "failure",
+                    <Option<DaemonFailure>>::wire_schema(),
+                    FieldPresence::Defaulted,
+                ),
+            ]),
+        )
+    }
+}
+
 /// Snapshot wire document. The schema tag is a parse-time format
 /// discriminator: a reader refuses a tag it does not implement before it looks
 /// at any field.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "schema")]
 pub enum SnapshotDocument {
     #[serde(rename = "phoxal/supervisor-snapshot/v0")]
@@ -499,7 +559,7 @@ impl<'de> Deserialize<'de> for SnapshotDocument {
 }
 
 /// One acknowledged operation requested from supervisor authority.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
     /// Compare-and-swap the observed Ready producer. `None` restarts only when
@@ -520,7 +580,9 @@ pub enum Command {
 }
 
 /// Outcome of one acknowledged supervisor command.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CommandOutcome {
     /// The first snapshot revision that reflects the accepted command.
@@ -533,7 +595,9 @@ pub enum CommandOutcome {
 }
 
 /// Typed command rejection suitable for caller branching.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandRejection {
     UnknownParticipant,
@@ -828,6 +892,81 @@ mod tests {
         );
         assert!(before.nanos() < 1_000_000_000);
         assert_eq!(before.unix_seconds(), -8);
+    }
+
+    /// The snapshot's serializer is hand-written through a `Wire` mirror, so
+    /// its declared shape is checked against the document that mirror actually
+    /// produces - including the derived rows underneath it, which reach across
+    /// crates for the participant, producer, and kind identities.
+    #[test]
+    fn the_declared_snapshot_shape_is_the_shape_the_mirror_writes() {
+        let mut failed = process("drive");
+        failed.state = ProcessState::Failed;
+        failed.producer =
+            Some(ProducerId::try_from((1_u128 << 124) | 9).expect("a canonical producer id"));
+        failed.failure = Some(ProcessFailure::new(
+            ProcessFailureKind::Exit,
+            WallTime::new(17, 250).expect("a normalized wall time"),
+            Some(ExitStatus::Code { code: 3 }),
+            "the process exited",
+            Some("stderr tail"),
+        ));
+
+        let mut populated = snapshot(vec![process("brain"), failed]);
+        populated.lifecycle = Lifecycle::Degraded;
+        populated.startup.push(StartupStep {
+            kind: StartupStepKind::Bundle,
+            state: StartupStepState::Done,
+            detail: Some(Detail::new("read")),
+            elapsed_ms: Some(12),
+        });
+
+        let document = SnapshotDocument::V0(populated);
+        let json = serde_json::to_value(&document).expect("the snapshot document serializes");
+        assert_eq!(SnapshotDocument::wire_schema().conforms(&json), Ok(()));
+        // The tag merges into the same map as the snapshot's own fields, so
+        // the declared document has to describe the merged form.
+        assert_eq!(json["schema"], "phoxal/supervisor-snapshot/v0");
+        assert!(json["processes"].is_array());
+    }
+
+    /// The internally tagged command documents, the `#[serde(other)]` decode
+    /// fallback, and the `snake_case` variant spellings are all read from the
+    /// declaration rather than restated here.
+    #[test]
+    fn the_declared_command_shapes_are_the_shapes_serde_writes() {
+        let command = Command::Restart {
+            participant: ParticipantId::new("drive").expect("a valid participant id"),
+            expected_producer: None,
+        };
+        let json = serde_json::to_value(&command).expect("a command serializes");
+        assert_eq!(Command::wire_schema().conforms(&json), Ok(()));
+        assert_eq!(json["command"], "restart");
+
+        let outcome = CommandOutcome::Rejected {
+            reason: CommandRejection::Busy,
+        };
+        let json = serde_json::to_value(outcome).expect("an outcome serializes");
+        assert_eq!(CommandOutcome::wire_schema().conforms(&json), Ok(()));
+
+        let rejections = CommandRejection::wire_schema();
+        let WireSchema::Enum { variants, .. } = &rejections else {
+            panic!("a rejection is a sum type: {rejections:?}");
+        };
+        assert!(
+            variants.iter().any(|variant| variant.name == "unknown"
+                && variant.body == phoxal_runtime_contract::wire_schema::VariantBody::Other),
+            "the unknown-reason fallback is part of the wire shape: {variants:?}"
+        );
+    }
+
+    /// A bounded diagnostic is one string on the wire whatever its budget is,
+    /// so both aliases declare the same shape.
+    #[test]
+    fn every_diagnostic_budget_declares_the_one_text_shape() {
+        assert_eq!(Detail::wire_schema(), StderrTail::wire_schema());
+        let json = serde_json::to_value(Detail::new("bounded")).expect("a detail serializes");
+        assert_eq!(Detail::wire_schema().conforms(&json), Ok(()));
     }
 
     #[test]

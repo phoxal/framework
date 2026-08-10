@@ -1,3 +1,8 @@
+# The workspace's command runner, so a maintainer and CI spell a task the same
+# way: `cargo xtask <verb>`.
+[alias]
+xtask = "run --quiet --package xtask --"
+
 # The static registry this workspace's executables publish to.
 # Committed here rather than passed per
 # invocation because everything that touches this workspace needs it:

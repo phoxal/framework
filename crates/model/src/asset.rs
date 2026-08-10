@@ -53,6 +53,17 @@ impl<'de> Deserialize<'de> for AssetId {
     }
 }
 
+impl phoxal_runtime_contract::wire_schema::DescribeWire for AssetId {
+    // Invariant: this states what the `Serialize` above writes - the normalized
+    // forward-slash identity as one string.
+    fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
+        phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+            "AssetId",
+            phoxal_runtime_contract::wire_schema::WireSchema::String,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

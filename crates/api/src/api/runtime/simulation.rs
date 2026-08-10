@@ -8,7 +8,16 @@
 ///
 /// The production timeline and exact instant are bus metadata. The body carries
 /// only the simulator's monotonic step counter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Clock {
     pub step: u64,
 }

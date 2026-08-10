@@ -1,39 +1,60 @@
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SensorHealth {
     Nominal,
     Degraded,
     Fault,
 }
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct ScanGeometry {
     pub angle_min_rad: f32,
     pub angle_increment_rad: f32,
 }
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct RangeLimits {
     pub min_m: f32,
     pub max_m: f32,
 }
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct ScanQuality {
     pub valid_points: u32,
 }
 /// A polar return is either a physical range or an explicit invalid reading.
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RangeSample {
     Valid(f32),
     Invalid,
 }
 /// A cartesian return is likewise explicit about a missing/invalid reading.
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PointSample {
     Valid([f32; 3]),
     Invalid,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Ranges {
     pub ranges: Vec<RangeSample>,
     pub geometry: Option<ScanGeometry>,
@@ -41,14 +62,18 @@ pub struct Ranges {
     pub quality: Option<ScanQuality>,
     pub health: SensorHealth,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Points {
     pub points: Vec<PointSample>,
     pub limits: Option<RangeLimits>,
     pub quality: Option<ScanQuality>,
     pub health: SensorHealth,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(tag = "kind", rename_all = "snake_case", try_from = "ScanWire")]
 pub enum Scan {
     Ranges(Ranges),

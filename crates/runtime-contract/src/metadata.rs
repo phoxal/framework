@@ -17,9 +17,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::ParticipantArtifactId;
 use crate::version::FrameworkVersion;
+use crate::wire_schema::{
+    DescribeWire, EnumRepresentation, FieldPresence, VariantBody, WireField, WireSchema,
+    WireVariant,
+};
 
 /// Maximum participant instances in one compiled runtime execution.
 pub const MAX_RUNTIME_PARTICIPANTS: usize = 64;
+
+/// The format tag of the embedded participant-metadata document.
+///
+/// A serde attribute cannot name a constant, so the spelling below is written
+/// twice: once on [`ParticipantMetadata`]'s `rename` and once here. The
+/// declared shape and the crate's contract surface both read it from here, and
+/// `the_declared_document_shape_is_the_shape_the_writer_emits` serializes a
+/// real record against that shape, so a drift between the two spellings fails a
+/// test rather than shipping.
+pub const PARTICIPANT_METADATA_SCHEMA_TAG: &str = "phoxal/participant-metadata/v0";
 
 /// The complete compatibility contract embedded in one reusable participant
 /// artifact.
@@ -41,6 +55,31 @@ pub struct ParticipantContract {
     pub requirement: Option<ParticipantRequirement>,
     /// The exact JSON Schema emitted for the artifact's config type.
     pub config_schema: serde_json::Value,
+}
+
+// The wire shapes in this module are hand-written rather than derived: the
+// process-contract floor sits below `phoxal-macros` in the crate graph, so it
+// cannot use the derive that reads these same serde attributes. Each
+// implementation states the shape its adjacent `#[derive(Serialize)]` writes,
+// and `the_declared_document_shape_is_the_shape_the_writer_emits` checks the
+// two against each other rather than trusting either.
+impl DescribeWire for ParticipantContract {
+    // Invariant: this states what the derived `Serialize` above writes - one
+    // map of the five declared field names, with `requirement` decodable while
+    // absent because it is an `Option`.
+    fn wire_schema() -> WireSchema {
+        WireSchema::structure([
+            WireField::required("framework", FrameworkVersion::wire_schema()),
+            WireField::required("id", ParticipantArtifactId::wire_schema()),
+            WireField::required("kind", ParticipantKind::wire_schema()),
+            WireField::new(
+                "requirement",
+                WireSchema::option(ParticipantRequirement::wire_schema()),
+                FieldPresence::Defaulted,
+            ),
+            WireField::required("config_schema", serde_json::Value::wire_schema()),
+        ])
+    }
 }
 
 /// What a participant binary is, as declared by the role macro it was built
@@ -70,6 +109,22 @@ impl ParticipantKind {
             ParticipantKind::Brain => "brain",
         }
     }
+
+    /// Every kind, so the wire declaration and `as_str` cannot cover different
+    /// sets.
+    const ALL: [Self; 4] = [Self::Service, Self::Driver, Self::Simulator, Self::Brain];
+}
+
+impl DescribeWire for ParticipantKind {
+    // Invariant: this states what the derived `Serialize` above writes - one
+    // externally tagged unit variant per kind, spelled by the `snake_case`
+    // rename that `as_str` also returns.
+    fn wire_schema() -> WireSchema {
+        WireSchema::enumeration(
+            EnumRepresentation::ExternallyTagged,
+            ParticipantKind::ALL.map(|kind| WireVariant::new(kind.as_str(), VariantBody::Unit)),
+        )
+    }
 }
 
 /// The one topology requirement a participant binary may currently declare.
@@ -88,6 +143,23 @@ impl ParticipantRequirement {
             Self::DifferentialDriveVelocity => "differential_drive_velocity",
         }
     }
+
+    /// Every requirement, so the wire declaration and `as_str` cannot cover
+    /// different sets.
+    const ALL: [Self; 1] = [Self::DifferentialDriveVelocity];
+}
+
+impl DescribeWire for ParticipantRequirement {
+    // Invariant: this states what the derived `Serialize` above writes - one
+    // externally tagged unit variant, spelled by the `snake_case` rename that
+    // `as_str` also returns.
+    fn wire_schema() -> WireSchema {
+        WireSchema::enumeration(
+            EnumRepresentation::ExternallyTagged,
+            ParticipantRequirement::ALL
+                .map(|requirement| WireVariant::new(requirement.as_str(), VariantBody::Unit)),
+        )
+    }
 }
 
 /// The record every participant binary embeds in its `.phoxal_meta` /
@@ -104,6 +176,28 @@ pub enum ParticipantMetadata {
         #[serde(flatten)]
         contract: ParticipantContract,
     },
+}
+
+impl DescribeWire for ParticipantMetadata {
+    // Invariant: this states the one document both sides of this contract
+    // handle - the parser above and `emit::ParticipantMetadataRecord`, which is
+    // its only writer. The tag spelling comes from
+    // [`PARTICIPANT_METADATA_SCHEMA_TAG`], which the serde attribute above
+    // cannot name; every other part of the document composes from
+    // `ParticipantContract`, since `#[serde(flatten)]` merges that contract's
+    // fields into the tagged map and an internally tagged newtype variant over
+    // it describes exactly the same result.
+    fn wire_schema() -> WireSchema {
+        WireSchema::enumeration(
+            EnumRepresentation::InternallyTagged {
+                tag: String::from("schema"),
+            },
+            [WireVariant::new(
+                PARTICIPANT_METADATA_SCHEMA_TAG,
+                VariantBody::newtype(ParticipantContract::wire_schema()),
+            )],
+        )
+    }
 }
 
 impl ParticipantMetadata {
@@ -216,6 +310,41 @@ mod tests {
     fn a_record_missing_its_framework_version_is_rejected() {
         let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","requirement":null,"config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
+    }
+
+    /// The declared document shape is checked against a real record rather
+    /// than asserted, which is what keeps a hand-written declaration honest
+    /// about the flattened contract it merges under the tag.
+    #[test]
+    fn the_declared_document_shape_is_the_shape_the_writer_emits() {
+        let emitted = crate::emit::ParticipantMetadataRecord::V0 {
+            contract: crate::emit::ParticipantContractRecord {
+                framework: FrameworkVersion::CURRENT,
+                id: "drive",
+                kind: ParticipantKind::Service,
+                requirement: Some(ParticipantRequirement::DifferentialDriveVelocity),
+                config_schema: serde_json::json!({"type": "null"}),
+            },
+        };
+        let json = serde_json::to_value(&emitted).expect("the writer's record serializes");
+        assert_eq!(ParticipantMetadata::wire_schema().conforms(&json), Ok(()));
+
+        // The reader's declaration and the writer's are one shape, because the
+        // two types are one document in two evaluation modes.
+        assert_eq!(
+            ParticipantMetadata::wire_schema(),
+            crate::emit::ParticipantMetadataRecord::wire_schema()
+        );
+    }
+
+    /// The declared shape says an absent `requirement` still decodes, so the
+    /// parser has to agree.
+    #[test]
+    fn an_absent_requirement_decodes_exactly_as_the_declared_shape_says() {
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","framework":"0.57.2","id":"drive","kind":"service","config_schema":null}"#;
+        let metadata =
+            ParticipantMetadata::from_bytes(bytes).expect("an absent optional field decodes");
+        assert_eq!(metadata.contract().requirement, None);
     }
 
     #[test]

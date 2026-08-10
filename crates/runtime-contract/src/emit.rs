@@ -20,8 +20,11 @@
 
 use serde::Serialize;
 
-use crate::metadata::{ParticipantKind, ParticipantRequirement};
+use crate::metadata::{
+    ParticipantContract, ParticipantKind, ParticipantMetadata, ParticipantRequirement,
+};
 use crate::version::FrameworkVersion;
+use crate::wire_schema::{DescribeWire, WireSchema};
 
 /// `const_format::concatcp!`, made reachable as `$crate::emit::concatcp!`.
 ///
@@ -61,6 +64,23 @@ pub enum ParticipantMetadataRecord<'a> {
         #[serde(flatten)]
         contract: ParticipantContractRecord<'a>,
     },
+}
+
+impl DescribeWire for ParticipantContractRecord<'_> {
+    // Invariant: this record is the serialize side of one contract, so it
+    // declares that contract's shape rather than a second copy of it. A field
+    // added to only one of the two stops matching here.
+    fn wire_schema() -> WireSchema {
+        ParticipantContract::wire_schema()
+    }
+}
+
+impl DescribeWire for ParticipantMetadataRecord<'_> {
+    // Invariant: the writer and the parser are one document, so the shape is
+    // stated exactly once, on the parser.
+    fn wire_schema() -> WireSchema {
+        ParticipantMetadata::wire_schema()
+    }
 }
 
 /// Const-evaluates the embedded metadata document.
@@ -145,6 +165,19 @@ mod tests {
             serde_json::from_str(EMBEDDED).expect("the const writer emits a JSON document");
         let typed = serde_json::to_value(typed_record()).expect("the typed record serializes");
         assert_eq!(const_written, typed);
+    }
+
+    /// The bytes that actually land in the linker section are checked against
+    /// the declared document shape, so the const evaluation mode is covered by
+    /// the same declaration the typed one is.
+    #[test]
+    fn the_const_written_bytes_have_the_declared_document_shape() {
+        let const_written: serde_json::Value =
+            serde_json::from_str(EMBEDDED).expect("the const writer emits a JSON document");
+        assert_eq!(
+            ParticipantMetadataRecord::wire_schema().conforms(&const_written),
+            Ok(())
+        );
     }
 
     #[test]

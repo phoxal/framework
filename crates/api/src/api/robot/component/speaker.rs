@@ -4,7 +4,9 @@
 /// stream starts with the standard WAV header, later chunks
 /// continue its data. `None` ends the stream and is what tells
 /// the owner the sound is complete.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Chunk {
     pub stream: Option<Vec<u8>>,
 }

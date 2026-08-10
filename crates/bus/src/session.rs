@@ -39,7 +39,7 @@ use crate::time::TimeWindow;
 /// First chunk of every Phoxal bus key. It exists so a Phoxal execution is
 /// recognisable in a trace and cannot collide with a non-Phoxal key tree
 /// sharing the same Zenoh fabric.
-const BUS_KEY_PREFIX: &str = "phoxal";
+pub(crate) const BUS_KEY_PREFIX: &str = "phoxal";
 
 /// Capacity (in samples) of each ordered outbound lane. Coalesced state and
 /// setpoint lanes retain one pending slot per concrete topic instead.

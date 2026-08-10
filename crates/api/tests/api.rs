@@ -6,6 +6,8 @@ pub use phoxal_api::*;
 
 #[path = "api/behavior.rs"]
 mod behavior;
+#[path = "api/contract_surface.rs"]
+mod contract_surface;
 #[path = "api/family.rs"]
 mod family;
 #[path = "api/macro_fixtures.rs"]

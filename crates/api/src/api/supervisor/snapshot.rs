@@ -13,7 +13,9 @@ pub use crate::api::supervisor::execution::{
     StartupStepKind, StartupStepState, StderrTail, WallTime, WallTimeError,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct CurrentRequest {}
 

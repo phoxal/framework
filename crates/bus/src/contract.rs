@@ -58,6 +58,25 @@ pub enum DeliveryFamily {
     Query,
 }
 
+impl DeliveryFamily {
+    /// The canonical spelling of this family.
+    ///
+    /// A delivery family is compile-time typing: it selects a transport lane
+    /// and never becomes bytes of its own. The spelling exists so an endpoint
+    /// record in a contract surface can name the lane it rides without a second
+    /// vocabulary being invented beside this enum.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Sample => "sample",
+            Self::Setpoint => "setpoint",
+            Self::Stream => "stream",
+            Self::Query => "query",
+        }
+    }
+}
+
 /// The fixed semantic kind of an endpoint.
 ///
 /// This is endpoint metadata, not payload metadata.  The five pub/sub kinds
@@ -81,6 +100,19 @@ pub enum EndpointKind {
 }
 
 impl EndpointKind {
+    /// The canonical spelling of this kind, for a contract-surface record.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Sample => "sample",
+            Self::Event => "event",
+            Self::Stream => "stream",
+            Self::Setpoint => "setpoint",
+            Self::Query => "query",
+        }
+    }
+
     /// The transport family fixed by this endpoint kind.
     pub const fn delivery_family(self) -> DeliveryFamily {
         match self {

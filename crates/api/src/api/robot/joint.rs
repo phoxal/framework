@@ -3,7 +3,9 @@ fn finite(value: f64) -> bool {
 }
 
 /// A finite per-joint position/velocity sample.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "JointStateWire")]
 pub struct JointState {
     pub position_rad: f64,

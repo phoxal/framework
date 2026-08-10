@@ -17,7 +17,7 @@ use crate::structure::{Geometry, JointKind, Structure};
 
 /// A conservative planar radial envelope around the robot's ground-projection
 /// origin.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct FootprintEnvelope {
     /// Maximum planar distance from `base_footprint` to any collision point.
     pub radius_m: f64,

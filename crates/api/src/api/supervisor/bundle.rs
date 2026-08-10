@@ -5,14 +5,18 @@
 //! own. What paths resolve, and which of them are refused, is `phoxald`'s
 //! decision; this fragment owns only the request and the three answers.
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct GetRequest {
     pub path: String,
 }
 
 /// A missing entry and a path the supervisor refuses to resolve are distinct
 /// answers, so a client can tell "not in this bundle" from "never ask that".
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum GetResponse {
     Found { bytes: Vec<u8> },
     Missing,

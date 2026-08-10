@@ -1,5 +1,7 @@
 /// Per-instance emergency-stop state.
-#[derive(Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct State {
     pub engaged: bool,
 }

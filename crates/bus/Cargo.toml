@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 getrandom = { workspace = true }
 libc = { workspace = true }
+phoxal-macros = { workspace = true }
 phoxal-runtime-contract = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

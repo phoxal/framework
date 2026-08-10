@@ -12,7 +12,7 @@ use capability::Capability;
 
 /// One component *type*: the capabilities and structure every instance of it
 /// has.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     capabilities: BTreeMap<CapabilityId, Capability>,
