@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0](https://github.com/phoxal/framework/compare/v0.56.2...v0.57.0) - 2026-08-10
+
+### Added
+
+- [**breaking**] make the framework train version the single compatibility identity ([#429](https://github.com/phoxal/framework/pull/429))
+
+### Other
+
+- reorganize the workspace directory layout ([#427](https://github.com/phoxal/framework/pull/427))
+
 ## [0.56.1](https://github.com/phoxal/framework/compare/v0.56.0...v0.56.1) - 2026-08-10
 
 ### Other

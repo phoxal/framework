@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.56.2...phoxal-manifest-v0.57.0) - 2026-08-10
+
+### Other
+
+- reorganize the workspace directory layout ([#427](https://github.com/phoxal/framework/pull/427))
+
 ## [0.56.2](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.56.1...phoxal-manifest-v0.56.2) - 2026-08-10
 
 ### Added
