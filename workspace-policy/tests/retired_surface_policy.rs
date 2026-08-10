@@ -103,8 +103,8 @@ fn participant_kind_declarations_match_the_two_explicit_owners() -> Result<()> {
     let root = workspace_root()?;
     let declaration = ("enum", ["Participant", "Kind"].concat());
     let expected = [
-        PathBuf::from("phoxal-macros/src/authoring.rs"),
-        PathBuf::from("phoxal-runtime-contract/src/metadata.rs"),
+        PathBuf::from("crates/macros/src/authoring.rs"),
+        PathBuf::from("crates/runtime-contract/src/metadata.rs"),
     ];
     let mut owners = Vec::new();
     for relative in source_files(root)? {

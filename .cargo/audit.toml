@@ -21,7 +21,7 @@ ignore = [
     # runtime on duplicate-attribute checks and unbounded namespace-declaration
     # allocation (DoS class). quick-xml 0.36 is pulled in by urdf-rs 0.9.0
     # (latest release, pins ^0.36). Phoxal only parses URDF from local,
-    # operator-installed component definitions (component/*/structure.urdf),
+    # operator-installed component definitions (components/*/structure.urdf),
     # never network input, so the DoS vector is not attacker-reachable.
     # Remove once urdf-rs releases with quick-xml >= 0.41
     # (https://github.com/openrr/urdf-rs/issues/134) and the workspace
@@ -32,7 +32,7 @@ ignore = [
     # RUSTSEC-2023-0071 (Marvin timing side channel): no fixed rsa release
     # exists. rsa is pulled in by zenoh-transport's auth_pubkey feature, which
     # transport_multilink requires at compile time. Phoxal never configures
-    # zenoh public-key auth at runtime (phoxal-bus/src/session.rs builds the
+    # zenoh public-key auth at runtime (crates/bus/src/session.rs builds the
     # config programmatically), so no RSA operations run in our deployments.
     # Remove once the rsa crate ships a constant-time fix and zenoh adopts it.
     "RUSTSEC-2023-0071",

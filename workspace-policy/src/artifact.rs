@@ -1,11 +1,16 @@
 //! The official artifact package grammar: where an artifact package lives,
 //! what it is called, where it publishes, and which targets it may carry.
 //!
-//! One artifact is one Cargo package at `{service,component,simulator}/<id>`,
+//! One artifact is one Cargo package at `{services,components,simulators}/<id>`,
 //! producing exactly one binary and no library. Discovery reads the workspace
 //! metadata and rejects any package that claims to be an artifact without
 //! obeying the grammar, which is what keeps the directory, the crate name and
 //! the published identity from drifting apart.
+//!
+//! A directory holds many artifacts and reads plural; a name qualifies one and
+//! reads singular, so `services/drive` is the crate `phoxal-service-drive`.
+//! [`ArtifactKind`] owns both spellings and is the only place that knows they
+//! differ.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -14,7 +19,9 @@ use anyhow::{Context, Result, bail};
 use cargo_metadata::semver::Version;
 use cargo_metadata::{MetadataCommand, Target, TargetKind};
 
-use crate::{EXCLUDED_TOP_LEVEL_DIRS, LIBRARY_CRATE_DIRS};
+use crate::{
+    FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, library_package_name,
+};
 
 /// Official Phoxal packages always use this provider segment in their public
 /// `package` identity (`phoxal/<name>`). Third-party packages use their own
@@ -27,8 +34,9 @@ pub const PHOXAL_PROVIDER: &str = "phoxal";
 /// `the_crate_prefix_spells_the_provider`.
 const PHOXAL_PACKAGE_PREFIX: &str = "phoxal-";
 
-/// The kind of an official artifact, named by the top-level directory its
-/// packages live under.
+/// The kind of an official artifact. Each kind renders two ways: as the
+/// top-level directory its packages live under ([`ArtifactKind::directory`])
+/// and as the leading segment of their names ([`ArtifactKind::name_segment`]).
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ArtifactKind {
     Service,
@@ -45,9 +53,31 @@ impl ArtifactKind {
     /// Every kind, in the order discovery reports artifacts.
     pub const ALL: [Self; 3] = [Self::Service, Self::Component, Self::Simulator];
 
-    /// The top-level directory this kind's packages live under, which is also
-    /// the leading segment of both of their names.
+    /// The top-level directory this kind's packages live under.
+    ///
+    /// This is a repository-layout fact and nothing else. It is deliberately
+    /// *not* the leading segment of the package names, which
+    /// [`Self::name_segment`] owns: the directory holds many artifacts and so
+    /// reads plural, while a name segment qualifies exactly one and so reads
+    /// singular. The two are pinned to each other by
+    /// `the_directory_and_name_segment_of_every_kind_are_pinned`, which is
+    /// what keeps a rename of either from silently moving the other.
     pub fn directory(self) -> &'static str {
+        match self {
+            Self::Service => "services",
+            Self::Component => "components",
+            Self::Simulator => "simulators",
+        }
+    }
+
+    /// The leading segment of both of this kind's names: `service` in
+    /// `phoxal/service-drive` and in `phoxal-service-drive`.
+    ///
+    /// This is published identity. It reaches crates.io, the `phoxal`
+    /// registry, and every robot manifest that names an artifact, so it is
+    /// frozen independently of where the sources happen to sit in this
+    /// repository.
+    pub fn name_segment(self) -> &'static str {
         match self {
             Self::Service => "service",
             Self::Component => "component",
@@ -75,7 +105,7 @@ impl ArtifactKind {
     fn from_package_name(package_name: &str) -> Option<(Self, ArtifactId)> {
         let tail = package_name.strip_prefix(PHOXAL_PACKAGE_PREFIX)?;
         Self::ALL.into_iter().find_map(|kind| {
-            let id = tail.strip_prefix(kind.directory())?.strip_prefix('-')?;
+            let id = tail.strip_prefix(kind.name_segment())?.strip_prefix('-')?;
             Some((kind, ArtifactId::new(id).ok()?))
         })
     }
@@ -83,11 +113,11 @@ impl ArtifactKind {
     /// The shared tail of both names: `service-drive` in `phoxal/service-drive`
     /// and in `phoxal-service-drive`.
     fn package_segment(self, id: &ArtifactId) -> String {
-        format!("{}-{id}", self.directory())
+        format!("{}-{id}", self.name_segment())
     }
 
-    /// A package's name is a function of the directory it lives in, so a
-    /// mismatch means one of the two moved without the other.
+    /// A package's name is a function of the kind whose directory it lives in,
+    /// so a mismatch means one of the two moved without the other.
     fn validate_package_name(
         self,
         package_name: &str,
@@ -355,8 +385,8 @@ impl Workspace {
 enum ManifestClassification {
     /// An official artifact package, at the exact path its kind and id require.
     Artifact { kind: ArtifactKind, id: ArtifactId },
-    /// A path the grammar deliberately says nothing about: a library crate at
-    /// its own root, this policy crate, or a manifest fixture.
+    /// A path the grammar deliberately says nothing about: a listed library
+    /// crate, published or internal, or this policy crate.
     Excluded,
     /// Any other workspace member. Discovery skips it exactly as it skips
     /// `Excluded`; the two stay distinct so a test can tell an intended
@@ -378,13 +408,34 @@ impl ManifestClassification {
             bail!("manifest path {} is empty", relative.display());
         };
 
-        if EXCLUDED_TOP_LEVEL_DIRS.contains(&top_level) {
-            return Ok(Self::Excluded);
-        }
-        if LIBRARY_CRATE_DIRS.contains(&top_level)
-            && components.as_slice() == [top_level, "Cargo.toml"]
+        let [directory @ .., "Cargo.toml"] = components.as_slice() else {
+            bail!(
+                "workspace package manifest {} is not named Cargo.toml",
+                relative.display()
+            );
+        };
+        let directory = directory.join("/");
+        if LIBRARY_CRATE_DIRS.contains(&directory.as_str())
+            || INTERNAL_CRATE_DIRS.contains(&directory.as_str())
         {
             return Ok(Self::Excluded);
+        }
+        // A manifest under the library root that neither list names is a
+        // violation rather than a package the grammar says nothing about:
+        // `crates/` is reserved for the workspace's own libraries, and a
+        // package sitting there unlisted would be skipped by every rule in
+        // this crate.
+        if top_level == LIBRARY_CRATE_ROOT {
+            bail!(
+                "workspace package manifest {} is under '{LIBRARY_CRATE_ROOT}/' but is not a \
+                 listed library crate; a library crate is the package '{}' at \
+                 '{directory}', and must be added to LIBRARY_CRATE_DIRS or \
+                 INTERNAL_CRATE_DIRS",
+                relative.display(),
+                library_package_name(&directory).unwrap_or_else(|| format!(
+                    "{FACADE}-<suffix>' at '{LIBRARY_CRATE_ROOT}/<suffix>"
+                ))
+            );
         }
 
         let Ok(kind) = ArtifactKind::try_from(top_level) else {
@@ -393,9 +444,9 @@ impl ManifestClassification {
         let [_, id, "Cargo.toml"] = components.as_slice() else {
             bail!(
                 "workspace package manifest {} is nested under artifact root '{top_level}'; \
-                 official artifacts must live exactly at \
-                 {{service,component,simulator}}/<id>/Cargo.toml",
-                relative.display()
+                 official artifacts must live exactly at {{{}}}/<id>/Cargo.toml",
+                relative.display(),
+                ArtifactKind::ALL.map(ArtifactKind::directory).join(",")
             );
         };
 
@@ -481,6 +532,25 @@ mod tests {
         assert_eq!(PHOXAL_PACKAGE_PREFIX, format!("{PHOXAL_PROVIDER}-"));
     }
 
+    /// The directory an artifact's sources sit in and the segment its names
+    /// are built from are two independent facts: one is repository layout, the
+    /// other is published identity. Nothing derives one from the other, so
+    /// this is the only thing standing between a layout change and a silent
+    /// rename of every published package. Both columns are spelled out in
+    /// full, because a rule that computed one from the other would be the
+    /// coupling this test exists to prevent.
+    #[test]
+    fn the_directory_and_name_segment_of_every_kind_are_pinned() {
+        assert_eq!(
+            ArtifactKind::ALL.map(|kind| (kind.directory(), kind.name_segment())),
+            [
+                ("services", "service"),
+                ("components", "component"),
+                ("simulators", "simulator"),
+            ]
+        );
+    }
+
     /// `Display` and `TryFrom` are one mapping written twice, so every variant
     /// must survive the round trip through its directory segment.
     #[test]
@@ -492,7 +562,7 @@ mod tests {
         let error = ArtifactKind::try_from("library").unwrap_err();
         assert_eq!(
             error.to_string(),
-            "'library' names no artifact kind; expected one of service, component, simulator"
+            "'library' names no artifact kind; expected one of services, components, simulators"
         );
     }
 
@@ -542,7 +612,7 @@ mod tests {
     /// executables at the wrong channel entirely.
     #[test]
     fn an_executable_publishes_only_to_the_phoxal_registry() {
-        let manifest = root().join("simulator/webots-controller/Cargo.toml");
+        let manifest = root().join("simulators/webots-controller/Cargo.toml");
         let check = |publish: Option<&[String]>| {
             OfficialArtifact::validate_publish(
                 "phoxal-simulator-webots-controller",
@@ -582,21 +652,21 @@ mod tests {
     #[test]
     fn directory_grammar_maps_artifact_kinds() -> Result<()> {
         assert_eq!(
-            classify("service/drive/Cargo.toml")?,
+            classify("services/drive/Cargo.toml")?,
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Service,
                 id: id("drive")
             }
         );
         assert_eq!(
-            classify("component/ddsm115/Cargo.toml")?,
+            classify("components/ddsm115/Cargo.toml")?,
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Component,
                 id: id("ddsm115")
             }
         );
         assert_eq!(
-            classify("simulator/webots/Cargo.toml")?,
+            classify("simulators/webots/Cargo.toml")?,
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Simulator,
                 id: id("webots")
@@ -607,33 +677,72 @@ mod tests {
 
     #[test]
     fn nested_crates_under_artifact_roots_are_errors() {
-        let err = classify("service/drive/helper/Cargo.toml").unwrap_err();
+        let err = classify("services/drive/helper/Cargo.toml").unwrap_err();
         assert!(err.to_string().contains("nested under artifact root"));
     }
 
-    /// A component crate lives directly at `component/<id>/Cargo.toml`; a
+    /// A component crate lives directly at `components/<id>/Cargo.toml`; a
     /// subdirectory splits one artifact across two paths and is rejected.
     #[test]
     fn nested_crates_under_component_are_errors() {
-        let err = classify("component/ddsm115/driver/Cargo.toml").unwrap_err();
+        let err = classify("components/ddsm115/driver/Cargo.toml").unwrap_err();
         assert!(err.to_string().contains("nested under artifact root"));
     }
 
     #[test]
-    fn library_policy_and_fixture_paths_are_excluded() -> Result<()> {
+    fn library_and_policy_crate_paths_are_excluded() -> Result<()> {
         assert_eq!(
             classify("phoxal/Cargo.toml")?,
+            ManifestClassification::Excluded
+        );
+        assert_eq!(
+            classify("crates/api/Cargo.toml")?,
+            ManifestClassification::Excluded
+        );
+        assert_eq!(
+            classify("crates/fixture/Cargo.toml")?,
             ManifestClassification::Excluded
         );
         assert_eq!(
             classify("workspace-policy/Cargo.toml")?,
             ManifestClassification::Excluded
         );
+        Ok(())
+    }
+
+    /// `fixture/` holds authored documents and no packages at all, so the
+    /// grammar has nothing to say about anything under it. It used to be an
+    /// explicit exclusion because a crate lived there too; the exclusion went
+    /// away with the crate.
+    #[test]
+    fn the_authored_fixture_tree_names_no_package() -> Result<()> {
         assert_eq!(
-            classify("fixture/component/foo/Cargo.toml")?,
-            ManifestClassification::Excluded
+            classify("fixture/components/foo/Cargo.toml")?,
+            ManifestClassification::NonArtifact
         );
         Ok(())
+    }
+
+    /// `crates/` is reserved for the workspace's own libraries. A package
+    /// parked there without being listed would be silently skipped by every
+    /// rule in this crate, so the grammar rejects it instead of ignoring it.
+    #[test]
+    fn an_unlisted_package_under_the_library_root_is_an_error() {
+        let err = classify("crates/rogue/Cargo.toml").unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "is not a listed library crate; a library crate is the package \
+                          'phoxal-rogue' at 'crates/rogue'"
+            ),
+            "{err}"
+        );
+
+        let err = classify("crates/api/inner/Cargo.toml").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("phoxal-<suffix>' at 'crates/<suffix>"),
+            "a package nested deeper than one level names no library crate: {err}"
+        );
     }
 
     #[test]
@@ -643,7 +752,7 @@ mod tests {
                 "phoxal-component-drive-driver",
                 &id("drive"),
                 &root(),
-                &root().join("service/drive/Cargo.toml"),
+                &root().join("services/drive/Cargo.toml"),
             )
             .unwrap_err();
         assert!(err.to_string().contains("expected 'phoxal-service-drive'"));
@@ -658,11 +767,11 @@ mod tests {
             root.join("Cargo.toml"),
             r#"[workspace]
 resolver = "3"
-members = ["component/test"]
+members = ["components/test"]
 "#,
         )?;
 
-        let package_dir = root.join("component/test");
+        let package_dir = root.join("components/test");
         fs::create_dir_all(package_dir.join("src"))?;
         fs::write(
             package_dir.join("src/lib.rs"),

@@ -1,14 +1,26 @@
 //! Staging for the workspace fixture robot.
 //!
-//! The fixture remains authored YAML/URDF beside this crate. Tests that need
-//! a runtime artifact compile those sources once and let this build-side
-//! assembler combine the resulting canonical model, source-owned service and
-//! driver facts, simulation membership, assets, and disposable binary bytes
-//! through `phoxal-bundle`'s explicit assembly API. No finalized source
-//! document is copied into the runtime root.
+//! The fixture itself is authored YAML/URDF and nothing else. It lives at
+//! `fixture/` in the workspace root, holds no code, and is read straight off
+//! disk by the tests that only need documents - `phoxal-manifest`'s compile
+//! tests are its largest consumer and never link this crate at all.
 //!
-//! This crate is never published: the paths it resolves are relative to this
-//! repository's layout and mean nothing outside it.
+//! This crate is the other half: it takes those documents through the whole
+//! authoring pipeline, compiling them with `phoxal-manifest` and assembling
+//! the result into a finalized bundle with `phoxal-bundle`. That makes it the
+//! only place in the workspace where those two crates meet. They are siblings:
+//! each depends on `phoxal-model` and `phoxal-runtime-contract`, and neither
+//! depends on the other, so nothing else here proves that what the compiler
+//! emits is something the assembler can actually accept. The real `phoxal`
+//! CLI joins them for a living; this is the test that says it can be done.
+//!
+//! Its second job is smaller and purely mechanical: `staged_bundle` is needed
+//! by both a unit test inside `phoxal/src` and an integration test in
+//! `phoxal/tests`, and a dev-dependency crate is the only thing Rust offers
+//! that both can reach.
+//!
+//! Never published: the paths it resolves are relative to this repository's
+//! layout and mean nothing outside it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,8 +37,13 @@ use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind, Pa
 use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
 use tempfile::TempDir;
 
-fn authored_root() -> &'static Path {
+/// The authored documents this crate stages, at `fixture/` in the workspace
+/// root. Resolved relative to this crate rather than from `cargo metadata`,
+/// so staging needs nothing parsed before it can start.
+fn authored_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("fixture")
 }
 
 /// Stage the fixture into a disposable `runtime.json` bundle.
@@ -78,7 +95,7 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
             .map(|component_type| {
                 (
                     component_type.to_string(),
-                    fixture.join("component").join(component_type),
+                    fixture.join("components").join(component_type),
                 )
             })
             .collect(),

@@ -25,7 +25,7 @@ use crate::lock::lock;
 /// This is the internal accounting vocabulary. The runner maps it onto the
 /// wire-facing enum in `phoxal-api`. The structural guard at the bottom of this
 /// module fails when a variant is added here; the assertion that the mapping is
-/// total and injective lives in `phoxal-api/src/tests/runtime_metric_parity.rs`,
+/// total and injective lives in `crates/api/src/tests/runtime_metric_parity.rs`,
 /// which is the nearest crate able to name both enums.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeDirection {

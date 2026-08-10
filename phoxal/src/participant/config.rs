@@ -6,7 +6,7 @@
 //! owners.
 
 /// Const-eval plumbing the participant attribute macros
-/// (`phoxal-macros/src/authoring.rs`'s `expand_participant`) use to build the
+/// (`crates/macros/src/authoring.rs`'s `expand_participant`) use to build the
 /// binary's embedded linker-section metadata static:
 /// `{"schema", "api", "schemas", "id", "kind", "config_schema"}`.
 ///

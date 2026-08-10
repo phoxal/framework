@@ -76,4 +76,4 @@ jobs:
       - name: Package with router enabled
         run: |
           cargo package -p phoxal-bus --features router --allow-dirty \
-            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
+            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/crates/runtime-contract'"

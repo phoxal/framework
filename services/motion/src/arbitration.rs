@@ -321,7 +321,7 @@ mod tests {
 
     /// A live manual command, i.e. one the receiver-owned lease already
     /// admitted. Manual freshness is the lease's job (see its own tests in
-    /// `phoxal-bus` and `service/motion`), not arbitration's.
+    /// `phoxal-bus` and `services/motion`), not arbitration's.
     fn manual(linear_x_mps: f64, angular_z_radps: f64) -> api::motion::ManualCommand {
         api::motion::ManualCommand {
             linear_x_mps,
