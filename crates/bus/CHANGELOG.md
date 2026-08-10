@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.57.0...phoxal-bus-v0.58.0) - 2026-08-10
+
+### Other
+
+- [**breaking**] replace the hardened bundle filesystem layer with plain std::fs ([#432](https://github.com/phoxal/framework/pull/432))
+
 ## [0.57.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.56.2...phoxal-bus-v0.57.0) - 2026-08-10
 
 ### Added
