@@ -2,7 +2,7 @@ use super::ShutdownController;
 use super::event_loop::advance_step_deadline;
 use super::lifecycle::{
     BusLease, ClockDisciplineLost, LoopExit, ParticipantFault, Runner, RunnerClock, RunnerTasks,
-    StartOutcome, close_session_with_result,
+    StartOutcome, close_session_with_result, runner_clock,
 };
 use crate::bus::{RobotInstant, TimelineId};
 use crate::participant::api::Participant;
@@ -37,6 +37,29 @@ async fn shutdown_request_remains_sticky_after_source_completes() {
     tokio::time::timeout(Duration::from_millis(10), shutdown.wait())
         .await
         .expect("a completed shutdown source must remain immediately observable");
+}
+
+/// A stepless real participant keeps the origin-anchored clock, so its
+/// recurring beat reads real robot time instead of faulting on a clock that
+/// was never there. Only a truly clockless launch leaves the runner without
+/// one.
+#[test]
+fn a_stepless_real_participant_keeps_the_origin_clock() {
+    let (scheduler, handle) = AnyStepScheduler::for_clock_mode(ParticipantClock::Real, None, None)
+        .expect("a stepless real participant builds without a scheduler");
+    assert!(handle.is_none());
+
+    let origin = phoxal_runtime_contract::origin::ExecutionOrigin::try_mint()
+        .expect("the host boot clock is readable");
+    let clock = RealClock::new(origin).expect("an origin-anchored clock builds");
+    assert!(matches!(
+        runner_clock(&scheduler, Some(clock)),
+        Ok(RunnerClock::Delegated(_))
+    ));
+    assert!(matches!(
+        runner_clock::<RealClock>(&scheduler, None),
+        Ok(RunnerClock::Disabled)
+    ));
 }
 
 #[test]

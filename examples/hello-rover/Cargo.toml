@@ -11,7 +11,7 @@ resolver = "3"
 members = ["."]
 
 [workspace.dependencies]
-phoxal = "0.53.0"
+phoxal = "0.58.0"
 
 [workspace.lints.rust]
 unused = "warn"
