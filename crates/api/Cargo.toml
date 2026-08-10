@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = true
-description = "Phoxal's train-selected semantic API and typed endpoint builders over the phoxal-bus ABI floor."
+description = "Phoxal's semantic contract families and typed endpoint builders over the phoxal-bus ABI floor."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -20,6 +20,7 @@ phoxal-macros = { workspace = true }
 phoxal-runtime-contract = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 rmp-serde = { workspace = true }

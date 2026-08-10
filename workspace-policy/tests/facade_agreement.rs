@@ -2,34 +2,29 @@
 
 use anyhow::Result;
 
-/// The runtime compatibility identities are one contract owned by the facade
-/// and the embedded participant metadata writer. Keeping this assertion here
-/// prevents a facade constant from drifting away from its wire enum.
+/// Compatibility is one identity - the framework train version - reached
+/// through three spellings that must all be the same fact: the facade constant
+/// a role macro splices into a binary, the process-contract value a running
+/// participant compares, and the workspace version Cargo builds everything
+/// from.
 #[test]
-fn the_facade_runtime_schemas_match_the_process_contract() -> Result<()> {
+fn the_facade_framework_version_is_the_workspace_train_version() -> Result<()> {
     use phoxal::__private::compatibility as compat;
-    use phoxal_runtime_contract::metadata::ParticipantSchemas;
-    use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RuntimeSchema};
+    use phoxal_runtime_contract::version::FrameworkVersion;
 
-    // Serialized, not `as_str`: what a peer writes on the wire is what
-    // `phoxal-manifest` has to accept.
+    // Serialized, not `Display`: what a peer writes on the wire is what a
+    // reader has to accept.
     fn tag(value: impl serde::Serialize) -> Result<String> {
         Ok(serde_json::from_value::<String>(serde_json::to_value(
             value,
         )?)?)
     }
 
-    let schemas = ParticipantSchemas {
-        bus: compat::BUS,
-        launch: compat::LAUNCH,
-        runtime: compat::RUNTIME,
-    };
-    assert_eq!(schemas.bus, BusAbi::V0);
-    assert_eq!(schemas.launch, LaunchAbi::V0);
-    assert_eq!(schemas.runtime, RuntimeSchema::V0);
-    assert_eq!(tag(compat::BUS)?, compat::BUS.as_str());
-    assert_eq!(tag(compat::LAUNCH)?, compat::LAUNCH.as_str());
-    assert_eq!(tag(compat::RUNTIME)?, compat::RUNTIME.as_str());
+    assert_eq!(compat::FRAMEWORK, FrameworkVersion::CURRENT.to_string());
+    assert_eq!(tag(FrameworkVersion::CURRENT)?, compat::FRAMEWORK);
+    // Every workspace member inherits `[workspace.package] version`, so this
+    // crate's own package version is the train version.
+    assert_eq!(compat::FRAMEWORK, env!("CARGO_PKG_VERSION"));
     Ok(())
 }
 

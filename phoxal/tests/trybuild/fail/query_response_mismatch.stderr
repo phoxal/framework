@@ -1,13 +1,13 @@
 error[E0271]: expected `get` to return `Result<GetResponse, QueryFailure>`, but it returns `Result<SubmapResponse, QueryFailure>`
-  --> tests/trybuild/fail/query_response_mismatch.rs:16:61
+  --> tests/trybuild/fail/query_response_mismatch.rs:16:62
    |
-16 |         ctx.query(supervisor::topic::owner().asset().get(), Self::get)
-   |             -----                                           ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
+16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get)
+   |             -----                                            ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
    |             |
    |             required by a bound introduced by this call
    |
    = note: expected enum `std::result::Result<GetResponse, QueryFailure>`
-              found enum `std::result::Result<phoxal::api::map::SubmapResponse, QueryFailure>`
+              found enum `std::result::Result<SubmapResponse, QueryFailure>`
 note: required by a bound in `phoxal::SetupContext::<R>::query`
   --> src/participant/context.rs
    |

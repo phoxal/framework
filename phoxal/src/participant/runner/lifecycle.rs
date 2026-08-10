@@ -234,7 +234,7 @@ where
         clock,
         query_reply_delay,
     } = prepared;
-    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
     let schedule = R::__step_schedule();
     let now = if clock_mode == ParticipantClock::Real {
         let reading =

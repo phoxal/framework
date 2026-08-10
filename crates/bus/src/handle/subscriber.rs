@@ -1632,7 +1632,7 @@ mod tests {
 
     use crate::abi::CodecId;
     use crate::contract::{
-        ApiVersion, EndpointDescriptor, EndpointKind, StateContract, StreamContract,
+        ApiFamily, EndpointDescriptor, EndpointKind, StateContract, StreamContract,
         StreamDeliveryContract,
     };
     use crate::handle::publisher::{SetpointPublisher, StatePublisher};
@@ -1656,7 +1656,7 @@ mod tests {
 
     enum NonCloneApi {}
 
-    impl ApiVersion for NonCloneApi {
+    impl ApiFamily for NonCloneApi {
         const ID: &'static str = "nonclone";
     }
 
@@ -1665,7 +1665,7 @@ mod tests {
         type Api = NonCloneApi;
         type Payload = NonCloneBody;
         const NAME: &'static str = "nonclone::state::Body";
-        const VERSION: &'static str = "nonclone";
+        const FAMILY: &'static str = "nonclone";
         const CONTRACT: &'static str = "state::Body";
         const TOPIC: &'static str = "nonclone/state";
         const KIND: EndpointKind = EndpointKind::State;
@@ -1681,7 +1681,7 @@ mod tests {
         type Api = NonCloneApi;
         type Payload = OrderedChunk;
         const NAME: &'static str = "nonclone::stream::Chunk";
-        const VERSION: &'static str = "nonclone";
+        const FAMILY: &'static str = "nonclone";
         const CONTRACT: &'static str = "stream::Chunk";
         const TOPIC: &'static str = "nonclone/stream/chunk";
         const KIND: EndpointKind = EndpointKind::Stream;
@@ -1735,13 +1735,13 @@ mod tests {
     }
 
     fn setpoint_ring(metrics: &RuntimeMetrics) -> Ring<u8> {
-        let metric = metrics.register_subscriber("v0.1/test/setpoint", MAX_SETPOINT_SOURCES);
+        let metric = metrics.register_subscriber("robot/test/setpoint", MAX_SETPOINT_SOURCES);
         Ring::new(
             MAX_SETPOINT_SOURCES,
             RingPolicy::Setpoint,
             metric,
             Arc::new(TerminalState::new()),
-            "v0.1/test/setpoint",
+            "robot/test/setpoint",
         )
     }
 
@@ -2094,12 +2094,12 @@ mod tests {
     fn stream_positions_surface_gaps_and_reject_regressions() {
         let positions = Mutex::new(HashMap::new());
         assert!(matches!(
-            classify_stream("v0.1/test/stream", &positions, stream_observed(1, Some(0)))
+            classify_stream("robot/test/stream", &positions, stream_observed(1, Some(0)))
                 .expect("first position is ordered"),
             StreamEvent::Item(Observed { body: 1, .. })
         ));
 
-        let gap = classify_stream("v0.1/test/stream", &positions, stream_observed(3, Some(2)))
+        let gap = classify_stream("robot/test/stream", &positions, stream_observed(3, Some(2)))
             .expect("a forward gap is explicit evidence, not a decode failure");
         assert!(matches!(
             gap,
@@ -2111,7 +2111,7 @@ mod tests {
         ));
 
         let regression =
-            classify_stream("v0.1/test/stream", &positions, stream_observed(2, Some(1)))
+            classify_stream("robot/test/stream", &positions, stream_observed(2, Some(1)))
                 .expect_err("a repeated or reversed position is never ordered stream data");
         assert!(matches!(
             regression,
@@ -2127,13 +2127,21 @@ mod tests {
     fn a_late_stream_subscription_establishes_its_first_observed_position() {
         let positions = Mutex::new(HashMap::new());
         assert!(matches!(
-            classify_stream("v0.1/test/stream", &positions, stream_observed(1, Some(41)),)
-                .expect("traffic before subscription is not receiver-observed loss"),
+            classify_stream(
+                "robot/test/stream",
+                &positions,
+                stream_observed(1, Some(41)),
+            )
+            .expect("traffic before subscription is not receiver-observed loss"),
             StreamEvent::Item(Observed { body: 1, .. })
         ));
         assert!(matches!(
-            classify_stream("v0.1/test/stream", &positions, stream_observed(2, Some(43)),)
-                .expect("a discontinuity after the baseline is explicit"),
+            classify_stream(
+                "robot/test/stream",
+                &positions,
+                stream_observed(2, Some(43)),
+            )
+            .expect("a discontinuity after the baseline is explicit"),
             StreamEvent::Gap {
                 expected: 42,
                 observed: 43,
@@ -2145,7 +2153,7 @@ mod tests {
     #[test]
     fn a_stream_sample_without_a_position_is_rejected() {
         let error = classify_stream(
-            "v0.1/test/stream",
+            "robot/test/stream",
             &Mutex::new(HashMap::new()),
             stream_observed(1, None),
         )
@@ -2162,7 +2170,7 @@ mod tests {
                 producer: producer(u128::try_from(source + 1).expect("source index")),
                 label: None,
             };
-            classify_stream("v0.1/test/stream", &positions, item)
+            classify_stream("robot/test/stream", &positions, item)
                 .expect("the fixed source bound admits each first source");
         }
 
@@ -2171,7 +2179,7 @@ mod tests {
             producer: producer(u128::try_from(MAX_STREAM_SOURCES + 1).expect("source index")),
             label: None,
         };
-        let error = classify_stream("v0.1/test/stream", &positions, extra)
+        let error = classify_stream("robot/test/stream", &positions, extra)
             .expect_err("a new source beyond the fixed history bound must terminate");
         assert!(matches!(
             error,
@@ -2186,7 +2194,7 @@ mod tests {
     #[test]
     fn too_many_stream_sources_is_typed_terminal_evidence() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.1/test/stream", DEFAULT_ORDERED_CAPACITY);
+        let metric = metrics.register_subscriber("robot/test/stream", DEFAULT_ORDERED_CAPACITY);
         let terminal = Arc::new(TerminalState::new());
         let receiver = StreamReceiver::<OrderedEndpoint> {
             inner: Subscriber {
@@ -2195,7 +2203,7 @@ mod tests {
                     RingPolicy::Refuse,
                     metric,
                     Arc::clone(&terminal),
-                    "v0.1/test/stream",
+                    "robot/test/stream",
                 )),
                 terminal: Arc::clone(&terminal),
                 _guard: Arc::new(SubscriptionGuard {
@@ -2203,7 +2211,7 @@ mod tests {
                     expected: Arc::new(AtomicBool::new(false)),
                 }),
             },
-            topic: "v0.1/test/stream".to_string(),
+            topic: "robot/test/stream".to_string(),
             next_positions: Mutex::new(HashMap::new()),
         };
         for source in 0..MAX_STREAM_SOURCES {
@@ -2282,13 +2290,13 @@ mod tests {
     #[test]
     fn ring_counts_each_drop_oldest_eviction_cumulatively() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.1/test/state", 1);
+        let metric = metrics.register_subscriber("robot/test/state", 1);
         let ring = Ring::new(
             1,
             RingPolicy::DropOldest,
             metric,
             Arc::new(TerminalState::new()),
-            "v0.1/test/state",
+            "robot/test/state",
         );
         let first = ring.push(observed(1, None));
         assert!(first.accepted);
@@ -2314,14 +2322,14 @@ mod tests {
     #[test]
     fn stream_quarantine_refuses_saturation_without_evicting_an_accepted_chunk() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.1/test/stream", 2);
+        let metric = metrics.register_subscriber("robot/test/stream", 2);
         let terminal = Arc::new(TerminalState::new());
         let ring = Ring::new(
             2,
             RingPolicy::Refuse,
             metric,
             Arc::clone(&terminal),
-            "v0.1/test/stream",
+            "robot/test/stream",
         );
         ring.retain_timeline(timeline(1));
 
@@ -2346,14 +2354,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_terminal_receive_wakes_a_waiter_without_abort() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.1/test/state", 1);
+        let metric = metrics.register_subscriber("robot/test/state", 1);
         let terminal = Arc::new(TerminalState::new());
         let ring = Arc::new(Ring::<u8>::new(
             1,
             RingPolicy::DropOldest,
             metric,
             Arc::clone(&terminal),
-            "v0.1/test/state",
+            "robot/test/state",
         ));
         let waiting = {
             let ring = Arc::clone(&ring);
@@ -2427,13 +2435,13 @@ mod tests {
     #[test]
     fn a_sample_expressing_no_robot_time_survives_every_timeline_barrier() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.1/test/command", 4);
+        let metric = metrics.register_subscriber("robot/test/command", 4);
         let ring = Ring::new(
             4,
             RingPolicy::DropOldest,
             metric,
             Arc::new(TerminalState::new()),
-            "v0.1/test/command",
+            "robot/test/command",
         );
         ring.retain_timeline(timeline(1));
         assert!(ring.push(observed(1, None)).accepted);
@@ -2773,13 +2781,13 @@ mod tests {
     #[test]
     fn subscriber_activation_is_safe_when_replacement_ingress_races_the_clock() {
         let metrics = RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v0.1/test/state", 4);
+        let metric = metrics.register_subscriber("robot/test/state", 4);
         let ring = Arc::new(Ring::new(
             4,
             RingPolicy::DropOldest,
             metric,
             Arc::new(TerminalState::new()),
-            "v0.1/test/state",
+            "robot/test/state",
         ));
         assert!(ring.push(observed(1, Some(1))).accepted);
         ring.retain_timeline(timeline(1));

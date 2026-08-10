@@ -1,4 +1,4 @@
-//! Black-box coverage of the generated Robot API surface.
+//! Black-box coverage of the generated contract-family surface.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -6,10 +6,10 @@ pub use phoxal_api::*;
 
 #[path = "api/behavior.rs"]
 mod behavior;
+#[path = "api/family.rs"]
+mod family;
 #[path = "api/macro_fixtures.rs"]
 mod macro_fixtures;
-#[path = "api/revision.rs"]
-mod revision;
 #[path = "api/topic_builder.rs"]
 mod topic_builder;
 #[path = "api/topic_keys.rs"]

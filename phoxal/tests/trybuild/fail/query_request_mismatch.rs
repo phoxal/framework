@@ -1,5 +1,5 @@
 use phoxal::api;
-use phoxal_supervisor_api::supervisor;
+use phoxal_api::supervisor;
 use phoxal::prelude::*;
 
 struct Api;
@@ -13,7 +13,7 @@ impl Participant for BadRequest {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().asset().get(), Self::get)
+        ctx.query(supervisor::topic::owner().bundle().get(), Self::get)
             ?;
         Ok(((), Api))
     }
@@ -26,8 +26,8 @@ impl BadRequest {
         _query: QueryContext,
         _request: api::map::SubmapRequest,
         _state: &mut (),
-    ) -> QueryResult<supervisor::asset::GetResponse> {
-        Ok(supervisor::asset::GetResponse::Missing)
+    ) -> QueryResult<supervisor::bundle::GetResponse> {
+        Ok(supervisor::bundle::GetResponse::Missing)
     }
 }
 

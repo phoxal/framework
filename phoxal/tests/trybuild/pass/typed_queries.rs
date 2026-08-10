@@ -1,5 +1,5 @@
 use phoxal::api;
-use phoxal_supervisor_api::supervisor;
+use phoxal_api::supervisor;
 use phoxal::prelude::*;
 
 struct Api;
@@ -14,7 +14,7 @@ impl Participant for TypedQueries {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().asset().get(), Self::get)
+        ctx.query(supervisor::topic::owner().bundle().get(), Self::get)
             ?;
         ctx.query(api::topic::owner().map().submap(), Self::submap)
             ?;
@@ -27,11 +27,11 @@ impl TypedQueries {
         &self,
         _api: &Api,
         _query: QueryContext,
-        _request: supervisor::asset::GetRequest,
+        _request: supervisor::bundle::GetRequest,
         state: &mut State,
-    ) -> QueryResult<supervisor::asset::GetResponse> {
+    ) -> QueryResult<supervisor::bundle::GetResponse> {
         state.0 += 1;
-        Ok(supervisor::asset::GetResponse::Missing)
+        Ok(supervisor::bundle::GetResponse::Missing)
     }
 
     fn submap(

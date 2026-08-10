@@ -1,5 +1,0 @@
-error: API revision minor component must fit in a `u16`
- --> tests/trybuild/fail/tree_revision_minor_overflow.rs:7:24
-  |
-7 |         latest version v0_65536;
-  |                        ^^^^^^^^

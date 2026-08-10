@@ -1,12 +1,12 @@
-//! Generated endpoint catalogue for materialized API and protocol trees.
+//! Generated endpoint catalogue for materialized contract families.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::model::{MaterializedTree, Node, TopicKind};
 
-/// One tree (an API revision or a protocol) in the emitted manifest.
-pub(super) struct ManifestVersion {
+/// One contract family in the emitted manifest.
+pub(super) struct ManifestFamily {
     name: String,
     contracts: Vec<ManifestContract>,
 }
@@ -21,7 +21,7 @@ struct ManifestContract {
     delivery_tokens: TokenStream,
 }
 
-impl ManifestVersion {
+impl ManifestFamily {
     /// Enumerate every endpoint, sorted independently of authoring order.
     pub(super) fn of(tree: &MaterializedTree) -> Self {
         let mut contracts = Vec::new();
@@ -37,10 +37,10 @@ impl ManifestVersion {
         }
     }
 
-    pub(super) fn expand_manifest(versions: &[Self]) -> TokenStream {
-        let version_entries = versions.iter().map(|version| {
-            let name = &version.name;
-            let contracts = version.contracts.iter().map(|contract| {
+    pub(super) fn expand_manifest(families: &[Self]) -> TokenStream {
+        let family_entries = families.iter().map(|family| {
+            let name = &family.name;
+            let contracts = family.contracts.iter().map(|contract| {
                 let endpoint = &contract.endpoint;
                 let topic = &contract.topic;
                 let payload = optional_string(&contract.payload);
@@ -61,7 +61,7 @@ impl ManifestVersion {
                 }
             });
             quote! {
-                ApiContractManifestVersion {
+                ApiContractManifestFamily {
                     name: #name,
                     contracts: &[#(#contracts),*],
                 }
@@ -69,10 +69,10 @@ impl ManifestVersion {
         });
 
         quote! {
-            /// One generated API/protocol tree in the endpoint catalogue.
+            /// One generated contract family in the endpoint catalogue.
             #[doc(hidden)]
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-            pub struct ApiContractManifestVersion {
+            pub struct ApiContractManifestFamily {
                 pub name: &'static str,
                 pub contracts: &'static [ApiContractManifestContract],
             }
@@ -92,7 +92,7 @@ impl ManifestVersion {
 
             /// Every endpoint declared by the materialized trees.
             #[doc(hidden)]
-            pub const API_CONTRACT_MANIFEST: &[ApiContractManifestVersion] = &[#(#version_entries),*];
+            pub const API_CONTRACT_MANIFEST: &[ApiContractManifestFamily] = &[#(#family_entries),*];
         }
     }
 }

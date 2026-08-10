@@ -1,173 +1,207 @@
-//! Every version identity that crosses a Phoxal process boundary.
+//! The one compatibility identity that crosses a Phoxal process boundary.
 //!
-//! Most cross-binary versions are a closed set. Robot API identity is the
-//! deliberate exception: a process must be able to report an otherwise valid
-//! newer robot API to an external client even when that client does not
-//! implement that API's contract tree. It is therefore an open, validated
-//! value rather than a train-maintained enum.
+//! Two Phoxal binaries speak the same contracts exactly when they were built
+//! from the same framework train, so the framework's SemVer version is that
+//! statement in full: one [`FrameworkVersion`] per participant, compared for
+//! exact equality. There is no second, per-boundary identity to negotiate, and
+//! no way for a bus, launch, or document claim to disagree with the train that
+//! produced it.
 //!
-//! These identities live on the process-boundary floor rather than in the crate
-//! that implements each contract, because the record that declares them
-//! ([`crate::metadata::ParticipantMetadata`]) has to name all of them at once
-//! and this crate is below `phoxal-bus`, `phoxal-api`, and `phoxal-manifest`
-//! in the graph. `phoxal-api` pins its generated `RobotApi` to the revision its contract tree
-//! actually speaks, and the runtime bundle pins [`RuntimeSchema`] to the
-//! compiled document grammar it persists. Authored source grammars are not
-//! participant-binary compatibility claims.
+//! The schema tags on persisted documents (`phoxal/runtime-bundle/v0`,
+//! `phoxal/participant-metadata/v0`) are not identities of this kind. They are
+//! parse-time format discriminators owned by the document that carries them: a
+//! reader refuses a tag it does not implement before it looks at any field.
+//!
+//! The identity lives on the process-boundary floor rather than in the crate
+//! that implements a contract, because the record that declares it
+//! ([`crate::metadata::ParticipantMetadata`]) sits below `phoxal-bus`,
+//! `phoxal-api`, and `phoxal-manifest` in the graph.
 
 use serde::{Deserialize, Serialize};
 
-/// An exact, open robot API identity carried at the process boundary.
+/// The framework train one binary was built from, and therefore the whole of
+/// what it claims about compatibility.
 ///
-/// Its canonical wire spelling is `phoxal/robot-api/v<major>.<minor>`. This
-/// type deliberately accepts versions unknown to this framework build; the
-/// generated API catalogue decides whether a caller implements a particular
-/// revision. Keeping that catalogue above this process-contract floor avoids a
-/// dependency from this crate back to `phoxal-api`.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RobotApiVersion {
+/// Its canonical wire spelling is the SemVer string itself, e.g. `0.56.2`:
+/// three decimal segments, no prefix, no padding, no pre-release or build
+/// metadata. Comparison is exact equality; the [`CompatibilityLine`] a version
+/// belongs to is reported separately so a looser rule can never be applied by
+/// accident.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct FrameworkVersion {
     major: u16,
     minor: u16,
+    patch: u16,
 }
 
-impl RobotApiVersion {
-    /// Construct one exact robot API version.
+impl FrameworkVersion {
+    /// The canonical spelling of the train this binary was built from.
+    ///
+    /// The crate version is the workspace train version: `[workspace.package]
+    /// version` sets it and exact `=` pins keep every internal dependency on
+    /// the same train.
+    pub const CURRENT_SPELLING: &'static str = env!("CARGO_PKG_VERSION");
+
+    /// The train this binary was built from.
+    ///
+    /// Parsed from [`Self::CURRENT_SPELLING`] during const evaluation, so a
+    /// crate version this type cannot represent fails the build rather than
+    /// reaching a process boundary.
+    pub const CURRENT: Self = match Self::parse(Self::CURRENT_SPELLING.as_bytes()) {
+        Some(version) => version,
+        None => panic!("the crate version is not a canonical <major>.<minor>.<patch> version"),
+    };
+
+    /// Construct one exact framework version.
     #[must_use]
-    pub const fn new(major: u16, minor: u16) -> Self {
-        Self { major, minor }
+    pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
-    /// The API's major component.
+    /// The version's major component.
     #[must_use]
     pub const fn major(self) -> u16 {
         self.major
     }
 
-    /// The API's minor component.
+    /// The version's minor component.
     #[must_use]
     pub const fn minor(self) -> u16 {
         self.minor
     }
-}
 
-impl std::fmt::Display for RobotApiVersion {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "phoxal/robot-api/v{}.{}", self.major, self.minor)
+    /// The version's patch component.
+    #[must_use]
+    pub const fn patch(self) -> u16 {
+        self.patch
+    }
+
+    /// The SemVer line this version belongs to: pre-1.0 trains break on every
+    /// minor, and a released major breaks only on the major.
+    ///
+    /// This reports the line; it does not decide compatibility. Two binaries
+    /// are compatible when their versions are equal.
+    #[must_use]
+    pub const fn compatibility_line(self) -> CompatibilityLine {
+        if self.major == 0 {
+            CompatibilityLine::PreV1 { minor: self.minor }
+        } else {
+            CompatibilityLine::Stable { major: self.major }
+        }
+    }
+
+    /// Parse the canonical spelling, or `None` when the bytes are anything
+    /// else.
+    ///
+    /// One parser serves const evaluation, [`FromStr`](std::str::FromStr), and
+    /// `Deserialize`, so what a peer reads off the wire, what a diagnostic
+    /// prints, and what the build accepts cannot drift apart.
+    const fn parse(bytes: &[u8]) -> Option<Self> {
+        let (major, index) = match Self::parse_segment(bytes, 0) {
+            Some(parsed) => parsed,
+            None => return None,
+        };
+        if index >= bytes.len() || bytes[index] != b'.' {
+            return None;
+        }
+        let (minor, index) = match Self::parse_segment(bytes, index + 1) {
+            Some(parsed) => parsed,
+            None => return None,
+        };
+        if index >= bytes.len() || bytes[index] != b'.' {
+            return None;
+        }
+        let (patch, index) = match Self::parse_segment(bytes, index + 1) {
+            Some(parsed) => parsed,
+            None => return None,
+        };
+        if index != bytes.len() {
+            return None;
+        }
+        Some(Self::new(major, minor, patch))
+    }
+
+    /// One decimal segment starting at `start`, with the index just past it.
+    ///
+    /// A segment is a non-empty run of ASCII digits that fits in `u16` and
+    /// carries no leading zero, so `0` parses and `00` or `057` does not.
+    const fn parse_segment(bytes: &[u8], start: usize) -> Option<(u16, usize)> {
+        let mut index = start;
+        let mut value: u16 = 0;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            let digit = (bytes[index] - b'0') as u16;
+            value = match value.checked_mul(10) {
+                Some(scaled) => scaled,
+                None => return None,
+            };
+            value = match value.checked_add(digit) {
+                Some(added) => added,
+                None => return None,
+            };
+            index += 1;
+        }
+        if index == start {
+            return None;
+        }
+        if bytes[start] == b'0' && index - start > 1 {
+            return None;
+        }
+        Some((value, index))
     }
 }
 
-impl Serialize for RobotApiVersion {
+/// The SemVer line a [`FrameworkVersion`] belongs to.
+///
+/// Pre-1.0 the breaking axis is the minor; from 1.0 on it is the major. The
+/// line is a report about a version, never a comparison rule applied to two of
+/// them.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CompatibilityLine {
+    /// A `0.x` train, whose line is its minor.
+    PreV1 { minor: u16 },
+    /// A released train, whose line is its major.
+    Stable { major: u16 },
+}
+
+impl std::fmt::Display for FrameworkVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl std::str::FromStr for FrameworkVersion {
+    type Err = FrameworkVersionError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value.as_bytes()).ok_or_else(|| FrameworkVersionError {
+            value: value.to_owned(),
+        })
+    }
+}
+
+/// A framework version that is not the canonical SemVer spelling of a version
+/// this type can represent.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("invalid framework version '{value}'; expected <major>.<minor>.<patch>")]
+pub struct FrameworkVersionError {
+    value: String,
+}
+
+impl Serialize for FrameworkVersion {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
     }
 }
 
-impl<'de> Deserialize<'de> for RobotApiVersion {
+impl<'de> Deserialize<'de> for FrameworkVersion {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
-        const PREFIX: &str = "phoxal/robot-api/v";
-        let Some(version) = value.strip_prefix(PREFIX) else {
-            return Err(serde::de::Error::custom(format!(
-                "invalid robot API '{value}'; expected {PREFIX}<major>.<minor>"
-            )));
-        };
-        let Some((major, minor)) = version.split_once('.') else {
-            return Err(serde::de::Error::custom(format!(
-                "invalid robot API '{value}'; expected {PREFIX}<major>.<minor>"
-            )));
-        };
-        if major.is_empty()
-            || minor.is_empty()
-            || minor.contains('.')
-            || !major.bytes().all(|byte| byte.is_ascii_digit())
-            || !minor.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return Err(serde::de::Error::custom(format!(
-                "invalid robot API '{value}'; expected {PREFIX}<major>.<minor>"
-            )));
-        }
-        let major = major.parse().map_err(serde::de::Error::custom)?;
-        let minor = minor.parse().map_err(serde::de::Error::custom)?;
-        let parsed = Self::new(major, minor);
-        if parsed.to_string() != value {
-            return Err(serde::de::Error::custom(format!(
-                "robot API '{value}' is not canonical; expected '{parsed}'"
-            )));
-        }
-        Ok(parsed)
-    }
-}
-
-/// Declares one cross-binary version identity.
-///
-/// The canonical spelling is written exactly once per variant and is used for
-/// both the serde rename and `as_str`, so the wire token and the diagnostic
-/// token cannot drift apart.
-macro_rules! version_identity {
-    (
-        $(#[$enum_meta:meta])*
-        $name:ident {
-            $(
-                $(#[$variant_meta:meta])*
-                $variant:ident = $token:literal
-            ),+ $(,)?
-        }
-    ) => {
-        $(#[$enum_meta])*
-        #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-        pub enum $name {
-            $(
-                $(#[$variant_meta])*
-                #[serde(rename = $token)]
-                $variant,
-            )+
-        }
-
-        impl $name {
-            /// The canonical spelling of this version, for diagnostics. It is
-            /// the same literal the serde rename uses.
-            #[must_use]
-            pub const fn as_str(self) -> &'static str {
-                match self {
-                    $(Self::$variant => $token,)+
-                }
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.as_str())
-            }
-        }
-    };
-}
-
-version_identity! {
-    /// The bus wire ABI: the version-qualified key grammar, the sample
-    /// metadata, and the encoding string together.
-    ///
-    /// Distinct from the `phoxal/v0` prefix inside a Zenoh encoding string:
-    /// that token is per-sample wire overhead and stays short, while this one
-    /// is a document identity that has to be unambiguous next to the launch
-    /// and manifest identities it sits beside.
-    BusAbi {
-        V0 = "phoxal/bus-abi/v0",
-    }
-}
-
-version_identity! {
-    /// The process launch compatibility identity.
-    LaunchAbi {
-        V0 = "phoxal/participant-launch/v0",
-    }
-}
-
-version_identity! {
-    /// The compiled runtime document grammar consumed by participants and
-    /// supervisors. This is deliberately distinct from authored robot,
-    /// component, and simulation source schemas.
-    RuntimeSchema {
-        V0 = "phoxal/runtime-bundle/v0",
+        Self::parse(value.as_bytes())
+            .ok_or_else(|| serde::de::Error::custom(FrameworkVersionError { value }))
     }
 }
 
@@ -175,62 +209,105 @@ version_identity! {
 mod tests {
     use super::*;
 
-    /// `as_str` and the serde rename are generated from one literal, so this
-    /// asserts the property that literal is meant to have: what a peer reads
-    /// off the wire is exactly what a diagnostic prints.
-    macro_rules! assert_round_trip {
-        ($value:expr) => {{
-            let value = $value;
-            let json = serde_json::to_string(&value).expect("a unit variant serializes");
-            assert_eq!(json, format!("\"{}\"", value.as_str()));
-            assert_eq!(
-                serde_json::from_str::<_>(&json).ok(),
-                Some(value),
-                "the canonical spelling must deserialize back to the same variant"
-            );
-        }};
-    }
-
     #[test]
-    fn every_identity_serializes_to_its_canonical_spelling_and_back() {
-        assert_round_trip!(BusAbi::V0);
-        assert_round_trip!(LaunchAbi::V0);
-        assert_round_trip!(RuntimeSchema::V0);
-    }
-
-    #[test]
-    fn the_canonical_spellings_are_the_tokens_a_peer_binary_expects() {
-        assert_eq!(BusAbi::V0.as_str(), "phoxal/bus-abi/v0");
-        assert_eq!(LaunchAbi::V0.as_str(), "phoxal/participant-launch/v0");
-        assert_eq!(RuntimeSchema::V0.as_str(), "phoxal/runtime-bundle/v0");
-    }
-
-    #[test]
-    fn an_unknown_version_is_rejected_with_the_expected_set_named() {
-        let error = serde_json::from_str::<BusAbi>("\"phoxal/bus-abi/v1\"")
-            .expect_err("a version this train does not speak must not parse");
-        let message = error.to_string();
-        assert!(message.contains("phoxal/bus-abi/v1"), "{message}");
-        assert!(message.contains("phoxal/bus-abi/v0"), "{message}");
-    }
-
-    /// Each process-boundary grammar is its own type, so a record can never
-    /// compare one contract version against another's.
-    #[test]
-    fn identities_of_different_kinds_are_different_types() {
-        assert_ne!(BusAbi::V0.as_str(), RuntimeSchema::V0.as_str());
-    }
-
-    #[test]
-    fn robot_api_is_open_but_canonical() {
-        let known = RobotApiVersion::new(0, 1);
-        let future = RobotApiVersion::new(42, 7);
-        assert_eq!(known.to_string(), "phoxal/robot-api/v0.1");
+    fn the_wire_spelling_is_the_semver_string_and_round_trips() {
+        let version = FrameworkVersion::new(0, 57, 2);
+        assert_eq!(version.to_string(), "0.57.2");
         assert_eq!(
-            serde_json::from_str::<RobotApiVersion>("\"phoxal/robot-api/v42.7\"").unwrap(),
-            future
+            serde_json::to_string(&version).expect("a framework version serializes"),
+            "\"0.57.2\""
         );
-        assert!(serde_json::from_str::<RobotApiVersion>("\"phoxal/robot-api/v042.7\"").is_err());
-        assert!(serde_json::from_str::<RobotApiVersion>("\"phoxal/robot-api/v42\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<FrameworkVersion>("\"0.57.2\"").expect("the spelling parses"),
+            version
+        );
+        assert_eq!(
+            "0.57.2"
+                .parse::<FrameworkVersion>()
+                .expect("the spelling parses"),
+            version
+        );
+        assert_eq!(
+            (version.major(), version.minor(), version.patch()),
+            (0, 57, 2)
+        );
+    }
+
+    /// The wire accepts one spelling. A prefix, a missing segment, pre-release
+    /// metadata, padding, or a structural object are all a different document
+    /// than the one this contract defines.
+    #[test]
+    fn every_non_canonical_spelling_is_rejected() {
+        for value in [
+            "\"v0.57.2\"",
+            "\"0.57\"",
+            "\"0.57.2.1\"",
+            "\"0.57.2-rc.1\"",
+            "\"0.57.2+build.5\"",
+            "\"0.057.2\"",
+            "\"00.57.2\"",
+            "\"0.57.2 \"",
+            "\" 0.57.2\"",
+            "\"\"",
+            r#"{"major":0,"minor":57,"patch":2}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<FrameworkVersion>(value).is_err(),
+                "{value} must not parse as a framework version"
+            );
+        }
+        assert!("0.57.2-rc.1".parse::<FrameworkVersion>().is_err());
+        assert!("65536.0.0".parse::<FrameworkVersion>().is_err());
+    }
+
+    /// The const-evaluated constant and the crate version are the same fact,
+    /// checked here through the runtime parser so a const-eval mistake cannot
+    /// hide behind itself.
+    #[test]
+    fn current_is_the_crate_version() {
+        assert_eq!(
+            FrameworkVersion::CURRENT.to_string(),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            env!("CARGO_PKG_VERSION")
+                .parse::<FrameworkVersion>()
+                .expect("the crate version is a canonical framework version"),
+            FrameworkVersion::CURRENT
+        );
+        assert_eq!(
+            FrameworkVersion::CURRENT_SPELLING,
+            FrameworkVersion::CURRENT.to_string()
+        );
+    }
+
+    #[test]
+    fn the_compatibility_line_is_the_minor_before_v1_and_the_major_after() {
+        assert_eq!(
+            FrameworkVersion::new(0, 57, 2).compatibility_line(),
+            CompatibilityLine::PreV1 { minor: 57 }
+        );
+        assert_eq!(
+            FrameworkVersion::new(0, 58, 0).compatibility_line(),
+            CompatibilityLine::PreV1 { minor: 58 }
+        );
+        assert_eq!(
+            FrameworkVersion::new(1, 4, 9).compatibility_line(),
+            CompatibilityLine::Stable { major: 1 }
+        );
+        assert_eq!(
+            FrameworkVersion::new(2, 0, 0).compatibility_line(),
+            CompatibilityLine::Stable { major: 2 }
+        );
+    }
+
+    /// Two versions on one line are still two versions: the framework compares
+    /// them for exact equality.
+    #[test]
+    fn versions_on_the_same_line_are_not_equal() {
+        let earlier = FrameworkVersion::new(0, 57, 0);
+        let later = FrameworkVersion::new(0, 57, 1);
+        assert_eq!(earlier.compatibility_line(), later.compatibility_line());
+        assert_ne!(earlier, later);
     }
 }

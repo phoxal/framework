@@ -1,15 +1,14 @@
 error: endpoint payloads use a local type name; define that type beside this fragment
-  --> tests/trybuild/fail/fragment_external_payload.rs:13:33
+  --> tests/trybuild/fail/fragment_external_payload.rs:12:33
    |
-13 |               topic sample: State<crate::Sample>;
+12 |               topic sample: State<crate::Sample>;
    |                                   ^^^^^^^^^^^^^
 ...
-17 | / phoxal_api_tree! {
-18 | |     output generated;
-19 | |     source crate;
-20 | |     versions { latest version v1_0; }
-21 | |     fragments { data; }
-22 | | }
+16 | / phoxal_api_tree! {
+17 | |     output generated;
+18 | |     source crate;
+19 | |     fragments { data; }
+20 | | }
    | |_- in this macro invocation
    |
    = note: this error originates in the macro `data::__phoxal_api_fragment_collect` which comes from the expansion of the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)

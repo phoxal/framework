@@ -3,9 +3,7 @@
 //! Three macro families make up the authoring surface:
 //!
 //! - [`phoxal_api_tree!`], [`phoxal_api_fragment!`], and
-//!   [`phoxal_api_fragment_group!`] - author modular Robot API contracts.
-//! - [`phoxal_protocol!`] - declares process-boundary protocol endpoints over
-//!   ordinary Rust payload modules, with protocol-relative keys.
+//!   [`phoxal_api_fragment_group!`] - author modular contract families.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
@@ -24,11 +22,13 @@ mod authoring;
 
 use proc_macro::TokenStream;
 
-/// Declare the semantic endpoints for one version-first Robot API module.
+/// Declare the semantic endpoints for one authored contract module.
 ///
-/// Payload types, implementations, and tests remain ordinary sibling Rust
-/// items. Endpoint bodies name a local payload type; the root tree's `source`
-/// path qualifies that name during materialization.
+/// The fragment's `path` roots at its semantic family and is the wire key
+/// prefix for every endpoint it declares. Payload types, implementations, and
+/// tests remain ordinary sibling Rust items. Endpoint bodies name a local
+/// payload type; the root tree's `source` path qualifies that name during
+/// materialization.
 #[proc_macro]
 pub fn phoxal_api_fragment(input: TokenStream) -> TokenStream {
     api_tree::expand_fragment(input.into())
@@ -44,10 +44,12 @@ pub fn phoxal_api_fragment_group(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Materialize declared Robot API versions from registered endpoint fragments.
+/// Materialize semantic contract families from registered endpoint fragments.
 ///
-/// The `source` path names the module containing the version-first authored
-/// tree, such as `crate::api` for `crate::api::v0_1::drive::Target`.
+/// Every fragment path roots at its family, and one generated module per family
+/// collects the fragments that root there. The `source` path names the module
+/// containing the family-first authored tree, such as `crate::api` for
+/// `crate::api::robot::drive::Target`.
 #[proc_macro]
 pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
     api_tree::expand_tree(input.into())
@@ -69,16 +71,6 @@ pub fn __phoxal_api_materialize(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn __phoxal_api_define_group(input: TokenStream) -> TokenStream {
     api_tree::expand_group_collector(input.into()).into()
-}
-
-/// Declare a process-boundary protocol surface without a revision/latest
-/// axis. Keeping protocol mode in its own macro prevents the two grammars from
-/// silently drifting into one another.
-#[proc_macro]
-pub fn phoxal_protocol(input: TokenStream) -> TokenStream {
-    api_tree::expand_protocol(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
 }
 
 /// Attach a positive, finite frequency to the ordinary

@@ -242,7 +242,7 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
     )
     .expect("real scheduler");
     assert!(clock_handle.is_none());
-    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
     let clock = RealClock::new(phoxal_runtime_contract::origin::ExecutionOrigin::mint())
         .expect("current-boot origin");
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -353,7 +353,7 @@ async fn assert_owner_worker_failure_reaches_lifecycle(
         AnyStepScheduler::for_clock_mode(ParticipantClock::Clockless, None, None)
             .expect("disabled scheduler");
     assert!(clock_handle.is_none());
-    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
     let mut shutdown = ShutdownController::new(std::future::pending());
 
     let outcome = Runner::<TransportFaultLifecycle, RealClock>::start(

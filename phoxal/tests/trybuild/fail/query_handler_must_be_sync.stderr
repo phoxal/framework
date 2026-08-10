@@ -7,18 +7,18 @@ warning: unused import: `phoxal::api`
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
 error[E0271]: expected `get` to return `Result<GetResponse, QueryFailure>`, but it returns `impl Future<Output = Result<GetResponse, QueryFailure>>`
-  --> tests/trybuild/fail/query_handler_must_be_sync.rs:16:61
+  --> tests/trybuild/fail/query_handler_must_be_sync.rs:16:62
    |
-16 |         ctx.query(supervisor::topic::owner().asset().get(), Self::get)?;
-   |             -----                                           ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found future
+16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get)?;
+   |             -----                                            ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found future
    |             |
    |             required by a bound introduced by this call
    |
 note: calling an async function returns a future
-  --> tests/trybuild/fail/query_handler_must_be_sync.rs:16:61
+  --> tests/trybuild/fail/query_handler_must_be_sync.rs:16:62
    |
-16 |         ctx.query(supervisor::topic::owner().asset().get(), Self::get)?;
-   |                                                             ^^^^^^^^^
+16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get)?;
+   |                                                              ^^^^^^^^^
 note: required by a bound in `phoxal::SetupContext::<R>::query`
   --> src/participant/context.rs
    |
@@ -29,5 +29,5 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::query`
 help: consider `await`ing on the `Future`
    |
-16 |         ctx.query(supervisor::topic::owner().asset().get(), Self::get.await)?;
-   |                                                                      ++++++
+16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get.await)?;
+   |                                                                       ++++++

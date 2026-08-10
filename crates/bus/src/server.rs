@@ -14,7 +14,7 @@
 //!
 //! These public types carry untyped payload bytes; the generated server dispatch
 //! does the typed encode/decode around them. Contract identity is not validated
-//! here: a query only ever reaches the handler for its own version-qualified
+//! here: a query only ever reaches the handler for its own family-rooted
 //! topic key, so the codec is the only thing left to check.
 
 use zenoh::handlers::FifoChannelHandler;
@@ -47,7 +47,7 @@ impl ServerQueryable {
         })
     }
 
-    /// The version-qualified topic key this queryable serves.
+    /// The family-rooted topic key this queryable serves.
     pub fn topic_key(&self) -> &str {
         &self.topic_key
     }
@@ -60,7 +60,7 @@ pub struct IncomingQuery {
 }
 
 impl IncomingQuery {
-    /// The version-qualified topic key.
+    /// The family-rooted topic key.
     pub fn topic_key(&self) -> &str {
         &self.topic_key
     }
@@ -80,7 +80,7 @@ impl IncomingQuery {
 
     /// The request's bus metadata (codec + provenance), decoded from the Zenoh
     /// attachment. Contract identity is not carried here: this queryable only
-    /// ever receives requests on its own version-qualified topic key.
+    /// ever receives requests on its own family-rooted topic key.
     pub fn request_metadata(&self) -> Result<BusMetadata> {
         let encoding = self
             .query

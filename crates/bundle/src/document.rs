@@ -8,7 +8,7 @@ use phoxal_model::component::capability::MotorCommand;
 use phoxal_model::identity::CapabilityRef;
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
-use phoxal_runtime_contract::version::RobotApiVersion;
+use phoxal_runtime_contract::version::FrameworkVersion;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -93,10 +93,10 @@ impl RuntimeDocument {
         &self.runtime().robot
     }
 
-    /// The one Robot API revision validated for this execution.
+    /// The one framework train validated for this execution.
     #[must_use]
-    pub fn robot_api(&self) -> RobotApiVersion {
-        self.runtime().robot_api()
+    pub fn framework(&self) -> FrameworkVersion {
+        self.runtime().framework()
     }
 
     /// The final participant set, in persisted order.
@@ -216,7 +216,7 @@ impl Runtime {
         self.router.as_ref()
     }
 
-    /// The one Robot API revision selected by every launched participant.
+    /// The one framework train every launched participant was built from.
     ///
     /// Runtime construction proves this invariant and every valid runtime has
     /// a brain participant, so the lookup cannot fail after validation.
@@ -225,11 +225,11 @@ impl Runtime {
         clippy::expect_used,
         reason = "Runtime is constructible only after validation proves at least one selected participant and its artifact"
     )]
-    pub fn robot_api(&self) -> RobotApiVersion {
+    pub fn framework(&self) -> FrameworkVersion {
         self.participants
             .first()
             .and_then(|participant| self.artifacts.get(&participant.artifact))
-            .map(|artifact| artifact.contract().api)
+            .map(|artifact| artifact.contract().framework)
             .expect("validated runtime has a selected participant artifact")
     }
 
@@ -273,7 +273,7 @@ impl Runtime {
         let mut referenced_artifacts = BTreeSet::new();
         let mut brain = None;
         let mut simulator_count = 0_u8;
-        let mut robot_api = None;
+        let mut framework = None;
         for participant in &self.participants {
             let artifact = self.artifacts.get(&participant.artifact).ok_or_else(|| {
                 DocumentError::UnknownArtifact {
@@ -288,17 +288,19 @@ impl Runtime {
                 }
             })?;
             participant.validate(&self.robot, artifact, validator)?;
-            let api = artifact.contract().api;
-            if let Some(expected) = robot_api
-                && expected != api
+            // One execution runs one framework train: compatibility is exact
+            // version equality, so a bundle mixing trains has no valid launch.
+            let artifact_framework = artifact.contract().framework;
+            if let Some(expected) = framework
+                && expected != artifact_framework
             {
-                return Err(DocumentError::MixedRobotApi {
+                return Err(DocumentError::MixedFramework {
                     artifact: participant.artifact.clone(),
                     expected,
-                    actual: api,
+                    actual: artifact_framework,
                 });
             }
-            robot_api = Some(api);
+            framework = Some(artifact_framework);
             if artifact.contract().kind == phoxal_runtime_contract::metadata::ParticipantKind::Brain
             {
                 if participant.id.as_str() != "brain" {

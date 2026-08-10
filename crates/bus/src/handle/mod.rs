@@ -1,4 +1,4 @@
-//! Endpoint-typed handles over the version-qualified bus boundary.
+//! Endpoint-typed handles over the family-rooted bus boundary.
 //!
 //! The handles are grouped by what they own:
 //!
@@ -91,7 +91,7 @@ use crate::metadata::BusMetadata;
 ///
 /// Contract identity is not checked here: it is guaranteed by the Zenoh key
 /// itself, and this function is only ever invoked for samples received on a
-/// subscription already scoped to `E`'s version-qualified topic.
+/// subscription already scoped to `E`'s family-rooted topic.
 pub(crate) fn decode_sample<E: EndpointDescriptor>(
     sample: &Sample,
     topic: &str,

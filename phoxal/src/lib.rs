@@ -3,7 +3,7 @@
 //! A production-oriented framework for autonomous robots.
 //!
 //! Phoxal gives a robot a small, strongly-typed core: a contract bus over
-//! [Zenoh](https://zenoh.io), train-selected concrete API contracts,
+//! [Zenoh](https://zenoh.io), framework-owned semantic API contracts,
 //! and a
 //! participant authoring model where a role marker plus a direct trait
 //! implementation is a complete service, driver, or simulator. The framework owns the
@@ -14,7 +14,7 @@
 //! Three ideas hold it together:
 //!
 //! - **A typed contract bus.** Every message is a plain serde body bound to one
-//!   version-qualified contract name. Handles are endpoint-typed
+//!   family-rooted contract name. Handles are endpoint-typed
 //!   ([`StatePublisher<T>`](bus::StatePublisher),
 //!   [`StateView<T>`](bus::StateView), [`SampleReceiver<T>`](bus::SampleReceiver),
 //!   [`Querier<Req, Resp>`](bus::Querier)), so the compiler - not a late check -
@@ -22,10 +22,10 @@
 //!   gated by the contract's *temporal* role: the robot time a publisher can
 //!   express is fixed by what the contract is, so a participant cannot stamp an
 //!   instant it never reached.
-//! - **One train-selected API facade.** Official participants import
-//!   `phoxal::api`, which names the complete concrete revision selected by the
-//!   locked framework train. Contract identity is realized on the wire by the
-//!   revision-qualified key.
+//! - **One authoring API facade.** Official participants import `phoxal::api`,
+//!   the complete `robot` contract family. Contract identity is realized on the
+//!   wire by the family-rooted key; compatibility between participants is the
+//!   framework train version they were built from.
 //! - **Participants are authored, not wired.** A role attribute declares
 //!   identity and associated `Config`/`State`/`Api` types; a direct
 //!   [`Participant`] implementation owns lifecycle
@@ -81,9 +81,9 @@
 //!
 //! What each piece does:
 //!
-//! - `use phoxal::api;` brings the versioned API module into scope;
-//!   `Api` struct fields name train-selected bodies (`api::drive::Target`)
-//!   directly, with no participant-local version attribute to keep in sync.
+//! - `use phoxal::api;` brings the `robot` contract family into scope;
+//!   `Api` struct fields name its bodies (`api::drive::Target`) directly, with
+//!   no participant-local contract attribute to keep in sync.
 //! - The role attribute records identity and sets associated types. Omitted
 //!   `Config`, `State`, and `Api` default to `()`.
 //! - Handles are ordinary fields built in `Participant::setup` from typed topic
@@ -117,9 +117,9 @@
 //!
 //! ## Where to look next
 //!
-//! - The `phoxal-api` crate (`phoxal::api`, …) - the versioned API
-//!   modules: version-local wire bodies, the [`ApiVersion`](bus::ApiVersion) /
-//!   endpoint descriptor traits and API-local topic builders, all generated
+//! - The `phoxal-api` crate (`phoxal::api`, …) - the contract-family
+//!   modules: family-local wire bodies, the [`ApiFamily`](bus::ApiFamily) /
+//!   endpoint descriptor traits and family-local topic builders, all generated
 //!   from modular `phoxal_api_tree!` and `phoxal_api_fragment!` declarations.
 //!   A participant imports it directly with `use phoxal::api as api;`.
 //!   The runner also links it for framework-owned out-of-band infrastructure
@@ -154,19 +154,16 @@ pub mod geometry;
 mod participant;
 mod sample_schedule;
 
-/// Framework-owned transport hand contracts. This module is hidden from the
-/// authoring documentation because these endpoints are runtime plumbing, not
-/// robot API declarations.
-#[doc(hidden)]
-pub mod runtime;
-
 /// Explicit in-process participant testing support.
 #[cfg(feature = "test-harness")]
 pub mod testing;
 
-/// The concrete framework API revision selected by this release train.
+/// The `robot` contract family, the surface a participant authors against.
+///
+/// The facade exposes the robot family only. The `runtime` and `supervisor`
+/// families are host-tooling surfaces, reached through `phoxal_api` directly.
 pub mod api {
-    pub use phoxal_api::latest::*;
+    pub use phoxal_api::robot::*;
 }
 
 /// Typed contract and handle vocabulary for normal participant authoring.
@@ -190,7 +187,7 @@ pub mod api {
 /// strong that guarantee is.
 pub mod bus {
     pub use phoxal_bus::{
-        ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
+        ApiFamily, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
         DEFAULT_QUERY_TIMEOUT, DeliveryFamily, Endpoint, EndpointDescriptor, EndpointKind,
         EventContract, EventPublisher, EventReceiver, ExclusiveProducerLease, FixedSourceAdmission,
         FixedSourceLease, KeySegment, KeySegmentError, LEASE_TRACE_TARGET, LeaseDecision,
@@ -314,32 +311,26 @@ pub mod prelude {
 pub mod __private {
     /// The compatibility declaration a participant binary carries.
     ///
-    /// Every constant here is a value of the version enum that owns the
-    /// contract it names, so a train can only ever say one thing about each and
-    /// no version is ever spelled as a string. The role macros splice these
-    /// into the participant's embedded `.phoxal_meta` document at compile time
-    /// through `participant_metadata_json!`; that embedded document is the only
-    /// compatibility artifact - there is no Cargo package-metadata table, no
-    /// version file, and no framework-SemVer floor. The document's own version
-    /// is the tag on `ParticipantMetadata` itself, so it needs no entry here.
-    /// Topology requirements are a closed typed declaration; they are not
-    /// inferred from package names or a service registry.
+    /// The framework train version is the whole of it: two Phoxal processes
+    /// speak the same contracts exactly when they were built from the same
+    /// train, so there is one constant here and it is owned by
+    /// `phoxal-runtime-contract`. The role macros splice it into the
+    /// participant's embedded `.phoxal_meta` document at compile time through
+    /// `participant_metadata_json!`; that embedded document is the only
+    /// compatibility artifact - there is no Cargo package-metadata table and no
+    /// version file. The document's own grammar is the tag on
+    /// `ParticipantMetadata` itself, a format discriminator rather than a
+    /// negotiated identity, so it needs no entry here. Topology requirements
+    /// are a closed typed declaration; they are not inferred from package names
+    /// or a service registry.
     pub mod compatibility {
         use phoxal_runtime_contract::metadata::ParticipantRequirement;
-        use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
+        use phoxal_runtime_contract::version::FrameworkVersion;
 
-        /// The train-selected API revision (`phoxal::api`).
-        pub const API: RobotApiVersion = phoxal_api::RobotApi::LATEST.version();
-        /// The generated catalogue's canonical token for the train-selected
-        /// robot API. The embedded metadata writer needs a const string while
-        /// the process-facing contract remains the validated value above.
-        pub const API_TOKEN: &str = phoxal_api::RobotApi::LATEST.as_str();
-        /// The bus wire ABI.
-        pub const BUS: BusAbi = BusAbi::V0;
-        /// The process launch compatibility identity.
-        pub const LAUNCH: LaunchAbi = LaunchAbi::V0;
-        /// The compiled runtime document grammar.
-        pub const RUNTIME: RuntimeSchema = RuntimeSchema::V0;
+        /// The canonical spelling of the framework train this binary was built
+        /// from. The const-eval metadata writer needs a string; the value it
+        /// spells is `FrameworkVersion::CURRENT`.
+        pub const FRAMEWORK: &str = FrameworkVersion::CURRENT_SPELLING;
         /// The default declaration for participants without a static topology
         /// requirement.
         pub const NO_REQUIREMENT: Option<ParticipantRequirement> = None;

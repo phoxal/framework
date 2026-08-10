@@ -254,7 +254,7 @@ impl<E: EventContract> EventPublisher<E> {
 mod tests {
     use super::*;
     use crate::contract::{
-        ApiVersion, EndpointDescriptor, EndpointKind, SampleContract, SetpointContract,
+        ApiFamily, EndpointDescriptor, EndpointKind, SampleContract, SetpointContract,
         SetpointDeliveryContract, StateContract, StreamContract,
     };
     use crate::error::BusError;
@@ -271,7 +271,7 @@ mod tests {
 
     enum StreamApi {}
 
-    impl ApiVersion for StreamApi {
+    impl ApiFamily for StreamApi {
         const ID: &'static str = "stream-test";
     }
 
@@ -280,7 +280,7 @@ mod tests {
         type Api = StreamApi;
         type Payload = StreamChunk;
         const NAME: &'static str = "stream-test::Chunk";
-        const VERSION: &'static str = "stream-test";
+        const FAMILY: &'static str = "stream-test";
         const CONTRACT: &'static str = "Chunk";
         const TOPIC: &'static str = "stream-test/chunk";
         const KIND: EndpointKind = EndpointKind::Stream;
@@ -296,7 +296,7 @@ mod tests {
         type Api = StreamApi;
         type Payload = StateChunk;
         const NAME: &'static str = "stream-test::State";
-        const VERSION: &'static str = "stream-test";
+        const FAMILY: &'static str = "stream-test";
         const CONTRACT: &'static str = "State";
         const TOPIC: &'static str = "stream-test/state";
         const KIND: EndpointKind = EndpointKind::State;
@@ -312,7 +312,7 @@ mod tests {
         type Api = StreamApi;
         type Payload = SampleChunk;
         const NAME: &'static str = "stream-test::Sample";
-        const VERSION: &'static str = "stream-test";
+        const FAMILY: &'static str = "stream-test";
         const CONTRACT: &'static str = "Sample";
         const TOPIC: &'static str = "stream-test/sample";
         const KIND: EndpointKind = EndpointKind::Sample;
@@ -328,7 +328,7 @@ mod tests {
         type Api = StreamApi;
         type Payload = SetpointChunk;
         const NAME: &'static str = "stream-test::Setpoint";
-        const VERSION: &'static str = "stream-test";
+        const FAMILY: &'static str = "stream-test";
         const CONTRACT: &'static str = "Setpoint";
         const TOPIC: &'static str = "stream-test/setpoint";
         const KIND: EndpointKind = EndpointKind::Setpoint;

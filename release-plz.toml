@@ -71,12 +71,6 @@ version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false
 
-[[package]]
-name = "phoxal-supervisor-api"
-version_group = "framework-train"
-git_tag_enable = false
-git_release_enable = false
-
 # --- executables, published to the `phoxal` registry ------------------------
 #
 # `publish = false` here suppresses only release-plz's `cargo publish` step; the

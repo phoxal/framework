@@ -1,5 +1,4 @@
-//! The generated tree model shared by materialized Robot API revisions and
-//! process protocols.
+//! The generated tree model for materialized contract families.
 //!
 //! Nothing here emits a module or a builder - the model is what the grammar
 //! produces and what every codegen pass reads.
@@ -7,29 +6,6 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::Ident;
-
-/// One `protocol <name> { … }` tree.
-///
-/// A protocol has no revision history and no version segment. Its `name` is
-/// both the generated module and the tree's identity, and it is the leading
-/// wire-key segment - exactly the slot the dotted revision occupies in API
-/// mode.
-pub(super) struct Protocol {
-    pub(super) name: Ident,
-    pub(super) nodes: Vec<Node>,
-}
-
-/// One already-materialized Robot API revision. Fragment inheritance is
-/// resolved into endpoint maps before this representation is built.
-pub(super) struct ConcreteVersion {
-    pub(super) name: Ident,
-    /// The dotted wire spelling of `name` (`v0_1` -> `"v0.1"`), which is both
-    /// this revision's identity and its leading wire-key segment.
-    pub(super) wire_id: String,
-    pub(super) major: u16,
-    pub(super) minor: u16,
-    pub(super) nodes: Vec<Node>,
-}
 
 /// One node in the api tree: a `name { … }` (static) or `name(var) { … }`
 /// (dynamic) block that may hold endpoint declarations and nested child nodes.
@@ -46,7 +22,6 @@ pub(super) struct Node {
 
 #[derive(Clone)]
 pub(super) struct TopicDef {
-    pub(super) replace: bool,
     pub(super) leaf: TopicLeaf,
     pub(super) kind: TopicKind,
     /// The endpoint semantic determines temporal capability and transport
@@ -60,14 +35,14 @@ pub(super) struct TopicDef {
 pub(super) enum TopicLeaf {
     Named(Ident),
     /// `topic self: …` - the body binds to the node path itself instead of
-    /// appending a leaf segment, for framework infrastructure topics such as
-    /// `logs/{participant_id}`.
+    /// appending a leaf segment, so a fragment whose whole path is the wire key
+    /// (`runtime/logs`, `supervisor/snapshot`) says so directly.
     Node,
 }
 
 impl TopicLeaf {
-    /// The builder method (and delta-matching) name for this leaf. A `self`
-    /// leaf has no segment of its own, so it is addressed as `topic`.
+    /// The builder method name for this leaf. A `self` leaf has no segment of
+    /// its own, so it is addressed as `topic`.
     pub(super) fn method_ident(&self) -> Ident {
         match self {
             TopicLeaf::Named(ident) => ident.clone(),
@@ -185,9 +160,8 @@ pub(super) enum TopicKind {
     },
 }
 
-/// A resolved payload path. Robot API fragments start with a local sibling
-/// type name and the tree materializer qualifies it; protocols accept complete
-/// Rust paths directly.
+/// A resolved payload path. A fragment names a local sibling type and the tree
+/// materializer qualifies it against the fragment's own module path.
 #[derive(Clone)]
 pub(super) struct BodyPath {
     pub(super) path: syn::Path,
@@ -200,20 +174,16 @@ impl BodyPath {
     }
 }
 
-/// One fully resolved tree ready to emit, from either mode.
+/// One fully resolved family tree ready to emit.
 ///
-/// `id` is the tree's identity AND its leading wire-key segment: the dotted
-/// revision (`"v0.1"`) for an API revision, the protocol name (`"supervisor"`)
-/// for a protocol. Everything below this point is mode-agnostic - the two modes
-/// differ only in how a tree is parsed, validated, and identified, never in how
-/// its modules, bodies, or builders are shaped.
+/// `id` is the tree's identity AND its leading wire-key segment: the semantic
+/// family (`"robot"`, `"runtime"`, `"supervisor"`).
 pub(super) struct MaterializedTree {
     pub(super) module: Ident,
     pub(super) id: String,
     pub(super) doc: String,
-    /// Authored module prefix for Robot API payloads. Protocol payload paths
-    /// are already explicit and have no revision provenance to resolve.
-    pub(super) source: Option<syn::Path>,
+    /// Authored module prefix the fragment payload names resolve against.
+    pub(super) source: syn::Path,
     pub(super) nodes: Vec<Node>,
 }
 

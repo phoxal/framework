@@ -1,0 +1,5 @@
+error: a contract family root is a static path segment; dynamic segments live below it
+ --> tests/trybuild/fail/fragment_dynamic_family.rs:4:10
+  |
+4 |     path robot(instance) / drive;
+  |          ^^^^^

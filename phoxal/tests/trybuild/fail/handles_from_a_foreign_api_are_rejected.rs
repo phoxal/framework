@@ -1,11 +1,10 @@
-// A participant declares one API (`ParticipantSpec::ContractApi`, fixed by the
-// role attribute to the train-selected facade), and every handle it builds must
-// come from that API. A body bound to any other `ApiVersion` - a second
-// revision, or another semantic protocol tree such as a process-boundary
-// protocol - is rejected at the builder call, which is what makes the `api`
-// field of the participant's embedded metadata record a checked statement.
+// A participant declares one contract family (`ParticipantSpec::ContractApi`,
+// fixed by the role attribute to the authoring facade), and every handle it
+// builds must come from that family. A body bound to any other `ApiFamily` -
+// another family, or a semantic protocol tree such as a process-boundary
+// protocol - is rejected at the builder call.
 use phoxal::bus::{
-    ApiVersion, EndpointDescriptor, EndpointKind, Publish, StateContract, StateDeliveryContract,
+    ApiFamily, EndpointDescriptor, EndpointKind, Publish, StateContract, StateDeliveryContract,
     Topic,
 };
 use phoxal::prelude::*;
@@ -15,7 +14,7 @@ struct ForeignState;
 
 enum ForeignApi {}
 
-impl ApiVersion for ForeignApi {
+impl ApiFamily for ForeignApi {
     const ID: &'static str = "foreign";
 }
 
@@ -25,7 +24,7 @@ impl EndpointDescriptor for ForeignStateEndpoint {
     type Api = ForeignApi;
     type Payload = ForeignState;
     const NAME: &'static str = "foreign::drive::state";
-    const VERSION: &'static str = "foreign";
+    const FAMILY: &'static str = "foreign";
     const CONTRACT: &'static str = "drive/state";
     const TOPIC: &'static str = "foreign/drive/state";
     const KIND: EndpointKind = EndpointKind::State;

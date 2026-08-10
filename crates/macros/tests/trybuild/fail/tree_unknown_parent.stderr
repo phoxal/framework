@@ -1,5 +1,0 @@
-error: an `extends` parent must be declared earlier
- --> tests/trybuild/fail/tree_unknown_parent.rs:7:37
-  |
-7 |         latest version v1_1 extends v1_0;
-  |                                     ^^^^

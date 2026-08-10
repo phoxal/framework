@@ -1,5 +1,5 @@
 error: fragments declare endpoints only; define payload types, implementations, and tests as ordinary sibling Rust items
- --> tests/trybuild/fail/fragment_payload_item.rs:6:5
+ --> tests/trybuild/fail/fragment_payload_item.rs:5:5
   |
-6 |     struct Target;
+5 |     struct Target;
   |     ^^^^^^

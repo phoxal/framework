@@ -14,7 +14,7 @@ use crate::participant::context::QueryContext;
 /// A successful server reply: the encoded plain `Resp` body.
 ///
 /// The reply carries no contract identity of its own, because the request
-/// already arrived on `Resp`'s version-qualified topic key - a receiver that
+/// already arrived on `Resp`'s family-rooted topic key - a receiver that
 /// got the reply knows what it asked for.
 #[derive(Debug)]
 pub(crate) struct ServerReply {
@@ -138,7 +138,7 @@ mod tests {
     use super::QueryRegistration;
     use crate::bus::{Codec, MessagePack, QueryCode, QueryFailure};
     use crate::prelude::*;
-    use phoxal_supervisor_api::supervisor;
+    use phoxal_api::supervisor;
 
     struct Api;
 
@@ -166,13 +166,13 @@ mod tests {
             &self,
             _api: &Api,
             query: QueryContext,
-            request: supervisor::asset::GetRequest,
+            request: supervisor::bundle::GetRequest,
             state: &mut QueryState,
-        ) -> QueryResult<supervisor::asset::GetResponse> {
+        ) -> QueryResult<supervisor::bundle::GetResponse> {
             state.calls.push(request.path.clone());
             state.requesters.push(query.producer());
             if request.path == "ok" {
-                Ok(supervisor::asset::GetResponse::Found {
+                Ok(supervisor::bundle::GetResponse::Found {
                     bytes: vec![1, 2, 3],
                 })
             } else {
@@ -183,10 +183,8 @@ mod tests {
 
     #[test]
     fn typed_query_dispatch_decodes_mutates_and_encodes() {
-        let registration = QueryRegistration::new(
-            "v0.1/supervisor/asset/get".to_string(),
-            QueryParticipant::get,
-        );
+        let registration =
+            QueryRegistration::new("supervisor/bundle/get".to_string(), QueryParticipant::get);
         let participant = QueryParticipant;
         let api = Api;
         let mut state = QueryState::default();
@@ -195,7 +193,7 @@ mod tests {
         let second_producer =
             phoxal_bus::ProducerId::try_from((1_u128 << 124) | 2).expect("canonical test producer");
 
-        let first = MessagePack::encode(&supervisor::asset::GetRequest {
+        let first = MessagePack::encode(&supervisor::bundle::GetRequest {
             path: "ok".to_string(),
         })
         .unwrap();
@@ -208,13 +206,14 @@ mod tests {
                 first,
             )
             .unwrap();
-        let response: supervisor::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
+        let response: supervisor::bundle::GetResponse =
+            MessagePack::decode(&reply.payload).unwrap();
         assert!(matches!(
             response,
-            supervisor::asset::GetResponse::Found { .. }
+            supervisor::bundle::GetResponse::Found { .. }
         ));
 
-        let second = MessagePack::encode(&supervisor::asset::GetRequest {
+        let second = MessagePack::encode(&supervisor::bundle::GetRequest {
             path: "missing".to_string(),
         })
         .unwrap();

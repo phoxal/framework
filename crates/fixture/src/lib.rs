@@ -33,8 +33,8 @@ use phoxal_manifest::{SourceSet, source};
 use phoxal_model::identity::ComponentInstanceId;
 use phoxal_model::{Clock, Robot};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
-use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind, ParticipantSchemas};
-use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
+use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind};
+use phoxal_runtime_contract::version::FrameworkVersion;
 use tempfile::TempDir;
 
 /// The authored documents this crate stages, at `fixture/` in the workspace
@@ -146,14 +146,9 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
                 let binary = BinaryReference::from_source(
                     binary_path.clone(),
                     ParticipantContract {
+                        framework: FrameworkVersion::CURRENT,
                         id: artifact_id.clone(),
                         kind,
-                        api: RobotApiVersion::new(0, 1),
-                        schemas: ParticipantSchemas {
-                            bus: BusAbi::V0,
-                            launch: LaunchAbi::V0,
-                            runtime: RuntimeSchema::V0,
-                        },
                         requirement: None,
                         config_schema,
                     },

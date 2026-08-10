@@ -19,8 +19,9 @@ use phoxal_bundle::ParticipantClock;
 use phoxal_bundle::ParticipantRuntimeInputs;
 use phoxal_bus::{BusConfig, BusHandle, BusOwner};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
-use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantSchemas};
+use phoxal_runtime_contract::metadata::ParticipantContract;
 use phoxal_runtime_contract::origin::ExecutionOrigin;
+use phoxal_runtime_contract::version::FrameworkVersion;
 
 use super::ShutdownController;
 use super::executable::verify_current_executable;
@@ -137,14 +138,9 @@ where
             )
         })?;
     let expected_contract = ParticipantContract {
+        framework: FrameworkVersion::CURRENT,
         id: compiled_artifact_id,
         kind: R::KIND,
-        api: crate::__private::compatibility::API,
-        schemas: ParticipantSchemas {
-            bus: crate::__private::compatibility::BUS,
-            launch: crate::__private::compatibility::LAUNCH,
-            runtime: crate::__private::compatibility::RUNTIME,
-        },
         requirement: R::REQUIREMENT,
         config_schema: process_config_schema,
     };

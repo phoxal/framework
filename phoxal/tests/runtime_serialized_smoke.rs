@@ -1,4 +1,4 @@
-use phoxal_supervisor_api::supervisor;
+use phoxal_api::supervisor;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -29,7 +29,7 @@ impl Participant for SerializedSmoke {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().asset().get(), Self::query)?;
+        ctx.query(supervisor::topic::owner().bundle().get(), Self::query)?;
         Ok((SmokeState::default(), ()))
     }
 
@@ -49,10 +49,10 @@ impl SerializedSmoke {
         &self,
         _api: &(),
         _query: QueryContext,
-        _request: supervisor::asset::GetRequest,
+        _request: supervisor::bundle::GetRequest,
         state: &mut SmokeState,
-    ) -> QueryResult<supervisor::asset::GetResponse> {
-        Ok(supervisor::asset::GetResponse::Found {
+    ) -> QueryResult<supervisor::bundle::GetResponse> {
+        Ok(supervisor::bundle::GetResponse::Found {
             bytes: (state.steps as u64).to_le_bytes().to_vec(),
         })
     }
@@ -91,7 +91,7 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
 
         let querier = Querier::new(
             bus.clone(),
-            &supervisor::topic::client().asset().get(),
+            &supervisor::topic::client().bundle().get(),
             Duration::from_secs(2),
         )
         .expect("create smoke querier");
@@ -103,7 +103,7 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
             let querier = querier.clone();
             async move {
                 querier
-                    .query(supervisor::asset::GetRequest {
+                    .query(supervisor::bundle::GetRequest {
                         path: "smoke".to_string(),
                     })
                     .await
@@ -119,7 +119,7 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
             .await
             .expect("query task should not panic")
             .expect("the serialized query should answer");
-        let supervisor::asset::GetResponse::Found { bytes } = response else {
+        let supervisor::bundle::GetResponse::Found { bytes } = response else {
             panic!("smoke query returned the wrong response variant");
         };
         let observed_steps =

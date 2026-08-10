@@ -580,10 +580,10 @@ pub fn expand_participant(
             const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
             const REQUIREMENT: Option<#phoxal::__private::ParticipantRequirement> = #requirement;
             const ID: &'static str = #id;
-            // The train-selected facade revision, spliced from the framework
-            // path rather than named by the author: a participant does not get
-            // to pick an API revision, and every handle it builds is bounded on
-            // this one.
+            // The participant-authoring facade family, spliced from the
+            // framework path rather than named by the author: a participant
+            // does not get to pick a contract family, and every handle it
+            // builds is bounded on this one.
             type ContractApi = #phoxal::api::Api;
             type Config = #config_ty;
             type State = #state_ty;
@@ -608,19 +608,16 @@ pub fn expand_participant(
 
         #marker
 
-        // Process-boundary metadata is self-identifying and strict. Every
-        // version comes in as a typed value from `__private::compatibility`
-        // and the document is composed by the framework-owned writer, so this
-        // expansion contains no contract token of any kind. The CLI reads this
-        // record out of the built artifact before launch; it is the binary's
-        // whole compatibility declaration.
+        // Process-boundary metadata is self-identifying and strict. The
+        // framework train version - the single compatibility identity - comes
+        // in from `__private::compatibility` and the document is composed by
+        // the framework-owned writer, so this expansion spells no version of
+        // its own. The CLI reads this record out of the built artifact before
+        // launch; it is the binary's whole compatibility declaration.
         #[doc(hidden)]
         const #metadata_const_ident: &'static str =
             #phoxal::__private::compatibility::participant_metadata_json!(
-                api = #phoxal::__private::compatibility::API_TOKEN,
-                bus = #phoxal::__private::compatibility::BUS,
-                launch = #phoxal::__private::compatibility::LAUNCH,
-                runtime = #phoxal::__private::compatibility::RUNTIME,
+                framework = #phoxal::__private::compatibility::FRAMEWORK,
                 id = #id,
                 kind = #artifact_kind,
                 requirement = #requirement,
@@ -932,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn the_embedded_record_names_every_compatibility_constant_and_no_framework_version() {
+    fn the_embedded_record_names_the_single_framework_compatibility_constant() {
         let expanded = compact_tokens(
             expand_participant(
                 quote! {},
@@ -941,22 +938,22 @@ mod tests {
             )
             .expect("expands"),
         );
-        for constant in ["API", "BUS", "LAUNCH", "RUNTIME"] {
-            assert!(
-                expanded.contains(&format!("compatibility :: {constant}")),
-                "the embedded record must name compatibility::{constant}: {expanded}"
-            );
-        }
+        assert!(
+            expanded.contains("compatibility :: FRAMEWORK"),
+            "the embedded record must name compatibility::FRAMEWORK: {expanded}"
+        );
         assert!(
             expanded.contains("compatibility :: NO_REQUIREMENT"),
             "participants without a topology declaration must emit the explicit none requirement: {expanded}"
         );
-        // The embedded document is the only compatibility artifact, and a
-        // framework SemVer is deliberately not part of it.
-        assert!(
-            !expanded.contains("CARGO_PKG_VERSION") && !expanded.contains("framework_version"),
-            "no framework version may reach the embedded record: {expanded}"
-        );
+        // The framework train version is the whole compatibility claim, so the
+        // per-boundary constants it replaced must not reappear beside it.
+        for retired in ["API", "API_TOKEN", "BUS", "LAUNCH", "RUNTIME"] {
+            assert!(
+                !expanded.contains(&format!("compatibility :: {retired}")),
+                "the embedded record must not name compatibility::{retired}: {expanded}"
+            );
+        }
     }
 
     #[test]
@@ -979,12 +976,12 @@ mod tests {
         );
     }
 
-    /// A version identity has exactly one spelling, owned by the crate that
-    /// owns the contract. This expansion must therefore contain no version
-    /// token at all - it names typed values and hands them to the
-    /// framework-owned writer.
+    /// The framework train version is the single compatibility identity and it
+    /// reaches the record through the facade constant, so this expansion spells
+    /// no version at all: not the train version, not a retired per-boundary
+    /// identity, not an authored source grammar.
     #[test]
-    fn the_expansion_spells_no_version_identity() {
+    fn the_expansion_spells_no_version() {
         for kind in [
             ParticipantKind::Service,
             ParticipantKind::Driver,
@@ -995,14 +992,16 @@ mod tests {
                 expand_participant(quote! {}, quote! { struct Probe; }, kind).expect("expands"),
             );
             for token in [
+                // This crate is built from the train it must not hand-spell.
+                env!("CARGO_PKG_VERSION"),
                 "participant-metadata",
                 "bus-abi",
                 "robot-api",
                 "participant-launch",
+                "runtime-bundle",
                 "phoxal/robot/v0",
                 "phoxal/component/v0",
                 "phoxal/simulation/v0",
-                "v0.1",
             ] {
                 assert!(
                     !expanded.contains(token),
@@ -1012,14 +1011,13 @@ mod tests {
         }
     }
 
-    /// The API a participant's handles may come from is fixed by the role
-    /// attribute to the train-selected facade, never named by the author. Every
-    /// `SetupContext` builder is bounded on this associated type, so a
-    /// participant that reached for a second API revision - or another
-    /// unrelated semantic API tree - fails to compile rather than embedding an
-    /// `api` claim its handles contradict.
+    /// The contract family a participant's handles may come from is fixed by
+    /// the role attribute to the authoring facade, never named by the author.
+    /// Every `SetupContext` builder is bounded on this associated type, so a
+    /// participant that reached for another semantic contract tree fails to
+    /// compile.
     #[test]
-    fn every_role_fixes_its_contract_api_to_the_train_selected_facade() {
+    fn every_role_fixes_its_contract_api_to_the_authoring_facade() {
         for kind in [
             ParticipantKind::Service,
             ParticipantKind::Driver,
@@ -1031,7 +1029,7 @@ mod tests {
             );
             assert!(
                 expanded.contains("type ContractApi = :: phoxal :: api :: Api ;"),
-                "{} must fix ContractApi to the facade revision: {expanded}",
+                "{} must fix ContractApi to the facade family: {expanded}",
                 kind.attr_name()
             );
         }

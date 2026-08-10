@@ -1,12 +1,14 @@
 //! Typed topics: the api-local builder output.
 //!
-//! A [`Topic`] is a version-qualified topic key plus a phantom [`TopicKind`]
-//! that ties the key to its body type(s) **and to the side** the holder may
-//! take. The api tree's `topic` builders return these; the `SetupContext` handle
+//! A [`Topic`] is a family-rooted topic key plus a phantom [`TopicKind`] that
+//! ties the key to its body type(s) **and to the side** the holder may take.
+//! The api tree's `topic` builders return these; the `SetupContext` handle
 //! builders consume them. The wire body never appears in the key, but the
-//! version does - the key is `v0.1/drive/state`, not `drive/state`: folding the
-//! version into the key is what makes different versioned names physically
-//! distinct Zenoh keys.
+//! contract family does - the key is `robot/drive/state`, not `drive/state`.
+//! The family is a semantic namespace, so robot contracts, runtime plumbing,
+//! and supervisor process traffic occupy physically distinct Zenoh subtrees.
+//! Nothing in the key encodes a version: compatibility is the framework train
+//! version both peers were built from.
 //!
 //! # Side branding
 //!
@@ -121,7 +123,7 @@ impl<E> TopicKind for AskQuery<E> {}
 impl<E> sealed::Sealed for ServeQuery<E> {}
 impl<E> TopicKind for ServeQuery<E> {}
 
-/// A typed topic: a version-qualified key bound to its body type(s) via `Kind`.
+/// A typed topic: a family-rooted key bound to its body type(s) via `Kind`.
 pub struct Topic<Kind> {
     key: Cow<'static, str>,
     _kind: PhantomData<Kind>,
@@ -132,8 +134,8 @@ impl<Kind> Topic<Kind> {
     ///
     /// # Why this is `pub`
     ///
-    /// The Robot API fragment materializer expands in `phoxal-api`, where the
-    /// versioned APIs live, and its generated builders call this over each
+    /// The contract fragment materializer expands in `phoxal-api`, where the
+    /// contract families live, and its generated builders call this over each
     /// contract's canonical key. Generated code in a downstream crate needs a
     /// `pub` constructor, and Rust has no visibility between "this crate" and
     /// "the world", so `pub(crate)` cannot express the real boundary. The one
@@ -166,7 +168,7 @@ impl<Kind> Topic<Kind> {
         }
     }
 
-    /// The version-qualified topic key (e.g. `v0.1/drive/state`).
+    /// The family-rooted topic key (e.g. `robot/drive/state`).
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -221,15 +223,15 @@ mod tests {
 
     #[test]
     fn a_concrete_key_is_publishable_and_a_wildcard_one_is_not() {
-        let concrete = Topic::<Publish<()>>::new_static("v0.1/drive/state");
+        let concrete = Topic::<Publish<()>>::new_static("robot/drive/state");
         assert_eq!(
             concrete
                 .publish_key()
                 .expect("a concrete key is publishable"),
-            "v0.1/drive/state"
+            "robot/drive/state"
         );
 
-        for wildcard in ["v0.1/component/*/state", "v0.1/component/**"] {
+        for wildcard in ["robot/component/*/state", "robot/component/**"] {
             let topic = Topic::<Subscribe<()>>::new_owned(wildcard.to_string());
             let rejected = topic
                 .publish_key()

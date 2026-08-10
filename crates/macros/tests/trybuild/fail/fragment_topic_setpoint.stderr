@@ -1,5 +1,5 @@
 error: expected semantic descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`
- --> tests/trybuild/fail/fragment_topic_setpoint.rs:6:23
+ --> tests/trybuild/fail/fragment_topic_setpoint.rs:5:23
   |
-6 |         topic target: Setpoint<Target>;
+5 |         topic target: Setpoint<Target>;
   |                       ^^^^^^^^
