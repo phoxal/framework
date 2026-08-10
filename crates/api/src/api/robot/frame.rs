@@ -12,7 +12,9 @@ fn valid_frame_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "FrameTransformWire")]
 pub struct FrameTransform {
     pub parent_frame_id: String,
@@ -77,17 +79,23 @@ impl std::fmt::Display for FrameTransformError {
 }
 impl std::error::Error for FrameTransformError {}
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct StaticTransforms {
     pub transforms: Vec<FrameTransform>,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Tree {
     pub transforms: Vec<FrameTransform>,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "LookupRequestWire")]
 pub struct LookupRequest {
     pub target_frame_id: String,
@@ -95,7 +103,9 @@ pub struct LookupRequest {
     pub at: Option<::phoxal_bus::RobotInstant>,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct LookupResponse {
     pub transform: Option<FrameTransform>,
 }

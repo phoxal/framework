@@ -364,7 +364,7 @@ impl WireSchema {
         out
     }
 
-    fn render(&self, out: &mut String) {
+    pub(crate) fn render(&self, out: &mut String) {
         match self {
             Self::Bool => out.push_str(r#"{"kind":"bool"}"#),
             Self::U8 => out.push_str(r#"{"kind":"u8"}"#),
@@ -501,7 +501,7 @@ impl VariantBody {
     }
 }
 
-fn render_list<T>(items: &[T], out: &mut String, render: impl Fn(&T, &mut String)) {
+pub(crate) fn render_list<T>(items: &[T], out: &mut String, render: impl Fn(&T, &mut String)) {
     out.push('[');
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
@@ -513,7 +513,7 @@ fn render_list<T>(items: &[T], out: &mut String, render: impl Fn(&T, &mut String
 }
 
 /// One JSON string literal, escaped exactly as a JSON writer would.
-fn render_string(value: &str, out: &mut String) {
+pub(crate) fn render_string(value: &str, out: &mut String) {
     out.push('"');
     for character in value.chars() {
         match character {

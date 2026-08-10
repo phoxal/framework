@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{BinaryReference, DocumentError, ParticipantClock};
 
 /// One exact process entry in the final runtime graph.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeParticipant {
     pub(crate) id: ParticipantId,

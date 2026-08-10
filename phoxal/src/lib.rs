@@ -154,6 +154,13 @@ pub mod geometry;
 mod participant;
 mod sample_schedule;
 
+/// The contract surface this crate owns: the participant launch contract.
+///
+/// Not public API. It exists so compatibility CI can read this crate's declared
+/// process boundary out of the crate itself.
+#[doc(hidden)]
+pub mod __compat;
+
 /// Explicit in-process participant testing support.
 #[cfg(feature = "test-harness")]
 pub mod testing;

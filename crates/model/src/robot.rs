@@ -21,7 +21,7 @@ use crate::structure::{Joint, JointKind, Structure};
 pub use phoxal_runtime_contract::clock::Clock;
 
 /// One resolved component instance in the canonical robot.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(phoxal_macros::DescribeWire, Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
     id: ComponentInstanceId,
@@ -88,7 +88,9 @@ pub struct MotionModel {
 }
 
 /// The outer envelope every motion command is clamped to.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
+#[derive(
+    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MotionLimits {
@@ -97,7 +99,9 @@ pub struct MotionLimits {
 }
 
 /// The drive geometry, and the capabilities that realize it.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(
+    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KinematicConfig {
@@ -583,7 +587,7 @@ pub struct Robot {
 /// and the validation that turns them into a `Robot`. Keeping the wire helper
 /// here also means deserialization can never construct an invalid robot by
 /// bypassing [`Robot::new`].
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RobotWire {
     id: RobotId,
@@ -602,7 +606,7 @@ struct RobotWire {
 /// `Option<T>` is normally permissive in a derived serde struct: both a
 /// missing key and `null` become `None`. Runtime documents need to distinguish
 /// them so every persisted robot says explicitly whether a footprint exists.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize)]
 struct PersistedFootprint(Option<FootprintEnvelope>);
 
 impl serde::Serialize for Robot {
@@ -619,6 +623,17 @@ impl serde::Serialize for Robot {
             footprint: PersistedFootprint(self.footprint),
         }
         .serialize(serializer)
+    }
+}
+
+impl phoxal_runtime_contract::wire_schema::DescribeWire for Robot {
+    // Invariant: the `Serialize` above builds a `RobotWire` and writes that, so
+    // the wire helper's shape is the whole of what a persisted robot is.
+    fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
+        phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+            "Robot",
+            <RobotWire as phoxal_runtime_contract::wire_schema::DescribeWire>::wire_schema(),
+        )
     }
 }
 
@@ -1609,6 +1624,24 @@ mod tests {
 
     fn robot_with(instance_ids: &[&str]) -> Robot {
         robot_with_structure(robot_structure(), instance_ids)
+    }
+
+    /// `Robot` and `Structure` both write through a private wire helper their
+    /// own declarations do not predict, so the declared shape is checked
+    /// against a real serialized robot rather than asserted. This is the whole
+    /// canonical model - components, capabilities, structure, footprint - so a
+    /// type anywhere below it whose shape drifted fails here.
+    #[test]
+    fn the_declared_robot_shape_is_the_shape_serde_writes() {
+        use phoxal_runtime_contract::wire_schema::DescribeWire;
+
+        for robot in [
+            robot_with(&["left"]),
+            robot_with_structure(robot_structure_with_collision(), &[]),
+        ] {
+            let json = serde_json::to_value(&robot).expect("a canonical robot serializes");
+            assert_eq!(Robot::wire_schema().conforms(&json), Ok(()));
+        }
     }
 
     #[test]

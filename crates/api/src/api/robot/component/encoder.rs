@@ -1,5 +1,7 @@
 use std::time::Duration;
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "SampleWire")]
 pub struct Sample {
     pub position_rad: f64,

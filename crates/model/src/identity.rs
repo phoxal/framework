@@ -136,6 +136,18 @@ macro_rules! token_identifier {
                 value.0
             }
         }
+
+        impl phoxal_runtime_contract::wire_schema::DescribeWire for $name {
+            // Invariant: this states what `#[serde(into = "String")]` above
+            // writes - the bare normalized token as one string. The token
+            // grammar itself is a decode rule, not a shape.
+            fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
+                phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+                    stringify!($name),
+                    phoxal_runtime_contract::wire_schema::WireSchema::String,
+                )
+            }
+        }
     };
 }
 
@@ -238,6 +250,17 @@ macro_rules! structural_identifier {
                 value.0
             }
         }
+
+        impl phoxal_runtime_contract::wire_schema::DescribeWire for $name {
+            // Invariant: this states what `#[serde(transparent)]` above writes -
+            // the authored structural name as one string, with no wrapper.
+            fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
+                phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+                    stringify!($name),
+                    phoxal_runtime_contract::wire_schema::WireSchema::String,
+                )
+            }
+        }
     };
 }
 
@@ -312,6 +335,18 @@ impl TryFrom<String> for CapabilityRef {
 impl From<CapabilityRef> for String {
     fn from(value: CapabilityRef) -> Self {
         value.to_string()
+    }
+}
+
+impl phoxal_runtime_contract::wire_schema::DescribeWire for CapabilityRef {
+    // Invariant: this states what `#[serde(into = "String")]` above writes -
+    // the one dotted `component.capability` string, never the two-field struct
+    // the type is made of.
+    fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
+        phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+            "CapabilityRef",
+            phoxal_runtime_contract::wire_schema::WireSchema::String,
+        )
     }
 }
 

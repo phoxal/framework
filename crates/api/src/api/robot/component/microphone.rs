@@ -1,5 +1,7 @@
 /// One audio frame as raw encoded bytes.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Frame {
     pub data: Vec<u8>,
 }

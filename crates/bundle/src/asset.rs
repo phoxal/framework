@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// The integrity index for every participant-readable asset.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssetIndex {
     pub(crate) entries: Vec<AssetRecord>,
@@ -75,7 +75,7 @@ impl AssetIndex {
 }
 
 /// One indexed asset and its expected bytes.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssetRecord {
     pub(crate) id: AssetId,

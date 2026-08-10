@@ -60,7 +60,7 @@ impl BinarySource {
 }
 
 /// A staged reusable executable and its canonical artifact contract.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryReference {
     pub(crate) path: BundlePath,

@@ -1,4 +1,13 @@
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Manual,
@@ -6,7 +15,16 @@ pub enum Source {
     EmergencyStop,
 }
 
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ZeroReason {
     NoCandidate,
@@ -18,14 +36,25 @@ pub enum ZeroReason {
     SafetyProtectiveStop,
 }
 
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SafetyRuntime {
     Absent,
     Present,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct ManualCommand {
     pub linear_x_mps: f64,
     pub angular_z_radps: f64,
@@ -33,7 +62,9 @@ pub struct ManualCommand {
 
 /// The sole motion execution decision. A stopped decision carries no source or
 /// target, so consumers cannot observe an active source alongside a stop reason.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum Decision {
     Active {
         source: Source,
@@ -44,7 +75,9 @@ pub enum Decision {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct State {
     pub decision: Decision,
     /// How long ago motion observed the live manual command, on

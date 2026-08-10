@@ -14,7 +14,9 @@ pub use crate::api::runtime::telemetry::Cursor;
 /// `before_sequence` is the previous page's `next_before_sequence`, so paging
 /// walks backwards through a window that keeps moving without ever repeating or
 /// skipping a record.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct SnapshotRequest {
     pub participant_id: Option<String>,
     pub limit: u32,
@@ -24,7 +26,9 @@ pub struct SnapshotRequest {
 /// One retained log record. The supervisor's `sequence` orders the retained
 /// view; `source_sequence` is the producer's own counter, so per-producer loss
 /// stays visible after retention has merged several producers.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Record {
     pub sequence: u64,
     pub participant_id: String,
@@ -38,7 +42,9 @@ pub struct Record {
     pub truncated: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Snapshot {
     pub cursor: Cursor,
     /// Records the supervisor lost at ingestion, which no page can show.
@@ -48,7 +54,9 @@ pub struct Snapshot {
     pub next_before_sequence: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Follow {
     pub cursor: Cursor,
     pub ingest_dropped: u64,

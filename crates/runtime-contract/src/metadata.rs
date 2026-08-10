@@ -25,6 +25,16 @@ use crate::wire_schema::{
 /// Maximum participant instances in one compiled runtime execution.
 pub const MAX_RUNTIME_PARTICIPANTS: usize = 64;
 
+/// The format tag of the embedded participant-metadata document.
+///
+/// A serde attribute cannot name a constant, so the spelling below is written
+/// twice: once on [`ParticipantMetadata`]'s `rename` and once here. The
+/// declared shape and the crate's contract surface both read it from here, and
+/// `the_declared_document_shape_is_the_shape_the_writer_emits` serializes a
+/// real record against that shape, so a drift between the two spellings fails a
+/// test rather than shipping.
+pub const PARTICIPANT_METADATA_SCHEMA_TAG: &str = "phoxal/participant-metadata/v0";
+
 /// The complete compatibility contract embedded in one reusable participant
 /// artifact.
 ///
@@ -171,19 +181,19 @@ pub enum ParticipantMetadata {
 impl DescribeWire for ParticipantMetadata {
     // Invariant: this states the one document both sides of this contract
     // handle - the parser above and `emit::ParticipantMetadataRecord`, which is
-    // its only writer. The tag and its spelling are repeated from the serde
-    // attributes because a Rust attribute cannot name a constant; every other
-    // part of the document composes from `ParticipantContract`, since
-    // `#[serde(flatten)]` merges that contract's fields into the tagged map and
-    // an internally tagged newtype variant over it describes exactly the same
-    // result.
+    // its only writer. The tag spelling comes from
+    // [`PARTICIPANT_METADATA_SCHEMA_TAG`], which the serde attribute above
+    // cannot name; every other part of the document composes from
+    // `ParticipantContract`, since `#[serde(flatten)]` merges that contract's
+    // fields into the tagged map and an internally tagged newtype variant over
+    // it describes exactly the same result.
     fn wire_schema() -> WireSchema {
         WireSchema::enumeration(
             EnumRepresentation::InternallyTagged {
                 tag: String::from("schema"),
             },
             [WireVariant::new(
-                "phoxal/participant-metadata/v0",
+                PARTICIPANT_METADATA_SCHEMA_TAG,
                 VariantBody::newtype(ParticipantContract::wire_schema()),
             )],
         )

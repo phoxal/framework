@@ -20,7 +20,9 @@ use crate::{
 ///
 /// This belongs to the compiled runtime bundle because it is a runtime
 /// selection fact, not a process-contract/launch parser type.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantClock {
     /// Follow the host's boot-anchored real clock.
@@ -42,7 +44,7 @@ impl fmt::Display for ParticipantClock {
 }
 
 /// A schema-tagged persisted runtime document.
-#[derive(Clone, Debug, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Serialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum RuntimeDocument {
     /// The first runtime bundle schema. Older/future schemas are refused
@@ -123,7 +125,7 @@ impl RuntimeDocument {
 }
 
 /// The persisted final runtime graph and all framework-owned runtime facts.
-#[derive(Clone, Debug, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Runtime {
     /// The complete canonical model. Its `id` is the sole persisted RobotId;
@@ -414,7 +416,7 @@ fn validate_drive_side(
 }
 
 /// A normalized reference to optional router configuration.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeRouterConfig {
     /// The config is an indexed asset, never an arbitrary filesystem path.

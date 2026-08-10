@@ -2227,6 +2227,7 @@ name = "phoxal-bundle"
 version = "0.58.1"
 dependencies = [
  "jsonschema",
+ "phoxal-macros",
  "phoxal-model",
  "phoxal-runtime-contract",
  "serde",
@@ -2242,6 +2243,7 @@ version = "0.58.1"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
+ "phoxal-macros",
  "phoxal-runtime-contract",
  "rmp-serde",
  "serde",
@@ -2351,6 +2353,7 @@ dependencies = [
 name = "phoxal-model"
 version = "0.58.1"
 dependencies = [
+ "phoxal-macros",
  "phoxal-runtime-contract",
  "schemars 1.2.1",
  "serde",

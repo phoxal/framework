@@ -7,7 +7,9 @@
 //! owns only the live rollup and the sample vocabulary it is written in.
 
 /// Position in one retained sample sequence.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Cursor {
     pub sequence: u64,
 }
@@ -15,7 +17,16 @@ pub struct Cursor {
 /// Which side of a topic a row accounts for. `Mixed` exists for a summary row
 /// that spans several topics and therefore names no single direction.
 #[derive(
-    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+    phoxal_macros::DescribeWire,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
@@ -27,7 +38,16 @@ pub enum Direction {
 /// Which buffer a row accounts for. `Mixed` exists for a summary row that
 /// spans several buffers.
 #[derive(
-    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+    phoxal_macros::DescribeWire,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum BufferKind {
@@ -39,7 +59,9 @@ pub enum BufferKind {
 
 /// Step cadence measured over one window, for a participant that has a
 /// cadence at all.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Step {
     pub target_period_ns: u64,
     pub completed: u64,
@@ -53,7 +75,9 @@ pub struct Step {
 }
 
 /// One topic's traffic and buffer accounting over one window.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Topic {
     pub topic: String,
     pub direction: Direction,
@@ -74,7 +98,9 @@ pub struct Topic {
 
 /// One window of runtime performance: the step section, the bounded per-topic
 /// rows, and the single row everything that did not fit was folded into.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Rollup {
     pub window_ns: u64,
     pub step: Option<Step>,

@@ -9,7 +9,9 @@ use phoxal_runtime_contract::clock::Clock;
 use phoxal_runtime_contract::identity::RobotId;
 
 /// Empty request for the immutable facts of one running bundle.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct InfoRequest {}
 
@@ -18,7 +20,9 @@ pub struct InfoRequest {}
 ///
 /// Every value is finite on decode: a driver cannot be handed a limit it has no
 /// way to respect.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct ManualDrive {
     #[serde(deserialize_with = "crate::api::supervisor::info::deserialize_finite_f64")]
@@ -30,7 +34,9 @@ pub struct ManualDrive {
 }
 
 /// The facts a supervisor advertises about the bundle it is running.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Info {
     pub robot: RobotId,

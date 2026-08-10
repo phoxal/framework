@@ -25,7 +25,16 @@ fn valid_request_id(value: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureReason {
     LocalizationUnavailable,
@@ -36,7 +45,9 @@ pub enum FailureReason {
     Internal,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum Outcome {
     Succeeded,
     Failed(FailureReason),
@@ -48,7 +59,17 @@ pub enum Outcome {
 /// A bounded caller-chosen request identity. The wire representation remains
 /// the historic `{ "value": "..." }` object, but callers cannot construct an
 /// invalid identity by writing the field directly.
-#[derive(Eq, PartialOrd, Ord, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(try_from = "RequestIdWire")]
 pub struct RequestId {
     value: String,
@@ -100,7 +121,17 @@ impl TryFrom<RequestIdWire> for RequestId {
 
 /// A server-issued operation identity. It is scoped to the producer
 /// incarnation and sequence zero is reserved as the absent value.
-#[derive(Copy, Eq, Hash, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Hash,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(try_from = "NavigationOperationIdWire")]
 pub struct NavigationOperationId {
     producer: ::phoxal_bus::ProducerId,
@@ -136,7 +167,9 @@ impl TryFrom<NavigationOperationIdWire> for NavigationOperationId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "PoseWire")]
 pub struct Pose {
     pub x_m: f64,
@@ -170,7 +203,9 @@ impl TryFrom<PoseWire> for Pose {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "PathWire")]
 pub struct Path {
     pub poses: Vec<Pose>,
@@ -204,36 +239,48 @@ impl TryFrom<PathWire> for Path {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum StartKind {
     GotoPose(Pose),
     FollowPath(Path),
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct StartRequest {
     pub request_id: RequestId,
     pub kind: StartKind,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum StartResponse {
     Accepted { operation_id: NavigationOperationId },
     Refused(RefusalReason),
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct CancelRequest {
     pub operation_id: NavigationOperationId,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum CancelResponse {
     Accepted,
     Refused(RefusalReason),
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RefusalReason {
     Busy,
@@ -244,14 +291,18 @@ pub enum RefusalReason {
     NotFound,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub enum State {
     Idle,
     Accepted(NavigationOperationId),
     Running(NavigationOperationId),
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "ProgressWire")]
 pub struct Progress {
     pub operation_id: NavigationOperationId,
@@ -302,7 +353,9 @@ impl Progress {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "ResultWire")]
 pub struct Result {
     pub operation_id: NavigationOperationId,
@@ -328,7 +381,9 @@ impl TryFrom<ResultWire> for Result {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "CandidateWire")]
 pub struct Candidate {
     pub operation_id: NavigationOperationId,
@@ -372,12 +427,16 @@ impl Candidate {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct FrontierRequest {
     pub map_revision: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "FrontierWire")]
 pub struct Frontier {
     pub x_m: f64,
@@ -434,7 +493,9 @@ impl Frontier {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct FrontierResponse {
     pub frontier: Option<Frontier>,
     pub map_revision: Option<u64>,

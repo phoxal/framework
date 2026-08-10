@@ -10,7 +10,9 @@ fn canonical_yaw(value: f64) -> bool {
     value.is_finite() && (-std::f64::consts::PI..=std::f64::consts::PI).contains(&value)
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "StateWire")]
 pub struct State {
     pub x_m: f64,

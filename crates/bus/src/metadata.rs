@@ -85,7 +85,9 @@ pub struct SourceLabelError(String);
 /// concrete transport session incarnation. They are one source identity for
 /// authority and freshness decisions; keeping them together prevents callers
 /// from accidentally comparing one without the other.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize,
+)]
 pub struct ParticipantSourceIdentity {
     /// The compiled topology participant.
     pub participant: ParticipantId,
@@ -109,7 +111,7 @@ impl ParticipantSourceIdentity {
 /// Every attribution carries a producer at the envelope level. Only compiled
 /// participants receive a topology [`ParticipantId`]; attached/operator
 /// sessions remain external and may carry a bounded diagnostic label.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceAttribution {
     /// A compiled participant process.
     Participant(ParticipantSourceIdentity),
@@ -161,14 +163,14 @@ impl SourceAttribution {
 /// position in between two chunks. The bus therefore attaches this separate
 /// position only to stream publications, keyed by the concrete topic at each
 /// receiver.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamPosition {
     /// The zero-based position of this accepted stream chunk.
     pub sequence: u64,
 }
 
 /// Per-sample metadata carried in the Zenoh attachment (MessagePack-encoded).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusMetadata {
     /// The codec used for the body payload.
     pub codec: u8,

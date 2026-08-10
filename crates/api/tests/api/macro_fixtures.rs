@@ -13,7 +13,14 @@ mod fragment_collection {
             pub mod robot {
                 pub mod component {
                     pub mod motor {
-                        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                        #[derive(
+                            phoxal_macros::DescribeWire,
+                            Clone,
+                            Debug,
+                            PartialEq,
+                            serde::Serialize,
+                            serde::Deserialize,
+                        )]
                         pub enum Command {
                             Velocity(f32),
                             Stop,
@@ -22,7 +29,14 @@ mod fragment_collection {
                         #[expect(dead_code, reason = "duplicate support-name facade regression")]
                         pub struct Support(pub u8);
 
-                        #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                        #[derive(
+                            phoxal_macros::DescribeWire,
+                            Clone,
+                            Debug,
+                            PartialEq,
+                            serde::Serialize,
+                            serde::Deserialize,
+                        )]
                         pub struct Status {
                             pub stopped: bool,
                         }
@@ -36,7 +50,14 @@ mod fragment_collection {
                 }
 
                 pub mod drive {
-                    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                    #[derive(
+                        phoxal_macros::DescribeWire,
+                        Clone,
+                        Debug,
+                        PartialEq,
+                        serde::Serialize,
+                        serde::Deserialize,
+                    )]
                     pub struct Target {
                         pub speed: f32,
                     }
@@ -98,7 +119,7 @@ mod fragment_order_independence {
                 pub mod source {
                     pub mod robot {
                         pub mod alpha {
-                            #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+                            #[derive(phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize)]
                             #[expect(dead_code, reason = "order-only endpoint fixture payload")]
                             pub struct State { pub value: u8 }
                             crate::phoxal_api_fragment! {
@@ -107,7 +128,7 @@ mod fragment_order_independence {
                             }
                         }
                         pub mod beta {
-                            #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+                            #[derive(phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize)]
                             #[expect(dead_code, reason = "order-only endpoint fixture payload")]
                             pub struct State { pub value: u16 }
                             crate::phoxal_api_fragment! {
@@ -154,20 +175,48 @@ mod semantic_surface {
     pub mod source {
         pub mod robot {
             pub mod data {
-                #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                #[derive(
+                    phoxal_macros::DescribeWire,
+                    Clone,
+                    Debug,
+                    PartialEq,
+                    serde::Serialize,
+                    serde::Deserialize,
+                )]
                 pub struct Supporting {
                     pub code: u8,
                 }
-                #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                #[derive(
+                    phoxal_macros::DescribeWire,
+                    Clone,
+                    Debug,
+                    PartialEq,
+                    serde::Serialize,
+                    serde::Deserialize,
+                )]
                 pub struct SharedPayload {
                     pub value: u8,
                     pub support: Supporting,
                 }
-                #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                #[derive(
+                    phoxal_macros::DescribeWire,
+                    Clone,
+                    Debug,
+                    PartialEq,
+                    serde::Serialize,
+                    serde::Deserialize,
+                )]
                 pub struct QueryRequest {
                     pub value: u8,
                 }
-                #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+                #[derive(
+                    phoxal_macros::DescribeWire,
+                    Clone,
+                    Debug,
+                    PartialEq,
+                    serde::Serialize,
+                    serde::Deserialize,
+                )]
                 pub struct QueryResponse {
                     pub value: u8,
                 }
@@ -248,15 +297,21 @@ mod semantic_forms {
     pub mod source {
         pub mod robot {
             pub mod forms {
-                #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+                #[derive(
+                    phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize,
+                )]
                 pub struct Payload {
                     pub value: u8,
                 }
-                #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+                #[derive(
+                    phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize,
+                )]
                 pub struct Request {
                     pub value: u8,
                 }
-                #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+                #[derive(
+                    phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize,
+                )]
                 pub struct Response {
                     pub value: u8,
                 }

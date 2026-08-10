@@ -530,6 +530,18 @@ fn paths_and_digests_are_strict() {
 }
 
 #[test]
+fn the_declared_document_shape_is_the_shape_the_writer_persists() {
+    use phoxal_runtime_contract::wire_schema::DescribeWire;
+
+    let (document, _, _) = document();
+    let value = serde_json::to_value(&document).expect("document serializes");
+    // The declaration composes from a hand-written `Robot` and `Structure`
+    // shape and from `phoxal-api`'s derives, so it is checked against a real
+    // persisted document rather than asserted.
+    assert_eq!(RuntimeDocument::wire_schema().conforms(&value), Ok(()));
+}
+
+#[test]
 fn runtime_json_is_tagged_strict_and_robot_id_is_persisted_once() {
     let (document, _, _) = document();
     let value = serde_json::to_value(&document).expect("document serializes");

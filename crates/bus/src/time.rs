@@ -146,7 +146,9 @@ impl LocalInstant {
 /// zero. Two `RobotInstant`s are only meaningful together when their
 /// [`TimelineId`]s are equal, so comparison and age are checked operations -
 /// there is no `Ord` and no `Sub`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
 pub struct RobotInstant {
     timeline: TimelineId,
     ticks: u64,
@@ -264,7 +266,7 @@ impl fmt::Display for RobotInstant {
 /// clock is honestly wider. Consumers never hand-pick a bound - they ask the
 /// named predicates below, each of which answers conservatively for the
 /// question it is named after.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct TimeWindow {
     timeline: TimelineId,
     earliest_ticks: u64,

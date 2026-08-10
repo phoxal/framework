@@ -3,7 +3,9 @@ use crate::api::robot::map::GridWireError;
 /// Why safety is stopping or limiting body motion. The
 /// map/footprint reasons are deliberately distinct so a fail
 /// closed decision remains diagnosable without parsing text.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintReason {
     WorldUnavailable,
@@ -32,7 +34,9 @@ pub enum ConstraintReason {
 /// Additional provenance category for the compiled footprint
 /// checks. The source is still the safety participant, but the
 /// category tells operators which safety input failed.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstraintSourceKind {
     WorldModel,
@@ -46,7 +50,9 @@ pub enum ConstraintSourceKind {
 }
 
 /// Typed origin of one constraint.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct ConstraintSource {
     pub kind: ConstraintSourceKind,
     pub participant_id: String,
@@ -58,7 +64,9 @@ pub struct ConstraintSource {
 /// effective limits and a `Stopped` item carries no contradictory
 /// limit fields. This prevents a consumer from having to choose
 /// between `stop = true` and a nonzero limit.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "crate::api::robot::safety::SafetyConstraintWire")]
 pub enum Constraint {
     Limited {
@@ -82,7 +90,9 @@ pub enum Constraint {
 /// The sole safety permission consumed by motion. Its variants
 /// are mutually exclusive and carry exactly the fields that make
 /// sense for that decision.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "crate::api::robot::safety::SafetyMotionPermissionWire")]
 pub enum MotionPermission {
     Clear,
@@ -96,7 +106,9 @@ pub enum MotionPermission {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "crate::api::robot::safety::SafetyMotionConstraintsWire")]
 pub struct MotionConstraints {
     pub sequence: u64,
@@ -105,7 +117,9 @@ pub struct MotionConstraints {
     pub expires_at: ::phoxal_bus::RobotInstant,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub constraints: MotionConstraints,

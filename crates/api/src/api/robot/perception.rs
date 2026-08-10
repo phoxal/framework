@@ -1,6 +1,15 @@
 /// An exact component-capability source reference.
 #[derive(
-    serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
+    phoxal_macros::DescribeWire,
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
 )]
 #[serde(try_from = "String", into = "String")]
 pub struct SourceRef(String);
@@ -70,7 +79,9 @@ const MAX_DETECTIONS: usize = 4_096;
 /// The fields stay private so a detector cannot create a value which bypasses
 /// the same checks used by wire deserialization. Tracking is deliberately
 /// assigned after construction by the perception service.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "DetectionWire")]
 pub struct Detection {
     class_id: String,
@@ -198,7 +209,9 @@ impl TryFrom<DetectionWire> for Detection {
 /// One source-captured perception batch. `captured_at` is copied from the
 /// selected camera measurement's provenance; it is not the perception step's
 /// publication instant.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "DetectionsWire")]
 pub struct Detections {
     source: SourceRef,
@@ -273,7 +286,16 @@ impl TryFrom<DetectionsWire> for Detections {
 }
 
 /// Why the perception participant cannot provide a healthy batch.
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthReason {
     MissingCamera,
@@ -291,26 +313,28 @@ pub enum HealthReason {
 /// validated for both constructor-created and deserialized states. The wire
 /// shape remains the externally-tagged `Healthy`/`Unhealthy` enum the
 /// contract carries.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "StateWire", into = "StateWire")]
 pub struct State {
     detector: String,
     reason: Option<HealthReason>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum StateWire {
     Healthy(HealthyStateWire),
     Unhealthy(UnhealthyStateWire),
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HealthyStateWire {
     detector: String,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UnhealthyStateWire {
     detector: String,

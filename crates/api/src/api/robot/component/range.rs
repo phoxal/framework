@@ -1,21 +1,36 @@
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SensorHealth {
     Nominal,
     Degraded,
     Fault,
 }
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Limits {
     pub min_m: f32,
     pub max_m: f32,
 }
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct SampleQuality {
     pub valid: bool,
     pub confidence: Option<f32>,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "SampleWire")]
 pub struct Sample {
     pub distance_m: f32,

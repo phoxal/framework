@@ -1,37 +1,65 @@
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Encoding {
     U16Millimeters,
 }
-#[derive(Copy, Eq, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire,
+    Copy,
+    Eq,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum InvalidSamplePolicy {
     ZeroIsInvalid,
     NonFiniteIsInvalid,
 }
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Intrinsics {
     pub fx: f32,
     pub fy: f32,
     pub cx: f32,
     pub cy: f32,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct Distortion {
     pub model: String,
     pub coefficients: Vec<f32>,
 }
-#[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct ExposureTiming {
     pub exposure_start_ns: Option<u64>,
     pub exposure_duration_ns: Option<u64>,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 pub struct CalibrationIdentity {
     pub id: String,
     pub version: String,
 }
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(try_from = "FrameWire")]
 pub struct Frame {
     pub samples_mm: Vec<u16>,
