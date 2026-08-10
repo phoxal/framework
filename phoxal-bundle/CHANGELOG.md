@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.56.2](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.56.1...phoxal-bundle-v0.56.2) - 2026-08-10
+
+### Added
+
+- *(supervisor)* add execution control contract
+
 ## [0.56.1](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.56.0...phoxal-bundle-v0.56.1) - 2026-08-10
 
 ### Other
