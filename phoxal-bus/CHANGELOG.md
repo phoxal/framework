@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.55.0...phoxal-bus-v0.56.0) - 2026-08-09
+
+### Added
+
+- *(api)* [**breaking**] simplify modular Robot API authoring ([#422](https://github.com/phoxal/framework/pull/422))
+- *(model)* [**breaking**] preserve authored safety runtime truth ([#420](https://github.com/phoxal/framework/pull/420))
+- *(bus)* [**breaking**] enforce semantic delivery and transport lifecycle ([#419](https://github.com/phoxal/framework/pull/419))
+- *(authority)* [**breaking**] enforce source authority and query ownership ([#415](https://github.com/phoxal/framework/pull/415))
+- *(bus)* [**breaking**] enforce owner handles and delivery semantics ([#410](https://github.com/phoxal/framework/pull/410))
+- *(model)* [**breaking**] remove namespace identity ([#400](https://github.com/phoxal/framework/pull/400))
+
+### Fixed
+
+- *(authority)* [**breaking**] fence sources before receive coalescing
+- *(identity)* [**breaking**] enforce execution and source ownership ([#417](https://github.com/phoxal/framework/pull/417))
+- *(participant)* [**breaking**] complete lifecycle ownership guarantees ([#416](https://github.com/phoxal/framework/pull/416))
+- *(time)* [**breaking**] enforce causal robot-time semantics ([#403](https://github.com/phoxal/framework/pull/403))
+
+### Other
+
+- [**breaking**] mechanical code-quality cleanup across the framework ([#398](https://github.com/phoxal/framework/pull/398))
+
 ## [0.55.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.54.0...phoxal-bus-v0.55.0) - 2026-08-06
 
 ### Added

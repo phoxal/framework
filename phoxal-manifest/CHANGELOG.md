@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.55.0...phoxal-manifest-v0.56.0) - 2026-08-09
+
+### Added
+
+- *(model)* [**breaking**] preserve authored safety runtime truth ([#420](https://github.com/phoxal/framework/pull/420))
+- *(bundle)* [**breaking**] separate runtime artifacts from participant instances ([#418](https://github.com/phoxal/framework/pull/418))
+- [**breaking**] enforce revisioned map safety and robot footprints ([#411](https://github.com/phoxal/framework/pull/411))
+- *(bundle)* [**breaking**] persist validated runtime documents
+- *(model)* [**breaking**] remove namespace identity ([#400](https://github.com/phoxal/framework/pull/400))
+
+### Other
+
+- enforce the panic and stub rules with clippy ([#399](https://github.com/phoxal/framework/pull/399))
+- [**breaking**] mechanical code-quality cleanup across the framework ([#398](https://github.com/phoxal/framework/pull/398))
+
 ## [0.55.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.54.0...phoxal-manifest-v0.55.0) - 2026-08-06
 
 ### Added
