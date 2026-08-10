@@ -118,12 +118,9 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trybuild = "1"
 urdf-rs = "0.9.0"
 webots-rs = "0.2"
-# Default features minus transport_compression: zenoh-transport's lz4_flex pin
-# (^0.10.0) has no release with the RUSTSEC-2026-0041 fix, so keep the affected
-# block-decompression path out of shipped binaries. Phoxal never enables zenoh
-# compression at runtime, so no behavior changes. Re-enable defaults only after
-# zenoh ships lz4_flex >= 0.11.6 (eclipse-zenoh/zenoh#2499) and the ignore in
-# .cargo/audit.toml is removed.
+# Default features minus transport_compression: Phoxal never enables zenoh
+# compression at runtime, so the feature only pulls lz4_flex into shipped
+# binaries. Re-enable defaults if a Phoxal transport ever compresses.
 # Pinned exactly, not caret: `unstable` gates APIs Zenoh may change in any
 # release, so the bump must be a deliberate act that fails to compile rather
 # than something `cargo update` performs silently.

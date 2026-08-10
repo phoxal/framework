@@ -702,9 +702,8 @@ pub struct StreamReceiver<E: EndpointDescriptor> {
 /// The fixed number of producer histories one setpoint receiver retains.
 ///
 /// A setpoint receiver keeps one newest actionable value for each source. It
-/// refuses a new source once this bound is reached instead of allowing a flood
-/// from an unrelated producer to evict a source whose authority has not yet
-/// been evaluated.
+/// refuses a new source once this bound is reached, so a high-rate unrelated
+/// producer cannot evict a source whose authority has not yet been evaluated.
 pub const MAX_SETPOINT_SOURCES: usize = 16;
 
 /// The fixed number of producer histories one stream receiver retains.
@@ -1781,7 +1780,7 @@ mod tests {
     }
 
     #[test]
-    fn one_producer_flood_cannot_evict_another_producers_pending_setpoint() {
+    fn one_producers_high_rate_cannot_evict_another_producers_pending_setpoint() {
         let metrics = RuntimeMetrics::default();
         let ring = setpoint_ring(&metrics);
 
@@ -1789,7 +1788,7 @@ mod tests {
             ring.push(setpoint_observed(10, "motion", producer(1)))
                 .accepted
         );
-        for body in 0..u8::try_from(MAX_SETPOINT_SOURCES * 4).expect("test flood fits in u8") {
+        for body in 0..u8::try_from(MAX_SETPOINT_SOURCES * 4).expect("test burst fits in u8") {
             assert!(
                 ring.push(setpoint_observed(body, "motion", producer(2)))
                     .accepted
@@ -1799,7 +1798,7 @@ mod tests {
         assert_eq!(ring.try_pop().map(|(item, _)| item.body), Some(10));
         assert_eq!(
             ring.try_pop().map(|(item, _)| item.body),
-            Some(u8::try_from(MAX_SETPOINT_SOURCES * 4 - 1).expect("test flood fits in u8"))
+            Some(u8::try_from(MAX_SETPOINT_SOURCES * 4 - 1).expect("test burst fits in u8"))
         );
         assert!(ring.try_pop().is_none());
     }
@@ -1827,7 +1826,7 @@ mod tests {
             ring.push(setpoint_observed(2, "motion", legitimate.producer))
                 .accepted
         );
-        for body in 3..u8::try_from(MAX_SETPOINT_SOURCES * 4).expect("test flood fits in u8") {
+        for body in 3..u8::try_from(MAX_SETPOINT_SOURCES * 4).expect("test burst fits in u8") {
             assert!(
                 ring.push(setpoint_observed(body, "motion", wrong.producer))
                     .accepted

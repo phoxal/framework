@@ -134,8 +134,8 @@ impl ParticipantAssets {
         self.entries.keys()
     }
 
-    /// Read a declared asset through one no-follow file descriptor and verify
-    /// the bytes consumed from that same descriptor.
+    /// Read a declared asset and verify the bytes consumed against the size
+    /// and digest the index recorded.
     pub fn read(&self, id: &AssetId) -> Result<Vec<u8>, BundleError> {
         let entry = self
             .entries

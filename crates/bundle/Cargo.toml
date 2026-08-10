@@ -16,7 +16,6 @@ name = "phoxal_bundle"
 path = "src/lib.rs"
 
 [dependencies]
-libc = { workspace = true }
 jsonschema = { workspace = true }
 phoxal-model = { workspace = true }
 phoxal-runtime-contract = { workspace = true }

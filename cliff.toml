@@ -39,7 +39,6 @@ commit_parsers = [
      { message = "^release:", skip = true },
   { message = "^chore", group = "Other" },
   { message = "^ci", group = "CI" },
-  { body = ".*security", group = "Security" },
 ]
 protect_breaking_commits = true
 filter_commits = false

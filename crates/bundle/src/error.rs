@@ -178,10 +178,6 @@ pub enum BundleError {
     NotDirectory(PathBuf),
     #[error("bundle target already exists: {0}")]
     TargetExists(PathBuf),
-    #[error("secure no-follow opening is unsupported for bundle file {path}")]
-    UnsupportedSecureOpen { path: PathBuf },
-    #[error("atomic no-replace publication is unsupported for bundle target {path}")]
-    UnsupportedAtomicPublish { path: PathBuf },
     #[error("failed to read runtime document {}: {source}", path.display())]
     ReadDocument {
         path: PathBuf,
@@ -192,36 +188,10 @@ pub enum BundleError {
     DocumentJson(#[from] serde_json::Error),
     #[error(transparent)]
     Document(#[from] DocumentError),
-    #[error("bundle contains forbidden symlink {path}")]
-    ForbiddenSymlink { path: PathBuf },
     #[error("bundle contains unsupported filesystem entry {path}")]
     UnsupportedEntry { path: PathBuf },
     #[error("bundle executable is not executable: {path}")]
     NotExecutable { path: PathBuf },
-    #[error(
-        "bundle executable {path} has mode {actual:#05o}, expected canonical mode {expected:#05o}"
-    )]
-    ExecutableMode {
-        path: PathBuf,
-        expected: u32,
-        actual: u32,
-    },
-    #[error(
-        "bundle data file {path} has mode {actual:#05o}, expected canonical mode {expected:#05o}"
-    )]
-    DataFileMode {
-        path: PathBuf,
-        expected: u32,
-        actual: u32,
-    },
-    #[error(
-        "bundle directory {path} has mode {actual:#05o}, expected canonical mode {expected:#05o}"
-    )]
-    DirectoryMode {
-        path: PathBuf,
-        expected: u32,
-        actual: u32,
-    },
     #[error("bundle contains unexpected file {path}")]
     UnexpectedFile { path: PathBuf },
     #[error("bundle contains unindexed directory {path}")]

@@ -17,8 +17,8 @@ use crate::time::{LocalInstant, RobotInstant, RobotTimeError};
 
 /// The maximum number of simultaneously observed Ready incarnations retained
 /// by one fixed-source receiver.  More than one is already a fail-closed
-/// conflict; the cap prevents a malformed or hostile liveliness stream from
-/// turning receiver state into an allocation sink.
+/// conflict, so the cap keeps receiver state bounded no matter how many
+/// incarnations the liveliness stream reports.
 pub const MAX_READY_PRODUCERS: usize = 16;
 
 /// Why a source was not admitted.
@@ -849,11 +849,11 @@ mod tests {
     }
 
     #[test]
-    fn fixed_source_admission_rejects_rogue_clear_before_keep_last() {
+    fn fixed_source_admission_rejects_a_mismatched_clear_before_keep_last() {
         let expected = participant("safety");
-        let rogue = participant("operator");
+        let mismatched = participant("operator");
         let authoritative = source_identity(&expected, producer(14));
-        let rogue = source_identity(&rogue, producer(15));
+        let mismatched = source_identity(&mismatched, producer(15));
         let mut admission = FixedSourceAdmission::new(expected);
         admission.update_ready(&authoritative, ParticipantReadyStatus::Ready);
 
@@ -865,7 +865,7 @@ mod tests {
             keep_last = Some("authoritative stop");
         }
         assert_eq!(
-            admission.offer(Some(&rogue), 99),
+            admission.offer(Some(&mismatched), 99),
             LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
         );
         assert_eq!(keep_last, Some("authoritative stop"));
@@ -889,10 +889,10 @@ mod tests {
     }
 
     #[test]
-    fn fixed_source_admission_rejects_a_navigation_rogue_flood_before_keep_last() {
+    fn fixed_source_admission_rejects_sustained_mismatched_offers_before_keep_last() {
         let expected = participant("navigation");
         let source = source_identity(&expected, producer(18));
-        let rogue = source_identity(&participant("operator"), producer(19));
+        let mismatched = source_identity(&participant("operator"), producer(19));
         let mut admission = FixedSourceAdmission::new(expected);
         admission.update_ready(&source, ParticipantReadyStatus::Ready);
 
@@ -900,7 +900,7 @@ mod tests {
         assert_eq!(admission.offer(Some(&source), 1), LeaseDecision::Acquired);
         for sequence in 2..=100 {
             assert_eq!(
-                admission.offer(Some(&rogue), sequence),
+                admission.offer(Some(&mismatched), sequence),
                 LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
             );
         }
@@ -1041,7 +1041,7 @@ mod tests {
                 &crate::metadata::SourceAttribution::Participant(source),
                 0,
                 at,
-                "rogue",
+                "participant body",
             ),
             LeaseDecision::Rejected(LeaseRejection::ParticipantSource)
         );

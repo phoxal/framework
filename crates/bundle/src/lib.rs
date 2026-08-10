@@ -28,9 +28,9 @@ pub use writer::BundleWriter;
 mod fs;
 pub(crate) use fs::{
     BundleRoot, copy_executable_source, create_staging_root, ensure_staging_directory,
-    mark_staging_root_ready, open_bundle_file, open_executable_source, prepare_publish_parent,
-    publish_staging_root, read_and_verify, read_runtime_document, reject_existing_target,
-    require_layout_directories, validate_layout, write_new_file,
+    open_bundle_file, open_executable_source, prepare_publish_parent, publish_staging_root,
+    read_and_verify, read_runtime_document, reject_existing_target, require_layout_directories,
+    validate_layout, write_new_file,
 };
 mod artifact;
 pub use artifact::{BinaryReference, BinarySource};

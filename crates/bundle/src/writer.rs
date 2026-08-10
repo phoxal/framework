@@ -8,8 +8,8 @@ use phoxal_model::AssetId;
 use crate::{
     ASSETS_DIR, AssetIndex, BinaryReference, BinarySource, BundleError, BundlePath, BundleRoot,
     DocumentError, RuntimeBundle, RuntimeDocument, copy_executable_source, create_staging_root,
-    ensure_staging_directory, mark_staging_root_ready, prepare_publish_parent,
-    publish_staging_root, reject_existing_target, write_new_file,
+    ensure_staging_directory, prepare_publish_parent, publish_staging_root, reject_existing_target,
+    write_new_file,
 };
 
 /// A build-tool-facing writer for the explicit final assembly boundary.
@@ -17,40 +17,26 @@ pub struct BundleWriter;
 
 impl BundleWriter {
     /// Write a document and the exact staged executable sources it references.
+    ///
+    /// The bundle is assembled in a private sibling directory, verified
+    /// completely, and only then renamed onto its final name, so the target is
+    /// either absent or a complete bundle.
     pub fn write(
         root: impl AsRef<Path>,
         document: &RuntimeDocument,
         assets: &BTreeMap<AssetId, Vec<u8>>,
         binaries: &BTreeMap<BundlePath, BinarySource>,
     ) -> Result<RuntimeBundle, BundleError> {
-        write_inner(root, document, assets, binaries, publish_staging_root)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn write_inner<F>(
-        root: impl AsRef<Path>,
-        document: &RuntimeDocument,
-        assets: &BTreeMap<AssetId, Vec<u8>>,
-        binaries: &BTreeMap<BundlePath, BinarySource>,
-        publish: F,
-    ) -> Result<RuntimeBundle, BundleError>
-    where
-        F: FnOnce(&Path, &Path) -> Result<(), BundleError>,
-    {
-        write_inner(root, document, assets, binaries, publish)
+        write_bundle(root, document, assets, binaries)
     }
 }
 
-pub(crate) fn write_inner<F>(
+fn write_bundle(
     root: impl AsRef<Path>,
     document: &RuntimeDocument,
     assets: &BTreeMap<AssetId, Vec<u8>>,
     binaries: &BTreeMap<BundlePath, BinarySource>,
-    publish: F,
-) -> Result<RuntimeBundle, BundleError>
-where
-    F: FnOnce(&Path, &Path) -> Result<(), BundleError>,
-{
+) -> Result<RuntimeBundle, BundleError> {
     let expected_assets = document.runtime().assets();
     let supplied_assets = AssetIndex::from_bytes(assets)?;
     if supplied_assets.entries() != expected_assets.entries() {
@@ -95,7 +81,6 @@ where
         }
         let json = serde_json::to_vec_pretty(document)?;
         write_new_file(&root, &BundlePath::new(crate::RUNTIME_FILE)?, &json)?;
-        mark_staging_root_ready(&root)?;
         RuntimeBundle::open_verified(root.path())
     })();
     let verified = match staged {
@@ -105,7 +90,7 @@ where
             return Err(error);
         }
     };
-    if let Err(error) = publish(root.path(), &publish_target) {
+    if let Err(error) = publish_staging_root(root.path(), &publish_target) {
         let _ = std::fs::remove_dir_all(&staging_path);
         return Err(error);
     }

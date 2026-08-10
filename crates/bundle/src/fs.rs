@@ -1,117 +1,37 @@
-//! Pinned-root and filesystem entry points for bundle reads.
-
-#[cfg(unix)]
-mod unix;
-
-#[cfg(unix)]
-pub(crate) use unix::{
-    create_staging_file, ensure_staging_directory, mark_staging_root_ready, open_bundle_file,
-    open_executable_source, publish_staging_root, require_layout_directories,
-};
-
-#[cfg(not(unix))]
-pub(crate) fn open_bundle_file(
-    root: &BundleRoot,
-    path: &BundlePath,
-) -> Result<std::fs::File, BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: path.filesystem_path(root.path()),
-    })
-}
-
-#[cfg(not(unix))]
-pub(crate) fn open_executable_source(path: &Path) -> Result<std::fs::File, BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: path.to_path_buf(),
-    })
-}
-
-#[cfg(not(unix))]
-pub(crate) fn create_staging_file(
-    root: &BundleRoot,
-    path: &BundlePath,
-    _mode: u32,
-) -> Result<std::fs::File, BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: path.filesystem_path(root.path()),
-    })
-}
-
-#[cfg(not(unix))]
-pub(crate) fn ensure_staging_directory(
-    root: &BundleRoot,
-    relative: &str,
-) -> Result<(), BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: root.path().join(relative),
-    })
-}
-
-#[cfg(not(unix))]
-pub(crate) fn mark_staging_root_ready(root: &BundleRoot) -> Result<(), BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: root.path().to_path_buf(),
-    })
-}
-
-#[cfg(not(unix))]
-pub(crate) fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
-    let _ = staged;
-    Err(BundleError::UnsupportedAtomicPublish {
-        path: target.to_path_buf(),
-    })
-}
-
-#[cfg(not(unix))]
-pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: root.path().to_path_buf(),
-    })
-}
+//! Bundle root resolution, staged writes, and verified reads.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
 use crate::*;
 
-/// A bundle root pinned to one directory object for the lifetime of a load.
-#[derive(Clone)]
+/// The mode the writer gives every staged directory and executable.
+const EXECUTABLE_MODE: u32 = 0o755;
+/// The mode the writer gives every staged data file.
+const DATA_MODE: u32 = 0o644;
+
+/// A bundle root that has been proven to be a directory.
+#[derive(Clone, Debug)]
 pub(crate) struct BundleRoot {
     path: PathBuf,
-    #[cfg(unix)]
-    pub(crate) fd: Arc<std::os::fd::OwnedFd>,
-}
-
-impl fmt::Debug for BundleRoot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("BundleRoot")
-            .field("path", &self.path)
-            .finish()
-    }
 }
 
 impl BundleRoot {
     pub(crate) fn open(requested: &Path) -> Result<Self, BundleError> {
-        #[cfg(unix)]
-        {
-            Ok(Self {
-                path: requested.to_path_buf(),
-                fd: unix::open_root(requested)?,
-            })
+        let metadata = std::fs::metadata(requested).map_err(|source| BundleError::Root {
+            path: requested.to_path_buf(),
+            source,
+        })?;
+        if !metadata.is_dir() {
+            return Err(BundleError::NotDirectory(requested.to_path_buf()));
         }
-        #[cfg(not(unix))]
-        {
-            Err(BundleError::UnsupportedSecureOpen {
-                path: requested.to_path_buf(),
-            })
-        }
+        Ok(Self {
+            path: requested.to_path_buf(),
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -121,6 +41,132 @@ impl BundleRoot {
     pub(crate) fn relocate(&mut self, path: PathBuf) {
         self.path = path;
     }
+}
+
+/// One filesystem entry, classified without following a symlink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryKind {
+    Directory,
+    File,
+    /// Anything the bundle layout does not admit, including a symlink.
+    Other,
+}
+
+impl From<std::fs::FileType> for EntryKind {
+    fn from(value: std::fs::FileType) -> Self {
+        if value.is_dir() {
+            Self::Directory
+        } else if value.is_file() {
+            Self::File
+        } else {
+            Self::Other
+        }
+    }
+}
+
+pub(crate) fn open_bundle_file(
+    root: &BundleRoot,
+    path: &BundlePath,
+) -> Result<std::fs::File, BundleError> {
+    let filesystem_path = path.filesystem_path(root.path());
+    match std::fs::File::open(&filesystem_path) {
+        Ok(file) => Ok(file),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            Err(BundleError::MissingFile {
+                path: filesystem_path,
+            })
+        }
+        Err(source) => Err(BundleError::ReadFile {
+            path: filesystem_path,
+            source,
+        }),
+    }
+}
+
+pub(crate) fn open_executable_source(path: &Path) -> Result<std::fs::File, BundleError> {
+    let file = std::fs::File::open(path).map_err(|source| BundleError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let metadata = file.metadata().map_err(|source| BundleError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(BundleError::UnsupportedEntry {
+            path: path.to_path_buf(),
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(BundleError::NotExecutable {
+                path: path.to_path_buf(),
+            });
+        }
+    }
+    Ok(file)
+}
+
+pub(crate) fn ensure_staging_directory(
+    root: &BundleRoot,
+    relative: &str,
+) -> Result<(), BundleError> {
+    let mut path = root.path().to_path_buf();
+    for component in relative.split('/') {
+        path.push(component);
+        match std::fs::create_dir(&path) {
+            Ok(()) => set_mode(&path, EXECUTABLE_MODE)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(source) => return Err(BundleError::ReadFile { path, source }),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn create_staging_file(
+    root: &BundleRoot,
+    path: &BundlePath,
+    mode: u32,
+) -> Result<std::fs::File, BundleError> {
+    if let Some((parent, _)) = path.as_str().rsplit_once('/') {
+        ensure_staging_directory(root, parent)?;
+    }
+    let filesystem_path = path.filesystem_path(root.path());
+    let file =
+        std::fs::File::create_new(&filesystem_path).map_err(|source| BundleError::ReadFile {
+            path: filesystem_path.clone(),
+            source,
+        })?;
+    set_mode(&filesystem_path, mode)?;
+    Ok(file)
+}
+
+/// Move a completed staging root onto its final name. The rename is the one
+/// step that makes a bundle visible, so an interrupted build leaves the target
+/// name either absent or holding a complete bundle.
+pub(crate) fn publish_staging_root(staged: &Path, target: &Path) -> Result<(), BundleError> {
+    std::fs::rename(staged, target).map_err(|source| BundleError::ReadFile {
+        path: target.to_path_buf(),
+        source,
+    })
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<(), BundleError> {
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).map_err(
+        |source| BundleError::ReadFile {
+            path: path.to_path_buf(),
+            source,
+        },
+    )
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> Result<(), BundleError> {
+    Ok(())
 }
 
 pub(crate) fn read_runtime_document(root: &BundleRoot) -> Result<RuntimeDocument, BundleError> {
@@ -134,8 +180,6 @@ pub(crate) fn read_runtime_document(root: &BundleRoot) -> Result<RuntimeDocument
             },
             other => other,
         })?;
-    #[cfg(unix)]
-    unix::verify_data_file(&runtime_file, &runtime_path)?;
     let mut bytes = Vec::new();
     runtime_file
         .read_to_end(&mut bytes)
@@ -151,7 +195,7 @@ pub(crate) fn write_new_file(
     path: &BundlePath,
     bytes: &[u8],
 ) -> Result<(), BundleError> {
-    let mut file = create_staging_file(root, path, 0o644)?;
+    let mut file = create_staging_file(root, path, DATA_MODE)?;
     let diagnostic = path.filesystem_path(root.path());
     std::io::Write::write_all(&mut file, bytes).map_err(|source| BundleError::ReadFile {
         path: diagnostic,
@@ -167,7 +211,7 @@ pub(crate) fn copy_executable_source(
     expected_size: u64,
 ) -> Result<(), BundleError> {
     let mut input = source.reader()?;
-    let mut output = create_staging_file(root, destination, 0o755)?;
+    let mut output = create_staging_file(root, destination, EXECUTABLE_MODE)?;
     let diagnostic = destination.filesystem_path(root.path());
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
@@ -217,9 +261,9 @@ pub(crate) fn copy_executable_source(
 
 pub(crate) fn prepare_publish_parent(root: &Path) -> Result<PathBuf, BundleError> {
     let parent = root.parent().unwrap_or_else(|| Path::new("."));
-    // A host may intentionally expose its temporary directory through a
-    // compatibility symlink (for example macOS `/var`). Resolve that parent
-    // once; the bundle target itself is still refused when it is a symlink.
+    // A host may expose its temporary directory through a compatibility
+    // symlink (for example macOS `/var`), so the parent is resolved once and
+    // the bundle is published under that resolved name.
     let canonical_parent = parent
         .canonicalize()
         .map_err(|source| BundleError::ReadFile {
@@ -241,19 +285,10 @@ pub(crate) fn prepare_publish_parent(root: &Path) -> Result<PathBuf, BundleError
     Ok(canonical_parent.join(name))
 }
 
+/// A bundle is published onto a free name, so an installed bundle is never
+/// modified in place.
 pub(crate) fn reject_existing_target(root: &Path) -> Result<(), BundleError> {
     match std::fs::symlink_metadata(root) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(BundleError::ForbiddenSymlink {
-            path: root.to_path_buf(),
-        }),
-        Ok(metadata) if !metadata.is_dir() => Err(BundleError::NotDirectory(root.to_path_buf())),
-        Ok(metadata) if metadata.is_dir() => {
-            if let Some(path) = find_symlink(root)? {
-                Err(BundleError::ForbiddenSymlink { path })
-            } else {
-                Err(BundleError::TargetExists(root.to_path_buf()))
-            }
-        }
         Ok(_) => Err(BundleError::TargetExists(root.to_path_buf())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(BundleError::ReadFile {
@@ -261,33 +296,6 @@ pub(crate) fn reject_existing_target(root: &Path) -> Result<(), BundleError> {
             source,
         }),
     }
-}
-
-fn find_symlink(directory: &Path) -> Result<Option<PathBuf>, BundleError> {
-    for entry in std::fs::read_dir(directory).map_err(|source| BundleError::ReadFile {
-        path: directory.to_path_buf(),
-        source,
-    })? {
-        let entry = entry.map_err(|source| BundleError::ReadFile {
-            path: directory.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        let metadata =
-            std::fs::symlink_metadata(&path).map_err(|source| BundleError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
-        if metadata.file_type().is_symlink() {
-            return Ok(Some(path));
-        }
-        if metadata.is_dir()
-            && let Some(path) = find_symlink(&path)?
-        {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
 }
 
 pub(crate) fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError> {
@@ -309,15 +317,7 @@ pub(crate) fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError>
         ));
         match std::fs::create_dir(&staged) {
             Ok(()) => {
-                #[cfg(unix)]
-                std::fs::set_permissions(
-                    &staged,
-                    std::os::unix::fs::PermissionsExt::from_mode(0o700),
-                )
-                .map_err(|source| BundleError::ReadFile {
-                    path: staged.clone(),
-                    source,
-                })?;
+                set_mode(&staged, EXECUTABLE_MODE)?;
                 return Ok(staged);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -335,26 +335,41 @@ pub(crate) fn create_staging_root(target: &Path) -> Result<PathBuf, BundleError>
     })
 }
 
-#[cfg(unix)]
+pub(crate) fn require_layout_directories(root: &BundleRoot) -> Result<(), BundleError> {
+    for directory in [ASSETS_DIR, BIN_DIR] {
+        let path = root.path().join(directory);
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(BundleError::UnsupportedEntry { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(BundleError::MissingFile { path });
+            }
+            Err(source) => return Err(BundleError::ReadFile { path, source }),
+        }
+    }
+    Ok(())
+}
+
+/// The layout admits exactly the indexed tree: `runtime.json`, the indexed
+/// files below `assets/` and `bin/`, and the directories those files need.
 pub(crate) fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<(), BundleError> {
     let root_path = root.path();
     require_layout_directories(root)?;
     let allowed = [RUNTIME_FILE, ASSETS_DIR, BIN_DIR];
-    for (name, kind) in unix::root_entries(root)? {
+    for (name, kind) in read_entries(root_path)? {
         let path = root_path.join(&name);
-        if kind == unix::BundleEntryKind::Symlink {
-            return Err(BundleError::ForbiddenSymlink { path });
-        }
         let name = name
             .to_str()
             .ok_or_else(|| BundleError::UnsupportedEntry { path: path.clone() })?;
         if !allowed.contains(&name) {
             return Err(BundleError::UnexpectedFile { path });
         }
-        if name == RUNTIME_FILE && kind != unix::BundleEntryKind::File {
-            return Err(BundleError::UnsupportedEntry { path });
-        }
-        if name != RUNTIME_FILE && kind != unix::BundleEntryKind::Directory {
+        let expected = if name == RUNTIME_FILE {
+            EntryKind::File
+        } else {
+            EntryKind::Directory
+        };
+        if kind != expected {
             return Err(BundleError::UnsupportedEntry { path });
         }
     }
@@ -366,7 +381,7 @@ pub(crate) fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<()
     }
     let mut actual_assets = BTreeSet::new();
     let mut actual_asset_directories = BTreeSet::new();
-    unix::collect_files(
+    collect_files(
         root,
         ASSETS_DIR,
         &mut actual_assets,
@@ -406,7 +421,7 @@ pub(crate) fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<()
         .collect::<BTreeSet<_>>();
     let mut actual_binaries = BTreeSet::new();
     let mut actual_binary_directories = BTreeSet::new();
-    unix::collect_files(
+    collect_files(
         root,
         BIN_DIR,
         &mut actual_binaries,
@@ -431,11 +446,63 @@ pub(crate) fn validate_layout(root: &BundleRoot, runtime: &Runtime) -> Result<()
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub(crate) fn validate_layout(root: &BundleRoot, _runtime: &Runtime) -> Result<(), BundleError> {
-    Err(BundleError::UnsupportedSecureOpen {
-        path: root.path().to_path_buf(),
-    })
+fn read_entries(directory: &Path) -> Result<Vec<(std::ffi::OsString, EntryKind)>, BundleError> {
+    let read = std::fs::read_dir(directory).map_err(|source| BundleError::ReadFile {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    let mut entries = Vec::new();
+    for entry in read {
+        let entry = entry.map_err(|source| BundleError::ReadFile {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let kind = entry
+            .file_type()
+            .map_err(|source| BundleError::ReadFile {
+                path: entry.path(),
+                source,
+            })?
+            .into();
+        entries.push((entry.file_name(), kind));
+    }
+    Ok(entries)
+}
+
+fn collect_files(
+    root: &BundleRoot,
+    relative_directory: &str,
+    paths: &mut BTreeSet<BundlePath>,
+    directories: &mut BTreeSet<BundlePath>,
+) -> Result<(), BundleError> {
+    let directory_path = root.path().join(relative_directory);
+    collect_files_at(&directory_path, relative_directory, paths, directories)
+}
+
+fn collect_files_at(
+    directory_path: &Path,
+    relative_directory: &str,
+    paths: &mut BTreeSet<BundlePath>,
+    directories: &mut BTreeSet<BundlePath>,
+) -> Result<(), BundleError> {
+    for (name, kind) in read_entries(directory_path)? {
+        let path = directory_path.join(&name);
+        let name = name
+            .to_str()
+            .ok_or_else(|| BundleError::UnsupportedEntry { path: path.clone() })?;
+        let relative = format!("{relative_directory}/{name}");
+        match kind {
+            EntryKind::Directory => {
+                directories.insert(BundlePath::new(relative.clone())?);
+                collect_files_at(&path, &relative, paths, directories)?;
+            }
+            EntryKind::File => {
+                paths.insert(BundlePath::new(relative)?);
+            }
+            EntryKind::Other => return Err(BundleError::UnsupportedEntry { path }),
+        }
+    }
+    Ok(())
 }
 
 fn reject_unindexed_directories(
@@ -460,11 +527,7 @@ fn reject_unindexed_directories(
 }
 
 fn verify_binary(root: &BundleRoot, binary: &BinaryReference) -> Result<(), BundleError> {
-    let path = binary.path.filesystem_path(root.path());
-    let file = open_bundle_file(root, &binary.path)?;
-    #[cfg(unix)]
-    unix::verify_executable(&file, &path)?;
-    verify_open_file(file, &path, binary.digest, Some(binary.size_bytes))
+    verify_digest_and_size(root, &binary.path, binary.digest, Some(binary.size_bytes))
 }
 
 fn verify_file(root: &BundleRoot, entry: &AssetRecord) -> Result<(), BundleError> {
@@ -479,8 +542,6 @@ fn verify_digest_and_size(
 ) -> Result<(), BundleError> {
     let path = bundle_path.filesystem_path(root.path());
     let file = open_bundle_file(root, bundle_path)?;
-    #[cfg(unix)]
-    unix::verify_data_file(&file, &path)?;
     verify_open_file(file, &path, expected, expected_size)
 }
 
