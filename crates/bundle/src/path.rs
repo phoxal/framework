@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// A normalized, traversal-proof bundle-relative path.
+/// A normalized bundle-relative path: forward slashes only, no leading slash,
+/// no empty, `.`, or `..` component.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BundlePath(String);
 

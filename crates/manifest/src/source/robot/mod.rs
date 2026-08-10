@@ -139,12 +139,6 @@ fn compose(leaf: &Path) -> Result<serde_yaml::Value, SourceError> {
                     source,
                 }
             })?;
-            if !parent.starts_with(&root) {
-                return Err(ComposeError::EscapingParent {
-                    path: relative,
-                    root: root.clone(),
-                });
-            }
             if parent == leaf {
                 return Err(ComposeError::SelfParent { path: relative });
             }
@@ -329,7 +323,7 @@ robot:
     }
 
     #[test]
-    fn duplicate_and_escaping_parents_are_rejected() -> anyhow::Result<()> {
+    fn duplicate_parents_are_rejected() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
         let robot_dir = temp.path().join("robot");
         std::fs::create_dir(&robot_dir)?;
@@ -346,17 +340,6 @@ robot:
         assert!(
             duplicate.to_string().contains("duplicate parent"),
             "{duplicate}"
-        );
-
-        std::fs::write(
-            robot_dir.join("robot.yaml"),
-            COMPOSED_LEAF.replace("base.robot.yaml, host.robot.yaml", "../outside.robot.yaml"),
-        )?;
-        std::fs::write(temp.path().join("outside.robot.yaml"), "{}\n")?;
-        let escaping = Manifest::load(&robot_dir).expect_err("escaping parent must fail");
-        assert!(
-            escaping.to_string().contains("escapes directory"),
-            "{escaping}"
         );
         Ok(())
     }

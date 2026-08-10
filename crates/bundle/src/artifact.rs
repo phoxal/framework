@@ -12,11 +12,8 @@ use crate::{
     BIN_DIR, BundleError, BundlePath, DocumentError, Sha256Digest, open_executable_source,
 };
 
-/// One opened executable source pinned to the exact file descriptor the
-/// writer will hash and copy.
-///
-/// Opening is no-follow on supported platforms. Keeping the descriptor owned
-/// closes the check/open race that a path-only writer would otherwise have.
+/// One opened executable source. The writer hashes and copies the same open
+/// handle, so the digest it records and the bytes it stages come from one file.
 pub struct BinarySource {
     file: std::fs::File,
     path: PathBuf,
@@ -32,8 +29,7 @@ impl fmt::Debug for BinarySource {
 }
 
 impl BinarySource {
-    /// Open one executable source through a descriptor-pinned parent walk,
-    /// without following a substituted leaf.
+    /// Open one executable source file.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BundleError> {
         let path = path.as_ref().to_path_buf();
         let file = open_executable_source(&path)?;

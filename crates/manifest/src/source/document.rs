@@ -293,10 +293,6 @@ pub enum ComposeError {
         source: std::io::Error,
     },
 
-    /// A parent resolves outside the leaf document's own directory.
-    #[error("parent {} escapes directory {}", path.display(), root.display())]
-    EscapingParent { path: PathBuf, root: PathBuf },
-
     /// A document lists itself as a parent.
     #[error("document cannot extend itself: {}", path.display())]
     SelfParent { path: PathBuf },

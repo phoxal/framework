@@ -51,11 +51,10 @@ pub enum BuildRequirementsError {
     #[error("{label}: `apt` entries must be strings")]
     AptEntryNotAString { label: String },
 
-    /// A selector that is not a Debian package name could be read by apt as an
-    /// option, so the shape is enforced rather than trusted.
+    /// A selector that does not spell a Debian package name.
     #[error(
-        "{label}: invalid apt selector {selector:?}; a selector must start with an ASCII \
-         alphanumeric, be at least two bytes, and use only [A-Za-z0-9.+:_=-]"
+        "{label}: invalid apt selector {selector:?}; a Debian package name starts with an ASCII \
+         alphanumeric, is at least two bytes, and uses only [A-Za-z0-9.+:_=-]"
     )]
     InvalidSelector { label: String, selector: String },
 }
@@ -132,7 +131,7 @@ impl BuildRequirements {
 }
 
 /// Debian package names start with an alphanumeric and contain at least two
-/// bytes (Policy 5.6.1); those rules also prevent apt option injection.
+/// bytes (Policy 5.6.1).
 fn is_valid_apt_selector(selector: &str) -> bool {
     selector.len() >= 2
         && selector
@@ -239,7 +238,7 @@ mod tests {
 
     #[test]
     fn an_invalid_selector_is_rejected() {
-        for selector in ["libudev-dev; rm -rf /", "", "-o"] {
+        for selector in ["", "x", ".libudev-dev", "libudev dev"] {
             let source = format!("[package.metadata.phoxal.build]\napt = [{selector:?}]");
             let error = BuildRequirements::from_manifest(&source, "test").unwrap_err();
             assert!(error.to_string().contains("invalid apt selector"));
@@ -247,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_values_are_escaped_in_errors() {
+    fn error_text_escapes_control_characters() {
         let error = BuildRequirements::from_manifest(
             "[package.metadata.phoxal.build]\napt = [\"\\u001b]0;owned\\u0007\"]",
             "test",

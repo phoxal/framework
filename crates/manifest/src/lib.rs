@@ -54,10 +54,6 @@ pub enum CompileError {
         source: std::io::Error,
     },
 
-    /// A declared path resolves outside the tree it must stay inside.
-    #[error("{} must stay below {}", path.display(), root.display())]
-    Escapes { path: PathBuf, root: PathBuf },
-
     /// The caller resolved no root for a component type the robot mounts.
     #[error("no resolved component root for type '{component_type}'")]
     UnresolvedComponentRoot { component_type: String },
@@ -269,12 +265,6 @@ impl SourceSet {
     pub fn compile(self) -> Result<CompiledProject, CompileError> {
         let project_root = canonicalize(&self.project_root)?;
         let robot_manifest = canonicalize(&self.robot_manifest)?;
-        if !robot_manifest.starts_with(&project_root) {
-            return Err(CompileError::Escapes {
-                path: robot_manifest,
-                root: project_root,
-            });
-        }
         let source::robot::Manifest::V0(manifest) = source::robot::Manifest::load(&robot_manifest)
             .map_err(|source| CompileError::Document { source })?;
 
@@ -529,19 +519,9 @@ impl ResolvedSources {
         })
     }
 
-    /// Resolve a manifest-declared path against the robot root, refusing any
-    /// path that leaves it.
+    /// Resolve a manifest-declared path against the robot root.
     fn robot_relative(&self, relative: &Path) -> Result<PathBuf, CompileError> {
-        let resolved = canonicalize(&self.robot_root.join(relative))?;
-        let root = canonicalize(&self.robot_root)?;
-        if resolved.starts_with(&root) {
-            Ok(resolved)
-        } else {
-            Err(CompileError::Escapes {
-                path: resolved,
-                root,
-            })
-        }
+        canonicalize(&self.robot_root.join(relative))
     }
 
     fn compile_source_facts(

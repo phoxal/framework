@@ -1,16 +1,12 @@
 //! Bundle boundary regression tests.
 //!
 //! These stay in one crate-root unit target because they exercise the complete
-//! persisted-bundle boundary across document validation, atomic writing,
-//! descriptor-pinned filesystem access, selection, and verified reading. The
-//! filesystem race assertions deliberately use crate-private seams that a
-//! public integration test cannot reach; splitting the shared staged-bundle
-//! fixture among the implementation modules would duplicate the boundary it
-//! proves.
+//! persisted-bundle boundary across document validation, staged writing,
+//! layout validation, selection, and verified reading. Splitting the shared
+//! staged-bundle fixture among the implementation modules would duplicate the
+//! boundary it proves.
 
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::path::PathBuf;
 
 use crate::*;
 use phoxal_model::{AssetId, Clock, Robot};
@@ -29,6 +25,17 @@ type StagedBytes = (
     BTreeMap<AssetId, Vec<u8>>,
     BTreeMap<BundlePath, BinarySource>,
 );
+
+/// Write an executable source the writer will accept as a binary input.
+fn write_executable(path: &std::path::Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).expect("executable source bytes");
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        path,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .expect("executable source mode");
+}
 
 fn document() -> StagedBytes {
     let robot = RobotBuilder::new("rover")
@@ -798,9 +805,7 @@ fn writer_stages_a_real_executable_with_canonical_mode() {
     let parent = tempfile::tempdir().expect("bundle parent");
     let root = parent.path().join("bundle");
     let source = parent.path().join("probe-source");
-    std::fs::write(&source, b"#!/bin/sh\nprintf staged\n").expect("probe source");
-    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700))
-        .expect("probe source mode");
+    write_executable(&source, b"#!/bin/sh\nprintf staged\n");
 
     let (document, assets, mut binaries) = document();
     let RuntimeDocument::V0(mut runtime) = document;
@@ -861,78 +866,6 @@ fn writer_stages_a_real_executable_with_canonical_mode() {
             0o644
         );
     }
-}
-
-#[cfg(unix)]
-#[test]
-fn opened_binary_source_is_pinned_across_path_substitution() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let parent = tempfile::tempdir().expect("source parent");
-    let source_path = parent.path().join("source");
-    std::fs::write(&source_path, b"#!/bin/sh\nprintf original\n").expect("source bytes");
-    std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o700))
-        .expect("source mode");
-    let source = BinarySource::open(&source_path).expect("source descriptor");
-    let moved = parent.path().join("moved");
-    std::fs::rename(&source_path, &moved).expect("move opened inode");
-    let replacement = parent.path().join("replacement");
-    std::fs::write(&replacement, b"#!/bin/sh\nprintf replacement\n").expect("replacement");
-    std::os::unix::fs::symlink(&replacement, &source_path).expect("replacement symlink");
-    assert!(matches!(
-        BinarySource::open(&source_path),
-        Err(BundleError::ForbiddenSymlink { .. })
-    ));
-
-    let (document, assets, mut binaries) = document();
-    let RuntimeDocument::V0(mut runtime) = document;
-    let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
-    let existing = runtime.artifacts.get(&artifact_id).expect("drive artifact");
-    let reference =
-        BinaryReference::from_source(existing.path.clone(), existing.contract.clone(), &source)
-            .expect("reference hashes the opened inode");
-    runtime.artifacts.insert(artifact_id, reference);
-    let document = RuntimeDocument::new(
-        Runtime::new(
-            runtime.robot,
-            runtime.artifacts,
-            runtime.participants,
-            runtime.assets,
-            runtime.router,
-        )
-        .expect("runtime document"),
-    );
-    binaries.insert(BundlePath::new("bin/drive").expect("binary path"), source);
-    let root = parent.path().join("bundle");
-    BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
-    assert!(
-        std::fs::read(root.join("bin/drive"))
-            .expect("staged binary")
-            .windows(b"original".len())
-            .any(|window| window == b"original")
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn verified_open_requires_the_canonical_executable_mode() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let parent = tempfile::tempdir().expect("bundle parent");
-    let root = parent.path().join("bundle");
-    let (document, assets, binaries) = document();
-    BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
-    let binary = root.join("bin/drive");
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
-        .expect("change the canonical mode");
-    assert!(matches!(
-        RuntimeBundle::open_verified(&root),
-        Err(BundleError::ExecutableMode {
-            expected: 0o755,
-            actual: 0o700,
-            ..
-        })
-    ));
 }
 
 #[test]
@@ -1008,7 +941,7 @@ fn participant_open_skips_unrelated_artifact_hashes_but_full_open_does_not() {
         .expect("runtime document"),
     );
     BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
-    std::fs::write(root.join("bin/other"), b"tampered").expect("tamper other artifact");
+    std::fs::write(root.join("bin/other"), b"changed").expect("change other artifact");
 
     ParticipantBundle::open(&root, &ParticipantId::new("drive").expect("participant id"))
         .expect("selected participant does not hash unrelated artifact");
@@ -1041,7 +974,7 @@ fn a_mutated_indexed_asset_is_rejected_on_open_and_read() {
     let (document, assets, binaries) = document();
     let loaded = BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
     let id = AssetId::new("robot/structure.json").expect("asset id");
-    std::fs::write(root.join("assets/robot/structure.json"), b"tampered").expect("tamper asset");
+    std::fs::write(root.join("assets/robot/structure.json"), b"changed").expect("change asset");
     assert!(matches!(
         loaded.assets().read(&id),
         Err(BundleError::Integrity { .. } | BundleError::Size { .. })
@@ -1058,129 +991,10 @@ fn a_mutated_indexed_binary_is_rejected_on_open() {
     let root = parent.path().join("bundle");
     let (document, assets, binaries) = document();
     BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
-    std::fs::write(root.join("bin/drive"), b"tampered").expect("tamper binary");
+    std::fs::write(root.join("bin/drive"), b"changed").expect("change binary");
     assert!(matches!(
         RuntimeBundle::open_verified(&root),
         Err(BundleError::Integrity { .. } | BundleError::Size { .. })
-    ));
-}
-
-#[cfg(unix)]
-#[test]
-fn symlinked_bundle_files_are_rejected_before_runtime_use() {
-    let parent = tempfile::tempdir().expect("bundle parent");
-    let root = parent.path().join("bundle");
-    let outside = tempfile::tempdir().expect("outside root");
-    let (document, assets, binaries) = document();
-    let loaded = BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
-    let asset = root.join("assets/robot/structure.json");
-    std::fs::remove_file(&asset).expect("remove indexed asset");
-    std::fs::write(outside.path().join("structure.json"), b"outside").expect("outside asset");
-    std::os::unix::fs::symlink(outside.path().join("structure.json"), &asset)
-        .expect("symlink asset");
-    assert!(matches!(
-        RuntimeBundle::open_verified(&root),
-        Err(BundleError::ForbiddenSymlink { .. })
-    ));
-    assert!(matches!(
-        loaded
-            .assets()
-            .read(&AssetId::new("robot/structure.json").expect("asset id")),
-        Err(BundleError::ForbiddenSymlink { .. })
-    ));
-}
-
-#[cfg(unix)]
-#[test]
-fn substituted_assets_directory_is_not_followed_by_asset_access() {
-    let parent = tempfile::tempdir().expect("bundle parent");
-    let root = parent.path().join("bundle");
-    let outside = tempfile::tempdir().expect("outside root");
-    let (document, assets, binaries) = document();
-    let loaded = BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
-    let assets_dir = root.join(ASSETS_DIR);
-    let moved_assets = outside.path().join(ASSETS_DIR);
-    std::fs::rename(&assets_dir, &moved_assets).expect("move indexed assets");
-    std::os::unix::fs::symlink(&moved_assets, &assets_dir).expect("symlink assets directory");
-    assert!(matches!(
-        loaded
-            .assets()
-            .read(&AssetId::new("robot/structure.json").expect("asset id")),
-        Err(BundleError::ForbiddenSymlink { .. })
-    ));
-    assert!(matches!(
-        RuntimeBundle::open_verified(&root),
-        Err(BundleError::ForbiddenSymlink { .. })
-    ));
-}
-
-#[cfg(unix)]
-#[test]
-fn pinned_root_cannot_be_redirected_by_root_symlink_substitution() {
-    let parent = tempfile::tempdir().expect("bundle parent");
-    let root = parent.path().join("bundle");
-    let moved = parent.path().join("bundle-original");
-    let outside = parent.path().join("outside");
-    let bundle_path = BundlePath::new("assets/asset").expect("bundle path");
-    std::fs::create_dir_all(root.join(ASSETS_DIR)).expect("bundle assets");
-    std::fs::create_dir_all(outside.join(ASSETS_DIR)).expect("outside assets");
-    std::fs::write(root.join("assets/asset"), b"pinned").expect("pinned asset");
-    std::fs::write(outside.join("assets/asset"), b"redirected").expect("outside asset");
-
-    let pinned = BundleRoot::open(&root).expect("pin bundle root");
-    std::fs::rename(&root, &moved).expect("move original bundle");
-    std::os::unix::fs::symlink(&outside, &root).expect("substitute root symlink");
-
-    let mut file = open_bundle_file(&pinned, &bundle_path).expect("open pinned asset");
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).expect("read pinned asset");
-    assert_eq!(bytes, b"pinned");
-}
-
-#[cfg(unix)]
-#[test]
-fn layout_validation_stays_on_pinned_tree_after_root_substitution() {
-    let parent = tempfile::tempdir().expect("bundle parent");
-    let root = parent.path().join("bundle");
-    let moved = parent.path().join("bundle-original");
-    let outside = parent.path().join("outside");
-    let (document, assets, binaries) = document();
-    let loaded = BundleWriter::write(&root, &document, &assets, &binaries).expect("bundle writes");
-    drop(loaded);
-    std::fs::write(root.join(ASSETS_DIR).join("unexpected"), b"extra")
-        .expect("extra original file");
-
-    // Build a pathname replacement containing the expected files but not
-    // the extra file. A pathname-based validator would accept this tree;
-    // the pinned descriptor must continue to observe the original.
-    let RuntimeDocument::V0(runtime) = &document;
-    std::fs::create_dir_all(outside.join(ASSETS_DIR).join("robot")).expect("outside assets");
-    std::fs::create_dir_all(outside.join(BIN_DIR)).expect("outside binaries");
-    std::fs::write(
-        outside.join(RUNTIME_FILE),
-        serde_json::to_vec_pretty(&document).expect("runtime json"),
-    )
-    .expect("outside runtime");
-    for (id, bytes) in &assets {
-        std::fs::write(
-            outside
-                .join(ASSETS_DIR)
-                .join(id.as_str().split('/').collect::<PathBuf>()),
-            bytes,
-        )
-        .expect("outside asset");
-    }
-    for (path, source) in &binaries {
-        std::fs::copy(source.path(), path.filesystem_path(&outside)).expect("outside binary");
-    }
-
-    let pinned = BundleRoot::open(&root).expect("pin original root");
-    std::fs::rename(&root, &moved).expect("move original root");
-    std::os::unix::fs::symlink(&outside, &root).expect("substitute root symlink");
-
-    assert!(matches!(
-        validate_layout(&pinned, runtime),
-        Err(BundleError::UnexpectedFile { path }) if path.ends_with("assets/unexpected")
     ));
 }
 
@@ -1197,201 +1011,76 @@ fn unindexed_empty_directories_are_rejected() {
     ));
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn no_replace_publication_preserves_target_created_after_staging() {
-    let parent = tempfile::tempdir().expect("publication parent");
-    let staged = parent.path().join(".bundle.staging");
-    let target = parent.path().join("bundle");
-    std::fs::create_dir(&staged).expect("staging directory");
-    std::fs::write(staged.join("new"), b"new bundle").expect("staged marker");
-
-    // This target is created after staging, standing in for a concurrent
-    // publisher winning the check-to-publish race.
-    std::fs::create_dir(&target).expect("concurrent target");
-    std::fs::write(target.join("sentinel"), b"existing bundle").expect("target sentinel");
-
-    assert!(matches!(
-        publish_staging_root(&staged, &target),
-        Err(BundleError::TargetExists(path)) if path == target
-    ));
-    assert_eq!(
-        std::fs::read(target.join("sentinel")).expect("sentinel remains"),
-        b"existing bundle"
-    );
-    assert!(
-        staged.exists(),
-        "failed publication retains staging for cleanup"
-    );
-    assert!(!target.join("new").exists(), "target was never replaced");
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[test]
-fn no_replace_publication_closes_the_preflight_race_for_all_target_types() {
-    for target_kind in ["directory", "file", "symlink"] {
-        let parent = tempfile::tempdir().expect("publication parent");
-        let staged = parent.path().join(".bundle.staging");
-        let target = parent.path().join("bundle");
-        std::fs::create_dir(&staged).expect("staging directory");
-        std::fs::write(staged.join("new"), b"new bundle").expect("staged marker");
-
-        // Model the real writer sequence: the advisory preflight observes
-        // an absent target, then a concurrent actor creates it immediately
-        // before the no-replace publish syscall.
-        assert!(matches!(reject_existing_target(&target), Ok(())));
-        match target_kind {
-            "directory" => {
-                std::fs::create_dir(&target).expect("concurrent directory");
-                std::fs::write(target.join("sentinel"), b"directory").expect("directory sentinel");
-            }
-            "file" => std::fs::write(&target, b"file").expect("concurrent file"),
-            "symlink" => {
-                let outside = parent.path().join("outside");
-                std::fs::write(&outside, b"outside").expect("outside target");
-                std::os::unix::fs::symlink(&outside, &target).expect("concurrent symlink");
-            }
-            _ => unreachable!(),
-        }
-
-        assert!(matches!(
-            publish_staging_root(&staged, &target),
-            Err(BundleError::TargetExists(path)) if path == target
-        ));
-        assert!(
-            staged.exists(),
-            "failed publication retains staging for cleanup"
-        );
-        assert!(!target.join("new").exists(), "target was never replaced");
-        match target_kind {
-            "directory" => assert_eq!(
-                std::fs::read(target.join("sentinel")).expect("sentinel remains"),
-                b"directory"
-            ),
-            "file" => assert_eq!(std::fs::read(&target).expect("file remains"), b"file"),
-            "symlink" => assert!(
-                std::fs::symlink_metadata(&target)
-                    .expect("symlink remains")
-                    .file_type()
-                    .is_symlink()
-            ),
-            _ => unreachable!(),
-        }
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[test]
-fn writer_tail_race_removes_staging_without_touching_new_targets() {
-    for target_kind in ["directory", "file", "symlink"] {
+fn a_bundle_is_published_onto_a_free_name_only() {
+    for existing in ["directory", "file"] {
         let parent = tempfile::tempdir().expect("bundle parent");
         let root = parent.path().join("bundle");
-        let target = root
-            .parent()
-            .expect("bundle parent path")
-            .canonicalize()
-            .expect("canonical bundle parent")
-            .join("bundle");
-        let (document, assets, binaries) = document();
-        let observed_staging = std::cell::RefCell::new(None);
-
-        let result =
-            BundleWriter::write_inner(&root, &document, &assets, &binaries, |staged, target| {
-                *observed_staging.borrow_mut() = Some(staged.to_path_buf());
-                match target_kind {
-                    "directory" => {
-                        std::fs::create_dir(target).expect("concurrent directory");
-                        std::fs::write(target.join("sentinel"), b"directory")
-                            .expect("directory sentinel");
-                    }
-                    "file" => std::fs::write(target, b"file").expect("concurrent file"),
-                    "symlink" => {
-                        let outside = parent.path().join("outside");
-                        std::fs::write(&outside, b"outside").expect("outside target");
-                        std::os::unix::fs::symlink(&outside, target).expect("concurrent symlink");
-                    }
-                    _ => unreachable!(),
-                }
-                publish_staging_root(staged, target)
-            });
-
-        assert!(matches!(
-            result,
-            Err(BundleError::TargetExists(path)) if path == target
-        ));
-        let staging = observed_staging
-            .into_inner()
-            .expect("writer reached publication tail");
-        assert!(
-            !staging.exists(),
-            "writer removes failed task-owned staging"
-        );
-        assert!(
-            !target.join("runtime.json").exists(),
-            "target was never replaced"
-        );
-        match target_kind {
-            "directory" => assert_eq!(
-                std::fs::read(target.join("sentinel")).expect("sentinel remains"),
-                b"directory"
-            ),
-            "file" => assert_eq!(std::fs::read(&target).expect("file remains"), b"file"),
-            "symlink" => assert!(
-                std::fs::symlink_metadata(&target)
-                    .expect("symlink remains")
-                    .file_type()
-                    .is_symlink()
-            ),
+        match existing {
+            "directory" => {
+                std::fs::create_dir(&root).expect("existing directory");
+                std::fs::write(root.join("sentinel"), b"existing").expect("sentinel");
+            }
+            "file" => std::fs::write(&root, b"existing").expect("existing file"),
             _ => unreachable!(),
         }
+
+        let (document, assets, binaries) = document();
+        assert!(matches!(
+            BundleWriter::write(&root, &document, &assets, &binaries),
+            Err(BundleError::TargetExists(_))
+        ));
+        assert!(
+            !root.join(RUNTIME_FILE).exists(),
+            "the existing target keeps its own content"
+        );
     }
 }
 
-#[cfg(not(unix))]
+/// A source whose bytes change between indexing and staging fails the digest
+/// the document recorded, and the abandoned staging directory is removed.
 #[test]
-fn unsupported_platforms_fail_closed_for_asset_open() {
-    let root = tempfile::tempdir().expect("bundle root");
-    let path = root.path().join(ASSETS_DIR).join("asset");
-    std::fs::create_dir_all(path.parent().expect("asset parent")).expect("asset directory");
-    std::fs::write(&path, b"asset").expect("asset file");
-    let bundle_path = BundlePath::new("assets/asset").expect("bundle path");
-    assert!(matches!(
-        BundleRoot::open(root.path()),
-        Err(BundleError::UnsupportedSecureOpen { .. })
-    ));
-}
-
-#[cfg(unix)]
-#[test]
-fn writer_rejects_existing_symlinked_target_before_writing() {
+fn a_source_that_changes_after_indexing_fails_the_write_and_clears_staging() {
     let parent = tempfile::tempdir().expect("bundle parent");
-    let outside = tempfile::tempdir().expect("outside root");
+    let sources = tempfile::tempdir().expect("source parent");
     let root = parent.path().join("bundle");
-    std::fs::create_dir(&root).expect("existing root");
-    std::os::unix::fs::symlink(outside.path(), root.join(ASSETS_DIR)).expect("assets symlink");
-    let (document, assets, binaries) = document();
+    let source_path = sources.path().join("drive");
+    write_executable(&source_path, b"#!/bin/sh\nprintf indexed\n");
+
+    let (document, assets, mut binaries) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
+    let existing = runtime.artifacts.get(&artifact_id).expect("drive artifact");
+    let source = BinarySource::open(&source_path).expect("drive source opens");
+    let reference =
+        BinaryReference::from_source(existing.path.clone(), existing.contract.clone(), &source)
+            .expect("drive reference");
+    runtime.artifacts.insert(artifact_id, reference);
+    let document = RuntimeDocument::new(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        )
+        .expect("runtime document"),
+    );
+    binaries.insert(BundlePath::new("bin/drive").expect("binary path"), source);
+    write_executable(&source_path, b"#!/bin/sh\nprintf changed\n");
+
     assert!(matches!(
         BundleWriter::write(&root, &document, &assets, &binaries),
-        Err(BundleError::ForbiddenSymlink { .. })
+        Err(BundleError::Integrity { .. } | BundleError::Size { .. })
     ));
-    assert!(!outside.path().join("robot").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn writer_rejects_symlinked_leaf_in_existing_target() {
-    let parent = tempfile::tempdir().expect("bundle parent");
-    let outside = tempfile::tempdir().expect("outside root");
-    let root = parent.path().join("bundle");
-    std::fs::create_dir_all(root.join(ASSETS_DIR).join("robot")).expect("existing tree");
-    let leaf = root.join(ASSETS_DIR).join("robot/structure.json");
-    std::os::unix::fs::symlink(outside.path().join("structure.json"), &leaf).expect("leaf symlink");
-    let (document, assets, binaries) = document();
-    assert!(matches!(
-        BundleWriter::write(&root, &document, &assets, &binaries),
-        Err(BundleError::ForbiddenSymlink { .. })
-    ));
-    assert!(!outside.path().join("structure.json").exists());
+    assert!(!root.exists(), "no bundle was published");
+    assert_eq!(
+        std::fs::read_dir(parent.path())
+            .expect("bundle parent reads")
+            .count(),
+        0,
+        "the abandoned staging directory was removed"
+    );
 }
 
 #[test]

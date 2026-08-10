@@ -1,4 +1,4 @@
-//! Pinned bundle readers for supervisors and participant processes.
+//! Bundle readers for supervisors and participant processes.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -168,7 +168,7 @@ impl ParticipantBundle {
         self.inputs
     }
 
-    /// The pinned root retained for diagnostics.
+    /// The bundle root retained for diagnostics.
     #[must_use]
     pub fn root(&self) -> &Path {
         self.root.path()
