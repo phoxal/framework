@@ -208,6 +208,22 @@ pub enum ModelError {
     Structure(#[from] StructureError),
 }
 
+impl From<phoxal_runtime_contract::identity::TopologyIdError> for ModelError {
+    fn from(error: phoxal_runtime_contract::identity::TopologyIdError) -> Self {
+        use phoxal_runtime_contract::identity::TopologyIdError;
+        match error {
+            TopologyIdError::Robot(value) => Self::NotNormalized {
+                kind: IdentifierKind::RobotId,
+                value,
+            },
+            TopologyIdError::ComponentInstance(value) => Self::NotNormalized {
+                kind: IdentifierKind::ComponentInstance,
+                value,
+            },
+        }
+    }
+}
+
 /// A canonical structure that violates the structural invariants.
 #[derive(Debug, thiserror::Error)]
 pub enum StructureError {

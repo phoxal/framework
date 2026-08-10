@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::identity::ParticipantArtifactId;
 use crate::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
 
+/// Maximum participant instances in one compiled runtime execution.
+pub const MAX_RUNTIME_PARTICIPANTS: usize = 64;
+
 /// Every process-boundary version identity one participant binary speaks.
 /// Authored source grammars are intentionally absent: a runtime process
 /// consumes the compiled runtime document, not `robot.yaml`, component files,

@@ -113,6 +113,30 @@ fn document() -> StagedBytes {
 }
 
 #[test]
+fn runtime_rejects_more_participants_than_a_snapshot_can_publish() {
+    let (RuntimeDocument::V0(mut runtime), _, _) = document();
+    let template = runtime.participants[1].clone();
+    runtime.participants = (0..=MAX_RUNTIME_PARTICIPANTS)
+        .map(|index| {
+            let mut participant = template.clone();
+            participant.id = ParticipantId::new(format!("service-{index}")).unwrap();
+            participant
+        })
+        .collect();
+    assert!(matches!(
+        Runtime::new(
+            runtime.robot,
+            runtime.artifacts,
+            runtime.participants,
+            runtime.assets,
+            runtime.router,
+        ),
+        Err(DocumentError::TooManyParticipants { count })
+            if count == MAX_RUNTIME_PARTICIPANTS + 1
+    ));
+}
+
+#[test]
 fn runtime_rejects_mixed_robot_api_artifacts_and_exposes_the_selected_api() {
     let (document, _, _) = document();
     assert_eq!(document.robot_api(), RobotApiVersion::new(0, 1));

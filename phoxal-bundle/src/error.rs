@@ -16,6 +16,11 @@ use crate::{BundlePath, BundlePathError, DigestError, ParticipantClock, Sha256Di
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum DocumentError {
     #[error(
+        "runtime graph has {count} participants; limit is {}",
+        crate::MAX_RUNTIME_PARTICIPANTS
+    )]
+    TooManyParticipants { count: usize },
+    #[error(
         "artifact '{artifact}' speaks robot API {actual}, but this runtime already selected {expected}"
     )]
     MixedRobotApi {

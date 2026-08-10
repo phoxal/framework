@@ -234,6 +234,11 @@ impl Runtime {
     }
 
     fn validate(&self) -> Result<(), DocumentError> {
+        if self.participants.len() > crate::MAX_RUNTIME_PARTICIPANTS {
+            return Err(DocumentError::TooManyParticipants {
+                count: self.participants.len(),
+            });
+        }
         let mut ids = BTreeSet::new();
         let mut artifact_paths = BTreeSet::new();
         let mut validators = BTreeMap::new();

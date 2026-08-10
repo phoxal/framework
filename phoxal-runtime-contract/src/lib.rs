@@ -18,6 +18,7 @@
 //!   evaluation modes.
 //! - [`origin`] - the boot-anchored origin of one real execution.
 
+pub mod clock;
 pub mod emit;
 pub mod identity;
 pub mod metadata;

@@ -85,6 +85,9 @@ fn public_library_dependency_direction_is_exact() -> Result<()> {
         ("phoxal-bus", "phoxal-runtime-contract"),
         ("phoxal-manifest", "phoxal-model"),
         ("phoxal-manifest", "phoxal-runtime-contract"),
+        // Canonical model identities originate in the process-contract layer
+        // so runtime consumers do not need the authored model crate.
+        ("phoxal-model", "phoxal-runtime-contract"),
         ("phoxal-supervisor-api", "phoxal-bus"),
         ("phoxal-supervisor-api", "phoxal-macros"),
         ("phoxal-supervisor-api", "phoxal-runtime-contract"),

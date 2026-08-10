@@ -23,6 +23,7 @@ path = "src/lib.rs"
 schemars = ["dep:schemars"]
 
 [dependencies]
+phoxal-runtime-contract = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -519,10 +519,13 @@ impl ResolvedSources {
     }
 
     /// Attribute an identifier rejection to the document that carried it.
-    fn identity<T>(&self, result: Result<T, phoxal_model::ModelError>) -> Result<T, CompileError> {
+    fn identity<T, E>(&self, result: Result<T, E>) -> Result<T, CompileError>
+    where
+        E: Into<phoxal_model::ModelError>,
+    {
         result.map_err(|source| CompileError::CanonicalModel {
             path: self.robot_manifest.clone(),
-            source,
+            source: source.into(),
         })
     }
 

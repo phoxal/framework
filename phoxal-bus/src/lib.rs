@@ -82,8 +82,9 @@ pub use lease::{
     LeaseDecision, LeaseRejection, MAX_READY_PRODUCERS,
 };
 pub use liveliness::{
-    KeyLivelinessObserver, LivelinessStatus, ParticipantReadyEvent, ParticipantReadyEvents,
-    ParticipantReadyObserver, ParticipantReadyStatus, ParticipantReadyToken,
+    KeyLivelinessObserver, KeyLivelinessToken, LivelinessStatus, ParticipantReadyEvent,
+    ParticipantReadyEvents, ParticipantReadyObserver, ParticipantReadyStatus,
+    ParticipantReadyToken,
 };
 pub use metadata::{
     BusMetadata, ParticipantSourceIdentity, SourceAttribution, SourceLabel, SourceLabelError,

@@ -47,5 +47,6 @@ pub const RUNTIME_FILE: &str = "runtime.json";
 pub const ASSETS_DIR: &str = "assets";
 /// The supervisor-only binary directory.
 pub const BIN_DIR: &str = "bin";
+pub use phoxal_runtime_contract::metadata::MAX_RUNTIME_PARTICIPANTS;
 #[cfg(test)]
 mod bundle_boundary_tests;
