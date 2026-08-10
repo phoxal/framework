@@ -99,10 +99,10 @@ fn main() -> phoxal::Result<()> {
 }
 "#,
     )?;
-    use phoxal::__private::compatibility as compat;
     use phoxal_runtime_contract::emit::ParticipantContractRecord;
     use phoxal_runtime_contract::emit::ParticipantMetadataRecord;
-    use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantSchemas};
+    use phoxal_runtime_contract::metadata::ParticipantKind;
+    use phoxal_runtime_contract::version::FrameworkVersion;
 
     // Compared against the framework's own typed writer rather than a
     // hand-written JSON literal: the linked bytes and the record the
@@ -111,12 +111,7 @@ fn main() -> phoxal::Result<()> {
         meta,
         serde_json::to_value(ParticipantMetadataRecord::V0 {
             contract: ParticipantContractRecord {
-                api: compat::API,
-                schemas: ParticipantSchemas {
-                    bus: compat::BUS,
-                    launch: compat::LAUNCH,
-                    runtime: compat::RUNTIME,
-                },
+                framework: FrameworkVersion::CURRENT,
                 id: "brain",
                 kind: ParticipantKind::Brain,
                 requirement: None,
@@ -128,11 +123,12 @@ fn main() -> phoxal::Result<()> {
     Ok(())
 }
 
-/// The embedded record is a document, not a struct with a schema field:
-/// it must parse straight into the tagged `V0` variant, and it must carry
-/// no framework version in any spelling.
+/// The embedded record is a document, not a struct with a schema field: it must
+/// parse straight into the tagged `V0` variant. Its `framework` field is the
+/// binary's whole compatibility claim, so it carries the exact train version
+/// and none of the per-boundary identities that claim replaced.
 #[test]
-fn a_linked_participant_record_parses_as_the_tagged_v0_document() -> Result<()> {
+fn a_linked_participant_record_carries_the_framework_train_version_alone() -> Result<()> {
     let meta = linked_participant_metadata(
         "phoxal-tagged-meta-probe",
         r#"use phoxal::prelude::*;
@@ -155,27 +151,31 @@ fn main() -> phoxal::Result<()> {
 }
 "#,
     )?;
+    use phoxal::__private::compatibility as compat;
+    use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantMetadata};
+    use phoxal_runtime_contract::version::FrameworkVersion;
+
     let object = meta
         .as_object()
         .context("the embedded record must be a JSON object")?;
-    for absent in ["framework", "framework_version", "version", "phoxal"] {
+    assert_eq!(
+        object.get("framework").and_then(Value::as_str),
+        Some(compat::FRAMEWORK),
+        "the embedded record must carry the exact framework train version: {meta:?}"
+    );
+    for absent in ["api", "schemas", "bus", "launch", "runtime", "version"] {
         assert!(
             !object.contains_key(absent),
-            "the embedded record must carry no framework version ('{absent}'): {meta:?}"
+            "the framework train version is the whole compatibility claim, so '{absent}' must be \
+             absent: {meta:?}"
         );
     }
-
-    use phoxal::__private::compatibility as compat;
-    use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantMetadata};
 
     let bytes = serde_json::to_vec(&meta)?;
     let metadata = ParticipantMetadata::from_bytes(&bytes)
         .context("the linked record must parse as the tagged v0 document")?;
     let contract = metadata.contract();
-    assert_eq!(contract.api, compat::API);
-    assert_eq!(contract.schemas.bus, compat::BUS);
-    assert_eq!(contract.schemas.launch, compat::LAUNCH);
-    assert_eq!(contract.schemas.runtime, compat::RUNTIME);
+    assert_eq!(contract.framework, FrameworkVersion::CURRENT);
     assert_eq!(contract.kind, ParticipantKind::Service);
     assert_ne!(contract.kind, ParticipantKind::Brain);
     assert_eq!(contract.id.as_str(), "tagged-meta-probe");

@@ -314,32 +314,26 @@ pub mod prelude {
 pub mod __private {
     /// The compatibility declaration a participant binary carries.
     ///
-    /// Every constant here is a value of the version enum that owns the
-    /// contract it names, so a train can only ever say one thing about each and
-    /// no version is ever spelled as a string. The role macros splice these
-    /// into the participant's embedded `.phoxal_meta` document at compile time
-    /// through `participant_metadata_json!`; that embedded document is the only
-    /// compatibility artifact - there is no Cargo package-metadata table, no
-    /// version file, and no framework-SemVer floor. The document's own version
-    /// is the tag on `ParticipantMetadata` itself, so it needs no entry here.
-    /// Topology requirements are a closed typed declaration; they are not
-    /// inferred from package names or a service registry.
+    /// The framework train version is the whole of it: two Phoxal processes
+    /// speak the same contracts exactly when they were built from the same
+    /// train, so there is one constant here and it is owned by
+    /// `phoxal-runtime-contract`. The role macros splice it into the
+    /// participant's embedded `.phoxal_meta` document at compile time through
+    /// `participant_metadata_json!`; that embedded document is the only
+    /// compatibility artifact - there is no Cargo package-metadata table and no
+    /// version file. The document's own grammar is the tag on
+    /// `ParticipantMetadata` itself, a format discriminator rather than a
+    /// negotiated identity, so it needs no entry here. Topology requirements
+    /// are a closed typed declaration; they are not inferred from package names
+    /// or a service registry.
     pub mod compatibility {
         use phoxal_runtime_contract::metadata::ParticipantRequirement;
-        use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
+        use phoxal_runtime_contract::version::FrameworkVersion;
 
-        /// The train-selected API revision (`phoxal::api`).
-        pub const API: RobotApiVersion = phoxal_api::RobotApi::LATEST.version();
-        /// The generated catalogue's canonical token for the train-selected
-        /// robot API. The embedded metadata writer needs a const string while
-        /// the process-facing contract remains the validated value above.
-        pub const API_TOKEN: &str = phoxal_api::RobotApi::LATEST.as_str();
-        /// The bus wire ABI.
-        pub const BUS: BusAbi = BusAbi::V0;
-        /// The process launch compatibility identity.
-        pub const LAUNCH: LaunchAbi = LaunchAbi::V0;
-        /// The compiled runtime document grammar.
-        pub const RUNTIME: RuntimeSchema = RuntimeSchema::V0;
+        /// The canonical spelling of the framework train this binary was built
+        /// from. The const-eval metadata writer needs a string; the value it
+        /// spells is `FrameworkVersion::CURRENT`.
+        pub const FRAMEWORK: &str = FrameworkVersion::CURRENT_SPELLING;
         /// The default declaration for participants without a static topology
         /// requirement.
         pub const NO_REQUIREMENT: Option<ParticipantRequirement> = None;

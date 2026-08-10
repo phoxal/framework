@@ -95,6 +95,42 @@ fn retired_runtime_vocabulary_stays_absent() -> Result<()> {
     Ok(())
 }
 
+/// Compatibility is one identity: the framework train version every
+/// participant binary embeds, compared for exact equality. The per-boundary
+/// version enums that identity replaced - and the macro that declared them -
+/// must not return under their former exact identifiers, because a second
+/// identity is a second answer to a question that has one.
+#[test]
+fn retired_compatibility_identities_stay_absent() -> Result<()> {
+    let root = workspace_root()?;
+    // Split literals keep this rule from becoming its own only violation.
+    let identifiers = [
+        ["Participant", "Schemas"].concat(),
+        ["Bus", "Abi"].concat(),
+        ["Launch", "Abi"].concat(),
+        ["Runtime", "Schema"].concat(),
+        ["version_", "identity"].concat(),
+    ];
+
+    let mut violations = Vec::new();
+    for relative in source_files(root)? {
+        let path = root.join(&relative);
+        let source = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        for term in &identifiers {
+            if contains_identifier(&source, term) {
+                violations.push(format!("{} contains identifier {term}", relative.display()));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "retired compatibility identities returned:\n{}",
+        violations.join("\n")
+    );
+    Ok(())
+}
+
 /// Participant kind has one process-contract owner and one private macro
 /// dispatch mirror. The macro enum maps attribute roles to the contract's wire
 /// variants during expansion and never becomes an authored document field.

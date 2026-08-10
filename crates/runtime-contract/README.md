@@ -6,15 +6,17 @@ Application participants normally use these contracts through the `phoxal` facad
 There is no crate-root facade here: each contract is a module and each public type has exactly one path.
 
 - `identity` - the execution, participant, producer, and timeline identities that reach process boundaries.
-- `version` - the version identities two binaries compare to establish that they speak the same contracts.
+- `version` - the framework train version two binaries compare to establish that they speak the same contracts.
 - `metadata` - the record every participant binary embeds at compile time, and its strict parser.
 - `emit` - the one sanctioned writer of that record, in both of its evaluation modes.
 - `launch` - scheduler policy facts persisted in the compiled runtime bundle;
   participant process parsing is strict Clap argv in `phoxal`.
 - `origin` - the boot-anchored origin of one real execution.
 
-Compatibility between a `phoxal-cli` and a built participant is declared in one place: the `ParticipantMetadata` document each binary embeds at compile time, carrying the API revision and the three process-boundary schemas it speaks (bus, launch, runtime).
-There is no Cargo package-metadata table, no version file, and no framework-SemVer floor anywhere in the contract.
+Compatibility between a `phoxal-cli` and a built participant is one fact declared in one place: the framework train version in the `ParticipantMetadata` document each binary embeds at compile time.
+Two binaries speak the same contracts exactly when that version is equal.
+There is no Cargo package-metadata table and no version file anywhere in the contract.
+The `schema` tag on a persisted document is a format discriminator, not a second compatibility identity.
 
 `ParticipantId` is the validated topology role selected from a persisted
 `runtime.json`; it is distinct from `ProducerId`, which is minted by the

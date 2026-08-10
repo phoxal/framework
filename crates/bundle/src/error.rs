@@ -8,7 +8,7 @@ use phoxal_model::{AssetId, Clock};
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
 use phoxal_runtime_contract::metadata::ParticipantKind;
 use phoxal_runtime_contract::metadata::ParticipantRequirement;
-use phoxal_runtime_contract::version::RobotApiVersion;
+use phoxal_runtime_contract::version::FrameworkVersion;
 
 use crate::{BundlePath, BundlePathError, DigestError, ParticipantClock, Sha256Digest};
 
@@ -21,12 +21,12 @@ pub enum DocumentError {
     )]
     TooManyParticipants { count: usize },
     #[error(
-        "artifact '{artifact}' speaks robot API {actual}, but this runtime already selected {expected}"
+        "artifact '{artifact}' was built from framework {actual}, but this runtime already selected {expected}"
     )]
-    MixedRobotApi {
+    MixedFramework {
         artifact: ParticipantArtifactId,
-        expected: RobotApiVersion,
-        actual: RobotApiVersion,
+        expected: FrameworkVersion,
+        actual: FrameworkVersion,
     },
     #[error("duplicate participant id '{id}'")]
     DuplicateParticipant { id: ParticipantId },

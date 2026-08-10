@@ -21,8 +21,8 @@ use phoxal_model::RobotBuilder;
 use phoxal_model::builder::Kinematics;
 use phoxal_model::component::capability::{Capability, Motor, MotorCommand, StructuralTarget};
 use phoxal_model::identity::{ComponentInstanceId, JointId};
-use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind, ParticipantSchemas};
-use phoxal_runtime_contract::version::{BusAbi, LaunchAbi, RobotApiVersion, RuntimeSchema};
+use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind};
+use phoxal_runtime_contract::version::FrameworkVersion;
 
 type StagedBytes = (
     RuntimeDocument,
@@ -46,14 +46,9 @@ fn document() -> StagedBytes {
     let binary = BinaryReference::from_source(
         binary_path.clone(),
         ParticipantContract {
+            framework: FrameworkVersion::CURRENT,
             id: artifact_id.clone(),
             kind: ParticipantKind::Service,
-            api: RobotApiVersion::new(0, 1),
-            schemas: ParticipantSchemas {
-                bus: BusAbi::V0,
-                launch: LaunchAbi::V0,
-                runtime: RuntimeSchema::V0,
-            },
             requirement: None,
             config_schema: serde_json::json!({"type":"null"}),
         },
@@ -73,14 +68,9 @@ fn document() -> StagedBytes {
     let brain = BinaryReference::from_source(
         brain_path.clone(),
         ParticipantContract {
+            framework: FrameworkVersion::CURRENT,
             id: brain_id.clone(),
             kind: ParticipantKind::Brain,
-            api: RobotApiVersion::new(0, 1),
-            schemas: ParticipantSchemas {
-                bus: BusAbi::V0,
-                launch: LaunchAbi::V0,
-                runtime: RuntimeSchema::V0,
-            },
             requirement: None,
             config_schema: serde_json::json!({"type":"null"}),
         },
@@ -136,20 +126,33 @@ fn runtime_rejects_more_participants_than_a_snapshot_can_publish() {
     ));
 }
 
+/// Compatibility is exact framework-version equality, so a bundle whose
+/// artifacts were built from two trains has no valid launch - including two
+/// patch releases of one pre-1.0 line.
 #[test]
-fn runtime_rejects_mixed_robot_api_artifacts_and_exposes_the_selected_api() {
+fn runtime_rejects_mixed_framework_artifacts_and_exposes_the_selected_train() {
     let (document, _, _) = document();
-    assert_eq!(document.robot_api(), RobotApiVersion::new(0, 1));
+    assert_eq!(document.framework(), FrameworkVersion::CURRENT);
 
     let RuntimeDocument::V0(mut runtime) = document;
     let drive = ParticipantArtifactId::new("drive").expect("drive artifact id");
+    let neighbour = FrameworkVersion::new(
+        FrameworkVersion::CURRENT.major(),
+        FrameworkVersion::CURRENT.minor(),
+        FrameworkVersion::CURRENT.patch() + 1,
+    );
     runtime
         .artifacts
         .get_mut(&drive)
         .expect("drive artifact")
         .contract
-        .api = RobotApiVersion::new(0, 3);
+        .framework = neighbour;
 
+    assert_eq!(
+        neighbour.compatibility_line(),
+        FrameworkVersion::CURRENT.compatibility_line(),
+        "the rejected artifact must sit on the current compatibility line"
+    );
     assert!(matches!(
         Runtime::new(
             runtime.robot,
@@ -158,9 +161,8 @@ fn runtime_rejects_mixed_robot_api_artifacts_and_exposes_the_selected_api() {
             runtime.assets,
             runtime.router,
         ),
-        Err(DocumentError::MixedRobotApi { expected, actual, .. })
-            if expected == RobotApiVersion::new(0, 3)
-                && actual == RobotApiVersion::new(0, 1)
+        Err(DocumentError::MixedFramework { expected, actual, .. })
+            if expected == neighbour && actual == FrameworkVersion::CURRENT
     ));
 }
 

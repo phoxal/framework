@@ -9,10 +9,11 @@
 //! The body is always the plain payload: the codec never adds a version
 //! envelope, because the version is already folded into the key.
 //!
-//! The identity of this ABI as a whole is
-//! [`phoxal_runtime_contract::version::BusAbi`], declared in every
-//! participant's embedded metadata record. The `phoxal/v0` prefix below is
-//! unrelated: it is per-sample wire overhead and stays short.
+//! This ABI has no identity of its own: the framework train version in every
+//! participant's embedded metadata record is the single compatibility identity,
+//! and two binaries built from the same train speak this ABI by construction.
+//! The `phoxal/v0` prefix below is unrelated: it is per-sample wire overhead and
+//! stays short.
 
 use std::str::FromStr;
 
