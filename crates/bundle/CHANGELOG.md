@@ -5,6 +5,16 @@ train.
 
 ## Unreleased
 
+## [0.58.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.57.0...phoxal-bundle-v0.58.0) - 2026-08-10
+
+### Fixed
+
+- drop participant self-verification of the running executable ([#431](https://github.com/phoxal/framework/pull/431))
+
+### Other
+
+- [**breaking**] replace the hardened bundle filesystem layer with plain std::fs ([#432](https://github.com/phoxal/framework/pull/432))
+
 ## [0.57.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.56.2...phoxal-bundle-v0.57.0) - 2026-08-10
 
 ### Added
