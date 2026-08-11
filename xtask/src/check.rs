@@ -8,24 +8,33 @@ use semver::Version;
 use crate::index::PublishedVersions;
 use crate::probe::{ContractSurfaces, Extraction, Side};
 use crate::release::ReleaseStep;
+use crate::runbook::{RunbookPointer, RunbookRule};
 use crate::surface::{CompatibilityImpact, RecordChange, SurfaceSet};
+use crate::toolchain::{RustVersion, ToolchainFloor};
 
 /// The compatibility check: resolve the published baseline, read both sides'
-/// contract surfaces, and classify the difference.
+/// contract surfaces and toolchain floors, and classify the difference.
 pub(crate) struct CompatibilityCheck<V: PublishedVersions, S: ContractSurfaces> {
     versions: V,
     surfaces: S,
     workspace_version: Version,
+    workspace_floor: RustVersion,
 }
 
 impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
     /// Compare `workspace_version`'s crates against whatever `versions` says is
     /// published.
-    pub(crate) fn new(versions: V, surfaces: S, workspace_version: Version) -> Self {
+    pub(crate) fn new(
+        versions: V,
+        surfaces: S,
+        workspace_version: Version,
+        workspace_floor: RustVersion,
+    ) -> Self {
         Self {
             versions,
             surfaces,
             workspace_version,
+            workspace_floor,
         }
     }
 
@@ -33,15 +42,20 @@ impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
     ///
     /// The baseline is read first: when the published crates carry no surface
     /// there is nothing to compare against, and compiling the workspace side
-    /// would answer a question nobody can ask yet.
+    /// would answer a question nobody can ask yet. The toolchain floor is read
+    /// from the same index entry the baseline came from, so it is compared even
+    /// on a train whose surfaces cannot be.
     pub(crate) fn run(&self, declared: CompatibilityImpact) -> Result<CompatibilityReport> {
-        let baseline = self.versions.latest_train()?;
+        let train = self.versions.latest_train()?;
+        let baseline = train.version.clone();
+        let floor = ToolchainFloor::between(train.rust_version, self.workspace_floor.clone());
         let Extraction::Surfaces(published) =
             self.surfaces.extract(&Side::Baseline(baseline.clone()))?
         else {
             return Ok(CompatibilityReport {
                 baseline,
                 workspace_version: self.workspace_version.clone(),
+                floor,
                 outcome: Outcome::NoComparableBaseline,
             });
         };
@@ -57,6 +71,7 @@ impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
         let effective = mechanical.max(declared);
         Ok(CompatibilityReport {
             workspace_version: self.workspace_version.clone(),
+            floor,
             outcome: Outcome::Compared {
                 mechanical,
                 declared,
@@ -73,32 +88,70 @@ impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
 pub(crate) struct CompatibilityReport {
     baseline: Version,
     workspace_version: Version,
+    floor: ToolchainFloor,
     outcome: Outcome,
 }
 
 impl CompatibilityReport {
-    /// Why the workspace version is not a sufficient release over the
-    /// baseline, or `None` when it is.
+    /// Every reason this candidate is constrained at all, in the order a
+    /// reader meets them.
     ///
-    /// A baseline with no surface to compare against constrains no release: the
-    /// check has nothing to say about a train it cannot read.
-    pub(crate) fn release_shortfall(&self) -> Option<InsufficientRelease> {
-        let Outcome::Compared {
+    /// A baseline with no surface to compare against contributes none: the
+    /// check has nothing to say about contracts it cannot read. The toolchain
+    /// floor is a separate axis, read from the registry rather than from a
+    /// surface, so it still speaks on such a train.
+    fn requirements(&self) -> Vec<ReleaseRequirement> {
+        let mut requirements = Vec::new();
+        if let Outcome::Compared {
             effective,
             required,
+            changes,
             ..
         } = &self.outcome
-        else {
-            return None;
-        };
-        if required.is_satisfied_by(&self.baseline, &self.workspace_version) {
+        {
+            requirements.push(ReleaseRequirement::Contracts {
+                impact: *effective,
+                step: *required,
+                frozen: changes
+                    .iter()
+                    .any(RecordChange::breaks_the_frozen_bootstrap),
+            });
+        }
+        if let Some(step) = self.floor.required_step() {
+            requirements.push(ReleaseRequirement::ToolchainFloor {
+                floor: self.floor.clone(),
+                step,
+            });
+        }
+        requirements
+    }
+
+    /// The smallest release this candidate may be, over all axes.
+    fn binding_step(&self) -> Option<ReleaseStep> {
+        self.requirements()
+            .iter()
+            .map(ReleaseRequirement::step)
+            .max()
+    }
+
+    /// Why the workspace version is not a sufficient release over the
+    /// baseline, or `None` when it is.
+    pub(crate) fn release_shortfall(&self) -> Option<InsufficientRelease> {
+        let binding = self.binding_step()?;
+        if binding.is_satisfied_by(&self.baseline, &self.workspace_version) {
             return None;
         }
         Some(InsufficientRelease {
             workspace_version: self.workspace_version.clone(),
             baseline: self.baseline.clone(),
-            impact: *effective,
-            minimum: required.minimum_version(&self.baseline),
+            minimum: binding.minimum_version(&self.baseline),
+            // Only the axes that actually bind: an axis a smaller release would
+            // already satisfy is not why this candidate was refused.
+            binding: self
+                .requirements()
+                .into_iter()
+                .filter(|requirement| requirement.step() == binding)
+                .collect(),
         })
     }
 }
@@ -111,12 +164,13 @@ impl fmt::Display for CompatibilityReport {
             self.baseline
         )?;
         writeln!(formatter, "workspace: {}", self.workspace_version)?;
+        writeln!(formatter, "toolchain: {}", self.floor)?;
         let Outcome::Compared {
             mechanical,
             declared,
             effective,
-            required,
             changes,
+            ..
         } = &self.outcome
         else {
             return write!(
@@ -136,11 +190,13 @@ impl fmt::Display for CompatibilityReport {
             )?;
         }
         writeln!(formatter)?;
-        writeln!(
-            formatter,
-            "release:   at least a {required} ({} or higher)",
-            required.minimum_version(&self.baseline)
-        )?;
+        if let Some(binding) = self.binding_step() {
+            writeln!(
+                formatter,
+                "release:   at least a {binding} ({} or higher)",
+                binding.minimum_version(&self.baseline)
+            )?;
+        }
         if changes.is_empty() {
             return write!(formatter, "contracts: unchanged");
         }
@@ -149,6 +205,89 @@ impl fmt::Display for CompatibilityReport {
             write!(formatter, "\n  {change}")?;
         }
         Ok(())
+    }
+}
+
+/// One axis that constrains how small this release may be.
+#[derive(Clone, Debug)]
+enum ReleaseRequirement {
+    /// What the contract surfaces changed.
+    Contracts {
+        impact: CompatibilityImpact,
+        step: ReleaseStep,
+        /// Whether a record the attachment bootstrap freezes is among them.
+        frozen: bool,
+    },
+    /// What the toolchain floor did.
+    ToolchainFloor {
+        floor: ToolchainFloor,
+        step: ReleaseStep,
+    },
+}
+
+impl ReleaseRequirement {
+    fn step(&self) -> ReleaseStep {
+        match self {
+            Self::Contracts { step, .. } | Self::ToolchainFloor { step, .. } => *step,
+        }
+    }
+
+    /// The rule that says what may be done about this requirement.
+    fn rule(&self) -> RunbookRule {
+        match self {
+            Self::Contracts { frozen: true, .. } => RunbookRule::FrozenBootstrapDrift,
+            Self::Contracts {
+                impact: CompatibilityImpact::Breaking,
+                ..
+            } => RunbookRule::BreakingContractChange,
+            Self::Contracts { .. } => RunbookRule::UnderSizedCandidate,
+            Self::ToolchainFloor { .. } => RunbookRule::ToolchainFloorRaised,
+        }
+    }
+}
+
+impl fmt::Display for ReleaseRequirement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Contracts {
+                impact: CompatibilityImpact::Unchanged,
+                step,
+                ..
+            } => write!(
+                formatter,
+                "the contracts are unchanged, and a release is still at least a {step} over the \
+                 baseline"
+            ),
+            Self::Contracts {
+                impact,
+                step,
+                frozen: true,
+            } => write!(
+                formatter,
+                "the contract change is {impact} at the FROZEN BOOTSTRAP: requires at least a \
+                 {step} release"
+            ),
+            Self::Contracts { impact, step, .. } => write!(
+                formatter,
+                "the contract change is {impact}: requires at least a {step} release"
+            ),
+            Self::ToolchainFloor {
+                floor:
+                    ToolchainFloor::Raised {
+                        baseline,
+                        workspace,
+                    },
+                step,
+            } => write!(
+                formatter,
+                "rust-version floor raised {baseline} -> {workspace}: requires at least a {step} \
+                 release"
+            ),
+            Self::ToolchainFloor { floor, step } => write!(
+                formatter,
+                "the toolchain floor ({floor}) requires at least a {step} release"
+            ),
+        }
     }
 }
 
@@ -171,22 +310,32 @@ enum Outcome {
     },
 }
 
-/// The workspace version does not clear the release its own contract changes
-/// require.
+/// The workspace version does not clear the release its own changes require.
 pub(crate) struct InsufficientRelease {
     workspace_version: Version,
     baseline: Version,
-    impact: CompatibilityImpact,
     minimum: Version,
+    binding: Vec<ReleaseRequirement>,
 }
 
 impl fmt::Display for InsufficientRelease {
+    /// The refusal, the axes behind it, and the one line that says what may be
+    /// done about it. The pointer goes last so an agent reading a truncated CI
+    /// log finds the decision tree at the end of the failure.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            formatter,
+            "the workspace is at {} over a published {}, which is not a sufficient release: \
+             release {} or higher",
+            self.workspace_version, self.baseline, self.minimum
+        )?;
+        for requirement in &self.binding {
+            writeln!(formatter, "  {requirement}")?;
+        }
         write!(
             formatter,
-            "the workspace is at {} over a published {}, which is not enough for a {} contract \
-             change: release {} or higher",
-            self.workspace_version, self.baseline, self.impact, self.minimum
+            "{}",
+            RunbookPointer::to(self.binding.iter().map(ReleaseRequirement::rule))
         )
     }
 }
@@ -200,6 +349,13 @@ mod tests {
     use super::*;
     use crate::index::PublishedVersion;
     use crate::surface::CONTRACT_CRATES;
+
+    /// The floor both sides carry unless a test is about the floor.
+    const FLOOR: &str = "1.88";
+
+    fn floor(value: &str) -> RustVersion {
+        RustVersion::parse(value).expect("the floor parses")
+    }
 
     /// A registry that publishes one complete train.
     struct FixtureTrain(Version);
@@ -280,7 +436,21 @@ mod tests {
         workspace: Version,
         surfaces: FixtureSurfaces,
     ) -> CompatibilityCheck<FixtureTrain, FixtureSurfaces> {
-        CompatibilityCheck::new(FixtureTrain(baseline), surfaces, workspace)
+        check_at_floor(baseline, workspace, surfaces, FLOOR)
+    }
+
+    fn check_at_floor(
+        baseline: Version,
+        workspace: Version,
+        surfaces: FixtureSurfaces,
+        workspace_floor: &str,
+    ) -> CompatibilityCheck<FixtureTrain, FixtureSurfaces> {
+        CompatibilityCheck::new(
+            FixtureTrain(baseline),
+            surfaces,
+            workspace,
+            floor(workspace_floor),
+        )
     }
 
     /// An unchanged surface leaves the release free, so a workspace sitting one
@@ -297,6 +467,12 @@ mod tests {
         assert!(report.release_shortfall().is_none());
         assert!(report.to_string().contains("impact:    unchanged"));
         assert!(report.to_string().contains("contracts: unchanged"));
+        assert!(
+            report
+                .to_string()
+                .contains("toolchain: 1.88 (unchanged from the published train)"),
+            "{report}"
+        );
     }
 
     /// The version gate is the point of `check-release`: an addition on a patch
@@ -401,5 +577,143 @@ mod tests {
         assert!(rendered.contains("no comparable baseline"), "{rendered}");
         assert!(rendered.contains("0.58.1"), "{rendered}");
         assert!(report.release_shortfall().is_none());
+    }
+
+    /// A raised floor breaks every consumer still on the previous toolchain, so
+    /// it takes a minor of its own even when no contract moved at all.
+    #[test]
+    fn a_raised_toolchain_floor_requires_a_minor_on_its_own() {
+        let report = check_at_floor(
+            Version::new(0, 58, 1),
+            Version::new(0, 58, 2),
+            FixtureSurfaces::new(&[endpoint("robot/a")], &[endpoint("robot/a")]),
+            "1.90",
+        )
+        .run(CompatibilityImpact::Unchanged)
+        .expect("the comparison runs");
+        let rendered = report.to_string();
+        assert!(rendered.contains("impact:    unchanged"), "{rendered}");
+        assert!(
+            rendered.contains("toolchain: 1.90 (raised from the published 1.88"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("release:   at least a minor (0.59.0"),
+            "{rendered}"
+        );
+        let shortfall = report
+            .release_shortfall()
+            .expect("a patch cannot carry a raised floor")
+            .to_string();
+        assert!(
+            shortfall.contains("rust-version floor raised 1.88 -> 1.90"),
+            "{shortfall}"
+        );
+        assert!(shortfall.contains("0.59.0"), "{shortfall}");
+        assert!(shortfall.trim_end().ends_with("rule 4 (the toolchain floor rose - revert the raise or acknowledge it and release a minor)"), "{shortfall}");
+    }
+
+    /// An equal or lowered floor asks nothing of anybody, so it constrains no
+    /// release and says so without complaint.
+    #[test]
+    fn an_equal_or_lowered_toolchain_floor_constrains_nothing() {
+        for (workspace_floor, expected) in [("1.88", "unchanged"), ("1.87", "lowered")] {
+            let report = check_at_floor(
+                Version::new(0, 58, 1),
+                Version::new(0, 58, 2),
+                FixtureSurfaces::new(&[endpoint("robot/a")], &[endpoint("robot/a")]),
+                workspace_floor,
+            )
+            .run(CompatibilityImpact::Unchanged)
+            .expect("the comparison runs");
+            assert!(report.to_string().contains(expected), "{report}");
+            assert!(report.release_shortfall().is_none(), "{report}");
+        }
+    }
+
+    /// Two axes can bind one candidate. The refusal names both, because fixing
+    /// one and re-running to meet the other is a wasted cycle.
+    #[test]
+    fn a_refusal_names_every_axis_that_binds_it() {
+        let shortfall = check_at_floor(
+            Version::new(0, 58, 1),
+            Version::new(0, 58, 2),
+            FixtureSurfaces::new(
+                &[endpoint("robot/a")],
+                &[endpoint("robot/a"), endpoint("robot/b")],
+            ),
+            "1.90",
+        )
+        .run(CompatibilityImpact::Unchanged)
+        .expect("the comparison runs")
+        .release_shortfall()
+        .expect("a patch carries neither an addition nor a raised floor")
+        .to_string();
+        assert!(
+            shortfall.contains("contract change is additive"),
+            "{shortfall}"
+        );
+        assert!(shortfall.contains("floor raised"), "{shortfall}");
+        assert!(shortfall.contains("rule 4"), "{shortfall}");
+        assert!(shortfall.contains("rule 7"), "{shortfall}");
+    }
+
+    /// The floor is read from the registry rather than from a surface, so it
+    /// still gates a train whose contracts cannot be compared at all.
+    #[test]
+    fn a_raised_floor_gates_even_without_a_comparable_baseline() {
+        let report = check_at_floor(
+            Version::new(0, 58, 1),
+            Version::new(0, 58, 2),
+            FixtureSurfaces::without_a_baseline_surface(&[endpoint("robot/a")]),
+            "1.90",
+        )
+        .run(CompatibilityImpact::Unchanged)
+        .expect("the comparison runs");
+        assert!(
+            report.to_string().contains("no comparable baseline"),
+            "{report}"
+        );
+        assert!(
+            report
+                .release_shortfall()
+                .expect("a raised floor gates on its own")
+                .to_string()
+                .contains("0.59.0")
+        );
+    }
+
+    /// A break at the frozen bootstrap sends the reader to the one rule with no
+    /// autonomous remedy, not to the ordinary breaking-change rule.
+    #[test]
+    fn a_frozen_bootstrap_break_points_at_the_stop_rule() {
+        let connect = json!({
+            "delivery": "query",
+            "family": "supervisor",
+            "kind": "query",
+            "path": "supervisor/connect",
+            "payload": Value::Null,
+            "record": "endpoint",
+            "request": {"fields": [], "kind": "struct"},
+            "response": {"fields": [], "kind": "struct"},
+        });
+        let report = check(
+            Version::new(0, 58, 1),
+            Version::new(0, 58, 2),
+            FixtureSurfaces::new(&[connect], &[]),
+        )
+        .run(CompatibilityImpact::Unchanged)
+        .expect("the comparison runs");
+        assert!(
+            report.to_string().contains("[FROZEN BOOTSTRAP]"),
+            "{report}"
+        );
+        let shortfall = report
+            .release_shortfall()
+            .expect("a patch cannot carry a break")
+            .to_string();
+        assert!(shortfall.contains("FROZEN BOOTSTRAP"), "{shortfall}");
+        assert!(shortfall.contains("rule 3"), "{shortfall}");
+        assert!(!shortfall.contains("rules 1 and 2"), "{shortfall}");
     }
 }

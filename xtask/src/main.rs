@@ -9,21 +9,28 @@
 //! never builds the runtime stack it checks, and the checker can never report
 //! the surface it was itself compiled against.
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use semver::Version;
 
 mod check;
 mod index;
 mod probe;
+mod readiness;
+mod rehearsal;
 mod release;
+mod runbook;
 mod surface;
+mod toolchain;
 
 use crate::check::CompatibilityCheck;
 use crate::index::SparseIndex;
 use crate::probe::ProbeSurfaces;
+use crate::readiness::V1Readiness;
+use crate::rehearsal::Rehearsal;
 use crate::surface::CompatibilityImpact;
 
 /// The version this workspace would release next.
@@ -43,17 +50,50 @@ fn main() -> ExitCode {
     }
 }
 
+/// The workspace this runner is part of.
+///
+/// The root is the runner's own parent directory, so every verb finds the
+/// crates it reads no matter where it was invoked from.
+pub(crate) fn workspace_root() -> Result<PathBuf> {
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("the runner's manifest directory has no workspace parent")?
+        .to_path_buf())
+}
+
 fn run() -> Result<ExitCode> {
     let Verb::Compatibility(verb) = Cli::parse().verb;
+    match verb {
+        CompatibilityVerb::Report { options } => compare(&options, false),
+        CompatibilityVerb::CheckRelease { options } => compare(&options, true),
+        CompatibilityVerb::RehearseV1 => {
+            let report = Rehearsal::new(workspace_root()?).run()?;
+            println!("{report}");
+            Ok(report.exit_code())
+        }
+        CompatibilityVerb::V1Readiness {
+            allow_rust_version_raise,
+        } => {
+            let report = V1Readiness::new(workspace_root()?, allow_rust_version_raise).run()?;
+            println!("{report}");
+            Ok(report.exit_code())
+        }
+    }
+}
+
+/// Compare this workspace against the published train, and gate the version on
+/// the result when the caller asked for a gate.
+fn compare(options: &ComparisonOptions, gates_the_release: bool) -> Result<ExitCode> {
     let report = CompatibilityCheck::new(
         SparseIndex::crates_io(),
         ProbeSurfaces::for_workspace()?,
         Version::parse(WORKSPACE_VERSION)?,
+        toolchain::workspace_floor(&workspace_root()?)?,
     )
-    .run(verb.options().declared_impact)?;
+    .run(options.declared_impact)?;
     println!("{report}");
 
-    if !verb.gates_the_release() {
+    if !gates_the_release {
         return Ok(ExitCode::SUCCESS);
     }
     let Some(shortfall) = report.release_shortfall() else {
@@ -100,23 +140,25 @@ enum CompatibilityVerb {
         #[command(flatten)]
         options: ComparisonOptions,
     },
-}
-
-impl CompatibilityVerb {
-    fn options(&self) -> &ComparisonOptions {
-        match self {
-            Self::Report { options } | Self::CheckRelease { options } => options,
-        }
-    }
-
-    /// Whether this verb fails when the workspace version under-states the
-    /// change it carries.
-    fn gates_the_release(&self) -> bool {
-        match self {
-            Self::Report { .. } => false,
-            Self::CheckRelease { .. } => true,
-        }
-    }
+    /// Drill the Stable-line semantics this workspace has not reached yet.
+    ///
+    /// The framework is pre-1.0, so every post-1.0 code path runs only inside
+    /// `cargo test`. This runs the whole matrix as one command, reaching no
+    /// registry, so the paths are watched behaving before the day they matter.
+    #[command(name = "rehearse-v1")]
+    RehearseV1,
+    /// Check everything that has to be true before this workspace releases a
+    /// 1.0, and name what is left for a human.
+    #[command(name = "v1-readiness")]
+    V1Readiness {
+        /// Accept a toolchain floor higher than the published train's.
+        ///
+        /// A raised floor breaks every consumer still on the previous
+        /// toolchain, so the gate refuses it until someone says it is
+        /// deliberate. The release still has to be at least a minor.
+        #[arg(long)]
+        allow_rust_version_raise: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -163,10 +205,18 @@ mod tests {
         assert_eq!(declared, WORKSPACE_VERSION);
     }
 
-    /// The two subcommands differ only in whether they gate the version, so
-    /// both carry the escalation flag.
+    fn parse(arguments: [&str; 4]) -> CompatibilityVerb {
+        let Verb::Compatibility(verb) =
+            Cli::try_parse_from(arguments.iter().take_while(|argument| !argument.is_empty()))
+                .expect("the verb parses")
+                .verb;
+        verb
+    }
+
+    /// The two comparing subcommands differ only in whether they gate the
+    /// version, so both carry the escalation flag.
     #[test]
-    fn both_compatibility_verbs_accept_a_declared_impact() {
+    fn both_comparing_verbs_accept_a_declared_impact() {
         for verb in ["report", "check-release"] {
             let parsed = Cli::try_parse_from([
                 "cargo xtask",
@@ -176,24 +226,51 @@ mod tests {
                 "breaking",
             ])
             .expect("the verb parses");
-            let Verb::Compatibility(verb) = parsed.verb;
-            assert_eq!(
-                verb.options().declared_impact,
-                CompatibilityImpact::Breaking
-            );
+            let Verb::Compatibility(
+                CompatibilityVerb::Report { options } | CompatibilityVerb::CheckRelease { options },
+            ) = parsed.verb
+            else {
+                panic!("{verb} is a comparing verb");
+            };
+            assert_eq!(options.declared_impact, CompatibilityImpact::Breaking);
         }
     }
 
     /// Nothing is escalated unless a caller says so.
     #[test]
     fn the_declared_impact_defaults_to_unchanged() {
-        let parsed = Cli::try_parse_from(["cargo xtask", "compatibility", "report"])
-            .expect("the verb parses");
-        let Verb::Compatibility(verb) = parsed.verb;
-        assert_eq!(
-            verb.options().declared_impact,
-            CompatibilityImpact::Unchanged
-        );
+        let CompatibilityVerb::Report { options } =
+            parse(["cargo xtask", "compatibility", "report", ""])
+        else {
+            panic!("report parses as the reporting verb");
+        };
+        assert_eq!(options.declared_impact, CompatibilityImpact::Unchanged);
+    }
+
+    /// The two v1 verbs are spelled the way the runbook and CI spell them.
+    #[test]
+    fn the_v1_verbs_parse_under_their_documented_names() {
+        assert!(matches!(
+            parse(["cargo xtask", "compatibility", "rehearse-v1", ""]),
+            CompatibilityVerb::RehearseV1
+        ));
+        assert!(matches!(
+            parse(["cargo xtask", "compatibility", "v1-readiness", ""]),
+            CompatibilityVerb::V1Readiness {
+                allow_rust_version_raise: false
+            }
+        ));
+        assert!(matches!(
+            parse([
+                "cargo xtask",
+                "compatibility",
+                "v1-readiness",
+                "--allow-rust-version-raise"
+            ]),
+            CompatibilityVerb::V1Readiness {
+                allow_rust_version_raise: true
+            }
+        ));
     }
 
     #[test]

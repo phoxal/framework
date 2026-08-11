@@ -61,6 +61,27 @@ pub(crate) const CONTRACT_CRATES: [ContractCrate; 5] = [
     },
 ];
 
+/// The records the attachment bootstrap freezes, by the identity a comparison
+/// names them under.
+///
+/// `supervisor/connect` is the one exchange two Phoxal binaries complete before
+/// they know whether they agree on anything else, so its record covers the key
+/// spelling, both frozen document shapes, and the canonical framework-version
+/// spelling inside them. Nothing here may move in any release of any line, and
+/// a change that moves one is the single failure with no autonomous remedy - so
+/// the checker names it as such instead of leaving the reader to notice which
+/// of many records it was.
+///
+/// The set is restated here for the same reason the record kinds are: the
+/// checker depends on no framework crate. It cannot go stale silently - a
+/// renamed or removed frozen record loses this identity, which the comparison
+/// reports as a removal and this list still recognizes.
+const FROZEN_RECORDS: [(&str, RecordKind, &str); 1] = [(
+    "phoxal-api",
+    RecordKind::Endpoint,
+    "supervisor supervisor/connect",
+)];
+
 /// The kinds of record a surface document carries.
 ///
 /// The set mirrors the one the runtime contract owns. It is restated here
@@ -259,11 +280,27 @@ impl RecordChange {
             ChangeDetail::Removed | ChangeDetail::Changed { .. }
         )
     }
+
+    /// Whether this change moves a record the attachment bootstrap freezes.
+    ///
+    /// Only a break counts. A record added beside a frozen one leaves the
+    /// frozen one exactly where it was, which is what the freeze protects.
+    pub(crate) fn breaks_the_frozen_bootstrap(&self) -> bool {
+        self.breaks_a_peer()
+            && FROZEN_RECORDS.iter().any(|(crate_name, kind, key)| {
+                self.identity.crate_name == *crate_name
+                    && self.identity.kind == *kind
+                    && self.identity.key == *key
+            })
+    }
 }
 
 impl fmt::Display for RecordChange {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{:<8} {}", self.detail.token(), self.identity)?;
+        if self.breaks_the_frozen_bootstrap() {
+            write!(formatter, "  [FROZEN BOOTSTRAP]")?;
+        }
         let ChangeDetail::Changed { differences } = &self.detail else {
             return Ok(());
         };
@@ -718,5 +755,81 @@ mod tests {
     fn impacts_order_from_unchanged_to_breaking() {
         assert!(CompatibilityImpact::Unchanged < CompatibilityImpact::Additive);
         assert!(CompatibilityImpact::Additive < CompatibilityImpact::Breaking);
+    }
+
+    /// The bootstrap endpoint, spelled the way the contract crate renders it.
+    fn connect() -> Value {
+        json!({
+            "delivery": "query",
+            "family": "supervisor",
+            "kind": "query",
+            "path": "supervisor/connect",
+            "payload": Value::Null,
+            "record": "endpoint",
+            "request": {"fields": [], "kind": "struct"},
+            "response": {"fields": [], "kind": "struct"},
+        })
+    }
+
+    fn changes_between(published: Vec<Value>, current: Vec<Value>) -> Vec<RecordChange> {
+        let side = |endpoints| {
+            side(
+                endpoints,
+                vec![identifier("bus-encoding", "phoxal/v0;codec=1")],
+                launch("execution-id", true),
+            )
+        };
+        SurfaceSet::read(&side(published))
+            .expect("the baseline reads")
+            .changes_to(&SurfaceSet::read(&side(current)).expect("the current side reads"))
+    }
+
+    /// A break at the frozen bootstrap is called out by name: it is the one
+    /// finding with no autonomous remedy, so a reader must not have to work out
+    /// which record moved.
+    #[test]
+    fn a_break_at_the_frozen_bootstrap_is_named_as_one() {
+        let mut moved = connect();
+        moved["response"] = json!({"fields": [{"name": "verdict"}], "kind": "struct"});
+        for current in [vec![], vec![moved]] {
+            let changes = changes_between(vec![connect()], current);
+            assert!(
+                changes
+                    .iter()
+                    .any(RecordChange::breaks_the_frozen_bootstrap),
+                "{changes:?}"
+            );
+            assert!(rendered(&changes).contains("[FROZEN BOOTSTRAP]"));
+        }
+    }
+
+    /// The freeze is about the frozen record and nothing else: an ordinary
+    /// break, and an addition beside the bootstrap, leave it where it was.
+    #[test]
+    fn changes_that_leave_the_bootstrap_alone_are_not_frozen_findings() {
+        let unrelated = changes_between(
+            vec![connect(), endpoint("robot/drive/state", "speed", "f64")],
+            vec![connect()],
+        );
+        assert_eq!(
+            CompatibilityImpact::of(&unrelated),
+            CompatibilityImpact::Breaking
+        );
+        assert!(
+            !unrelated
+                .iter()
+                .any(RecordChange::breaks_the_frozen_bootstrap)
+        );
+
+        let added = changes_between(
+            vec![connect()],
+            vec![connect(), endpoint("robot/drive/state", "speed", "f64")],
+        );
+        assert_eq!(
+            CompatibilityImpact::of(&added),
+            CompatibilityImpact::Additive
+        );
+        assert!(!added.iter().any(RecordChange::breaks_the_frozen_bootstrap));
+        assert!(!rendered(&added).contains("FROZEN"));
     }
 }

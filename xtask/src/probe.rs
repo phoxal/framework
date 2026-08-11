@@ -111,15 +111,10 @@ pub(crate) struct ProbeSurfaces {
 
 impl ProbeSurfaces {
     /// Probe the workspace this runner is part of.
-    ///
-    /// The root is the runner's own parent directory, so the checker finds the
-    /// crates it compares no matter where it was invoked from.
     pub(crate) fn for_workspace() -> Result<Self> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("the runner's manifest directory has no workspace parent")?
-            .to_path_buf();
-        Ok(Self { workspace_root })
+        Ok(Self {
+            workspace_root: crate::workspace_root()?,
+        })
     }
 
     /// The probe project for one side, materialized and ready to run.

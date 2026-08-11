@@ -4,6 +4,15 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The Stable-line rehearsal, and nothing else. Every other job below is
+  # conditioned on a pull request or a push, so a scheduled run is one job.
+  # GitHub only runs a schedule on the default branch, which is where the
+  # rehearsal belongs: it drills the semantics main carries, not a branch's.
+  # 04:41 UTC on Mondays, off the hour so it does not queue behind the top of
+  # the hour, and off the daily release-plz cron.
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -18,8 +27,9 @@ concurrency:
 jobs:
   ci:
     if: >-
-      github.event_name != 'push' ||
-      !startsWith(github.event.head_commit.message, 'chore(release): release v')
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
     with:
       webots-version: R2025a
@@ -35,8 +45,9 @@ jobs:
   hello-rover-example:
     name: examples/hello-rover
     if: >-
-      github.event_name != 'push' ||
-      !startsWith(github.event.head_commit.message, 'chore(release): release v')
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -54,8 +65,9 @@ jobs:
   bus-router-feature:
     name: phoxal-bus router feature
     if: >-
-      github.event_name != 'push' ||
-      !startsWith(github.event.head_commit.message, 'chore(release): release v')
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -153,6 +165,44 @@ jobs:
           echo "$report"
           {
             echo "## Release candidate compatibility"
+            echo
+            echo '```'
+            echo "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+  # The Stable-line semantics, drilled on a schedule.
+  #
+  # Every post-1.0 code path - a break needing a major, two versions on one 1.x
+  # line interoperating, the frozen bootstrap surviving a major flip - runs only
+  # inside `cargo test` while the framework is pre-1.0. This runs the whole
+  # matrix as the command a maintainer would run, so a Stable path that stops
+  # working is found in the week it breaks and not on flip day.
+  #
+  # Deliberately not on pull requests: the drill answers a question no branch
+  # asks, and the matrix rows are already proved by `cargo test` on every one.
+  # It reaches no registry and installs no Webots: the drill states its own
+  # baselines, and the pinned tests it runs are in `phoxal-runtime-contract` and
+  # `phoxal-api`, neither of which links libController.
+  compatibility-rehearsal:
+    name: compatibility rehearsal
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Drill the Stable-line semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          report="$(cargo xtask compatibility rehearse-v1)" || status=$?
+          echo "$report"
+          {
+            echo "## v1 rehearsal"
             echo
             echo '```'
             echo "$report"
