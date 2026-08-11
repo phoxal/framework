@@ -8,7 +8,7 @@ use phoxal_model::component::capability::MotorCommand;
 use phoxal_model::identity::CapabilityRef;
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
-use phoxal_runtime_contract::version::FrameworkVersion;
+use phoxal_runtime_contract::version::{CompatibilityLine, FrameworkVersion};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -95,10 +95,10 @@ impl RuntimeDocument {
         &self.runtime().robot
     }
 
-    /// The one framework train validated for this execution.
+    /// The one compatibility line validated for this execution.
     #[must_use]
-    pub fn framework(&self) -> FrameworkVersion {
-        self.runtime().framework()
+    pub fn framework_line(&self) -> CompatibilityLine {
+        self.runtime().framework_line()
     }
 
     /// The final participant set, in persisted order.
@@ -218,7 +218,14 @@ impl Runtime {
         self.router.as_ref()
     }
 
-    /// The one framework train every launched participant was built from.
+    /// The one compatibility line every launched participant was built on.
+    ///
+    /// This is the line, not a version, because that is all the document can
+    /// honestly promise: validation proves the selected artifacts share a
+    /// line, and they may have been built from different trains on it. The
+    /// exact train behind each artifact stays readable through
+    /// [`Self::artifacts`], which is where a provenance report or a diagnostic
+    /// reads it from.
     ///
     /// Runtime construction proves this invariant and every valid runtime has
     /// a brain participant, so the lookup cannot fail after validation.
@@ -227,11 +234,11 @@ impl Runtime {
         clippy::expect_used,
         reason = "Runtime is constructible only after validation proves at least one selected participant and its artifact"
     )]
-    pub fn framework(&self) -> FrameworkVersion {
+    pub fn framework_line(&self) -> CompatibilityLine {
         self.participants
             .first()
             .and_then(|participant| self.artifacts.get(&participant.artifact))
-            .map(|artifact| artifact.contract().framework)
+            .map(|artifact| artifact.contract().framework.compatibility_line())
             .expect("validated runtime has a selected participant artifact")
     }
 
@@ -275,7 +282,7 @@ impl Runtime {
         let mut referenced_artifacts = BTreeSet::new();
         let mut brain = None;
         let mut simulator_count = 0_u8;
-        let mut framework = None;
+        let mut framework: Option<FrameworkVersion> = None;
         for participant in &self.participants {
             let artifact = self.artifacts.get(&participant.artifact).ok_or_else(|| {
                 DocumentError::UnknownArtifact {
@@ -290,19 +297,20 @@ impl Runtime {
                 }
             })?;
             participant.validate(&self.robot, artifact, validator)?;
-            // One execution runs one framework train: compatibility is exact
-            // version equality, so a bundle mixing trains has no valid launch.
+            // One execution runs one compatibility line. Artifacts may have
+            // been built from different trains on that line, because trains on
+            // one line speak the same contracts; a bundle spanning two lines
+            // has no valid launch. The first selected artifact's train is kept
+            // as the reported one so the diagnostic names a stable side.
             let artifact_framework = artifact.contract().framework;
-            if let Some(expected) = framework
-                && expected != artifact_framework
-            {
-                return Err(DocumentError::MixedFramework {
+            let expected = *framework.get_or_insert(artifact_framework);
+            if !expected.is_compatible_with(artifact_framework) {
+                return Err(DocumentError::MixedFrameworkLine {
                     artifact: participant.artifact.clone(),
                     expected,
                     actual: artifact_framework,
                 });
             }
-            framework = Some(artifact_framework);
             if artifact.contract().kind == phoxal_runtime_contract::metadata::ParticipantKind::Brain
             {
                 if participant.id.as_str() != "brain" {

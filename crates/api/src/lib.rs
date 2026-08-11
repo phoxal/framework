@@ -23,10 +23,11 @@
 //!   owns only what an answer looks like.
 //!
 //! Compatibility is owned entirely by the framework train version each
-//! participant binary embeds, compared for exact equality, so no key,
-//! descriptor, or body carries a per-API version. The one exception is
-//! [`supervisor::connect`], the frozen bootstrap two binaries exchange before
-//! they know whether their trains agree.
+//! participant binary embeds, compared by the compatibility line the two
+//! trains belong to, so no key, descriptor, or body carries a per-API version.
+//! The one exception is [`supervisor::connect`], the frozen bootstrap two
+//! binaries exchange before they know whether their trains agree; it reports
+//! the exact version, and the reader decides.
 //!
 //! Endpoint semantics are fixed by the declaration: `State`, `Sample`, `Event`,
 //! `Stream`, `Setpoint`, or bounded query. Source identity, robot/capture time,

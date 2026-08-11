@@ -133,13 +133,16 @@ fn runtime_rejects_more_participants_than_a_snapshot_can_publish() {
     ));
 }
 
-/// Compatibility is exact framework-version equality, so a bundle whose
-/// artifacts were built from two trains has no valid launch - including two
-/// patch releases of one pre-1.0 line.
+/// Compatibility is the line, so artifacts built from two patch trains of one
+/// line launch together, and the document reports the line rather than a
+/// version it could not honestly single out.
 #[test]
-fn runtime_rejects_mixed_framework_artifacts_and_exposes_the_selected_train() {
+fn runtime_accepts_artifacts_from_one_line_and_exposes_that_line() {
     let (document, _, _) = document();
-    assert_eq!(document.framework(), FrameworkVersion::CURRENT);
+    assert_eq!(
+        document.framework_line(),
+        FrameworkVersion::CURRENT.compatibility_line()
+    );
 
     let RuntimeDocument::V0(mut runtime) = document;
     let drive = ParticipantArtifactId::new("drive").expect("drive artifact id");
@@ -148,6 +151,8 @@ fn runtime_rejects_mixed_framework_artifacts_and_exposes_the_selected_train() {
         FrameworkVersion::CURRENT.minor(),
         FrameworkVersion::CURRENT.patch() + 1,
     );
+    assert_ne!(neighbour, FrameworkVersion::CURRENT);
+    assert!(neighbour.is_compatible_with(FrameworkVersion::CURRENT));
     runtime
         .artifacts
         .get_mut(&drive)
@@ -155,22 +160,64 @@ fn runtime_rejects_mixed_framework_artifacts_and_exposes_the_selected_train() {
         .contract
         .framework = neighbour;
 
+    let mixed = Runtime::new(
+        runtime.robot,
+        runtime.artifacts,
+        runtime.participants,
+        runtime.assets,
+        runtime.router,
+    )
+    .expect("two patch trains of one line are one execution");
     assert_eq!(
-        neighbour.compatibility_line(),
-        FrameworkVersion::CURRENT.compatibility_line(),
-        "the rejected artifact must sit on the current compatibility line"
+        mixed.framework_line(),
+        FrameworkVersion::CURRENT.compatibility_line()
     );
-    assert!(matches!(
-        Runtime::new(
-            runtime.robot,
-            runtime.artifacts,
-            runtime.participants,
-            runtime.assets,
-            runtime.router,
+    assert_eq!(
+        mixed
+            .artifacts()
+            .get(&drive)
+            .expect("drive artifact")
+            .contract()
+            .framework,
+        neighbour,
+        "each artifact keeps the exact train it was built from"
+    );
+}
+
+/// A line is where a bundle stops mixing: two lines are two contract sets, so
+/// there is no launch that runs both, and the diagnostic names the line.
+#[test]
+fn runtime_rejects_artifacts_from_a_second_framework_line() {
+    let (document, _, _) = document();
+    let RuntimeDocument::V0(mut runtime) = document;
+    let brain = ParticipantArtifactId::new("brain").expect("brain artifact id");
+    // Bumping the major crosses the line in both SemVer eras: a `0.x` train
+    // leaves the pre-1.0 lines entirely, and a released train changes majors.
+    let other_line = FrameworkVersion::new(FrameworkVersion::CURRENT.major() + 1, 0, 0);
+    assert!(!other_line.is_compatible_with(FrameworkVersion::CURRENT));
+    runtime
+        .artifacts
+        .get_mut(&brain)
+        .expect("brain artifact")
+        .contract
+        .framework = other_line;
+
+    let error = Runtime::new(
+        runtime.robot,
+        runtime.artifacts,
+        runtime.participants,
+        runtime.assets,
+        runtime.router,
+    )
+    .expect_err("a bundle spanning two lines has no valid launch");
+    assert!(
+        matches!(
+            error,
+            DocumentError::MixedFrameworkLine { expected, actual, .. }
+                if expected == FrameworkVersion::CURRENT && actual == other_line
         ),
-        Err(DocumentError::MixedFramework { expected, actual, .. })
-            if expected == neighbour && actual == FrameworkVersion::CURRENT
-    ));
+        "unexpected error: {error}"
+    );
 }
 
 fn motor_robot(left: MotorCommand, right: MotorCommand) -> Robot {

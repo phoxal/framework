@@ -320,7 +320,8 @@ pub mod __private {
     ///
     /// The framework train version is the whole of it: two Phoxal processes
     /// speak the same contracts exactly when they were built from the same
-    /// train, so there is one constant here and it is owned by
+    /// compatibility line, and the exact train the binary records is what a
+    /// validator reads that line from. So there is one constant here, owned by
     /// `phoxal-runtime-contract`. The role macros splice it into the
     /// participant's embedded `.phoxal_meta` document at compile time through
     /// `participant_metadata_json!`; that embedded document is the only

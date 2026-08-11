@@ -125,8 +125,9 @@ fn main() -> phoxal::Result<()> {
 
 /// The embedded record is a document, not a struct with a schema field: it must
 /// parse straight into the tagged `V0` variant. Its `framework` field is the
-/// binary's whole compatibility claim, so it carries the exact train version
-/// and none of the per-boundary identities that claim replaced.
+/// binary's whole compatibility claim: it carries the exact train version - the
+/// provenance a validator reads the compatibility line from - and none of the
+/// per-boundary identities that claim replaced.
 #[test]
 fn a_linked_participant_record_carries_the_framework_train_version_alone() -> Result<()> {
     let meta = linked_participant_metadata(

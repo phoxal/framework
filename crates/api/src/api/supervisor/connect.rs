@@ -4,6 +4,11 @@
 //! `supervisor/connect` answers exactly one question - which framework train
 //! built this supervisor - so a client that disagrees can say so precisely
 //! instead of failing to decode a richer reply and reporting nothing.
+//!
+//! The reply reports the exact version, never a line or a verdict. Deciding
+//! compatibility is the reader's, through
+//! [`FrameworkVersion::is_compatible_with`]; a supervisor that shipped a
+//! verdict would be answering a question only the peer can ask.
 
 use phoxal_runtime_contract::version::FrameworkVersion;
 

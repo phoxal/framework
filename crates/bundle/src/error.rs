@@ -20,10 +20,15 @@ pub enum DocumentError {
         crate::MAX_RUNTIME_PARTICIPANTS
     )]
     TooManyParticipants { count: usize },
+    /// Artifacts may mix trains within one compatibility line; a runtime
+    /// spanning two lines has no valid launch, because its participants do not
+    /// speak each other's contracts.
     #[error(
-        "artifact '{artifact}' was built from framework {actual}, but this runtime already selected {expected}"
+        "artifact '{artifact}' was built from framework {actual}, but this runtime is on the {} \
+         line (from framework {expected})",
+        expected.compatibility_line()
     )]
-    MixedFramework {
+    MixedFrameworkLine {
         artifact: ParticipantArtifactId,
         expected: FrameworkVersion,
         actual: FrameworkVersion,

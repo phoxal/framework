@@ -96,8 +96,8 @@ fn retired_runtime_vocabulary_stays_absent() -> Result<()> {
 }
 
 /// Compatibility is one identity: the framework train version every
-/// participant binary embeds, compared for exact equality. The per-boundary
-/// version enums that identity replaced - and the macro that declared them -
+/// participant binary embeds, compared by the line the two trains belong to.
+/// The per-boundary version enums that identity replaced - and the macro that declared them -
 /// must not return under their former exact identifiers, because a second
 /// identity is a second answer to a question that has one. Ordinary wire
 /// contracts are grouped by semantic family instead, so the generated revision

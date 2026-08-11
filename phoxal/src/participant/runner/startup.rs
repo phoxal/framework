@@ -108,24 +108,25 @@ where
     // session exists. A malformed bundle therefore has no producer or wire
     // side effects to clean up.
     let bundle = participant_inputs_for_launch(&launch.bundle_root, &launch.participant_id)?;
+    let recorded = bundle.artifact().contract();
     let compiled_artifact_id = ParticipantArtifactId::new(R::ID).map_err(|error| {
         anyhow::anyhow!(
             "binary '{}' carries an invalid compiled artifact id: {error}",
             R::ID
         )
     })?;
-    if bundle.artifact().contract().id != compiled_artifact_id {
+    if recorded.id != compiled_artifact_id {
         anyhow::bail!(
             "selected artifact '{}' does not match this binary's compiled artifact id '{}'",
-            bundle.artifact().contract().id,
+            recorded.id,
             R::ID
         );
     }
-    if bundle.artifact().contract().kind != R::KIND {
+    if recorded.kind != R::KIND {
         anyhow::bail!(
             "selected artifact '{}' has kind {:?}, but this binary declares {:?}",
-            bundle.artifact().contract().id,
-            bundle.artifact().contract().kind,
+            recorded.id,
+            recorded.kind,
             R::KIND
         );
     }
@@ -136,17 +137,36 @@ where
                 R::ID
             )
         })?;
+    // The recorded train and this binary's train have to share a compatibility
+    // line, not be the same version: a participant binary from one train may
+    // be launched from a bundle recorded by another train on the same line.
+    // Both exact versions stay in the diagnostic, because that is the fact an
+    // operator acts on.
+    if !FrameworkVersion::CURRENT.is_compatible_with(recorded.framework) {
+        anyhow::bail!(
+            "selected artifact '{}' was built from framework {}, but this binary speaks framework \
+             {} ({}); rebuild the bundle on this line",
+            recorded.id,
+            recorded.framework,
+            FrameworkVersion::CURRENT,
+            FrameworkVersion::CURRENT.compatibility_line()
+        );
+    }
+    // Every remaining field is compared for equality, and the whole struct is
+    // compared at once so a field added to the contract cannot slip past this
+    // check unvalidated. `framework` is carried over from the record because
+    // the line check above is its comparison.
     let expected_contract = ParticipantContract {
-        framework: FrameworkVersion::CURRENT,
+        framework: recorded.framework,
         id: compiled_artifact_id,
         kind: R::KIND,
         requirement: R::REQUIREMENT,
         config_schema: process_config_schema,
     };
-    if bundle.artifact().contract() != &expected_contract {
+    if recorded != &expected_contract {
         anyhow::bail!(
             "selected artifact '{}' contract does not match this binary's compiled participant contract",
-            bundle.artifact().contract().id
+            recorded.id
         );
     }
     // Deserialize the selected config while the process is still local. A
@@ -207,6 +227,99 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::prelude::*;
+    use phoxal_runtime_contract::identity::ExecutionId;
+
+    #[phoxal::brain]
+    struct LineProbeBrain;
+
+    impl Participant for LineProbeBrain {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
+        }
+    }
+
+    /// Record `framework` for every artifact in a staged bundle's persisted
+    /// document, standing in for a bundle produced by a different train.
+    ///
+    /// Only `runtime.json` is rewritten, which is what the launch path reads;
+    /// the indexed assets and executables it points at are untouched, so this
+    /// stages the exact situation without building a second train.
+    fn record_framework(root: &std::path::Path, framework: FrameworkVersion) {
+        let path = root.join(phoxal_bundle::RUNTIME_FILE);
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("the staged runtime document"))
+                .expect("the staged runtime document is JSON");
+        let artifacts = document
+            .get_mut("artifacts")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("the staged document records artifacts");
+        for artifact in artifacts.values_mut() {
+            artifact["contract"]["framework"] = serde_json::json!(framework.to_string());
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&document).expect("the rewritten document serializes"),
+        )
+        .expect("the rewritten document is written");
+    }
+
+    fn launch_brain(root: &std::path::Path) -> SupervisedLaunch {
+        SupervisedLaunch {
+            execution_id: ExecutionId::parse("10000000000000000000000000000001")
+                .expect("test execution id"),
+            participant_id: ParticipantId::new("brain").expect("brain participant id"),
+            bundle_root: root.to_path_buf(),
+            connect_endpoints: vec!["tcp/127.0.0.1:0".to_string()],
+            execution_origin: Some(ExecutionOrigin::mint()),
+            shutdown_grace: Duration::from_millis(
+                crate::participant::launch::DEFAULT_SHUTDOWN_GRACE_MS,
+            ),
+        }
+    }
+
+    /// The launch validator compares compatibility lines, not versions: a
+    /// binary launches from a bundle another train on its own line recorded.
+    #[test]
+    fn a_bundle_recorded_by_another_train_on_this_line_launches() {
+        let bundle = phoxal_fixture::staged_bundle();
+        let neighbour = FrameworkVersion::new(
+            FrameworkVersion::CURRENT.major(),
+            FrameworkVersion::CURRENT.minor(),
+            FrameworkVersion::CURRENT.patch() + 1,
+        );
+        assert_ne!(neighbour, FrameworkVersion::CURRENT);
+        assert!(FrameworkVersion::CURRENT.is_compatible_with(neighbour));
+        record_framework(bundle.path(), neighbour);
+
+        validate_launch::<LineProbeBrain>(&launch_brain(bundle.path()))
+            .expect("a bundle from a neighbouring train on this line is launchable");
+    }
+
+    /// A bundle from another line is refused before any bus session exists,
+    /// and the failure names both exact trains.
+    #[test]
+    fn a_bundle_recorded_on_another_line_is_refused_before_the_bus_opens() {
+        let bundle = phoxal_fixture::staged_bundle();
+        // Bumping the major crosses the line in both SemVer eras.
+        let other_line = FrameworkVersion::new(FrameworkVersion::CURRENT.major() + 1, 0, 0);
+        assert!(!FrameworkVersion::CURRENT.is_compatible_with(other_line));
+        record_framework(bundle.path(), other_line);
+
+        let error = validate_launch::<LineProbeBrain>(&launch_brain(bundle.path()))
+            .expect_err("a bundle from another line has no launch here");
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains(&other_line.to_string()), "{rendered}");
+        assert!(
+            rendered.contains(&FrameworkVersion::CURRENT.to_string()),
+            "{rendered}"
+        );
+    }
 
     #[test]
     fn execution_origin_is_required_only_for_real_clock_mode() {
