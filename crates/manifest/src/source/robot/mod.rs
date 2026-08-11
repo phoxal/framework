@@ -11,6 +11,7 @@
 //! exists on [`Manifest::load`]: text handed to [`Manifest::parse`] has no
 //! directory to resolve against.
 
+pub mod driver;
 pub mod v0;
 
 use std::collections::BTreeSet;
@@ -22,6 +23,11 @@ use crate::source::document::{ComposeError, Document, DocumentKind, Origin, Sour
 use crate::source::{document_path, strict_yaml};
 
 /// A versioned authored `robot.yaml` document; the schema tag selects the variant.
+///
+/// The tag names the source language this document is written in, not a
+/// framework compatibility identity. Adding a generation means adding a variant
+/// here and its own `Manifest::normalize` arm; nothing below the
+/// normalization boundary learns that the generation exists.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "schema")]
 pub enum Manifest {
@@ -108,6 +114,21 @@ impl Manifest {
     /// written.
     pub fn write_to_dir(&self, directory: impl AsRef<Path>) -> Result<(), SourceError> {
         self.write_dir(directory.as_ref())
+    }
+
+    /// Resolve this document's own grammar into the version-independent robot
+    /// the compiler consumes.
+    ///
+    /// This is the only place a robot schema generation is matched on: the
+    /// compiler below it never sees a versioned DTO.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the selected generation's normalization rejects.
+    pub(crate) fn normalize(self) -> Result<crate::normalized::Robot, crate::CompileError> {
+        match self {
+            Self::V0(body) => body.normalize(),
+        }
     }
 }
 

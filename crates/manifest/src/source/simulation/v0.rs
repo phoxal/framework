@@ -78,6 +78,34 @@ impl fmt::Display for ValidationError {
 }
 
 impl Manifest {
+    /// Resolve this generation's grammar into the version-independent
+    /// simulation.
+    ///
+    /// The authored capability map and its canonical counterpart are the same
+    /// wire shape by construction, so this generation adopts it wholesale; a
+    /// link's authored name becomes the canonical link identity it always
+    /// referred to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CompileError::Transcode`] when an authored capability
+    /// does not adopt into its canonical counterpart.
+    pub(crate) fn normalize(self) -> Result<crate::normalized::Simulation, crate::CompileError> {
+        Ok(crate::normalized::Simulation {
+            capabilities: crate::source::transcode(&self.capabilities, "simulation capabilities")?,
+            links: self
+                .links
+                .into_iter()
+                .map(|(id, link)| {
+                    (
+                        phoxal_model::identity::LinkId::new(id),
+                        link.contact_material,
+                    )
+                })
+                .collect(),
+        })
+    }
+
     /// Every rule this document breaks, or `Ok(())` when it breaks none.
     ///
     /// # Errors

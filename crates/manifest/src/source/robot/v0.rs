@@ -20,6 +20,11 @@ use serde::{Deserialize, Serialize};
 use phoxal_model::CapabilityRole;
 use phoxal_model::robot::{KinematicConfig, MotionLimits};
 
+// The hardware connection block is shared across robot document generations
+// rather than owned by this one, so it is named here at its established
+// authored path and defined once beside the document family.
+pub use super::driver::{ConnectionConfig, DriverConfig, GpioDirection, GpioPinConfig};
+
 /// Exact top-level `robot.yaml` v0 document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -159,57 +164,6 @@ pub struct Component {
     pub roles: BTreeMap<String, Vec<CapabilityRole>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub parameters: BTreeMap<String, Parameters>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DriverConfig {
-    pub connection: ConnectionConfig,
-    #[serde(default = "default_runtime_clock_ms")]
-    pub runtime_clock_ms: u64,
-}
-
-/// Connection configuration for executable drivers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ConnectionConfig {
-    /// CAN bus connection.
-    Can { bus: u8, node_id: u8 },
-    /// I2C connection.
-    I2c { bus: u8, address: u16 },
-    /// SPI connection.
-    Spi { bus: u8, chip_select: u8 },
-    /// Serial port connection (RS-232/RS-485).
-    Serial { port: String, baud: u32 },
-    /// UART connection (distinct from Serial for hardware-specific drivers).
-    Uart { port: String, baud_rate: u32 },
-    /// USB connection.
-    Usb {
-        vendor_id: Option<u16>,
-        product_id: Option<u16>,
-    },
-    /// GPIO pins.
-    Gpio {
-        chip: String,
-        pins: Vec<GpioPinConfig>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GpioPinConfig {
-    pub line: u16,
-    pub direction: GpioDirection,
-    #[serde(default)]
-    pub active_low: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum GpioDirection {
-    Input,
-    Output,
 }
 
 /// Per-instance overrides for one capability the component type declares.
@@ -366,6 +320,72 @@ impl Manifest {
         }
     }
 
+    /// Resolve this generation's grammar into the version-independent robot.
+    ///
+    /// Everything that is v0 syntax ends here: `extends` has already been
+    /// composed away by the time a document reaches this point, the authored
+    /// per-capability parameter blocks collapse into the kind and the direction
+    /// sign the compiler acts on, and an authored role list becomes the role
+    /// set it always meant (the grammar is what rejects a repeat).
+    ///
+    /// # Errors
+    ///
+    /// Returns no error today: every v0 value already has a normalized
+    /// counterpart. The boundary stays fallible because normalization is a
+    /// generation's own obligation, and a later generation's may not be total.
+    pub(crate) fn normalize(self) -> Result<crate::normalized::Robot, crate::CompileError> {
+        let instances = self
+            .robot
+            .components
+            .into_iter()
+            .map(|(id, component)| {
+                let parameters = component
+                    .parameters
+                    .into_iter()
+                    .map(|(capability, parameters)| {
+                        (
+                            capability,
+                            crate::normalized::CapabilityParameters {
+                                kind: parameters.kind(),
+                                direction_sign: parameters.direction_sign(),
+                            },
+                        )
+                    })
+                    .collect();
+                let roles = component
+                    .roles
+                    .into_iter()
+                    .map(|(capability, roles)| (capability, roles.into_iter().collect()))
+                    .collect();
+                (
+                    id,
+                    crate::normalized::ComponentInstance {
+                        component_type: component.component,
+                        mount_link: component.mount_link,
+                        driver: component.driver,
+                        roles,
+                        parameters,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(crate::normalized::Robot {
+            id: self.robot.id,
+            clock: self.clock.into(),
+            structure: self.robot.structure,
+            kinematic: self.robot.kinematic,
+            motion_limits: self.robot.motion_limits,
+            instances,
+            services: self
+                .services
+                .into_iter()
+                .map(|(id, service)| (id, service.config))
+                .collect(),
+            router_config: self.router.config,
+        })
+    }
+
     #[must_use]
     pub fn used_component_types(&self) -> BTreeSet<&str> {
         self.robot
@@ -476,10 +496,6 @@ impl fmt::Display for ValidationError {
 
 fn default_structure_path() -> PathBuf {
     PathBuf::from("structure.urdf")
-}
-
-const fn default_runtime_clock_ms() -> u64 {
-    100
 }
 
 const fn default_direction_sign() -> i8 {
@@ -918,6 +934,21 @@ robot:
         );
 
         Ok(())
+    }
+
+    /// The hardware connection block belongs to the document family rather than
+    /// to this generation, and is re-exported here. An authored path that named
+    /// it before must keep naming the same type, not a second copy of it.
+    #[test]
+    fn the_driver_block_keeps_its_established_authored_path() {
+        assert_eq!(
+            std::any::TypeId::of::<super::DriverConfig>(),
+            std::any::TypeId::of::<crate::source::robot::driver::DriverConfig>()
+        );
+        assert_eq!(
+            std::any::TypeId::of::<super::ConnectionConfig>(),
+            std::any::TypeId::of::<crate::source::robot::driver::ConnectionConfig>()
+        );
     }
 
     #[test]

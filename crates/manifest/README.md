@@ -15,8 +15,12 @@ processes do not depend on this crate.
 
 `source` holds the exact serde shape of each authored document: `robot.yaml`,
 `component.yaml` and `simulation.yaml`.
-Each kind owns its schema version independently, so `robot.yaml` v1 can be introduced without forcing the other two to advance.
-A new version is a new DTO beside the existing one with its own explicit conversion into the same crate-internal builder input, which is why adding one does not change anything `phoxal-model` exposes.
+A `schema:` tag names the source language a document is written in; it is a generation of an authored grammar and never a framework compatibility identity, which stays `FrameworkVersion` alone.
+Each kind owns its generation independently, so `robot.yaml` v1 can be introduced without forcing the other two to advance.
+
+A generation's syntax ends at one boundary.
+Every versioned DTO normalizes into the crate-internal `normalized` form, and the compiler reads only that, so a new generation is a new DTO plus a new `normalize` - never a second copy of the compiler, and never a change to anything this crate or `phoxal-model` exposes.
+A test-only second source language proves that end to end: it normalizes into the same value and compiles to the same canonical output as the equivalent current document.
 
 Every kind is reached the same way, through associated functions on its `Manifest`:
 `parse` for exact text, `load` for a path (the document file, or the directory holding it), and `write_to_dir`.
