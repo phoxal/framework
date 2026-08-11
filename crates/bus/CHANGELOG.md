@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.59.1...phoxal-bus-v0.60.0) - 2026-08-11
+
+### Added
+
+- [**breaking**] freeze the bootstrap-reachable transport subset ([#442](https://github.com/phoxal/framework/pull/442))
+
 ## [0.59.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.58.2...phoxal-bus-v0.59.0) - 2026-08-11
 
 ### Added
