@@ -183,6 +183,11 @@ mod tests {
     }
 
     /// The bus codec is MessagePack, so the freeze has to hold there too.
+    ///
+    /// The reply is round-tripped at this train and at a released major: the
+    /// bootstrap is what two binaries exchange before they know whether their
+    /// trains agree, so it has to survive the flip to a Stable line as
+    /// literally as it survives a patch.
     #[test]
     fn the_bootstrap_documents_round_trip_on_the_bus_codec() {
         let request = ConnectRequest::V0 {};
@@ -192,14 +197,14 @@ mod tests {
             request
         );
 
-        let reply = ConnectReply::V0 {
-            framework: FrameworkVersion::CURRENT,
-        };
-        let encoded = rmp_serde::to_vec_named(&reply).unwrap();
-        assert_eq!(
-            rmp_serde::from_slice::<ConnectReply>(&encoded).unwrap(),
-            reply
-        );
+        for framework in [FrameworkVersion::CURRENT, FrameworkVersion::new(9, 9, 9)] {
+            let reply = ConnectReply::V0 { framework };
+            let encoded = rmp_serde::to_vec_named(&reply).unwrap();
+            assert_eq!(
+                rmp_serde::from_slice::<ConnectReply>(&encoded).unwrap(),
+                reply
+            );
+        }
     }
 
     /// A reply from a line this binary does not implement fails by naming the

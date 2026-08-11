@@ -36,5 +36,9 @@ semver = { version = "1.0.28", features = ["serde"] }
 # TLS stack the workspace already links.
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
+[dev-dependencies]
+# Manifest fixtures for the toolchain-floor reader, written and thrown away.
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
