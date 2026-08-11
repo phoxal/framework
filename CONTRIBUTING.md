@@ -50,7 +50,27 @@ changed.
 Run `cargo xtask compatibility report` to see the impact of a change before
 pushing it; every pull request runs the same report.
 
-## Build prerequisites
+### The toolchain floor is a compatibility promise
+
+`rust-version` in the workspace is the floor every robot project builds on.
+Raising it breaks builds on older toolchains without touching any wire, so a
+raise is never a patch: before 1.0 it needs the next line, and from 1.0 on it
+is a deliberate minor.
+The release gate reads the published train's floor from the registry index and
+refuses an under-sized candidate; acknowledge a deliberate raise with the
+gate's flag and size the release accordingly.
+
+### The authoring surface is a compatibility promise
+
+Participant authoring - the role attributes, the fragment grammar, `step`, the
+`phoxal::api` facade - is a source-level contract with every robot project that
+`cargo-semver-checks` cannot see, because proc-macro grammar is invisible to
+it.
+Its gate is the example build (`examples/hello-rover` in CI) plus the trybuild
+pass fixtures: representative authored code that must keep compiling.
+Grammar evolution follows the same rule as wire contracts: additions are
+ordinary, and a change that breaks existing authored code carries the breaking
+marker.
 
 Building this workspace requires Webots R2025a.
 The Webots controller crate links `libController` at build time, so this
