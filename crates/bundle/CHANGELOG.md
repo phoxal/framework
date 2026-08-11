@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.58.2](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.58.1...phoxal-bundle-v0.58.2) - 2026-08-10
+
+### Added
+
+- make the compatibility promise checkable against published trains ([#437](https://github.com/phoxal/framework/pull/437))
+
 ## [0.58.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.57.0...phoxal-bundle-v0.58.0) - 2026-08-10
 
 ### Fixed

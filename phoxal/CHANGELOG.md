@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.2](https://github.com/phoxal/framework/compare/v0.58.1...v0.58.2) - 2026-08-10
+
+### Added
+
+- make the compatibility promise checkable against published trains ([#437](https://github.com/phoxal/framework/pull/437))
+
 ## [0.58.1](https://github.com/phoxal/framework/compare/v0.58.0...v0.58.1) - 2026-08-10
 
 ### Fixed
