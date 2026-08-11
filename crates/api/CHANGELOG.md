@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.1](https://github.com/phoxal/framework/compare/phoxal-api-v0.59.0...phoxal-api-v0.59.1) - 2026-08-11
+
+### Added
+
+- add the v1 rehearsal, toolchain-floor gate, and remediation runbook ([#440](https://github.com/phoxal/framework/pull/440))
+
 ## [0.59.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.58.2...phoxal-api-v0.59.0) - 2026-08-11
 
 ### Added
