@@ -39,7 +39,30 @@ use crate::time::TimeWindow;
 /// First chunk of every Phoxal bus key. It exists so a Phoxal execution is
 /// recognisable in a trace and cannot collide with a non-Phoxal key tree
 /// sharing the same Zenoh fabric.
+///
+/// This spelling belongs to the frozen bootstrap-reachable subset: a client
+/// composes it before it can address the attachment bootstrap at all, so it is
+/// preserved across framework majors. Moving it is a bootstrap-breaking event -
+/// see `xtask/README.md` "When a gate fails", rule 3 "A frozen bootstrap fact
+/// drifted".
 pub(crate) const BUS_KEY_PREFIX: &str = "phoxal";
+
+/// The Zenoh wire protocol version the linked transport speaks.
+///
+/// It is the deepest fact the attachment bootstrap stands on: two peers that
+/// disagree here never establish a session, so no Phoxal key, encoding or
+/// document is ever exchanged and the frozen bootstrap cannot report the
+/// disagreement. It is therefore part of the frozen bootstrap-reachable subset,
+/// and a Zenoh upgrade that moves it is a bootstrap-breaking event needing
+/// deliberate design rather than a routine dependency bump - see
+/// `xtask/README.md` "When a gate fails", rule 3 "A frozen bootstrap fact
+/// drifted".
+///
+/// The value is stated here rather than read from Zenoh: `zenoh-protocol` is an
+/// internal crate of the transport and states its own constant for its own use.
+/// `workspace-policy` holds the two together, so this declaration cannot go
+/// stale behind a Zenoh upgrade.
+pub(crate) const ZENOH_WIRE_PROTOCOL_VERSION: u8 = 9;
 
 /// Capacity (in samples) of each ordered outbound lane. Coalesced state and
 /// setpoint lanes retain one pending slot per concrete topic instead.
@@ -535,6 +558,14 @@ impl BusOwner {
     /// Cardinality is the caller's rule. This reports what is connected -
     /// none, one, or several - and errors only when a connected session id is
     /// not a Phoxal execution at all.
+    ///
+    /// Discovery belongs to the frozen bootstrap-reachable subset: it is the
+    /// first step of an attachment, and it reads the transport's own
+    /// directly-connected router set rather than any Phoxal key, so an
+    /// attaching client learns an execution before it can address one. The
+    /// mechanics that carry it - a client-mode session on the given endpoint
+    /// with multicast scouting off, and a router session id that *is* the
+    /// execution - are preserved across framework majors.
     pub async fn probe_routers(endpoint: &str) -> Result<Vec<ExecutionId>> {
         let session = zenoh::open(client_config(endpoint)?)
             .await
@@ -784,6 +815,13 @@ impl BusHandle {
     }
 
     /// Compose a full bus key from a family-rooted topic key.
+    ///
+    /// The composition `phoxal/{execution}/{topic}` belongs to the frozen
+    /// bootstrap-reachable subset: it is the grammar an attaching client spells
+    /// to reach the attachment bootstrap, so it is preserved across framework
+    /// majors. There is no version segment; compatibility is the framework
+    /// train both peers were built from, and the bootstrap is what establishes
+    /// it.
     pub fn full_key(&self, topic_key: &str) -> String {
         format!("{}/{}", self.identity.root, topic_key)
     }
@@ -1561,6 +1599,127 @@ mod tests {
         // text is the same string again.
         let producer = producer_from_zid(zid).expect("a session id is always a producer");
         assert_eq!(producer.to_string(), execution.to_string());
+    }
+
+    /// The bus key root is written out rather than composed from whatever the
+    /// prefix currently is, because a root that follows the code is not frozen.
+    ///
+    /// This fact is part of the frozen bootstrap-reachable subset and is
+    /// preserved across framework majors. A change here is a bootstrap-breaking
+    /// event - see `xtask/README.md` "When a gate fails", rule 3 "A frozen
+    /// bootstrap fact drifted".
+    #[test]
+    fn the_bootstrap_key_grammar_is_pinned_to_its_literal() {
+        assert_eq!(BUS_KEY_PREFIX, "phoxal");
+
+        let execution = ExecutionId::parse("1c8f3a5b7d9e0f2a4b6c8d0e1f325476")
+            .expect("a canonical execution id");
+        assert_eq!(
+            format!("{BUS_KEY_PREFIX}/{execution}"),
+            "phoxal/1c8f3a5b7d9e0f2a4b6c8d0e1f325476"
+        );
+
+        // And the composition below it: one root, one family-rooted topic key,
+        // no version segment between them.
+        let root = format!("{BUS_KEY_PREFIX}/{execution}");
+        assert_eq!(
+            format!("{root}/supervisor/connect"),
+            "phoxal/1c8f3a5b7d9e0f2a4b6c8d0e1f325476/supervisor/connect"
+        );
+        OwnedKeyExpr::new(format!("{root}/supervisor/connect"))
+            .expect("the composed bootstrap key is a legal Zenoh key");
+    }
+
+    /// The execution's text form is what the key root carries and what a router
+    /// session reports, so a client that reads one and spells the other needs
+    /// the two to be the same string.
+    ///
+    /// This fact is part of the frozen bootstrap-reachable subset and is
+    /// preserved across framework majors. A change here is a bootstrap-breaking
+    /// event - see `xtask/README.md` "When a gate fails", rule 3 "A frozen
+    /// bootstrap fact drifted".
+    #[test]
+    fn the_bootstrap_execution_text_form_is_pinned_to_the_session_id_spelling() {
+        let execution = ExecutionId::parse("1c8f3a5b7d9e0f2a4b6c8d0e1f325476")
+            .expect("a canonical execution id");
+        let rendered = execution.to_string();
+        assert_eq!(rendered.len(), 32);
+        assert!(
+            rendered
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "an execution renders as lowercase hexadecimal: {rendered}"
+        );
+        assert_ne!(&rendered[..1], "0", "the leading nibble is never zero");
+
+        // The Zenoh session id a router opens with renders as that same string,
+        // and reads back as the same execution.
+        let zid = zenoh_id_for(execution).expect("an execution is always a session id");
+        assert_eq!(zid.to_string(), rendered);
+        assert_eq!(
+            execution_from_zid(zid).expect("a router session id is an execution"),
+            execution
+        );
+    }
+
+    /// Discovery is the first step of an attachment, so the session it opens is
+    /// pinned: a client on exactly the given endpoint, with multicast scouting
+    /// off, so only routers reachable through that endpoint are ever reported.
+    ///
+    /// This fact is part of the frozen bootstrap-reachable subset and is
+    /// preserved across framework majors. A change here is a bootstrap-breaking
+    /// event - see `xtask/README.md` "When a gate fails", rule 3 "A frozen
+    /// bootstrap fact drifted".
+    #[test]
+    fn the_bootstrap_discovery_session_is_pinned_to_a_scouting_free_client() {
+        let config = client_config("tcp/127.0.0.1:7447").expect("a discovery client config");
+        assert_eq!(
+            config.get_json("mode").expect("the mode is set"),
+            "\"client\""
+        );
+        assert_eq!(
+            config
+                .get_json("connect/endpoints")
+                .expect("the endpoint is set"),
+            "[\"tcp/127.0.0.1:7447\"]"
+        );
+        assert_eq!(
+            config
+                .get_json("scouting/multicast/enabled")
+                .expect("multicast scouting is set"),
+            "false",
+            "discovery reports the routers behind the given endpoint and never a multicast peer"
+        );
+        assert_eq!(
+            config
+                .get_json("transport/link/tx/lease")
+                .expect("the lease is set"),
+            "3000"
+        );
+        assert_eq!(
+            config
+                .get_json("transport/link/tx/keep_alive")
+                .expect("the keepalive is set"),
+            "4"
+        );
+    }
+
+    /// The transport underneath the bootstrap has a wire version of its own,
+    /// and two peers that disagree on it never exchange a Phoxal byte.
+    ///
+    /// This fact is part of the frozen bootstrap-reachable subset and is
+    /// preserved across framework majors. A change here is a bootstrap-breaking
+    /// event: a Zenoh release that moves its wire protocol version needs
+    /// deliberate design, never a routine dependency bump - see
+    /// `xtask/README.md` "When a gate fails", rule 3 "A frozen bootstrap fact
+    /// drifted".
+    #[test]
+    fn the_zenoh_wire_protocol_version_is_pinned_to_its_literal() {
+        assert_eq!(
+            ZENOH_WIRE_PROTOCOL_VERSION, 9,
+            "the Zenoh wire protocol version this train speaks is a frozen bootstrap fact; a \
+             transport upgrade that moves it breaks every peer built from every other line"
+        );
     }
 
     #[test]

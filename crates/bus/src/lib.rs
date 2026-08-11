@@ -5,16 +5,30 @@
 //!
 //! Samples are Zenoh-native. One sample is:
 //!
-//! - a key, `phoxal/<execution-id>/<version>/<topic>`, with the API version
-//!   folded in;
+//! - a key, `phoxal/<execution-id>/<topic>`, where the topic is the
+//!   family-rooted contract name;
 //! - an encoding string naming the codec, plus a [`BusMetadata`] attachment
 //!   carrying codec and provenance only - no schema, family, or api identity;
 //! - a plain MessagePack body payload.
 //!
-//! There is no Phoxal frame independent of Zenoh and no version tag in the
-//! body. Identity lives entirely in the key: different family-rooted
-//! contract names are different keys and physically cannot collide, so a
-//! receiver's per-key subscription is the whole fast-reject.
+//! There is no Phoxal frame independent of Zenoh and no version tag anywhere:
+//! not in the key, not in the body. Identity lives entirely in the key:
+//! different family-rooted contract names are different keys and physically
+//! cannot collide, so a receiver's per-key subscription is the whole
+//! fast-reject.
+//!
+//! # The frozen bootstrap-reachable subset
+//!
+//! Four of those facts are what an attaching client has to traverse *before* it
+//! can decode the attachment bootstrap's reply and learn whether the two peers
+//! agree at all: router discovery, the key grammar above, the query envelopes
+//! ([`BusMetadata`] and [`QueryFailure`]), and the encoding string. Beneath them
+//! sits the Zenoh wire protocol version, without which no session forms in the
+//! first place. All five are preserved across framework majors, are emitted in
+//! this crate's contract surface, and are pinned by their own tests in the
+//! modules that own them. A change to any of them is a bootstrap-breaking
+//! event; see `xtask/README.md` "When a gate fails", rule 3 "A frozen bootstrap
+//! fact drifted".
 //!
 //! # The crate-root facade
 //!
@@ -121,6 +135,12 @@ pub use topic::{
 /// [`DeliveryFamily`] and [`EndpointKind`], which are compile-time typing with
 /// no bytes of their own - they reach a surface only as the spelling on an
 /// endpoint record, which is where they actually decide something.
+///
+/// Most of what this crate declares is bootstrap-reachable, so the
+/// compatibility checker classifies it as the frozen bootstrap and routes any
+/// drift in it to the stop rule. `participant-ready-key` is the exception: an
+/// attaching client composes it only after the bootstrap has already told it
+/// the two peers agree.
 #[doc(hidden)]
 pub mod __compat {
     use phoxal_runtime_contract::contract_surface::{ContractRecord, ContractSurface};
@@ -130,7 +150,7 @@ pub mod __compat {
     use crate::liveliness::PARTICIPANT_LIVELINESS_PREFIX;
     use crate::metadata::BusMetadata;
     use crate::query::QueryFailure;
-    use crate::session::BUS_KEY_PREFIX;
+    use crate::session::{BUS_KEY_PREFIX, ZENOH_WIRE_PROTOCOL_VERSION};
 
     /// The canonical rendering of this crate's contract surface.
     #[must_use]
@@ -149,6 +169,12 @@ pub mod __compat {
                 "bus-key-root",
                 format!("{BUS_KEY_PREFIX}/{{execution}}"),
             ),
+            // The whole grammar, so a peer knows what goes below the root: one
+            // family-rooted topic key and nothing between them.
+            ContractRecord::identifier(
+                "bus-key-composition",
+                format!("{BUS_KEY_PREFIX}/{{execution}}/{{topic}}"),
+            ),
             ContractRecord::identifier(
                 "participant-ready-key",
                 format!(
@@ -157,6 +183,14 @@ pub mod __compat {
             ),
             // The encoding string a receiver validates before it decodes.
             ContractRecord::identifier("encoding", CodecId::MessagePack.encoding_string()),
+            // The transport's own wire version. It is not a Phoxal spelling,
+            // and it is recorded here because it is the floor everything above
+            // stands on: peers that disagree on it never form a session, so
+            // nothing above ever gets the chance to report the disagreement.
+            ContractRecord::identifier(
+                "zenoh-wire-protocol",
+                ZENOH_WIRE_PROTOCOL_VERSION.to_string(),
+            ),
         ])
         .canonical_json()
     }
@@ -177,8 +211,10 @@ pub mod __compat {
                 r#""name":"BusMetadata""#,
                 r#""name":"QueryFailure""#,
                 r#""value":"phoxal/{execution}""#,
+                r#""value":"phoxal/{execution}/{topic}""#,
                 r#""value":"phoxal/{execution}/liveliness/participants/{participant}/{producer}""#,
                 r#""value":"phoxal/v0;codec=1""#,
+                r#""name":"zenoh-wire-protocol","record":"identifier","value":"9""#,
                 // The attachment's own fields, so an empty envelope body fails.
                 r#""name":"produced_at""#,
             ] {

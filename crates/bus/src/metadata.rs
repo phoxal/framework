@@ -1,10 +1,10 @@
 //! `BusMetadata` - the per-sample attachment.
 //!
 //! The wire body is the plain MessagePack payload; provenance rides here, in
-//! the Zenoh attachment. Identity (which contract, which version) is not
-//! carried in the envelope at all - it lives in the Zenoh key itself, since the
-//! version is folded into `<Endpoint as EndpointDescriptor>::TOPIC`, so a receiver's
-//! per-key subscription is the whole fast-reject.
+//! the Zenoh attachment. Identity is not carried in the envelope at all - it
+//! lives in the Zenoh key itself, which is
+//! `<Endpoint as EndpointDescriptor>::TOPIC`, so a receiver's per-key
+//! subscription is the whole fast-reject.
 //!
 //! Provenance is a [`SourceAttribution`] plus a per-producer sequence, and the
 //! production instant is an explicit `Option<`[`TimeWindow`]`>` - a sample that
@@ -170,6 +170,13 @@ pub struct StreamPosition {
 }
 
 /// Per-sample metadata carried in the Zenoh attachment (MessagePack-encoded).
+///
+/// This envelope belongs to the frozen bootstrap-reachable subset: it rides
+/// beside every reply, including the attachment bootstrap's, and a receiver
+/// decodes it before it reaches the body, so its field names and their presence
+/// rules are preserved across framework majors. A change here is a
+/// bootstrap-breaking event - see `xtask/README.md` "When a gate fails", rule 3
+/// "A frozen bootstrap fact drifted".
 #[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusMetadata {
     /// The codec used for the body payload.
@@ -260,6 +267,59 @@ mod tests {
 
     fn encoded(metadata: &BusMetadata) -> Vec<u8> {
         metadata.encode().expect("test metadata encodes")
+    }
+
+    /// The attachment's field names are written out and checked against real
+    /// encoded bytes, because a decoder on another line reads exactly these
+    /// names off the wire before it reaches the body it came for.
+    ///
+    /// This fact is part of the frozen bootstrap-reachable subset and is
+    /// preserved across framework majors. A change here is a bootstrap-breaking
+    /// event - see `xtask/README.md` "When a gate fails", rule 3 "A frozen
+    /// bootstrap fact drifted".
+    #[test]
+    fn the_bootstrap_reply_attachment_is_pinned_to_its_literal_fields() {
+        let names = |attachment: &BusMetadata| -> Vec<String> {
+            serde_json::to_value(attachment)
+                .expect("the attachment serializes")
+                .as_object()
+                .expect("the attachment is a map")
+                .keys()
+                .cloned()
+                .collect()
+        };
+
+        // A reply carries no robot time and no stream position, which is the
+        // shape the attachment bootstrap's own reply rides under.
+        let reply = metadata(None);
+        assert_eq!(
+            names(&reply),
+            ["codec", "produced_at", "sequence", "source"]
+        );
+
+        let mut streamed = metadata(None);
+        streamed.stream_position = Some(StreamPosition { sequence: 0 });
+        assert_eq!(
+            names(&streamed),
+            [
+                "codec",
+                "produced_at",
+                "sequence",
+                "source",
+                "stream_position"
+            ]
+        );
+
+        // And the same names are the bytes, not only the serde model.
+        let bytes = encoded(&reply);
+        for name in ["codec", "produced_at", "sequence", "source"] {
+            assert!(
+                bytes
+                    .windows(name.len())
+                    .any(|window| window == name.as_bytes()),
+                "the encoded attachment must spell '{name}'"
+            );
+        }
     }
 
     #[test]

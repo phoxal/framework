@@ -27,6 +27,12 @@ use serde::de::DeserializeOwned;
 pub const MAX_DECODE_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// The fixed prefix every Phoxal encoding string opens with.
+///
+/// The encoding string and the codec it names belong to the frozen
+/// bootstrap-reachable subset: a client validates them before it decodes the
+/// attachment bootstrap's reply, so both are preserved across framework majors.
+/// A change here is a bootstrap-breaking event - see `xtask/README.md` "When a
+/// gate fails", rule 3 "A frozen bootstrap fact drifted".
 const ENCODING_PREFIX: &str = "phoxal/v0";
 
 /// The wire codec identifier carried in bus metadata. One codec in v1.
@@ -317,6 +323,34 @@ mod tests {
                 field: "schema".to_string()
             })
         );
+    }
+
+    /// The encoding string is written out rather than composed from the current
+    /// prefix and id, and codec 1 is proved to be MessagePack with *named*
+    /// fields: a decoder on another line reads a map with string keys, not a
+    /// positional array, and the two are indistinguishable to a round trip that
+    /// encodes and decodes with the same codec.
+    ///
+    /// This fact is part of the frozen bootstrap-reachable subset and is
+    /// preserved across framework majors. A change here is a bootstrap-breaking
+    /// event - see `xtask/README.md` "When a gate fails", rule 3 "A frozen
+    /// bootstrap fact drifted".
+    #[test]
+    fn the_bootstrap_encoding_and_codec_are_pinned_to_their_literals() {
+        assert_eq!(ENCODING_PREFIX, "phoxal/v0");
+        assert_eq!(CodecId::MessagePack.as_u8(), 1);
+        assert_eq!(CodecId::MessagePack.encoding_string(), "phoxal/v0;codec=1");
+        assert_eq!(MessagePack::ID, CodecId::MessagePack);
+
+        #[derive(serde::Serialize)]
+        struct Body {
+            schema: &'static str,
+        }
+        let encoded = MessagePack::encode(&Body { schema: "v0" }).expect("the body encodes");
+        // A one-entry fixmap, then the key as a fixstr: the named-field
+        // encoding. `to_vec` would write a one-element array here instead.
+        assert_eq!(encoded[0], 0x81, "codec 1 writes a map, not an array");
+        assert_eq!(&encoded[1..8], b"\xa6schema");
     }
 
     #[test]
