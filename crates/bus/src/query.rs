@@ -35,6 +35,13 @@ pub enum QueryCode {
 }
 
 /// A structured handler failure carried on the error reply leg.
+///
+/// This envelope belongs to the frozen bootstrap-reachable subset: it is the
+/// only body on the error leg of a query, so a client whose attachment
+/// bootstrap is refused decodes this before it can report why, and its field
+/// names, code spellings and presence rules are preserved across framework
+/// majors. A change here is a bootstrap-breaking event - see `xtask/README.md`
+/// "When a gate fails", rule 3 "A frozen bootstrap fact drifted".
 #[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryFailure {
     /// The fixed error code.
@@ -152,6 +159,52 @@ mod tests {
 
     fn encoded(failure: &QueryFailure) -> Vec<u8> {
         failure.encode().expect("a test failure encodes")
+    }
+
+    /// The error leg's field names and code spellings are written out, because
+    /// a client refused at the attachment bootstrap reads exactly these off the
+    /// wire to say what happened.
+    ///
+    /// This fact is part of the frozen bootstrap-reachable subset and is
+    /// preserved across framework majors. A change here is a bootstrap-breaking
+    /// event - see `xtask/README.md` "When a gate fails", rule 3 "A frozen
+    /// bootstrap fact drifted".
+    #[test]
+    fn the_bootstrap_error_leg_is_pinned_to_its_literal_fields() {
+        let failure = QueryFailure::not_found("no such entity");
+        assert_eq!(
+            serde_json::to_value(&failure).expect("a failure serializes"),
+            serde_json::json!({"code": "not_found", "message": "no such entity"}),
+            "an absent detail is absent on the wire, not a null"
+        );
+
+        let mut detailed = QueryFailure::internal("with detail");
+        detailed.details = Some(vec![1]);
+        detailed.details_encoding = Some("application/phoxal-test".to_string());
+        assert_eq!(
+            serde_json::to_value(&detailed)
+                .expect("a detailed failure serializes")
+                .as_object()
+                .expect("a failure is a map")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["code", "details", "details_encoding", "message"]
+        );
+
+        for (code, spelling) in [
+            (QueryCode::NotFound, "not_found"),
+            (QueryCode::InvalidArgument, "invalid_argument"),
+            (QueryCode::Internal, "internal"),
+            (QueryCode::Unavailable, "unavailable"),
+            (QueryCode::Unimplemented, "unimplemented"),
+            (QueryCode::DeadlineExceeded, "deadline_exceeded"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(code).expect("a code serializes"),
+                serde_json::Value::String(spelling.to_owned())
+            );
+        }
     }
 
     #[test]

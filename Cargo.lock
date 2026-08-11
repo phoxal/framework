@@ -4559,6 +4559,7 @@ dependencies = [
  "cargo_metadata",
  "object",
  "phoxal",
+ "phoxal-bus",
  "phoxal-manifest",
  "phoxal-model",
  "phoxal-runtime-contract",

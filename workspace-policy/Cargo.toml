@@ -22,6 +22,9 @@ cargo_metadata = "0.23.1"
 
 [dev-dependencies]
 phoxal = { workspace = true }
+# `tests/dependencies.rs` reads the Zenoh wire protocol version out of the bus's
+# own declared contract surface, which is the crate that owns that declaration.
+phoxal-bus = { workspace = true }
 phoxal-manifest = { workspace = true }
 # The producer/consumer boundary `tests/facade_agreement.rs` pins is the model
 # crate's own asset-id rule, and the record `tests/participant_metadata.rs`

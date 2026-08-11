@@ -45,18 +45,40 @@ const VERSION_SEMANTICS: PinnedTests = PinnedTests {
 /// The pinned tests that own the frozen attachment bootstrap.
 ///
 /// These are the facts that must survive a major flip untouched: the connect
-/// key's spelling, both document shapes, the canonical framework-version
-/// spelling inside them at a Stable train, the MessagePack round trip, and the
-/// diagnostic a foreign tag produces.
+/// key's spelling, the composed wire key it becomes, both document shapes, the
+/// canonical framework-version spelling inside them at a Stable train, the
+/// MessagePack round trip, and the diagnostic a foreign tag produces.
 const FROZEN_BOOTSTRAP: PinnedTests = PinnedTests {
     what: "frozen bootstrap invariants",
     package: "phoxal-api",
     tests: &[
         "api::supervisor::connect::tests::the_bootstrap_key_is_pinned_to_its_literal",
+        "api::supervisor::connect::tests::the_composed_bootstrap_wire_key_is_pinned_to_its_literal",
         "api::supervisor::connect::tests::the_bootstrap_documents_are_pinned_to_their_literal_json",
         "api::supervisor::connect::tests::the_bootstrap_documents_are_pinned_to_their_declared_wire_shape",
         "api::supervisor::connect::tests::the_bootstrap_documents_round_trip_on_the_bus_codec",
         "api::supervisor::connect::tests::a_foreign_schema_tag_fails_by_naming_itself",
+    ],
+};
+
+/// The pinned tests that own the transport the bootstrap stands on.
+///
+/// A frozen document is worth nothing if the path to it moves: these are the
+/// facts an attaching client traverses before it can decode the reply at all -
+/// discovery, the key grammar and the execution's text form inside it, the
+/// query envelopes on both reply legs, the encoding string and its named-field
+/// codec, and the Zenoh wire protocol version underneath everything.
+const FROZEN_BOOTSTRAP_TRANSPORT: PinnedTests = PinnedTests {
+    what: "frozen bootstrap transport facts",
+    package: "phoxal-bus",
+    tests: &[
+        "abi::tests::the_bootstrap_encoding_and_codec_are_pinned_to_their_literals",
+        "metadata::tests::the_bootstrap_reply_attachment_is_pinned_to_its_literal_fields",
+        "query::tests::the_bootstrap_error_leg_is_pinned_to_its_literal_fields",
+        "session::tests::the_bootstrap_discovery_session_is_pinned_to_a_scouting_free_client",
+        "session::tests::the_bootstrap_execution_text_form_is_pinned_to_the_session_id_spelling",
+        "session::tests::the_bootstrap_key_grammar_is_pinned_to_its_literal",
+        "session::tests::the_zenoh_wire_protocol_version_is_pinned_to_its_literal",
     ],
 };
 
@@ -80,6 +102,7 @@ impl Rehearsal {
         for (kind, pinned) in [
             (GroupKind::VersionSemantics, VERSION_SEMANTICS),
             (GroupKind::FrozenBootstrap, FROZEN_BOOTSTRAP),
+            (GroupKind::FrozenBootstrap, FROZEN_BOOTSTRAP_TRANSPORT),
         ] {
             eprintln!("drilling {} ({})", pinned.what, pinned.package);
             groups.push(Group {

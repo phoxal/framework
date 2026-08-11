@@ -66,8 +66,8 @@
 //!   bounded drop-oldest ring with loss evidence, and streams refuse to evict
 //!   an older chunk when their ring is saturated.
 //!
-//! Contract identity lives entirely in the Zenoh key - the version is folded
-//! into `<Endpoint as EndpointDescriptor>::TOPIC` - so a receiver's per-key subscription
+//! Contract identity lives entirely in the Zenoh key - it is
+//! `<Endpoint as EndpointDescriptor>::TOPIC` - so a receiver's per-key subscription
 //! is the fast-reject, and the decode path only still validates the codec. A
 //! decode failure is counted (`decode_errors`) + logged as a health signal,
 //! never a silent accept. Timeline-aware handles separately count purged or

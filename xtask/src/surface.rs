@@ -67,20 +67,37 @@ pub(crate) const CONTRACT_CRATES: [ContractCrate; 5] = [
 /// `supervisor/connect` is the one exchange two Phoxal binaries complete before
 /// they know whether they agree on anything else, so its record covers the key
 /// spelling, both frozen document shapes, and the canonical framework-version
-/// spelling inside them. Nothing here may move in any release of any line, and
-/// a change that moves one is the single failure with no autonomous remedy - so
-/// the checker names it as such instead of leaving the reader to notice which
-/// of many records it was.
+/// spelling inside them.
+///
+/// The rest of the list is the transport that exchange stands on: everything an
+/// attaching client traverses *before* it can decode that reply. A future line
+/// that moved the key grammar, the query envelopes, the encoding or the Zenoh
+/// wire protocol would leave the frozen documents intact and unreachable, and
+/// the promise would be broken with no gate noticing. Nothing here may move in
+/// any release of any line, and a change that moves one is the single failure
+/// with no autonomous remedy - so the checker names it as such instead of
+/// leaving the reader to notice which of many records it was.
+///
+/// `phoxal-bus identifier participant-ready-key` is deliberately absent: a
+/// client composes it only after the bootstrap has already answered.
 ///
 /// The set is restated here for the same reason the record kinds are: the
 /// checker depends on no framework crate. It cannot go stale silently - a
 /// renamed or removed frozen record loses this identity, which the comparison
 /// reports as a removal and this list still recognizes.
-const FROZEN_RECORDS: [(&str, RecordKind, &str); 1] = [(
-    "phoxal-api",
-    RecordKind::Endpoint,
-    "supervisor supervisor/connect",
-)];
+const FROZEN_RECORDS: [(&str, RecordKind, &str); 7] = [
+    (
+        "phoxal-api",
+        RecordKind::Endpoint,
+        "supervisor supervisor/connect",
+    ),
+    ("phoxal-bus", RecordKind::Envelope, "BusMetadata"),
+    ("phoxal-bus", RecordKind::Envelope, "QueryFailure"),
+    ("phoxal-bus", RecordKind::Identifier, "bus-key-composition"),
+    ("phoxal-bus", RecordKind::Identifier, "bus-key-root"),
+    ("phoxal-bus", RecordKind::Identifier, "encoding"),
+    ("phoxal-bus", RecordKind::Identifier, "zenoh-wire-protocol"),
+];
 
 /// The kinds of record a surface document carries.
 ///
@@ -801,6 +818,114 @@ mod tests {
             );
             assert!(rendered(&changes).contains("[FROZEN BOOTSTRAP]"));
         }
+    }
+
+    /// One side that holds `records` on `crate_name` and nothing anywhere else.
+    fn only(crate_name: &str, records: Vec<Value>) -> BTreeMap<String, Value> {
+        CONTRACT_CRATES
+            .iter()
+            .map(|contract_crate| {
+                let declared = if contract_crate.name == crate_name {
+                    records.clone()
+                } else {
+                    Vec::new()
+                };
+                (
+                    contract_crate.name.to_owned(),
+                    json!({ "records": declared }),
+                )
+            })
+            .collect()
+    }
+
+    /// A record of `kind` that the comparison names under `key`.
+    fn record_named(kind: RecordKind, key: &str) -> Value {
+        match kind {
+            RecordKind::Endpoint => {
+                let (family, path) = key
+                    .split_once(' ')
+                    .expect("an endpoint identity is a family and a path");
+                json!({
+                    "delivery": "query",
+                    "family": family,
+                    "kind": "query",
+                    "path": path,
+                    "payload": Value::Null,
+                    "record": "endpoint",
+                    "request": {"fields": [], "kind": "struct"},
+                    "response": {"fields": [], "kind": "struct"},
+                })
+            }
+            RecordKind::Document => json!({
+                "body": {"fields": [], "kind": "struct"},
+                "name": "Doc",
+                "record": "document",
+                "tag": key,
+            }),
+            RecordKind::Envelope => json!({
+                "body": {"fields": [], "kind": "struct"},
+                "name": key,
+                "record": "envelope",
+            }),
+            RecordKind::Identifier => identifier(key, "the frozen spelling"),
+            RecordKind::Launch => launch("execution-id", true),
+        }
+    }
+
+    /// Every entry in the frozen set is recognized when it breaks.
+    ///
+    /// The list is restated in this crate rather than imported, so the failure
+    /// it can have is an entry naming an identity the comparison never
+    /// produces: that entry would then silently protect nothing.
+    #[test]
+    fn every_frozen_record_is_recognized_when_it_breaks() {
+        for (crate_name, kind, key) in FROZEN_RECORDS {
+            let record = record_named(kind, key);
+            let changes = SurfaceSet::read(&only(crate_name, vec![record]))
+                .expect("the baseline reads")
+                .changes_to(
+                    &SurfaceSet::read(&only(crate_name, Vec::new())).expect("the side reads"),
+                );
+            assert!(
+                changes
+                    .iter()
+                    .any(RecordChange::breaks_the_frozen_bootstrap),
+                "{crate_name} {} {key} is frozen but a break in it is not reported as one: {}",
+                kind.token(),
+                rendered(&changes)
+            );
+        }
+    }
+
+    /// The transport beneath the bootstrap is frozen on the same terms as the
+    /// bootstrap itself: a client that cannot reach the key never decodes the
+    /// one reply that would have named the disagreement.
+    #[test]
+    fn a_moved_transport_fact_beneath_the_bootstrap_is_a_frozen_finding() {
+        let bus = |protocol: &str| {
+            only(
+                "phoxal-bus",
+                vec![
+                    identifier("bus-key-root", "phoxal/{execution}"),
+                    identifier("bus-key-composition", "phoxal/{execution}/{topic}"),
+                    identifier("encoding", "phoxal/v0;codec=1"),
+                    identifier("zenoh-wire-protocol", protocol),
+                ],
+            )
+        };
+        let changes = SurfaceSet::read(&bus("9"))
+            .expect("the baseline reads")
+            .changes_to(&SurfaceSet::read(&bus("10")).expect("the current side reads"));
+        let report = rendered(&changes);
+        assert!(
+            report.contains("changed  phoxal-bus identifier zenoh-wire-protocol"),
+            "{report}"
+        );
+        assert!(report.contains("[FROZEN BOOTSTRAP]"), "{report}");
+        assert_eq!(
+            CompatibilityImpact::of(&changes),
+            CompatibilityImpact::Breaking
+        );
     }
 
     /// The freeze is about the frozen record and nothing else: an ordinary

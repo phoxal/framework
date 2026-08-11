@@ -60,8 +60,13 @@ The gate is satisfied by the change going away, never by the version growing to 
 ### 3. A frozen bootstrap fact drifted
 
 Stop.
-The frozen set is the `supervisor/connect` key spelling, both bootstrap document shapes, the canonical framework-version spelling inside them, and the transport facts reachable from the bootstrap.
+The frozen set is the `supervisor/connect` key spelling, both bootstrap document shapes, the canonical framework-version spelling inside them, and the bootstrap-reachable transport facts: discovery, key grammar, query envelope, encoding, zenoh wire protocol.
+Those five are everything an attaching client traverses *before* it can decode the bootstrap reply, so a line that moved one of them would leave the frozen documents intact and unreachable.
+Concretely they are the `phoxal-bus` records `bus-key-root`, `bus-key-composition`, `encoding`, `zenoh-wire-protocol`, `BusMetadata` and `QueryFailure`, plus the discovery mechanics and the transport version their own pin tests hold.
 A report marking a record `[FROZEN BOOTSTRAP]`, or a failing bootstrap pin test, means one of them moved.
+
+A Zenoh upgrade that changes the wire protocol version lands here too.
+It is not a routine dependency bump: peers that disagree on it never form a session, so nothing above it ever gets the chance to report the disagreement.
 
 Do not fix forward.
 Do not adjust the pin to match what the code now produces.

@@ -9,6 +9,27 @@
 //! compatibility is the reader's, through
 //! [`FrameworkVersion::is_compatible_with`]; a supervisor that shipped a
 //! verdict would be answering a question only the peer can ask.
+//!
+//! # The promise includes the transport beneath it
+//!
+//! A frozen document is worth nothing if the path to it moves: a client that
+//! cannot reach this key never gets to decode the one reply that would have
+//! named the disagreement. So the freeze covers everything an attaching client
+//! traverses before this reply, each owned and pinned by `phoxal-bus`:
+//!
+//! - **discovery** - a client-mode session on the operator's endpoint, with
+//!   multicast scouting off, reading the executions of the routers it is
+//!   directly connected to;
+//! - **the key grammar** - `phoxal/{execution}/{topic}`, which this endpoint's
+//!   own `supervisor/connect` composes into;
+//! - **the query envelopes** - the `BusMetadata` attachment a reply carries and
+//!   the `QueryFailure` body the error leg carries;
+//! - **the encoding** - `phoxal/v0;codec=1`, MessagePack with named fields;
+//! - **the Zenoh wire protocol version**, without which no session forms at
+//!   all.
+//!
+//! All of them are preserved across framework majors on the same terms as the
+//! documents below.
 
 use phoxal_runtime_contract::version::FrameworkVersion;
 
@@ -93,6 +114,38 @@ mod tests {
             "supervisor/connect"
         );
         assert_ne!(PRESENCE_KEY, <ConnectEndpoint as EndpointDescriptor>::TOPIC);
+    }
+
+    /// The key a client actually addresses is the bus root composed with this
+    /// topic, so the composed spelling is pinned as a literal too: the freeze
+    /// covers the whole path to the bootstrap, not only its last segment. The
+    /// grammar is read out of the bus's own declared surface rather than
+    /// restated here, so a crate that moved it cannot leave this test agreeing
+    /// with itself.
+    ///
+    /// That the live session composes the same key is proved separately, end to
+    /// end, by `phoxal`'s `wire_key_composition` test. That one composes from
+    /// whatever the two halves currently are, which is what makes this literal
+    /// the pin rather than a second copy of it.
+    #[test]
+    fn the_composed_bootstrap_wire_key_is_pinned_to_its_literal() {
+        const EXECUTION: &str = "1c8f3a5b7d9e0f2a4b6c8d0e1f325476";
+
+        let surface = phoxal_bus::__compat::contract_surface();
+        assert!(
+            surface.contains(
+                r#"{"name":"bus-key-composition","record":"identifier","value":"phoxal/{execution}/{topic}"}"#
+            ),
+            "the bus must declare the key grammar the bootstrap composes into: {surface}"
+        );
+
+        let composed = "phoxal/{execution}/{topic}"
+            .replace("{execution}", EXECUTION)
+            .replace("{topic}", <ConnectEndpoint as EndpointDescriptor>::TOPIC);
+        assert_eq!(
+            composed,
+            "phoxal/1c8f3a5b7d9e0f2a4b6c8d0e1f325476/supervisor/connect"
+        );
     }
 
     /// Both documents are pinned as literal JSON, including the tag strings and
