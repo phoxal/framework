@@ -1,10 +1,12 @@
 //! The read side of the embedded participant-metadata document.
 //!
 //! Every participant binary carries one [`ParticipantContract`] in a linker
-//! section. The document states the framework train the binary was built from -
-//! the one compatibility identity two Phoxal processes compare, for exact
-//! equality - plus the participant's own facts: what it is, what it requires,
-//! and the config it accepts. The same contract is persisted with the reusable
+//! section. The document states the exact framework train the binary was built
+//! from - the one compatibility identity two Phoxal processes compare, by the
+//! compatibility line the two trains belong to - plus the participant's own
+//! facts: what it is, what it requires, and the config it accepts. The record
+//! stays exact so it can name its train; the comparison is the line. The same
+//! contract is persisted with the reusable
 //! artifact in a runtime bundle; keeping one type for both boundaries prevents
 //! a binary's identity and compatibility claims from being copied into a second
 //! DTO.
@@ -44,8 +46,9 @@ pub const PARTICIPANT_METADATA_SCHEMA_TAG: &str = "phoxal/participant-metadata/v
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantContract {
-    /// The framework train the artifact was built from, and the whole of what
-    /// it claims about compatibility.
+    /// The exact framework train the artifact was built from, and the whole of
+    /// what it claims about compatibility. A validator compares the line this
+    /// version belongs to, never the version itself.
     pub framework: FrameworkVersion,
     /// The compile-time identity of the reusable artifact.
     pub id: ParticipantArtifactId,

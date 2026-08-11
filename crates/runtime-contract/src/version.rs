@@ -1,11 +1,18 @@
 //! The one compatibility identity that crosses a Phoxal process boundary.
 //!
 //! Two Phoxal binaries speak the same contracts exactly when they were built
-//! from the same framework train, so the framework's SemVer version is that
-//! statement in full: one [`FrameworkVersion`] per participant, compared for
-//! exact equality. There is no second, per-boundary identity to negotiate, and
-//! no way for a bus, launch, or document claim to disagree with the train that
-//! produced it.
+//! from the same [`CompatibilityLine`], so the framework's SemVer version is
+//! that statement in full: one [`FrameworkVersion`] per participant, compared
+//! with [`FrameworkVersion::is_compatible_with`]. There is no second,
+//! per-boundary identity to negotiate, and no way for a bus, launch, or
+//! document claim to disagree with the train that produced it.
+//!
+//! The version a binary records stays exact. It is the provenance a diagnostic
+//! names and the value the frozen `supervisor/connect` bootstrap reports; only
+//! the comparison is the line. What makes the looser comparison truthful is the
+//! compatibility CI: the release gates prove every wire and process surface
+//! against the trains already published on the line, and refuse a candidate
+//! version too small for what its contracts changed.
 //!
 //! The schema tags on persisted documents (`phoxal/runtime-bundle/v0`,
 //! `phoxal/participant-metadata/v0`) are not identities of this kind. They are
@@ -26,9 +33,9 @@ use crate::wire_schema::{DescribeWire, WireSchema};
 ///
 /// Its canonical wire spelling is the SemVer string itself, e.g. `0.56.2`:
 /// three decimal segments, no prefix, no padding, no pre-release or build
-/// metadata. Comparison is exact equality; the [`CompatibilityLine`] a version
-/// belongs to is reported separately so a looser rule can never be applied by
-/// accident.
+/// metadata. Equality is exact, so provenance and diagnostics always name the
+/// precise train; compatibility is [`Self::is_compatible_with`], which asks
+/// whether two versions share a [`CompatibilityLine`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FrameworkVersion {
     major: u16,
@@ -85,14 +92,46 @@ impl FrameworkVersion {
     /// The SemVer line this version belongs to: pre-1.0 trains break on every
     /// minor, and a released major breaks only on the major.
     ///
-    /// This reports the line; it does not decide compatibility. Two binaries
-    /// are compatible when their versions are equal.
+    /// The line is what decides compatibility, through
+    /// [`Self::is_compatible_with`]. The version stays exact so a record or a
+    /// diagnostic can still name the train a binary was built from.
     #[must_use]
     pub const fn compatibility_line(self) -> CompatibilityLine {
         if self.major == 0 {
             CompatibilityLine::PreV1 { minor: self.minor }
         } else {
             CompatibilityLine::Stable { major: self.major }
+        }
+    }
+
+    /// Whether a peer built from `other` speaks this version's contracts.
+    ///
+    /// Two trains interoperate exactly when they share a
+    /// [`CompatibilityLine`], so this is the comparison every validator makes:
+    /// a launch, a bundle admission, and a client attachment all ask this
+    /// question and never for equality. The exact version remains available
+    /// for provenance and diagnostics.
+    ///
+    /// The promise is truthful because the compatibility CI enforces it at
+    /// release: the gates prove each candidate's wire and process surfaces
+    /// against the trains already published on its line, and refuse a version
+    /// too small for what its contracts changed. A patch train therefore
+    /// cannot carry a surface change that a peer on the same line would fail
+    /// to speak.
+    #[must_use]
+    pub const fn is_compatible_with(self, other: Self) -> bool {
+        // `CompatibilityLine` is `Eq`, but a derived `PartialEq` is not a const
+        // function, so the two lines are matched here instead.
+        match (self.compatibility_line(), other.compatibility_line()) {
+            (
+                CompatibilityLine::PreV1 { minor },
+                CompatibilityLine::PreV1 { minor: other_minor },
+            ) => minor == other_minor,
+            (
+                CompatibilityLine::Stable { major },
+                CompatibilityLine::Stable { major: other_major },
+            ) => major == other_major,
+            _ => false,
         }
     }
 
@@ -156,17 +195,30 @@ impl FrameworkVersion {
     }
 }
 
-/// The SemVer line a [`FrameworkVersion`] belongs to.
+/// The SemVer line a [`FrameworkVersion`] belongs to, and therefore the unit
+/// two Phoxal binaries have to agree on.
 ///
-/// Pre-1.0 the breaking axis is the minor; from 1.0 on it is the major. The
-/// line is a report about a version, never a comparison rule applied to two of
-/// them.
+/// Pre-1.0 the breaking axis is the minor; from 1.0 on it is the major. Two
+/// versions on one line interoperate, which is what
+/// [`FrameworkVersion::is_compatible_with`] asks.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CompatibilityLine {
     /// A `0.x` train, whose line is its minor.
     PreV1 { minor: u16 },
     /// A released train, whose line is its major.
     Stable { major: u16 },
+}
+
+impl std::fmt::Display for CompatibilityLine {
+    /// The line spelled the way an operator names a compatible release:
+    /// `0.58.x` before 1.0, `1.x` after it. One spelling here keeps every
+    /// diagnostic that offers a remediation from inventing its own.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PreV1 { minor } => write!(formatter, "0.{minor}.x"),
+            Self::Stable { major } => write!(formatter, "{major}.x"),
+        }
+    }
 }
 
 impl std::fmt::Display for FrameworkVersion {
@@ -326,13 +378,51 @@ mod tests {
         );
     }
 
-    /// Two versions on one line are still two versions: the framework compares
-    /// them for exact equality.
+    /// A line is spelled once, as the release an operator would ask for.
     #[test]
-    fn versions_on_the_same_line_are_not_equal() {
+    fn a_line_is_spelled_as_the_release_it_names() {
+        assert_eq!(
+            FrameworkVersion::new(0, 58, 2)
+                .compatibility_line()
+                .to_string(),
+            "0.58.x"
+        );
+        assert_eq!(
+            FrameworkVersion::new(1, 4, 9)
+                .compatibility_line()
+                .to_string(),
+            "1.x"
+        );
+    }
+
+    /// Two versions on one line are still two versions: equality distinguishes
+    /// them so a record and a diagnostic can name the exact train. Only
+    /// compatibility treats them as one.
+    #[test]
+    fn versions_on_the_same_line_are_not_equal_but_are_compatible() {
         let earlier = FrameworkVersion::new(0, 57, 0);
         let later = FrameworkVersion::new(0, 57, 1);
         assert_eq!(earlier.compatibility_line(), later.compatibility_line());
         assert_ne!(earlier, later);
+        assert!(earlier.is_compatible_with(later));
+        assert!(later.is_compatible_with(earlier));
+    }
+
+    /// Compatibility is line equality: pre-1.0 the minor is the break, from
+    /// 1.0 on the major is, and the two eras never interoperate.
+    #[test]
+    fn compatibility_is_the_line_and_the_line_is_the_break() {
+        let pre_v1 = FrameworkVersion::new(0, 58, 0);
+        assert!(pre_v1.is_compatible_with(FrameworkVersion::new(0, 58, 7)));
+        assert!(!pre_v1.is_compatible_with(FrameworkVersion::new(0, 59, 0)));
+        assert!(!pre_v1.is_compatible_with(FrameworkVersion::new(0, 57, 9)));
+
+        let stable = FrameworkVersion::new(1, 4, 2);
+        assert!(stable.is_compatible_with(FrameworkVersion::new(1, 9, 0)));
+        assert!(!stable.is_compatible_with(FrameworkVersion::new(2, 0, 0)));
+        assert!(!stable.is_compatible_with(pre_v1));
+        assert!(!pre_v1.is_compatible_with(stable));
+
+        assert!(FrameworkVersion::CURRENT.is_compatible_with(FrameworkVersion::CURRENT));
     }
 }

@@ -5,8 +5,9 @@ use anyhow::Result;
 /// Compatibility is one identity - the framework train version - reached
 /// through three spellings that must all be the same fact: the facade constant
 /// a role macro splices into a binary, the process-contract value a running
-/// participant compares, and the workspace version Cargo builds everything
-/// from.
+/// participant reads its compatibility line from, and the workspace version
+/// Cargo builds everything from. All three are the exact train; only the
+/// comparison between two of them is the line.
 #[test]
 fn the_facade_framework_version_is_the_workspace_train_version() -> Result<()> {
     use phoxal::__private::compatibility as compat;

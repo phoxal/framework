@@ -15,8 +15,8 @@
 /// bus metadata as informational provenance, never in the wire body.
 ///
 /// A family names meaning, not a revision. Compatibility between two
-/// participants is the framework train version they were built from, compared
-/// for exact equality, so no key or descriptor carries a per-API version.
+/// participants is the compatibility line of the framework trains they were
+/// built from, so no key or descriptor carries a per-API version.
 ///
 /// The marker keeps one family's bodies from standing in for another's at
 /// compile time. `ParticipantSpec::ContractApi` pins a participant to exactly

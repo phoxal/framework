@@ -1,11 +1,10 @@
 //! The one sanctioned writer of the embedded participant-metadata document.
 //!
-//! [`ParticipantMetadata`](crate::metadata::ParticipantMetadata) is
-//! deserialize-only, so the document's serialized shape is defined exactly
-//! once, here, by [`ParticipantMetadataRecord`]. The framework train version is
-//! the document's whole compatibility claim and arrives as a typed
-//! [`FrameworkVersion`](crate::version::FrameworkVersion); no writer anywhere
-//! invents a version of its own.
+//! [`ParticipantMetadata`] is deserialize-only, so the document's serialized
+//! shape is defined exactly once, here, by [`ParticipantMetadataRecord`]. The
+//! framework train version is the document's whole compatibility claim and
+//! arrives as a typed [`FrameworkVersion`]; no writer anywhere invents a
+//! version of its own.
 //!
 //! A role macro cannot call `serde_json` though: the record it emits lands in a
 //! `#[link_section]` static, whose length must be a constant, and its
@@ -40,8 +39,8 @@ pub use const_format::concatcp;
 
 /// The serialize side of the embedded metadata document.
 ///
-/// The serialized form of one [`ParticipantContract`](crate::metadata::ParticipantContract)
-/// while its artifact id is still a const string in a role-macro expansion.
+/// The serialized form of one [`ParticipantContract`] while its artifact id is
+/// still a const string in a role-macro expansion.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantContractRecord<'a> {
@@ -52,9 +51,8 @@ pub struct ParticipantContractRecord<'a> {
     pub config_schema: serde_json::Value,
 }
 
-/// Its variants and renames mirror
-/// [`ParticipantMetadata`](crate::metadata::ParticipantMetadata) exactly - that
-/// is the point: a record written through this type is, by construction, a
+/// Its variants and renames mirror [`ParticipantMetadata`] exactly - that is
+/// the point: a record written through this type is, by construction, a
 /// document the parser accepts.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "schema")]
