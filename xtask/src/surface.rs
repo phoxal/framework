@@ -362,7 +362,7 @@ const REPORTED_DIFFERENCES: usize = 5;
 const REPORTED_VALUE_LENGTH: usize = 72;
 
 /// One place inside a changed record where the two declarations disagree.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FieldDifference {
     path: String,
     baseline: String,
@@ -372,7 +372,11 @@ pub(crate) struct FieldDifference {
 impl FieldDifference {
     /// The first places two declarations of one record disagree, named by their
     /// JSON path into the record.
-    fn between(baseline: &Value, current: &Value) -> Vec<Self> {
+    ///
+    /// The authored-source leg reads it for the same job on a different
+    /// document: two compilations of one authored project that disagree about
+    /// what it means.
+    pub(crate) fn between(baseline: &Value, current: &Value) -> Vec<Self> {
         let mut found = Vec::new();
         Self::walk("$", Some(baseline), Some(current), &mut found);
         found

@@ -35,7 +35,7 @@ pub(crate) enum Side {
 
 impl Side {
     /// The probe directory this side reuses across runs.
-    fn directory_name(&self) -> String {
+    pub(crate) fn directory_name(&self) -> String {
         match self {
             Self::Baseline(version) => format!("baseline-{version}"),
             Self::Current => "current".to_owned(),
@@ -220,13 +220,13 @@ impl ContractSurfaces for ProbeSurfaces {
 
 /// The Cargo that invoked this runner, so a probe builds with the same
 /// toolchain the workspace is being checked with.
-fn cargo_command() -> String {
+pub(crate) fn cargo_command() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned())
 }
 
 /// Write a generated file only when its content changed, so Cargo's own
 /// freshness check keeps the probe's build cached between runs.
-fn write_if_changed(path: &Path, content: &str) -> Result<()> {
+pub(crate) fn write_if_changed(path: &Path, content: &str) -> Result<()> {
     if fs::read_to_string(path).is_ok_and(|existing| existing == content) {
         return Ok(());
     }

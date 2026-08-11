@@ -11,6 +11,11 @@ use crate::source::document::{Document, DocumentKind, Origin, SourceError};
 
 /// A versioned authored `component.yaml` document; the schema tag selects the
 /// variant.
+///
+/// The tag names the source language this document is written in, not a
+/// framework compatibility identity. Adding a generation means adding a variant
+/// here and its own `Manifest::normalize` arm; nothing below the
+/// normalization boundary learns that the generation exists.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "schema")]
 pub enum Manifest {
@@ -74,6 +79,37 @@ impl Manifest {
                 .map(|error| error.in_component(component_type))
                 .collect()
         })
+    }
+
+    /// Validate this document as the definition of `component_type` and resolve
+    /// its own grammar into the version-independent component the compiler
+    /// consumes.
+    ///
+    /// `root` is the directory the document was read from, so a rejection names
+    /// the file an author has to edit. Schema-specific validation stays with
+    /// the schema: the compiler below this point has no rules of its own about
+    /// how a component document is spelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CompileError::Document`] when the document breaks its
+    /// own rules, and [`crate::CompileError::Transcode`] when an authored
+    /// capability does not adopt into its canonical counterpart.
+    pub(crate) fn normalize(
+        self,
+        component_type: &str,
+        root: &Path,
+    ) -> Result<crate::normalized::Component, crate::CompileError> {
+        self.validate_as(component_type)
+            .map_err(|violations| crate::CompileError::Document {
+                source: SourceError::Invalid {
+                    origin: Origin::File(crate::source::document_path(root, Self::KIND)),
+                    violations: Violations::Component(violations),
+                },
+            })?;
+        match self {
+            Self::V0(body) => body.normalize(),
+        }
     }
 }
 

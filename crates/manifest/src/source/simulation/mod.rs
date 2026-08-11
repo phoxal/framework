@@ -11,6 +11,11 @@ use crate::source::document::{Document, DocumentKind, Origin, SourceError};
 
 /// A versioned authored `simulation.yaml` document; the schema tag selects
 /// the variant.
+///
+/// The tag names the source language this document is written in, not a
+/// framework compatibility identity. Adding a generation means adding a variant
+/// here and its own `Manifest::normalize` arm; nothing below the
+/// normalization boundary learns that the generation exists.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "schema")]
 pub enum Manifest {
@@ -58,6 +63,20 @@ impl Manifest {
     /// written.
     pub fn write_to_dir(&self, directory: impl AsRef<Path>) -> Result<(), SourceError> {
         self.write_dir(directory.as_ref())
+    }
+
+    /// Resolve this document's own grammar into the version-independent
+    /// simulation the compiler consumes.
+    ///
+    /// This is the only place a simulation schema generation is matched on.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the selected generation's normalization rejects.
+    pub(crate) fn normalize(self) -> Result<crate::normalized::Simulation, crate::CompileError> {
+        match self {
+            Self::V0(body) => body.normalize(),
+        }
     }
 }
 
@@ -123,6 +142,24 @@ capabilities:
             simulation.capabilities.get("emergency_stop"),
             Some(super::v0::Capability::EmergencyStop)
         ));
+        Ok(())
+    }
+
+    /// The schema tag alone selects the variant: a body that is structurally
+    /// valid under the current generation still fails when it is tagged with an
+    /// unknown one, because the tag is read before the body is interpreted.
+    #[test]
+    fn future_schema_tag_fails_on_the_variant_not_the_body() -> anyhow::Result<()> {
+        const BODY: &str =
+            "capabilities:\n  range:\n    kind: range\n    sampling_period_hz: 20.0\n";
+
+        let error = Manifest::parse(&format!("schema: phoxal/simulation/v1\n{BODY}"))
+            .expect_err("a valid body under an unknown schema tag must still fail");
+        assert!(
+            error.to_string().contains("phoxal/simulation/v1"),
+            "got: {error}"
+        );
+        Manifest::parse(&format!("schema: phoxal/simulation/v0\n{BODY}"))?;
         Ok(())
     }
 

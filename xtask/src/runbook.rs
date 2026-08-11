@@ -31,6 +31,9 @@ pub(crate) enum RunbookRule {
     /// Rule 7: the candidate version does not clear an unchanged or additive
     /// change.
     UnderSizedCandidate,
+    /// Rule 8: a document the published reader accepted is now rejected, or
+    /// compiles to something else.
+    AuthoredSourceBreak,
 }
 
 impl RunbookRule {
@@ -41,6 +44,7 @@ impl RunbookRule {
             Self::FrozenBootstrapDrift => "rule 3",
             Self::ToolchainFloorRaised => "rule 4",
             Self::UnderSizedCandidate => "rule 7",
+            Self::AuthoredSourceBreak => "rule 8",
         }
     }
 
@@ -59,6 +63,10 @@ impl RunbookRule {
                 "the toolchain floor rose - revert the raise or acknowledge it and release a minor"
             }
             Self::UnderSizedCandidate => "raise the candidate version to the stated minimum",
+            Self::AuthoredSourceBreak => {
+                "an authored document stopped being read the way it was - restore it in the \
+                 normalizer, or take the break to the next line with the breaking marker"
+            }
         }
     }
 }
@@ -70,7 +78,8 @@ pub(crate) struct RunbookPointer {
 }
 
 impl RunbookPointer {
-    /// Point at the rules that answer this refusal, most severe first.
+    /// Point at the rules that answer this refusal, in the order the document
+    /// numbers them.
     pub(crate) fn to(rules: impl IntoIterator<Item = RunbookRule>) -> Self {
         let mut rules = rules.into_iter().collect::<Vec<_>>();
         rules.sort();
@@ -148,6 +157,7 @@ mod tests {
             RunbookRule::FrozenBootstrapDrift,
             RunbookRule::ToolchainFloorRaised,
             RunbookRule::UnderSizedCandidate,
+            RunbookRule::AuthoredSourceBreak,
         ] {
             for number in rule.numbering().trim_start_matches("rules ").split(" and ") {
                 let heading = format!("### {}.", number.trim_start_matches("rule "));

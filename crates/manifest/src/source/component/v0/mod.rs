@@ -157,6 +157,24 @@ impl fmt::Display for ValidationError {
 }
 
 impl Manifest {
+    /// Resolve this generation's grammar into the version-independent
+    /// component.
+    ///
+    /// The authored capability map and its canonical counterpart are the same
+    /// wire shape by construction, so this generation adopts it wholesale; the
+    /// GTIN is a catalog fact that no compilation stage below this point reads,
+    /// so it does not survive normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CompileError::Transcode`] when an authored capability
+    /// does not adopt into its canonical counterpart.
+    pub(crate) fn normalize(self) -> Result<crate::normalized::Component, crate::CompileError> {
+        Ok(crate::normalized::Component {
+            capabilities: crate::source::transcode(&self.capabilities, "component capabilities")?,
+        })
+    }
+
     /// Every rule this document breaks, or `Ok(())` when it breaks none.
     ///
     /// # Errors

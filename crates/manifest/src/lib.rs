@@ -1,4 +1,16 @@
 //! Authored manifest readers and deterministic source-to-canonical compilation.
+//!
+//! Authored documents are written in a *source language*, and the `schema:` tag
+//! at the head of one names which generation of that language it is written in.
+//! A schema tag is never a framework compatibility identity: it negotiates
+//! nothing between binaries, no runtime reads it, and `FrameworkVersion`
+//! remains the only negotiated compatibility identity.
+//!
+//! A generation's syntax ends at one boundary. [`source`] owns the versioned
+//! DTOs and their rules; each one normalizes into `normalized`, the
+//! version-independent form; and the compiler in this module reads only that.
+//! So a new source generation is a new DTO plus a new `normalize` - never a
+//! second copy of the compiler.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -9,11 +21,17 @@ use phoxal_model::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId,
 use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantArtifactIdError};
 
 use source::SourceError;
-use source::robot::v0::DriverConfig;
+use source::robot::driver::DriverConfig;
 
 pub mod build_requirements;
 pub mod schema;
 pub mod source;
+
+mod normalized;
+
+// A second source generation, proved end to end without shipping one.
+#[cfg(test)]
+mod source_generation_proof;
 
 // The authored URDF DTO stays private: `phoxal-model` owns the normalized
 // structure a caller is meant to read. Only the failure vocabulary is public,
@@ -265,8 +283,11 @@ impl SourceSet {
     pub fn compile(self) -> Result<CompiledProject, CompileError> {
         let project_root = canonicalize(&self.project_root)?;
         let robot_manifest = canonicalize(&self.robot_manifest)?;
-        let source::robot::Manifest::V0(manifest) = source::robot::Manifest::load(&robot_manifest)
-            .map_err(|source| CompileError::Document { source })?;
+        // The authored generation ends here: everything past this line reads
+        // the normalized robot and cannot tell which schema tag produced it.
+        let manifest = source::robot::Manifest::load(&robot_manifest)
+            .map_err(|source| CompileError::Document { source })?
+            .normalize()?;
 
         let resolved = ResolvedSources {
             robot_manifest,
@@ -323,7 +344,7 @@ impl ResolvedSources {
     /// documents that are already resolved on disk.
     fn compile_model(
         &self,
-        manifest: &source::robot::v0::Manifest,
+        manifest: &normalized::Robot,
     ) -> Result<
         (
             phoxal_model::Robot,
@@ -351,12 +372,12 @@ impl ResolvedSources {
         }
 
         let mut component_instances = BTreeMap::new();
-        for (id, authored) in &manifest.robot.components {
+        for (id, authored) in &manifest.instances {
             let component = component_types
-                .get(authored.component.as_str())
+                .get(authored.component_type.as_str())
                 .ok_or_else(|| CompileError::UnknownComponentType {
                     instance: id.clone(),
-                    component_type: authored.component.clone(),
+                    component_type: authored.component_type.clone(),
                 })?;
             let mut direction_signs = BTreeMap::new();
             let mut roles = BTreeMap::new();
@@ -368,7 +389,7 @@ impl ResolvedSources {
                     });
                 }
                 let canonical_id = self.identity(CapabilityId::new(capability_id))?;
-                roles.insert(canonical_id, authored_roles.iter().copied().collect());
+                roles.insert(canonical_id, authored_roles.clone());
             }
             for (capability_id, parameters) in &authored.parameters {
                 let declared = component.capability(capability_id).ok_or_else(|| {
@@ -377,17 +398,17 @@ impl ResolvedSources {
                         capability_id: capability_id.clone(),
                     }
                 })?;
-                if declared.kind() != parameters.kind() {
+                if declared.kind() != parameters.kind {
                     return Err(CompileError::CapabilityKindMismatch {
                         instance: id.clone(),
                         capability_id: capability_id.clone(),
-                        authored: parameters.kind(),
+                        authored: parameters.kind,
                         declared: declared.kind(),
                     });
                 }
                 direction_signs.insert(
                     self.identity(CapabilityId::new(capability_id))?,
-                    parameters.direction_sign(),
+                    parameters.direction_sign,
                 );
             }
             let instance_id = self.identity(ComponentInstanceId::new(id))?;
@@ -395,7 +416,7 @@ impl ResolvedSources {
                 instance_id.clone(),
                 phoxal_model::compiler::component_instance_with_roles(
                     instance_id,
-                    self.identity(ComponentTypeId::new(&authored.component))?,
+                    self.identity(ComponentTypeId::new(&authored.component_type))?,
                     LinkId::new(&authored.mount_link),
                     direction_signs,
                     roles,
@@ -403,7 +424,7 @@ impl ResolvedSources {
             );
         }
 
-        let structure_path = self.robot_relative(&manifest.robot.structure)?;
+        let structure_path = self.robot_relative(&manifest.structure)?;
         let structure = urdf_dto::Structure::load(&structure_path)
             .and_then(|structure| structure.into_canonical(None))
             .map_err(|source| CompileError::Structure {
@@ -412,10 +433,10 @@ impl ResolvedSources {
             })?;
 
         let robot = phoxal_model::compiler::robot(RobotParts {
-            id: self.identity(RobotId::new(&manifest.robot.id))?,
-            clock: manifest.clock.into(),
-            kinematic: manifest.robot.kinematic.clone(),
-            motion_limits: manifest.robot.motion_limits,
+            id: self.identity(RobotId::new(&manifest.id))?,
+            clock: manifest.clock,
+            kinematic: manifest.kinematic.clone(),
+            motion_limits: manifest.motion_limits,
             component_instances,
             component_types,
             simulation_types,
@@ -444,16 +465,8 @@ impl ResolvedSources {
     > {
         let root = canonicalize(configured_root)?;
         let authored = source::component::Manifest::load(&root)
-            .map_err(|source| CompileError::Document { source })?;
-        authored
-            .validate_as(component_type)
-            .map_err(|errors| CompileError::Document {
-                source: SourceError::Invalid {
-                    origin: source::Origin::File(root.join("component.yaml")),
-                    violations: source::Violations::Component(errors),
-                },
-            })?;
-        let source::component::Manifest::V0(authored) = authored;
+            .map_err(|source| CompileError::Document { source })?
+            .normalize(component_type, &root)?;
 
         let structure_path = root.join("structure.urdf");
         let structure = urdf_dto::Structure::load(&structure_path)
@@ -462,50 +475,17 @@ impl ResolvedSources {
                 path: structure_path,
                 source,
             })?;
-        let component = phoxal_model::compiler::component(
-            Self::transcode(&authored.capabilities, "component capabilities")?,
-            structure,
-        );
+        let component = phoxal_model::compiler::component(authored.capabilities, structure);
 
         let simulation_path = root.join("simulation.yaml");
         if !simulation_path.is_file() {
             return Ok((component, None));
         }
-        let source::simulation::Manifest::V0(authored) =
-            source::simulation::Manifest::load(&simulation_path)
-                .map_err(|source| CompileError::Document { source })?;
-        let links = authored
-            .links
-            .into_iter()
-            .map(|(id, link)| (LinkId::new(id), link.contact_material))
-            .collect();
-        let simulation = phoxal_model::compiler::simulation(
-            Self::transcode(&authored.capabilities, "simulation capabilities")?,
-            links,
-        );
+        let authored = source::simulation::Manifest::load(&simulation_path)
+            .map_err(|source| CompileError::Document { source })?
+            .normalize()?;
+        let simulation = phoxal_model::compiler::simulation(authored.capabilities, authored.links);
         Ok((component, Some(simulation)))
-    }
-
-    /// Adopt an authored capability map into its canonical counterpart.
-    ///
-    /// The two shapes are serde-compatible by construction: the authored DTO's
-    /// job is to add defaults and permissive spellings on the way in, and the
-    /// canonical value is what is left once those are resolved. Going through
-    /// JSON is what keeps that "same wire, different obligations" relationship
-    /// explicit rather than hiding it in a hand-written field-by-field copy that
-    /// would silently drift.
-    fn transcode<T: serde::Serialize, U: serde::de::DeserializeOwned>(
-        authored: &T,
-        what: &'static str,
-    ) -> Result<U, CompileError> {
-        let value = serde_json::to_value(authored).map_err(|source| CompileError::Transcode {
-            authored: what,
-            source,
-        })?;
-        serde_json::from_value(value).map_err(|source| CompileError::Transcode {
-            authored: what,
-            source,
-        })
     }
 
     /// Attribute an identifier rejection to the document that carried it.
@@ -526,19 +506,19 @@ impl ResolvedSources {
 
     fn compile_source_facts(
         &self,
-        manifest: &source::robot::v0::Manifest,
+        manifest: &normalized::Robot,
     ) -> Result<(Vec<CompiledService>, Vec<CompiledDriver>), CompileError> {
         // `services` cannot contain the reserved `brain` identity here: every
         // entry into this compiler validates the authored document first, and
-        // `Manifest::validate` owns that rejection.
+        // the document's own rules own that rejection.
         let services = manifest
             .services
             .iter()
-            .map(|(id, service)| {
+            .map(|(id, config)| {
                 ParticipantArtifactId::new(id.clone())
                     .map(|id| CompiledService {
                         id,
-                        config: service.config.clone(),
+                        config: config.clone(),
                     })
                     .map_err(|source| CompileError::InvalidServiceImplementation {
                         service: id.clone(),
@@ -547,16 +527,17 @@ impl ResolvedSources {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let drivers = manifest
-            .robot
-            .components
+            .instances
             .iter()
             .filter_map(|(instance, component)| {
                 component.driver.as_ref().map(|config| {
-                    let implementation = ParticipantArtifactId::new(component.component.clone())
-                        .map_err(|source| CompileError::InvalidDriverImplementation {
-                            component_type: component.component.clone(),
-                            source,
-                        });
+                    let implementation =
+                        ParticipantArtifactId::new(component.component_type.clone()).map_err(
+                            |source| CompileError::InvalidDriverImplementation {
+                                component_type: component.component_type.clone(),
+                                source,
+                            },
+                        );
                     implementation.and_then(|implementation| {
                         self.identity(ComponentInstanceId::new(instance))
                             .map(|instance| CompiledDriver {
@@ -576,7 +557,7 @@ impl ResolvedSources {
     fn compile_assets(
         &self,
         project_root: &Path,
-        manifest: &source::robot::v0::Manifest,
+        manifest: &normalized::Robot,
         robot: &phoxal_model::Robot,
     ) -> Result<(CompiledAssets, Option<CompiledRouter>), CompileError> {
         let mut assets = CompiledAssets::default();
@@ -601,7 +582,7 @@ impl ResolvedSources {
                 });
             }
         }
-        let router = if let Some(relative) = &manifest.router.config {
+        let router = if let Some(relative) = &manifest.router_config {
             let source = self.robot_relative(relative)?;
             let bytes = std::fs::read(&source).map_err(|source_error| CompileError::Assets {
                 root: project_root.to_path_buf(),

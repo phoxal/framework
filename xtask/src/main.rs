@@ -1,8 +1,9 @@
 //! The framework workspace's command runner, reached as `cargo xtask <verb>`.
 //!
 //! Today it carries one verb group: `compatibility`, which compares the
-//! contract surfaces this workspace declares against the latest published
-//! framework train and says what release those changes require.
+//! contract surfaces this workspace declares, and the authored documents this
+//! workspace reads, against the latest published framework train, and says what
+//! release those changes require.
 //!
 //! The runner depends on no framework crate. Both sides of a comparison are
 //! read out of separately compiled probe projects, so building the checker
@@ -23,6 +24,7 @@ mod readiness;
 mod rehearsal;
 mod release;
 mod runbook;
+mod source;
 mod surface;
 mod toolchain;
 
@@ -31,6 +33,7 @@ use crate::index::SparseIndex;
 use crate::probe::ProbeSurfaces;
 use crate::readiness::V1Readiness;
 use crate::rehearsal::Rehearsal;
+use crate::source::SourceProbe;
 use crate::surface::CompatibilityImpact;
 
 /// The version this workspace would release next.
@@ -87,6 +90,7 @@ fn compare(options: &ComparisonOptions, gates_the_release: bool) -> Result<ExitC
     let report = CompatibilityCheck::new(
         SparseIndex::crates_io(),
         ProbeSurfaces::for_workspace()?,
+        SourceProbe::for_workspace()?,
         Version::parse(WORKSPACE_VERSION)?,
         toolchain::workspace_floor(&workspace_root()?)?,
     )

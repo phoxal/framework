@@ -9,30 +9,39 @@ use crate::index::PublishedVersions;
 use crate::probe::{ContractSurfaces, Extraction, Side};
 use crate::release::ReleaseStep;
 use crate::runbook::{RunbookPointer, RunbookRule};
+use crate::source::{AuthoredDocuments, SourceComparison};
 use crate::surface::{CompatibilityImpact, RecordChange, SurfaceSet};
 use crate::toolchain::{RustVersion, ToolchainFloor};
 
 /// The compatibility check: resolve the published baseline, read both sides'
-/// contract surfaces and toolchain floors, and classify the difference.
-pub(crate) struct CompatibilityCheck<V: PublishedVersions, S: ContractSurfaces> {
+/// contract surfaces, authored-source readings and toolchain floors, and
+/// classify the difference.
+pub(crate) struct CompatibilityCheck<
+    V: PublishedVersions,
+    S: ContractSurfaces,
+    A: AuthoredDocuments,
+> {
     versions: V,
     surfaces: S,
+    documents: A,
     workspace_version: Version,
     workspace_floor: RustVersion,
 }
 
-impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
+impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> CompatibilityCheck<V, S, A> {
     /// Compare `workspace_version`'s crates against whatever `versions` says is
     /// published.
     pub(crate) fn new(
         versions: V,
         surfaces: S,
+        documents: A,
         workspace_version: Version,
         workspace_floor: RustVersion,
     ) -> Self {
         Self {
             versions,
             surfaces,
+            documents,
             workspace_version,
             workspace_floor,
         }
@@ -40,15 +49,25 @@ impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
 
     /// Run the comparison, raising the mechanical impact to `declared`.
     ///
-    /// The baseline is read first: when the published crates carry no surface
-    /// there is nothing to compare against, and compiling the workspace side
-    /// would answer a question nobody can ask yet. The toolchain floor is read
-    /// from the same index entry the baseline came from, so it is compared even
-    /// on a train whose surfaces cannot be.
+    /// The authored source is read first, because it is the one axis that
+    /// speaks whatever the contract surfaces do: `phoxal-manifest` is not a
+    /// wire surface, so a published reader always exists to compare against
+    /// even on a train that states no surface at all.
+    ///
+    /// The contract baseline is read next: when the published crates carry no
+    /// surface there is nothing to compare against, and compiling the workspace
+    /// side would answer a question nobody can ask yet. The toolchain floor is
+    /// read from the same index entry the baseline came from, so it is compared
+    /// even on a train whose surfaces cannot be.
     pub(crate) fn run(&self, declared: CompatibilityImpact) -> Result<CompatibilityReport> {
         let train = self.versions.latest_train()?;
         let baseline = train.version.clone();
         let floor = ToolchainFloor::between(train.rust_version, self.workspace_floor.clone());
+        let source = SourceComparison::between(
+            &self.documents.read(&Side::Baseline(baseline.clone()))?,
+            &self.documents.read(&Side::Current)?,
+        )?;
+
         let Extraction::Surfaces(published) =
             self.surfaces.extract(&Side::Baseline(baseline.clone()))?
         else {
@@ -56,6 +75,7 @@ impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
                 baseline,
                 workspace_version: self.workspace_version.clone(),
                 floor,
+                source,
                 outcome: Outcome::NoComparableBaseline,
             });
         };
@@ -68,17 +88,16 @@ impl<V: PublishedVersions, S: ContractSurfaces> CompatibilityCheck<V, S> {
 
         let changes = SurfaceSet::read(&published)?.changes_to(&SurfaceSet::read(&current)?);
         let mechanical = CompatibilityImpact::of(&changes);
-        let effective = mechanical.max(declared);
         Ok(CompatibilityReport {
             workspace_version: self.workspace_version.clone(),
             floor,
             outcome: Outcome::Compared {
+                effective: mechanical.max(declared).max(source.impact()),
                 mechanical,
                 declared,
-                effective,
-                required: ReleaseStep::required(effective, &baseline),
                 changes,
             },
+            source,
             baseline,
         })
     }
@@ -89,6 +108,7 @@ pub(crate) struct CompatibilityReport {
     baseline: Version,
     workspace_version: Version,
     floor: ToolchainFloor,
+    source: SourceComparison,
     outcome: Outcome,
 }
 
@@ -96,25 +116,34 @@ impl CompatibilityReport {
     /// Every reason this candidate is constrained at all, in the order a
     /// reader meets them.
     ///
-    /// A baseline with no surface to compare against contributes none: the
-    /// check has nothing to say about contracts it cannot read. The toolchain
-    /// floor is a separate axis, read from the registry rather than from a
-    /// surface, so it still speaks on such a train.
+    /// A baseline with no surface to compare against contributes no contract
+    /// requirement: the check has nothing to say about contracts it cannot
+    /// read. The authored source and the toolchain floor are separate axes,
+    /// read from the published reader and from the registry rather than from a
+    /// surface, so both still speak on such a train.
     fn requirements(&self) -> Vec<ReleaseRequirement> {
         let mut requirements = Vec::new();
         if let Outcome::Compared {
-            effective,
-            required,
+            mechanical,
+            declared,
             changes,
             ..
         } = &self.outcome
         {
+            let impact = (*mechanical).max(*declared);
             requirements.push(ReleaseRequirement::Contracts {
-                impact: *effective,
-                step: *required,
+                impact,
+                step: ReleaseStep::required(impact, &self.baseline),
                 frozen: changes
                     .iter()
                     .any(RecordChange::breaks_the_frozen_bootstrap),
+            });
+        }
+        let source = self.source.impact();
+        if source > CompatibilityImpact::Unchanged {
+            requirements.push(ReleaseRequirement::AuthoredSource {
+                impact: source,
+                step: ReleaseStep::required(source, &self.baseline),
             });
         }
         if let Some(step) = self.floor.required_step() {
@@ -132,6 +161,15 @@ impl CompatibilityReport {
             .iter()
             .map(ReleaseRequirement::step)
             .max()
+    }
+
+    /// The authored-source line: one word when the whole corpus came through
+    /// unchanged, and the corpus itself when it did not.
+    fn write_source(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.source.is_clean() {
+            return writeln!(formatter, "source:    {}", self.source);
+        }
+        writeln!(formatter, "source:{}", self.source)
     }
 
     /// Why the workspace version is not a sufficient release over the
@@ -170,9 +208,9 @@ impl fmt::Display for CompatibilityReport {
             declared,
             effective,
             changes,
-            ..
         } = &self.outcome
         else {
+            self.write_source(formatter)?;
             return write!(
                 formatter,
                 "no comparable baseline: the published {} crates state no contract surface, so \
@@ -183,10 +221,20 @@ impl fmt::Display for CompatibilityReport {
         };
 
         write!(formatter, "impact:    {effective}")?;
-        if declared > mechanical {
+        // Everything the surfaces alone do not account for is named, so a
+        // reader is never left guessing which axis raised the release.
+        let raised = [
+            (declared > mechanical, "declared"),
+            (self.source.impact() > *mechanical, "the authored source"),
+        ]
+        .into_iter()
+        .filter_map(|(applies, reason)| applies.then_some(reason))
+        .collect::<Vec<_>>();
+        if !raised.is_empty() {
             write!(
                 formatter,
-                " (declared; the surfaces themselves are {mechanical})"
+                " ({}; the surfaces themselves are {mechanical})",
+                raised.join(" and ")
             )?;
         }
         writeln!(formatter)?;
@@ -197,6 +245,7 @@ impl fmt::Display for CompatibilityReport {
                 binding.minimum_version(&self.baseline)
             )?;
         }
+        self.write_source(formatter)?;
         if changes.is_empty() {
             return write!(formatter, "contracts: unchanged");
         }
@@ -218,6 +267,12 @@ enum ReleaseRequirement {
         /// Whether a record the attachment bootstrap freezes is among them.
         frozen: bool,
     },
+    /// What this workspace's reader did to the documents the published reader
+    /// already accepted.
+    AuthoredSource {
+        impact: CompatibilityImpact,
+        step: ReleaseStep,
+    },
     /// What the toolchain floor did.
     ToolchainFloor {
         floor: ToolchainFloor,
@@ -228,7 +283,9 @@ enum ReleaseRequirement {
 impl ReleaseRequirement {
     fn step(&self) -> ReleaseStep {
         match self {
-            Self::Contracts { step, .. } | Self::ToolchainFloor { step, .. } => *step,
+            Self::Contracts { step, .. }
+            | Self::AuthoredSource { step, .. }
+            | Self::ToolchainFloor { step, .. } => *step,
         }
     }
 
@@ -240,7 +297,13 @@ impl ReleaseRequirement {
                 impact: CompatibilityImpact::Breaking,
                 ..
             } => RunbookRule::BreakingContractChange,
-            Self::Contracts { .. } => RunbookRule::UnderSizedCandidate,
+            Self::AuthoredSource {
+                impact: CompatibilityImpact::Breaking,
+                ..
+            } => RunbookRule::AuthoredSourceBreak,
+            Self::Contracts { .. } | Self::AuthoredSource { .. } => {
+                RunbookRule::UnderSizedCandidate
+            }
             Self::ToolchainFloor { .. } => RunbookRule::ToolchainFloorRaised,
         }
     }
@@ -270,6 +333,18 @@ impl fmt::Display for ReleaseRequirement {
             Self::Contracts { impact, step, .. } => write!(
                 formatter,
                 "the contract change is {impact}: requires at least a {step} release"
+            ),
+            Self::AuthoredSource {
+                impact: CompatibilityImpact::Breaking,
+                step,
+            } => write!(
+                formatter,
+                "an authored document the published reader accepted is rejected or means \
+                 something else: requires at least a {step} release"
+            ),
+            Self::AuthoredSource { impact, step } => write!(
+                formatter,
+                "the authored source language is {impact}: requires at least a {step} release"
             ),
             Self::ToolchainFloor {
                 floor:
@@ -301,10 +376,9 @@ enum Outcome {
         mechanical: CompatibilityImpact,
         /// What the caller declared on top of them.
         declared: CompatibilityImpact,
-        /// The greater of the two, which is what the release must carry.
+        /// The greatest of the surfaces, the declaration and the authored
+        /// source, which is what the release must carry.
         effective: CompatibilityImpact,
-        /// The smallest release that may carry it.
-        required: ReleaseStep,
         /// The records behind the impact.
         changes: Vec<RecordChange>,
     },
@@ -348,6 +422,7 @@ mod tests {
 
     use super::*;
     use crate::index::PublishedVersion;
+    use crate::source::Reading;
     use crate::surface::CONTRACT_CRATES;
 
     /// The floor both sides carry unless a test is about the floor.
@@ -431,11 +506,50 @@ mod tests {
         })
     }
 
+    /// What each side made of one authored document, stated outright.
+    #[derive(Clone, Copy)]
+    struct FixtureDocuments {
+        current_accepts: bool,
+    }
+
+    impl FixtureDocuments {
+        /// A corpus that came through this workspace's reader unchanged, which
+        /// is what every test not about the source axis needs.
+        const fn unchanged() -> Self {
+            Self {
+                current_accepts: true,
+            }
+        }
+
+        /// A corpus this workspace's reader no longer accepts.
+        const fn regressed() -> Self {
+            Self {
+                current_accepts: false,
+            }
+        }
+    }
+
+    impl AuthoredDocuments for FixtureDocuments {
+        fn read(&self, side: &Side) -> Result<BTreeMap<&'static str, Reading>> {
+            let accepted = Reading::Accepted {
+                canonical: json!({"id": "r"}),
+            };
+            let reading = if matches!(side, Side::Current) && !self.current_accepts {
+                Reading::Rejected {
+                    error: "unknown field `mount_link`".to_owned(),
+                }
+            } else {
+                accepted
+            };
+            Ok([("robot.yaml", reading)].into_iter().collect())
+        }
+    }
+
     fn check(
         baseline: Version,
         workspace: Version,
         surfaces: FixtureSurfaces,
-    ) -> CompatibilityCheck<FixtureTrain, FixtureSurfaces> {
+    ) -> CompatibilityCheck<FixtureTrain, FixtureSurfaces, FixtureDocuments> {
         check_at_floor(baseline, workspace, surfaces, FLOOR)
     }
 
@@ -444,13 +558,76 @@ mod tests {
         workspace: Version,
         surfaces: FixtureSurfaces,
         workspace_floor: &str,
-    ) -> CompatibilityCheck<FixtureTrain, FixtureSurfaces> {
+    ) -> CompatibilityCheck<FixtureTrain, FixtureSurfaces, FixtureDocuments> {
         CompatibilityCheck::new(
             FixtureTrain(baseline),
             surfaces,
+            FixtureDocuments::unchanged(),
             workspace,
             floor(workspace_floor),
         )
+    }
+
+    /// The source axis on its own: nothing about the wire surfaces moved, and a
+    /// document the published reader accepted no longer compiles. Pre-1.0 that
+    /// is the next minor, and the refusal names the fixture, the reader's own
+    /// complaint, and the rule that answers it.
+    #[test]
+    fn a_source_break_gates_a_release_on_its_own() {
+        let report = CompatibilityCheck::new(
+            FixtureTrain(Version::new(0, 58, 1)),
+            FixtureSurfaces::new(&[endpoint("robot/a")], &[endpoint("robot/a")]),
+            FixtureDocuments::regressed(),
+            Version::new(0, 58, 2),
+            floor(FLOOR),
+        )
+        .run(CompatibilityImpact::Unchanged)
+        .expect("the comparison runs");
+        let rendered = report.to_string();
+        assert!(
+            rendered.contains(
+                "impact:    breaking (the authored source; the surfaces themselves are unchanged)"
+            ),
+            "{rendered}"
+        );
+        assert!(rendered.contains("contracts: unchanged"), "{rendered}");
+        assert!(rendered.contains("regressed     robot.yaml"), "{rendered}");
+        assert!(rendered.contains("[SOURCE-BREAKING]"), "{rendered}");
+        assert!(
+            rendered.contains("unknown field `mount_link`"),
+            "{rendered}"
+        );
+        let shortfall = report
+            .release_shortfall()
+            .expect("a patch cannot carry a source break")
+            .to_string();
+        assert!(
+            shortfall.contains("rejected or means something else"),
+            "{shortfall}"
+        );
+        assert!(shortfall.contains("0.59.0"), "{shortfall}");
+        assert!(shortfall.contains("rule 8"), "{shortfall}");
+        assert!(!shortfall.contains("rules 1 and 2"), "{shortfall}");
+    }
+
+    /// A clean corpus says so in one line rather than listing itself, and it is
+    /// reported even on a train whose contract surfaces cannot be compared.
+    #[test]
+    fn a_clean_corpus_is_reported_on_every_train() {
+        for surfaces in [
+            FixtureSurfaces::new(&[endpoint("robot/a")], &[endpoint("robot/a")]),
+            FixtureSurfaces::without_a_baseline_surface(&[endpoint("robot/a")]),
+        ] {
+            let report = check(Version::new(0, 58, 1), Version::new(0, 58, 2), surfaces)
+                .run(CompatibilityImpact::Unchanged)
+                .expect("the comparison runs");
+            assert!(
+                report
+                    .to_string()
+                    .contains("source:    compatible (1 authored project)"),
+                "{report}"
+            );
+        }
     }
 
     /// An unchanged surface leaves the release free, so a workspace sitting one
