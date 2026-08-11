@@ -31,6 +31,9 @@ fn the_published_train_is_a_comparable_baseline() {
     );
     assert!(report.contains("impact:"), "{report}");
     assert!(report.contains("release:"), "{report}");
+    // The authored corpus is read through the published reader and this one, so
+    // a train that resolves at all has a source verdict too.
+    assert!(report.contains("source:"), "{report}");
 }
 
 /// The Stable-line drill runs end to end and holds, which is what makes it

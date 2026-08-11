@@ -33,3 +33,18 @@ same DTOs. They provide portable YAML completion and inspection only;
 and project-resolution validation.
 The generated schemas are pinned by golden documents under `tests/golden/`, so a
 DTO change that moves an editor schema has to be reblessed deliberately.
+
+## What a release owes an author
+
+This crate is not a wire surface - no two binaries negotiate over a `robot.yaml` -
+so the contract-surface comparison cannot see a grammar change here at all.
+The promise it does carry is directional: a newer compatible framework keeps
+reading every document an older compatible framework accepted, with the same
+meaning, and is free to accept more.
+
+`cargo xtask compatibility report` gates that. It compiles a corpus of the
+repository's authored projects through both this reader and the published one,
+and calls a document that stopped compiling, or that compiles to a different
+canonical model, source-breaking. The remedy lives in the versioned DTO's
+`normalize`, which is the only place a generation's syntax and defaults are
+owned; see `xtask/README.md` rule 8.

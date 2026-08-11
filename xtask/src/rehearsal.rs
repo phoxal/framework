@@ -14,6 +14,7 @@
 //! on no framework crate, and a drill that reimplemented `FrameworkVersion` or
 //! the frozen documents would prove only that the copy agrees with itself.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -25,6 +26,7 @@ use serde_json::{Value, json};
 use crate::check::CompatibilityCheck;
 use crate::index::{PublishedTrain, PublishedVersion, PublishedVersions};
 use crate::probe::{ContractSurfaces, Extraction, Side};
+use crate::source::{AuthoredDocuments, Reading};
 use crate::surface::{CONTRACT_CRATES, CompatibilityImpact};
 use crate::toolchain::RustVersion;
 
@@ -271,6 +273,52 @@ impl ContractSurfaces for StatedSurfaces {
     }
 }
 
+/// What the two readers made of one stated authored document.
+///
+/// The drill needs no corpus and compiles no probe: the directional rule is
+/// about what one reader accepted and the next one does, and that is a pair of
+/// readings whichever documents produced them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatedSource {
+    /// Both readers accept the document, identically.
+    Unchanged,
+    /// The published reader accepted it and this one rejects it.
+    Regressed,
+    /// Both readers accept it and disagree about what it means.
+    Reinterpreted,
+    /// The published reader rejected it and this one accepts it.
+    Grown,
+    /// Neither reader accepts it.
+    Unreadable,
+}
+
+impl StatedSource {
+    /// The one document this state describes, as each side read it.
+    fn readings(self, side: &Side) -> BTreeMap<&'static str, Reading> {
+        let accepted = |canonical: Value| Reading::Accepted { canonical };
+        let rejected = || Reading::Rejected {
+            error: "failed to compile robot document".to_owned(),
+        };
+        let published = matches!(side, Side::Baseline(_));
+        let reading = match (self, published) {
+            (Self::Unchanged, _) => accepted(json!({"wheel_radius_m": 0.05})),
+            (Self::Regressed, true) | (Self::Grown, false) => {
+                accepted(json!({"wheel_radius_m": 0.05}))
+            }
+            (Self::Regressed, false) | (Self::Grown, true) | (Self::Unreadable, _) => rejected(),
+            (Self::Reinterpreted, true) => accepted(json!({"wheel_radius_m": 0.05})),
+            (Self::Reinterpreted, false) => accepted(json!({"wheel_radius_m": 0.5})),
+        };
+        [("robot.yaml", reading)].into_iter().collect()
+    }
+}
+
+impl AuthoredDocuments for StatedSource {
+    fn read(&self, side: &Side) -> Result<BTreeMap<&'static str, Reading>> {
+        Ok(self.readings(side))
+    }
+}
+
 /// One row of the Stable matrix: a stated world, and what the checker must say
 /// about it.
 struct Row {
@@ -282,6 +330,8 @@ struct Row {
     declared: CompatibilityImpact,
     published: Vec<Value>,
     current: Vec<Value>,
+    /// What the two readers made of the authored corpus.
+    source: StatedSource,
     /// Fragments the printed report must carry.
     report_states: &'static [&'static str],
     /// Fragments the refusal must carry, or an empty list when the candidate
@@ -301,6 +351,7 @@ impl Row {
                 baseline: Extraction::Surfaces(documents(&self.published)),
                 current: Extraction::Surfaces(documents(&self.current)),
             },
+            self.source,
             self.workspace,
             RustVersion::parse(self.workspace_floor)?,
         )
@@ -370,7 +421,7 @@ fn connect() -> Value {
 
 /// One side's surface set: every contract crate present, the records on the
 /// crate that owns endpoints.
-fn documents(records: &[Value]) -> std::collections::BTreeMap<String, Value> {
+fn documents(records: &[Value]) -> BTreeMap<String, Value> {
     CONTRACT_CRATES
         .iter()
         .map(|contract_crate| {
@@ -404,6 +455,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 4, 3),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: same(),
             report_states: &[
@@ -420,6 +472,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 4, 2),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: same(),
             report_states: &["impact:    unchanged"],
@@ -432,6 +485,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 4, 3),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: grown(),
             report_states: &["impact:    additive", "at least a minor (1.5.0"],
@@ -444,6 +498,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 5, 0),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: grown(),
             report_states: &["impact:    additive"],
@@ -456,6 +511,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 9, 0),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: vec![],
             report_states: &["impact:    breaking", "at least a major (2.0.0", "removed"],
@@ -468,6 +524,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(2, 0, 0),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: vec![],
             report_states: &["impact:    breaking", "at least a major (2.0.0"],
@@ -480,6 +537,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(3, 0, 0),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: vec![],
             report_states: &["impact:    breaking"],
@@ -492,6 +550,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 5, 0),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Breaking,
+            source: StatedSource::Unchanged,
             published: same(),
             current: same(),
             report_states: &[
@@ -507,6 +566,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 5, 0),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Additive,
+            source: StatedSource::Unchanged,
             published: same(),
             current: vec![],
             report_states: &["impact:    breaking"],
@@ -519,6 +579,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 4, 3),
             workspace_floor: "1.90",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: same(),
             report_states: &[
@@ -534,6 +595,7 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(1, 4, 3),
             workspace_floor: "1.88.0",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: same(),
             current: same(),
             report_states: &["toolchain: 1.88.0 (unchanged from the published train)"],
@@ -546,11 +608,90 @@ fn stable_release_arithmetic() -> Result<Vec<Check>> {
             workspace: Version::new(2, 0, 0),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: vec![connect()],
             current: vec![],
             // The major is large enough for the break, and the freeze is
             // reported anyway: no version buys a frozen fact.
             report_states: &["[FROZEN BOOTSTRAP]", "impact:    breaking"],
+            refusal_states: &[],
+        },
+        // The authored-source axis at a Stable baseline. It is directional, so
+        // the four states are not symmetric: losing a document a published
+        // reader accepted is a break of the line, and gaining one is not.
+        Row {
+            name: "an unchanged authored corpus over 1.4.2 constrains nothing",
+            baseline: Version::new(1, 4, 2),
+            baseline_floor: "1.88",
+            workspace: Version::new(1, 4, 3),
+            workspace_floor: "1.88",
+            declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
+            published: same(),
+            current: same(),
+            report_states: &["source:    compatible (1 authored project)"],
+            refusal_states: &[],
+        },
+        Row {
+            name: "a document the published reader accepted and this one rejects refuses 1.9.0",
+            baseline: Version::new(1, 4, 2),
+            baseline_floor: "1.88",
+            workspace: Version::new(1, 9, 0),
+            workspace_floor: "1.88",
+            declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Regressed,
+            published: same(),
+            current: same(),
+            report_states: &[
+                "impact:    breaking (the authored source; the surfaces themselves are unchanged)",
+                "at least a major (2.0.0",
+                "regressed",
+                "[SOURCE-BREAKING]",
+                "contracts: unchanged",
+            ],
+            refusal_states: &["rejected or means something else", "2.0.0", "rule 8"],
+        },
+        Row {
+            name: "a document that compiles to a different model over 1.4.2 accepts the next major",
+            baseline: Version::new(1, 4, 2),
+            baseline_floor: "1.88",
+            workspace: Version::new(2, 0, 0),
+            workspace_floor: "1.88",
+            declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Reinterpreted,
+            published: same(),
+            current: same(),
+            report_states: &[
+                "impact:    breaking",
+                "reinterpreted",
+                "$.wheel_radius_m: 0.05 -> 0.5",
+            ],
+            refusal_states: &[],
+        },
+        Row {
+            name: "a source language that grew over 1.4.2 refuses a patch and takes the minor",
+            baseline: Version::new(1, 4, 2),
+            baseline_floor: "1.88",
+            workspace: Version::new(1, 4, 3),
+            workspace_floor: "1.88",
+            declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Grown,
+            published: same(),
+            current: same(),
+            report_states: &["impact:    additive", "at least a minor (1.5.0", "grown"],
+            refusal_states: &["authored source language is additive", "1.5.0", "rule 7"],
+        },
+        Row {
+            name: "a document neither reader accepts over 1.4.2 constrains nothing",
+            baseline: Version::new(1, 4, 2),
+            baseline_floor: "1.88",
+            workspace: Version::new(1, 4, 3),
+            workspace_floor: "1.88",
+            declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unreadable,
+            published: same(),
+            current: same(),
+            report_states: &["impact:    unchanged", "unreadable"],
             refusal_states: &[],
         },
     ];
@@ -626,7 +767,7 @@ mod tests {
     #[test]
     fn every_stable_row_holds() {
         let checks = stable_release_arithmetic().expect("the matrix runs");
-        assert!(checks.len() >= 12, "the Stable matrix lost rows");
+        assert!(checks.len() >= 17, "the Stable matrix lost rows");
         for check in &checks {
             assert!(
                 check.failure.is_none(),
@@ -648,6 +789,7 @@ mod tests {
             workspace: Version::new(1, 4, 3),
             workspace_floor: "1.88",
             declared: CompatibilityImpact::Unchanged,
+            source: StatedSource::Unchanged,
             published: vec![endpoint("robot/a")],
             current: vec![],
             report_states: &["impact:    unchanged"],
