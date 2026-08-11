@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.1](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.60.0...phoxal-manifest-v0.60.1) - 2026-08-11
+
+### Added
+
+- normalize authored manifests at the schema boundary and gate source compatibility ([#444](https://github.com/phoxal/framework/pull/444))
+
 ## [0.58.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.57.0...phoxal-manifest-v0.58.0) - 2026-08-10
 
 ### Other
