@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.59.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.58.2...phoxal-bundle-v0.59.0) - 2026-08-11
+
+### Added
+
+- [**breaking**] accept same-line framework trains at every runtime validator ([#438](https://github.com/phoxal/framework/pull/438))
+
 ## [0.58.2](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.58.1...phoxal-bundle-v0.58.2) - 2026-08-10
 
 ### Added

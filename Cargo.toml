@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.58.2"
+version = "0.59.0"
 edition = "2024"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
@@ -144,14 +144,14 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service and component crates' dependency on `phoxal`.
-phoxal = { path = "phoxal", version = "=0.58.2" }
-phoxal-api = { path = "crates/api", version = "=0.58.2" }
-phoxal-bus = { path = "crates/bus", version = "=0.58.2" }
-phoxal-bundle = { path = "crates/bundle", version = "=0.58.2" }
-phoxal-model = { path = "crates/model", version = "=0.58.2" }
-phoxal-manifest = { path = "crates/manifest", version = "=0.58.2" }
-phoxal-runtime-contract = { path = "crates/runtime-contract", version = "=0.58.2" }
-phoxal-macros = { path = "crates/macros", version = "=0.58.2" }
+phoxal = { path = "phoxal", version = "=0.59.0" }
+phoxal-api = { path = "crates/api", version = "=0.59.0" }
+phoxal-bus = { path = "crates/bus", version = "=0.59.0" }
+phoxal-bundle = { path = "crates/bundle", version = "=0.59.0" }
+phoxal-model = { path = "crates/model", version = "=0.59.0" }
+phoxal-manifest = { path = "crates/manifest", version = "=0.59.0" }
+phoxal-runtime-contract = { path = "crates/runtime-contract", version = "=0.59.0" }
+phoxal-macros = { path = "crates/macros", version = "=0.59.0" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.
