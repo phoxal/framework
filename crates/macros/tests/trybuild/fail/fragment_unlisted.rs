@@ -1,10 +1,10 @@
 #![deny(dead_code)]
 
-use phoxal_macros::phoxal_api_fragment;
+use phoxal_macros::protocol_fragment;
 
 mod forgotten {
-    use super::phoxal_api_fragment;
-    phoxal_api_fragment! {
+    use super::protocol_fragment;
+    protocol_fragment! {
         path robot / forgotten;
             topic state: State<State>;
     }

@@ -297,9 +297,7 @@ mod tests {
             .manifest(&Side::Current)
             .expect("the manifest renders");
         assert!(
-            manifest.contains(
-                "phoxal-protocol = { package = \"phoxal-api\", path = \"/workspace/crates/api\" }"
-            ),
+            manifest.contains("phoxal-protocol = { path = \"/workspace/crates/protocol\" }"),
             "{manifest}"
         );
     }

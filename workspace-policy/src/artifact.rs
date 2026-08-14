@@ -696,7 +696,7 @@ mod tests {
             ManifestClassification::Excluded
         );
         assert_eq!(
-            classify("crates/api/Cargo.toml")?,
+            classify("crates/protocol/Cargo.toml")?,
             ManifestClassification::Excluded
         );
         assert_eq!(
@@ -737,7 +737,7 @@ mod tests {
             "{err}"
         );
 
-        let err = classify("crates/api/inner/Cargo.toml").unwrap_err();
+        let err = classify("crates/protocol/inner/Cargo.toml").unwrap_err();
         assert!(
             err.to_string()
                 .contains("phoxal-<suffix>' at 'crates/<suffix>"),

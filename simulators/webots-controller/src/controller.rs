@@ -19,9 +19,9 @@ use phoxal::prelude::*;
 // it is world-clock authority, which only this simulator legitimately names, so
 // it lives behind the explicit `phoxal_bus` opt-in instead - see that module's
 // docs.
-use phoxal_api::runtime::endpoint::simulation::ClockEndpoint;
-use phoxal_api::runtime::simulation::Clock;
 use phoxal_bus::WorldClockPublisher;
+use phoxal_protocol::runtime::endpoint::simulation::ClockEndpoint;
+use phoxal_protocol::runtime::simulation::Clock;
 
 use crate::backend::{SharedBackend, WebotsHandle};
 use crate::catalog::CapabilityCatalog;
@@ -153,7 +153,9 @@ mod tests {
         .expect("bus should open");
         let clock_subscriber = StreamReceiver::<ClockEndpoint>::new(
             &bus,
-            &phoxal_api::runtime::topic::client().simulation().clock(),
+            &phoxal_protocol::runtime::topic::client()
+                .simulation()
+                .clock(),
         )
         .await
         .expect("clock subscriber should attach");
@@ -182,7 +184,9 @@ mod tests {
         let api = Api {
             clock: WorldClockPublisher::mint(
                 bus.clone(),
-                &phoxal_api::runtime::topic::owner().simulation().clock(),
+                &phoxal_protocol::runtime::topic::owner()
+                    .simulation()
+                    .clock(),
             )
             .expect("clock publisher should attach"),
         };

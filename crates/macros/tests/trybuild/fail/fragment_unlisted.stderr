@@ -1,16 +1,16 @@
-error[E0277]: the trait bound `__PhoxalApiFragmentMarker: __PhoxalApiFragmentRegistered` is not satisfied
+error[E0277]: the trait bound `__ProtocolFragmentMarker: __ProtocolFragmentRegistered` is not satisfied
   --> tests/trybuild/fail/fragment_unlisted.rs:7:5
    |
- 7 | /     phoxal_api_fragment! {
+ 7 | /     protocol_fragment! {
  8 | |         path robot / forgotten;
  9 | |             topic state: State<State>;
 10 | |     }
    | |_____^ unsatisfied trait bound
    |
-help: the trait `__PhoxalApiFragmentRegistered` is not implemented for `__PhoxalApiFragmentMarker`
+help: the trait `__ProtocolFragmentRegistered` is not implemented for `__ProtocolFragmentMarker`
   --> tests/trybuild/fail/fragment_unlisted.rs:7:5
    |
- 7 | /     phoxal_api_fragment! {
+ 7 | /     protocol_fragment! {
  8 | |         path robot / forgotten;
  9 | |             topic state: State<State>;
 10 | |     }
@@ -18,9 +18,9 @@ help: the trait `__PhoxalApiFragmentRegistered` is not implemented for `__Phoxal
 help: this trait has no implementations, consider adding one
   --> tests/trybuild/fail/fragment_unlisted.rs:7:5
    |
- 7 | /     phoxal_api_fragment! {
+ 7 | /     protocol_fragment! {
  8 | |         path robot / forgotten;
  9 | |             topic state: State<State>;
 10 | |     }
    | |_____^
-   = note: this error originates in the macro `phoxal_api_fragment` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `protocol_fragment` (in Nightly builds, run with -Z macro-backtrace for more info)

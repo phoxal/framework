@@ -1,6 +1,6 @@
 //! The composed form of a wire key, proven end to end.
 //!
-//! `phoxal_api_tree!` emits *relative* keys whose leading segment is the
+//! `protocol_tree!` emits *relative* keys whose leading segment is the
 //! contract family, and the bus session mounts everything under
 //! `phoxal/<execution-id>`. Each half is unit tested in its own crate, and
 //! neither can see the composed key that the generated rustdoc advertises, so a
@@ -9,7 +9,7 @@
 
 use phoxal_bus::{BusConfig, BusOwner, EndpointDescriptor, ExecutionId};
 
-type ConnectEndpoint = phoxal_api::supervisor::endpoint::connect::TopicEndpoint;
+type ConnectEndpoint = phoxal_protocol::supervisor::endpoint::connect::TopicEndpoint;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_family_topic_composes_under_the_execution_scoped_root() {

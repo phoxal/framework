@@ -1,15 +1,15 @@
-use phoxal_macros::{phoxal_api_fragment, phoxal_api_tree};
+use phoxal_macros::{protocol_fragment, protocol_tree};
 
 mod drive {
-    use super::phoxal_api_fragment;
-    phoxal_api_fragment! {
+    use super::protocol_fragment;
+    protocol_fragment! {
         path robot / drive;
         command target: Setpoint<Target>;
         command target: Setpoint<Target>;
     }
 }
 
-phoxal_api_tree! {
+protocol_tree! {
     output generated;
     source crate;
     fragments { drive; }

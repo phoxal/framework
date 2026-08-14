@@ -134,12 +134,12 @@ impl<Kind> Topic<Kind> {
     ///
     /// # Why this is `pub`
     ///
-    /// The contract fragment materializer expands in `phoxal-api`, where the
+    /// The contract fragment materializer expands in `phoxal-protocol`, where the
     /// contract families live, and its generated builders call this over each
     /// contract's canonical key. Generated code in a downstream crate needs a
     /// `pub` constructor, and Rust has no visibility between "this crate" and
     /// "the world", so `pub(crate)` cannot express the real boundary. The one
-    /// caller this exists for is `phoxal-api`'s generated builder tree.
+    /// caller this exists for is `phoxal-protocol`'s generated builder tree.
     ///
     /// It is generic over `Kind`, so a caller that reaches for it directly can
     /// forge either branded side of a topic. Author correctness does not come

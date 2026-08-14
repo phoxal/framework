@@ -37,7 +37,7 @@ pub const FACADE: &str = "phoxal";
 /// entry would silently turn that crate into a grammar violation.
 pub const LIBRARY_CRATE_DIRS: [&str; 8] = [
     "phoxal",
-    "crates/api",
+    "crates/protocol",
     "crates/bundle",
     "crates/bus",
     "crates/macros",
@@ -65,7 +65,7 @@ pub fn library_package_name(directory: &str) -> Option<String> {
     let suffix = directory
         .strip_prefix(LIBRARY_CRATE_ROOT)?
         .strip_prefix('/')?;
-    // A library crate is one directory deep and no deeper: `crates/api/inner`
+    // A library crate is one directory deep and no deeper: `crates/protocol/inner`
     // would be a second package hiding under the first one's name.
     if suffix.is_empty() || suffix.contains('/') {
         return None;
@@ -194,8 +194,8 @@ mod tests {
     fn a_library_crate_directory_names_exactly_one_package() {
         assert_eq!(library_package_name("phoxal").as_deref(), Some("phoxal"));
         assert_eq!(
-            library_package_name("crates/api").as_deref(),
-            Some("phoxal-api")
+            library_package_name("crates/protocol").as_deref(),
+            Some("phoxal-protocol")
         );
         // Being unpublished changes nothing about where a crate lives.
         assert_eq!(
@@ -209,8 +209,8 @@ mod tests {
 
         assert_eq!(library_package_name("crates"), None);
         assert_eq!(library_package_name("crates/"), None);
-        assert_eq!(library_package_name("crates/api/inner"), None);
-        assert_eq!(library_package_name("phoxal-api"), None);
+        assert_eq!(library_package_name("crates/protocol/inner"), None);
+        assert_eq!(library_package_name("phoxal-protocol"), None);
         assert_eq!(library_package_name("services/drive"), None);
         assert_eq!(library_package_name("cratesfoo"), None);
     }

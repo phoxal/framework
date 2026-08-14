@@ -117,10 +117,10 @@
 //!
 //! ## Where to look next
 //!
-//! - The `phoxal-api` crate (`phoxal::api`, …) - the contract-family
+//! - The `phoxal-protocol` crate (`phoxal::api`, …) - the contract-family
 //!   modules: family-local wire bodies, the [`ApiFamily`](bus::ApiFamily) /
 //!   endpoint descriptor traits and family-local topic builders, all generated
-//!   from modular `phoxal_api_tree!` and `phoxal_api_fragment!` declarations.
+//!   from modular `protocol_tree!` and `protocol_fragment!` declarations.
 //!   A participant imports it directly with `use phoxal::api as api;`.
 //!   The runner also links it for framework-owned out-of-band infrastructure
 //!   contracts such as bus logs.
@@ -168,9 +168,9 @@ pub mod testing;
 /// The `robot` contract family, the surface a participant authors against.
 ///
 /// The facade exposes the robot family only. The `runtime` and `supervisor`
-/// families are host-tooling surfaces, reached through `phoxal_api` directly.
+/// families are host-tooling surfaces, reached through `phoxal_protocol` directly.
 pub mod api {
-    pub use phoxal_api::robot::*;
+    pub use phoxal_protocol::robot::*;
 }
 
 /// Typed contract and handle vocabulary for normal participant authoring.

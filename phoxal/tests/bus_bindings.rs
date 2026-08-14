@@ -11,7 +11,7 @@ use phoxal::bus::{
     BusMetadata, CodecId, EndpointDescriptor, ParticipantSourceIdentity, ProducerId, RobotInstant,
     SourceAttribution, TimeWindow, TimelineId,
 };
-use phoxal_api::supervisor;
+use phoxal_protocol::supervisor;
 
 #[test]
 fn encoding_string_carries_only_the_codec() {

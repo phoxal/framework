@@ -131,7 +131,7 @@ pub use topic::{
 /// process boundary out of the crate itself.
 ///
 /// Endpoints are deliberately absent: this crate owns the transport floor, and
-/// every concrete endpoint is declared by `phoxal-api`. So are
+/// every concrete endpoint is declared by `phoxal-protocol`. So are
 /// [`DeliveryFamily`] and [`EndpointKind`], which are compile-time typing with
 /// no bytes of their own - they reach a surface only as the spelling on an
 /// endpoint record, which is where they actually decide something.

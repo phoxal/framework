@@ -2195,12 +2195,12 @@ dependencies = [
  "const_format",
  "jsonschema",
  "libc",
- "phoxal-api",
  "phoxal-bundle",
  "phoxal-bus",
  "phoxal-fixture",
  "phoxal-macros",
  "phoxal-model",
+ "phoxal-protocol",
  "phoxal-runtime-contract",
  "schemars 1.2.1",
  "serde",
@@ -2212,20 +2212,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trybuild",
-]
-
-[[package]]
-name = "phoxal-api"
-version = "0.60.1"
-dependencies = [
- "phoxal-bus",
- "phoxal-macros",
- "phoxal-runtime-contract",
- "rmp-serde",
- "serde",
- "serde_bytes",
- "serde_json",
- "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -2368,6 +2354,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-protocol"
+version = "0.60.1"
+dependencies = [
+ "phoxal-bus",
+ "phoxal-macros",
+ "phoxal-runtime-contract",
+ "rmp-serde",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "phoxal-runtime-contract"
 version = "0.60.1"
 dependencies = [
@@ -2378,6 +2378,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 
@@ -2481,8 +2482,8 @@ version = "0.60.1"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-api",
  "phoxal-bus",
+ "phoxal-protocol",
  "tokio",
  "tracing",
  "webots-rs",

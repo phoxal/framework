@@ -58,8 +58,8 @@ pub(crate) const CONTRACT_CRATES: [ContractCrate; 5] = [
     },
     ContractCrate {
         carrier: "phoxal-protocol",
-        workspace_package: "phoxal-api",
-        workspace_directory: "crates/api",
+        workspace_package: "phoxal-protocol",
+        workspace_directory: "crates/protocol",
         published_package: "phoxal-protocol",
         predecessor_package: Some("phoxal-api"),
     },

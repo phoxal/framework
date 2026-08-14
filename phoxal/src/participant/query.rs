@@ -138,7 +138,7 @@ mod tests {
     use super::QueryRegistration;
     use crate::bus::{Codec, MessagePack, QueryCode, QueryFailure};
     use crate::prelude::*;
-    use phoxal_api::supervisor;
+    use phoxal_protocol::supervisor;
 
     struct Api;
 

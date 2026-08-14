@@ -2,8 +2,8 @@
 //!
 //! Three macro families make up the authoring surface:
 //!
-//! - [`phoxal_api_tree!`], [`phoxal_api_fragment!`], and
-//!   [`phoxal_api_fragment_group!`] - author modular contract families.
+//! - [`protocol_tree!`], [`protocol_fragment!`], and
+//!   [`protocol_fragment_group!`] - author modular contract families.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
@@ -17,8 +17,8 @@
 //! through `::phoxal::…`; the engine crate makes that path resolve to itself with
 //! `extern crate self as phoxal;`.
 
-mod api_tree;
 mod authoring;
+mod protocol_tree;
 mod wire_schema;
 
 use proc_macro::TokenStream;
@@ -31,16 +31,16 @@ use proc_macro::TokenStream;
 /// payload type; the root tree's `source` path qualifies that name during
 /// materialization.
 #[proc_macro]
-pub fn phoxal_api_fragment(input: TokenStream) -> TokenStream {
-    api_tree::expand_fragment(input.into())
+pub fn protocol_fragment(input: TokenStream) -> TokenStream {
+    protocol_tree::expand_fragment(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
 
 /// Relay child fragment registration without contributing a semantic path.
 #[proc_macro]
-pub fn phoxal_api_fragment_group(input: TokenStream) -> TokenStream {
-    api_tree::expand_fragment_group(input.into())
+pub fn protocol_fragment_group(input: TokenStream) -> TokenStream {
+    protocol_tree::expand_fragment_group(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -52,8 +52,8 @@ pub fn phoxal_api_fragment_group(input: TokenStream) -> TokenStream {
 /// containing the family-first authored tree, such as `crate::api` for
 /// `crate::api::robot::drive::Target`.
 #[proc_macro]
-pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
-    api_tree::expand_tree(input.into())
+pub fn protocol_tree(input: TokenStream) -> TokenStream {
+    protocol_tree::expand_tree(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -61,8 +61,8 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// Collector-chain target; public only because proc-macro exports must be.
 #[doc(hidden)]
 #[proc_macro]
-pub fn __phoxal_api_materialize(input: TokenStream) -> TokenStream {
-    api_tree::expand_materialized(input.into())
+pub fn __protocol_materialize(input: TokenStream) -> TokenStream {
+    protocol_tree::expand_materialized(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -70,8 +70,8 @@ pub fn __phoxal_api_materialize(input: TokenStream) -> TokenStream {
 /// Nested group collector target; public only for macro expansion plumbing.
 #[doc(hidden)]
 #[proc_macro]
-pub fn __phoxal_api_define_group(input: TokenStream) -> TokenStream {
-    api_tree::expand_group_collector(input.into()).into()
+pub fn __protocol_define_group(input: TokenStream) -> TokenStream {
+    protocol_tree::expand_group_collector(input.into()).into()
 }
 
 /// Attach a positive, finite frequency to the ordinary

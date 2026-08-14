@@ -393,11 +393,14 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
 
     pub fn world_clock_publisher(
         &self,
-    ) -> crate::Result<WorldClockPublisher<phoxal_api::runtime::endpoint::simulation::ClockEndpoint>>
-    {
+    ) -> crate::Result<
+        WorldClockPublisher<phoxal_protocol::runtime::endpoint::simulation::ClockEndpoint>,
+    > {
         Ok(WorldClockPublisher::mint(
             self.bus.clone(),
-            &phoxal_api::runtime::topic::owner().simulation().clock(),
+            &phoxal_protocol::runtime::topic::owner()
+                .simulation()
+                .clock(),
         )?)
     }
 }

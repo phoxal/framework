@@ -71,15 +71,15 @@ fn phoxal_metadata_namespace_is_valid_in_every_workspace_manifest() -> Result<()
 fn public_library_dependency_direction_is_exact() -> Result<()> {
     let metadata = workspace_metadata()?;
     let allowed = [
-        ("phoxal", "phoxal-api"),
+        ("phoxal", "phoxal-protocol"),
         ("phoxal", "phoxal-bus"),
         ("phoxal", "phoxal-bundle"),
         ("phoxal", "phoxal-macros"),
         ("phoxal", "phoxal-model"),
         ("phoxal", "phoxal-runtime-contract"),
-        ("phoxal-api", "phoxal-bus"),
-        ("phoxal-api", "phoxal-macros"),
-        ("phoxal-api", "phoxal-runtime-contract"),
+        ("phoxal-protocol", "phoxal-bus"),
+        ("phoxal-protocol", "phoxal-macros"),
+        ("phoxal-protocol", "phoxal-runtime-contract"),
         // Every crate that owns a wire or document contract derives the wire
         // shape of its own declarations, so the derive reaches each of them.
         // The direction stays one-way: `phoxal-macros` depends on none of them.

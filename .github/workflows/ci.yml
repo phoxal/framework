@@ -189,7 +189,7 @@ jobs:
   # asks, and the matrix rows are already proved by `cargo test` on every one.
   # It reaches no registry and installs no Webots: the drill states its own
   # baselines, and the pinned tests it runs are in `phoxal-runtime-contract` and
-  # `phoxal-api`, neither of which links libController.
+  # `phoxal-protocol`, neither of which links libController.
   compatibility-rehearsal:
     name: compatibility rehearsal
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

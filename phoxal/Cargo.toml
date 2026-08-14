@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = true
-description = "Phoxal - production-oriented autonomous robot framework: the runtime engine and model (the api contract tree lives in phoxal-api, the typed bus in phoxal-bus)."
+description = "Phoxal - production-oriented autonomous robot framework: the runtime engine and model (the api contract tree lives in phoxal-protocol, the typed bus in phoxal-bus)."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -27,7 +27,7 @@ path = "src/lib.rs"
 test-harness = ["phoxal-bus/test-harness"]
 
 [dependencies]
-phoxal-api = { workspace = true }
+phoxal-protocol = { workspace = true }
 phoxal-bus = { workspace = true }
 phoxal-bundle = { workspace = true }
 phoxal-macros = { workspace = true }

@@ -4,14 +4,14 @@ error: duplicate fragment ownership for `robot/drive`
 13 |           path robot / drive;
    |                ^^^^^
 ...
-23 | / phoxal_api_tree! {
+23 | / protocol_tree! {
 24 | |     output generated;
 25 | |     source crate;
 26 | |     fragments { all; }
 27 | | }
    | |_- in this macro invocation
    |
-   = note: this error originates in the macro `all::__phoxal_api_fragment_collect` which comes from the expansion of the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `all::__protocol_fragment_collect` which comes from the expansion of the macro `protocol_tree` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error: first owner is here
   --> tests/trybuild/fail/fragment_duplicate_owner.rs:6:14
@@ -19,11 +19,11 @@ error: first owner is here
  6 |           path robot / drive;
    |                ^^^^^
 ...
-23 | / phoxal_api_tree! {
+23 | / protocol_tree! {
 24 | |     output generated;
 25 | |     source crate;
 26 | |     fragments { all; }
 27 | | }
    | |_- in this macro invocation
    |
-   = note: this error originates in the macro `all::__phoxal_api_fragment_collect` which comes from the expansion of the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `all::__protocol_fragment_collect` which comes from the expansion of the macro `protocol_tree` (in Nightly builds, run with -Z macro-backtrace for more info)

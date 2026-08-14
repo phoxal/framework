@@ -1,6 +1,6 @@
-use phoxal_macros::phoxal_api_fragment;
+use phoxal_macros::protocol_fragment;
 
-phoxal_api_fragment! {
+protocol_fragment! {
     path robot / drive;
     struct Target;
     command target: Setpoint<Target>;

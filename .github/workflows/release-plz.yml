@@ -90,7 +90,7 @@ jobs:
             # Only a train whose libraries are already live may resume: that is
             # what makes re-running the registry leg alone coherent, and those
             # versions are immutable so they cannot be redone anyway.
-            for crate in phoxal-runtime-contract phoxal-model phoxal-manifest phoxal-bundle phoxal-bus phoxal-macros phoxal-api phoxal; do
+            for crate in phoxal-runtime-contract phoxal-model phoxal-manifest phoxal-bundle phoxal-bus phoxal-macros phoxal-protocol phoxal; do
               curl --fail --silent \
                 --user-agent "phoxal-release-verifier/1.0 (https://github.com/phoxal/framework)" \
                 "https://crates.io/api/v1/crates/$crate/$version" >/dev/null || {
@@ -246,7 +246,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
-          for crate in phoxal-runtime-contract phoxal-model phoxal-manifest phoxal-bundle phoxal-bus phoxal-macros phoxal-api phoxal; do
+          for crate in phoxal-runtime-contract phoxal-model phoxal-manifest phoxal-bundle phoxal-bus phoxal-macros phoxal-protocol phoxal; do
             found=false
             for _attempt in $(seq 1 30); do
               if curl --fail --silent \

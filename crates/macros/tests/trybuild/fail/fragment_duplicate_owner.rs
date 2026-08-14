@@ -1,26 +1,26 @@
-use phoxal_macros::{phoxal_api_fragment, phoxal_api_fragment_group, phoxal_api_tree};
+use phoxal_macros::{protocol_fragment, protocol_fragment_group, protocol_tree};
 
 mod first {
-    use super::phoxal_api_fragment;
-    phoxal_api_fragment! {
+    use super::protocol_fragment;
+    protocol_fragment! {
         path robot / drive;
             command target: Setpoint<Target>;
     }
 }
 mod second {
-    use super::phoxal_api_fragment;
-    phoxal_api_fragment! {
+    use super::protocol_fragment;
+    protocol_fragment! {
         path robot / drive;
             topic state: State<State>;
     }
 }
 mod all {
     pub(super) use super::{first, second};
-    use super::phoxal_api_fragment_group;
-    phoxal_api_fragment_group! { fragments { first; second; } }
+    use super::protocol_fragment_group;
+    protocol_fragment_group! { fragments { first; second; } }
 }
 
-phoxal_api_tree! {
+protocol_tree! {
     output generated;
     source crate;
     fragments { all; }

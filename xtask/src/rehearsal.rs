@@ -52,7 +52,7 @@ const VERSION_SEMANTICS: PinnedTests = PinnedTests {
 /// MessagePack round trip, and the diagnostic a foreign tag produces.
 const FROZEN_BOOTSTRAP: PinnedTests = PinnedTests {
     what: "frozen bootstrap invariants",
-    package: "phoxal-api",
+    package: "phoxal-protocol",
     tests: &[
         "api::supervisor::connect::tests::the_bootstrap_key_is_pinned_to_its_literal",
         "api::supervisor::connect::tests::the_composed_bootstrap_wire_key_is_pinned_to_its_literal",

@@ -40,7 +40,7 @@ git_tag_name = "v{{ version }}"
 git_release_enable = false
 
 [[package]]
-name = "phoxal-api"
+name = "phoxal-protocol"
 version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false
