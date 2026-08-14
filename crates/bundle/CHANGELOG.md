@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.61.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.60.1...phoxal-bundle-v0.61.0) - 2026-08-14
+
+### Other
+
+- [**breaking**] move protocol and supervisor into the framework train ([#447](https://github.com/phoxal/framework/pull/447))
+
 ## [0.59.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.58.2...phoxal-bundle-v0.59.0) - 2026-08-11
 
 ### Added

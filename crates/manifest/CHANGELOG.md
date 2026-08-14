@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.60.1...phoxal-manifest-v0.61.0) - 2026-08-14
+
+### Other
+
+- [**breaking**] move protocol and supervisor into the framework train ([#447](https://github.com/phoxal/framework/pull/447))
+
 ## [0.60.1](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.60.0...phoxal-manifest-v0.60.1) - 2026-08-11
 
 ### Added
