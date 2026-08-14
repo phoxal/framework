@@ -10,6 +10,12 @@ Releases below the first `phoxal-protocol` entry preserve the immutable
 
 ## [Unreleased]
 
+## [0.61.0](https://github.com/phoxal/framework/compare/phoxal-protocol-v0.60.1...phoxal-protocol-v0.61.0) - 2026-08-14
+
+### Other
+
+- [**breaking**] move protocol and supervisor into the framework train ([#447](https://github.com/phoxal/framework/pull/447))
+
 ## [0.60.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.59.1...phoxal-api-v0.60.0) - 2026-08-11
 
 ### Added
