@@ -1,5 +1,0 @@
-error: `Stream` requires `Stream<Payload, In|Out>`
- --> tests/trybuild/fail/fragment_stream_missing_direction.rs:5:13
-  |
-5 |     chunks: Stream<Chunk>;
-  |             ^^^^^^

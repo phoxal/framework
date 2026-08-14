@@ -1,5 +1,0 @@
-error: descriptor requires exactly `State<T>`
- --> tests/trybuild/fail/fragment_descriptor_wrong_arity.rs:5:14
-  |
-5 |     current: State<Snapshot, Extra>;
-  |              ^^^^^

@@ -15,9 +15,9 @@ use phoxal_bus::{
 };
 use phoxal_model::robot::KinematicConfig;
 use phoxal_protocol::supervisor;
-use phoxal_protocol::supervisor::command::{Command, CommandOutcome, CommandRejection};
 use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
-use phoxal_protocol::supervisor::snapshot::SnapshotDocument;
+use phoxal_protocol::supervisor::execution::SnapshotDocument;
+use phoxal_protocol::supervisor::execution::{Command, CommandOutcome, CommandRejection};
 use phoxal_runtime_contract::version::FrameworkVersion;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -206,7 +206,7 @@ async fn serve_commands(bus: BusHandle, state: ExecutionState, control: Control)
         // tasks; reversing these operations turns a successful stop into an
         // ambiguous no-responder failure at the caller.
         reply(&incoming, &bus, &supervisor::command::Reply::V0 { outcome }).await?;
-        post_reply.apply(&control);
+        post_reply.apply(&control).await;
     }
 }
 
@@ -215,12 +215,40 @@ enum PostReply {
     #[default]
     None,
     Stop,
+    Host(HostAction),
 }
 
 impl PostReply {
-    fn apply(self, control: &Control) {
-        if self == Self::Stop {
-            control.stop.cancel();
+    async fn apply(self, control: &Control) {
+        match self {
+            Self::None => {}
+            Self::Stop => control.stop.cancel(),
+            Self::Host(action) => action.request().await,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostAction {
+    Reboot,
+    Poweroff,
+}
+
+impl HostAction {
+    async fn request(self) {
+        let name = match self {
+            Self::Reboot => "reboot",
+            Self::Poweroff => "power-off",
+        };
+        let result = tokio::task::spawn_blocking(move || match self {
+            Self::Reboot => system_shutdown::reboot(),
+            Self::Poweroff => system_shutdown::shutdown(),
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::error!(action = name, %error, "host action failed"),
+            Err(error) => tracing::error!(action = name, %error, "host action task failed"),
         }
     }
 }
@@ -274,14 +302,30 @@ fn command(
                 PostReply::Stop,
             )
         }
-        // The supervisor owns one execution, never the machine under it, so the
-        // two host operations are refused with the reason that says exactly
-        // that rather than silently ignored.
-        Command::Reboot { .. } | Command::Poweroff { .. } => (
-            rejected(CommandRejection::UnsupportedHostAction),
-            PostReply::None,
-        ),
+        Command::Reboot { expected_revision } => {
+            host_action(state, expected_revision, HostAction::Reboot)
+        }
+        Command::Poweroff { expected_revision } => {
+            host_action(state, expected_revision, HostAction::Poweroff)
+        }
     }
+}
+
+fn host_action(
+    state: &ExecutionState,
+    expected_revision: u64,
+    action: HostAction,
+) -> (CommandOutcome, PostReply) {
+    let revision = state.snapshot().revision;
+    if revision != expected_revision {
+        return (rejected(CommandRejection::RevisionStale), PostReply::None);
+    }
+    (
+        CommandOutcome::Accepted {
+            at_revision: revision,
+        },
+        PostReply::Host(action),
+    )
 }
 
 const fn rejected(reason: CommandRejection) -> CommandOutcome {

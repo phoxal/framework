@@ -18,15 +18,18 @@ use crate::topic::{AskQuery, Topic};
 /// The Phoxal-pinned finite query timeout - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-crate::semantic::author_semantic_docs! {
-    "Meaning: asks one request of the endpoint owner and expects exactly one response.\n\nTimestamp: requests express no robot time.\n\nBuffering and admission: each call has a finite, Phoxal-pinned [`timeout`](DEFAULT_QUERY_TIMEOUT), not Zenoh's 10 s default, and no endpoint-local backlog is exposed.\n\nObservable overload or loss: every incomplete or ambiguous outcome is a typed `QueryError`:\n\n- a success reply decodes to the plain `Resp` body;\n- a handler error rides Zenoh's native `ReplyError` and surfaces as [`QueryError::Server`] carrying the [`QueryFailure`];\n- the deadline elapsing with no reply is [`QueryError::Timeout`], and the reply stream closing with no reply is [`QueryError::Unavailable`];\n- a second reply (a duplicate responder, also a launch-topology error) is [`QueryError::TooManyResponders`].";
-    pub struct Querier<Req, Resp> {
-        bus: BusHandle,
-        key: String,
-        topic: &'static str,
-        timeout: Duration,
-        _p: PhantomData<fn() -> (Req, Resp)>,
-    }
+/// Asks one request of the endpoint owner and expects exactly one response.
+///
+/// Requests carry no robot timestamp. Each call uses the finite
+/// [`DEFAULT_QUERY_TIMEOUT`], and timeout, unavailable service, server failure,
+/// protocol failure, and duplicate responders are returned as typed
+/// [`QueryError`] values.
+pub struct Querier<Req, Resp> {
+    bus: BusHandle,
+    key: String,
+    topic: &'static str,
+    timeout: Duration,
+    _p: PhantomData<fn() -> (Req, Resp)>,
 }
 
 // Manual, unbounded on `Req`/`Resp` - see `Outbox`'s `Clone` impl docs for

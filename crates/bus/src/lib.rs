@@ -51,7 +51,6 @@ pub mod query;
 #[cfg(feature = "router")]
 pub mod router;
 pub mod runtime_metrics;
-mod semantic;
 pub mod server;
 pub mod session;
 pub mod time;
@@ -76,10 +75,11 @@ pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, Producer
 
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
-    ApiFamily, DeliveryFamily, Endpoint, EndpointDescriptor, EndpointKind, EventContract, Payload,
-    QueryEndpointDescriptor, SampleContract, SampleDeliveryContract, SetpointContract,
-    SetpointDeliveryContract, StateContract, StateDeliveryContract, StreamContract,
-    StreamDeliveryContract, WorldClockContract,
+    ApiFamily, ClientPublishContract, ClientReceiveContract, DeliveryFamily, Endpoint,
+    EndpointDescriptor, EndpointKind, EventContract, Payload, QueryEndpointDescriptor,
+    SampleContract, SampleDeliveryContract, SetpointContract, SetpointDeliveryContract,
+    StateContract, StateDeliveryContract, StreamContract, StreamDeliveryContract,
+    WorldClockContract,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{

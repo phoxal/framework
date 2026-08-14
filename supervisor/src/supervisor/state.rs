@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use phoxal_protocol::supervisor::snapshot::{
+use phoxal_protocol::supervisor::execution::{
     Detail, Snapshot, StartupStep, StartupStepKind, StartupStepState, SupervisorFailure,
     SupervisorFailureReason,
 };
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(failure.detail.as_str(), "the router went away");
         assert_eq!(
             snapshot.lifecycle,
-            phoxal_protocol::supervisor::snapshot::Lifecycle::Failed,
+            phoxal_protocol::supervisor::execution::Lifecycle::Failed,
             "the store's lifecycle and the typed reason are one update"
         );
     }
@@ -343,7 +343,7 @@ mod tests {
         assert!(snapshot.revision > before);
         assert!(
             snapshot.processes.iter().any(|process| process.state
-                == phoxal_protocol::supervisor::snapshot::ProcessState::Ready)
+                == phoxal_protocol::supervisor::execution::ProcessState::Ready)
         );
     }
 }

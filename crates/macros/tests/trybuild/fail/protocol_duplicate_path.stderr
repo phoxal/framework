@@ -1,0 +1,11 @@
+error: duplicate path `robot/drive`
+ --> tests/trybuild/fail/protocol_duplicate_path.rs:6:10
+  |
+6 |     path robot / drive;
+  |          ^^^^^
+
+error: first path is here
+ --> tests/trybuild/fail/protocol_duplicate_path.rs:4:10
+  |
+4 |     path robot / drive;
+  |          ^^^^^

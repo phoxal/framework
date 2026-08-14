@@ -27,12 +27,13 @@ use crate::metadata::BusMetadata;
 use crate::query::QueryFailure;
 use crate::session::BusHandle;
 
-crate::semantic::author_semantic_docs! {
-    "Meaning: serves requests for one owner-bound query endpoint.\n\nTimestamp: requests and replies express no robot time; their metadata carries provenance only.\n\nBuffering and admission: the runner receives requests from the transport and serializes typed handler evaluation with participant state.\n\nObservable overload or loss: close and transport failure are typed errors; malformed requests receive structured failure evidence through the runner.";
-    pub struct ServerQueryable {
-        inner: Queryable<FifoChannelHandler<ZenohQuery>>,
-        topic_key: String,
-    }
+/// Serves requests for one owner-bound query endpoint.
+///
+/// Requests and replies carry provenance rather than robot time. Close,
+/// transport failure, and malformed requests are returned explicitly.
+pub struct ServerQueryable {
+    inner: Queryable<FifoChannelHandler<ZenohQuery>>,
+    topic_key: String,
 }
 
 impl ServerQueryable {
@@ -55,12 +56,14 @@ impl ServerQueryable {
     }
 }
 
-crate::semantic::author_semantic_docs! {
-    "Meaning: one admitted owner-side request with its success and error reply legs.\n\nTimestamp: the request expresses no robot time; metadata carries trusted requester provenance.\n\nBuffering and admission: the runner serializes this request with participant state and emits at most one reply.\n\nObservable overload or loss: malformed metadata and transport/reply failure are typed errors, while handler failure uses a structured [`QueryFailure`].";
-    pub struct IncomingQuery {
-        query: ZenohQuery,
-        topic_key: String,
-    }
+/// One admitted owner-side request with success and error reply legs.
+///
+/// The request metadata carries trusted requester provenance. Malformed
+/// metadata and reply failures are typed errors; handler failure uses
+/// [`QueryFailure`].
+pub struct IncomingQuery {
+    query: ZenohQuery,
+    topic_key: String,
 }
 
 impl IncomingQuery {

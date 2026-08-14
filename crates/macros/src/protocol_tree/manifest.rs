@@ -65,17 +65,15 @@ impl ManifestBodies {
 impl ManifestFamily {
     /// Enumerate every endpoint, sorted independently of authoring order.
     pub(super) fn of(tree: &MaterializedTree) -> Self {
+        let name = tree.module.to_string();
         let mut contracts = Vec::new();
-        collect(&tree.id, &tree.nodes, "", "", &mut contracts);
+        collect(&name, &tree.nodes, "", "", &mut contracts);
         contracts.sort_by(|left, right| {
             left.endpoint
                 .cmp(&right.endpoint)
                 .then_with(|| left.topic.cmp(&right.topic))
         });
-        Self {
-            name: tree.id.clone(),
-            contracts,
-        }
+        Self { name, contracts }
     }
 
     pub(super) fn expand_manifest(families: &[Self]) -> TokenStream {

@@ -32,7 +32,7 @@ pub(super) struct TopicDef {
 pub(super) enum TopicLeaf {
     Named(Ident),
     /// `self: …` - the body binds to the node path itself instead of
-    /// appending a leaf segment, so a fragment whose whole path is the wire key
+    /// appending a leaf segment, so a section whose whole path is the wire key
     /// (`runtime/logs`, `supervisor/snapshot`) says so directly.
     Node,
 }
@@ -172,6 +172,20 @@ impl Descriptor {
         }
     }
 
+    /// The endpoint role an external client may take.
+    ///
+    /// This is derived from the same descriptor state as the client/owner topic
+    /// brands. Keeping it on the generated descriptor lets generic clients
+    /// distinguish the otherwise-identical `Stream<_, In>` and
+    /// `Stream<_, Out>` semantic markers without copying an endpoint allowlist.
+    pub(super) fn client_role_marker_trait(&self) -> Option<TokenStream> {
+        match self.owner_role() {
+            OwnerRole::Publishes => Some(quote! { ::phoxal_bus::ClientReceiveContract }),
+            OwnerRole::Consumes => Some(quote! { ::phoxal_bus::ClientPublishContract }),
+            OwnerRole::Serves => None,
+        }
+    }
+
     pub(super) fn owner_role(&self) -> OwnerRole {
         match self {
             Self::State(_) | Self::Sample(_) | Self::Event(_) => OwnerRole::Publishes,
@@ -198,43 +212,10 @@ impl Descriptor {
             Self::Query { request, response } => vec![request, response],
         }
     }
-
-    /// Canonical semantic rustdoc shared by generated descriptors and builders.
-    pub(super) fn rustdoc(&self) -> &'static str {
-        match self {
-            Self::State(_) => {
-                "Meaning: the owner's current state snapshot.\n\nTimestamp: publication requires the logical step that produced the state.\n\nBuffering and admission: outbound and inbound state lanes keep the newest pending value without blocking the step loop.\n\nObservable overload or loss: replaced pending values are coalesced and reported by transport metrics; consumers observe current state rather than an ordered history."
-            }
-            Self::Sample(_) => {
-                "Meaning: a captured sensor observation.\n\nTimestamp: the publisher supplies an honest capture stamp, including an untranslated stamp when device time cannot be mapped to robot time.\n\nBuffering and admission: samples use bounded ordered queues whose overflow policy evicts the oldest buffered sample.\n\nObservable overload or loss: evictions and decode loss are counted by transport metrics, and receivers expose their cumulative dropped count."
-            }
-            Self::Event(_) => {
-                "Meaning: a discrete fact produced by the owner at a logical step.\n\nTimestamp: publication requires the logical step that produced the event.\n\nBuffering and admission: events use the bounded ordered stream lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: publishers receive a typed would-block error, while receivers expose explicit per-producer gap or terminal evidence."
-            }
-            Self::Setpoint(_) => {
-                "Meaning: newest-actionable intent consumed by the owner.\n\nTimestamp: a setpoint expresses no robot time; the owner stamps its own observation and applies it at a logical step.\n\nBuffering and admission: bounded producer-scoped lanes coalesce each source to its newest pending value.\n\nObservable overload or loss: replacements and refused new sources are counted, and source-bound overflow terminates the receiver with typed evidence."
-            }
-            Self::Stream {
-                direction: StreamDirection::In,
-                ..
-            } => {
-                "Meaning: ordered chunks flowing into the endpoint owner.\n\nTimestamp: stream chunks express no robot time.\n\nBuffering and admission: streams use a bounded ordered lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: publishers receive a typed would-block error, while receivers expose explicit per-producer gap or terminal evidence."
-            }
-            Self::Stream {
-                direction: StreamDirection::Out,
-                ..
-            } => {
-                "Meaning: ordered chunks flowing out from the endpoint owner.\n\nTimestamp: stream chunks express no robot time.\n\nBuffering and admission: streams use a bounded ordered lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: publishers receive a typed would-block error, while receivers expose explicit per-producer gap or terminal evidence."
-            }
-            Self::Query { .. } => {
-                "Meaning: one request served by the owner with exactly one response.\n\nTimestamp: requests express no robot time.\n\nBuffering and admission: each call has a finite timeout and expects one exclusive responder; no endpoint-local backlog is exposed.\n\nObservable overload or loss: timeout, unavailable service, server failure, protocol failure, and duplicate responders are returned as typed query errors."
-            }
-        }
-    }
 }
 
-/// A resolved payload path. A fragment names a local sibling type and the tree
-/// materializer qualifies it against the fragment's own module path.
+/// A resolved payload path. A catalogue section names a local sibling type and
+/// the parser qualifies it against that section's module path.
 #[derive(Clone)]
 pub(super) struct BodyPath {
     pub(super) path: syn::Path,
@@ -249,14 +230,9 @@ impl BodyPath {
 
 /// One fully resolved family tree ready to emit.
 ///
-/// `id` is the tree's identity AND its leading wire-key segment: the semantic
-/// family (`"robot"`, `"runtime"`, `"supervisor"`).
+/// The module name is also the leading wire-key segment and family identity.
 pub(super) struct MaterializedTree {
     pub(super) module: Ident,
-    pub(super) id: String,
-    pub(super) doc: String,
-    /// Authored module prefix the fragment payload names resolve against.
-    pub(super) source: syn::Path,
     pub(super) nodes: Vec<Node>,
 }
 
@@ -286,52 +262,5 @@ fn join_seg(prefix: &str, sep: &str, seg: &str) -> String {
         seg.to_string()
     } else {
         format!("{prefix}{sep}{seg}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn body(name: &str) -> BodyPath {
-        BodyPath {
-            path: syn::parse_str(name).expect("test payload path"),
-        }
-    }
-
-    #[test]
-    fn every_descriptor_rustdoc_covers_the_semantic_contract() {
-        let descriptors = [
-            Descriptor::State(body("State")),
-            Descriptor::Sample(body("Sample")),
-            Descriptor::Event(body("Event")),
-            Descriptor::Setpoint(body("Setpoint")),
-            Descriptor::Stream {
-                body: body("Input"),
-                direction: StreamDirection::In,
-            },
-            Descriptor::Stream {
-                body: body("Output"),
-                direction: StreamDirection::Out,
-            },
-            Descriptor::Query {
-                request: body("Request"),
-                response: body("Response"),
-            },
-        ];
-        for descriptor in descriptors {
-            let rustdoc = descriptor.rustdoc();
-            for required in [
-                "Meaning:",
-                "Timestamp:",
-                "Buffering and admission:",
-                "Observable overload or loss:",
-            ] {
-                assert!(
-                    rustdoc.contains(required),
-                    "descriptor rustdoc omitted `{required}`: {rustdoc}"
-                );
-            }
-        }
     }
 }

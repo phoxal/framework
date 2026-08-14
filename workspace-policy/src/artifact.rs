@@ -19,7 +19,7 @@ use anyhow::{Context, Result, bail};
 use cargo_metadata::Target;
 use cargo_metadata::semver::Version;
 
-pub use crate::executable::PHOXAL_PROVIDER;
+use crate::executable::PHOXAL_PROVIDER;
 use crate::executable::{validate_executable_targets, validate_registry_publish};
 use crate::{
     FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, library_package_name,

@@ -19,7 +19,7 @@ use phoxal_bus::{
 };
 use phoxal_model::Clock;
 use phoxal_protocol::supervisor::connect::PRESENCE_KEY;
-use phoxal_protocol::supervisor::snapshot::{Lifecycle, StartupStepKind, SupervisorFailureReason};
+use phoxal_protocol::supervisor::execution::{Lifecycle, StartupStepKind, SupervisorFailureReason};
 use phoxal_runtime_contract::identity::ExecutionId;
 use phoxal_runtime_contract::origin::ExecutionOrigin;
 use phoxal_runtime_contract::rendezvous::RuntimeRendezvous;

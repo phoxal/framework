@@ -1,5 +1,0 @@
-error: fragment groups relay registration only and cannot declare a `path`
- --> tests/trybuild/fail/fragment_group_path.rs:4:5
-  |
-4 |     path component;
-  |     ^^^^

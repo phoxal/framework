@@ -2,8 +2,7 @@
 //!
 //! Three macro families make up the authoring surface:
 //!
-//! - [`protocol_tree!`], [`protocol_fragment!`], and
-//!   [`protocol_fragment_group!`] - author modular contract families.
+//! - [`protocol_tree!`] - declares the framework protocol catalogue.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
@@ -23,55 +22,17 @@ mod wire_schema;
 
 use proc_macro::TokenStream;
 
-/// Declare the semantic endpoints for one authored contract module.
+/// Declare every semantic contract family in one catalogue.
 ///
-/// The fragment's `path` roots at its semantic family and is the wire key
-/// prefix for every endpoint it declares. Payload types, implementations, and
-/// tests remain ordinary sibling Rust items. Endpoint bodies name a local
-/// payload type; the root tree's `source` path qualifies that name during
-/// materialization.
-#[proc_macro]
-pub fn protocol_fragment(input: TokenStream) -> TokenStream {
-    protocol_tree::expand_fragment(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Relay child fragment registration without contributing a semantic path.
-#[proc_macro]
-pub fn protocol_fragment_group(input: TokenStream) -> TokenStream {
-    protocol_tree::expand_fragment_group(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Materialize semantic contract families from registered endpoint fragments.
-///
-/// Every fragment path roots at its family, and one generated module per family
-/// collects the fragments that root there. The `source` path names the module
-/// containing the family-first authored tree, such as `crate::api` for
-/// `crate::api::robot::drive::Target`.
+/// Each `path` names the ordinary Rust module that owns its payload types and
+/// is followed by descriptor-only endpoint declarations. The macro adds the
+/// public family modules, endpoint descriptors, topic builders, manifest, and
+/// compatibility surface without exporting helper macros or aliases.
 #[proc_macro]
 pub fn protocol_tree(input: TokenStream) -> TokenStream {
     protocol_tree::expand_tree(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
-}
-
-/// Collector-chain target; public only because proc-macro exports must be.
-#[doc(hidden)]
-#[proc_macro]
-pub fn __protocol_materialize(input: TokenStream) -> TokenStream {
-    protocol_tree::expand_materialized(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Nested group collector target; public only for macro expansion plumbing.
-#[doc(hidden)]
-#[proc_macro]
-pub fn __protocol_define_group(input: TokenStream) -> TokenStream {
-    protocol_tree::expand_group_collector(input.into()).into()
 }
 
 /// Attach a positive, finite frequency to the ordinary

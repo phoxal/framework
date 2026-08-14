@@ -7,7 +7,7 @@ use crate::model::process::{
     ProcessFailure as CoreProcessFailure, ProcessFailureKind as CoreProcessFailureKind,
     ProcessState as CoreProcessState,
 };
-use phoxal_protocol::supervisor::snapshot::{
+use phoxal_protocol::supervisor::execution::{
     DesiredState, ExitStatus, Lifecycle, Process, ProcessFailure, ProcessFailureKind, ProcessState,
     Snapshot, StartupStep, SupervisorFailure, WallTime,
 };

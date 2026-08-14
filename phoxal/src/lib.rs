@@ -120,7 +120,7 @@
 //! - The `phoxal-protocol` crate (`phoxal::api`, …) - the contract-family
 //!   modules: family-local wire bodies, the [`ApiFamily`](bus::ApiFamily) /
 //!   endpoint descriptor traits and family-local topic builders, all generated
-//!   from modular `protocol_tree!` and `protocol_fragment!` declarations.
+//!   from one `protocol_tree!` catalogue.
 //!   A participant imports it directly with `use phoxal::api as api;`.
 //!   The runner also links it for framework-owned out-of-band infrastructure
 //!   contracts such as bus logs.
@@ -184,6 +184,21 @@ pub mod api {
 /// place here. Host tooling that owns a session depends on `phoxal-bus`
 /// directly; a participant cannot open a second session through this facade.
 ///
+/// [`ClientPublishContract`](bus::ClientPublishContract) and
+/// [`ClientReceiveContract`](bus::ClientReceiveContract) are descriptor-derived
+/// external-client roles, not participant capabilities. `ClientPublishContract`
+/// marks owner-consumed Setpoint and `Stream<_, In>` endpoints; `In` flows from
+/// the client into the owner. `ClientReceiveContract` marks owner-published
+/// State, Sample, Event, and `Stream<_, Out>` endpoints; `Out` flows from the
+/// owner to the client. Query endpoints use their query brands and implement
+/// neither role. These markers are the narrow facade exception to the rule
+/// that session-owning host tooling uses `phoxal-bus` directly: generic client
+/// APIs need descriptor role bounds without gaining session construction,
+/// ownership, or raw transport access. The public traits must remain
+/// implementable because `protocol_tree!` can expand in downstream crates;
+/// only macro-generated descriptor implementations belong to the supported
+/// protocol surface.
+///
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
 /// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) are absent for a
 /// stronger reason: they are world-clock authority, which only a
@@ -194,21 +209,22 @@ pub mod api {
 /// strong that guarantee is.
 pub mod bus {
     pub use phoxal_bus::{
-        ApiFamily, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
-        DEFAULT_QUERY_TIMEOUT, DeliveryFamily, Endpoint, EndpointDescriptor, EndpointKind,
-        EventContract, EventPublisher, EventReceiver, ExclusiveProducerLease, FixedSourceAdmission,
-        FixedSourceLease, KeySegment, KeySegmentError, LEASE_TRACE_TARGET, LeaseDecision,
-        LeaseRejection, LocalInstant, MAX_READY_PRODUCERS, MessagePack, Observed, ParticipantId,
-        ParticipantReadyEvent, ParticipantReadyEvents, ParticipantReadyObserver,
-        ParticipantReadyStatus, ParticipantSourceIdentity, Payload, ProducerId, Publish, Querier,
-        QueryCode, QueryEndpointDescriptor, QueryError, QueryFailure, QueryResult, ReceiveTerminal,
-        Result, RobotInstant, RobotTimeError, SampleContract, SampleDeliveryContract,
-        SamplePublisher, SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract,
-        SetpointPublisher, SetpointReceiver, SourceAttribution, SourceLabel, StateContract,
-        StateDeliveryContract, StatePublisher, StateView, StepStamp, StepToken, StreamContract,
-        StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimeWindow, Timed,
-        TimelineId, TimelineMismatch, Topic, TopicKind, WallTimestamp, WildcardPublish,
-        WorldClockContract, WorldStepToken,
+        ApiFamily, AskQuery, BusError, BusMetadata, CaptureStamp, ClientPublishContract,
+        ClientReceiveContract, Codec, CodecError, CodecId, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
+        Endpoint, EndpointDescriptor, EndpointKind, EventContract, EventPublisher, EventReceiver,
+        ExclusiveProducerLease, FixedSourceAdmission, FixedSourceLease, KeySegment,
+        KeySegmentError, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection, LocalInstant,
+        MAX_READY_PRODUCERS, MessagePack, Observed, ParticipantId, ParticipantReadyEvent,
+        ParticipantReadyEvents, ParticipantReadyObserver, ParticipantReadyStatus,
+        ParticipantSourceIdentity, Payload, ProducerId, Publish, Querier, QueryCode,
+        QueryEndpointDescriptor, QueryError, QueryFailure, QueryResult, ReceiveTerminal, Result,
+        RobotInstant, RobotTimeError, SampleContract, SampleDeliveryContract, SamplePublisher,
+        SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract, SetpointPublisher,
+        SetpointReceiver, SourceAttribution, SourceLabel, StateContract, StateDeliveryContract,
+        StatePublisher, StateView, StepStamp, StepToken, StreamContract, StreamDeliveryContract,
+        StreamPublisher, StreamReceiver, Subscribe, TimeWindow, Timed, TimelineId,
+        TimelineMismatch, Topic, TopicKind, WallTimestamp, WildcardPublish, WorldClockContract,
+        WorldStepToken,
     };
 }
 

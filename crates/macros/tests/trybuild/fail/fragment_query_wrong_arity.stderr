@@ -1,5 +1,0 @@
-error: `Query` requires `Query<Request, Response>`
- --> tests/trybuild/fail/fragment_query_wrong_arity.rs:5:14
-  |
-5 |     current: Query<Request>;
-  |              ^^^^^

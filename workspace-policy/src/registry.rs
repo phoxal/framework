@@ -5,10 +5,13 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result, bail};
 use cargo_metadata::MetadataCommand;
 
-use crate::artifact::{OfficialArtifact, PHOXAL_PROVIDER, discover_package};
 use crate::executable::{publishes_to_phoxal, relative_display};
 use crate::framework_executable::{
     FrameworkExecutable, SPECS, spec_for_manifest, spec_for_package,
+};
+use crate::{
+    artifact::{OfficialArtifact, discover_package},
+    executable::PHOXAL_PROVIDER,
 };
 
 /// The two disjoint executable sets declared by the workspace.

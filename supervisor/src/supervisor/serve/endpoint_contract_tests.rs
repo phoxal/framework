@@ -11,15 +11,15 @@ use std::fs;
 use phoxal_bus::{Codec, EndpointDescriptor, EndpointKind, MessagePack, QueryEndpointDescriptor};
 use phoxal_model::builder::{Kinematics, RobotBuilder};
 use phoxal_model::robot::MotionLimits;
-use phoxal_protocol::supervisor;
-use phoxal_protocol::supervisor::command::{Command, CommandOutcome, CommandRejection};
 use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
+use phoxal_protocol::supervisor::execution::{Command, CommandOutcome, CommandRejection};
+use phoxal_protocol::{runtime, supervisor};
 use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 use phoxal_runtime_contract::version::FrameworkVersion;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{Control, PostReply, bundle_entry, command, connect_reply, manual_drive};
+use super::{Control, HostAction, PostReply, bundle_entry, command, connect_reply, manual_drive};
 use crate::process::spec::SupervisorAction;
 use crate::state::store::SupervisorState;
 use crate::supervisor::projection::ExecutionFacts;
@@ -45,7 +45,7 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
     );
 
     let (state, _, _) = ready_state();
-    let snapshot = supervisor::snapshot::SnapshotDocument::V0(state.snapshot());
+    let snapshot = supervisor::execution::SnapshotDocument::V0(state.snapshot());
     assert_stream_round_trip::<supervisor::endpoint::snapshot::TopicEndpoint>(
         "supervisor/snapshot",
         snapshot.clone(),
@@ -78,7 +78,7 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
             before_sequence: Some(11),
         },
         supervisor::logs::Snapshot {
-            cursor: supervisor::logs::Cursor { sequence: 13 },
+            cursor: runtime::telemetry::Cursor { sequence: 13 },
             ingest_dropped: 2,
             records: Vec::new(),
             next_before_sequence: Some(5),
@@ -97,7 +97,7 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
             before_sequence: Some(17),
         },
         supervisor::telemetry::Snapshot {
-            cursor: supervisor::telemetry::Cursor { sequence: 19 },
+            cursor: runtime::telemetry::Cursor { sequence: 19 },
             records: Vec::new(),
             capacity_evictions: 3,
             next_before_sequence: None,
@@ -199,8 +199,8 @@ fn bundle_entry_serves_only_plain_relative_files() {
     }
 }
 
-#[test]
-fn stop_is_applied_only_after_the_reply_decision() {
+#[tokio::test]
+async fn stop_is_applied_only_after_the_reply_decision() {
     let (state, _, _) = ready_state();
     let (control, _receiver) = test_control(1);
     let revision = state.snapshot().revision;
@@ -220,7 +220,7 @@ fn stop_is_applied_only_after_the_reply_decision() {
     );
     assert_eq!(post_reply, PostReply::Stop);
     assert!(!control.stop.is_cancelled(), "acceptance precedes shutdown");
-    post_reply.apply(&control);
+    post_reply.apply(&control).await;
     assert!(control.stop.is_cancelled(), "shutdown follows the reply");
 
     let (control, _receiver) = test_control(1);
@@ -237,19 +237,43 @@ fn stop_is_applied_only_after_the_reply_decision() {
 }
 
 #[test]
-fn machine_actions_are_rejected_as_unsupported_host_policy() {
+fn machine_actions_are_revision_guarded_and_scheduled_after_the_reply() {
     let (state, _, _) = ready_state();
-    for action in [
-        Command::Reboot {
-            expected_revision: state.snapshot().revision,
-        },
-        Command::Poweroff {
-            expected_revision: state.snapshot().revision,
-        },
+    let revision = state.snapshot().revision;
+    for (request, action) in [
+        (
+            Command::Reboot {
+                expected_revision: revision,
+            },
+            HostAction::Reboot,
+        ),
+        (
+            Command::Poweroff {
+                expected_revision: revision,
+            },
+            HostAction::Poweroff,
+        ),
     ] {
         let (control, _receiver) = test_control(1);
-        let (outcome, post_reply) = command(&state, &control, action);
-        assert_rejected(outcome, CommandRejection::UnsupportedHostAction);
+        let (outcome, post_reply) = command(&state, &control, request);
+        assert_eq!(
+            outcome,
+            CommandOutcome::Accepted {
+                at_revision: revision
+            }
+        );
+        assert_eq!(post_reply, PostReply::Host(action));
+
+        let stale = match action {
+            HostAction::Reboot => Command::Reboot {
+                expected_revision: revision + 1,
+            },
+            HostAction::Poweroff => Command::Poweroff {
+                expected_revision: revision + 1,
+            },
+        };
+        let (outcome, post_reply) = command(&state, &control, stale);
+        assert_rejected(outcome, CommandRejection::RevisionStale);
         assert_eq!(post_reply, PostReply::None);
     }
 }

@@ -3,7 +3,6 @@
 use super::child::ManagedChild;
 use super::output::{join_reader, spawn_output_reader};
 use super::signals::{ensure_process_group_stopped, send_process_group_signal, stop_child};
-use super::stages::format_duration;
 use crate::model::launch::{ParticipantSpec, RestartPolicy};
 use crate::model::process::{ExitDescription, ProcessFailureKind, ProcessState};
 use crate::state::store::SupervisorState;
@@ -193,9 +192,8 @@ impl RunningParticipant {
                 ProcessFailureKind::Exit,
                 Some(exit_description(&status)),
                 format!(
-                    "StartLimitBurst exhausted after {} failures in {}; last status {status}",
-                    policy.start_limit_burst,
-                    format_duration(policy.start_limit_interval)
+                    "restart limit exhausted after {} failures; last status {status}",
+                    policy.start_limit_burst
                 ),
             );
             return Ok(());

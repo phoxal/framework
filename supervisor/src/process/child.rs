@@ -1,33 +1,12 @@
 //! The central child launch boundary.
 //!
 //! Every participant this supervisor spawns crosses [`ManagedChild::spawn`],
-//! which owns three things and nothing else: the environment scrub, the
-//! isolated process group, and the kernel-level crash containment that outlives
-//! this process.
-//!
-//! # Kernel crash containment
-//!
-//! - **Linux:** `PR_SET_PDEATHSIG(SIGKILL)` in `pre_exec`, so the kernel kills
-//!   the child the moment this process dies.
-//!   Installed deployments additionally run under a systemd unit, whose cgroup
-//!   kill takes the whole tree down regardless.
-//! - **macOS:** no equivalent exists. Every graceful path here still stops the
-//!   child's whole process group explicitly, so an orderly shutdown - including
-//!   the panic-free error paths - leaves nothing behind. The residual window is
-//!   a *hard* kill of the supervisor (`SIGKILL`, a kernel panic) during a
-//!   development run: participants spawned by that run can survive it. That is
-//!   accepted for macOS development, where robots do not run in production.
-//!
-//! The trade this makes is deliberate: a guardian covered that last macOS
-//! window at the cost of a second process, a hand-rolled record protocol, and a
-//! spawn path that could fail in ways the thing it protected could not.
+//! which owns two things: the environment scrub and an isolated process group.
+//! Graceful shutdown always stops that group. Installed deployments additionally
+//! inherit their host lifecycle containment from the service manager.
 
 use anyhow::{Context, Result};
 use std::ops::{Deref, DerefMut};
-// Only the Linux containment hook needs `pre_exec`; elsewhere there is nothing
-// to run between fork and exec.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-use std::os::unix::process::CommandExt as _;
 use tokio::process::{Child, Command};
 
 /// Bootstrap variables systemd hands this process alone. A child that inherited
@@ -49,33 +28,7 @@ fn scrub_std_environment(command: &mut std::process::Command) {
     }
 }
 
-/// Ask the kernel to kill this child when the spawning process dies.
-///
-/// Linux only, and best-effort by design: the call runs post-fork/pre-exec, so
-/// it may only use async-signal-safe primitives, and a failure to arm it must
-/// not fail an otherwise good spawn - it is a containment backstop, not the
-/// shutdown path.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn arm_parent_death_signal(command: &mut std::process::Command) {
-    // SAFETY: runs in the post-fork child before exec and calls only prctl,
-    // which is async-signal-safe.
-    unsafe {
-        command.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn arm_parent_death_signal(_command: &mut std::process::Command) {
-    // See this module's docs: macOS has no `PR_SET_PDEATHSIG`, so hard-killing
-    // the supervisor on a development host can orphan participants. Graceful stops
-    // signal the whole process group and are unaffected.
-}
-
-/// A supervised child in its own process group, contained by the kernel for as
-/// long as this process lives.
+/// A supervised child in its own process group.
 pub(crate) struct ManagedChild {
     inner: Child,
 }
@@ -85,7 +38,6 @@ impl ManagedChild {
         scrub_environment(command);
         #[cfg(unix)]
         command.process_group(0);
-        arm_parent_death_signal(command.as_std_mut());
         let inner = command.spawn().context("spawn managed child")?;
         Ok(Self { inner })
     }

@@ -88,73 +88,81 @@ const fn outbound_capacity(family: DeliveryFamily) -> usize {
     }
 }
 
-macro_rules! role_publisher {
-    ($name:ident, $bound:ident, $doc:literal) => {
-        crate::semantic::author_semantic_docs! {
-            $doc;
-            ///
-            /// The role marker is a bound on the *type*, not just on its methods,
-            /// so naming the wrong publisher for a contract is rejected where the
-            /// `Api` struct declares the field - the earliest and clearest place.
-            pub struct $name<E: $bound>(Outbox<E>);
-        }
+/// Publishes the owner's current state at a logical step.
+///
+/// The transport keeps only the newest pending state. Replacements are
+/// reported by the bus metrics.
+pub struct StatePublisher<E: StateContract>(Outbox<E>);
 
-        impl<E: $bound> Clone for $name<E> {
-            fn clone(&self) -> Self {
-                $name(self.0.clone())
-            }
-        }
-
-        impl<E: $bound> $name<E> {
-            /// Build the handle over a topic.
-            ///
-            /// The author-facing path is the matching `ctx.*_publisher(...)`
-            /// builder in `Participant::setup`. `pub` only because the
-            /// generated api tree and the runner live in other crates; see
-            /// [`crate::handle::stamp`]'s module docs for the full statement of
-            /// what that does and does not close.
-            #[doc(hidden)]
-            pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
-                Ok($name(Outbox::new(bus, topic)?))
-            }
-        }
-    };
+impl<E: StateContract> Clone for StatePublisher<E> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
 }
 
-role_publisher!(
-    StatePublisher,
-    StateContract,
-    "Meaning: publishes the owner's current state snapshot.\n\nTimestamp: the step instant comes from a \
-     framework-minted [`StepToken`](crate::handle::stamp::StepToken) or \
-     [`WorldStepToken`](crate::handle::stamp::WorldStepToken), so a participant \
-     cannot publish state at a time it did not reach.\n\nBuffering and admission: \
-     the bounded lane keeps the newest pending state without blocking the step loop.\n\nObservable overload or loss: \
-     replacements are coalesced and reported by transport metrics. The framework's own world-clock contract \
-     is deliberately NOT a `StateContract` and so cannot be named here; see \
-     [`WorldClockPublisher`]."
-);
+impl<E: StateContract> StatePublisher<E> {
+    #[doc(hidden)]
+    pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
+        Ok(Self(Outbox::new(bus, topic)?))
+    }
+}
 
-role_publisher!(
-    SamplePublisher,
-    SampleContract,
-    "Meaning: publishes a captured sensor observation.\n\nTimestamp: the driver owns \
-     mapping its device clock into robot time - including reset, drift, \
-     wraparound, batching, and exposure-versus-readout semantics - and says so \
-     honestly through [`CaptureStamp`], which can represent an untranslated \
-     capture rather than inventing an instant.\n\nBuffering and admission: samples use a bounded ordered lane with drop-oldest overflow.\n\nObservable overload or loss: evictions and decode loss are counted by transport metrics and receivers expose a dropped count."
-);
+/// Publishes a captured sensor observation.
+///
+/// Samples retain their capture stamp. The bounded ordered lane evicts its
+/// oldest item on overflow and reports the loss through bus metrics.
+pub struct SamplePublisher<E: SampleContract>(Outbox<E>);
 
-role_publisher!(
-    SetpointPublisher,
-    SetpointContract,
-    "Meaning: sends newest-actionable intent to the endpoint owner.\n\nTimestamp: a setpoint expresses no robot time; the owner stamps its own observation and applies the result at a logical step.\n\nBuffering and admission: bounded lanes coalesce each source to its newest pending value.\n\nObservable overload or loss: replacements and source-bound refusal are counted, and receiver source overflow has typed terminal evidence."
-);
+impl<E: SampleContract> Clone for SamplePublisher<E> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
-role_publisher!(
-    StreamPublisher,
-    StreamContract,
-    "Meaning: publishes ordered stream chunks in the direction encoded by the endpoint descriptor.\n\nTimestamp: stream chunks express no robot time.\n\nBuffering and admission: streams use a bounded ordered lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: saturation is `WouldBlock`, close is `Closed`, and receivers expose gaps or terminal evidence."
-);
+impl<E: SampleContract> SamplePublisher<E> {
+    #[doc(hidden)]
+    pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
+        Ok(Self(Outbox::new(bus, topic)?))
+    }
+}
+
+/// Sends newest-actionable intent to the endpoint owner.
+///
+/// Setpoints carry no robot timestamp. A newer pending value replaces the
+/// older value and the replacement is reported by bus metrics.
+pub struct SetpointPublisher<E: SetpointContract>(Outbox<E>);
+
+impl<E: SetpointContract> Clone for SetpointPublisher<E> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<E: SetpointContract> SetpointPublisher<E> {
+    #[doc(hidden)]
+    pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
+        Ok(Self(Outbox::new(bus, topic)?))
+    }
+}
+
+/// Publishes ordered stream chunks in the endpoint's declared direction.
+///
+/// Stream chunks carry no robot timestamp. Saturation is returned to the
+/// caller, and receivers expose gaps or terminal failure.
+pub struct StreamPublisher<E: StreamContract>(Outbox<E>);
+
+impl<E: StreamContract> Clone for StreamPublisher<E> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<E: StreamContract> StreamPublisher<E> {
+    #[doc(hidden)]
+    pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
+        Ok(Self(Outbox::new(bus, topic)?))
+    }
+}
 
 /// Publishes the framework's own world-clock contract at a logical step.
 ///
@@ -222,10 +230,11 @@ impl<E: StreamContract> StreamPublisher<E> {
     }
 }
 
-crate::semantic::author_semantic_docs! {
-    "Meaning: publishes a discrete event produced by the owner.\n\nTimestamp: publication requires the logical step that produced the event.\n\nBuffering and admission: events use the bounded ordered stream lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: saturation is `WouldBlock`; receivers expose explicit per-producer gap or terminal evidence.";
-    pub struct EventPublisher<E: EventContract>(Outbox<E>);
-}
+/// Publishes a discrete event produced by the owner at a logical step.
+///
+/// Events use the bounded ordered stream lane. Saturation is returned as
+/// `WouldBlock`, and receivers expose producer gaps or terminal evidence.
+pub struct EventPublisher<E: EventContract>(Outbox<E>);
 
 impl<E: EventContract> Clone for EventPublisher<E> {
     fn clone(&self) -> Self {

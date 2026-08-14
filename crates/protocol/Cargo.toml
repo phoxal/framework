@@ -26,5 +26,10 @@ thiserror = { workspace = true }
 rmp-serde = { workspace = true }
 serde_json = { workspace = true }
 
+# `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
+# cannot see dependencies named only inside attributes.
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
+
 [lints]
 workspace = true

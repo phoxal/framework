@@ -1,0 +1,5 @@
+error: expected descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Setpoint<T>`, `Query<Request, Response>`, or `Stream<T, In|Out>`
+ --> tests/trybuild/fail/protocol_invalid_descriptor.rs:5:12
+  |
+5 |     state: Unknown<State>;
+  |            ^^^^^^^

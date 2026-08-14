@@ -28,6 +28,7 @@ phoxal-model = { workspace = true }
 phoxal-protocol = { workspace = true }
 phoxal-runtime-contract = { workspace = true }
 serde = { workspace = true }
+system_shutdown = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["rt"] }

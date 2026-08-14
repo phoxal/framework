@@ -13,7 +13,7 @@ use super::model::{Descriptor, MaterializedTree, Node, OwnerRole, TopicDef, Topi
 
 /// Which side a generated builder tree brands its leaves with.
 ///
-/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. Leaves are branded
+/// - [`Side::Client`] - the public `topic::client()...` tree. Leaves are branded
 ///   from their descriptor's owner-relative role.
 /// - [`Side::Owner`] - the `topic::owner()...` tree. The brands flip:
 ///   publishing descriptors yield `Publish`, consuming descriptors yield
@@ -36,27 +36,34 @@ struct NodeSeg {
 impl MaterializedTree {
     /// Emit the protocol-local `topic` builder module with BOTH side trees.
     ///
-    /// The PUBLIC client tree lives directly under `topic` (`topic::client()` +
+    /// The client tree lives directly under `topic` (`topic::client()` +
     /// a builder module per node); the OWNER tree lives under `topic::owner`
     /// (`topic::owner()` + the same builder modules, one level deeper).
-    ///
-    /// Builder leaves name generated endpoint descriptors through one hidden
-    /// root alias. It is forwarded one hop at every nesting level, so endpoint
-    /// references never depend on a counted `super::` path.
     pub(super) fn expand_topic_module(&self) -> TokenStream {
+        let family_name = self.module.to_string();
         let mut client_root_methods = TokenStream::new();
         let mut client_builder_mods = TokenStream::new();
         let mut owner_root_methods = TokenStream::new();
         let mut owner_builder_mods = TokenStream::new();
         for node in &self.nodes {
             client_root_methods.extend(node.entry_method());
-            client_builder_mods.extend(node.expand_builder_module(&self.id, &[], Side::Client));
+            client_builder_mods.extend(node.expand_builder_module(
+                &family_name,
+                &self.module,
+                &[],
+                Side::Client,
+            ));
             owner_root_methods.extend(node.entry_method());
-            owner_builder_mods.extend(node.expand_builder_module(&self.id, &[], Side::Owner));
+            owner_builder_mods.extend(node.expand_builder_module(
+                &family_name,
+                &self.module,
+                &[],
+                Side::Owner,
+            ));
         }
 
         quote! {
-            /// Protocol-local topic builders, side-branded. The PUBLIC
+            /// Protocol-local topic builders, side-branded. The
             /// `topic::client()...` chain is the CLIENT side; the OWNER side is
             /// the equally explicit [`topic::owner()`](owner). Every leaf binds the
             /// topic's node path and descriptor to the side it grants.
@@ -74,9 +81,6 @@ impl MaterializedTree {
                     #client_root_methods
                 }
 
-                #[doc(hidden)]
-                pub use super::endpoint as __protocol_endpoint_root;
-
                 #client_builder_mods
 
                 /// Begin an OWNER topic path for this tree.
@@ -88,9 +92,6 @@ impl MaterializedTree {
                 /// node here, getting the publish/subscribe/serve side it must take.
                 /// Consumed topics still go through [`client()`](self::client).
                 pub mod owner {
-                    #[doc(hidden)]
-                    pub use super::__protocol_endpoint_root;
-
                     /// Root of the owner topic builder chain. `#[non_exhaustive]` keeps
                     /// [`owner()`](super::owner) as its sole public entry point.
                     #[non_exhaustive]
@@ -141,6 +142,7 @@ impl Node {
     fn expand_builder_module(
         &self,
         tree_id: &str,
+        family: &Ident,
         ancestors: &[NodeSeg],
         side: Side,
     ) -> TokenStream {
@@ -172,10 +174,8 @@ impl Node {
         // dynamic node also takes its var's string. It assembles all carried fields by
         // moving the parent's fields and adding this node's. From inside this node's
         // builder module, the parent builder is `super::Root` for a top-level node
-        // (`ancestors` empty) and `super::Builder` for a nested one. Unlike the
-        // type-tree cross-reference below, this names this builder's own immediate
-        // parent module, which is by construction always exactly one hop away
-        // regardless of depth, so it never needed the alias-forwarding scheme.
+        // (`ancestors` empty) and `super::Builder` for a nested one. This is
+        // always the immediate parent module, regardless of path depth.
         let parent_builder_ty = if ancestors.is_empty() {
             quote! { super::Root }
         } else {
@@ -215,9 +215,9 @@ impl Node {
         let mut leaf_methods = TokenStream::new();
         for topic in &self.topics {
             let leaf = topic.leaf.method_ident();
-            let kind_ty = topic.builder_leaf_kind(&path, side);
+            let kind_ty = topic.builder_leaf_kind(family, &path, side);
             let (fmt_str, doc_key) = topic.leaf.builder_key_parts(tree_id, &path);
-            let doc = format!("{}\n\nWire topic: `{doc_key}`.", topic.descriptor.rustdoc());
+            let doc = format!("Wire topic: `{doc_key}`.");
             let constructor = if field_idents.is_empty() {
                 quote! { ::phoxal_bus::Topic::new_static(#fmt_str) }
             } else {
@@ -238,19 +238,12 @@ impl Node {
         let mut child_mods = TokenStream::new();
         for child in &self.children {
             child_methods.extend(child.entry_method());
-            child_mods.extend(child.expand_builder_module(tree_id, &path, side));
+            child_mods.extend(child.expand_builder_module(tree_id, family, &path, side));
         }
-
-        let endpoint_root_import = quote! {
-            #[doc(hidden)]
-            pub use super::__protocol_endpoint_root;
-        };
 
         let builder_doc = format!("Topic builder for the `{name_str}` node.");
         quote! {
             pub mod #name {
-                #endpoint_root_import
-
                 #[doc = #builder_doc]
                 // Keep a path builder reachable only through its parent builder, so
                 // `client()` and `owner()` remain the explicit entry points.
@@ -274,13 +267,13 @@ impl TopicDef {
     /// The branded `Kind` type for this leaf on `side`.
     ///
     /// The brand is picked from endpoint direction and builder side.
-    fn builder_leaf_kind(&self, path: &[NodeSeg], side: Side) -> TokenStream {
+    fn builder_leaf_kind(&self, family: &Ident, path: &[NodeSeg], side: Side) -> TokenStream {
         let endpoint_path: Vec<&Ident> = path.iter().map(|s| &s.name).collect();
         match &self.descriptor {
             Descriptor::Query { .. } => {
                 let endpoint = self.endpoint_ident();
                 let endpoint =
-                    quote! { self::__protocol_endpoint_root #(::#endpoint_path)* :: #endpoint };
+                    quote! { crate::#family::endpoint #(::#endpoint_path)* :: #endpoint };
                 match side {
                     Side::Client => quote! { ::phoxal_bus::AskQuery<#endpoint> },
                     Side::Owner => quote! { ::phoxal_bus::ServeQuery<#endpoint> },
@@ -289,7 +282,7 @@ impl TopicDef {
             _ => {
                 let endpoint = self.endpoint_ident();
                 let endpoint =
-                    quote! { self::__protocol_endpoint_root #(::#endpoint_path)* :: #endpoint };
+                    quote! { crate::#family::endpoint #(::#endpoint_path)* :: #endpoint };
                 match (side, self.descriptor.owner_role()) {
                     (Side::Owner, OwnerRole::Publishes) | (Side::Client, OwnerRole::Consumes) => {
                         quote! { ::phoxal_bus::Publish<#endpoint> }

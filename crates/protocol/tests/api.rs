@@ -2,7 +2,9 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-pub use phoxal_protocol::*;
+use phoxal_protocol::{
+    __compat, API_CONTRACT_MANIFEST, ApiContractManifestFamily, robot, runtime, supervisor,
+};
 
 #[path = "api/behavior.rs"]
 mod behavior;
@@ -10,8 +12,6 @@ mod behavior;
 mod contract_surface;
 #[path = "api/family.rs"]
 mod family;
-#[path = "api/macro_fixtures.rs"]
-mod macro_fixtures;
 #[path = "api/topic_builder.rs"]
 mod topic_builder;
 #[path = "api/topic_keys.rs"]

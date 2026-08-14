@@ -82,7 +82,7 @@ impl History {
             self.pop_front(true);
         }
         Ok(Some(supervisor::telemetry::Follow {
-            cursor: supervisor::telemetry::Cursor { sequence },
+            cursor: runtime::telemetry::Cursor { sequence },
             record,
         }))
     }
@@ -128,7 +128,7 @@ impl History {
                 .then_some(first.sequence)
         });
         supervisor::telemetry::Snapshot {
-            cursor: supervisor::telemetry::Cursor {
+            cursor: runtime::telemetry::Cursor {
                 sequence: self.sequence,
             },
             records,
@@ -164,11 +164,11 @@ fn bounded(value: &str) -> String {
 }
 
 fn bounded_rows(
-    rows: Vec<supervisor::telemetry::Topic>,
-    overflow: Option<supervisor::telemetry::Topic>,
+    rows: Vec<runtime::telemetry::Topic>,
+    overflow: Option<runtime::telemetry::Topic>,
 ) -> (
-    Vec<supervisor::telemetry::Topic>,
-    Option<supervisor::telemetry::Topic>,
+    Vec<runtime::telemetry::Topic>,
+    Option<runtime::telemetry::Topic>,
 ) {
     let mut aggregated = BTreeMap::new();
     for mut row in rows {
@@ -190,8 +190,8 @@ fn bounded_rows(
             merge(&mut folded, row);
         }
         folded.topic.clear();
-        folded.direction = supervisor::telemetry::Direction::Mixed;
-        folded.buffer_kind = supervisor::telemetry::BufferKind::Mixed;
+        folded.direction = runtime::telemetry::Direction::Mixed;
+        folded.buffer_kind = runtime::telemetry::BufferKind::Mixed;
         folded.overflowed_rows = folded
             .overflowed_rows
             .saturating_add(u32::try_from(tail.len()).unwrap_or(u32::MAX));
@@ -200,7 +200,7 @@ fn bounded_rows(
     (rows, overflow)
 }
 
-fn merge(target: &mut supervisor::telemetry::Topic, source: &supervisor::telemetry::Topic) {
+fn merge(target: &mut runtime::telemetry::Topic, source: &runtime::telemetry::Topic) {
     target.count = target.count.saturating_add(source.count);
     target.rate_millihz = target.rate_millihz.saturating_add(source.rate_millihz);
     target.drops = target.drops.saturating_add(source.drops);
@@ -224,11 +224,11 @@ fn merge(target: &mut supervisor::telemetry::Topic, source: &supervisor::telemet
         .saturating_add(source.overflowed_rows);
 }
 
-fn empty_overflow() -> supervisor::telemetry::Topic {
-    supervisor::telemetry::Topic {
+fn empty_overflow() -> runtime::telemetry::Topic {
+    runtime::telemetry::Topic {
         topic: String::new(),
-        direction: supervisor::telemetry::Direction::Mixed,
-        buffer_kind: supervisor::telemetry::BufferKind::Mixed,
+        direction: runtime::telemetry::Direction::Mixed,
+        buffer_kind: runtime::telemetry::BufferKind::Mixed,
         count: 0,
         rate_millihz: 0,
         drops: 0,
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn duplicate_rows_are_aggregated_and_the_tail_is_explicit() {
-        let row = |index: usize| supervisor::telemetry::Topic {
+        let row = |index: usize| runtime::telemetry::Topic {
             topic: format!("topic/{index}"),
             ..empty_overflow()
         };

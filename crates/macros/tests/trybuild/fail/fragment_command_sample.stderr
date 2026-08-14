@@ -1,5 +1,0 @@
-error: fragments declare endpoints only; define payload types, implementations, and tests as ordinary sibling Rust items
- --> tests/trybuild/fail/fragment_command_sample.rs:5:9
-  |
-5 |         command target: Sample<Target>;
-  |         ^^^^^^^

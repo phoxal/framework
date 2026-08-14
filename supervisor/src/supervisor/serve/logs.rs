@@ -45,7 +45,7 @@ impl History {
             self.records.pop_front();
         }
         Some(supervisor::logs::Follow {
-            cursor: supervisor::logs::Cursor { sequence },
+            cursor: runtime::telemetry::Cursor { sequence },
             ingest_dropped: self.ingest_dropped,
             record,
         })
@@ -87,7 +87,7 @@ impl History {
                 .then_some(first.sequence)
         });
         supervisor::logs::Snapshot {
-            cursor: supervisor::logs::Cursor {
+            cursor: runtime::telemetry::Cursor {
                 sequence: self.sequence,
             },
             ingest_dropped: self.ingest_dropped,

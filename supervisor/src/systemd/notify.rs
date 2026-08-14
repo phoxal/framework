@@ -81,16 +81,9 @@ impl SdNotify {
         let addr_len = (offset + needed) as libc::socklen_t;
 
         // SAFETY: a standard unbound datagram socket; the returned fd transfers
-        // once into the OwnedFd. `SOCK_CLOEXEC` closes the fd atomically at
-        // socket creation on platforms that support it (Linux/Android), so it
-        // never leaks across a concurrent `exec` (the supervisor spawns
-        // participants); macOS lacks the flag on `socket`, so `set_cloexec`
-        // below sets `FD_CLOEXEC` portably right after creation.
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let sock_type = libc::SOCK_DGRAM | libc::SOCK_CLOEXEC;
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let sock_type = libc::SOCK_DGRAM;
-        let raw = unsafe { libc::socket(libc::AF_UNIX, sock_type, 0) };
+        // once into the OwnedFd. `set_cloexec` below applies the same portable
+        // close-on-exec path on every supported Unix host.
+        let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_DGRAM, 0) };
         if raw < 0 {
             return Err(std::io::Error::last_os_error()).context("create sd_notify socket");
         }
