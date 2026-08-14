@@ -43,5 +43,5 @@ mod tests {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / magnetometer(capability);
 
-    topic sample: Sample<Sample>;
+    sample: Sample<Sample>;
 }

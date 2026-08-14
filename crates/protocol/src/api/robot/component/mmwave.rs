@@ -85,5 +85,5 @@ mod tests {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / mmwave(capability);
 
-    topic scan: Sample<Scan>;
+    scan: Sample<Scan>;
 }

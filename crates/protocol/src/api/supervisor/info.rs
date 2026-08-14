@@ -61,7 +61,7 @@ where
 phoxal_macros::protocol_fragment! {
     path supervisor / info;
 
-    query self: InfoRequest => Info;
+    self: Query<InfoRequest, Info>;
 }
 
 #[cfg(test)]

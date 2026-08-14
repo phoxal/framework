@@ -18,12 +18,16 @@ use crate::topic::{AskQuery, Topic};
 /// The Phoxal-pinned finite query timeout - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Issues queries on an exclusive query topic and returns
-/// `Result<Resp, QueryError>`.
+/// Meaning: asks one request of the endpoint owner and expects exactly one response.
 ///
-/// A query carries a finite, Phoxal-pinned
-/// [`timeout`](DEFAULT_QUERY_TIMEOUT) - not Zenoh's 10 s default - and expects
-/// exactly one responder:
+/// Timestamp: requests express no robot time.
+///
+/// Buffering and admission: each call has a finite, Phoxal-pinned
+/// [`timeout`](DEFAULT_QUERY_TIMEOUT), not Zenoh's 10 s default, and no
+/// endpoint-local backlog is exposed.
+///
+/// Observable overload or loss: every incomplete or ambiguous outcome is a
+/// typed `QueryError`:
 ///
 /// - a success reply decodes to the plain `Resp` body;
 /// - a handler error rides Zenoh's native `ReplyError` and surfaces as

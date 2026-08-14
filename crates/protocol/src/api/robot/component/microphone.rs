@@ -9,5 +9,5 @@ pub struct Frame {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / microphone(capability);
 
-    topic frame: Sample<Frame>;
+    frame: Sample<Frame>;
 }

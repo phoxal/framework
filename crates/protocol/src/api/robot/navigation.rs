@@ -525,11 +525,11 @@ impl std::error::Error for NavigationError {}
 phoxal_macros::protocol_fragment! {
     path robot / navigation;
 
-    topic state: State<State>;
-    topic progress: State<Progress>;
-    topic result: Event<Result>;
-    topic candidate: State<Candidate>;
-    query start: StartRequest => StartResponse;
-    query cancel: CancelRequest => CancelResponse;
-    query next_frontier: FrontierRequest => FrontierResponse;
+    state: State<State>;
+    progress: State<Progress>;
+    result: Event<Result>;
+    candidate: State<Candidate>;
+    start: Query<StartRequest, StartResponse>;
+    cancel: Query<CancelRequest, CancelResponse>;
+    next_frontier: Query<FrontierRequest, FrontierResponse>;
 }

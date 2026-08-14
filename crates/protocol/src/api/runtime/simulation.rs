@@ -34,5 +34,5 @@ impl ::phoxal_bus::WorldClockContract
 phoxal_macros::protocol_fragment! {
     path runtime / simulation;
 
-    topic clock: Event<Clock>;
+    clock: Event<Clock>;
 }

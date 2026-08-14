@@ -74,5 +74,5 @@ impl TryFrom<StateWire> for State {
 phoxal_macros::protocol_fragment! {
     path robot / odometry;
 
-    topic state: State<State>;
+    state: State<State>;
 }

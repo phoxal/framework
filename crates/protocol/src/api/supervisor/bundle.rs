@@ -26,5 +26,5 @@ pub enum GetResponse {
 phoxal_macros::protocol_fragment! {
     path supervisor / bundle;
 
-    query get: GetRequest => GetResponse;
+    get: Query<GetRequest, GetResponse>;
 }

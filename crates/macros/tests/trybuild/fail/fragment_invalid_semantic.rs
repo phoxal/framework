@@ -2,7 +2,7 @@ use phoxal_macros::protocol_fragment;
 
 protocol_fragment! {
     path robot / drive;
-        command target: State<Target>;
+        target: Inflow<Target>;
 }
 
 fn main() {}

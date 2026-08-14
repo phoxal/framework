@@ -158,7 +158,7 @@ impl TryFrom<LookupRequestWire> for LookupRequest {
 phoxal_macros::protocol_fragment! {
     path robot / frame;
 
-    topic tree: State<Tree>;
-    topic static_transforms: State<StaticTransforms>;
-    query lookup: LookupRequest => LookupResponse;
+    tree: State<Tree>;
+    static_transforms: State<StaticTransforms>;
+    lookup: Query<LookupRequest, LookupResponse>;
 }

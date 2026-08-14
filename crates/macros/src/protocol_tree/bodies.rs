@@ -5,7 +5,7 @@
 //! The parallel topic-builder tree is emitted by [`super::builders`] and
 //! spliced into the same tree module here.
 
-use super::model::{MaterializedTree, Node, TopicKind};
+use super::model::{Descriptor, MaterializedTree, Node};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 
@@ -74,13 +74,17 @@ impl Node {
         let mut semantic_aliases = std::collections::BTreeMap::<String, syn::Path>::new();
 
         for topic in &self.topics {
-            match &topic.kind {
-                TopicKind::PubSub(body) => {
+            match &topic.descriptor {
+                Descriptor::State(body)
+                | Descriptor::Sample(body)
+                | Descriptor::Event(body)
+                | Descriptor::Setpoint(body)
+                | Descriptor::Stream { body, .. } => {
                     let payload = &body.path;
                     collect_external_parent(&mut external_parents, payload);
                     register_semantic_alias(&mut semantic_aliases, payload, tree_module, source);
                 }
-                TopicKind::Query { request, response } => {
+                Descriptor::Query { request, response } => {
                     let request = &request.path;
                     let response = &response.path;
                     collect_external_parent(&mut external_parents, request);
@@ -146,16 +150,22 @@ impl Node {
             let endpoint_name = format!("{tree_id}::{family_path}::{endpoint}");
             let endpoint_contract = format!("{family_path}::{endpoint}");
             let endpoint_kind = topic.endpoint_kind();
-            match &topic.kind {
-                TopicKind::PubSub(body) => {
+            let semantic_doc = topic.descriptor.rustdoc();
+            match &topic.descriptor {
+                Descriptor::State(body)
+                | Descriptor::Sample(body)
+                | Descriptor::Event(body)
+                | Descriptor::Setpoint(body)
+                | Descriptor::Stream { body, .. } => {
                     let payload = &body.path;
-                    let delivery_marker = topic.semantic.delivery_marker_trait();
+                    let delivery_marker = topic.descriptor.delivery_marker_trait();
                     let temporal_marker = topic
-                        .semantic
+                        .descriptor
                         .semantic_marker_trait()
                         .map(|marker| quote! { impl #marker for #endpoint {} })
                         .unwrap_or_default();
                     descriptors.extend(quote! {
+                        #[doc = #semantic_doc]
                         #[derive(Clone, Copy, Debug)]
                         pub struct #endpoint;
                         impl ::phoxal_bus::EndpointDescriptor for #endpoint {
@@ -171,10 +181,11 @@ impl Node {
                         #temporal_marker
                     });
                 }
-                TopicKind::Query { request, response } => {
+                Descriptor::Query { request, response } => {
                     let request = &request.path;
                     let response = &response.path;
                     descriptors.extend(quote! {
+                        #[doc = #semantic_doc]
                         #[derive(Clone, Copy, Debug)]
                         pub struct #endpoint;
                         impl ::phoxal_bus::EndpointDescriptor for #endpoint {

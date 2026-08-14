@@ -122,11 +122,12 @@ macro_rules! role_publisher {
 role_publisher!(
     StatePublisher,
     StateContract,
-    "Publishes state at a logical step.\n\nThe step instant comes from a \
+    "Meaning: publishes the owner's current state snapshot.\n\nTimestamp: the step instant comes from a \
      framework-minted [`StepToken`](crate::handle::stamp::StepToken) or \
      [`WorldStepToken`](crate::handle::stamp::WorldStepToken), so a participant \
-     cannot publish state at a time it did not reach. Non-blocking, so it is \
-     safe to call from the step loop. The framework's own world-clock contract \
+     cannot publish state at a time it did not reach.\n\nBuffering and admission: \
+     the bounded lane keeps the newest pending state without blocking the step loop.\n\nObservable overload or loss: \
+     replacements are coalesced and reported by transport metrics. The framework's own world-clock contract \
      is deliberately NOT a `StateContract` and so cannot be named here; see \
      [`WorldClockPublisher`]."
 );
@@ -134,25 +135,23 @@ role_publisher!(
 role_publisher!(
     SamplePublisher,
     SampleContract,
-    "Publishes a sensor observation with its capture stamp.\n\nThe driver owns \
+    "Meaning: publishes a captured sensor observation.\n\nTimestamp: the driver owns \
      mapping its device clock into robot time - including reset, drift, \
      wraparound, batching, and exposure-versus-readout semantics - and says so \
      honestly through [`CaptureStamp`], which can represent an untranslated \
-     capture rather than inventing an instant."
+     capture rather than inventing an instant.\n\nBuffering and admission: samples use a bounded ordered lane with drop-oldest overflow.\n\nObservable overload or loss: evictions and decode loss are counted by transport metrics and receivers expose a dropped count."
 );
 
 role_publisher!(
     SetpointPublisher,
     SetpointContract,
-    "Sends a setpoint.\n\nA setpoint is actionable intent, not an observation: it \
-     expresses no robot time. The owning service stamps its own observation and \
-     applies the result at a logical step."
+    "Meaning: sends newest-actionable intent to the endpoint owner.\n\nTimestamp: a setpoint expresses no robot time; the owner stamps its own observation and applies the result at a logical step.\n\nBuffering and admission: bounded lanes coalesce each source to its newest pending value.\n\nObservable overload or loss: replacements and source-bound refusal are counted, and receiver source overflow has typed terminal evidence."
 );
 
 role_publisher!(
     StreamPublisher,
     StreamContract,
-    "Publishes ordered stream chunks.\n\nThe bounded bus queue reports saturation as a typed error and close as `Closed`; a chunk is never silently discarded."
+    "Meaning: publishes ordered stream chunks in the direction encoded by the endpoint descriptor.\n\nTimestamp: stream chunks express no robot time.\n\nBuffering and admission: streams use a bounded ordered lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: saturation is `WouldBlock`, close is `Closed`, and receivers expose gaps or terminal evidence."
 );
 
 /// Publishes the framework's own world-clock contract at a logical step.
@@ -221,9 +220,15 @@ impl<E: StreamContract> StreamPublisher<E> {
     }
 }
 
-/// Publishes a state-temporal event at a logical step. Events use ordered
-/// stream admission, so a receiver can observe order and explicit gaps while
-/// the event payload remains a plain serde value.
+/// Meaning: publishes a discrete event produced by the owner.
+///
+/// Timestamp: publication requires the logical step that produced the event.
+///
+/// Buffering and admission: events use the bounded ordered stream lane and
+/// refuse admission rather than silently evicting an item.
+///
+/// Observable overload or loss: saturation is `WouldBlock`; receivers expose
+/// explicit per-producer gap or terminal evidence.
 pub struct EventPublisher<E: EventContract>(Outbox<E>);
 
 impl<E: EventContract> Clone for EventPublisher<E> {

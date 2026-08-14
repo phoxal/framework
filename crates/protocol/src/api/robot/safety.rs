@@ -402,6 +402,6 @@ fn expected_safety_permission(
 phoxal_macros::protocol_fragment! {
     path robot / safety;
 
-    topic constraints: State<MotionConstraints>;
-    topic state: State<State>;
+    constraints: State<MotionConstraints>;
+    state: State<State>;
 }

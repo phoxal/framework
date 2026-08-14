@@ -9,20 +9,15 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
-use super::model::{MaterializedTree, Node, TopicDef, TopicKind, TopicLeaf};
+use super::model::{Descriptor, MaterializedTree, Node, OwnerRole, TopicDef, TopicLeaf};
 
 /// Which side a generated builder tree brands its leaves with.
 ///
-/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. A setpoint or
-///   stream leaf yields `Topic<Publish<E>>` (the client sends intent/chunks),
-///   a state/sample/event leaf yields `Topic<Subscribe<E>>` (the client observes
-///   products), and a query
-///   leaf yields `Topic<AskQuery<E>>` (the client calls).
+/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. Leaves are branded
+///   from their descriptor's owner-relative role.
 /// - [`Side::Owner`] - the `topic::owner()...` tree. The brands flip:
-///   setpoint/stream -> `Subscribe` (the owner reads control/chunks),
-///   state/sample/event -> `Publish` (the owner emits products),
-///   `query` -> `ServeQuery`
-///   (the owner serves through `ServeQuery<E>`).
+///   publishing descriptors yield `Publish`, consuming descriptors yield
+///   `Subscribe`, and `Query` yields `ServeQuery`.
 #[derive(Clone, Copy)]
 enum Side {
     Client,
@@ -222,6 +217,7 @@ impl Node {
             let leaf = topic.leaf.method_ident();
             let kind_ty = topic.builder_leaf_kind(&path, side);
             let (fmt_str, doc_key) = topic.leaf.builder_key_parts(tree_id, &path);
+            let doc = format!("{}\n\nWire topic: `{doc_key}`.", topic.descriptor.rustdoc());
             let constructor = if field_idents.is_empty() {
                 quote! { ::phoxal_bus::Topic::new_static(#fmt_str) }
             } else {
@@ -230,7 +226,7 @@ impl Node {
                 }
             };
             leaf_methods.extend(quote! {
-                #[doc = #doc_key]
+                #[doc = #doc]
                 pub fn #leaf(self) -> ::phoxal_bus::Topic<#kind_ty> {
                     #constructor
                 }
@@ -280,26 +276,28 @@ impl TopicDef {
     /// The brand is picked from endpoint direction and builder side.
     fn builder_leaf_kind(&self, path: &[NodeSeg], side: Side) -> TokenStream {
         let endpoint_path: Vec<&Ident> = path.iter().map(|s| &s.name).collect();
-        match &self.kind {
-            TopicKind::PubSub(_) => {
+        match &self.descriptor {
+            Descriptor::Query { .. } => {
                 let endpoint = self.endpoint_ident();
                 let endpoint =
                     quote! { self::__protocol_endpoint_root #(::#endpoint_path)* :: #endpoint };
-                let owner_publishes = self.owner_publishes;
                 match side {
-                    Side::Owner if owner_publishes => quote! { ::phoxal_bus::Publish<#endpoint> },
-                    Side::Client if !owner_publishes => quote! { ::phoxal_bus::Publish<#endpoint> },
-                    _ => quote! { ::phoxal_bus::Subscribe<#endpoint> },
+                    Side::Client => quote! { ::phoxal_bus::AskQuery<#endpoint> },
+                    Side::Owner => quote! { ::phoxal_bus::ServeQuery<#endpoint> },
                 }
             }
-            TopicKind::Query { .. } => {
+            _ => {
                 let endpoint = self.endpoint_ident();
                 let endpoint =
                     quote! { self::__protocol_endpoint_root #(::#endpoint_path)* :: #endpoint };
-                let req = endpoint.clone();
-                match side {
-                    Side::Client => quote! { ::phoxal_bus::AskQuery<#req> },
-                    Side::Owner => quote! { ::phoxal_bus::ServeQuery<#req> },
+                match (side, self.descriptor.owner_role()) {
+                    (Side::Owner, OwnerRole::Publishes) | (Side::Client, OwnerRole::Consumes) => {
+                        quote! { ::phoxal_bus::Publish<#endpoint> }
+                    }
+                    (Side::Client, OwnerRole::Publishes) | (Side::Owner, OwnerRole::Consumes) => {
+                        quote! { ::phoxal_bus::Subscribe<#endpoint> }
+                    }
+                    (_, OwnerRole::Serves) => unreachable!("query handled above"),
                 }
             }
         }

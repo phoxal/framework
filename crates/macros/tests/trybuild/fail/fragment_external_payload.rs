@@ -9,7 +9,7 @@ mod data {
 
     protocol_fragment! {
         path robot / data;
-            topic sample: State<crate::Sample>;
+            sample: State<crate::Sample>;
     }
 }
 

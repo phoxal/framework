@@ -4,8 +4,8 @@ mod drive {
     use super::protocol_fragment;
     protocol_fragment! {
         path robot / drive;
-        command target: Setpoint<Target>;
-        command target: Setpoint<Target>;
+        target: Setpoint<Target>;
+        target: Setpoint<Target>;
     }
 }
 

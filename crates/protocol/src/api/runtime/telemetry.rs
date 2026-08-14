@@ -111,5 +111,5 @@ pub struct Rollup {
 phoxal_macros::protocol_fragment! {
     path runtime / telemetry;
 
-    topic self: Stream<Rollup>;
+    self: Stream<Rollup, Out>;
 }

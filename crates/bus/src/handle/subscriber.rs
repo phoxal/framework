@@ -552,7 +552,16 @@ impl<E: EndpointDescriptor> Subscriber<E> {
     }
 }
 
-/// Delivery-specific keep-newest view for a state contract.
+/// Meaning: keep-newest view of the owner's current state snapshot.
+///
+/// Timestamp: each observation carries the logical step that produced it and
+/// the receiver-local observation instant.
+///
+/// Buffering and admission: one slot is overwritten with the newest admitted
+/// state; the view never accumulates a backlog.
+///
+/// Observable overload or loss: overwrites and decode loss are reported by
+/// transport metrics; intermediate state is not exposed as ordered history.
 #[derive(Clone)]
 pub struct StateView<E: EndpointDescriptor> {
     inner: Latest<E>,
@@ -610,7 +619,16 @@ impl<E: crate::contract::StateDeliveryContract> StateView<E> {
     }
 }
 
-/// Delivery-specific receiver for newest-actionable setpoints.
+/// Meaning: receiver for newest-actionable intent consumed by the owner.
+///
+/// Timestamp: a setpoint expresses no robot time; the observation records when
+/// this receiver saw it so the owner can apply it at a logical step.
+///
+/// Buffering and admission: bounded producer-scoped lanes coalesce each source
+/// to its newest pending value.
+///
+/// Observable overload or loss: replacements and refused sources are counted;
+/// source-bound overflow is typed terminal evidence.
 pub struct SetpointReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
 }
@@ -652,7 +670,16 @@ impl<E: crate::contract::SetpointDeliveryContract> SetpointReceiver<E> {
     }
 }
 
-/// Delivery-specific bounded ordered sample receiver.
+/// Meaning: bounded ordered receiver for captured sensor observations.
+///
+/// Timestamp: each sample retains its publisher-supplied capture stamp and the
+/// receiver-local observation instant.
+///
+/// Buffering and admission: a bounded ordered ring evicts the oldest buffered
+/// sample on overflow.
+///
+/// Observable overload or loss: [`Self::dropped`] exposes cumulative evictions,
+/// and transport metrics count evictions and decode loss.
 pub struct SampleReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
 }
@@ -692,7 +719,16 @@ impl<E: crate::contract::SampleDeliveryContract> SampleReceiver<E> {
     }
 }
 
-/// Delivery-specific ordered stream receiver.
+/// Meaning: ordered receiver for chunks flowing in the descriptor's direction.
+///
+/// Timestamp: stream chunks express no robot time; each item records only the
+/// receiver-local observation instant.
+///
+/// Buffering and admission: the bounded ordered lane refuses admission rather
+/// than silently evicting an item.
+///
+/// Observable overload or loss: receive methods expose per-producer gaps, and
+/// saturation or source-bound failure becomes typed terminal evidence.
 pub struct StreamReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
     topic: String,
@@ -821,11 +857,16 @@ impl<E: crate::contract::StreamDeliveryContract> StreamReceiver<E> {
     }
 }
 
-/// Delivery-specific ordered receiver for event endpoints.
+/// Meaning: ordered receiver for discrete events produced by the owner.
 ///
-/// Events share the stream transport guarantee (ordered admission and
-/// explicit per-producer gap evidence) but have their own endpoint kind so
-/// temporal/event semantics remain independent from the transport metadata.
+/// Timestamp: each event carries the logical step that produced it and the
+/// receiver-local observation instant.
+///
+/// Buffering and admission: events share the bounded ordered stream lane and
+/// refuse admission rather than silently evicting an item.
+///
+/// Observable overload or loss: receive methods expose explicit per-producer
+/// gaps, and saturation or source-bound failure becomes typed terminal evidence.
 pub struct EventReceiver<E: EventContract> {
     inner: StreamReceiver<E>,
 }

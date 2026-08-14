@@ -76,5 +76,5 @@ impl TryFrom<JointStateWire> for JointState {
 phoxal_macros::protocol_fragment! {
     path robot / joint(joint);
 
-    topic state: Event<JointState>;
+    state: Event<JointState>;
 }

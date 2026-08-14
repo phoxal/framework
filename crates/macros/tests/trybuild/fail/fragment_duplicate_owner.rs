@@ -4,14 +4,14 @@ mod first {
     use super::protocol_fragment;
     protocol_fragment! {
         path robot / drive;
-            command target: Setpoint<Target>;
+            target: Setpoint<Target>;
     }
 }
 mod second {
     use super::protocol_fragment;
     protocol_fragment! {
         path robot / drive;
-            topic state: State<State>;
+            state: State<State>;
     }
 }
 mod all {

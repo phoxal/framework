@@ -35,7 +35,7 @@ pub enum Reply {
 phoxal_macros::protocol_fragment! {
     path supervisor / command;
 
-    query self: Request => Reply;
+    self: Query<Request, Reply>;
 }
 
 #[cfg(test)]

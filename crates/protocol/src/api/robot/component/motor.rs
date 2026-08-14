@@ -39,5 +39,5 @@ where
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / motor(capability);
 
-    command command: Setpoint<Command>;
+    command: Setpoint<Command>;
 }

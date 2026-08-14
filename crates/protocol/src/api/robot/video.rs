@@ -36,5 +36,5 @@ pub enum OpenOutcome {
 phoxal_macros::protocol_fragment! {
     path robot / video;
 
-    query open: OpenRequest => OpenOutcome;
+    open: Query<OpenRequest, OpenOutcome>;
 }

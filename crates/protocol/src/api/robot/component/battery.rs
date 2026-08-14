@@ -63,5 +63,5 @@ mod tests {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / battery(capability);
 
-    topic state: State<State>;
+    state: State<State>;
 }

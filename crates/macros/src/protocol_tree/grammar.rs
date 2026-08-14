@@ -1,42 +1,12 @@
-//! The semantic family grammar: the keyword table and every `Parse` impl that
-//! turns an endpoint declaration's tokens into the [`super::model`] tree, plus
-//! the diagnostics that name why a form is not accepted where it was written.
+//! The descriptor-only endpoint grammar and its diagnostics.
 
 use syn::parse::{Parse, ParseStream};
 use syn::{Ident, Token};
 
-use super::model::{BodyPath, SemanticKind, TopicDef, TopicKind, TopicLeaf};
-
-mod kw {
-    syn::custom_keyword!(topic);
-    syn::custom_keyword!(command);
-    syn::custom_keyword!(stream);
-    syn::custom_keyword!(state);
-    syn::custom_keyword!(delivery);
-    syn::custom_keyword!(sample);
-    syn::custom_keyword!(setpoint);
-    syn::custom_keyword!(event);
-    syn::custom_keyword!(query);
-}
+use super::model::{BodyPath, Descriptor, StreamDirection, TopicDef, TopicLeaf};
 
 impl Parse for TopicDef {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        // New endpoint direction is part of the declaration prefix:
-        // `topic frame: Sample<Frame>` publishes from the owner,
-        // `command target: Setpoint<Target>` is consumed by the owner, and
-        // `query start: Req => Resp` is request/reply.
-        let prefix = if input.peek(kw::topic) {
-            input.parse::<kw::topic>()?;
-            0u8
-        } else if input.peek(kw::command) {
-            input.parse::<kw::command>()?;
-            1u8
-        } else if input.peek(kw::query) {
-            input.parse::<kw::query>()?;
-            2u8
-        } else {
-            return Err(input.error("expected `topic`, `command`, or `query` endpoint"));
-        };
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let leaf = if input.peek(Token![self]) {
             input.parse::<Token![self]>()?;
             TopicLeaf::Node
@@ -44,68 +14,72 @@ impl Parse for TopicDef {
             TopicLeaf::Named(input.parse()?)
         };
         input.parse::<Token![:]>()?;
-        if prefix == 2 {
-            let request = parse_body_path(input)?;
-            input.parse::<Token![=>]>()?;
-            let response = parse_body_path(input)?;
-            input.parse::<Token![;]>()?;
-            return Ok(TopicDef {
-                leaf,
-                kind: TopicKind::Query { request, response },
-                semantic: SemanticKind::Query,
-                owner_publishes: true,
-            });
-        }
-        // The semantic descriptor spelling is `State<T>`, `Sample<T>`,
-        // `Event<T>`, `Stream<T>`, or `Setpoint<T>`. It is deliberately
-        // distinguished from the old lowercase role keywords.
-        if input.peek(Ident)
-            && !input.peek(kw::command)
-            && !input.peek(kw::stream)
-            && !input.peek(kw::state)
-            && !input.peek(kw::event)
-            && !input.peek(kw::sample)
-            && !input.peek(kw::setpoint)
-            && !input.peek(kw::query)
-        {
-            let descriptor: Ident = input.parse()?;
-            if input.peek(Token![<]) {
-                input.parse::<Token![<]>()?;
+
+        let name: Ident = input.parse()?;
+        input.parse::<Token![<]>()?;
+        let descriptor = match name.to_string().as_str() {
+            "State" => Descriptor::State(parse_one(input, &name, "State<T>")?),
+            "Sample" => Descriptor::Sample(parse_one(input, &name, "Sample<T>")?),
+            "Event" => Descriptor::Event(parse_one(input, &name, "Event<T>")?),
+            "Setpoint" => Descriptor::Setpoint(parse_one(input, &name, "Setpoint<T>")?),
+            "Query" => {
+                let request = parse_body_path(input)?;
+                input.parse::<Token![,]>().map_err(|_| {
+                    syn::Error::new_spanned(&name, "`Query` requires `Query<Request, Response>`")
+                })?;
+                let response = parse_body_path(input)?;
+                reject_extra_argument(input, &name, "Query<Request, Response>")?;
+                Descriptor::Query { request, response }
+            }
+            "Stream" => {
                 let body = parse_body_path(input)?;
-                input.parse::<Token![>]>()?;
-                let (semantic, owner_publishes) = match descriptor.to_string().as_str() {
-                    "State" if prefix == 0 => (SemanticKind::State, true),
-                    "Sample" if prefix == 0 => (SemanticKind::Sample, true),
-                    "Event" if prefix == 0 => (SemanticKind::Event, true),
-                    "Stream" => (SemanticKind::Stream, prefix == 0),
-                    "Setpoint" if prefix == 1 => (SemanticKind::Setpoint, false),
+                input.parse::<Token![,]>().map_err(|_| {
+                    syn::Error::new_spanned(&name, "`Stream` requires `Stream<Payload, In|Out>`")
+                })?;
+                let direction: Ident = input.parse()?;
+                let direction = match direction.to_string().as_str() {
+                    "In" => StreamDirection::In,
+                    "Out" => StreamDirection::Out,
                     _ => {
                         return Err(syn::Error::new_spanned(
-                            descriptor,
-                            "expected semantic descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`",
+                            direction,
+                            "stream direction is exactly `In` or `Out`",
                         ));
                     }
                 };
-                input.parse::<Token![;]>()?;
-                return Ok(TopicDef {
-                    leaf,
-                    kind: TopicKind::PubSub(body),
-                    semantic,
-                    owner_publishes,
-                });
+                reject_extra_argument(input, &name, "Stream<Payload, In|Out>")?;
+                Descriptor::Stream { body, direction }
             }
-            return Err(syn::Error::new_spanned(
-                descriptor,
-                "semantic endpoint descriptors must carry one payload type in angle brackets",
-            ));
-        }
-        Err(input.error(
-            "expected a semantic endpoint descriptor: `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`",
-        ))
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    name,
+                    "expected descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Setpoint<T>`, `Query<Request, Response>`, or `Stream<T, In|Out>`",
+                ));
+            }
+        };
+        input.parse::<Token![>]>()?;
+        input.parse::<Token![;]>()?;
+        Ok(Self { leaf, descriptor })
     }
 }
 
-fn parse_body_path(input: ParseStream) -> syn::Result<BodyPath> {
+fn parse_one(input: ParseStream<'_>, name: &Ident, expected: &str) -> syn::Result<BodyPath> {
+    let body = parse_body_path(input)?;
+    reject_extra_argument(input, name, expected)?;
+    Ok(body)
+}
+
+fn reject_extra_argument(input: ParseStream<'_>, name: &Ident, expected: &str) -> syn::Result<()> {
+    if input.peek(Token![,]) {
+        return Err(syn::Error::new_spanned(
+            name,
+            format!("descriptor requires exactly `{expected}`"),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_body_path(input: ParseStream<'_>) -> syn::Result<BodyPath> {
     let ty: syn::TypePath = input.parse()?;
     Ok(BodyPath { path: ty.path })
 }

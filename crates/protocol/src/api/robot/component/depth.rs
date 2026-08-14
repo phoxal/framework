@@ -194,5 +194,5 @@ mod tests {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / depth(capability);
 
-    topic frame: Sample<Frame>;
+    frame: Sample<Frame>;
 }

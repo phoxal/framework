@@ -92,7 +92,7 @@ pub enum ConnectReply {
 phoxal_macros::protocol_fragment! {
     path supervisor / connect;
 
-    query self: ConnectRequest => ConnectReply;
+    self: Query<ConnectRequest, ConnectReply>;
 }
 
 #[cfg(test)]

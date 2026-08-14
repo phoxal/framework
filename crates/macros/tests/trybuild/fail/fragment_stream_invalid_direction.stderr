@@ -1,0 +1,5 @@
+error: stream direction is exactly `In` or `Out`
+ --> tests/trybuild/fail/fragment_stream_invalid_direction.rs:5:27
+  |
+5 |     chunks: Stream<Chunk, Sideways>;
+  |                           ^^^^^^^^

@@ -9,5 +9,5 @@ pub struct State {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / emergency_stop(capability);
 
-    topic state: State<State>;
+    state: State<State>;
 }

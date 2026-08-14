@@ -7,7 +7,7 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Ident, Token};
 
-use super::model::{MaterializedTree, Node, TopicDef, TopicKind};
+use super::model::{MaterializedTree, Node, TopicDef};
 
 mod kw {
     syn::custom_keyword!(fragments);
@@ -84,10 +84,15 @@ impl Parse for Fragment {
 }
 
 fn endpoint_ahead(input: ParseStream<'_>) -> bool {
-    let Ok(prefix) = input.fork().parse::<Ident>() else {
+    let ahead = input.fork();
+    if ahead.peek(Token![self]) {
+        if ahead.parse::<Token![self]>().is_err() {
+            return false;
+        }
+    } else if ahead.parse::<Ident>().is_err() {
         return false;
-    };
-    matches!(prefix.to_string().as_str(), "topic" | "command" | "query")
+    }
+    ahead.peek(Token![:])
 }
 
 /// A fragment path roots at one semantic family and owns at least one segment
@@ -460,10 +465,7 @@ fn qualify_endpoint_payloads(
 }
 
 fn endpoint_body_paths_mut(endpoint: &mut TopicDef) -> Vec<&mut super::model::BodyPath> {
-    match &mut endpoint.kind {
-        TopicKind::PubSub(body) => vec![body],
-        TopicKind::Query { request, response } => vec![request, response],
-    }
+    endpoint.descriptor.body_paths_mut()
 }
 
 fn build_nodes(contracts: impl IntoIterator<Item = PathContract>) -> syn::Result<Vec<Node>> {

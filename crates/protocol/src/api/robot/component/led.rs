@@ -17,5 +17,5 @@ pub enum Command {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / led(capability);
 
-    command command: Setpoint<Command>;
+    command: Setpoint<Command>;
 }

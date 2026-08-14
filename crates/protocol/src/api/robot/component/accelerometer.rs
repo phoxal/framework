@@ -45,5 +45,5 @@ mod tests {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / accelerometer(capability);
 
-    topic sample: Sample<Sample>;
+    sample: Sample<Sample>;
 }

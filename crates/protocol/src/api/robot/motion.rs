@@ -94,6 +94,6 @@ pub struct State {
 phoxal_macros::protocol_fragment! {
     path robot / motion;
 
-    command manual: Setpoint<ManualCommand>;
-    topic state: State<State>;
+    manual: Setpoint<ManualCommand>;
+    state: State<State>;
 }

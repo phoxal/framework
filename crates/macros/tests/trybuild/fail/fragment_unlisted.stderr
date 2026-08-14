@@ -3,7 +3,7 @@ error[E0277]: the trait bound `__ProtocolFragmentMarker: __ProtocolFragmentRegis
    |
  7 | /     protocol_fragment! {
  8 | |         path robot / forgotten;
- 9 | |             topic state: State<State>;
+ 9 | |             state: State<State>;
 10 | |     }
    | |_____^ unsatisfied trait bound
    |
@@ -12,7 +12,7 @@ help: the trait `__ProtocolFragmentRegistered` is not implemented for `__Protoco
    |
  7 | /     protocol_fragment! {
  8 | |         path robot / forgotten;
- 9 | |             topic state: State<State>;
+ 9 | |             state: State<State>;
 10 | |     }
    | |_____^
 help: this trait has no implementations, consider adding one
@@ -20,7 +20,7 @@ help: this trait has no implementations, consider adding one
    |
  7 | /     protocol_fragment! {
  8 | |         path robot / forgotten;
- 9 | |             topic state: State<State>;
+ 9 | |             state: State<State>;
 10 | |     }
    | |_____^
    = note: this error originates in the macro `protocol_fragment` (in Nightly builds, run with -Z macro-backtrace for more info)

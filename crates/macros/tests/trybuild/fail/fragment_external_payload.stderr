@@ -1,8 +1,8 @@
 error: endpoint payloads use a local type name; define that type beside this fragment
-  --> tests/trybuild/fail/fragment_external_payload.rs:12:33
+  --> tests/trybuild/fail/fragment_external_payload.rs:12:27
    |
-12 |               topic sample: State<crate::Sample>;
-   |                                   ^^^^^^^^^^^^^
+12 |               sample: State<crate::Sample>;
+   |                             ^^^^^^^^^^^^^
 ...
 16 | / protocol_tree! {
 17 | |     output generated;

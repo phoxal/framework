@@ -86,7 +86,7 @@ where
 phoxal_macros::protocol_fragment! {
     path runtime / logs;
 
-    topic self: Stream<Event>;
+    self: Stream<Event, Out>;
 }
 
 #[cfg(test)]

@@ -43,8 +43,8 @@ mod fragment_collection {
 
                         crate::protocol_fragment! {
                             path robot / component(instance) / motor(capability);
-                            command command: Setpoint<Command>;
-                            topic status: State<Status>;
+                            command: Setpoint<Command>;
+                            status: State<Status>;
                         }
                     }
                 }
@@ -64,7 +64,7 @@ mod fragment_collection {
 
                     crate::protocol_fragment! {
                         path robot / drive;
-                        command target: Setpoint<Target>;
+                        target: Setpoint<Target>;
                     }
                 }
             }
@@ -124,7 +124,7 @@ mod fragment_order_independence {
                             pub struct State { pub value: u8 }
                             crate::protocol_fragment! {
                                 path robot / alpha;
-                                topic state: State<State>;
+                                state: State<State>;
                             }
                         }
                         pub mod beta {
@@ -133,7 +133,7 @@ mod fragment_order_independence {
                             pub struct State { pub value: u16 }
                             crate::protocol_fragment! {
                                 path robot / beta;
-                                topic state: State<State>;
+                                state: State<State>;
                             }
                         }
                     }
@@ -223,9 +223,9 @@ mod semantic_surface {
 
                 crate::protocol_fragment! {
                     path robot / data;
-                    topic mirror: State<SharedPayload>;
-                    topic sample: Sample<SharedPayload>;
-                    query lookup: QueryRequest => QueryResponse;
+                    mirror: State<SharedPayload>;
+                    sample: Sample<SharedPayload>;
+                    lookup: Query<QueryRequest, QueryResponse>;
                 }
             }
         }
@@ -289,9 +289,10 @@ mod semantic_surface {
 /// kind while reusing ordinary sibling Rust payloads.
 mod semantic_forms {
     use phoxal_bus::{
-        EndpointDescriptor, EndpointKind, EventContract, QueryEndpointDescriptor,
-        SampleDeliveryContract, SetpointDeliveryContract, StateContract, StateDeliveryContract,
-        StreamContract, StreamDeliveryContract,
+        AskQuery, EndpointDescriptor, EndpointKind, EventContract, Publish,
+        QueryEndpointDescriptor, SampleDeliveryContract, ServeQuery, SetpointDeliveryContract,
+        StateContract, StateDeliveryContract, StreamContract, StreamDeliveryContract, Subscribe,
+        Topic,
     };
 
     pub mod source {
@@ -318,13 +319,13 @@ mod semantic_forms {
 
                 crate::protocol_fragment! {
                     path robot / forms;
-                    topic state: State<Payload>;
-                    topic sample: Sample<Payload>;
-                    topic event: Event<Payload>;
-                    topic stream: Stream<Payload>;
-                    command setpoint: Setpoint<Payload>;
-                    command chunks: Stream<Payload>;
-                    query lookup: Request => Response;
+                    state: State<Payload>;
+                    sample: Sample<Payload>;
+                    event: Event<Payload>;
+                    stream: Stream<Payload, Out>;
+                    setpoint: Setpoint<Payload>;
+                    chunks: Stream<Payload, In>;
+                    lookup: Query<Request, Response>;
                 }
             }
         }
@@ -369,5 +370,16 @@ mod semantic_forms {
         );
         assert_eq!(<Chunks as EndpointDescriptor>::KIND, EndpointKind::Stream);
         assert_eq!(<Lookup as EndpointDescriptor>::KIND, EndpointKind::Query);
+
+        fn publishes<E>(_: Topic<Publish<E>>) {}
+        fn subscribes<E>(_: Topic<Subscribe<E>>) {}
+        fn asks<E>(_: Topic<AskQuery<E>>) {}
+        fn serves<E>(_: Topic<ServeQuery<E>>) {}
+        publishes(generated::robot::topic::owner().forms().stream());
+        subscribes(generated::robot::topic::client().forms().stream());
+        subscribes(generated::robot::topic::owner().forms().chunks());
+        publishes(generated::robot::topic::client().forms().chunks());
+        asks(generated::robot::topic::client().forms().lookup());
+        serves(generated::robot::topic::owner().forms().lookup());
     }
 }

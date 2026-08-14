@@ -327,6 +327,6 @@ impl TryFrom<GridWindowWire> for crate::api::robot::map::GridWindow {
 phoxal_macros::protocol_fragment! {
     path robot / map;
 
-    topic revision: State<Revision>;
-    query submap: SubmapRequest => SubmapResponse;
+    revision: State<Revision>;
+    submap: Query<SubmapRequest, SubmapResponse>;
 }

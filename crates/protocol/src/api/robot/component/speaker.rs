@@ -14,5 +14,5 @@ pub struct Chunk {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / speaker(capability);
 
-    command stream: Stream<Chunk>;
+    stream: Stream<Chunk, In>;
 }

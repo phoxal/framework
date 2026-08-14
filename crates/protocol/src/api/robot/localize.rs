@@ -75,5 +75,5 @@ impl LocalizationState {
 phoxal_macros::protocol_fragment! {
     path robot / localize;
 
-    topic state: State<LocalizationState>;
+    state: State<LocalizationState>;
 }

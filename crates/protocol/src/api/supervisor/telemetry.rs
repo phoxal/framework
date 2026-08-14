@@ -60,6 +60,6 @@ pub struct Follow {
 phoxal_macros::protocol_fragment! {
     path supervisor / telemetry;
 
-    query snapshot: SnapshotRequest => Snapshot;
-    topic follow: Stream<Follow>;
+    snapshot: Query<SnapshotRequest, Snapshot>;
+    follow: Stream<Follow, Out>;
 }

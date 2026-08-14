@@ -1,5 +1,5 @@
 error: fragments declare endpoints only; define payload types, implementations, and tests as ordinary sibling Rust items
- --> tests/trybuild/fail/fragment_command_state.rs:5:9
+ --> tests/trybuild/fail/fragment_old_arrow_query.rs:5:5
   |
-5 |         command target: State<Target>;
-  |         ^^^^^^^
+5 |     query current: Request => Response;
+  |     ^^^^^

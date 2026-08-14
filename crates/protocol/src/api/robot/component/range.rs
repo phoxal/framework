@@ -134,5 +134,5 @@ mod tests {
 phoxal_macros::protocol_fragment! {
     path robot / component(instance) / range(capability);
 
-    topic sample: Sample<Sample>;
+    sample: Sample<Sample>;
 }

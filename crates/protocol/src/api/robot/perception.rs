@@ -438,6 +438,6 @@ fn valid_identifier(value: &str) -> bool {
 phoxal_macros::protocol_fragment! {
     path robot / perception;
 
-    topic detections: State<Detections>;
-    topic state: State<State>;
+    detections: State<Detections>;
+    state: State<State>;
 }

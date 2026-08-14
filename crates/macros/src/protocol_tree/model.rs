@@ -23,18 +23,15 @@ pub(super) struct Node {
 #[derive(Clone)]
 pub(super) struct TopicDef {
     pub(super) leaf: TopicLeaf,
-    pub(super) kind: TopicKind,
-    /// The endpoint semantic determines temporal capability and transport
-    /// family. Direction is separately explicit in the source grammar.
-    pub(super) semantic: SemanticKind,
-    /// Whether the endpoint owner publishes its payload.
-    pub(super) owner_publishes: bool,
+    /// The descriptor is the complete endpoint contract. Each variant is a
+    /// legal state, so direction, arity, and owner role cannot disagree.
+    pub(super) descriptor: Descriptor,
 }
 
 #[derive(Clone)]
 pub(super) enum TopicLeaf {
     Named(Ident),
-    /// `topic self: …` - the body binds to the node path itself instead of
+    /// `self: …` - the body binds to the node path itself instead of
     /// appending a leaf segment, so a fragment whose whole path is the wire key
     /// (`runtime/logs`, `supervisor/snapshot`) says so directly.
     Node,
@@ -60,15 +57,34 @@ impl TopicLeaf {
     }
 }
 
-/// One fixed semantic endpoint category from the public macro grammar.
+/// One legal descriptor from the public protocol grammar.
+#[derive(Clone)]
+pub(super) enum Descriptor {
+    State(BodyPath),
+    Sample(BodyPath),
+    Event(BodyPath),
+    Setpoint(BodyPath),
+    Stream {
+        body: BodyPath,
+        direction: StreamDirection,
+    },
+    Query {
+        request: BodyPath,
+        response: BodyPath,
+    },
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SemanticKind {
-    Setpoint,
-    Stream,
-    State,
-    Event,
-    Sample,
-    Query,
+pub(super) enum StreamDirection {
+    In,
+    Out,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OwnerRole {
+    Publishes,
+    Consumes,
+    Serves,
 }
 
 impl TopicDef {
@@ -90,14 +106,7 @@ impl TopicDef {
     }
 
     pub(super) fn endpoint_kind(&self) -> TokenStream {
-        match self.semantic {
-            SemanticKind::State => quote! { ::phoxal_bus::EndpointKind::State },
-            SemanticKind::Sample => quote! { ::phoxal_bus::EndpointKind::Sample },
-            SemanticKind::Event => quote! { ::phoxal_bus::EndpointKind::Event },
-            SemanticKind::Stream => quote! { ::phoxal_bus::EndpointKind::Stream },
-            SemanticKind::Setpoint => quote! { ::phoxal_bus::EndpointKind::Setpoint },
-            SemanticKind::Query => quote! { ::phoxal_bus::EndpointKind::Query },
-        }
+        self.descriptor.endpoint_kind()
     }
 
     /// The transport family emitted on the body and consumed by the semantic
@@ -105,59 +114,123 @@ impl TopicDef {
     /// generated manifest cannot accidentally classify an overridden topic by
     /// its temporal role.
     pub(super) fn delivery_family(&self) -> TokenStream {
-        self.semantic.delivery_family()
+        self.descriptor.delivery_family()
     }
 }
 
-impl SemanticKind {
-    /// The transport family selected by this endpoint semantic.
-    pub(super) fn delivery_family(self) -> TokenStream {
+impl Descriptor {
+    pub(super) fn endpoint_kind(&self) -> TokenStream {
         match self {
-            Self::State => quote! { ::phoxal_bus::DeliveryFamily::State },
-            Self::Sample => quote! { ::phoxal_bus::DeliveryFamily::Sample },
-            Self::Setpoint => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
-            Self::Stream | Self::Event => quote! { ::phoxal_bus::DeliveryFamily::Stream },
-            Self::Query => quote! { ::phoxal_bus::DeliveryFamily::Query },
+            Self::State(_) => quote! { ::phoxal_bus::EndpointKind::State },
+            Self::Sample(_) => quote! { ::phoxal_bus::EndpointKind::Sample },
+            Self::Event(_) => quote! { ::phoxal_bus::EndpointKind::Event },
+            Self::Stream { .. } => quote! { ::phoxal_bus::EndpointKind::Stream },
+            Self::Setpoint(_) => quote! { ::phoxal_bus::EndpointKind::Setpoint },
+            Self::Query { .. } => quote! { ::phoxal_bus::EndpointKind::Query },
         }
     }
 
-    /// The transport marker derived from the endpoint semantic. Events share
-    /// ordered transport with streams while retaining their step-time marker.
-    pub(super) fn delivery_marker_trait(self) -> TokenStream {
+    /// The transport family selected by this descriptor.
+    pub(super) fn delivery_family(&self) -> TokenStream {
         match self {
-            Self::Setpoint => quote! { ::phoxal_bus::SetpointDeliveryContract },
-            Self::Stream | Self::Event => {
+            Self::State(_) => quote! { ::phoxal_bus::DeliveryFamily::State },
+            Self::Sample(_) => quote! { ::phoxal_bus::DeliveryFamily::Sample },
+            Self::Setpoint(_) => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
+            Self::Stream { .. } | Self::Event(_) => {
+                quote! { ::phoxal_bus::DeliveryFamily::Stream }
+            }
+            Self::Query { .. } => quote! { ::phoxal_bus::DeliveryFamily::Query },
+        }
+    }
+
+    /// The transport marker derived from the descriptor. Events share
+    /// ordered transport with streams while retaining their step-time marker.
+    pub(super) fn delivery_marker_trait(&self) -> TokenStream {
+        match self {
+            Self::Setpoint(_) => quote! { ::phoxal_bus::SetpointDeliveryContract },
+            Self::Stream { .. } | Self::Event(_) => {
                 quote! { ::phoxal_bus::StreamDeliveryContract }
             }
-            Self::Sample => quote! { ::phoxal_bus::SampleDeliveryContract },
-            Self::State => {
+            Self::Sample(_) => quote! { ::phoxal_bus::SampleDeliveryContract },
+            Self::State(_) => {
                 quote! { ::phoxal_bus::StateDeliveryContract }
             }
-            Self::Query => {
+            Self::Query { .. } => {
                 unreachable!("query bodies have no pub/sub delivery marker")
             }
         }
     }
 
-    pub(super) fn semantic_marker_trait(self) -> Option<TokenStream> {
+    pub(super) fn semantic_marker_trait(&self) -> Option<TokenStream> {
         match self {
-            Self::Setpoint => Some(quote! { ::phoxal_bus::SetpointContract }),
-            Self::Stream => Some(quote! { ::phoxal_bus::StreamContract }),
-            Self::State => Some(quote! { ::phoxal_bus::StateContract }),
-            Self::Event => Some(quote! { ::phoxal_bus::EventContract }),
-            Self::Sample => Some(quote! { ::phoxal_bus::SampleContract }),
-            Self::Query => None,
+            Self::Setpoint(_) => Some(quote! { ::phoxal_bus::SetpointContract }),
+            Self::Stream { .. } => Some(quote! { ::phoxal_bus::StreamContract }),
+            Self::State(_) => Some(quote! { ::phoxal_bus::StateContract }),
+            Self::Event(_) => Some(quote! { ::phoxal_bus::EventContract }),
+            Self::Sample(_) => Some(quote! { ::phoxal_bus::SampleContract }),
+            Self::Query { .. } => None,
         }
     }
-}
 
-#[derive(Clone)]
-pub(super) enum TopicKind {
-    PubSub(BodyPath),
-    Query {
-        request: BodyPath,
-        response: BodyPath,
-    },
+    pub(super) fn owner_role(&self) -> OwnerRole {
+        match self {
+            Self::State(_) | Self::Sample(_) | Self::Event(_) => OwnerRole::Publishes,
+            Self::Setpoint(_)
+            | Self::Stream {
+                direction: StreamDirection::In,
+                ..
+            } => OwnerRole::Consumes,
+            Self::Stream {
+                direction: StreamDirection::Out,
+                ..
+            } => OwnerRole::Publishes,
+            Self::Query { .. } => OwnerRole::Serves,
+        }
+    }
+
+    pub(super) fn body_paths_mut(&mut self) -> Vec<&mut BodyPath> {
+        match self {
+            Self::State(body)
+            | Self::Sample(body)
+            | Self::Event(body)
+            | Self::Setpoint(body)
+            | Self::Stream { body, .. } => vec![body],
+            Self::Query { request, response } => vec![request, response],
+        }
+    }
+
+    /// Canonical semantic rustdoc shared by generated descriptors and builders.
+    pub(super) fn rustdoc(&self) -> &'static str {
+        match self {
+            Self::State(_) => {
+                "Meaning: the owner's current state snapshot.\n\nTimestamp: publication requires the logical step that produced the state.\n\nBuffering and admission: outbound and inbound state lanes keep the newest pending value without blocking the step loop.\n\nObservable overload or loss: replaced pending values are coalesced and reported by transport metrics; consumers observe current state rather than an ordered history."
+            }
+            Self::Sample(_) => {
+                "Meaning: a captured sensor observation.\n\nTimestamp: the publisher supplies an honest capture stamp, including an untranslated stamp when device time cannot be mapped to robot time.\n\nBuffering and admission: samples use bounded ordered queues whose overflow policy evicts the oldest buffered sample.\n\nObservable overload or loss: evictions and decode loss are counted by transport metrics, and receivers expose their cumulative dropped count."
+            }
+            Self::Event(_) => {
+                "Meaning: a discrete fact produced by the owner at a logical step.\n\nTimestamp: publication requires the logical step that produced the event.\n\nBuffering and admission: events use the bounded ordered stream lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: publishers receive a typed would-block error, while receivers expose explicit per-producer gap or terminal evidence."
+            }
+            Self::Setpoint(_) => {
+                "Meaning: newest-actionable intent consumed by the owner.\n\nTimestamp: a setpoint expresses no robot time; the owner stamps its own observation and applies it at a logical step.\n\nBuffering and admission: bounded producer-scoped lanes coalesce each source to its newest pending value.\n\nObservable overload or loss: replacements and refused new sources are counted, and source-bound overflow terminates the receiver with typed evidence."
+            }
+            Self::Stream {
+                direction: StreamDirection::In,
+                ..
+            } => {
+                "Meaning: ordered chunks flowing into the endpoint owner.\n\nTimestamp: stream chunks express no robot time.\n\nBuffering and admission: streams use a bounded ordered lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: publishers receive a typed would-block error, while receivers expose explicit per-producer gap or terminal evidence."
+            }
+            Self::Stream {
+                direction: StreamDirection::Out,
+                ..
+            } => {
+                "Meaning: ordered chunks flowing out from the endpoint owner.\n\nTimestamp: stream chunks express no robot time.\n\nBuffering and admission: streams use a bounded ordered lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: publishers receive a typed would-block error, while receivers expose explicit per-producer gap or terminal evidence."
+            }
+            Self::Query { .. } => {
+                "Meaning: one request served by the owner with exactly one response.\n\nTimestamp: requests express no robot time.\n\nBuffering and admission: each call has a finite timeout and expects one exclusive responder; no endpoint-local backlog is exposed.\n\nObservable overload or loss: timeout, unavailable service, server failure, protocol failure, and duplicate responders are returned as typed query errors."
+            }
+        }
+    }
 }
 
 /// A resolved payload path. A fragment names a local sibling type and the tree
@@ -213,5 +286,52 @@ fn join_seg(prefix: &str, sep: &str, seg: &str) -> String {
         seg.to_string()
     } else {
         format!("{prefix}{sep}{seg}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(name: &str) -> BodyPath {
+        BodyPath {
+            path: syn::parse_str(name).expect("test payload path"),
+        }
+    }
+
+    #[test]
+    fn every_descriptor_rustdoc_covers_the_semantic_contract() {
+        let descriptors = [
+            Descriptor::State(body("State")),
+            Descriptor::Sample(body("Sample")),
+            Descriptor::Event(body("Event")),
+            Descriptor::Setpoint(body("Setpoint")),
+            Descriptor::Stream {
+                body: body("Input"),
+                direction: StreamDirection::In,
+            },
+            Descriptor::Stream {
+                body: body("Output"),
+                direction: StreamDirection::Out,
+            },
+            Descriptor::Query {
+                request: body("Request"),
+                response: body("Response"),
+            },
+        ];
+        for descriptor in descriptors {
+            let rustdoc = descriptor.rustdoc();
+            for required in [
+                "Meaning:",
+                "Timestamp:",
+                "Buffering and admission:",
+                "Observable overload or loss:",
+            ] {
+                assert!(
+                    rustdoc.contains(required),
+                    "descriptor rustdoc omitted `{required}`: {rustdoc}"
+                );
+            }
+        }
     }
 }

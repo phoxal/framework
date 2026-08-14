@@ -1,5 +1,5 @@
-error: expected semantic descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Stream<T>`, or `Setpoint<T>`
- --> tests/trybuild/fail/fragment_invalid_semantic.rs:5:25
+error: expected descriptor `State<T>`, `Sample<T>`, `Event<T>`, `Setpoint<T>`, `Query<Request, Response>`, or `Stream<T, In|Out>`
+ --> tests/trybuild/fail/fragment_invalid_semantic.rs:5:17
   |
-5 |         command target: State<Target>;
-  |                         ^^^^^
+5 |         target: Inflow<Target>;
+  |                 ^^^^^^

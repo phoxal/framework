@@ -10,7 +10,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::model::{BodyPath, MaterializedTree, Node, TopicKind};
+use super::model::{BodyPath, Descriptor, MaterializedTree, Node};
 
 /// One contract family in the emitted manifest.
 pub(super) struct ManifestFamily {
@@ -234,9 +234,13 @@ fn collect(
             contracts.push(ManifestContract {
                 endpoint: endpoint_name,
                 topic: topic_key,
-                bodies: match &topic.kind {
-                    TopicKind::PubSub(body) => ManifestBodies::PubSub(body.clone()),
-                    TopicKind::Query { request, response } => ManifestBodies::Query {
+                bodies: match &topic.descriptor {
+                    Descriptor::State(body)
+                    | Descriptor::Sample(body)
+                    | Descriptor::Event(body)
+                    | Descriptor::Setpoint(body)
+                    | Descriptor::Stream { body, .. } => ManifestBodies::PubSub(body.clone()),
+                    Descriptor::Query { request, response } => ManifestBodies::Query {
                         request: request.clone(),
                         response: response.clone(),
                     },

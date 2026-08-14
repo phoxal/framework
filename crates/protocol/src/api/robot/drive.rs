@@ -106,8 +106,8 @@ where
 phoxal_macros::protocol_fragment! {
     path robot / drive;
 
-    command target: Setpoint<Target>;
-    topic state: State<State>;
+    target: Setpoint<Target>;
+    state: State<State>;
 }
 
 #[cfg(test)]

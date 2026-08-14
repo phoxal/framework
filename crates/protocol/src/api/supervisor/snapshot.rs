@@ -28,6 +28,6 @@ pub type Update = SnapshotDocument;
 phoxal_macros::protocol_fragment! {
     path supervisor / snapshot;
 
-    topic self: Stream<Update>;
-    query current: CurrentRequest => Current;
+    self: Stream<Update, Out>;
+    current: Query<CurrentRequest, Current>;
 }
