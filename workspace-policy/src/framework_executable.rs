@@ -18,6 +18,7 @@ pub struct Spec {
     manifest_path: &'static str,
     bin_name: &'static str,
     source_path: &'static str,
+    forbidden_dependencies: &'static [&'static str],
 }
 
 impl Spec {
@@ -35,6 +36,12 @@ impl Spec {
 
     pub const fn source_path(self) -> &'static str {
         self.source_path
+    }
+
+    /// Dependencies that would move authoring or parsing policy into this
+    /// framework-owned executable.
+    pub const fn forbidden_dependencies(self) -> &'static [&'static str] {
+        self.forbidden_dependencies
     }
 
     pub(crate) fn matches_manifest(self, relative: &Path) -> bool {
@@ -89,6 +96,18 @@ pub const SPECS: [Spec; 1] = [Spec {
     manifest_path: "supervisor/Cargo.toml",
     bin_name: "phoxal-supervisor",
     source_path: "supervisor/src/main.rs",
+    forbidden_dependencies: &[
+        // The supervisor consumes finalized runtime contracts, never the
+        // participant facade or its former CLI owner.
+        "phoxal",
+        "phoxal-cli",
+        // Authored YAML/URDF and their parsers stop at bundle compilation.
+        "phoxal-manifest",
+        "serde_yaml",
+        "urdf-rs",
+        // Its exact two-form process contract is intentionally hand parsed.
+        "clap",
+    ],
 }];
 
 /// One discovered framework-owned executable.

@@ -265,9 +265,10 @@ pub(crate) fn write_if_changed(path: &Path, content: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use semver::Version;
+    use serde_json::json;
 
     use super::*;
-    use crate::surface::SurfaceSet;
+    use crate::surface::{CONTRACT_CRATES, SurfaceSet};
 
     fn probe() -> ProbeSurfaces {
         ProbeSurfaces {
@@ -302,19 +303,89 @@ mod tests {
         );
     }
 
-    /// The first renamed baseline aliases the predecessor package privately to
-    /// the stable carrier, so both sides render records under one identity.
+    /// The first renamed baseline really selects the old Cargo package while
+    /// the current side selects the new one. The generated dependency alias and
+    /// collector then erase that package-name difference at the comparison
+    /// boundary, so an identical record remains unchanged under the stable
+    /// carrier identity.
     #[test]
-    fn the_first_baseline_privately_aliases_phoxal_api_as_phoxal_protocol() {
-        let manifest = probe()
-            .manifest(&Side::baseline(Version::new(0, 58, 1)))
-            .expect("the manifest renders");
+    fn a_predecessor_package_is_compared_under_the_stable_carrier() {
+        let baseline = Side::baseline(Version::new(0, 58, 1));
+        let Side::Baseline(train) = &baseline else {
+            panic!("the stated baseline is published");
+        };
+        let selected = train
+            .selected_package("phoxal-protocol")
+            .expect("the protocol carrier has a selected baseline package");
+        let protocol = CONTRACT_CRATES
+            .iter()
+            .find(|contract_crate| contract_crate.carrier == "phoxal-protocol")
+            .expect("the protocol carrier is declared");
+        assert_eq!(selected, "phoxal-api");
+        assert_eq!(protocol.workspace_package, "phoxal-protocol");
+        assert_ne!(selected, protocol.workspace_package);
+
+        let manifest = probe().manifest(&baseline).expect("the manifest renders");
         assert!(
             manifest
                 .contains("phoxal-protocol = { package = \"phoxal-api\", version = \"=0.58.1\" }"),
             "{manifest}"
         );
         assert!(!manifest.contains("\nphoxal-api ="), "{manifest}");
+        let current_manifest = probe()
+            .manifest(&Side::Current)
+            .expect("the current manifest renders");
+        assert!(
+            current_manifest
+                .contains("phoxal-protocol = { path = \"/workspace/crates/protocol\" }"),
+            "{current_manifest}"
+        );
+        assert!(
+            !current_manifest.contains("phoxal-api"),
+            "{current_manifest}"
+        );
+
+        let program = ProbeSurfaces::program();
+        assert!(
+            program
+                .contains("(\"phoxal-protocol\", phoxal_protocol::__compat::contract_surface())"),
+            "{program}"
+        );
+        assert!(!program.contains("phoxal_api"), "{program}");
+
+        let protocol_record = json!({
+            "delivery": "state",
+            "family": "robot",
+            "kind": "state",
+            "path": "robot/drive/state",
+            "payload": {"fields": [], "kind": "struct"},
+            "record": "endpoint",
+            "request": serde_json::Value::Null,
+            "response": serde_json::Value::Null,
+        });
+        let probe_output = || {
+            CONTRACT_CRATES
+                .iter()
+                .map(|contract_crate| {
+                    let records = if contract_crate.carrier == "phoxal-protocol" {
+                        vec![protocol_record.clone()]
+                    } else {
+                        Vec::new()
+                    };
+                    (
+                        contract_crate.carrier.to_owned(),
+                        json!({"records": records}),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let published = SurfaceSet::read(&probe_output()).expect("the predecessor surface reads");
+        let current = SurfaceSet::read(&probe_output()).expect("the current surface reads");
+        let changes = published.changes_to(&current);
+        assert!(
+            changes.is_empty(),
+            "the package rename created stable-carrier drift: {changes:?}"
+        );
     }
 
     /// The probe is its own workspace, so the enclosing one neither adopts the

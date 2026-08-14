@@ -1,0 +1,7 @@
+error[E0432]: unresolved imports `phoxal::api::runtime`, `phoxal::api::supervisor`
+ --> tests/trybuild/fail/authoring_api_excludes_runtime_and_supervisor.rs:1:19
+  |
+1 | use phoxal::api::{runtime, supervisor};
+  |                   ^^^^^^^  ^^^^^^^^^^ no `supervisor` in `api`
+  |                   |
+  |                   no `runtime` in `api`

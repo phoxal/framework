@@ -309,7 +309,7 @@ pub(crate) fn format_duration(value: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::participant::ParticipantKind;
+    use phoxal_runtime_contract::metadata::ParticipantKind;
     use std::path::PathBuf;
 
     fn spec(id: &str, kind: ParticipantKind) -> ParticipantSpec {

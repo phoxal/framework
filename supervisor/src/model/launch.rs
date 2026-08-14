@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::participant::ParticipantKind;
 use super::process::ProcessKey;
+use phoxal_runtime_contract::metadata::ParticipantKind;
 
 const RESTART_DELAY: Duration = Duration::from_secs(2);
 const START_LIMIT_INTERVAL: Duration = Duration::from_secs(60);

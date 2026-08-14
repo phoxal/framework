@@ -27,19 +27,12 @@ use crate::metadata::BusMetadata;
 use crate::query::QueryFailure;
 use crate::session::BusHandle;
 
-/// Meaning: serves requests for one owner-bound query endpoint.
-///
-/// Timestamp: requests and replies express no robot time; their metadata carries
-/// provenance only.
-///
-/// Buffering and admission: the runner receives requests from the transport and
-/// serializes typed handler evaluation with participant state.
-///
-/// Observable overload or loss: close and transport failure are typed errors;
-/// malformed requests receive structured failure evidence through the runner.
-pub struct ServerQueryable {
-    inner: Queryable<FifoChannelHandler<ZenohQuery>>,
-    topic_key: String,
+crate::semantic::author_semantic_docs! {
+    "Meaning: serves requests for one owner-bound query endpoint.\n\nTimestamp: requests and replies express no robot time; their metadata carries provenance only.\n\nBuffering and admission: the runner receives requests from the transport and serializes typed handler evaluation with participant state.\n\nObservable overload or loss: close and transport failure are typed errors; malformed requests receive structured failure evidence through the runner.";
+    pub struct ServerQueryable {
+        inner: Queryable<FifoChannelHandler<ZenohQuery>>,
+        topic_key: String,
+    }
 }
 
 impl ServerQueryable {
@@ -62,19 +55,12 @@ impl ServerQueryable {
     }
 }
 
-/// Meaning: one admitted owner-side request with its success and error reply legs.
-///
-/// Timestamp: the request expresses no robot time; metadata carries trusted
-/// requester provenance.
-///
-/// Buffering and admission: the runner serializes this request with participant
-/// state and emits at most one reply.
-///
-/// Observable overload or loss: malformed metadata and transport/reply failure
-/// are typed errors, while handler failure uses a structured [`QueryFailure`].
-pub struct IncomingQuery {
-    query: ZenohQuery,
-    topic_key: String,
+crate::semantic::author_semantic_docs! {
+    "Meaning: one admitted owner-side request with its success and error reply legs.\n\nTimestamp: the request expresses no robot time; metadata carries trusted requester provenance.\n\nBuffering and admission: the runner serializes this request with participant state and emits at most one reply.\n\nObservable overload or loss: malformed metadata and transport/reply failure are typed errors, while handler failure uses a structured [`QueryFailure`].";
+    pub struct IncomingQuery {
+        query: ZenohQuery,
+        topic_key: String,
+    }
 }
 
 impl IncomingQuery {

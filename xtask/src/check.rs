@@ -903,10 +903,12 @@ mod tests {
         );
     }
 
-    /// A break at the frozen bootstrap sends the reader to the one rule with no
-    /// autonomous remedy, not to the ordinary breaking-change rule.
+    /// A break at the frozen bootstrap fails both commands even when the
+    /// candidate already clears the ordinary release-size gate. Both SemVer
+    /// eras are stated because neither a pre-1.0 minor nor a post-1.0 major can
+    /// buy a change to the attachment bootstrap.
     #[test]
-    fn a_frozen_bootstrap_break_points_at_the_stop_rule() {
+    fn frozen_bootstrap_drift_is_unreleasable_at_any_sufficient_version() {
         let connect = json!({
             "delivery": "query",
             "family": "supervisor",
@@ -917,33 +919,41 @@ mod tests {
             "request": {"fields": [], "kind": "struct"},
             "response": {"fields": [], "kind": "struct"},
         });
-        let report = check(
-            Version::new(0, 58, 1),
-            Version::new(0, 58, 2),
-            FixtureSurfaces::new(&[connect], &[]),
-        )
-        .run(CompatibilityImpact::Unchanged)
-        .expect("the comparison runs");
-        assert!(
-            report.to_string().contains("[FROZEN BOOTSTRAP]"),
-            "{report}"
-        );
-        let shortfall = report
-            .release_shortfall()
-            .expect("a patch cannot carry a break")
-            .to_string();
-        assert!(shortfall.contains("FROZEN BOOTSTRAP"), "{shortfall}");
-        assert!(shortfall.contains("rule 3"), "{shortfall}");
-        assert!(!shortfall.contains("rules 1 and 2"), "{shortfall}");
-        for gates_the_release in [false, true] {
-            let failure = report
-                .command_failure(gates_the_release)
-                .expect("frozen drift fails both compatibility commands");
+        for (era, baseline, sufficient_candidate) in [
+            ("pre-1.0", Version::new(0, 58, 1), Version::new(0, 59, 0)),
+            ("post-1.0", Version::new(1, 4, 2), Version::new(2, 0, 0)),
+        ] {
+            let report = check(
+                baseline,
+                sufficient_candidate,
+                FixtureSurfaces::new(std::slice::from_ref(&connect), &[]),
+            )
+            .run(CompatibilityImpact::Unchanged)
+            .expect("the comparison runs");
             assert!(
-                matches!(failure, CompatibilityFailure::FrozenBootstrapDrift),
-                "{failure}"
+                report.to_string().contains("[FROZEN BOOTSTRAP]"),
+                "{era}: {report}"
             );
-            assert!(failure.to_string().contains("unreleasable"), "{failure}");
+            assert!(
+                report.release_shortfall().is_none(),
+                "{era}: the candidate deliberately clears the ordinary breaking-change gate: \
+                 {report}"
+            );
+            for (command, gates_the_release) in [("report", false), ("check-release", true)] {
+                let failure = report
+                    .command_failure(gates_the_release)
+                    .unwrap_or_else(|| {
+                        panic!("{era}: compatibility {command} must refuse frozen drift")
+                    });
+                assert!(
+                    matches!(failure, CompatibilityFailure::FrozenBootstrapDrift),
+                    "{era} compatibility {command}: {failure}"
+                );
+                assert!(
+                    failure.to_string().contains("unreleasable"),
+                    "{era} compatibility {command}: {failure}"
+                );
+            }
         }
     }
 }

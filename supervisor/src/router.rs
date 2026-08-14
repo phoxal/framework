@@ -72,16 +72,7 @@ pub(crate) async fn start_embedded_router(
     on_lost: RouterLost,
 ) -> Result<EmbeddedRouter> {
     validate_endpoint(&endpoint)?;
-    if let Some(socket) = unixsock_stream_path(&endpoint)
-        && let Some(parent) = socket.parent()
-    {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create the router socket directory {}",
-                parent.display()
-            )
-        })?;
-    }
+    prepare_endpoint_parent(&endpoint)?;
     // One execution equals one router lifetime: the router's ZID IS the
     // execution id, so a client that reads the router id has learned the
     // execution without asking anyone.
@@ -123,6 +114,20 @@ fn unixsock_stream_path(endpoint: &str) -> Option<&Path> {
     endpoint.strip_prefix("unixsock-stream/").map(Path::new)
 }
 
+/// Create the parent needed by a Unix-domain endpoint without opening a socket
+/// or starting Zenoh. Non-filesystem endpoints need no preparation.
+fn prepare_endpoint_parent(endpoint: &str) -> Result<()> {
+    let Some(parent) = unixsock_stream_path(endpoint).and_then(Path::parent) else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create the router socket directory {}",
+            parent.display()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +139,21 @@ mod tests {
             Some(Path::new("/tmp/phoxal/router.sock"))
         );
         assert_eq!(unixsock_stream_path("tcp/127.0.0.1:7447"), None);
+    }
+
+    #[test]
+    fn endpoint_parent_creation_is_a_pure_filesystem_operation() {
+        let root = tempfile::tempdir().expect("temp directory");
+        let socket = root.path().join("run/phoxal/router.sock");
+        let endpoint = format!("unixsock-stream/{}", socket.display());
+
+        prepare_endpoint_parent(&endpoint).expect("create endpoint parent");
+
+        assert!(socket.parent().expect("socket parent").is_dir());
+        assert!(
+            !socket.exists(),
+            "preparation must not bind or create the socket"
+        );
     }
 
     #[test]

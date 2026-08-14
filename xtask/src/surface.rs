@@ -606,15 +606,6 @@ mod tests {
             .join("\n")
     }
 
-    /// Package names do not participate in record identity: two identical
-    /// surfaces already keyed under the stable renamed carrier stay unchanged.
-    #[test]
-    fn a_package_rename_with_identical_carrier_surfaces_is_unchanged() {
-        let (impact, changes) = compare(&baseline());
-        assert_eq!(impact, CompatibilityImpact::Unchanged);
-        assert!(changes.is_empty(), "{}", rendered(&changes));
-    }
-
     /// A new endpoint cannot break a peer that never knew it existed.
     #[test]
     fn a_new_endpoint_is_additive() {

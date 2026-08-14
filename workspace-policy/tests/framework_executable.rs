@@ -39,12 +39,16 @@ fn supervisor_is_a_default_workspace_member_and_non_catalog_registry_executable(
         supervisor.manifest_path.as_std_path().strip_prefix(root)?,
         std::path::Path::new("supervisor/Cargo.toml")
     );
+    let forbidden_dependencies = SPECS[0].forbidden_dependencies();
+    let violations = supervisor
+        .dependencies
+        .iter()
+        .filter(|dependency| forbidden_dependencies.contains(&dependency.name.as_str()))
+        .map(|dependency| dependency.name.as_str())
+        .collect::<Vec<_>>();
     assert!(
-        supervisor
-            .dependencies
-            .iter()
-            .all(|dependency| dependency.name.as_str() != "phoxal"),
-        "the supervisor must not enter the participant graph through the authoring facade"
+        violations.is_empty(),
+        "the supervisor has forbidden authoring or parser dependencies: {violations:?}"
     );
 
     let policy =

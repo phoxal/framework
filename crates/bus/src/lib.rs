@@ -51,6 +51,7 @@ pub mod query;
 #[cfg(feature = "router")]
 pub mod router;
 pub mod runtime_metrics;
+mod semantic;
 pub mod server;
 pub mod session;
 pub mod time;

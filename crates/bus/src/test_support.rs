@@ -180,17 +180,3 @@ pub(crate) fn sample(codec: u8) -> Sample {
     .expect("a test body encodes");
     sample_with(codec, payload)
 }
-
-/// A short unix-socket endpoint plus the directory that owns it.
-///
-/// Unix-socket addresses are length-limited and the macOS default temp dir is
-/// long enough to overflow the limit, so these bind under `/tmp` directly.
-#[cfg(feature = "router")]
-pub(crate) fn socket_endpoint(prefix: &str) -> (tempfile::TempDir, String) {
-    let dir = tempfile::Builder::new()
-        .prefix(prefix)
-        .tempdir_in("/tmp")
-        .expect("short-path temp dir for the unix socket");
-    let endpoint = format!("unixsock-stream/{}", dir.path().join("r.sock").display());
-    (dir, endpoint)
-}

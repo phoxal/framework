@@ -90,12 +90,14 @@ const fn outbound_capacity(family: DeliveryFamily) -> usize {
 
 macro_rules! role_publisher {
     ($name:ident, $bound:ident, $doc:literal) => {
-        #[doc = $doc]
-        ///
-        /// The role marker is a bound on the *type*, not just on its methods,
-        /// so naming the wrong publisher for a contract is rejected where the
-        /// `Api` struct declares the field - the earliest and clearest place.
-        pub struct $name<E: $bound>(Outbox<E>);
+        crate::semantic::author_semantic_docs! {
+            $doc;
+            ///
+            /// The role marker is a bound on the *type*, not just on its methods,
+            /// so naming the wrong publisher for a contract is rejected where the
+            /// `Api` struct declares the field - the earliest and clearest place.
+            pub struct $name<E: $bound>(Outbox<E>);
+        }
 
         impl<E: $bound> Clone for $name<E> {
             fn clone(&self) -> Self {
@@ -220,16 +222,10 @@ impl<E: StreamContract> StreamPublisher<E> {
     }
 }
 
-/// Meaning: publishes a discrete event produced by the owner.
-///
-/// Timestamp: publication requires the logical step that produced the event.
-///
-/// Buffering and admission: events use the bounded ordered stream lane and
-/// refuse admission rather than silently evicting an item.
-///
-/// Observable overload or loss: saturation is `WouldBlock`; receivers expose
-/// explicit per-producer gap or terminal evidence.
-pub struct EventPublisher<E: EventContract>(Outbox<E>);
+crate::semantic::author_semantic_docs! {
+    "Meaning: publishes a discrete event produced by the owner.\n\nTimestamp: publication requires the logical step that produced the event.\n\nBuffering and admission: events use the bounded ordered stream lane and refuse admission rather than silently evicting an item.\n\nObservable overload or loss: saturation is `WouldBlock`; receivers expose explicit per-producer gap or terminal evidence.";
+    pub struct EventPublisher<E: EventContract>(Outbox<E>);
+}
 
 impl<E: EventContract> Clone for EventPublisher<E> {
     fn clone(&self) -> Self {

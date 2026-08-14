@@ -3,10 +3,9 @@
 use std::time::Duration;
 
 use crate::model::launch::{ParticipantSpec, RestartPolicy};
-use crate::model::participant::ParticipantKind;
 use phoxal_bundle::RuntimeBundle;
 use phoxal_runtime_contract::identity::ExecutionId;
-use phoxal_runtime_contract::metadata::ParticipantKind as RuntimeKind;
+use phoxal_runtime_contract::metadata::ParticipantKind;
 use phoxal_runtime_contract::origin::ExecutionOrigin;
 
 const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2_000;
@@ -48,9 +47,9 @@ pub(crate) fn participant_specs(
                 args.extend(["--execution-origin".to_string(), origin.encode()]);
             }
             Ok(ParticipantSpec {
-                spawn: artifact.contract().kind != RuntimeKind::Simulator,
+                spawn: artifact.contract().kind != ParticipantKind::Simulator,
                 key: participant.id().clone().into(),
-                kind: kind(artifact.contract().kind),
+                kind: artifact.contract().kind,
                 executable: bundle.root().join(artifact.path().as_str()),
                 args,
                 shutdown_grace: Duration::from_millis(DEFAULT_SHUTDOWN_GRACE_MS),
@@ -58,15 +57,6 @@ pub(crate) fn participant_specs(
             })
         })
         .collect()
-}
-
-const fn kind(kind: RuntimeKind) -> ParticipantKind {
-    match kind {
-        RuntimeKind::Brain => ParticipantKind::Brain,
-        RuntimeKind::Service => ParticipantKind::Service,
-        RuntimeKind::Driver => ParticipantKind::Driver,
-        RuntimeKind::Simulator => ParticipantKind::Simulator,
-    }
 }
 
 #[cfg(test)]
@@ -79,7 +69,7 @@ mod tests {
     };
     use phoxal_model::{Clock, RobotBuilder};
     use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
-    use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind};
+    use phoxal_runtime_contract::metadata::ParticipantContract;
     use phoxal_runtime_contract::version::FrameworkVersion;
 
     use super::*;

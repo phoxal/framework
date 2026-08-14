@@ -322,4 +322,4 @@ async fn reply<T: serde::Serialize>(
 }
 
 #[cfg(test)]
-mod tests;
+mod endpoint_contract_tests;
