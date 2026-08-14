@@ -2,7 +2,8 @@
 //!
 //! This crate deliberately contains no participant runner, bus transport,
 //! command-line parser, or project compiler. It is the shared vocabulary used
-//! by the framework runtime and `phoxal-cli`.
+//! by framework participants, the framework supervisor, and clients such as
+//! `phoxal-cli`.
 //!
 //! There is no crate-root facade: every public item is reached through the
 //! module that owns its contract, so a type has exactly one path and an import
@@ -17,6 +18,8 @@
 //! - [`emit`] - the one sanctioned writer of that record, in both of its
 //!   evaluation modes.
 //! - [`origin`] - the boot-anchored origin of one real execution.
+//! - [`rendezvous`] - the shared host paths and advisory locking through which
+//!   a client and the one execution supervisor find and fence each other.
 //! - [`wire_schema`] - the deterministic model of the shapes those contracts
 //!   put on the wire, which compatibility CI checks against published
 //!   baselines.
@@ -29,6 +32,7 @@ pub mod emit;
 pub mod identity;
 pub mod metadata;
 pub mod origin;
+pub mod rendezvous;
 pub mod version;
 pub mod wire_schema;
 

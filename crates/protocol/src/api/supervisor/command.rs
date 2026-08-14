@@ -1,6 +1,6 @@
 //! Acknowledged operations against supervisor authority.
 //!
-//! `phoxald` decides what a command does and whether it is allowed; this
+//! The supervisor decides what a command does and whether it is allowed; this
 //! fragment owns only the request and reply documents. The schema tags are
 //! parse-time format discriminators owned by the documents themselves, so
 //! renaming the endpoint does not rename a persisted tag.

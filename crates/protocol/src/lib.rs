@@ -18,9 +18,9 @@
 //! - [`runtime`] - facts a running Phoxal process emits about itself: its log
 //!   events, its bus and step telemetry, and the authoritative simulation
 //!   clock. Any process publishes here; the family names no collector.
-//! - [`supervisor`] - the wire vocabulary a supervisor speaks. `phoxald`, the
-//!   CLI's supervisor daemon, owns supervisor state and behavior; this crate
-//!   owns only what an answer looks like.
+//! - [`supervisor`] - the wire vocabulary a supervisor speaks. The
+//!   framework-owned `phoxal-supervisor` process owns supervisor state and
+//!   behavior; this crate owns only what an answer looks like.
 //!
 //! Compatibility is owned entirely by the framework train version each
 //! participant binary embeds, compared by the compatibility line the two

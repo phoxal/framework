@@ -1,16 +1,16 @@
 //! The supervisor's complete projection of one execution, and the baseline a
 //! late joiner needs before it applies updates.
 //!
-//! `phoxald` decides what the projection contains and when it changes; this
-//! fragment owns only its wire shape. Every published value is a complete
+//! The supervisor decides what the projection contains and when it changes;
+//! this fragment owns only its wire shape. Every published value is a complete
 //! replacement, so a consumer never reconstructs state from a diff it may have
 //! missed.
 
 pub use crate::api::supervisor::execution::{
-    DaemonFailure, DaemonFailureReason, DesiredState, Detail, DiagnosticText, ExitStatus,
-    Lifecycle, MAX_DETAIL_BYTES, MAX_PROCESSES, MAX_STDERR_TAIL_BYTES, Process, ProcessFailure,
-    ProcessFailureKind, ProcessState, Snapshot, SnapshotDocument, SnapshotError, StartupStep,
-    StartupStepKind, StartupStepState, StderrTail, WallTime, WallTimeError,
+    DesiredState, Detail, DiagnosticText, ExitStatus, Lifecycle, MAX_DETAIL_BYTES, MAX_PROCESSES,
+    MAX_STDERR_TAIL_BYTES, Process, ProcessFailure, ProcessFailureKind, ProcessState, Snapshot,
+    SnapshotDocument, SnapshotError, StartupStep, StartupStepKind, StartupStepState, StderrTail,
+    SupervisorFailure, SupervisorFailureReason, WallTime, WallTimeError,
 };
 
 #[derive(

@@ -144,7 +144,7 @@ pub struct ParticipantBundle {
 
 impl ParticipantBundle {
     /// Open one participant's selected runtime inputs without hashing unrelated
-    /// indexed files. Binary integrity is the supervisor's concern: the daemon
+    /// indexed files. Binary integrity is the supervisor's concern: it
     /// digest-verifies every staged executable when it opens the bundle, and a
     /// launched participant proves its identity through its embedded contract.
     pub fn open(root: impl AsRef<Path>, id: &ParticipantId) -> Result<Self, BundleError> {

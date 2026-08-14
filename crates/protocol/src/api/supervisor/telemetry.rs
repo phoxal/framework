@@ -1,6 +1,6 @@
 //! The supervisor's retained view of the live `runtime/telemetry` stream.
 //!
-//! Retention depth and eviction are `phoxald`'s decisions; this fragment owns
+//! Retention depth and eviction are the supervisor's decisions; this fragment owns
 //! the paged request and the record shape a consumer reads back. A record is a
 //! retained [`Rollup`](crate::api::runtime::telemetry::Rollup) with the
 //! attribution retention has to store explicitly, because the bus envelope that

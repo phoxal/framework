@@ -7,10 +7,12 @@
 //! decision reference - so they live here, in a crate whose only purpose is to
 //! be a test target under `cargo test --workspace`.
 //!
-//! Each rule lives in the module that owns it: [`artifact`] owns the package
-//! grammar, [`comment_reference`] owns what a comment may name, and
-//! [`tracked_source`] owns what counts as committed source for repository-wide
-//! scans. This root owns only the workspace facts they share.
+//! Each rule lives in the module that owns it: [`artifact`] owns authored
+//! package grammar, [`framework_executable`] owns exact non-catalog framework
+//! executables, [`registry`] joins those disjoint sets for publication policy,
+//! [`comment_reference`] owns what a comment may name, and [`tracked_source`]
+//! owns what counts as committed source for repository-wide scans. This root
+//! owns only the workspace facts they share.
 
 use std::path::Path;
 
@@ -18,6 +20,9 @@ use anyhow::{Context, Result};
 
 pub mod artifact;
 pub mod comment_reference;
+mod executable;
+pub mod framework_executable;
+pub mod registry;
 pub mod tracked_source;
 
 /// The directory holding every library crate that carries a name suffix.
@@ -122,7 +127,7 @@ mod tests {
     use cargo_metadata::MetadataCommand;
 
     use super::*;
-    use crate::artifact::is_library_target_kind;
+    use crate::executable::is_library_target_kind;
 
     /// A hand-maintained list that silently skips validation when it goes
     /// stale is worse than no list, so the workspace itself is the authority:

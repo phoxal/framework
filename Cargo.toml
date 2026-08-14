@@ -25,6 +25,7 @@ members = [
     "crates/manifest",
     "crates/runtime-contract",
     "crates/macros",
+    "supervisor",
     "components/bno085",
     "components/ddsm115",
     "components/oak_d_lite",
@@ -63,6 +64,7 @@ default-members = [
     "crates/manifest",
     "crates/runtime-contract",
     "crates/macros",
+    "supervisor",
     "components/bno085",
     "components/ddsm115",
     "components/oak_d_lite",
@@ -116,6 +118,7 @@ sysinfo = { version = "0.36", default-features = false, features = ["disk", "sys
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "process"] }
+tokio-util = { version = "0.7", default-features = false }
 toml = "1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

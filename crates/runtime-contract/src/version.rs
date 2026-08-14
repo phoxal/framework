@@ -22,7 +22,7 @@
 //! The identity lives on the process-boundary floor rather than in the crate
 //! that implements a contract, because the record that declares it
 //! ([`crate::metadata::ParticipantMetadata`]) sits below `phoxal-bus`,
-//! `phoxal-api`, and `phoxal-manifest` in the graph.
+//! `phoxal-protocol`, and `phoxal-manifest` in the graph.
 
 use serde::{Deserialize, Serialize};
 

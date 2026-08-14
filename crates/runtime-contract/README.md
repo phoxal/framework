@@ -9,12 +9,15 @@ There is no crate-root facade here: each contract is a module and each public ty
 - `version` - the framework train version two binaries compare to establish that they speak the same contracts.
 - `metadata` - the record every participant binary embeds at compile time, and its strict parser.
 - `emit` - the one sanctioned writer of that record, in both of its evaluation modes.
-- `launch` - scheduler policy facts persisted in the compiled runtime bundle;
-  participant process parsing is strict Clap argv in `phoxal`.
 - `origin` - the boot-anchored origin of one real execution.
+- `rendezvous` - shared execution-root mapping, the supervisor socket and
+  lifetime lock, and advisory lock operations used by both sides of that host
+  process boundary.
 
-Compatibility between a `phoxal-cli` and a built participant is one fact declared in one place: the framework train version in the `ParticipantMetadata` document each binary embeds at compile time.
-Two binaries speak the same contracts exactly when that version is equal.
+The framework train version is the one compatibility identity. Each participant
+embeds its exact train in `ParticipantMetadata`, and the supervisor reports its
+exact train through `supervisor/connect`. Two binaries speak the same contracts
+when those versions share a compatibility line.
 There is no Cargo package-metadata table and no version file anywhere in the contract.
 The `schema` tag on a persisted document is a format discriminator, not a second compatibility identity.
 

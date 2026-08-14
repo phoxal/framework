@@ -16,17 +16,14 @@ use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use cargo_metadata::Target;
 use cargo_metadata::semver::Version;
-use cargo_metadata::{MetadataCommand, Target, TargetKind};
 
+pub use crate::executable::PHOXAL_PROVIDER;
+use crate::executable::{validate_executable_targets, validate_registry_publish};
 use crate::{
     FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, library_package_name,
 };
-
-/// Official Phoxal packages always use this provider segment in their public
-/// `package` identity (`phoxal/<name>`). Third-party packages use their own
-/// provider segment; the grammar has no other official provider today.
-pub const PHOXAL_PROVIDER: &str = "phoxal";
 
 /// The Cargo `package.name` prefix backing [`PHOXAL_PROVIDER`]: the package
 /// `phoxal/service-drive` is the crate `phoxal-service-drive`. The two
@@ -247,22 +244,13 @@ impl OfficialArtifact {
         root: &Path,
         manifest_path: &Path,
     ) -> Result<()> {
-        let declared = publish.unwrap_or_default();
-        if declared != [PHOXAL_PROVIDER] {
-            bail!(
-                "{package_name} is an official executable but {} does not set \
-                 publish = [\"{PHOXAL_PROVIDER}\"]; executables publish to the static \
-                 {PHOXAL_PROVIDER} registry and never to crates.io, and release-plz must be able \
-                 to see them so their changes cut trains. Found: {}",
-                relative_display(root, manifest_path),
-                if publish.is_none() {
-                    "no publish field (defaults to crates.io)".to_string()
-                } else {
-                    format!("publish = {declared:?}")
-                }
-            );
-        }
-        Ok(())
+        validate_registry_publish(
+            package_name,
+            "an official artifact package",
+            publish,
+            root,
+            manifest_path,
+        )
     }
 
     /// Enforces the executable-only target convention for every official
@@ -271,113 +259,55 @@ impl OfficialArtifact {
     /// same archive; they do not need a Cargo library target for discovery or
     /// packaging.
     fn validate_targets(package_name: &str, targets: &[Target]) -> Result<()> {
-        if let Some((target, target_kind)) = targets
-            .iter()
-            .find_map(|target| unsupported_target_kind(target).map(|kind| (target, kind)))
-        {
-            if is_library_target_kind(target_kind) {
-                bail!(
-                    "{package_name} is an official artifact package but target '{}' has library kind '{target_kind}'",
-                    target.name
-                );
-            }
-            bail!(
-                "{package_name} is an official artifact package but target '{}' has unsupported target kind '{target_kind}'; expected bin, test, bench, example, or custom-build",
-                target.name
-            );
-        }
-
-        let binary_targets: Vec<_> = targets
-            .iter()
-            .filter(|target| target.is_kind(TargetKind::Bin))
-            .collect();
-
-        let [binary_target] = binary_targets.as_slice() else {
-            bail!(
-                "{package_name} is an official artifact package but has {} binary targets; expected exactly one",
-                binary_targets.len()
-            );
-        };
-        if binary_target.name != package_name {
-            bail!(
-                "{package_name} is an official artifact package but its only binary target is '{}'; expected '{package_name}'",
-                binary_target.name
-            );
-        }
-
-        Ok(())
+        validate_executable_targets(
+            package_name,
+            "an official artifact package",
+            package_name,
+            None,
+            targets,
+            Path::new(""),
+        )
     }
 }
 
-/// The official artifacts a workspace declares, as discovery found them.
-#[derive(Debug)]
-pub struct Workspace {
-    official_artifacts: Vec<OfficialArtifact>,
-}
-
-impl Workspace {
-    /// Reads `command`'s workspace metadata and validates every package in it
-    /// against the grammar, failing on the first violation.
-    pub fn discover(command: &mut MetadataCommand) -> Result<Self> {
-        let metadata = command
-            .no_deps()
-            .exec()
-            .context("failed to read cargo metadata")?;
-        let root = metadata.workspace_root.clone().into_std_path_buf();
-        let mut official_artifacts = Vec::new();
-
-        for package in metadata.workspace_packages() {
-            let package_name = package.name.to_string();
-            let manifest_path = package.manifest_path.clone().into_std_path_buf();
-            let manifest = ManifestClassification::classify(&root, &manifest_path)
-                .with_context(|| format!("failed to classify {}", manifest_path.display()))?;
-            let ManifestClassification::Artifact { kind, id } = manifest else {
-                if let Some((prefix_kind, prefix_id)) =
-                    ArtifactKind::from_package_name(&package_name)
-                {
-                    bail!(
-                        "{package_name} uses the {prefix_kind} artifact package prefix with id \
-                         '{prefix_id}' but its manifest path {} is outside the exact \
-                         directory grammar for that kind",
-                        relative_display(&root, &manifest_path)
-                    );
-                }
-                continue;
-            };
-
-            kind.validate_package_name(&package_name, &id, &root, &manifest_path)?;
-            OfficialArtifact::validate_publish(
-                &package_name,
-                package.publish.as_deref(),
-                &root,
-                &manifest_path,
-            )?;
-            OfficialArtifact::validate_targets(&package_name, &package.targets)?;
-            let crate_dir = manifest_path
-                .parent()
-                .with_context(|| format!("{package_name} manifest has no parent directory"))?
-                .to_path_buf();
-
-            official_artifacts.push(OfficialArtifact {
-                kind,
-                id,
-                version: package.version.clone(),
-                crate_dir,
-            });
+pub(crate) fn discover_package(
+    root: &Path,
+    package: &cargo_metadata::Package,
+) -> Result<Option<OfficialArtifact>> {
+    let package_name = package.name.to_string();
+    let manifest_path = package.manifest_path.clone().into_std_path_buf();
+    let manifest = ManifestClassification::classify(root, &manifest_path)
+        .with_context(|| format!("failed to classify {}", manifest_path.display()))?;
+    let ManifestClassification::Artifact { kind, id } = manifest else {
+        if let Some((prefix_kind, prefix_id)) = ArtifactKind::from_package_name(&package_name) {
+            bail!(
+                "{package_name} uses the {prefix_kind} artifact package prefix with id \
+                 '{prefix_id}' but its manifest path {} is outside the exact directory grammar \
+                 for that kind",
+                relative_display(root, &manifest_path)
+            );
         }
+        return Ok(None);
+    };
 
-        official_artifacts.sort_by(|left, right| {
-            left.kind
-                .cmp(&right.kind)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-
-        Ok(Self { official_artifacts })
-    }
-
-    pub fn official_artifacts(&self) -> &[OfficialArtifact] {
-        &self.official_artifacts
-    }
+    kind.validate_package_name(&package_name, &id, root, &manifest_path)?;
+    OfficialArtifact::validate_publish(
+        &package_name,
+        package.publish.as_deref(),
+        root,
+        &manifest_path,
+    )?;
+    OfficialArtifact::validate_targets(&package_name, &package.targets)?;
+    let crate_dir = manifest_path
+        .parent()
+        .with_context(|| format!("{package_name} manifest has no parent directory"))?
+        .to_path_buf();
+    Ok(Some(OfficialArtifact {
+        kind,
+        id,
+        version: package.version.clone(),
+        crate_dir,
+    }))
 }
 
 /// What a workspace member's manifest path says the package is.
@@ -468,38 +398,6 @@ fn path_components(path: &Path) -> Result<Vec<&str>> {
         .collect()
 }
 
-fn unsupported_target_kind(target: &Target) -> Option<&TargetKind> {
-    target
-        .kind
-        .iter()
-        .find(|kind| !is_allowed_artifact_target_kind(kind))
-}
-
-fn is_allowed_artifact_target_kind(kind: &TargetKind) -> bool {
-    matches!(
-        kind,
-        TargetKind::Bin
-            | TargetKind::Test
-            | TargetKind::Bench
-            | TargetKind::Example
-            | TargetKind::CustomBuild
-    )
-}
-
-/// Whether a target kind produces a library. Official artifact packages carry
-/// none; the workspace's library crates are exactly the packages that do.
-pub(crate) fn is_library_target_kind(kind: &TargetKind) -> bool {
-    matches!(
-        kind,
-        TargetKind::Lib
-            | TargetKind::RLib
-            | TargetKind::DyLib
-            | TargetKind::CDyLib
-            | TargetKind::StaticLib
-            | TargetKind::ProcMacro
-    )
-}
-
 fn relative_display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -511,6 +409,10 @@ fn relative_display(root: &Path, path: &Path) -> String {
 mod tests {
     use std::fs;
 
+    use cargo_metadata::{MetadataCommand, TargetKind};
+
+    use crate::executable::{is_allowed_target_kind, is_library_target_kind};
+    use crate::registry::Workspace;
     use crate::workspace_root;
 
     use super::*;
@@ -767,7 +669,26 @@ mod tests {
             root.join("Cargo.toml"),
             r#"[workspace]
 resolver = "3"
-members = ["components/test"]
+members = ["components/test", "supervisor"]
+"#,
+        )?;
+
+        let supervisor_dir = root.join("supervisor");
+        fs::create_dir_all(supervisor_dir.join("src"))?;
+        fs::write(supervisor_dir.join("src/main.rs"), "fn main() {}\n")?;
+        fs::write(
+            supervisor_dir.join("Cargo.toml"),
+            r#"[package]
+name = "phoxal-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = ["phoxal"]
+autobins = false
+
+[[bin]]
+name = "phoxal-supervisor"
+path = "src/main.rs"
 "#,
         )?;
 
@@ -901,10 +822,7 @@ path = "src/example.rs"
             TargetKind::Example,
             TargetKind::CustomBuild,
         ] {
-            assert!(
-                is_allowed_artifact_target_kind(&kind),
-                "{kind} must be accepted"
-            );
+            assert!(is_allowed_target_kind(&kind), "{kind} must be accepted");
         }
         for kind in [
             TargetKind::Lib,
@@ -918,15 +836,12 @@ path = "src/example.rs"
                 is_library_target_kind(&kind),
                 "{kind} must be a library kind"
             );
-            assert!(
-                !is_allowed_artifact_target_kind(&kind),
-                "{kind} must be rejected"
-            );
+            assert!(!is_allowed_target_kind(&kind), "{kind} must be rejected");
         }
         let unknown = TargetKind::Unknown("future".to_owned());
         assert!(!is_library_target_kind(&unknown));
         assert!(
-            !is_allowed_artifact_target_kind(&unknown),
+            !is_allowed_target_kind(&unknown),
             "unknown target kinds must be rejected"
         );
     }

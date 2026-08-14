@@ -1,6 +1,6 @@
 //! Supervisor execution state and acknowledged operations, as wire values.
 //!
-//! `phoxald` owns the behavior these values describe - restart policy,
+//! The framework supervisor owns the behavior these values describe - restart policy,
 //! lifecycle transitions, and what a command does to a running execution. This
 //! module owns only their shape, their bounds, and the invariants a peer may
 //! rely on after a successful decode.
@@ -336,7 +336,7 @@ pub struct StartupStep {
     phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum DaemonFailureReason {
+pub enum SupervisorFailureReason {
     InvalidBundle,
     RouterUnavailable,
     RouterLost,
@@ -351,14 +351,14 @@ pub enum DaemonFailureReason {
 /// Whole-execution failure evidence.
 #[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct DaemonFailure {
-    pub reason: DaemonFailureReason,
+pub struct SupervisorFailure {
+    pub reason: SupervisorFailureReason,
     pub detail: Detail,
 }
 
-impl DaemonFailure {
+impl SupervisorFailure {
     #[must_use]
-    pub fn new(reason: DaemonFailureReason, detail: impl AsRef<str>) -> Self {
+    pub fn new(reason: SupervisorFailureReason, detail: impl AsRef<str>) -> Self {
         Self {
             reason,
             detail: Detail::new(detail),
@@ -375,7 +375,7 @@ pub struct Snapshot {
     pub startup: Vec<StartupStep>,
     /// Ordered by participant id.
     pub processes: Vec<Process>,
-    pub failure: Option<DaemonFailure>,
+    pub failure: Option<SupervisorFailure>,
 }
 
 impl Snapshot {
@@ -437,12 +437,12 @@ impl Snapshot {
             }
         }
         if self.lifecycle == Lifecycle::Failed && self.failure.is_none() {
-            return Err(SnapshotError::MissingDaemonFailure);
+            return Err(SnapshotError::MissingSupervisorFailure);
         }
         if matches!(self.lifecycle, Lifecycle::Ready | Lifecycle::Degraded)
             && self.failure.is_some()
         {
-            return Err(SnapshotError::UnexpectedDaemonFailure);
+            return Err(SnapshotError::UnexpectedSupervisorFailure);
         }
         Ok(())
     }
@@ -457,7 +457,7 @@ impl<'de> Deserialize<'de> for Snapshot {
             lifecycle: Lifecycle,
             startup: Vec<StartupStep>,
             processes: Vec<Process>,
-            failure: Option<DaemonFailure>,
+            failure: Option<SupervisorFailure>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let snapshot = Self {
@@ -482,7 +482,7 @@ impl Serialize for Snapshot {
             lifecycle: Lifecycle,
             startup: &'a [StartupStep],
             processes: &'a [Process],
-            failure: &'a Option<DaemonFailure>,
+            failure: &'a Option<SupervisorFailure>,
         }
         Wire {
             revision: self.revision,
@@ -510,7 +510,7 @@ impl DescribeWire for Snapshot {
                 WireField::required("processes", <Vec<Process>>::wire_schema()),
                 WireField::new(
                     "failure",
-                    <Option<DaemonFailure>>::wire_schema(),
+                    <Option<SupervisorFailure>>::wire_schema(),
                     FieldPresence::Defaulted,
                 ),
             ]),
@@ -641,10 +641,10 @@ pub enum SnapshotError {
     MissingProcessFailure { participant: ParticipantId },
     #[error("ready participant {participant} carries no producer")]
     MissingReadyProducer { participant: ParticipantId },
-    #[error("failed lifecycle carries no daemon failure")]
-    MissingDaemonFailure,
-    #[error("running lifecycle carries stale daemon failure evidence")]
-    UnexpectedDaemonFailure,
+    #[error("failed lifecycle carries no supervisor failure")]
+    MissingSupervisorFailure,
+    #[error("running lifecycle carries stale supervisor failure evidence")]
+    UnexpectedSupervisorFailure,
 }
 
 /// A wall-clock value whose nanosecond component is not normalized.
@@ -788,19 +788,22 @@ mod tests {
             Err(SnapshotError::MissingProcessFailure { .. })
         ));
 
-        let mut failed_daemon = snapshot(Vec::new());
-        failed_daemon.lifecycle = Lifecycle::Failed;
+        let mut failed_supervisor = snapshot(Vec::new());
+        failed_supervisor.lifecycle = Lifecycle::Failed;
         assert_eq!(
-            failed_daemon.validate(),
-            Err(SnapshotError::MissingDaemonFailure)
+            failed_supervisor.validate(),
+            Err(SnapshotError::MissingSupervisorFailure)
         );
 
         let mut stale_failure = snapshot(Vec::new());
         stale_failure.lifecycle = Lifecycle::Ready;
-        stale_failure.failure = Some(DaemonFailure::new(DaemonFailureReason::Internal, "stale"));
+        stale_failure.failure = Some(SupervisorFailure::new(
+            SupervisorFailureReason::Internal,
+            "stale",
+        ));
         assert_eq!(
             stale_failure.validate(),
-            Err(SnapshotError::UnexpectedDaemonFailure)
+            Err(SnapshotError::UnexpectedSupervisorFailure)
         );
 
         let mut component = process("brain");

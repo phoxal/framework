@@ -2,7 +2,7 @@
 //!
 //! The supervisor is the only process that knows where the bundle lives, so a
 //! client asks it for a path rather than reaching into a filesystem it does not
-//! own. What paths resolve, and which of them are refused, is `phoxald`'s
+//! own. What paths resolve, and which of them are refused, is the supervisor's
 //! decision; this fragment owns only the request and the three answers.
 
 #[derive(

@@ -1,6 +1,6 @@
 //! The supervisor's retained view of the live `runtime/logs` stream.
 //!
-//! Retention depth, eviction, and what "recent" means are `phoxald`'s
+//! Retention depth, eviction, and what "recent" means are the supervisor's
 //! decisions; this fragment owns the paged request and the record shape a
 //! consumer reads back. Records use the same timestamp, severity, and
 //! finite-value vocabulary as ingestion, so a retained record and a live event
