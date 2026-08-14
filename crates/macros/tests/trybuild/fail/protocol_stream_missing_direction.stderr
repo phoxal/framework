@@ -1,0 +1,5 @@
+error: `Stream` requires `Stream<Payload, In|Out>`
+ --> tests/trybuild/fail/protocol_stream_missing_direction.rs:5:11
+  |
+5 |     self: Stream<Event>;
+  |           ^^^^^^

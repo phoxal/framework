@@ -1,4 +1,4 @@
-use phoxal_api::supervisor;
+use phoxal_protocol::supervisor;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;

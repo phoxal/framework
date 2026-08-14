@@ -8,6 +8,7 @@ use std::fs;
 use anyhow::{Context, Result};
 use cargo_metadata::{DependencyKind, MetadataCommand};
 use workspace_policy::artifact::ArtifactKind;
+use workspace_policy::framework_executable::SPECS;
 use workspace_policy::{is_library_package, workspace_root};
 
 fn workspace_metadata() -> Result<cargo_metadata::Metadata> {
@@ -71,15 +72,15 @@ fn phoxal_metadata_namespace_is_valid_in_every_workspace_manifest() -> Result<()
 fn public_library_dependency_direction_is_exact() -> Result<()> {
     let metadata = workspace_metadata()?;
     let allowed = [
-        ("phoxal", "phoxal-api"),
+        ("phoxal", "phoxal-protocol"),
         ("phoxal", "phoxal-bus"),
         ("phoxal", "phoxal-bundle"),
         ("phoxal", "phoxal-macros"),
         ("phoxal", "phoxal-model"),
         ("phoxal", "phoxal-runtime-contract"),
-        ("phoxal-api", "phoxal-bus"),
-        ("phoxal-api", "phoxal-macros"),
-        ("phoxal-api", "phoxal-runtime-contract"),
+        ("phoxal-protocol", "phoxal-bus"),
+        ("phoxal-protocol", "phoxal-macros"),
+        ("phoxal-protocol", "phoxal-runtime-contract"),
         // Every crate that owns a wire or document contract derives the wire
         // shape of its own declarations, so the derive reaches each of them.
         // The direction stays one-way: `phoxal-macros` depends on none of them.
@@ -162,6 +163,25 @@ fn canonical_crates_and_official_participants_keep_forbidden_edges_absent() -> R
             .with_context(|| format!("missing package {package_name}"))?;
         for dependency in &package.dependencies {
             if forbidden.contains(&dependency.name.as_str()) {
+                violations.push(format!(
+                    "{} -> {} ({:?})",
+                    package.name, dependency.name, dependency.kind
+                ));
+            }
+        }
+    }
+
+    for spec in SPECS {
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| package.name.as_str() == spec.package_name())
+            .with_context(|| format!("missing package {}", spec.package_name()))?;
+        for dependency in &package.dependencies {
+            if spec
+                .forbidden_dependencies()
+                .contains(&dependency.name.as_str())
+            {
                 violations.push(format!(
                     "{} -> {} ({:?})",
                     package.name, dependency.name, dependency.kind

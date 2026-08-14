@@ -75,10 +75,11 @@ pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, Producer
 
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
-    ApiFamily, DeliveryFamily, Endpoint, EndpointDescriptor, EndpointKind, EventContract, Payload,
-    QueryEndpointDescriptor, SampleContract, SampleDeliveryContract, SetpointContract,
-    SetpointDeliveryContract, StateContract, StateDeliveryContract, StreamContract,
-    StreamDeliveryContract, WorldClockContract,
+    ApiFamily, ClientPublishContract, ClientReceiveContract, DeliveryFamily, Endpoint,
+    EndpointDescriptor, EndpointKind, EventContract, Payload, QueryEndpointDescriptor,
+    SampleContract, SampleDeliveryContract, SetpointContract, SetpointDeliveryContract,
+    StateContract, StateDeliveryContract, StreamContract, StreamDeliveryContract,
+    WorldClockContract,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{
@@ -131,7 +132,7 @@ pub use topic::{
 /// process boundary out of the crate itself.
 ///
 /// Endpoints are deliberately absent: this crate owns the transport floor, and
-/// every concrete endpoint is declared by `phoxal-api`. So are
+/// every concrete endpoint is declared by `phoxal-protocol`. So are
 /// [`DeliveryFamily`] and [`EndpointKind`], which are compile-time typing with
 /// no bytes of their own - they reach a surface only as the spelling on an
 /// endpoint record, which is where they actually decide something.

@@ -1,7 +1,7 @@
 # Phoxal Framework
 
-Rust workspace for the Phoxal Framework libraries and official services,
-components, and simulators.
+Rust workspace for the Phoxal Framework libraries, execution supervisor, and
+official runtime participants.
 
 Phoxal is pre-1.0 and evolving. Public product and authoring documentation is
 published at <https://phoxal.com>.
@@ -10,6 +10,7 @@ published at <https://phoxal.com>.
 
 - `phoxal/` — robot-authoring facade
 - `crates/` — framework libraries
+- `supervisor/` — framework-train execution supervisor
 - `services/`, `components/`, `simulators/` — official runtime packages
 - `examples/` and `fixture/` — development examples and test inputs
 

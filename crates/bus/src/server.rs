@@ -27,7 +27,10 @@ use crate::metadata::BusMetadata;
 use crate::query::QueryFailure;
 use crate::session::BusHandle;
 
-/// A declared queryable bound to one server topic key.
+/// Serves requests for one owner-bound query endpoint.
+///
+/// Requests and replies carry provenance rather than robot time. Close,
+/// transport failure, and malformed requests are returned explicitly.
 pub struct ServerQueryable {
     inner: Queryable<FifoChannelHandler<ZenohQuery>>,
     topic_key: String,
@@ -53,7 +56,11 @@ impl ServerQueryable {
     }
 }
 
-/// One incoming query, with the request payload and the reply legs.
+/// One admitted owner-side request with success and error reply legs.
+///
+/// The request metadata carries trusted requester provenance. Malformed
+/// metadata and reply failures are typed errors; handler failure uses
+/// [`QueryFailure`].
 pub struct IncomingQuery {
     query: ZenohQuery,
     topic_key: String,

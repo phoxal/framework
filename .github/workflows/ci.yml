@@ -58,38 +58,6 @@ jobs:
         working-directory: examples/hello-rover
         run: cargo check --locked
 
-  # `phoxal-bus`'s `router` feature is off by default, so `cargo test
-  # --workspace` never compiles it. Only `phoxal-cli`'s supervisor turns it on,
-  # which means without this job the embedded router would ship untested from
-  # this repo and break in the consumer instead.
-  bus-router-feature:
-    name: phoxal-bus router feature
-    if: >-
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'push' &&
-       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy
-
-      - name: Clippy
-        run: cargo clippy -p phoxal-bus --features router --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test -p phoxal-bus --features router
-
-      # cargo publish's release-time verify builds without features, so this
-      # is the only place the router-enabled crate is packaged in isolation
-      # as its one consumer (phoxal-cli's supervisor) receives it.
-      - name: Package with router enabled
-        run: |
-          cargo package -p phoxal-bus --features router --allow-dirty \
-            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/crates/runtime-contract'"
-
   # What this pull request does to the wire contracts, stated where the author
   # can see it. It never fails on the verdict: an ordinary branch is not setting
   # a version, so there is no version for it to be judged against. The release
@@ -129,7 +97,11 @@ jobs:
           if [[ "$PR_TITLE" =~ $marker ]]; then
             declared=breaking
           fi
-          report="$(cargo xtask compatibility report --declared-impact "$declared")"
+          # Ordinary release-size findings do not fail `report`, while frozen
+          # bootstrap drift does. Preserve the complete report in the summary
+          # before returning that hard failure.
+          status=0
+          report="$(cargo xtask compatibility report --declared-impact "$declared")" || status=$?
           echo "$report"
           {
             echo "## Contract compatibility"
@@ -138,6 +110,7 @@ jobs:
             echo "$report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
   # The release PR carries the candidate train version, which makes it the one
   # branch where the sufficiency of a version can be judged at all. A candidate
@@ -184,7 +157,7 @@ jobs:
   # asks, and the matrix rows are already proved by `cargo test` on every one.
   # It reaches no registry and installs no Webots: the drill states its own
   # baselines, and the pinned tests it runs are in `phoxal-runtime-contract` and
-  # `phoxal-api`, neither of which links libController.
+  # `phoxal-protocol`, neither of which links libController.
   compatibility-rehearsal:
     name: compatibility rehearsal
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

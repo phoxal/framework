@@ -23,9 +23,9 @@ use crate::lock::lock;
 /// Which way samples move through the buffer a row describes.
 ///
 /// This is the internal accounting vocabulary. The runner maps it onto the
-/// wire-facing enum in `phoxal-api`. The structural guard at the bottom of this
+/// wire-facing enum in `phoxal-protocol`. The structural guard at the bottom of this
 /// module fails when a variant is added here; the assertion that the mapping is
-/// total and injective lives in `crates/api/src/tests/runtime_metric_parity.rs`,
+/// total and injective lives in `crates/protocol/src/tests/runtime_metric_parity.rs`,
 /// which is the nearest crate able to name both enums.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeDirection {
@@ -338,12 +338,12 @@ mod tests {
 
     /// Every variant here has to reach the wire.
     ///
-    /// `phoxal-api` declares its own serialized `RuntimeDirection` /
+    /// `phoxal-protocol` declares its own serialized `RuntimeDirection` /
     /// `RuntimeBufferKind`, and `phoxal`'s rollup maps this enum onto that one.
     /// The duplication is deliberate wire-versus-internal layering, but it means
     /// a variant added here and nowhere else silently never reaches an operator.
     ///
-    /// This crate cannot name the wire enum - `phoxal-api` depends on this crate,
+    /// This crate cannot name the wire enum - `phoxal-protocol` depends on this crate,
     /// not the other way round - so the guard is structural: the matches below
     /// are exhaustive and the lists are exact, so adding a variant fails to
     /// compile here and fails the assertion, forcing whoever adds it to read
@@ -378,13 +378,13 @@ mod tests {
         assert_eq!(
             DIRECTIONS.len(),
             2,
-            "a new RuntimeDirection needs a wire variant in phoxal-api and an arm \
+            "a new RuntimeDirection needs a wire variant in phoxal-protocol and an arm \
              in phoxal's runtime performance rollup"
         );
         assert_eq!(
             BUFFER_KINDS.len(),
             3,
-            "a new RuntimeBufferKind needs a wire variant in phoxal-api and an arm \
+            "a new RuntimeBufferKind needs a wire variant in phoxal-protocol and an arm \
              in phoxal's runtime performance rollup"
         );
     }

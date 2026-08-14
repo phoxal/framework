@@ -327,6 +327,11 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
+    /// Build the client handle for a descriptor-declared query.
+    ///
+    /// Requests express no robot time, calls have a finite timeout, no local
+    /// backlog is exposed, and incomplete or ambiguous outcomes are typed
+    /// [`crate::bus::QueryError`] values.
     pub fn querier<E: QueryEndpointDescriptor>(
         &self,
         topic: Topic<AskQuery<E>>,
@@ -338,6 +343,11 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         )?)
     }
 
+    /// Register the endpoint owner's synchronous typed query handler.
+    ///
+    /// Requests express no robot time. The runner admits and serializes handler
+    /// evaluation with participant state; it emits one success response or a
+    /// structured failure, and duplicate bindings are rejected at setup.
     pub fn query<E, H>(&mut self, topic: Topic<ServeQuery<E>>, handler: H) -> crate::Result<()>
     where
         E: QueryEndpointDescriptor,
@@ -393,11 +403,14 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
 
     pub fn world_clock_publisher(
         &self,
-    ) -> crate::Result<WorldClockPublisher<phoxal_api::runtime::endpoint::simulation::ClockEndpoint>>
-    {
+    ) -> crate::Result<
+        WorldClockPublisher<phoxal_protocol::runtime::endpoint::simulation::ClockEndpoint>,
+    > {
         Ok(WorldClockPublisher::mint(
             self.bus.clone(),
-            &phoxal_api::runtime::topic::owner().simulation().clock(),
+            &phoxal_protocol::runtime::topic::owner()
+                .simulation()
+                .clock(),
         )?)
     }
 }

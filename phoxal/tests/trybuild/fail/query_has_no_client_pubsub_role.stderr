@@ -1,0 +1,65 @@
+error[E0599]: the associated function or constant `prove_publish` exists for struct `GetEndpoint`, but its trait bounds were not satisfied
+  --> tests/trybuild/fail/query_has_no_client_pubsub_role.rs:22:12
+   |
+22 |       Query::prove_publish();
+   |              ^^^^^^^^^^^^^ associated function or constant cannot be called on `GetEndpoint` due to unsatisfied trait bounds
+   |
+  ::: $WORKSPACE/crates/protocol/src/lib.rs
+   |
+   | / phoxal_macros::protocol_tree! {
+   | |     path robot / component(instance) / accelerometer(capability);
+   | |
+   | |     sample: Sample<Sample>;
+...  |
+   | |     get: Query<GetRequest, GetResponse>;
+   | |_______- doesn't satisfy `GetEndpoint: ClientPublishContract` or `GetEndpoint: PublishProof`
+   |
+note: the following trait bounds were not satisfied:
+      `&GetEndpoint: ClientPublishContract`
+      `&mut GetEndpoint: ClientPublishContract`
+      `GetEndpoint: ClientPublishContract`
+  --> tests/trybuild/fail/query_has_no_client_pubsub_role.rs:7:9
+   |
+ 7 | impl<E: ClientPublishContract> PublishProof for E {
+   |         ^^^^^^^^^^^^^^^^^^^^^  ------------     -
+   |         |
+   |         unsatisfied trait bound introduced here
+   = help: items from traits can only be used if the trait is implemented and in scope
+note: `PublishProof` defines an item `prove_publish`, perhaps you need to implement it
+  --> tests/trybuild/fail/query_has_no_client_pubsub_role.rs:3:1
+   |
+ 3 | trait PublishProof {
+   | ^^^^^^^^^^^^^^^^^^
+
+error[E0599]: the associated function or constant `prove_receive` exists for struct `GetEndpoint`, but its trait bounds were not satisfied
+  --> tests/trybuild/fail/query_has_no_client_pubsub_role.rs:23:12
+   |
+23 |       Query::prove_receive();
+   |              ^^^^^^^^^^^^^ associated function or constant cannot be called on `GetEndpoint` due to unsatisfied trait bounds
+   |
+  ::: $WORKSPACE/crates/protocol/src/lib.rs
+   |
+   | / phoxal_macros::protocol_tree! {
+   | |     path robot / component(instance) / accelerometer(capability);
+   | |
+   | |     sample: Sample<Sample>;
+...  |
+   | |     get: Query<GetRequest, GetResponse>;
+   | |_______- doesn't satisfy `GetEndpoint: ClientReceiveContract` or `GetEndpoint: ReceiveProof`
+   |
+note: the following trait bounds were not satisfied:
+      `&GetEndpoint: ClientReceiveContract`
+      `&mut GetEndpoint: ClientReceiveContract`
+      `GetEndpoint: ClientReceiveContract`
+  --> tests/trybuild/fail/query_has_no_client_pubsub_role.rs:15:9
+   |
+15 | impl<E: ClientReceiveContract> ReceiveProof for E {
+   |         ^^^^^^^^^^^^^^^^^^^^^  ------------     -
+   |         |
+   |         unsatisfied trait bound introduced here
+   = help: items from traits can only be used if the trait is implemented and in scope
+note: `ReceiveProof` defines an item `prove_receive`, perhaps you need to implement it
+  --> tests/trybuild/fail/query_has_no_client_pubsub_role.rs:11:1
+   |
+11 | trait ReceiveProof {
+   | ^^^^^^^^^^^^^^^^^^

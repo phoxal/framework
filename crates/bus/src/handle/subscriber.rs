@@ -552,7 +552,10 @@ impl<E: EndpointDescriptor> Subscriber<E> {
     }
 }
 
-/// Delivery-specific keep-newest view for a state contract.
+/// Keep-newest view of the owner's current state snapshot.
+///
+/// Each value carries its logical step and local observation time. The single
+/// slot is overwritten by newer state; this is a current view, not history.
 #[derive(Clone)]
 pub struct StateView<E: EndpointDescriptor> {
     inner: Latest<E>,
@@ -610,7 +613,10 @@ impl<E: crate::contract::StateDeliveryContract> StateView<E> {
     }
 }
 
-/// Delivery-specific receiver for newest-actionable setpoints.
+/// Receiver for newest-actionable intent consumed by the owner.
+///
+/// Setpoints carry no robot timestamp. Producer-scoped lanes retain the newest
+/// pending value, and source overflow is exposed as terminal evidence.
 pub struct SetpointReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
 }
@@ -652,7 +658,10 @@ impl<E: crate::contract::SetpointDeliveryContract> SetpointReceiver<E> {
     }
 }
 
-/// Delivery-specific bounded ordered sample receiver.
+/// Bounded ordered receiver for captured sensor observations.
+///
+/// Each sample retains its capture stamp. Overflow evicts the oldest buffered
+/// sample, and [`Self::dropped`] exposes the cumulative count.
 pub struct SampleReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
 }
@@ -692,7 +701,10 @@ impl<E: crate::contract::SampleDeliveryContract> SampleReceiver<E> {
     }
 }
 
-/// Delivery-specific ordered stream receiver.
+/// Ordered receiver for stream chunks flowing in the descriptor's direction.
+///
+/// Chunks carry no robot timestamp. The bounded lane refuses saturation, and
+/// receive methods expose producer gaps and terminal evidence.
 pub struct StreamReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
     topic: String,
@@ -821,11 +833,10 @@ impl<E: crate::contract::StreamDeliveryContract> StreamReceiver<E> {
     }
 }
 
-/// Delivery-specific ordered receiver for event endpoints.
+/// Ordered receiver for discrete events produced by the owner.
 ///
-/// Events share the stream transport guarantee (ordered admission and
-/// explicit per-producer gap evidence) but have their own endpoint kind so
-/// temporal/event semantics remain independent from the transport metadata.
+/// Events carry their logical step and use the bounded stream lane. Receive
+/// methods expose producer gaps and terminal evidence.
 pub struct EventReceiver<E: EventContract> {
     inner: StreamReceiver<E>,
 }

@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::participant::lock;
-use phoxal_api::runtime;
 use phoxal_bus::{BusHandle, StreamPublisher};
+use phoxal_protocol::runtime;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Metadata};

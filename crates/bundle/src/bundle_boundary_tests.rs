@@ -583,7 +583,7 @@ fn the_declared_document_shape_is_the_shape_the_writer_persists() {
     let (document, _, _) = document();
     let value = serde_json::to_value(&document).expect("document serializes");
     // The declaration composes from a hand-written `Robot` and `Structure`
-    // shape and from `phoxal-api`'s derives, so it is checked against a real
+    // shape and from `phoxal-protocol`'s derives, so it is checked against a real
     // persisted document rather than asserted.
     assert_eq!(RuntimeDocument::wire_schema().conforms(&value), Ok(()));
 }

@@ -28,7 +28,7 @@ const REMEDY: &str = "hand-implement \
 ///
 /// The model lives on the process-contract floor, below every crate that owns
 /// a wire contract, so the derive names it directly rather than routing through
-/// the engine facade the authoring macros use: `phoxal-api` sits *below*
+/// the engine facade the authoring macros use: `phoxal-protocol` sits *below*
 /// `phoxal` and could not resolve `::phoxal`.
 fn model_path() -> TokenStream {
     quote!(::phoxal_runtime_contract::wire_schema)

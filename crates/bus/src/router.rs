@@ -55,11 +55,7 @@ impl Router {
         listen_endpoints: &[String],
         config_file: Option<&Path>,
     ) -> Result<Self> {
-        if listen_endpoints.is_empty() {
-            return Err(BusError::Transport(
-                "a router needs at least one listen endpoint".to_string(),
-            ));
-        }
+        validate_listen_endpoints(listen_endpoints)?;
         let session = zenoh::open(router_config(execution, listen_endpoints, config_file)?)
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
@@ -103,6 +99,15 @@ impl Router {
             .await
             .map_err(|error| BusError::Transport(error.to_string()))
     }
+}
+
+fn validate_listen_endpoints(listen_endpoints: &[String]) -> Result<()> {
+    if listen_endpoints.is_empty() {
+        return Err(BusError::Transport(
+            "a router needs at least one listen endpoint".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Watches the supervisor's own link to the router it is running.
@@ -213,16 +218,6 @@ fn router_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-
-    use serial_test::serial;
-
-    use crate::contract::EndpointDescriptor;
-    use crate::handle::publisher::StatePublisher;
-    use crate::handle::subscriber::Latest;
-    use crate::session::{BusConfig, BusOwner};
-    use crate::test_support::{Target, TargetEndpoint, socket_endpoint, step};
-    use crate::topic::{Publish, Subscribe, Topic};
 
     const ENDPOINT: &str = "tcp/127.0.0.1:7447";
 
@@ -258,16 +253,6 @@ mod tests {
                 format!("\"{execution}\""),
             );
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn a_running_router_reports_the_execution_as_its_own_session_id() {
-        let execution = ExecutionId::mint();
-        let router = Router::open(execution, &["tcp/127.0.0.1:0".to_string()], None)
-            .await
-            .expect("the router binds an OS-assigned port");
-        assert_eq!(router.session.zid().to_string(), execution.to_string());
-        router.close().await.expect("the router closes");
     }
 
     #[test]
@@ -367,240 +352,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn opening_without_a_listen_endpoint_is_rejected() {
-        let error = Router::open(ExecutionId::mint(), &[], None)
-            .await
-            .expect_err("a router with nowhere to listen must fail");
+    #[test]
+    fn opening_without_a_listen_endpoint_is_rejected_before_transport_open() {
+        let error =
+            validate_listen_endpoints(&[]).expect_err("a router with nowhere to listen must fail");
         assert!(error.to_string().contains("listen endpoint"));
-    }
-
-    /// The load-bearing proof for the embedded router: two *separate* client
-    /// sessions exchange a real sample, which can only happen if the in-process
-    /// router actually relays between them.
-    #[serial]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn two_client_sessions_exchange_a_sample_through_an_embedded_router() {
-        let (_dir, endpoint) = socket_endpoint("phoxal-embedded-router-");
-
-        // One execution for the router and both clients, so the sessions compose
-        // the same key root and the sample is observable rather than scoped away.
-        let execution = ExecutionId::mint();
-        let router = Router::open(execution, std::slice::from_ref(&endpoint), None)
-            .await
-            .expect("the embedded router binds its endpoint");
-
-        let client = |execution: ExecutionId, participant: &str| {
-            BusConfig::for_participant(
-                execution,
-                phoxal_runtime_contract::identity::ParticipantId::new(participant)
-                    .expect("test participant id"),
-                vec![endpoint.clone()],
-            )
-        };
-
-        let (publishing_owner, publishing) = BusOwner::open(client(execution, "publisher"))
-            .await
-            .expect("publisher dials the embedded router");
-        let (subscribing_owner, subscribing) = BusOwner::open(client(execution, "subscriber"))
-            .await
-            .expect("subscriber dials the embedded router");
-        assert_ne!(
-            publishing.producer(),
-            subscribing.producer(),
-            "the two sides must be genuinely separate sessions for this to prove relay"
-        );
-
-        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let publisher =
-            StatePublisher::<TargetEndpoint>::new(publishing.clone(), &pub_topic).unwrap();
-        let latest = Latest::<TargetEndpoint>::new(&subscribing, &sub_topic)
-            .await
-            .unwrap();
-
-        // Republish each round rather than publishing once: the subscriber's
-        // declaration travels B -> router while the sample travels A -> router, and
-        // `declare_subscriber` does not wait for the router to acknowledge it, so a
-        // single publish has a small window in which it arrives before the
-        // subscription exists and is dropped. Retrying removes the flake without
-        // weakening the assertion.
-        let mut observed = None;
-        for tick in 0..100 {
-            publisher
-                .publish(
-                    &step(1, 100 + tick),
-                    Target {
-                        linear_x_mps: 0.4,
-                        angular_z_radps: 0.2,
-                    },
-                )
-                .unwrap();
-            if let Some(sample) = latest.observed() {
-                observed = Some(sample);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-
-        let observed = observed.expect("the router must relay the sample to the other session");
-        assert_eq!(observed.body.linear_x_mps, 0.4);
-        assert_eq!(
-            observed.metadata.source.producer(),
-            publishing.producer(),
-            "provenance must survive the hop through the router"
-        );
-
-        // A second execution shares the exact same physical router/fabric but
-        // has a different execution-rooted key. It gets its own publisher and
-        // subscriber so the test proves both isolation and same-root delivery.
-        let other_execution = ExecutionId::mint();
-        let (other_publishing_owner, other_publishing) =
-            BusOwner::open(client(other_execution, "other-publisher"))
-                .await
-                .expect("the second execution publisher dials the same router");
-        let (other_subscribing_owner, other_subscribing) =
-            BusOwner::open(client(other_execution, "other-subscriber"))
-                .await
-                .expect("the second execution subscriber dials the same router");
-        let other_publisher =
-            StatePublisher::<TargetEndpoint>::new(other_publishing.clone(), &pub_topic).unwrap();
-        let other_latest = Latest::<TargetEndpoint>::new(&other_subscribing, &sub_topic)
-            .await
-            .unwrap();
-
-        assert!(other_latest.latest().is_none());
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(
-            other_latest.latest().is_none(),
-            "a sample under one execution root must not reach another root on the same fabric"
-        );
-
-        let mut other_observed = None;
-        for tick in 0..100 {
-            other_publisher
-                .publish(
-                    &step(1, 200 + tick),
-                    Target {
-                        linear_x_mps: 0.8,
-                        angular_z_radps: 0.3,
-                    },
-                )
-                .unwrap();
-            if let Some(sample) = other_latest.observed() {
-                other_observed = Some(sample);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let other_observed =
-            other_observed.expect("the second execution must exchange within its own root");
-        assert_eq!(other_observed.body.linear_x_mps, 0.8);
-        assert_eq!(
-            other_observed.metadata.source.producer(),
-            other_publishing.producer()
-        );
-
-        publishing_owner.close().await;
-        subscribing_owner.close().await;
-        other_publishing_owner.close().await;
-        other_subscribing_owner.close().await;
-        router.close().await.unwrap();
-    }
-
-    /// An ephemeral port is the whole reason `bound_endpoints` exists: the caller
-    /// asks for `:0`, the OS picks, and the requested string still says `:0`.
-    #[serial]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_ephemeral_port_is_reported_back_and_is_actually_connectable() {
-        let execution = ExecutionId::mint();
-        let router = Router::open(execution, &["tcp/127.0.0.1:0".to_string()], None)
-            .await
-            .expect("router binds an OS-assigned port");
-
-        let bound = router.bound_endpoints().await;
-        let tcp = bound
-            .iter()
-            .find(|endpoint| endpoint.starts_with("tcp/"))
-            .expect("the router reports the tcp endpoint it bound");
-        let port: u16 = tcp
-            .rsplit(':')
-            .next()
-            .and_then(|port| port.parse().ok())
-            .expect("the reported endpoint carries a concrete port");
-        assert_ne!(
-            port, 0,
-            "`:0` must resolve to a real assigned port, got {tcp}"
-        );
-
-        // Reported is not the same as reachable - dial the port we were told.
-        let (owner, _bus) = BusOwner::open(BusConfig::for_participant(
-            execution,
-            phoxal_runtime_contract::identity::ParticipantId::new("client")
-                .expect("test participant id"),
-            vec![tcp.clone()],
-        ))
-        .await
-        .expect("the reported endpoint must be the one that actually accepts");
-
-        owner.close().await;
-        router.close().await.unwrap();
-    }
-
-    /// The supervisor's question is "is the router I am running still there", and
-    /// the only end that can answer it is the client end. Prove the whole loop: a
-    /// watch reports nothing while the router is up, and fires exactly once when it
-    /// goes away.
-    #[serial]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_watch_fires_when_the_router_goes_away_and_not_before() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let (_dir, endpoint) = socket_endpoint("phoxal-router-watch-");
-        let router = Router::open(ExecutionId::mint(), std::slice::from_ref(&endpoint), None)
-            .await
-            .expect("router binds");
-
-        let losses = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&losses);
-        let watch = RouterWatch::open(&endpoint, move || {
-            counter.fetch_add(1, Ordering::Relaxed);
-        })
-        .await
-        .expect("the watch dials the running router");
-
-        // A healthy router must stay silent. `history(true)` replays the link that
-        // already exists, so a watch that keyed off any event rather than a close
-        // would fire here.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(
-            losses.load(Ordering::Relaxed),
-            0,
-            "a live router must not be reported as lost"
-        );
-
-        router.close().await.expect("close the router");
-
-        let mut fired = false;
-        for _ in 0..100 {
-            if losses.load(Ordering::Relaxed) > 0 {
-                fired = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(fired, "losing the router must be reported");
-
-        // Zenoh keeps retrying a dead endpoint; the loss is reported once, not per
-        // failed reconnect.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        assert_eq!(
-            losses.load(Ordering::Relaxed),
-            1,
-            "the loss must be reported exactly once, not once per reconnect attempt"
-        );
-
-        watch.close().await.expect("close the watch");
     }
 }

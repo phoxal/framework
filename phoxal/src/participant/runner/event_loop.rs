@@ -8,8 +8,8 @@ use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
-use phoxal_api::runtime::endpoint::simulation::ClockEndpoint;
 use phoxal_bundle::ParticipantClock;
+use phoxal_protocol::runtime::endpoint::simulation::ClockEndpoint;
 
 use super::ShutdownController;
 use super::lifecycle::{LoopExit, Runner};
@@ -246,7 +246,9 @@ pub(crate) async fn simulation_clock_feed(
     bus: phoxal_bus::BusHandle,
     handle: SimulationClockHandle,
 ) -> crate::Result<()> {
-    let topic = phoxal_api::runtime::topic::client().simulation().clock();
+    let topic = phoxal_protocol::runtime::topic::client()
+        .simulation()
+        .clock();
     let subscriber = match StreamReceiver::<ClockEndpoint>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),

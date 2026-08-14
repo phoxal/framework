@@ -31,7 +31,8 @@ zenoh = { workspace = true }
 test-harness = []
 # The supervisor's embedded Zenoh router. Off by default so
 # participants - which reach this crate through the `phoxal` facade - never see
-# a router in their API surface; only `phoxal-cli`'s supervisor enables it.
+# a router in their API surface; only the framework-owned `phoxal-supervisor`
+# executable enables it.
 #
 # It carries `zenoh/unstable`, which the router needs for two APIs with no
 # stable equivalent: `Session::info().locators()` to report the endpoints it

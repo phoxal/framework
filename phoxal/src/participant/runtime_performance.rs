@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use phoxal_api::runtime;
 use phoxal_bus::{
     BusHandle, RobotInstant, RuntimeBufferKind, RuntimeDirection, RuntimeMetricSnapshot,
     StreamPublisher,
 };
+use phoxal_protocol::runtime;
 
 use crate::participant::duration_nanos;
 use crate::participant::scheduler::StepSchedule;

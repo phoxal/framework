@@ -1,11 +1,14 @@
 //! The stock safety footprint compiled from canonical collision geometry.
 //!
-//! The compiler reduces every fixed collision shape to a conservative planar
-//! radial envelope around `base_footprint`. A radial bound is intentionally
+//! The compiler reduces collision shapes to a conservative planar radial
+//! envelope around `base_footprint`. A radial bound is intentionally
 //! conservative: it never under-approximates a box, cylinder, capsule, or
 //! sphere, and it remains valid when a fixed joint rotates a shape in three
-//! dimensions. Meshes and collision geometry below movable joints are refused
-//! because their runtime extent cannot be known from source-free facts alone.
+//! dimensions. Meshes and general collision geometry below movable joints are
+//! refused because their runtime extent cannot be known from source-free facts
+//! alone. The narrow exception is a mounted component's direct, axis-centered
+//! sphere, cylinder, or capsule whose geometry is unchanged by its revolute or
+//! continuous joint; that proof preserves the general movable-joint refusal.
 
 use std::collections::BTreeMap;
 
@@ -13,7 +16,9 @@ use crate::ModelError;
 use crate::component::Component;
 use crate::identity::ComponentInstanceId;
 use crate::robot::ComponentInstance;
-use crate::structure::{Geometry, JointKind, Structure};
+use crate::structure::{Collision, Geometry, Joint, JointKind, Structure};
+
+const AXIS_INVARIANCE_TOLERANCE: f64 = 1.0e-9;
 
 /// A conservative planar radial envelope around the robot's ground-projection
 /// origin.
@@ -54,7 +59,7 @@ pub fn compile(
     instances: &BTreeMap<ComponentInstanceId, ComponentInstance>,
     components: &BTreeMap<crate::identity::ComponentTypeId, Component>,
 ) -> Result<Option<FootprintEnvelope>, ModelError> {
-    let mut radius = structure_radius(structure)?;
+    let mut radius = structure_radius(structure, MovableCollisionPolicy::Reject)?;
     for instance in instances.values() {
         let Some(component) = components.get(instance.component_type()) else {
             // Robot validation reports this separately. Keeping this path
@@ -62,7 +67,11 @@ pub fn compile(
             // is ever relaxed.
             continue;
         };
-        let Some(component_radius) = structure_radius(component.structure())? else {
+        let Some(component_radius) = structure_radius(
+            component.structure(),
+            MovableCollisionPolicy::AllowDirectAxisInvariantRotation,
+        )?
+        else {
             continue;
         };
         let mount = link_transform(structure, instance.mount_link().as_str())?;
@@ -77,52 +86,61 @@ pub fn compile(
     radius.map(FootprintEnvelope::new).transpose()
 }
 
-fn structure_radius(structure: &Structure) -> Result<Option<f64>, ModelError> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MovableCollisionPolicy {
+    Reject,
+    AllowDirectAxisInvariantRotation,
+}
+
+fn structure_radius(
+    structure: &Structure,
+    policy: MovableCollisionPolicy,
+) -> Result<Option<f64>, ModelError> {
     let mut max_radius = None;
     walk_links(
         structure,
         structure.root_link().as_str(),
         Transform::identity(),
-        false,
+        None,
+        policy,
         &mut max_radius,
     )?;
     Ok(max_radius)
 }
 
-fn walk_links(
-    structure: &Structure,
+fn walk_links<'a>(
+    structure: &'a Structure,
     link_id: &str,
     transform: Transform,
-    movable_ancestor: bool,
+    movable_ancestor: Option<&'a Joint>,
+    policy: MovableCollisionPolicy,
     max_radius: &mut Option<f64>,
 ) -> Result<(), ModelError> {
     let Some(link) = structure.link(link_id) else {
         return Err(ModelError::FootprintNonFinite);
     };
     for collision in link.collisions() {
-        let shape_radius = match collision.geometry() {
-            Geometry::Box { size } => half_norm(*size),
-            Geometry::Cylinder { radius, length } => radial_shape_bound(*radius, *length / 2.0),
-            Geometry::Capsule { radius, length } => {
-                radial_shape_bound(*radius, *length / 2.0 + *radius)
-            }
-            Geometry::Sphere { radius } => *radius,
-            Geometry::Mesh { .. } => {
-                return Err(ModelError::FootprintMesh {
-                    link: link.name().clone(),
+        let shape_radius = collision_shape_radius(collision.geometry(), link.name())?;
+        let shape_origin = transform.apply(collision.origin().xyz());
+        let candidate = if let Some(joint) = movable_ancestor {
+            let direct_child = structure
+                .parent_joint(link_id)
+                .is_some_and(|parent| parent.name() == joint.name());
+            if policy != MovableCollisionPolicy::AllowDirectAxisInvariantRotation
+                || !direct_child
+                || !rotation_keeps_collision_fixed(joint, collision)
+            {
+                return Err(ModelError::FootprintMovableJoint {
+                    joint: joint.name().clone(),
                 });
             }
+            // The collision is fixed as the joint turns. Use a full 3D bound
+            // around the component mount because the robot may mount this
+            // component at any fixed orientation.
+            norm_xyz(shape_origin) + shape_radius
+        } else {
+            norm_xy(shape_origin) + shape_radius
         };
-        if movable_ancestor {
-            let joint = structure
-                .parent_joint(link_id)
-                .map(|joint| joint.name().clone());
-            return Err(ModelError::FootprintMovableJoint {
-                joint: joint.unwrap_or_else(|| crate::identity::JointId::new(link_id.to_string())),
-            });
-        }
-        let shape_origin = transform.apply(collision.origin().xyz());
-        let candidate = norm_xy(shape_origin) + shape_radius;
         if !candidate.is_finite() {
             return Err(ModelError::FootprintNonFinite);
         }
@@ -131,16 +149,59 @@ fn walk_links(
 
     for joint in structure.child_joints(link_id) {
         let child_transform = transform.then(joint.origin().xyz(), joint.origin().rpy());
-        let child_movable = movable_ancestor || joint.kind() != JointKind::Fixed;
+        let child_movable =
+            movable_ancestor.or_else(|| (joint.kind() != JointKind::Fixed).then_some(joint));
         walk_links(
             structure,
             joint.child().as_str(),
             child_transform,
             child_movable,
+            policy,
             max_radius,
         )?;
     }
     Ok(())
+}
+
+fn rotation_keeps_collision_fixed(joint: &Joint, collision: &Collision) -> bool {
+    if !matches!(joint.kind(), JointKind::Revolute | JointKind::Continuous) {
+        return false;
+    }
+    let Some(axis) = normalized(joint.axis()) else {
+        return false;
+    };
+    let center = collision.origin().xyz();
+    let center_on_axis =
+        norm_xyz(subtract(center, scale(axis, dot(center, axis)))) <= AXIS_INVARIANCE_TOLERANCE;
+    if !center_on_axis {
+        return false;
+    }
+    match collision.geometry() {
+        Geometry::Sphere { .. } => true,
+        Geometry::Cylinder { .. } | Geometry::Capsule { .. } => {
+            let geometry_axis =
+                multiply_vector(rpy_rotation(collision.origin().rpy()), [0.0, 0.0, 1.0]);
+            normalized(geometry_axis).is_some_and(|geometry_axis| {
+                (dot(axis, geometry_axis).abs() - 1.0).abs() <= AXIS_INVARIANCE_TOLERANCE
+            })
+        }
+        Geometry::Box { .. } | Geometry::Mesh { .. } => false,
+    }
+}
+
+fn collision_shape_radius(
+    geometry: &Geometry,
+    link: &crate::identity::LinkId,
+) -> Result<f64, ModelError> {
+    match geometry {
+        Geometry::Box { size } => Ok(half_norm(*size)),
+        Geometry::Cylinder { radius, length } => Ok(radial_shape_bound(*radius, *length / 2.0)),
+        Geometry::Capsule { radius, length } => {
+            Ok(radial_shape_bound(*radius, *length / 2.0 + *radius))
+        }
+        Geometry::Sphere { radius } => Ok(*radius),
+        Geometry::Mesh { .. } => Err(ModelError::FootprintMesh { link: link.clone() }),
+    }
 }
 
 fn link_transform(structure: &Structure, target: &str) -> Result<Transform, ModelError> {
@@ -194,6 +255,31 @@ fn half_norm(size: [f64; 3]) -> f64 {
 
 fn norm_xy(value: [f64; 3]) -> f64 {
     (value[0] * value[0] + value[1] * value[1]).sqrt()
+}
+
+fn norm_xyz(value: [f64; 3]) -> f64 {
+    (value
+        .into_iter()
+        .map(|coordinate| coordinate * coordinate)
+        .sum::<f64>())
+    .sqrt()
+}
+
+fn normalized(value: [f64; 3]) -> Option<[f64; 3]> {
+    let length = norm_xyz(value);
+    (length.is_finite() && length > 0.0).then(|| scale(value, 1.0 / length))
+}
+
+fn dot(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left.into_iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+fn scale(value: [f64; 3], scalar: f64) -> [f64; 3] {
+    value.map(|coordinate| coordinate * scalar)
+}
+
+fn subtract(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
 
 #[derive(Clone, Copy)]
@@ -410,6 +496,57 @@ mod tests {
         assert!(matches!(
             compile(&movable, &BTreeMap::new(), &BTreeMap::new()),
             Err(crate::ModelError::FootprintMovableJoint { .. })
+        ));
+    }
+
+    #[test]
+    fn component_rotation_exception_rejects_off_axis_collision() {
+        let robot = structure(
+            json!([
+                link("base_footprint", json!([])),
+                link("component_mount", json!([])),
+            ]),
+            json!([fixed_joint(
+                "component_mount_joint",
+                "base_footprint",
+                "component_mount"
+            )]),
+        );
+        let component = structure(
+            json!([
+                link("mount", json!([])),
+                link("rotor", sphere_collision(0.1)),
+            ]),
+            json!([{
+                "name": "motor_joint",
+                "kind": "continuous",
+                "origin": { "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0] },
+                "parent": "mount",
+                "child": "rotor",
+                "axis": [0.0, 0.0, 1.0],
+                "limit": { "lower": 0.0, "upper": 0.0, "effort": 0.0, "velocity": 1.0 }
+            }]),
+        );
+        let component_type = crate::identity::ComponentTypeId::new("wheel")
+            .expect("the component type id is normalized");
+        let instance_id = crate::identity::ComponentInstanceId::new("wheel-1")
+            .expect("the component instance id is normalized");
+        let instance = crate::compiler::component_instance(
+            instance_id.clone(),
+            component_type.clone(),
+            crate::identity::LinkId::new("component_mount"),
+            BTreeMap::new(),
+        );
+        let components = BTreeMap::from([(
+            component_type,
+            crate::compiler::component(BTreeMap::new(), component),
+        )]);
+        let instances = BTreeMap::from([(instance_id, instance)]);
+
+        assert!(matches!(
+            compile(&robot, &instances, &components),
+            Err(crate::ModelError::FootprintMovableJoint { joint })
+                if joint.as_str() == "motor_joint"
         ));
     }
 

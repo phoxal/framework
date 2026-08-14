@@ -18,13 +18,14 @@ resolver = "3"
 members = [
     "crates/fixture",
     "phoxal",
-    "crates/api",
+    "crates/protocol",
     "crates/bus",
     "crates/bundle",
     "crates/model",
     "crates/manifest",
     "crates/runtime-contract",
     "crates/macros",
+    "supervisor",
     "components/bno085",
     "components/ddsm115",
     "components/oak_d_lite",
@@ -56,13 +57,14 @@ members = [
 default-members = [
     "crates/fixture",
     "phoxal",
-    "crates/api",
+    "crates/protocol",
     "crates/bus",
     "crates/bundle",
     "crates/model",
     "crates/manifest",
     "crates/runtime-contract",
     "crates/macros",
+    "supervisor",
     "components/bno085",
     "components/ddsm115",
     "components/oak_d_lite",
@@ -106,6 +108,7 @@ serde_bytes = "0.11.19"
 serde_json = "1.0.149"
 serde_yaml = "0.9"
 serial_test = "3"
+system_shutdown = "4.1.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 # `system` and `disk` are the minimal features for host/process CPU and memory
 # sampling plus mounted-filesystem capacity. Default features additionally pull
@@ -116,6 +119,7 @@ sysinfo = { version = "0.36", default-features = false, features = ["disk", "sys
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "process"] }
+tokio-util = { version = "0.7", default-features = false }
 toml = "1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -145,7 +149,7 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service and component crates' dependency on `phoxal`.
 phoxal = { path = "phoxal", version = "=0.60.1" }
-phoxal-api = { path = "crates/api", version = "=0.60.1" }
+phoxal-protocol = { path = "crates/protocol", version = "=0.60.1" }
 phoxal-bus = { path = "crates/bus", version = "=0.60.1" }
 phoxal-bundle = { path = "crates/bundle", version = "=0.60.1" }
 phoxal-model = { path = "crates/model", version = "=0.60.1" }

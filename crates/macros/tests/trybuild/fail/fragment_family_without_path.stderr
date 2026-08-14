@@ -1,5 +1,0 @@
-error: a fragment declares at least one path segment below its contract family
- --> tests/trybuild/fail/fragment_family_without_path.rs:4:10
-  |
-4 |     path robot;
-  |          ^^^^^

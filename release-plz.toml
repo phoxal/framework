@@ -22,7 +22,7 @@ pr_name = "chore(release): release v{{ version }}"
 #
 # No per-package override is needed: release-plz only runs the check on packages
 # that contain a library, and every executable published to the `phoxal`
-# registry is bin-only, so all 17 are skipped on their own.
+# registry is bin-only, so each is skipped on its own.
 semver_check = true
 
 # --- crates.io libraries ----------------------------------------------------
@@ -40,7 +40,7 @@ git_tag_name = "v{{ version }}"
 git_release_enable = false
 
 [[package]]
-name = "phoxal-api"
+name = "phoxal-protocol"
 version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false
@@ -90,10 +90,18 @@ git_release_enable = false
 # train" defect.
 #
 # `changelog_update = false` because the train's library-side changelog already
-# records what shipped; 26 per-package changelogs would be noise.
+# records what shipped; per-executable changelogs would be noise.
 #
 # Cargo-side `publish = ["phoxal"]` in each manifest is the second, independent
 # guard: an ordinary `cargo publish` cannot reach crates.io by accident.
+
+[[package]]
+name = "phoxal-supervisor"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
 
 [[package]]
 name = "phoxal-component-bno085"

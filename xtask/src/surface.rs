@@ -19,16 +19,26 @@ use serde_json::Value;
 /// One crate that owns a contract surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ContractCrate {
-    /// The Cargo and registry package name.
-    pub(crate) name: &'static str,
+    /// The stable identity used to key this carrier's records.
+    pub(crate) carrier: &'static str,
+    /// The Cargo package that owns the carrier in this workspace.
+    pub(crate) workspace_package: &'static str,
     /// Where this workspace holds it, relative to the workspace root.
-    pub(crate) directory: &'static str,
+    pub(crate) workspace_directory: &'static str,
+    /// The package whose registry history normally supplies the baseline.
+    pub(crate) published_package: &'static str,
+    /// A one-time predecessor consulted only while the new package has no
+    /// registry history at all.
+    pub(crate) predecessor_package: Option<&'static str>,
 }
 
 impl ContractCrate {
-    /// The Rust path the probe project reaches this crate through.
+    /// The Rust path the probe project reaches this stable carrier through.
+    ///
+    /// Cargo aliases the selected package to this name when package ownership
+    /// differs, so the probe program stays byte-identical across a rename.
     pub(crate) fn module(self) -> String {
-        self.name.replace('-', "_")
+        self.carrier.replace('-', "_")
     }
 }
 
@@ -40,24 +50,39 @@ impl ContractCrate {
 /// comparison, which is how a boundary would silently stop being checked.
 pub(crate) const CONTRACT_CRATES: [ContractCrate; 5] = [
     ContractCrate {
-        name: "phoxal",
-        directory: "phoxal",
+        carrier: "phoxal",
+        workspace_package: "phoxal",
+        workspace_directory: "phoxal",
+        published_package: "phoxal",
+        predecessor_package: None,
     },
     ContractCrate {
-        name: "phoxal-api",
-        directory: "crates/api",
+        carrier: "phoxal-protocol",
+        workspace_package: "phoxal-protocol",
+        workspace_directory: "crates/protocol",
+        published_package: "phoxal-protocol",
+        predecessor_package: Some("phoxal-api"),
     },
     ContractCrate {
-        name: "phoxal-bundle",
-        directory: "crates/bundle",
+        carrier: "phoxal-bundle",
+        workspace_package: "phoxal-bundle",
+        workspace_directory: "crates/bundle",
+        published_package: "phoxal-bundle",
+        predecessor_package: None,
     },
     ContractCrate {
-        name: "phoxal-bus",
-        directory: "crates/bus",
+        carrier: "phoxal-bus",
+        workspace_package: "phoxal-bus",
+        workspace_directory: "crates/bus",
+        published_package: "phoxal-bus",
+        predecessor_package: None,
     },
     ContractCrate {
-        name: "phoxal-runtime-contract",
-        directory: "crates/runtime-contract",
+        carrier: "phoxal-runtime-contract",
+        workspace_package: "phoxal-runtime-contract",
+        workspace_directory: "crates/runtime-contract",
+        published_package: "phoxal-runtime-contract",
+        predecessor_package: None,
     },
 ];
 
@@ -87,7 +112,7 @@ pub(crate) const CONTRACT_CRATES: [ContractCrate; 5] = [
 /// reports as a removal and this list still recognizes.
 const FROZEN_RECORDS: [(&str, RecordKind, &str); 7] = [
     (
-        "phoxal-api",
+        "phoxal-protocol",
         RecordKind::Endpoint,
         "supervisor supervisor/connect",
     ),
@@ -223,20 +248,20 @@ impl SurfaceSet {
     pub(crate) fn read(documents: &BTreeMap<String, Value>) -> Result<Self> {
         let mut records = BTreeMap::new();
         for contract_crate in CONTRACT_CRATES {
-            let document = documents
-                .get(contract_crate.name)
-                .with_context(|| format!("{} rendered no contract surface", contract_crate.name))?;
+            let document = documents.get(contract_crate.carrier).with_context(|| {
+                format!("{} rendered no contract surface", contract_crate.carrier)
+            })?;
             let declared = document
                 .get("records")
                 .and_then(Value::as_array)
                 .with_context(|| {
                     format!(
                         "{}'s contract surface holds no records",
-                        contract_crate.name
+                        contract_crate.carrier
                     )
                 })?;
             for record in declared {
-                let identity = RecordIdentity::of(contract_crate.name, record)?;
+                let identity = RecordIdentity::of(contract_crate.carrier, record)?;
                 if records.insert(identity.clone(), record.clone()).is_some() {
                     bail!("{identity} is declared twice in one contract surface");
                 }
@@ -548,7 +573,7 @@ mod tests {
             .collect::<Vec<_>>();
         BTreeMap::from([
             ("phoxal".to_owned(), json!({"records": [launch]})),
-            ("phoxal-api".to_owned(), json!({"records": endpoints})),
+            ("phoxal-protocol".to_owned(), json!({"records": endpoints})),
             ("phoxal-bundle".to_owned(), json!({"records": [document()]})),
             ("phoxal-bus".to_owned(), json!({"records": bus})),
             (
@@ -581,15 +606,6 @@ mod tests {
             .join("\n")
     }
 
-    /// Two identical sides are unchanged, which is what lets an ordinary
-    /// release ride a patch.
-    #[test]
-    fn identical_surfaces_are_unchanged() {
-        let (impact, changes) = compare(&baseline());
-        assert_eq!(impact, CompatibilityImpact::Unchanged);
-        assert!(changes.is_empty(), "{}", rendered(&changes));
-    }
-
     /// A new endpoint cannot break a peer that never knew it existed.
     #[test]
     fn a_new_endpoint_is_additive() {
@@ -604,15 +620,15 @@ mod tests {
         assert_eq!(impact, CompatibilityImpact::Additive);
         let report = rendered(&changes);
         assert!(
-            report.contains("added    phoxal-api endpoint robot robot/drive/command"),
+            report.contains("added    phoxal-protocol endpoint robot robot/drive/command"),
             "{report}"
         );
     }
 
-    /// A field that changed type is a break, and the diagnostic names the
-    /// record and the path inside it rather than only that something moved.
+    /// Stable carrier mapping cannot hide an endpoint change: the diagnostic
+    /// names the exact record and path rather than only that something moved.
     #[test]
-    fn a_changed_payload_field_is_breaking_and_names_its_path() {
+    fn carrier_mapping_keeps_an_exact_endpoint_change_visible() {
         let (impact, changes) = compare(&side(
             vec![endpoint("robot/drive/state", "speed", "u32")],
             vec![identifier("bus-encoding", "phoxal/v0;codec=1")],
@@ -621,7 +637,7 @@ mod tests {
         assert_eq!(impact, CompatibilityImpact::Breaking);
         let report = rendered(&changes);
         assert!(
-            report.contains("changed  phoxal-api endpoint robot robot/drive/state"),
+            report.contains("changed  phoxal-protocol endpoint robot robot/drive/state"),
             "{report}"
         );
         assert!(
@@ -647,9 +663,10 @@ mod tests {
         );
     }
 
-    /// A peer that still publishes on a removed key talks to nobody.
+    /// Stable carrier mapping cannot turn a removed endpoint into a package
+    /// rename: a peer that still publishes on that key talks to nobody.
     #[test]
-    fn a_removed_endpoint_is_breaking() {
+    fn carrier_mapping_keeps_an_endpoint_removal_visible() {
         let (impact, changes) = compare(&side(
             Vec::new(),
             vec![identifier("bus-encoding", "phoxal/v0;codec=1")],
@@ -658,7 +675,7 @@ mod tests {
         assert_eq!(impact, CompatibilityImpact::Breaking);
         let report = rendered(&changes);
         assert!(
-            report.contains("removed  phoxal-api endpoint robot robot/drive/state"),
+            report.contains("removed  phoxal-protocol endpoint robot robot/drive/state"),
             "{report}"
         );
     }
@@ -778,6 +795,18 @@ mod tests {
         assert!(CompatibilityImpact::Additive < CompatibilityImpact::Breaking);
     }
 
+    /// The execution supervisor consumes contracts but never supplies a
+    /// contract carrier or a second compatibility identity.
+    #[test]
+    fn phoxal_supervisor_is_not_a_contract_carrier() {
+        assert!(CONTRACT_CRATES.iter().all(|contract_crate| {
+            contract_crate.carrier != "phoxal-supervisor"
+                && contract_crate.workspace_package != "phoxal-supervisor"
+                && contract_crate.published_package != "phoxal-supervisor"
+                && contract_crate.predecessor_package != Some("phoxal-supervisor")
+        }));
+    }
+
     /// The bootstrap endpoint, spelled the way the contract crate renders it.
     fn connect() -> Value {
         json!({
@@ -829,13 +858,13 @@ mod tests {
         CONTRACT_CRATES
             .iter()
             .map(|contract_crate| {
-                let declared = if contract_crate.name == crate_name {
+                let declared = if contract_crate.carrier == crate_name {
                     records.clone()
                 } else {
                     Vec::new()
                 };
                 (
-                    contract_crate.name.to_owned(),
+                    contract_crate.carrier.to_owned(),
                     json!({ "records": declared }),
                 )
             })

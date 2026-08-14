@@ -1,5 +1,5 @@
 use phoxal::api;
-use phoxal_api::supervisor;
+use phoxal_protocol::supervisor;
 use phoxal::prelude::*;
 
 struct Api;

@@ -19,42 +19,68 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use semver::Version;
 use serde_json::Value;
 
+use crate::index::PublishedTrain;
 use crate::surface::CONTRACT_CRATES;
 
 /// Which crate set a surface is read from.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum Side {
-    /// The published train, at exact registry versions.
-    Baseline(Version),
+    /// The published train, at exact registry versions and using the actual
+    /// package selected for each stable carrier.
+    Baseline(PublishedTrain),
     /// This workspace, through path dependencies.
     Current,
 }
 
 impl Side {
+    #[cfg(test)]
+    pub(crate) fn baseline(version: semver::Version) -> Self {
+        Self::Baseline(PublishedTrain::stated(version, None))
+    }
+
     /// The probe directory this side reuses across runs.
     pub(crate) fn directory_name(&self) -> String {
         match self {
-            Self::Baseline(version) => format!("baseline-{version}"),
+            Self::Baseline(train) => format!("baseline-{}", train.version),
             Self::Current => "current".to_owned(),
         }
     }
 
     /// How the probe manifest names the contract crates.
-    fn dependencies(&self, workspace_root: &Path) -> String {
+    fn dependencies(&self, workspace_root: &Path) -> Result<String> {
         CONTRACT_CRATES
             .iter()
             .map(|contract_crate| match self {
-                Self::Baseline(version) => {
-                    format!("{} = \"={version}\"\n", contract_crate.name)
+                Self::Baseline(train) => {
+                    let package = train.selected_package(contract_crate.carrier)?;
+                    if package == contract_crate.carrier {
+                        Ok(format!(
+                            "{} = \"={}\"\n",
+                            contract_crate.carrier, train.version
+                        ))
+                    } else {
+                        Ok(format!(
+                            "{} = {{ package = {:?}, version = \"={}\" }}\n",
+                            contract_crate.carrier, package, train.version
+                        ))
+                    }
                 }
-                Self::Current => format!(
-                    "{} = {{ path = {:?} }}\n",
-                    contract_crate.name,
-                    workspace_root.join(contract_crate.directory)
-                ),
+                Self::Current => {
+                    let path = workspace_root.join(contract_crate.workspace_directory);
+                    if contract_crate.workspace_package == contract_crate.carrier {
+                        Ok(format!(
+                            "{} = {{ path = {:?} }}\n",
+                            contract_crate.carrier, path
+                        ))
+                    } else {
+                        Ok(format!(
+                            "{} = {{ package = {:?}, path = {:?} }}\n",
+                            contract_crate.carrier, contract_crate.workspace_package, path
+                        ))
+                    }
+                }
             })
             .collect()
     }
@@ -63,7 +89,7 @@ impl Side {
 impl fmt::Display for Side {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Baseline(version) => write!(formatter, "published {version}"),
+            Self::Baseline(train) => write!(formatter, "published {}", train.version),
             Self::Current => formatter.write_str("workspace"),
         }
     }
@@ -126,14 +152,14 @@ impl ProbeSurfaces {
             .join(side.directory_name());
         fs::create_dir_all(directory.join("src"))
             .with_context(|| format!("failed to create the probe at {}", directory.display()))?;
-        write_if_changed(&directory.join("Cargo.toml"), &self.manifest(side))?;
+        write_if_changed(&directory.join("Cargo.toml"), &self.manifest(side)?)?;
         write_if_changed(&directory.join("src").join("main.rs"), &Self::program())?;
         Ok(directory)
     }
 
     /// The probe manifest: its own workspace, so the enclosing one neither
     /// adopts the generated package nor resolves its dependencies.
-    fn manifest(&self, side: &Side) -> String {
+    fn manifest(&self, side: &Side) -> Result<String> {
         const HEAD: &str = r#"# Written by `cargo xtask compatibility`. It is regenerated on every
 # run, lives under `target/`, and is not tracked.
 [workspace]
@@ -146,7 +172,10 @@ publish = false
 
 [dependencies]
 "#;
-        format!("{HEAD}{}", side.dependencies(&self.workspace_root))
+        Ok(format!(
+            "{HEAD}{}",
+            side.dependencies(&self.workspace_root)?
+        ))
     }
 
     /// The probe program: one JSON object holding every crate's own rendering
@@ -178,7 +207,7 @@ fn main() {
             .map(|contract_crate| {
                 format!(
                     "        (\"{}\", {}::__compat::contract_surface()),\n",
-                    contract_crate.name,
+                    contract_crate.carrier,
                     contract_crate.module()
                 )
             })
@@ -235,8 +264,11 @@ pub(crate) fn write_if_changed(path: &Path, content: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use semver::Version;
+    use serde_json::json;
+
     use super::*;
-    use crate::surface::SurfaceSet;
+    use crate::surface::{CONTRACT_CRATES, SurfaceSet};
 
     fn probe() -> ProbeSurfaces {
         ProbeSurfaces {
@@ -249,7 +281,9 @@ mod tests {
     /// itself.
     #[test]
     fn the_baseline_probe_pins_exact_published_versions() {
-        let manifest = probe().manifest(&Side::Baseline(Version::new(0, 58, 1)));
+        let manifest = probe()
+            .manifest(&Side::baseline(Version::new(0, 58, 1)))
+            .expect("the manifest renders");
         assert!(manifest.contains("phoxal = \"=0.58.1\""), "{manifest}");
         assert!(
             manifest.contains("phoxal-runtime-contract = \"=0.58.1\""),
@@ -260,10 +294,97 @@ mod tests {
     /// The workspace side reads the crates in front of it, by path.
     #[test]
     fn the_current_probe_names_the_workspace_crates_by_path() {
-        let manifest = probe().manifest(&Side::Current);
+        let manifest = probe()
+            .manifest(&Side::Current)
+            .expect("the manifest renders");
         assert!(
-            manifest.contains("phoxal-api = { path = \"/workspace/crates/api\" }"),
+            manifest.contains("phoxal-protocol = { path = \"/workspace/crates/protocol\" }"),
             "{manifest}"
+        );
+    }
+
+    /// The first renamed baseline really selects the old Cargo package while
+    /// the current side selects the new one. The generated dependency alias and
+    /// collector then erase that package-name difference at the comparison
+    /// boundary, so an identical record remains unchanged under the stable
+    /// carrier identity.
+    #[test]
+    fn a_predecessor_package_is_compared_under_the_stable_carrier() {
+        let baseline = Side::baseline(Version::new(0, 58, 1));
+        let Side::Baseline(train) = &baseline else {
+            panic!("the stated baseline is published");
+        };
+        let selected = train
+            .selected_package("phoxal-protocol")
+            .expect("the protocol carrier has a selected baseline package");
+        let protocol = CONTRACT_CRATES
+            .iter()
+            .find(|contract_crate| contract_crate.carrier == "phoxal-protocol")
+            .expect("the protocol carrier is declared");
+        assert_eq!(selected, "phoxal-api");
+        assert_eq!(protocol.workspace_package, "phoxal-protocol");
+        assert_ne!(selected, protocol.workspace_package);
+
+        let manifest = probe().manifest(&baseline).expect("the manifest renders");
+        assert!(
+            manifest
+                .contains("phoxal-protocol = { package = \"phoxal-api\", version = \"=0.58.1\" }"),
+            "{manifest}"
+        );
+        assert!(!manifest.contains("\nphoxal-api ="), "{manifest}");
+        let current_manifest = probe()
+            .manifest(&Side::Current)
+            .expect("the current manifest renders");
+        assert!(
+            current_manifest
+                .contains("phoxal-protocol = { path = \"/workspace/crates/protocol\" }"),
+            "{current_manifest}"
+        );
+        assert!(
+            !current_manifest.contains("phoxal-api"),
+            "{current_manifest}"
+        );
+
+        let program = ProbeSurfaces::program();
+        assert!(
+            program
+                .contains("(\"phoxal-protocol\", phoxal_protocol::__compat::contract_surface())"),
+            "{program}"
+        );
+        assert!(!program.contains("phoxal_api"), "{program}");
+
+        let protocol_record = json!({
+            "delivery": "state",
+            "family": "robot",
+            "kind": "state",
+            "path": "robot/drive/state",
+            "payload": {"fields": [], "kind": "struct"},
+            "record": "endpoint",
+            "request": serde_json::Value::Null,
+            "response": serde_json::Value::Null,
+        });
+        let probe_output = || {
+            CONTRACT_CRATES
+                .iter()
+                .map(|contract_crate| {
+                    let records = if contract_crate.carrier == "phoxal-protocol" {
+                        vec![protocol_record.clone()]
+                    } else {
+                        Vec::new()
+                    };
+                    (
+                        contract_crate.carrier.to_owned(),
+                        json!({"records": records}),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let published = SurfaceSet::read(&probe_output()).expect("the predecessor surface reads");
+        let current = SurfaceSet::read(&probe_output()).expect("the current surface reads");
+        let changes = published.changes_to(&current);
+        assert!(
+            changes.is_empty(),
+            "the package rename created stable-carrier drift: {changes:?}"
         );
     }
 
@@ -271,7 +392,12 @@ mod tests {
     /// generated package nor resolves its dependencies.
     #[test]
     fn the_probe_manifest_declares_its_own_workspace() {
-        assert!(probe().manifest(&Side::Current).contains("[workspace]"));
+        assert!(
+            probe()
+                .manifest(&Side::Current)
+                .expect("the manifest renders")
+                .contains("[workspace]")
+        );
     }
 
     /// Every contract crate is asked for its own surface, under the name the
@@ -283,7 +409,7 @@ mod tests {
             assert!(
                 program.contains(&format!(
                     "(\"{}\", {}::__compat::contract_surface())",
-                    contract_crate.name,
+                    contract_crate.carrier,
                     contract_crate.module()
                 )),
                 "{program}"
@@ -296,7 +422,7 @@ mod tests {
     #[test]
     fn each_side_reuses_one_probe_directory() {
         assert_eq!(
-            Side::Baseline(Version::new(0, 58, 1)).directory_name(),
+            Side::baseline(Version::new(0, 58, 1)).directory_name(),
             "baseline-0.58.1"
         );
         assert_eq!(Side::Current.directory_name(), "current");
@@ -318,9 +444,9 @@ mod tests {
         };
         for contract_crate in CONTRACT_CRATES {
             assert!(
-                surfaces.contains_key(contract_crate.name),
+                surfaces.contains_key(contract_crate.carrier),
                 "{} stated no surface",
-                contract_crate.name
+                contract_crate.carrier
             );
         }
         SurfaceSet::read(&surfaces).expect("the workspace surfaces read as records");

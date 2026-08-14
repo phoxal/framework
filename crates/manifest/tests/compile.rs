@@ -59,6 +59,104 @@ fn every_repository_robot_compiles_to_the_canonical_model() {
     }
 }
 
+/// The stock wheel keeps its collision on the rotating rotor: Webots needs the
+/// bounding object and `rubber_wheel` contact material on that same physical
+/// link. The footprint compiler must recognize that this particular cylinder
+/// is unchanged by its axis-centered continuous rotation instead of forcing a
+/// consumer to fork the component or stripping real collision geometry.
+#[test]
+fn stock_ddsm115_compiles_with_its_rotating_collision_and_safety_footprint() {
+    let project = tempfile::tempdir().expect("temporary robot project");
+    std::fs::write(
+        project.path().join("robot.yaml"),
+        r#"schema: phoxal/robot/v0
+robot:
+  id: ddsm115-footprint
+  structure: structure.urdf
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: [drive.motor]
+    encoders: [drive.encoder]
+  components:
+    drive:
+      component: ddsm115
+      mount_link: wheel_mount
+"#,
+    )
+    .expect("robot manifest");
+    std::fs::write(
+        project.path().join("structure.urdf"),
+        r#"<?xml version="1.0" ?>
+<robot name="ddsm115_footprint">
+  <link name="base_footprint" />
+  <link name="base_link" />
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint" />
+    <child link="base_link" />
+  </joint>
+  <link name="wheel_mount" />
+  <joint name="wheel_mount_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="wheel_mount" />
+    <origin xyz="0 0.2 0" rpy="1.5708 0 0" />
+  </joint>
+</robot>
+"#,
+    )
+    .expect("robot structure");
+
+    let mut source_set = sources(project.path());
+    source_set.component_roots.insert(
+        "ddsm115".to_string(),
+        workspace_root().join("components/ddsm115"),
+    );
+    let compiled = source_set
+        .compile()
+        .expect("the stock DDSM115 must compile without consumer overrides");
+    let component = compiled
+        .robot()
+        .component_for_instance("drive")
+        .expect("mounted stock component");
+    assert_eq!(
+        component
+            .structure()
+            .joint("motor_joint")
+            .expect("stock motor joint")
+            .kind(),
+        phoxal_model::structure::JointKind::Continuous
+    );
+    assert_eq!(
+        component
+            .structure()
+            .link("mount")
+            .expect("fixed mount")
+            .collisions()
+            .len(),
+        0,
+        "the fixed mount must not steal the wheel's physical contact body"
+    );
+    assert_eq!(
+        component
+            .structure()
+            .link("rotor_link")
+            .expect("rotating wheel")
+            .collisions()
+            .len(),
+        1,
+        "the rotor keeps the collision Webots rotates with rubber contact"
+    );
+
+    let expected = 0.2 + 0.022 + (0.11_f64.powi(2) + 0.04_f64.powi(2)).sqrt();
+    let footprint = compiled
+        .robot()
+        .footprint_envelope()
+        .expect("stock collision produces a safety footprint");
+    assert!((footprint.radius_m - expected).abs() < 1.0e-12);
+}
+
 #[test]
 fn canonical_mesh_references_are_backed_by_compiled_assets() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");

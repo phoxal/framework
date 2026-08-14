@@ -18,20 +18,12 @@ use crate::topic::{AskQuery, Topic};
 /// The Phoxal-pinned finite query timeout - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Issues queries on an exclusive query topic and returns
-/// `Result<Resp, QueryError>`.
+/// Asks one request of the endpoint owner and expects exactly one response.
 ///
-/// A query carries a finite, Phoxal-pinned
-/// [`timeout`](DEFAULT_QUERY_TIMEOUT) - not Zenoh's 10 s default - and expects
-/// exactly one responder:
-///
-/// - a success reply decodes to the plain `Resp` body;
-/// - a handler error rides Zenoh's native `ReplyError` and surfaces as
-///   [`QueryError::Server`] carrying the [`QueryFailure`];
-/// - the deadline elapsing with no reply is [`QueryError::Timeout`], and the
-///   reply stream closing with no reply is [`QueryError::Unavailable`];
-/// - a second reply (a duplicate responder, also a launch-topology error) is
-///   [`QueryError::TooManyResponders`].
+/// Requests carry no robot timestamp. Each call uses the finite
+/// [`DEFAULT_QUERY_TIMEOUT`], and timeout, unavailable service, server failure,
+/// protocol failure, and duplicate responders are returned as typed
+/// [`QueryError`] values.
 pub struct Querier<Req, Resp> {
     bus: BusHandle,
     key: String,
