@@ -425,13 +425,13 @@ fn documents(records: &[Value]) -> BTreeMap<String, Value> {
     CONTRACT_CRATES
         .iter()
         .map(|contract_crate| {
-            let declared = if contract_crate.name == "phoxal-api" {
+            let declared = if contract_crate.carrier == "phoxal-protocol" {
                 records.to_vec()
             } else {
                 Vec::new()
             };
             (
-                contract_crate.name.to_owned(),
+                contract_crate.carrier.to_owned(),
                 json!({ "records": declared }),
             )
         })

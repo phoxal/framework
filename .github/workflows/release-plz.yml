@@ -202,7 +202,22 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Check the train against the published contract surfaces
-        run: cargo xtask compatibility check-release
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Frozen drift and release-size refusals still leave their complete
+          # evidence in the publication run summary before the job fails.
+          status=0
+          report="$(cargo xtask compatibility check-release)" || status=$?
+          echo "$report"
+          {
+            echo "## Prepared train compatibility"
+            echo
+            echo '```'
+            echo "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
   publish-crates:
     name: publish crates.io libraries

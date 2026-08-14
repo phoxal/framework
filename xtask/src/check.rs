@@ -62,15 +62,14 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
     pub(crate) fn run(&self, declared: CompatibilityImpact) -> Result<CompatibilityReport> {
         let train = self.versions.latest_train()?;
         let baseline = train.version.clone();
-        let floor = ToolchainFloor::between(train.rust_version, self.workspace_floor.clone());
+        let floor =
+            ToolchainFloor::between(train.rust_version.clone(), self.workspace_floor.clone());
         let source = SourceComparison::between(
-            &self.documents.read(&Side::Baseline(baseline.clone()))?,
+            &self.documents.read(&Side::Baseline(train.clone()))?,
             &self.documents.read(&Side::Current)?,
         )?;
 
-        let Extraction::Surfaces(published) =
-            self.surfaces.extract(&Side::Baseline(baseline.clone()))?
-        else {
+        let Extraction::Surfaces(published) = self.surfaces.extract(&Side::Baseline(train))? else {
             return Ok(CompatibilityReport {
                 baseline,
                 workspace_version: self.workspace_version.clone(),
@@ -161,6 +160,28 @@ impl CompatibilityReport {
             .iter()
             .map(ReleaseRequirement::step)
             .max()
+    }
+
+    /// The failure one command must return, if any.
+    ///
+    /// Frozen bootstrap drift is unreleasable and therefore fails both the
+    /// ordinary report and the release gate. Every other release-size finding
+    /// remains report-only until `check-release` asks to gate the candidate.
+    pub(crate) fn command_failure(&self, gates_the_release: bool) -> Option<CompatibilityFailure> {
+        if self.requirements().iter().any(|requirement| {
+            matches!(
+                requirement,
+                ReleaseRequirement::Contracts { frozen: true, .. }
+            )
+        }) {
+            return Some(CompatibilityFailure::FrozenBootstrapDrift);
+        }
+        if gates_the_release {
+            self.release_shortfall()
+                .map(CompatibilityFailure::InsufficientRelease)
+        } else {
+            None
+        }
     }
 
     /// The authored-source line: one word when the whole corpus came through
@@ -392,6 +413,27 @@ pub(crate) struct InsufficientRelease {
     binding: Vec<ReleaseRequirement>,
 }
 
+/// Why a compatibility command must fail after printing its complete report.
+pub(crate) enum CompatibilityFailure {
+    /// The frozen attachment bootstrap changed; no version can make it valid.
+    FrozenBootstrapDrift,
+    /// `check-release` found a candidate smaller than the required release.
+    InsufficientRelease(InsufficientRelease),
+}
+
+impl fmt::Display for CompatibilityFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FrozenBootstrapDrift => write!(
+                formatter,
+                "the frozen supervisor bootstrap drifted and is unreleasable at any version. {}",
+                RunbookPointer::to([RunbookRule::FrozenBootstrapDrift])
+            ),
+            Self::InsufficientRelease(shortfall) => shortfall.fmt(formatter),
+        }
+    }
+}
+
 impl fmt::Display for InsufficientRelease {
     /// The refusal, the axes behind it, and the one line that says what may be
     /// done about it. The pointer goes last so an agent reading a truncated CI
@@ -474,19 +516,20 @@ mod tests {
         }
     }
 
-    /// Put every record on `phoxal-api` and leave the other contract crates
+    /// Put every record on the stable `phoxal-protocol` carrier and leave the
+    /// other contract crates
     /// declaring nothing, which is a surface set the comparison accepts.
     fn documents(records: &[Value]) -> BTreeMap<String, Value> {
         CONTRACT_CRATES
             .iter()
             .map(|contract_crate| {
-                let declared = if contract_crate.name == "phoxal-api" {
+                let declared = if contract_crate.carrier == "phoxal-protocol" {
                     records.to_vec()
                 } else {
                     Vec::new()
                 };
                 (
-                    contract_crate.name.to_owned(),
+                    contract_crate.carrier.to_owned(),
                     json!({ "records": declared }),
                 )
             })
@@ -892,5 +935,15 @@ mod tests {
         assert!(shortfall.contains("FROZEN BOOTSTRAP"), "{shortfall}");
         assert!(shortfall.contains("rule 3"), "{shortfall}");
         assert!(!shortfall.contains("rules 1 and 2"), "{shortfall}");
+        for gates_the_release in [false, true] {
+            let failure = report
+                .command_failure(gates_the_release)
+                .expect("frozen drift fails both compatibility commands");
+            assert!(
+                matches!(failure, CompatibilityFailure::FrozenBootstrapDrift),
+                "{failure}"
+            );
+            assert!(failure.to_string().contains("unreleasable"), "{failure}");
+        }
     }
 }

@@ -5,11 +5,13 @@
 //! updated by the same change it is supposed to judge, so the registry - which
 //! a release cannot rewrite - is the only honest record of what shipped.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::Deserialize;
 
-use crate::surface::CONTRACT_CRATES;
+use crate::surface::{CONTRACT_CRATES, ContractCrate};
 use crate::toolchain::RustVersion;
 
 /// One version of one crate, as the registry index states it.
@@ -77,6 +79,12 @@ pub(crate) struct PublishedTrain {
     pub(crate) version: Version,
     /// The toolchain floor they were published under, when they state one.
     pub(crate) rust_version: Option<RustVersion>,
+    /// The actual registry package selected for each stable carrier.
+    ///
+    /// This is deliberately carried to the surface probe: resolving a legacy
+    /// predecessor and then probing the new package name would compare a
+    /// different train from the one whose completeness and floor were checked.
+    selected_packages: BTreeMap<&'static str, &'static str>,
 }
 
 impl PublishedTrain {
@@ -85,7 +93,26 @@ impl PublishedTrain {
         Self {
             version,
             rust_version,
+            selected_packages: CONTRACT_CRATES
+                .iter()
+                .map(|contract_crate| {
+                    (
+                        contract_crate.carrier,
+                        contract_crate
+                            .predecessor_package
+                            .unwrap_or(contract_crate.published_package),
+                    )
+                })
+                .collect(),
         }
+    }
+
+    /// The package selected from registry history for `carrier`.
+    pub(crate) fn selected_package(&self, carrier: &str) -> Result<&'static str> {
+        self.selected_packages
+            .get(carrier)
+            .copied()
+            .with_context(|| format!("published train selected no package for {carrier}"))
     }
 }
 
@@ -97,6 +124,26 @@ pub(crate) trait PublishedVersions {
     /// Every version the registry lists for `crate_name`, yanked ones
     /// included.
     fn versions(&self, crate_name: &str) -> Result<Vec<PublishedVersion>>;
+
+    /// Select the registry package that supplies one stable carrier.
+    ///
+    /// A predecessor is consulted only while the new package has no history at
+    /// all. Any new-package entry, including a yanked one, permanently closes
+    /// that fallback so a failed new line cannot silently compare against the
+    /// old owner again.
+    fn selected_history(
+        &self,
+        contract_crate: ContractCrate,
+    ) -> Result<(&'static str, Vec<PublishedVersion>)> {
+        let history = self.versions(contract_crate.published_package)?;
+        if !history.is_empty() {
+            return Ok((contract_crate.published_package, history));
+        }
+        let Some(predecessor) = contract_crate.predecessor_package else {
+            return Ok((contract_crate.published_package, history));
+        };
+        Ok((predecessor, self.versions(predecessor)?))
+    }
 
     /// The latest published framework train.
     ///
@@ -116,8 +163,8 @@ pub(crate) trait PublishedVersions {
     fn latest_train(&self) -> Result<PublishedTrain> {
         let mut latest = Vec::new();
         for contract_crate in CONTRACT_CRATES {
-            let newest = self
-                .versions(contract_crate.name)?
+            let (selected_package, history) = self.selected_history(contract_crate)?;
+            let newest = history
                 .into_iter()
                 .filter(|published| !published.yanked)
                 .max_by(|left, right| left.version.cmp(&right.version))
@@ -125,24 +172,24 @@ pub(crate) trait PublishedVersions {
                     format!(
                         "{} has no published version that is not yanked, so there is no train to \
                          compare against",
-                        contract_crate.name
+                        selected_package
                     )
                 })?;
-            latest.push((contract_crate.name, newest));
+            latest.push((contract_crate.carrier, selected_package, newest));
         }
 
         let version = latest
             .iter()
-            .map(|(_, published)| published.version.clone())
+            .map(|(_, _, published)| published.version.clone())
             .max()
             .context("no contract crate is declared, so no baseline can be resolved")?;
         if latest
             .iter()
-            .any(|(_, published)| published.version != version)
+            .any(|(_, _, published)| published.version != version)
         {
             let listed = latest
                 .iter()
-                .map(|(name, published)| format!("{name} {}", published.version))
+                .map(|(_, package, published)| format!("{package} {}", published.version))
                 .collect::<Vec<_>>()
                 .join(", ");
             bail!(
@@ -154,16 +201,16 @@ pub(crate) trait PublishedVersions {
         }
 
         let mut floors = Vec::new();
-        for (name, published) in &latest {
+        for (_, package, published) in &latest {
             let floor = published
                 .rust_version
                 .as_deref()
                 .map(RustVersion::parse)
                 .transpose()
                 .with_context(|| {
-                    format!("{name} {version} states an unreadable rust-version in the registry")
+                    format!("{package} {version} states an unreadable rust-version in the registry")
                 })?;
-            floors.push((*name, floor));
+            floors.push((*package, floor));
         }
         let (_, stated) = floors
             .first()
@@ -188,6 +235,10 @@ pub(crate) trait PublishedVersions {
         Ok(PublishedTrain {
             version,
             rust_version: stated,
+            selected_packages: latest
+                .into_iter()
+                .map(|(carrier, package, _)| (carrier, package))
+                .collect(),
         })
     }
 }
@@ -221,9 +272,18 @@ impl SparseIndex {
 impl PublishedVersions for SparseIndex {
     fn versions(&self, crate_name: &str) -> Result<Vec<PublishedVersion>> {
         let url = format!("{}/{}", self.base_url, Self::path_of(crate_name));
-        let document = ureq::get(&url)
-            .call()
-            .with_context(|| format!("failed to read the registry index at {url}"))?
+        let mut response = match ureq::get(&url).call() {
+            Ok(response) => response,
+            // A sparse-index 404 is the registry's representation of a package
+            // with zero history. The rename resolver needs to distinguish that
+            // state from a real read failure before consulting a predecessor.
+            Err(ureq::Error::StatusCode(404)) => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read the registry index at {url}"));
+            }
+        };
+        let document = response
             .body_mut()
             .read_to_string()
             .with_context(|| format!("failed to read the registry index body at {url}"))?;
@@ -234,6 +294,7 @@ impl PublishedVersions for SparseIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
 
     use super::*;
@@ -242,6 +303,7 @@ mod tests {
     #[derive(Default)]
     struct FixtureIndex {
         entries: BTreeMap<&'static str, Vec<PublishedVersion>>,
+        queries: RefCell<Vec<String>>,
     }
 
     impl FixtureIndex {
@@ -250,7 +312,9 @@ mod tests {
             let mut index = Self::default();
             for contract_crate in CONTRACT_CRATES {
                 index.entries.insert(
-                    contract_crate.name,
+                    contract_crate
+                        .predecessor_package
+                        .unwrap_or(contract_crate.published_package),
                     versions
                         .iter()
                         .map(|(version, yanked)| PublishedVersion::stated(version, *yanked))
@@ -290,6 +354,7 @@ mod tests {
 
     impl PublishedVersions for FixtureIndex {
         fn versions(&self, crate_name: &str) -> Result<Vec<PublishedVersion>> {
+            self.queries.borrow_mut().push(crate_name.to_owned());
             Ok(self.entries.get(crate_name).cloned().unwrap_or_default())
         }
     }
@@ -301,6 +366,12 @@ mod tests {
         let index = FixtureIndex::train(&[("0.58.1", false), ("0.57.0", false), ("0.58.0", false)]);
         let train = index.latest_train().expect("a complete train resolves");
         assert_eq!(train.version, Version::new(0, 58, 1));
+        assert_eq!(
+            train
+                .selected_package("phoxal-protocol")
+                .expect("the protocol carrier resolves"),
+            "phoxal-api"
+        );
         assert_eq!(
             train.rust_version,
             Some(RustVersion::parse("1.88").expect("the floor parses"))
@@ -389,6 +460,112 @@ mod tests {
         assert!(failure.contains("incomplete"), "{failure}");
         assert!(failure.contains("phoxal-api 0.59.0"), "{failure}");
         assert!(failure.contains("phoxal 0.58.1"), "{failure}");
+    }
+
+    /// The renamed carrier uses its predecessor only while the new package has
+    /// no history at all, and records the actual package chosen for the probe.
+    #[test]
+    fn the_first_protocol_baseline_uses_the_predecessor_package() {
+        let index = FixtureIndex::train(&[("0.58.1", false)]);
+        let train = index
+            .latest_train()
+            .expect("the predecessor train resolves");
+        assert_eq!(
+            train
+                .selected_package("phoxal-protocol")
+                .expect("the protocol carrier resolves"),
+            "phoxal-api"
+        );
+        let queries = index.queries.borrow();
+        let protocol = queries
+            .iter()
+            .position(|name| name == "phoxal-protocol")
+            .expect("the new package is queried");
+        let api = queries
+            .iter()
+            .position(|name| name == "phoxal-api")
+            .expect("the empty new history falls back");
+        assert!(protocol < api, "queries were {queries:?}");
+    }
+
+    /// Once the renamed package exists it is the only protocol history read;
+    /// the predecessor can no longer influence completeness or floors.
+    #[test]
+    fn a_published_protocol_disables_the_predecessor_fallback() {
+        let index = FixtureIndex::train(&[("0.58.1", false)])
+            .with("phoxal-protocol", &[("0.58.1", false)])
+            .with("phoxal-api", &[("0.99.0", false)]);
+        let train = index.latest_train().expect("the renamed train resolves");
+        assert_eq!(
+            train
+                .selected_package("phoxal-protocol")
+                .expect("the protocol carrier resolves"),
+            "phoxal-protocol"
+        );
+        let queries = index.queries.borrow();
+        assert!(queries.iter().any(|name| name == "phoxal-protocol"));
+        assert!(
+            !queries.iter().any(|name| name == "phoxal-api"),
+            "queries were {queries:?}"
+        );
+    }
+
+    /// The train floor comes from the actual selected renamed package, not a
+    /// predecessor entry that happens to carry the same version.
+    #[test]
+    fn the_floor_comes_from_the_actual_selected_protocol_package() {
+        let index = FixtureIndex::train(&[("0.58.1", false)])
+            .with_floor("phoxal-protocol", &[("0.58.1", Some("1.90"))])
+            .with_floor("phoxal-api", &[("0.58.1", Some("1.70"))])
+            .with_floor("phoxal", &[("0.58.1", Some("1.90"))])
+            .with_floor("phoxal-bundle", &[("0.58.1", Some("1.90"))])
+            .with_floor("phoxal-bus", &[("0.58.1", Some("1.90"))])
+            .with_floor("phoxal-runtime-contract", &[("0.58.1", Some("1.90"))]);
+        let train = index.latest_train().expect("the renamed train resolves");
+        assert_eq!(
+            train.rust_version,
+            Some(RustVersion::parse("1.90").expect("the floor parses"))
+        );
+        assert!(
+            !index
+                .queries
+                .borrow()
+                .iter()
+                .any(|name| name == "phoxal-api")
+        );
+    }
+
+    /// Even a yanked new-package entry permanently closes the predecessor
+    /// fallback: returning to the old owner would hide a failed cutover.
+    #[test]
+    fn yanked_only_protocol_history_fails_without_reactivating_the_predecessor() {
+        let index = FixtureIndex::train(&[("0.58.1", false)])
+            .with("phoxal-protocol", &[("0.58.1", true)])
+            .with("phoxal-api", &[("0.58.1", false)]);
+        let failure = index
+            .latest_train()
+            .expect_err("a yanked-only renamed package cannot fall back")
+            .to_string();
+        assert!(failure.contains("phoxal-protocol"), "{failure}");
+        let queries = index.queries.borrow();
+        assert!(
+            !queries.iter().any(|name| name == "phoxal-api"),
+            "queries were {queries:?}"
+        );
+    }
+
+    /// Completeness diagnostics name the actual selected package, not only the
+    /// stable carrier that aliases it in the probe.
+    #[test]
+    fn completeness_uses_the_actual_selected_package_names() {
+        let index =
+            FixtureIndex::train(&[("0.58.1", false)]).with("phoxal-api", &[("0.59.0", false)]);
+        let failure = index
+            .latest_train()
+            .expect_err("the selected predecessor splits the train")
+            .to_string();
+        assert!(failure.contains("phoxal-api 0.59.0"), "{failure}");
+        assert!(!failure.contains("phoxal-protocol 0.59.0"), "{failure}");
     }
 
     /// A crate whose every release is yanked leaves nothing to compare

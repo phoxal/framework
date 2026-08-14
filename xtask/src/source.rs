@@ -187,7 +187,9 @@ publish = false
 serde_json = "1"
 "#;
         let reader = match side {
-            Side::Baseline(version) => format!("phoxal-manifest = \"={version}\"\n"),
+            Side::Baseline(train) => {
+                format!("phoxal-manifest = \"={}\"\n", train.version)
+            }
             Side::Current => format!(
                 "phoxal-manifest = {{ path = {:?} }}\n",
                 self.workspace_root.join("crates/manifest")
@@ -718,7 +720,7 @@ mod tests {
         let probe = SourceProbe {
             workspace_root: PathBuf::from("/workspace"),
         };
-        let baseline = probe.manifest(&Side::Baseline(Version::new(0, 59, 1)));
+        let baseline = probe.manifest(&Side::baseline(Version::new(0, 59, 1)));
         assert!(
             baseline.contains("phoxal-manifest = \"=0.59.1\""),
             "{baseline}"

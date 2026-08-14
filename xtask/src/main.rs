@@ -97,13 +97,10 @@ fn compare(options: &ComparisonOptions, gates_the_release: bool) -> Result<ExitC
     .run(options.declared_impact)?;
     println!("{report}");
 
-    if !gates_the_release {
-        return Ok(ExitCode::SUCCESS);
-    }
-    let Some(shortfall) = report.release_shortfall() else {
+    let Some(failure) = report.command_failure(gates_the_release) else {
         return Ok(ExitCode::SUCCESS);
     };
-    eprintln!("error: {shortfall}");
+    eprintln!("error: {failure}");
     Ok(ExitCode::FAILURE)
 }
 

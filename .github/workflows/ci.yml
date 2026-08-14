@@ -129,7 +129,11 @@ jobs:
           if [[ "$PR_TITLE" =~ $marker ]]; then
             declared=breaking
           fi
-          report="$(cargo xtask compatibility report --declared-impact "$declared")"
+          # Ordinary release-size findings do not fail `report`, while frozen
+          # bootstrap drift does. Preserve the complete report in the summary
+          # before returning that hard failure.
+          status=0
+          report="$(cargo xtask compatibility report --declared-impact "$declared")" || status=$?
           echo "$report"
           {
             echo "## Contract compatibility"
@@ -138,6 +142,7 @@ jobs:
             echo "$report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
   # The release PR carries the candidate train version, which makes it the one
   # branch where the sufficiency of a version can be judged at all. A candidate
