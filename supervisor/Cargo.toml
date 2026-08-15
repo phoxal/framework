@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+clap = { workspace = true }
 libc = { workspace = true }
 phoxal-bundle = { workspace = true }
 # `router` opens the embedded Zenoh router in this process.
