@@ -19,7 +19,9 @@ use phoxal_bus::{
 };
 use phoxal_model::Clock;
 use phoxal_protocol::supervisor::connect::PRESENCE_KEY;
-use phoxal_protocol::supervisor::execution::{Lifecycle, StartupStepKind, SupervisorFailureReason};
+use phoxal_protocol::supervisor::execution::{
+    Lifecycle, StartupStepKind, SupervisorFailure, SupervisorFailureReason,
+};
 use phoxal_runtime_contract::identity::ExecutionId;
 use phoxal_runtime_contract::origin::ExecutionOrigin;
 use phoxal_runtime_contract::rendezvous::RuntimeRendezvous;
@@ -71,7 +73,30 @@ pub(crate) async fn run(requested_root: &Path) -> Result<()> {
     {
         state.fail(SupervisorFailureReason::Internal, format!("{error:#}"));
     }
-    outcome
+    finish_run(outcome, state.failure())
+}
+
+/// A published execution failure is the run's result, whatever the supervision
+/// loop returned.
+///
+/// An execution can fail while every teardown step still succeeds: a
+/// participant that loses its Ready producer fails the execution and cancels
+/// the shutdown token, and the supervision loop then tears the graph down
+/// orderly and returns `Ok(())`. The CLI and systemd classify a run by its exit
+/// status alone, so exiting 0 there would report a finished run, flatly
+/// contradicting the `Failed` lifecycle and the `SupervisorFailure` every
+/// attached client was just shown. An outcome that already failed keeps its own
+/// error: it is the more specific evidence, and it is what the failure above was
+/// recorded from.
+fn finish_run(outcome: Result<()>, failure: Option<SupervisorFailure>) -> Result<()> {
+    match (outcome, failure) {
+        (Ok(()), Some(failure)) => Err(anyhow::anyhow!(
+            "{:?}: {}",
+            failure.reason,
+            failure.detail.as_str()
+        )),
+        (outcome, _) => outcome,
+    }
 }
 
 async fn execute(
@@ -408,6 +433,36 @@ mod tests {
     use phoxal_bus::BusCloseTimeout;
 
     use super::*;
+
+    /// A run whose execution failed must never exit 0, because the CLI and
+    /// systemd classify the run by its exit status alone.
+    #[test]
+    fn a_published_execution_failure_fails_the_run_after_an_orderly_teardown() {
+        finish_run(Ok(()), None).expect("a stop with no recorded failure stays a clean run");
+
+        let lost = finish_run(
+            Ok(()),
+            Some(SupervisorFailure::new(
+                SupervisorFailureReason::LaunchFailed,
+                "participant perception lost its active Ready producer",
+            )),
+        )
+        .expect_err("an orderly teardown cannot turn a failed execution into a clean exit");
+        assert_eq!(
+            lost.to_string(),
+            "LaunchFailed: participant perception lost its active Ready producer"
+        );
+
+        let teardown = finish_run(
+            Err(anyhow::anyhow!("participant teardown failed")),
+            Some(SupervisorFailure::new(
+                SupervisorFailureReason::TeardownFailed,
+                "drive child stop: termination timed out",
+            )),
+        )
+        .expect_err("a failing outcome stays the run's result");
+        assert_eq!(teardown.to_string(), "participant teardown failed");
+    }
 
     #[test]
     fn terminal_transport_cleanup_does_not_fail_a_completed_lifecycle() {
