@@ -797,20 +797,6 @@
       ],
       "type": "object"
     },
-    "Router": {
-      "additionalProperties": false,
-      "description": "Authored `router:` - how this robot configures the Zenoh router it runs on.\n\nNamed for what it is rather than what it configures: the running router\nitself is `phoxal-bus`'s `Router`, and one value configuring another is not\na reason for the two to share a name.",
-      "properties": {
-        "config": {
-          "description": "Zenoh JSON5 configuration path relative to the resolved robot root.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
     "UserService": {
       "additionalProperties": false,
       "description": "One declared user service: presence in `services` is the declaration;\n`config` is its user-owned configuration.",
@@ -841,10 +827,6 @@
         },
         "robot": {
           "$ref": "#/$defs/RobotSection"
-        },
-        "router": {
-          "$ref": "#/$defs/Router",
-          "description": "Optional project-relative Zenoh router configuration."
         },
         "schema": {
           "const": "phoxal/robot/v0",

@@ -29,8 +29,7 @@ use crate::normalized;
 ///
 /// Every difference here is deliberate: `identity` instead of `robot.id`,
 /// `frame` instead of `robot.structure`, a `mounts` sequence instead of a
-/// `robot.components` map, a flat `router` scalar instead of a section, and a
-/// time domain whose spellings are its own.
+/// `robot.components` map, and a time domain whose spellings are its own.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TestAltRobotDto {
@@ -44,8 +43,6 @@ struct TestAltRobotDto {
     mounts: Vec<AltMount>,
     #[serde(default)]
     programs: Vec<AltProgram>,
-    #[serde(default)]
-    router: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -190,7 +187,6 @@ impl TestAltRobotDto {
                 .into_iter()
                 .map(|program| (program.name, program.settings))
                 .collect(),
-            router_config: self.router,
         }
     }
 }
@@ -207,7 +203,6 @@ struct AltProgram {
 const ALT_DOCUMENT: &str = r#"
 identity: rgbd-imu-diff-drive
 frame: structure.urdf
-router: router.json5
 limits:
   linear_mps: 0.6
   angular_radps: 2.0
@@ -294,9 +289,8 @@ fn staged_project(temp: &Path) {
         std::fs::read_to_string(fixture.join("robot.yaml")).expect("the fixture robot document");
     document.push_str(CURRENT_SERVICES);
     std::fs::write(temp.join("robot.yaml"), document).expect("a writable staging directory");
-    for file in ["structure.urdf", "router.json5"] {
-        std::fs::copy(fixture.join(file), temp.join(file)).expect("a readable fixture file");
-    }
+    std::fs::copy(fixture.join("structure.urdf"), temp.join("structure.urdf"))
+        .expect("a readable fixture file");
 }
 
 fn component_roots(robot: &normalized::Robot) -> BTreeMap<String, PathBuf> {
@@ -321,14 +315,13 @@ fn compile(project_root: &Path, robot: &normalized::Robot) -> crate::CompiledPro
         component_roots: component_roots(robot),
     };
     let (model, services, drivers) = resolved.compile_model(robot).expect("the model compiles");
-    let (assets, router) = resolved
+    let assets = resolved
         .compile_assets(&project_root, robot, &model)
         .expect("the assets compile");
     crate::CompiledProject {
         robot: model,
         services,
         drivers,
-        router,
         assets,
     }
 }
@@ -337,10 +330,9 @@ fn compile(project_root: &Path, robot: &normalized::Robot) -> crate::CompiledPro
 fn rendered(project: &crate::CompiledProject) -> String {
     let mut rendered = serde_json::to_string_pretty(project.robot()).expect("the model serializes");
     rendered.push_str(&format!(
-        "\n{:#?}\n{:#?}\n{:#?}\n",
+        "\n{:#?}\n{:#?}\n",
         project.services(),
-        project.drivers(),
-        project.router()
+        project.drivers()
     ));
     for (id, bytes) in project.assets().iter() {
         rendered.push_str(&format!("{} {}\n", id.as_str(), bytes.len()));

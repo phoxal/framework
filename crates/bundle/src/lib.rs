@@ -37,7 +37,7 @@ pub use artifact::{BinaryReference, BinarySource};
 mod participant;
 pub use participant::RuntimeParticipant;
 mod document;
-pub use document::{ParticipantClock, Runtime, RuntimeDocument, RuntimeRouterConfig};
+pub use document::{ParticipantClock, Runtime, RuntimeDocument};
 
 /// The only schema tag currently readable by this framework train.
 pub const RUNTIME_SCHEMA: &str = "phoxal/runtime-bundle/v0";

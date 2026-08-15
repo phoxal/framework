@@ -152,7 +152,6 @@ mod tests {
                 ParticipantClock::Real,
             )],
             AssetIndex::from_bytes(&BTreeMap::new()).expect("asset index"),
-            None,
         )
         .expect("runtime");
         let bundle_root = root.path().join("bundle");

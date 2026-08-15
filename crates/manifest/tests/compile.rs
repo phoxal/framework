@@ -209,22 +209,6 @@ fn authored_capability_roles_are_persisted_and_ordered_in_the_robot_model() {
 }
 
 #[test]
-fn router_configuration_is_preserved_as_a_compiled_asset_fact() {
-    let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
-    let compiled = sources(&root).compile().expect("fixture must compile");
-    let router = compiled.router().expect("fixture router fact");
-    assert_eq!(router.asset.as_str(), "robot/router.json5");
-    assert_eq!(
-        compiled
-            .assets()
-            .iter()
-            .find(|(id, _)| *id == &router.asset)
-            .map(|(_, bytes)| bytes),
-        Some(b"{}\n".as_slice())
-    );
-}
-
-#[test]
 fn missing_canonical_mesh_is_rejected_at_compile_time() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
@@ -327,7 +311,6 @@ fn staged_project(temp: &Path, extra_top_level: &str) {
         temp.join("structure.urdf"),
     )
     .unwrap();
-    std::fs::copy(source_root.join("router.json5"), temp.join("router.json5")).unwrap();
 }
 
 #[test]

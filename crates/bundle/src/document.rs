@@ -12,8 +12,7 @@ use phoxal_runtime_contract::version::{CompatibilityLine, FrameworkVersion};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ASSETS_DIR, AssetIndex, BinaryReference, BundleError, BundlePath, DocumentError,
-    RuntimeParticipant, SelectionError,
+    AssetIndex, BinaryReference, BundleError, DocumentError, RuntimeParticipant, SelectionError,
 };
 
 /// The scheduler policy persisted for one runtime participant instance.
@@ -139,8 +138,6 @@ pub struct Runtime {
     pub(crate) participants: Vec<RuntimeParticipant>,
     /// The participant-readable asset index and integrity facts.
     pub(crate) assets: AssetIndex,
-    /// Optional supervisor router configuration, kept as an indexed asset.
-    pub(crate) router: Option<RuntimeRouterConfig>,
 }
 
 impl<'de> Deserialize<'de> for Runtime {
@@ -152,18 +149,11 @@ impl<'de> Deserialize<'de> for Runtime {
             artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
             participants: Vec<RuntimeParticipant>,
             assets: AssetIndex,
-            router: Option<RuntimeRouterConfig>,
         }
 
         let wire = Wire::deserialize(deserializer)?;
-        Self::new(
-            wire.robot,
-            wire.artifacts,
-            wire.participants,
-            wire.assets,
-            wire.router,
-        )
-        .map_err(serde::de::Error::custom)
+        Self::new(wire.robot, wire.artifacts, wire.participants, wire.assets)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -175,14 +165,12 @@ impl Runtime {
         artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
         participants: Vec<RuntimeParticipant>,
         assets: AssetIndex,
-        router: Option<RuntimeRouterConfig>,
     ) -> Result<Self, DocumentError> {
         let runtime = Self {
             robot,
             artifacts,
             participants,
             assets,
-            router,
         };
         runtime.validate()?;
         Ok(runtime)
@@ -210,12 +198,6 @@ impl Runtime {
     #[must_use]
     pub const fn assets(&self) -> &AssetIndex {
         &self.assets
-    }
-
-    /// Optional router configuration selected by build tooling.
-    #[must_use]
-    pub const fn router(&self) -> Option<&RuntimeRouterConfig> {
-        self.router.as_ref()
     }
 
     /// The one compatibility line every launched participant was built on.
@@ -354,9 +336,6 @@ impl Runtime {
             });
         }
         self.assets.validate()?;
-        if let Some(router) = &self.router {
-            router.validate(&self.assets)?;
-        }
         Ok(())
     }
 }
@@ -421,42 +400,6 @@ fn validate_drive_side(
         }
     }
     Ok(())
-}
-
-/// A normalized reference to optional router configuration.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeRouterConfig {
-    /// The config is an indexed asset, never an arbitrary filesystem path.
-    path: BundlePath,
-}
-
-impl RuntimeRouterConfig {
-    /// Construct router configuration pointing at one bundle asset.
-    #[must_use]
-    pub const fn new(path: BundlePath) -> Self {
-        Self { path }
-    }
-
-    /// The indexed asset path containing the router configuration.
-    #[must_use]
-    pub const fn path(&self) -> &BundlePath {
-        &self.path
-    }
-
-    fn validate(&self, assets: &AssetIndex) -> Result<(), DocumentError> {
-        if !self.path.starts_with_directory(ASSETS_DIR) {
-            return Err(DocumentError::RouterOutsideAssets {
-                path: self.path.clone(),
-            });
-        }
-        if !assets.entries.iter().any(|entry| entry.path == self.path) {
-            return Err(DocumentError::RouterMissingAsset {
-                path: self.path.clone(),
-            });
-        }
-        Ok(())
-    }
 }
 
 /// Decode the one schema-tagged document retained in an installed bundle.

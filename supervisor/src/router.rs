@@ -51,11 +51,9 @@ impl EmbeddedRouter {
 
 /// Open the embedded router on `endpoint`.
 ///
-/// `config` is the optional authored Zenoh JSON5 file, resolved by staging into
-/// the bundle so a source run, an installed run, and an extracted release all
-/// reach the same asset. Phoxal's transport policy and the listen settings are
-/// applied after it by `phoxal-bus`, so an authored file cannot put the router
-/// at odds with the participants that dial it.
+/// The router's configuration is entirely framework-owned: `phoxal-bus` pins
+/// the transport policy and the listen settings, so the fabric cannot be put at
+/// odds with the participants that dial it.
 ///
 /// `endpoint` must be a plain endpoint string: a per-endpoint config fragment
 /// (`tcp/…#exit_on_failure=false`) would override the pinned listen settings
@@ -68,7 +66,6 @@ impl EmbeddedRouter {
 pub(crate) async fn start_embedded_router(
     execution: phoxal_runtime_contract::identity::ExecutionId,
     endpoint: String,
-    config: Option<&Path>,
     on_lost: RouterLost,
 ) -> Result<EmbeddedRouter> {
     validate_endpoint(&endpoint)?;
@@ -76,7 +73,7 @@ pub(crate) async fn start_embedded_router(
     // One execution equals one router lifetime: the router's ZID IS the
     // execution id, so a client that reads the router id has learned the
     // execution without asking anyone.
-    let router = phoxal_bus::Router::open(execution, std::slice::from_ref(&endpoint), config)
+    let router = phoxal_bus::Router::open(execution, std::slice::from_ref(&endpoint))
         .await
         .with_context(|| format!("failed to open the embedded router on {endpoint}"))?;
 

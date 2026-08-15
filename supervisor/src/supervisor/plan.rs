@@ -207,7 +207,6 @@ mod tests {
             artifacts,
             participants,
             AssetIndex::from_bytes(&BTreeMap::new()).expect("empty asset index"),
-            None,
         )
         .expect("runtime");
         let bundle = BundleWriter::write(
