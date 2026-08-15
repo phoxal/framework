@@ -24,6 +24,7 @@ use tokio::task::{AbortHandle, JoinHandle};
 use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::config::ZenohId;
 use zenoh::key_expr::OwnedKeyExpr;
+use zenoh::qos::CongestionControl;
 
 use crate::abi::truncate_utf8;
 use crate::contract::DeliveryFamily;
@@ -1367,6 +1368,45 @@ fn signal_fatal(inner: &BusInner, fault: BusFault) {
     }
 }
 
+/// The transport-queue policy each delivery family publishes under.
+///
+/// Zenoh's default is [`CongestionControl::Drop`]: a put whose transmission
+/// queue toward the router is full is discarded there, silently and for every
+/// subscriber at once. That is the right trade for the lossy families, whose
+/// contracts already tolerate it - state and setpoints are latest-wins, and the
+/// sample lane evicts its oldest item with evidence - and blocking on their
+/// behalf would let one slow link stall every other topic sharing the drain.
+///
+/// Streams are the exception: their contract is lossless per producer, the
+/// outbox refuses admission instead of evicting
+/// ([`crate::outbound::OutboundScheduler::admit`]), and a receiver treats a
+/// missing position as fatal by design. A transport-level drop therefore
+/// manufactures exactly the gap the whole family is built to make impossible,
+/// and it lands on every subscriber simultaneously - one dropped world-clock
+/// chunk faulted twelve supervised participants at once, eight seconds after
+/// the graph reached Ready. [`CongestionControl::Block`] turns that loss into
+/// backpressure on the drain loop instead, where the outbox's own bounded
+/// refusal reports it to the publisher as a bounded, attributable failure.
+const fn congestion_control_for(family: DeliveryFamily) -> CongestionControl {
+    match family {
+        DeliveryFamily::Stream => CongestionControl::Block,
+        // Query traffic never reaches this drain; keeping it with the lossy
+        // families makes an accidental future route degrade rather than block.
+        DeliveryFamily::State
+        | DeliveryFamily::Setpoint
+        | DeliveryFamily::Sample
+        | DeliveryFamily::Query => CongestionControl::Drop,
+    }
+}
+
+/// Publish one admitted outbound item on the session-owned Zenoh drain.
+///
+/// The congestion policy is per family (see [`congestion_control_for`]), which
+/// is why the drain carries [`Outbound::family`] this far down. Blocking here
+/// stalls the single drain loop while the link drains, and that is deliberate:
+/// backpressure is bounded by the transport lease and keepalive pinned in
+/// [`apply_phoxal_transport_policy`], so a peer that stops reading is detected
+/// and dropped rather than parking this loop forever.
 async fn put(session: &zenoh::Session, out: Outbound, inner: &Arc<BusInner>) {
     let key = match OwnedKeyExpr::new(out.key.clone()) {
         Ok(key) => key,
@@ -1381,6 +1421,7 @@ async fn put(session: &zenoh::Session, out: Outbound, inner: &Arc<BusInner>) {
         .put(key, ZBytes::from(out.payload))
         .encoding(Encoding::from(out.encoding))
         .attachment(out.attachment)
+        .congestion_control(congestion_control_for(out.family))
         .await
     {
         let error = format!("publish on '{}' failed: {e}", out.key);
@@ -1549,6 +1590,27 @@ mod tests {
             u64::MAX,
             "a refused allocation must not advance the counter"
         );
+    }
+
+    #[test]
+    fn only_streams_publish_under_transport_backpressure() {
+        // A dropped stream chunk is an unrecoverable gap for every subscriber
+        // at once, so streams are the one family that must never be discarded
+        // at a full transmission queue. The lossy families stay on Drop so a
+        // single slow link cannot stall the shared drain.
+        for (family, expected) in [
+            (DeliveryFamily::Stream, CongestionControl::Block),
+            (DeliveryFamily::State, CongestionControl::Drop),
+            (DeliveryFamily::Setpoint, CongestionControl::Drop),
+            (DeliveryFamily::Sample, CongestionControl::Drop),
+            (DeliveryFamily::Query, CongestionControl::Drop),
+        ] {
+            assert_eq!(
+                congestion_control_for(family),
+                expected,
+                "unexpected congestion policy for {family:?}"
+            );
+        }
     }
 
     #[test]
