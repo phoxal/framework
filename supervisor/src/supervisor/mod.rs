@@ -361,6 +361,13 @@ impl crate::process::stages::StageProgress for ParticipantStageProgress {
     }
 
     fn failed(&self, reason: &str) {
+        // Record the whole-execution failure here, not after supervision has
+        // returned: the process layer fails the board's lifecycle right after
+        // this call, and a published snapshot whose lifecycle is `Failed`
+        // without a typed failure is rejected by the wire contract. `fail`
+        // keeps the first cause, so recording it early costs nothing and still
+        // yields the `LaunchFailed` reason `execute` would assign later.
+        self.0.fail(SupervisorFailureReason::LaunchFailed, reason);
         self.0.step_failed(StartupStepKind::Participants, reason);
     }
 }
