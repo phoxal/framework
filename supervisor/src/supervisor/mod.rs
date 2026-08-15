@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use phoxal_bus::{
-    BusConfig, BusHandle, BusOwner, ParticipantReadyEvent, ParticipantReadyObserver,
-    ParticipantReadyStatus, SourceLabel,
+    BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
+    ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
 use phoxal_model::Clock;
 use phoxal_protocol::supervisor::connect::PRESENCE_KEY;
@@ -239,22 +239,29 @@ async fn execute(
     drop(identity);
     let close = owner.close().await;
     let router_close = router.close().await;
-    let bus_outcome = if close.is_clean() {
-        Ok(())
-    } else {
-        state.fail(SupervisorFailureReason::TeardownFailed, close.to_string());
-        Err(anyhow::anyhow!("supervisor bus teardown failed: {close}"))
-    };
-    let router_outcome = router_close.inspect_err(|error| {
-        state.fail(
-            SupervisorFailureReason::TeardownFailed,
-            format!("{error:#}"),
-        );
-    });
-    outcome
-        .and(notify_outcome)
-        .and(bus_outcome)
-        .and(router_outcome)
+    finish_after_transport_close(outcome, notify_outcome, close, router_close)
+}
+
+/// Preserve the lifecycle result after all participants have been torn down.
+///
+/// Closing the supervisor's observer session and embedded router is bounded,
+/// best-effort transport cleanup on the process exit path. Its evidence remains
+/// diagnostic, but it cannot turn an already completed lifecycle into a failed
+/// execution. Failures raised while the graph was authoritative, including the
+/// systemd notification task, remain fatal.
+fn finish_after_transport_close(
+    outcome: Result<()>,
+    notify_outcome: Result<()>,
+    close: BusCloseReport,
+    router_close: Result<()>,
+) -> Result<()> {
+    if !close.is_clean() {
+        tracing::warn!(%close, "supervisor bus did not close cleanly after graph teardown");
+    }
+    if let Err(error) = router_close {
+        tracing::warn!(error = %error, "embedded router did not close cleanly after graph teardown");
+    }
+    outcome.and(notify_outcome)
 }
 
 async fn abort_router_startup(
@@ -386,5 +393,64 @@ async fn notify_readiness(
             () = shutdown.cancelled() => return Ok(()),
             _ = ticker.tick() => notify.notify_watchdog()?,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use phoxal_bus::BusCloseTimeout;
+
+    use super::*;
+
+    #[test]
+    fn terminal_transport_cleanup_does_not_fail_a_completed_lifecycle() {
+        let close = BusCloseReport {
+            timed_out: vec![BusCloseTimeout::Session],
+            ..BusCloseReport::default()
+        };
+
+        finish_after_transport_close(
+            Ok(()),
+            Ok(()),
+            close,
+            Err(anyhow::anyhow!("router close failed")),
+        )
+        .expect("terminal transport cleanup is diagnostic after lifecycle teardown");
+    }
+
+    #[test]
+    fn transport_cleanup_does_not_mask_an_existing_lifecycle_failure() {
+        let close = BusCloseReport {
+            timed_out: vec![BusCloseTimeout::Session],
+            ..BusCloseReport::default()
+        };
+
+        let error = finish_after_transport_close(
+            Err(anyhow::anyhow!("participant teardown failed")),
+            Ok(()),
+            close,
+            Err(anyhow::anyhow!("router close failed")),
+        )
+        .expect_err("the lifecycle failure remains authoritative");
+
+        assert_eq!(error.to_string(), "participant teardown failed");
+    }
+
+    #[test]
+    fn transport_cleanup_does_not_mask_a_notification_failure() {
+        let close = BusCloseReport {
+            timed_out: vec![BusCloseTimeout::Session],
+            ..BusCloseReport::default()
+        };
+
+        let error = finish_after_transport_close(
+            Ok(()),
+            Err(anyhow::anyhow!("notification failed")),
+            close,
+            Err(anyhow::anyhow!("router close failed")),
+        )
+        .expect_err("the notification failure remains authoritative");
+
+        assert_eq!(error.to_string(), "notification failed");
     }
 }
