@@ -75,8 +75,8 @@ impl Participant for WebotsControllerSimulator {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         // Open Webots before validating the catalog: the world's actual
-        // basicTimeStep determines both device-period quantization and the
-        // effective source cadence schedules are allowed to publish at.
+        // basicTimeStep determines device-period quantization and therefore
+        // each capability's effective publish cadence.
         let handle = WebotsHandle::open()?;
         let catalog = CapabilityCatalog::from_robot(ctx.robot()?, handle.basic_time_step_ms())?;
         let clock = ctx.world_clock_publisher()?;

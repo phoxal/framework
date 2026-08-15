@@ -73,7 +73,8 @@ pub(crate) trait SimulatedSensor {
 }
 
 /// A capability the world samples at a configured rate and the controller
-/// publishes on the steps that rate is due on.
+/// publishes at the slower of the requested cadence and the effective device
+/// refresh cadence.
 #[derive(Clone, Debug)]
 pub(crate) struct SampledSpec {
     pub(crate) reference: CapabilityRef,
@@ -258,6 +259,7 @@ pub(crate) use vector_sensor;
 mod tests {
     use super::SampledSpec;
     use phoxal::model::identity::CapabilityRef;
+    use phoxal::model::simulation;
 
     #[test]
     fn webots_sampling_period_is_quantized_up_to_the_world_grid() {
@@ -273,15 +275,28 @@ mod tests {
     }
 
     #[test]
-    fn publish_rate_cannot_outpace_a_quantized_device_refresh() {
+    fn quantized_device_refresh_sets_the_effective_publish_cadence() {
         let reference: CapabilityRef = "front_camera.rgb".parse().unwrap();
-        let error = SampledSpec::new(reference, 10, 30.0, None)
-            .expect_err("30 Hz cannot publish from a 25 Hz device after quantization");
-        assert!(
-            error
-                .to_string()
-                .contains("publish cadence exceeds effective source cadence")
-        );
+        let spec = SampledSpec::new(reference, 10, 30.0, None).unwrap();
+        assert_eq!(spec.sampling_period_ms, 40);
+        assert_eq!(spec.schedule.period_ns(), 40_000_000);
+
+        let mut schedule = spec.schedule;
+        assert!(!schedule.is_due_at(0).unwrap());
+        assert!(!schedule.is_due_at(39_999_999).unwrap());
+        assert!(schedule.is_due_at(40_000_000).unwrap());
+    }
+
+    #[test]
+    fn a_faster_device_preserves_the_requested_publish_cadence() {
+        let reference: CapabilityRef = "front_camera.rgb".parse().unwrap();
+        let simulated = simulation::Capability::Camera(simulation::Camera {
+            sampling_period_hz: 100.0,
+            ..simulation::Camera::default()
+        });
+        let spec = SampledSpec::new(reference, 10, 30.0, Some(&simulated)).unwrap();
+        assert_eq!(spec.sampling_period_ms, 10);
+        assert_eq!(spec.schedule.period_ns(), 33_333_333);
     }
 
     #[test]
