@@ -56,7 +56,9 @@ impl SampleSchedule {
     ///
     /// This is used when a source's cadence is not represented by a floating
     /// point rate, such as a Webots device whose requested millisecond period
-    /// was quantized to the world's basic time step.
+    /// was quantized to the world's basic time step. When that effective
+    /// period is slower than the requested publish cadence, the schedule uses
+    /// the source period rather than repeating one observation.
     pub fn from_source_period_ns(
         capability_id: &str,
         source_period_ns: u64,
@@ -67,12 +69,10 @@ impl SampleSchedule {
         }
         validate_rate(capability_id, "publish_rate_hz", publish_rate_hz)?;
         let publish_period_ns = period_ns(capability_id, "publish_rate_hz", publish_rate_hz)?;
-        if publish_period_ns.get() < source_period_ns {
-            anyhow::bail!(
-                "capability '{capability_id}' publish cadence exceeds effective source cadence ({source_period_ns} ns)"
-            );
-        }
-        Ok(Self::from_periods(publish_period_ns))
+        let effective_period_ns = publish_period_ns.get().max(source_period_ns);
+        let effective_period_ns = NonZeroU64::new(effective_period_ns)
+            .ok_or_else(|| anyhow::anyhow!("capability '{capability_id}' period must be > 0 ns"))?;
+        Ok(Self::from_periods(effective_period_ns))
     }
 
     fn from_periods(period_ns: NonZeroU64) -> Self {
@@ -84,7 +84,7 @@ impl SampleSchedule {
         }
     }
 
-    /// The requested cadence in the framework's nanosecond time domain.
+    /// The effective publish cadence in the framework's nanosecond time domain.
     #[must_use]
     pub const fn period_ns(&self) -> u64 {
         self.period_ns.get()
@@ -299,5 +299,11 @@ mod tests {
             .expect_err("invalid source rate must be rejected")
             .to_string();
         assert_eq!(error, "capability 'camera' step_hz must be finite and > 0");
+    }
+
+    #[test]
+    fn an_effective_source_period_slower_than_the_request_sets_the_schedule() {
+        let schedule = SampleSchedule::from_source_period_ns("camera", 40_000_000, 30.0).unwrap();
+        assert_eq!(schedule.period_ns(), 40_000_000);
     }
 }
