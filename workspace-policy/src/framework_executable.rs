@@ -105,8 +105,6 @@ pub const SPECS: [Spec; 1] = [Spec {
         "phoxal-manifest",
         "serde_yaml",
         "urdf-rs",
-        // Its exact two-form process contract is intentionally hand parsed.
-        "clap",
     ],
 }];
 
