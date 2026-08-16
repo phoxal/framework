@@ -17,7 +17,7 @@ use std::time::Instant;
 use phoxal_protocol::supervisor::execution::{
     Detail, Snapshot, StartupStep, StartupStepKind, StartupStepState,
 };
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId, RobotId};
 use tokio::sync::watch;
 
 use super::presence::Presence;
@@ -34,6 +34,10 @@ struct Inner {
 }
 
 struct Data {
+    /// Read once from the opened bundle. The supervisor runs one bundle for the
+    /// life of the process, so this never changes and every published revision
+    /// repeats it.
+    robot: RobotId,
     revision: u64,
     presence: Presence,
     startup: Vec<StartupStep>,
@@ -45,6 +49,7 @@ struct Data {
 impl Data {
     fn project(&self) -> Snapshot {
         Snapshot {
+            robot: self.robot.clone(),
             revision: self.revision,
             lifecycle: self.presence.lifecycle(),
             startup: self.startup.clone(),
@@ -54,9 +59,9 @@ impl Data {
 }
 
 impl ExecutionState {
-    /// Start an execution from its expected runtime set, before any startup
-    /// step has begun.
-    pub(crate) fn new(presence: Presence) -> Self {
+    /// Start an execution from the robot it runs and its expected runtime set,
+    /// before any startup step has begun.
+    pub(crate) fn new(robot: RobotId, presence: Presence) -> Self {
         let startup = StartupStepKind::ALL
             .into_iter()
             .map(|kind| StartupStep {
@@ -67,6 +72,7 @@ impl ExecutionState {
             })
             .collect();
         let data = Data {
+            robot,
             revision: 0,
             presence,
             startup,
@@ -176,7 +182,10 @@ mod tests {
             .service("drive", None)
             .build()
             .expect("a valid robot");
-        ExecutionState::new(Presence::for_robot(&robot).expect("an expected set"))
+        ExecutionState::new(
+            robot.id().clone(),
+            Presence::for_robot(&robot).expect("an expected set"),
+        )
     }
 
     fn producer(seed: u128) -> ProducerId {

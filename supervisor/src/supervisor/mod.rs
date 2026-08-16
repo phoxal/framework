@@ -59,7 +59,10 @@ pub(crate) async fn run(requested_root: &Path) -> Result<()> {
         "phoxal-supervisor starting"
     );
 
-    let state = ExecutionState::new(Presence::for_robot(runtime.robot())?);
+    let state = ExecutionState::new(
+        runtime.robot_id().clone(),
+        Presence::for_robot(runtime.robot())?,
+    );
     state.step_active(StartupStepKind::Bundle);
     state.step_detail(
         StartupStepKind::Bundle,

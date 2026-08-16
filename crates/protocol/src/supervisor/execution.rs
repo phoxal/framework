@@ -13,7 +13,7 @@
 //! on after a successful decode. What the supervisor does with them is the
 //! supervisor's.
 
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId, RobotId};
 use phoxal_runtime_contract::metadata::ParticipantKind;
 use phoxal_runtime_contract::wire_schema::{DescribeWire, WireField, WireSchema};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -207,6 +207,15 @@ pub struct StartupStep {
 /// Complete supervisor projection at one execution-local revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Snapshot {
+    /// The robot this execution is running. It is fixed for the life of the
+    /// execution - the supervisor is handed one bundle root and never reopens
+    /// it - so every revision repeats the same value.
+    ///
+    /// It rides the snapshot because every client already subscribes to the
+    /// snapshot: carrying the identity here costs no endpoint, no second query,
+    /// and no addition to the frozen attachment bootstrap, which stays exactly
+    /// what it was.
+    pub robot: RobotId,
     /// Strictly increasing within one execution and incomparable across runs.
     pub revision: u64,
     pub lifecycle: Lifecycle,
@@ -275,6 +284,7 @@ impl<'de> Deserialize<'de> for Snapshot {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
+            robot: RobotId,
             revision: u64,
             lifecycle: Lifecycle,
             startup: Vec<StartupStep>,
@@ -282,6 +292,7 @@ impl<'de> Deserialize<'de> for Snapshot {
         }
         let wire = Wire::deserialize(deserializer)?;
         let snapshot = Self {
+            robot: wire.robot,
             revision: wire.revision,
             lifecycle: wire.lifecycle,
             startup: wire.startup,
@@ -298,12 +309,14 @@ impl Serialize for Snapshot {
         #[derive(Serialize)]
         #[serde(deny_unknown_fields)]
         struct Wire<'a> {
+            robot: &'a RobotId,
             revision: u64,
             lifecycle: Lifecycle,
             startup: &'a [StartupStep],
             processes: &'a [Process],
         }
         Wire {
+            robot: &self.robot,
             revision: self.revision,
             lifecycle: self.lifecycle,
             startup: &self.startup,
@@ -315,12 +328,13 @@ impl Serialize for Snapshot {
 
 impl DescribeWire for Snapshot {
     // Invariant: this states what the `Serialize` above writes through its
-    // `Wire` mirror - one map of those four fields. The relational rules
+    // `Wire` mirror - one map of those five fields. The relational rules
     // `validate` enforces are decode-time admissibility, not shape.
     fn wire_schema() -> WireSchema {
         WireSchema::opaque(
             "Snapshot",
             WireSchema::structure([
+                WireField::required("robot", RobotId::wire_schema()),
                 WireField::required("revision", u64::wire_schema()),
                 WireField::required("lifecycle", Lifecycle::wire_schema()),
                 WireField::required("startup", <Vec<StartupStep>>::wire_schema()),
@@ -424,6 +438,7 @@ mod tests {
 
     fn snapshot(processes: Vec<Process>) -> Snapshot {
         Snapshot {
+            robot: RobotId::new("rover").expect("a canonical robot id"),
             revision: 1,
             lifecycle: Lifecycle::Starting,
             startup: Vec::new(),
@@ -457,6 +472,7 @@ mod tests {
         );
         let malformed = rmp_serde::to_vec_named(&serde_json::json!({
             "schema": "phoxal/supervisor-snapshot/v0",
+            "robot": "rover",
             "revision": 1,
             "lifecycle": "starting",
             "startup": [],
@@ -581,7 +597,39 @@ mod tests {
         // The tag merges into the same map as the snapshot's own fields, so
         // the declared document has to describe the merged form.
         assert_eq!(json["schema"], "phoxal/supervisor-snapshot/v0");
+        assert_eq!(json["robot"], "rover");
         assert!(json["processes"].is_array());
+    }
+
+    /// The robot id is the identity a client reads the whole projection
+    /// against, so a snapshot without one, or with a token that is not a robot
+    /// id, is not a snapshot at all.
+    #[test]
+    fn a_snapshot_without_a_valid_robot_id_is_refused_on_decode() {
+        for malformed in [
+            serde_json::json!({
+                "schema": "phoxal/supervisor-snapshot/v0",
+                "revision": 1,
+                "lifecycle": "starting",
+                "startup": [],
+                "processes": [],
+            }),
+            serde_json::json!({
+                "schema": "phoxal/supervisor-snapshot/v0",
+                "robot": "Rover One",
+                "revision": 1,
+                "lifecycle": "starting",
+                "startup": [],
+                "processes": [],
+            }),
+        ] {
+            let encoded =
+                rmp_serde::to_vec_named(&malformed).expect("messagepack permits the input");
+            assert!(
+                rmp_serde::from_slice::<SnapshotDocument>(&encoded).is_err(),
+                "{malformed}"
+            );
+        }
     }
 
     /// A bounded diagnostic is one string on the wire whatever its budget is.

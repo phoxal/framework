@@ -1,7 +1,11 @@
 //! `motion` - the sole body-twist arbiter and emergency-stop authority.
 //!
 //! Manual and autonomous candidates are freshness checked, finite-value checked,
-//! and clamped to the robot-authored motion limits. Motion aggregates every
+//! and clamped to the robot-authored motion limits. The manual candidate arrives
+//! normalized - each axis a fraction of the robot's authored maximum - and is
+//! scaled here by those same limits, so an operator client drives without
+//! knowing any of the robot's geometry. The autonomous candidate is already a
+//! physical twist and is passed through unscaled. Motion aggregates every
 //! per-component emergency-stop state before publishing `drive/target`, and the
 //! safety service contributes typed world-aware constraints. Autonomous
 //! candidates require fresh constraints; direct manual control may recover
@@ -558,8 +562,8 @@ mod tests {
     #[test]
     fn the_manual_lease_expires_on_host_silence_and_on_the_logical_horizon() {
         let command = api::motion::ManualCommand {
-            linear_x_mps: 0.4,
-            angular_z_radps: 0.0,
+            linear: 0.4,
+            angular: 0.0,
         };
         let producer = producer(1);
         let host_start = LocalInstant::from_boot_ns(0);
@@ -664,8 +668,8 @@ mod tests {
             1,
             host_start,
             api::motion::ManualCommand {
-                linear_x_mps: 0.4,
-                angular_z_radps: 0.0,
+                linear: 0.4,
+                angular: 0.0,
             },
         );
         assert!(lease.live(host_start, at(0)).is_some());

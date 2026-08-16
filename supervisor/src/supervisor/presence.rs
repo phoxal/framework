@@ -271,6 +271,8 @@ mod tests {
         let mut presence = presence();
         presence.record(&participant("brain"), producer(1), true);
         let snapshot = Snapshot {
+            robot: phoxal_runtime_contract::identity::RobotId::new("rover")
+                .expect("a canonical robot id"),
             revision: 1,
             lifecycle: presence.lifecycle(),
             startup: Vec::new(),

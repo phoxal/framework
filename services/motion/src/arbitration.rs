@@ -45,7 +45,7 @@ impl Arbitration {
             // not depend on the world-safety provider being ready. A valid
             // protective stop still wins, and every manual command remains
             // bounded by e-stop, the lease, finite-value, and robot limits.
-            let limits = match safety.filter(|constraints| safety_is_usable(constraints, now)) {
+            let effective = match safety.filter(|constraints| safety_is_usable(constraints, now)) {
                 Some(safety) => match &safety.body.permission {
                     api::safety::MotionPermission::Stopped { .. } => {
                         return Self::zero(api::motion::ZeroReason::SafetyProtectiveStop);
@@ -54,11 +54,19 @@ impl Arbitration {
                 },
                 None => limits,
             };
+            // The operator's stick is a fraction of what this robot was
+            // authored to do, so it scales by the authored limits and not by
+            // whatever safety currently permits: a temporary constraint must
+            // narrow the resulting twist below, not silently redefine what full
+            // deflection means.
+            let Some((linear_x_mps, angular_z_radps)) = manual_twist(manual, limits) else {
+                return Self::zero(api::motion::ZeroReason::ManualCandidateNotFinite);
+            };
             return Self::select(
                 api::motion::Source::Manual,
-                manual.linear_x_mps,
-                manual.angular_z_radps,
-                limits,
+                linear_x_mps,
+                angular_z_radps,
+                effective,
             );
         }
 
@@ -92,8 +100,9 @@ impl Arbitration {
         Self::zero(reason)
     }
 
-    /// Accept one candidate, clamped to `limits`. A non-finite candidate is a
-    /// stop: it names no reachable velocity, so there is nothing to clamp.
+    /// Accept one candidate, already in m/s and rad/s, clamped to `limits`. A
+    /// non-finite candidate is a stop: it names no reachable velocity, so there
+    /// is nothing to clamp.
     fn select(
         source: api::motion::Source,
         linear_x_mps: f64,
@@ -138,6 +147,24 @@ impl Arbitration {
             decision: api::motion::Decision::Stopped { reason },
         }
     }
+}
+
+/// The body twist a normalized manual intent asks for on this robot.
+///
+/// The intent is dimensionless - each axis a fraction of the robot's authored
+/// maximum - so this is the one place a manual command becomes physical, and it
+/// is the reason no operator client has to know the robot's geometry or limits.
+/// A fraction past full deflection is clamped rather than refused: a stick that
+/// overshoots its own range still says "as fast as this robot goes". A
+/// non-finite fraction names no deflection at all and is reported as absent, so
+/// the caller can stop for that exact reason.
+fn manual_twist(manual: &api::motion::ManualCommand, limits: MotionLimits) -> Option<(f64, f64)> {
+    (manual.linear.is_finite() && manual.angular.is_finite()).then(|| {
+        (
+            manual.linear.clamp(-1.0, 1.0) * limits.max_linear_speed_mps,
+            manual.angular.clamp(-1.0, 1.0) * limits.max_angular_speed_radps,
+        )
+    })
 }
 
 /// `later` is at or after `earlier` on the same timeline.
@@ -320,13 +347,11 @@ mod tests {
     }
 
     /// A live manual command, i.e. one the receiver-owned lease already
-    /// admitted. Manual freshness is the lease's job (see its own tests in
-    /// `phoxal-bus` and `services/motion`), not arbitration's.
-    fn manual(linear_x_mps: f64, angular_z_radps: f64) -> api::motion::ManualCommand {
-        api::motion::ManualCommand {
-            linear_x_mps,
-            angular_z_radps,
-        }
+    /// admitted. Both axes are fractions of the authored maximum, never
+    /// physical units. Manual freshness is the lease's job (see its own tests
+    /// in `phoxal-bus` and `services/motion`), not arbitration's.
+    fn manual(linear: f64, angular: f64) -> api::motion::ManualCommand {
+        api::motion::ManualCommand { linear, angular }
     }
 
     fn safety() -> Timed<api::safety::MotionConstraints> {
@@ -484,14 +509,70 @@ mod tests {
         );
     }
 
+    /// Full deflection is the robot's authored maximum, and half deflection is
+    /// half of it: the fraction is the whole of what the operator sends, and
+    /// the robot supplies the physics.
     #[test]
-    fn manual_wins_and_is_clamped_to_robot_limits() {
+    fn manual_deflection_scales_by_the_authored_limits() {
+        let full = manual(1.0, -1.0);
+        let result = Arbitration::decide(Some(&full), None, false, Some(&safety()), LIMITS, now());
+        assert_eq!(active_source(&result), api::motion::Source::Manual);
+        assert_eq!(
+            active_target(&result).linear_x_mps(),
+            LIMITS.max_linear_speed_mps as f32
+        );
+        assert_eq!(
+            active_target(&result).angular_z_radps(),
+            -LIMITS.max_angular_speed_radps as f32
+        );
+
+        let half = manual(0.5, -0.5);
+        let result = Arbitration::decide(Some(&half), None, false, Some(&safety()), LIMITS, now());
+        assert_eq!(
+            active_target(&result).linear_x_mps(),
+            (0.5 * LIMITS.max_linear_speed_mps) as f32
+        );
+        assert_eq!(
+            active_target(&result).angular_z_radps(),
+            (-0.5 * LIMITS.max_angular_speed_radps) as f32
+        );
+    }
+
+    /// A stick that overshoots its own range is a sloppy client, not a protocol
+    /// violation: it means full deflection, which the robot limits anyway.
+    #[test]
+    fn a_manual_fraction_past_full_deflection_clamps_instead_of_stopping() {
         let manual = manual(9.0, -9.0);
         let result =
             Arbitration::decide(Some(&manual), None, false, Some(&safety()), LIMITS, now());
         assert_eq!(active_source(&result), api::motion::Source::Manual);
         assert_eq!(active_target(&result).linear_x_mps(), 0.6);
         assert_eq!(active_target(&result).angular_z_radps(), -2.0);
+    }
+
+    /// The autonomous candidate is a physical twist the navigator computed
+    /// against the same limits, so it reaches the wheels unscaled. Scaling it
+    /// as if it were a fraction would square the limits.
+    #[test]
+    fn the_navigation_candidate_is_physical_and_is_not_scaled() {
+        let autonomous = autonomous();
+        let result = Arbitration::decide(
+            None,
+            Some(&autonomous),
+            false,
+            Some(&safety()),
+            LIMITS,
+            now(),
+        );
+        assert_eq!(active_source(&result), api::motion::Source::Navigation);
+        assert_eq!(
+            active_target(&result).linear_x_mps(),
+            autonomous.body.linear_x_mps
+        );
+        assert_eq!(
+            active_target(&result).angular_z_radps(),
+            autonomous.body.angular_z_radps
+        );
     }
 
     #[test]
@@ -544,7 +625,10 @@ mod tests {
             RobotInstant::new(replaced, NOW_NS),
         );
         assert_eq!(active_source(&result), api::motion::Source::Manual);
-        assert_eq!(active_target(&result).linear_x_mps(), 0.4);
+        assert_eq!(
+            active_target(&result).linear_x_mps(),
+            (0.4 * limits.max_linear_speed_mps) as f32
+        );
     }
 
     #[test]
@@ -552,7 +636,10 @@ mod tests {
         let manual = manual(0.5, 0.4);
         let missing = Arbitration::decide(Some(&manual), None, false, None, LIMITS, now());
         assert_eq!(active_source(&missing), api::motion::Source::Manual);
-        assert_eq!(active_target(&missing).linear_x_mps(), 0.5);
+        assert_eq!(
+            active_target(&missing).linear_x_mps(),
+            (0.5 * LIMITS.max_linear_speed_mps) as f32
+        );
 
         let mut constrained = safety();
         let entry = safety_constraint(false);
@@ -570,8 +657,14 @@ mod tests {
             LIMITS,
             now(),
         );
+        // The safety constraint narrows the scaled twist; it does not redefine
+        // what full deflection means, so the unconstrained axis still reports
+        // its fraction of the authored maximum.
         assert_eq!(active_target(&result).linear_x_mps(), 0.1);
-        assert_eq!(active_target(&result).angular_z_radps(), 0.4);
+        assert_eq!(
+            active_target(&result).angular_z_radps(),
+            (0.4 * LIMITS.max_angular_speed_radps) as f32
+        );
     }
 
     #[test]

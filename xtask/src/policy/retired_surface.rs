@@ -189,6 +189,39 @@ pub(super) fn retired_bundle_and_role_vocabulary_stays_absent(
     Ok(violations)
 }
 
+/// Driving intent crosses the wire normalized, so the robot's physics stay in
+/// the robot. The envelope that shipped a wheel base and the motion limits to
+/// an operator client - and the endpoint that carried it, whose only other
+/// field the connect reply now answers - are deleted, because a client that
+/// re-derives a twist from geometry it was handed is a second copy of the
+/// kinematics `robot/drive` already owns. Neither may return under its former
+/// exact identifier or wire key.
+pub(super) fn retired_manual_drive_envelope_stays_absent(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
+    // Split literals keep this rule from becoming its own only violation.
+    let envelope = ["Manual", "Drive"].concat();
+    let endpoint_key = ["supervisor/", "info"].concat();
+
+    let mut violations = Vec::new();
+    for relative in source_files(&subject.root)? {
+        let source = read(&subject.root, &relative)?;
+        if contains_identifier(&source, &envelope) {
+            violations.push(Violation::new(format!(
+                "{} contains identifier {envelope}",
+                relative.display()
+            )));
+        }
+        if source.contains(&endpoint_key) {
+            violations.push(Violation::new(format!(
+                "{} contains the retired endpoint key {endpoint_key}",
+                relative.display()
+            )));
+        }
+    }
+    Ok(violations)
+}
+
 /// Participant kind has one process-contract owner and one private macro
 /// dispatch mirror. The macro enum maps attribute roles to the contract's wire
 /// variants during expansion and never becomes an authored document field.

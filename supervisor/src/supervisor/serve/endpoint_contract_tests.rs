@@ -9,15 +9,14 @@ use std::fmt::Debug;
 use std::fs;
 
 use phoxal_bus::{Codec, EndpointDescriptor, EndpointKind, MessagePack, QueryEndpointDescriptor};
-use phoxal_model::builder::{Kinematics, RobotBuilder};
-use phoxal_model::robot::MotionLimits;
+use phoxal_model::builder::RobotBuilder;
 use phoxal_protocol::supervisor::command::{Command, CommandOutcome, CommandRejection};
 use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
 use phoxal_protocol::{runtime, supervisor};
 use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 use phoxal_runtime_contract::version::FrameworkVersion;
 
-use super::{HostAction, bundle_entry, command, connect_reply, manual_drive};
+use super::{HostAction, bundle_entry, command, connect_reply};
 use crate::supervisor::presence::Presence;
 use crate::supervisor::state::ExecutionState;
 
@@ -49,19 +48,6 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
         "supervisor/snapshot/current",
         supervisor::snapshot::CurrentRequest {},
         snapshot,
-    );
-
-    assert_query_round_trip::<supervisor::endpoint::info::TopicEndpoint>(
-        "supervisor/info",
-        supervisor::info::InfoRequest {},
-        supervisor::info::Info {
-            robot: phoxal_runtime_contract::identity::RobotId::new("rover").expect("fixture robot"),
-            manual_drive: Some(supervisor::info::ManualDrive {
-                wheel_base_m: 0.42,
-                max_linear_speed_mps: 0.8,
-                max_angular_speed_radps: 1.6,
-            }),
-        },
     );
 
     assert_query_round_trip::<supervisor::endpoint::logs::SnapshotEndpoint>(
@@ -122,43 +108,6 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
             bytes: vec![1, 2, 3],
         },
     );
-}
-
-#[test]
-fn info_projects_manual_drive_only_for_differential_robots() {
-    let limits = MotionLimits {
-        max_linear_speed_mps: 0.8,
-        max_angular_speed_radps: 1.6,
-    };
-    let differential = RobotBuilder::new("rover")
-        .component_type("motor", |motor| motor.motor("spin", "axle"))
-        .component("left", "motor")
-        .component("right", "motor")
-        .kinematics(Kinematics::Differential {
-            left_actuators: &["left.spin"],
-            right_actuators: &["right.spin"],
-            left_encoders: &[],
-            right_encoders: &[],
-            wheel_radius_m: 0.1,
-            wheel_base_m: 0.42,
-        })
-        .motion_limits(limits)
-        .build()
-        .expect("valid differential robot");
-    assert_eq!(
-        manual_drive(&differential),
-        Some(supervisor::info::ManualDrive {
-            wheel_base_m: 0.42,
-            max_linear_speed_mps: 0.8,
-            max_angular_speed_radps: 1.6,
-        })
-    );
-
-    let omnidirectional = RobotBuilder::new("platform")
-        .motion_limits(limits)
-        .build()
-        .expect("valid non-differential robot");
-    assert_eq!(manual_drive(&omnidirectional), None);
 }
 
 #[test]
@@ -244,7 +193,10 @@ fn host_actions_are_revision_guarded_and_scheduled_after_the_reply() {
 /// One expected runtime, present under a known producer.
 fn present_state() -> (ExecutionState, ParticipantId) {
     let robot = RobotBuilder::new("rover").build().expect("fixture robot");
-    let state = ExecutionState::new(Presence::for_robot(&robot).expect("an expected set"));
+    let state = ExecutionState::new(
+        robot.id().clone(),
+        Presence::for_robot(&robot).expect("an expected set"),
+    );
     let participant = ParticipantId::new("brain").expect("fixture participant");
     state.record_presence(
         &participant,
