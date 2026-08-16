@@ -183,10 +183,6 @@ phoxal_macros::protocol_tree! {
 
     self: Query<ConnectRequest, ConnectReply>;
 
-    path supervisor / info;
-
-    self: Query<InfoRequest, Info>;
-
     path supervisor / logs;
 
     snapshot: Query<SnapshotRequest, Snapshot>;

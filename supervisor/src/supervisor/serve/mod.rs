@@ -13,7 +13,6 @@ use phoxal_bus::{
     BusHandle, Codec, EndpointDescriptor, IncomingQuery, MessagePack, QueryFailure,
     ServerQueryable, StreamPublisher,
 };
-use phoxal_model::robot::KinematicConfig;
 use phoxal_protocol::supervisor;
 use phoxal_protocol::supervisor::command::{Command, CommandOutcome, CommandRejection};
 use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
@@ -37,7 +36,6 @@ pub(crate) async fn serve(
     tasks.spawn(serve_connect(bus.clone()));
     tasks.spawn(serve_snapshots(bus.clone(), state.clone()));
     tasks.spawn(serve_current(bus.clone(), state.clone()));
-    tasks.spawn(serve_info(bus.clone(), bundle.clone()));
     tasks.spawn(serve_bundle(bus.clone(), bundle.root().to_path_buf()));
     tasks.spawn(serve_commands(bus.clone(), state.clone()));
     tasks.spawn(logs::run(bus.clone()));
@@ -63,7 +61,10 @@ pub(crate) async fn serve(
 ///
 /// It answers with this supervisor's framework train and nothing else, and it is
 /// declared alongside every other endpoint so a client that disagrees learns
-/// that from the first thing it asks rather than from a decode failure.
+/// that from the first thing it asks rather than from a decode failure. The
+/// robot this supervisor runs is not here: it rides the snapshot every client
+/// subscribes to anyway, which keeps this document exactly what every framework
+/// line can decode.
 async fn serve_connect(bus: BusHandle) -> Result<()> {
     let server = declare::<supervisor::endpoint::connect::TopicEndpoint>(&bus).await?;
     loop {
@@ -105,38 +106,6 @@ async fn serve_current(bus: BusHandle, state: ExecutionState) -> Result<()> {
         };
         reply(&incoming, &bus, &SnapshotDocument::V0(state.snapshot())).await?;
     }
-}
-
-async fn serve_info(bus: BusHandle, bundle: RuntimeBundle) -> Result<()> {
-    let server = declare::<supervisor::endpoint::info::TopicEndpoint>(&bus).await?;
-    loop {
-        let incoming = server.recv().await?;
-        let _: supervisor::info::InfoRequest = match decode(&incoming).await? {
-            Some(request) => request,
-            None => continue,
-        };
-        reply(
-            &incoming,
-            &bus,
-            &supervisor::info::Info {
-                robot: bundle.robot_id().clone(),
-                manual_drive: manual_drive(bundle.robot()),
-            },
-        )
-        .await?;
-    }
-}
-
-fn manual_drive(robot: &phoxal_model::Robot) -> Option<supervisor::info::ManualDrive> {
-    let KinematicConfig::Differential { wheel_base_m, .. } = robot.motion().kinematic() else {
-        return None;
-    };
-    let limits = robot.motion().limits();
-    Some(supervisor::info::ManualDrive {
-        wheel_base_m: *wheel_base_m,
-        max_linear_speed_mps: limits.max_linear_speed_mps,
-        max_angular_speed_radps: limits.max_angular_speed_radps,
-    })
 }
 
 /// Read access to the bundle this supervisor is running.

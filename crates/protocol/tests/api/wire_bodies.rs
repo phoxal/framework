@@ -403,8 +403,8 @@ fn navigation_and_safety_wire_shapes_are_golden() {
 #[test]
 fn navigation_and_safety_reject_malformed_payloads() {
     let wrong = rmp_serde::to_vec_named(&api::motion::ManualCommand {
-        linear_x_mps: 0.1,
-        angular_z_radps: 0.2,
+        linear: 0.1,
+        angular: 0.2,
     })
     .unwrap();
     assert!(rmp_serde::from_slice::<api::navigation::StartRequest>(&wrong).is_err());

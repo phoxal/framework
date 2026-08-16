@@ -52,12 +52,23 @@ pub enum SafetyRuntime {
     Present,
 }
 
+/// One operator's driving intent, expressed as a fraction of what this robot
+/// was authored to do rather than in physical units.
+///
+/// Both fields are a fraction of the robot's authored maximum in `-1.0..=1.0`:
+/// `linear` positive is forward, `angular` positive is counter-clockwise (left),
+/// matching the body-twist convention `robot/drive` realizes. The robot scales
+/// them by its own authored motion limits, so a client drives without knowing
+/// the wheel base, the wheel radius, or any limit - physics stays where the
+/// kinematics already live. A magnitude past 1 is full deflection, not a
+/// protocol violation; a non-finite value names no deflection at all and stops
+/// the robot.
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 pub struct ManualCommand {
-    pub linear_x_mps: f64,
-    pub angular_z_radps: f64,
+    pub linear: f64,
+    pub angular: f64,
 }
 
 /// The sole motion execution decision. A stopped decision carries no source or
