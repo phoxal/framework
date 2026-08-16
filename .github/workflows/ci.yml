@@ -19,8 +19,9 @@ concurrency:
   cancel-in-progress: true
 
 # The workspace builds on a bare runner by design. Runnable crates own native
-# build requirements in package.metadata.phoxal.build; workspace-policy keeps
-# this bootstrap input synchronized with their declared union.
+# build requirements in package.metadata.phoxal.build; phoxal-manifest's
+# `workspace_build_requirements` test keeps this bootstrap input synchronized
+# with their declared union.
 # webots-rs links libController at build time, so the workspace cannot even be
 # cargo checked without a real Webots installation; the reusable workflow
 # installs it and exports WEBOTS_HOME before the clippy and test jobs build.
@@ -57,6 +58,44 @@ jobs:
       - name: Check
         working-directory: examples/hello-rover
         run: cargo check --locked
+
+  # The rules no single crate owns: the directory/naming/publish grammar every
+  # official package obeys, the direction of the public library graph and the
+  # edges no canonical crate may grow, the Zenoh feature profile, the deleted
+  # surfaces that may not return, and what a committed comment may name.
+  # It builds nothing it judges - every rule reads `cargo metadata`, the
+  # filesystem or Git - so it links no framework crate and installs no Webots.
+  # The proofs that need the framework *linked* are ordinary tests in the crates
+  # that own them and run in the `ci` job's `cargo test --workspace`.
+  policy:
+    name: workspace policy
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Check the workspace policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The report goes to the summary whichever way the gate falls: the
+          # violations behind a refusal are the reason to read it.
+          status=0
+          report="$(cargo xtask policy)" || status=$?
+          echo "$report"
+          {
+            echo "## Workspace policy"
+            echo
+            echo '```'
+            echo "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
   # What this pull request does to the wire contracts, stated where the author
   # can see it. It never fails on the verdict: an ordinary branch is not setting
