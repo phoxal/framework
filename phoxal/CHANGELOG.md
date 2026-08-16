@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.1](https://github.com/phoxal/framework/compare/v0.62.0...v0.62.1) - 2026-08-16
+
+### Other
+
+- move the workspace policy into cargo xtask policy ([#459](https://github.com/phoxal/framework/pull/459))
+
 ## [0.61.1](https://github.com/phoxal/framework/compare/v0.61.0...v0.61.1) - 2026-08-15
 
 ### Fixed
