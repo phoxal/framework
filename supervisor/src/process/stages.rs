@@ -61,6 +61,13 @@ pub(crate) trait StageProgress: Send + Sync {
     /// Every stage completed.
     fn finished(&self);
     /// A stage failed, and the graph is unwinding.
+    ///
+    /// This records the execution's own failure, so it must be called *before*
+    /// the board's lifecycle turns `Failed`: the board publishes a complete
+    /// snapshot on every change, and a snapshot that carries a failed lifecycle
+    /// without the failure that caused it is rejected by the supervisor's wire
+    /// contract - which would take the control plane down instead of telling a
+    /// client why the graph failed.
     fn failed(&self, reason: &str);
 }
 

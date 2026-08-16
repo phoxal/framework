@@ -17,6 +17,7 @@ use phoxal_protocol::supervisor::execution::{
 use tokio::sync::watch;
 
 use super::projection::{ExecutionFacts, project};
+use crate::model::lifecycle::ProjectLifecycle;
 use crate::state::store::SupervisorState;
 
 /// The supervisor's startup sequence, in execution order.
@@ -211,10 +212,29 @@ impl ExecutionState {
         // older clone and make clients retain stale state.
         let board = inner.board.snapshot();
         let revision = inner.revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let data = inner
+        let mut data = inner
             .data
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The wire contract refuses a `Failed` lifecycle that carries no
+        // supervisor failure, and this projection feeds the serve path's
+        // encoder: an unclassified board failure would fail that encode and
+        // kill the control plane, so a client would lose the supervisor
+        // entirely instead of learning why the graph failed. The real fix is at
+        // the source - every failure site records its typed reason before the
+        // board's lifecycle turns `Failed` (see `ParticipantStageProgress` and
+        // `process::supervise`). This classifies whatever the board already
+        // holds as evidence, so a future ordering slip degrades to a coarse
+        // reason rather than to no control plane at all.
+        if board.lifecycle == ProjectLifecycle::Failed && data.failure.is_none() {
+            data.failure = Some(SupervisorFailure::new(
+                SupervisorFailureReason::LaunchFailed,
+                board
+                    .failure
+                    .as_deref()
+                    .unwrap_or("the participant graph failed"),
+            ));
+        }
         let snapshot = project(
             revision,
             &data.facts,
@@ -314,6 +334,33 @@ mod tests {
             phoxal_protocol::supervisor::execution::Lifecycle::Failed,
             "the store's lifecycle and the typed reason are one update"
         );
+    }
+
+    #[test]
+    fn a_board_failure_alone_still_publishes_a_snapshot_the_serve_path_can_encode() {
+        use phoxal_bus::{Codec, MessagePack};
+
+        let state = state();
+        state.board().fail("stage 'starting robot graph' stalled");
+
+        let snapshot = state.snapshot();
+        assert_eq!(
+            snapshot.lifecycle,
+            phoxal_protocol::supervisor::execution::Lifecycle::Failed
+        );
+        let failure = snapshot
+            .failure
+            .clone()
+            .expect("a failed lifecycle always carries its failure");
+        assert_eq!(failure.reason, SupervisorFailureReason::LaunchFailed);
+        assert_eq!(
+            failure.detail.as_str(),
+            "stage 'starting robot graph' stalled"
+        );
+        snapshot
+            .validate()
+            .expect("the wire contract accepts the published snapshot");
+        MessagePack::encode(&snapshot).expect("the serve path encodes the published snapshot");
     }
 
     #[test]

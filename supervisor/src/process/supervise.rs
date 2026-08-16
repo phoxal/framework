@@ -37,8 +37,8 @@ pub(crate) async fn supervise_until_shutdown(
             "process(es) failed before startup: {}",
             failed_processes.join(", ")
         );
-        board.fail(&reason);
         progress.failed(&reason);
+        board.fail(&reason);
         options.token.cancel();
         anyhow::bail!(reason);
     }
@@ -125,6 +125,7 @@ pub(crate) async fn supervise_until_shutdown(
                             "process {} exhausted its restart policy",
                             participant.spec.key
                         );
+                        progress.failed(&reason);
                         board.fail(&reason);
                         supervisor_error = Some(anyhow::anyhow!(reason));
                         token.cancel();
@@ -396,6 +397,61 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(state.snapshot().lifecycle, ProjectLifecycle::Stopped);
+    }
+
+    /// Records the order in which the supervision loop reports a failure to the
+    /// startup sequence and to the board.
+    struct OrderedFailures(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+    impl crate::process::stages::StageProgress for OrderedFailures {
+        fn started(&self, _label: &str) {}
+        fn detail(&self, _detail: String) {}
+        fn finished(&self) {}
+        fn failed(&self, _reason: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push("progress");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pre_startup_failure_is_reported_before_the_board_lifecycle_fails() {
+        let board = SupervisorState::new();
+        board.upsert_process(key("drive"), crate::model::process::ProcessState::Failed);
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = std::sync::Arc::clone(&order);
+        board.publish_with(move |snapshot| {
+            if snapshot.lifecycle == ProjectLifecycle::Failed {
+                observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("board");
+            }
+        });
+
+        let error = supervise_until_shutdown(
+            Vec::new(),
+            board,
+            std::sync::Arc::new(OrderedFailures(std::sync::Arc::clone(&order))),
+            SupervisorOptions::default(),
+        )
+        .await
+        .expect_err("a process that failed before startup ends the execution");
+
+        assert!(
+            error
+                .to_string()
+                .contains("process(es) failed before startup"),
+            "{error:#}"
+        );
+        assert_eq!(
+            *order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["progress", "board"],
+            "the execution failure is recorded before the lifecycle turns Failed"
+        );
     }
 
     #[test]
