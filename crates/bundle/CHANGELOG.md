@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.62.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.61.2...phoxal-bundle-v0.62.0) - 2026-08-16
+
+### Added
+
+- [**breaking**] drop the authored router configuration ([#454](https://github.com/phoxal/framework/pull/454))
+
 ## [0.61.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.60.1...phoxal-bundle-v0.61.0) - 2026-08-14
 
 ### Other
