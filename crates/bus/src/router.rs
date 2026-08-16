@@ -13,8 +13,6 @@
 //! through the `phoxal` facade, never see a router in their API surface: only
 //! the supervisor enables it.
 
-use std::path::Path;
-
 use phoxal_runtime_contract::identity::ExecutionId;
 
 use crate::error::{BusError, Result};
@@ -37,26 +35,17 @@ impl Router {
     /// Open a router for `execution`, listening on `listen_endpoints`.
     ///
     /// The router's session id *is* the execution, so the fabric a trace names
-    /// and the key root that trace carries are the same string. An authored
-    /// `id` cannot win: the run it would name is not the run it is routing.
-    ///
-    /// `config_file` is an optional native Zenoh JSON5 file supplying authored
-    /// defaults. Phoxal's transport policy, the session id, and the mode/listen
-    /// settings are applied *after* it, so an authored file can tune what
-    /// Phoxal does not pin but cannot silently put the router at odds with its
-    /// clients.
+    /// and the key root that trace carries are the same string. The whole
+    /// configuration is framework-owned: there is no authored Zenoh file, so a
+    /// robot project cannot put the router at odds with the clients dialing it.
     ///
     /// Returning `Ok` means the router is listening: Zenoh has bound every
     /// endpoint. There is no readiness probe to run afterwards and no window in
     /// which the endpoint exists but does not accept. `router_config` pins
-    /// the settings that guarantee this, so an authored file cannot weaken it.
-    pub async fn open(
-        execution: ExecutionId,
-        listen_endpoints: &[String],
-        config_file: Option<&Path>,
-    ) -> Result<Self> {
+    /// the settings that guarantee this.
+    pub async fn open(execution: ExecutionId, listen_endpoints: &[String]) -> Result<Self> {
         validate_listen_endpoints(listen_endpoints)?;
-        let session = zenoh::open(router_config(execution, listen_endpoints, config_file)?)
+        let session = zenoh::open(router_config(execution, listen_endpoints)?)
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
         let observed = match execution_from_zid(session.zid()) {
@@ -170,20 +159,8 @@ impl RouterWatch {
     }
 }
 
-fn router_config(
-    execution: ExecutionId,
-    listen_endpoints: &[String],
-    config_file: Option<&Path>,
-) -> Result<zenoh::Config> {
-    let mut config = match config_file {
-        Some(path) => zenoh::Config::from_file(path).map_err(|error| {
-            BusError::Transport(format!(
-                "failed to read the router config at {}: {error}",
-                path.display()
-            ))
-        })?,
-        None => zenoh::Config::default(),
-    };
+fn router_config(execution: ExecutionId, listen_endpoints: &[String]) -> Result<zenoh::Config> {
+    let mut config = zenoh::Config::default();
     apply_phoxal_transport_policy(&mut config)?;
     let endpoints = serde_json::to_string(listen_endpoints)
         .map_err(|error| BusError::Transport(error.to_string()))?;
@@ -192,10 +169,9 @@ fn router_config(
     // string that merely looks like it.
     let id = serde_json::to_string(&zenoh_id_for(execution)?.to_string())
         .map_err(|error| BusError::Transport(error.to_string()))?;
-    // Everything below is applied after the authored file precisely so a file
-    // cannot weaken it. The three `listen/*` keys are what make `open`'s
-    // success mean "bound", which is the guarantee that lets the supervisor
-    // delete its readiness probe: with a nonzero `timeout_ms` or
+    // Every key below is pinned. The three `listen/*` keys are what make
+    // `open`'s success mean "bound", which is the guarantee that lets the
+    // supervisor delete its readiness probe: with a nonzero `timeout_ms` or
     // `exit_on_failure: false`, Zenoh moves binding to a background retry task
     // and `open` returns `Ok` with nothing listening. `scouting/delay` is a
     // flat sleep at the end of router startup, paid even though Phoxal keeps
@@ -227,7 +203,7 @@ mod tests {
 
     #[test]
     fn router_config_pins_mode_and_listen_endpoints() {
-        let config = router_config(ExecutionId::mint(), &endpoints(), None).expect("router config");
+        let config = router_config(ExecutionId::mint(), &endpoints()).expect("router config");
         assert_eq!(config.get_json("mode").expect("mode is set"), "\"router\"");
         assert_eq!(
             config
@@ -237,29 +213,22 @@ mod tests {
         );
     }
 
-    /// The router's session id is the execution it routes, and an authored file
-    /// cannot rename the run.
+    /// The router's session id is the execution it routes.
     #[test]
-    fn the_router_session_id_is_the_execution_and_an_authored_id_cannot_override_it() {
+    fn the_router_session_id_is_the_execution() {
         let execution = ExecutionId::mint();
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("zenoh.json5");
-        std::fs::write(&path, r#"{ id: "abcdef" }"#).expect("write authored router config");
-
-        for authored in [None, Some(path.as_path())] {
-            let config = router_config(execution, &endpoints(), authored).expect("router config");
-            assert_eq!(
-                config.get_json("id").expect("the session id is pinned"),
-                format!("\"{execution}\""),
-            );
-        }
+        let config = router_config(execution, &endpoints()).expect("router config");
+        assert_eq!(
+            config.get_json("id").expect("the session id is pinned"),
+            format!("\"{execution}\""),
+        );
     }
 
     #[test]
     fn router_config_carries_the_same_transport_policy_as_a_client() {
         // The whole reason this lives in phoxal-bus: both ends of a link must
         // agree, so assert it rather than trusting the call order.
-        let config = router_config(ExecutionId::mint(), &endpoints(), None).expect("router config");
+        let config = router_config(ExecutionId::mint(), &endpoints()).expect("router config");
         assert_eq!(
             config
                 .get_json("transport/link/tx/lease")
@@ -281,47 +250,13 @@ mod tests {
     }
 
     #[test]
-    fn phoxal_policy_and_mode_override_an_authored_config_file() {
-        // An authored file supplies defaults; it must not be able to put the
-        // router at odds with the clients that dial it.
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("zenoh.json5");
-        std::fs::write(
-            &path,
-            r#"{ mode: "client", transport: { link: { tx: { lease: 9999 } } } }"#,
-        )
-        .expect("write authored router config");
-
-        let config = router_config(ExecutionId::mint(), &endpoints(), Some(&path))
-            .expect("authored router config");
-        assert_eq!(config.get_json("mode").expect("mode is set"), "\"router\"");
-        assert_eq!(
-            config
-                .get_json("transport/link/tx/lease")
-                .expect("lease is set"),
-            "3000",
-            "Phoxal transport policy must win over an authored default"
-        );
-    }
-
-    #[test]
-    fn an_authored_file_cannot_weaken_the_bound_on_open_guarantee() {
+    fn the_bound_on_open_guarantee_is_pinned() {
         // `Router::open` returning `Ok` means "listening", and the supervisor
         // deletes its readiness probe on that promise. Zenoh only keeps it when
         // binding is synchronous and fatal: a nonzero `listen/timeout_ms` or
         // `exit_on_failure: false` moves binding to a background retry task and
-        // `open` succeeds with nothing bound. An authored file must not be able
-        // to reach that.
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("zenoh.json5");
-        std::fs::write(
-            &path,
-            r#"{ listen: { timeout_ms: 60000, exit_on_failure: false } }"#,
-        )
-        .expect("write authored router config");
-
-        let config = router_config(ExecutionId::mint(), &endpoints(), Some(&path))
-            .expect("authored router config");
+        // `open` succeeds with nothing bound.
+        let config = router_config(ExecutionId::mint(), &endpoints()).expect("router config");
         assert_eq!(
             config
                 .get_json("listen/timeout_ms")
@@ -335,20 +270,6 @@ mod tests {
                 .expect("listen exit_on_failure is pinned"),
             "true",
             "a bind failure must fail `open`, not be swallowed"
-        );
-    }
-
-    #[test]
-    fn a_missing_config_file_names_the_path_it_could_not_read() {
-        let error = router_config(
-            ExecutionId::mint(),
-            &endpoints(),
-            Some(Path::new("/nonexistent/zenoh.json5")),
-        )
-        .expect_err("a missing config file must fail");
-        assert!(
-            error.to_string().contains("/nonexistent/zenoh.json5"),
-            "the error must name the unreadable path, got: {error}"
         );
     }
 

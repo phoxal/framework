@@ -53,9 +53,6 @@ pub struct Manifest {
     /// is the root Cargo package's binary, never an authored service.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub services: BTreeMap<String, UserService>,
-    /// Optional project-relative Zenoh router configuration.
-    #[serde(default, skip_serializing_if = "RouterConfig::is_empty")]
-    pub router: RouterConfig,
 }
 
 /// Authored `clock:` - the time domain the robot runs on.
@@ -119,27 +116,6 @@ pub struct RobotSection {
 pub struct UserService {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
-}
-
-/// Authored `router:` - how this robot configures the Zenoh router it runs on.
-///
-/// Named for what it is rather than what it configures: the running router
-/// itself is `phoxal-bus`'s `Router`, and one value configuring another is not
-/// a reason for the two to share a name.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "Router")]
-pub struct RouterConfig {
-    /// Zenoh JSON5 configuration path relative to the resolved robot root.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<PathBuf>,
-}
-
-impl RouterConfig {
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.config.is_none()
-    }
 }
 
 /// One mounted component instance.
@@ -251,10 +227,6 @@ pub struct NoParameters {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
     EmptyRobotId,
-    EmptyRouterConfigPath,
-    AbsoluteRouterConfigPath {
-        path: PathBuf,
-    },
     InvalidToken {
         field: String,
         value: String,
@@ -307,7 +279,6 @@ impl Manifest {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
         self.validate_reserved_identities(&mut errors);
-        self.validate_router(&mut errors);
         self.validate_component_structure(&mut errors);
         self.validate_driver_structure(&mut errors);
         self.validate_role_hints(&mut errors);
@@ -382,7 +353,6 @@ impl Manifest {
                 .into_iter()
                 .map(|(id, service)| (id, service.config))
                 .collect(),
-            router_config: self.router.config,
         })
     }
 
@@ -416,28 +386,12 @@ impl Manifest {
             });
         }
     }
-
-    fn validate_router(&self, errors: &mut Vec<ValidationError>) {
-        if let Some(path) = &self.router.config {
-            if path.as_os_str().is_empty() {
-                errors.push(ValidationError::EmptyRouterConfigPath);
-            } else if path.is_absolute() {
-                errors.push(ValidationError::AbsoluteRouterConfigPath { path: path.clone() });
-            }
-        }
-    }
 }
 
 impl fmt::Display for ValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyRobotId => formatter.write_str("robot.id must not be empty"),
-            Self::EmptyRouterConfigPath => formatter.write_str("router.config must not be empty"),
-            Self::AbsoluteRouterConfigPath { path } => write!(
-                formatter,
-                "router.config path '{}' must be project-relative",
-                path.display()
-            ),
             Self::InvalidToken { field, value } => write!(
                 formatter,
                 "{field} value '{value}' must contain only lowercase ASCII letters, digits, '_' or '-'"
@@ -504,7 +458,7 @@ const fn default_direction_sign() -> i8 {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use crate::source::SourceError;
     use crate::source::robot::Manifest;
@@ -572,8 +526,6 @@ robot:
 services:
   avoid-obstacles:
     config: { max_linear_speed_mps: 0.6 }
-router:
-  config: config/router.json5
 "#;
         let manifest = Manifest::parse(yaml)?;
         let Manifest::V0(robot) = manifest.clone();
@@ -591,10 +543,6 @@ router:
                 .and_then(|config| config.get("max_linear_speed_mps"))
                 .and_then(serde_json::Value::as_f64),
             Some(0.6)
-        );
-        assert_eq!(
-            robot.router.config.as_deref(),
-            Some(Path::new("config/router.json5"))
         );
 
         let serialized = serde_yaml::to_string(&manifest)?;
@@ -726,7 +674,6 @@ robot:
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
-        assert!(robot.router.is_empty());
 
         Ok(())
     }
@@ -750,54 +697,6 @@ robot:
         assert_eq!(reparsed.services, robot.services);
 
         Ok(())
-    }
-
-    #[test]
-    fn router_config_parses_and_validates() -> anyhow::Result<()> {
-        let manifest = Manifest::parse(&minimal_manifest(
-            r#"router:
-  config: config/router.json5
-"#,
-        ))?;
-        let Manifest::V0(robot) = manifest;
-
-        assert_eq!(
-            robot.router.config.as_deref(),
-            Some(Path::new("config/router.json5"))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn router_rejects_absolute_config_path() {
-        let error = Manifest::parse(&minimal_manifest(
-            r#"router:
-  config: /etc/phoxal/router.json5
-"#,
-        ))
-        .expect_err("absolute router config should fail validation");
-
-        assert!(
-            robot_violations(&error).contains(&super::ValidationError::AbsoluteRouterConfigPath {
-                path: PathBuf::from("/etc/phoxal/router.json5"),
-            }),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn router_rejects_empty_config_path() {
-        let error = Manifest::parse(&minimal_manifest(
-            r#"router:
-  config: ""
-"#,
-        ))
-        .expect_err("empty router config should fail validation");
-        assert!(
-            robot_violations(&error).contains(&super::ValidationError::EmptyRouterConfigPath),
-            "{error}"
-        );
     }
 
     /// The document grammar is closed: a root key the DTO does not declare is
@@ -851,7 +750,6 @@ robot:
                 "services",
                 minimal_manifest("services:\n  autonomy:\n    unknown_key: {}\n"),
             ),
-            ("router", minimal_manifest("router:\n  unknown_key: {}\n")),
             (
                 "components.drive",
                 r#"

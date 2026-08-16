@@ -91,26 +91,16 @@ async fn execute(
             shutdown.cancel();
         }) as crate::router::RouterLost
     };
-    let router_config = runtime
-        .document()
-        .runtime()
-        .router()
-        .map(|config| runtime.root().join(config.path().as_str()));
-    let router = crate::router::start_embedded_router(
-        execution,
-        endpoint.clone(),
-        router_config.as_deref(),
-        router_lost,
-    )
-    .await
-    .inspect_err(|error| {
-        fail_step(
-            state,
-            StartupStepKind::Router,
-            SupervisorFailureReason::RouterUnavailable,
-            error,
-        );
-    })?;
+    let router = crate::router::start_embedded_router(execution, endpoint.clone(), router_lost)
+        .await
+        .inspect_err(|error| {
+            fail_step(
+                state,
+                StartupStepKind::Router,
+                SupervisorFailureReason::RouterUnavailable,
+                error,
+            );
+        })?;
 
     let label = match SourceLabel::new(SUPERVISOR_LABEL) {
         Ok(label) => label,

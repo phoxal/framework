@@ -287,7 +287,6 @@ fn canonical(compiled: &phoxal_manifest::CompiledProject) -> serde_json::Value {
                 "implementation": driver.implementation.as_str(),
             }))
             .collect::<Vec<_>>(),
-        "router": compiled.router().map(|router| router.asset.as_str()),
         "assets": compiled
             .assets()
             .iter()

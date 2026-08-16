@@ -146,10 +146,6 @@ pub enum DocumentError {
     DuplicateAssetId { id: AssetId },
     #[error("duplicate asset path '{path}'")]
     DuplicateAssetPath { path: BundlePath },
-    #[error("router config is outside assets/: {path}")]
-    RouterOutsideAssets { path: BundlePath },
-    #[error("router config is not present in the asset index: {path}")]
-    RouterMissingAsset { path: BundlePath },
     #[error("supplied asset bytes do not match the persisted asset index")]
     AssetIndexMismatch,
     #[error("supplied executable sources do not match the persisted artifact set")]

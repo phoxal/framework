@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use phoxal_bundle::{
     AssetIndex, BinaryReference, BinarySource, BundlePath, BundleWriter, ParticipantClock, Runtime,
-    RuntimeBundle, RuntimeDocument, RuntimeParticipant, RuntimeRouterConfig,
+    RuntimeBundle, RuntimeDocument, RuntimeParticipant,
 };
 use phoxal_manifest::{SourceSet, source};
 use phoxal_model::identity::ComponentInstanceId;
@@ -101,7 +101,7 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
             .collect(),
     };
     let compiled = sources.compile().expect("the fixture sources compile");
-    let (robot, services, drivers, router, assets) = compiled.into_parts();
+    let (robot, services, drivers, assets) = compiled.into_parts();
     let assets = assets.into_map();
     let asset_index = AssetIndex::from_bytes(&assets).expect("fixture asset index");
 
@@ -209,13 +209,7 @@ fn staged_bundle_from_manifest(manifest_name: &str) -> StagedBundle {
             None,
         );
     }
-    let router = router.map(|router| {
-        RuntimeRouterConfig::new(
-            BundlePath::new(format!("assets/{}", router.asset.as_str()))
-                .expect("compiled router asset path"),
-        )
-    });
-    let runtime = Runtime::new(robot, artifacts, participants, asset_index, router)
+    let runtime = Runtime::new(robot, artifacts, participants, asset_index)
         .expect("fixture runtime is valid");
     let document = RuntimeDocument::new(runtime);
     let root = bundle.path().join("bundle");
@@ -296,17 +290,6 @@ mod tests {
                 })
                 .count(),
             0
-        );
-        let router = loaded
-            .document()
-            .runtime()
-            .router()
-            .expect("compiled router config is retained");
-        assert_eq!(router.path().as_str(), "assets/robot/router.json5");
-        let router_id = phoxal_model::AssetId::new("robot/router.json5").expect("router asset id");
-        assert_eq!(
-            loaded.assets().read(&router_id).expect("router bytes"),
-            b"{}\n"
         );
     }
 

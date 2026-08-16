@@ -43,9 +43,6 @@ pub(crate) struct Robot {
     /// Declared user services, keyed by service id, each with its user-owned
     /// configuration.
     pub services: BTreeMap<String, Option<serde_json::Value>>,
-    /// The Zenoh router configuration path, relative to the resolved robot
-    /// root.
-    pub router_config: Option<PathBuf>,
 }
 
 /// One mounted component instance.

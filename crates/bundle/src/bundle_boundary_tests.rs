@@ -102,7 +102,6 @@ fn document() -> StagedBytes {
         artifacts,
         vec![participant, brain_participant],
         index,
-        None,
     )
     .expect("runtime");
     let document = RuntimeDocument::new(runtime);
@@ -126,7 +125,6 @@ fn runtime_rejects_more_participants_than_a_snapshot_can_publish() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::TooManyParticipants { count })
             if count == MAX_RUNTIME_PARTICIPANTS + 1
@@ -165,7 +163,6 @@ fn runtime_accepts_artifacts_from_one_line_and_exposes_that_line() {
         runtime.artifacts,
         runtime.participants,
         runtime.assets,
-        runtime.router,
     )
     .expect("two patch trains of one line are one execution");
     assert_eq!(
@@ -207,7 +204,6 @@ fn runtime_rejects_artifacts_from_a_second_framework_line() {
         runtime.artifacts,
         runtime.participants,
         runtime.assets,
-        runtime.router,
     )
     .expect_err("a bundle spanning two lines has no valid launch");
     assert!(
@@ -326,7 +322,6 @@ fn requirement_document(robot: Robot) -> StagedBytes {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         )
         .expect("requirement runtime is valid"),
     );
@@ -360,7 +355,6 @@ fn final_runtime_rejects_a_simulator_on_a_real_robot() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::ExecutionModeMismatch {
             kind: ParticipantKind::Simulator,
@@ -393,7 +387,6 @@ fn final_runtime_rejects_a_driver_on_a_simulated_robot() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::ExecutionModeMismatch {
             kind: ParticipantKind::Driver,
@@ -424,7 +417,6 @@ fn final_runtime_requires_a_simulator_to_follow_simulation_time() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::ExecutionModeMismatch {
             kind: ParticipantKind::Simulator,
@@ -450,7 +442,6 @@ fn simulated_runtime_requires_exactly_one_simulator_authority() {
             runtime.artifacts.clone(),
             runtime.participants.clone(),
             runtime.assets.clone(),
-            runtime.router.clone(),
         ),
         Err(DocumentError::MissingSimulator)
     ));
@@ -476,7 +467,6 @@ fn simulated_runtime_requires_exactly_one_simulator_authority() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::DuplicateSimulator)
     ));
@@ -509,7 +499,6 @@ fn stock_drive_requirement_rejects_non_differential_topologies() {
                 runtime.artifacts,
                 runtime.participants,
                 runtime.assets,
-                runtime.router,
             ),
             Err(DocumentError::RequirementKinematicsMismatch { .. })
         ));
@@ -546,7 +535,6 @@ fn stock_drive_requirement_rejects_each_nonvelocity_drive_side() {
                 runtime.artifacts,
                 runtime.participants,
                 runtime.assets,
-                runtime.router,
             ),
             Err(DocumentError::RequirementMotorModeMismatch { actuator: ref found, .. })
                 if found.to_string() == actuator
@@ -608,9 +596,10 @@ fn runtime_json_is_tagged_strict_and_robot_id_is_persisted_once() {
         .is_err()
     );
     assert!(
-        serde_json::from_str::<RuntimeDocument>(
-            &text.replace("\"router\":null", "\"router\":null,\"source\":true")
-        )
+        serde_json::from_str::<RuntimeDocument>(&text.replace(
+            "\"schema\":\"phoxal/runtime-bundle/v0\"",
+            "\"schema\":\"phoxal/runtime-bundle/v0\",\"source\":true"
+        ))
         .is_err()
     );
 
@@ -638,7 +627,6 @@ fn runtime_graph_requires_exactly_one_fixed_brain_instance() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::MissingBrain)
     ));
@@ -656,7 +644,6 @@ fn runtime_graph_requires_exactly_one_fixed_brain_instance() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::BrainIdMismatch { .. })
     ));
@@ -681,7 +668,6 @@ fn runtime_graph_requires_exactly_one_fixed_brain_instance() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::BrainArtifactId { .. })
     ));
@@ -699,7 +685,6 @@ fn runtime_graph_requires_exactly_one_fixed_brain_instance() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::BrainArtifactPath { .. })
     ));
@@ -724,7 +709,6 @@ fn multiple_participant_instances_may_share_one_artifact() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         )
         .expect("shared artifact is valid"),
     );
@@ -760,7 +744,6 @@ fn every_artifact_must_be_selected_by_a_runtime_participant() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::UnusedArtifact { artifact }) if artifact == unused_id
     ));
@@ -783,7 +766,6 @@ fn artifact_config_schema_is_validated_once_even_before_config_values() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::InvalidConfigSchema { .. })
     ));
@@ -807,7 +789,6 @@ fn driver_artifacts_require_an_explicit_component_instance_binding() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::MissingDriverComponent { .. })
     ));
@@ -824,7 +805,6 @@ fn participant_config_is_validated_against_embedded_binary_schema() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         ),
         Err(DocumentError::InvalidConfig { .. })
     ));
@@ -881,7 +861,6 @@ fn writer_stages_a_real_executable_with_canonical_mode() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         )
         .expect("runtime document"),
     );
@@ -995,7 +974,6 @@ fn participant_open_skips_unrelated_artifact_hashes_but_full_open_does_not() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         )
         .expect("runtime document"),
     );
@@ -1121,7 +1099,6 @@ fn a_source_that_changes_after_indexing_fails_the_write_and_clears_staging() {
             runtime.artifacts,
             runtime.participants,
             runtime.assets,
-            runtime.router,
         )
         .expect("runtime document"),
     );

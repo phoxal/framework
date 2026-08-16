@@ -51,9 +51,9 @@ pub struct SourceSet {
 /// Where one robot's documents actually live, for authored projects and
 /// finalized bundles alike.
 ///
-/// `robot_root` is the base for the manifest's `robot.structure` and
-/// `router.config` paths; in an authored project it is the project root, and in
-/// a finalized bundle it is `<bundle>/assets`.
+/// `robot_root` is the base for the manifest's `robot.structure` path; in an
+/// authored project it is the project root, and in a finalized bundle it is
+/// `<bundle>/assets`.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedSources {
     robot_manifest: PathBuf,
@@ -228,7 +228,6 @@ pub struct CompiledProject {
     robot: phoxal_model::Robot,
     services: Vec<CompiledService>,
     drivers: Vec<CompiledDriver>,
-    router: Option<CompiledRouter>,
     assets: CompiledAssets,
 }
 
@@ -259,15 +258,6 @@ pub struct CompiledDriver {
     pub config: DriverConfig,
 }
 
-/// The indexed router configuration preserved for final runtime assembly.
-///
-/// The authored pathname is deliberately gone: build tooling consumes this
-/// logical asset identity and never has to reopen the source tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompiledRouter {
-    pub asset: AssetId,
-}
-
 /// Deterministic compiled runtime assets.
 #[derive(Debug, Clone, Default)]
 pub struct CompiledAssets(BTreeMap<AssetId, Vec<u8>>);
@@ -295,13 +285,12 @@ impl SourceSet {
             component_roots: self.component_roots,
         };
         let (robot, services, drivers) = resolved.compile_model(&manifest)?;
-        let (assets, router) = resolved.compile_assets(&project_root, &manifest, &robot)?;
+        let assets = resolved.compile_assets(&project_root, &manifest, &robot)?;
 
         Ok(CompiledProject {
             robot,
             services,
             drivers,
-            router,
             assets,
         })
     }
@@ -559,7 +548,7 @@ impl ResolvedSources {
         project_root: &Path,
         manifest: &normalized::Robot,
         robot: &phoxal_model::Robot,
-    ) -> Result<(CompiledAssets, Option<CompiledRouter>), CompileError> {
+    ) -> Result<CompiledAssets, CompileError> {
         let mut assets = CompiledAssets::default();
         let mut collect = |root: &Path, staged: &str| -> Result<(), CompileError> {
             collect_files(&root.join("meshes"), staged, &mut assets).map_err(|source| {
@@ -582,31 +571,7 @@ impl ResolvedSources {
                 });
             }
         }
-        let router = if let Some(relative) = &manifest.router_config {
-            let source = self.robot_relative(relative)?;
-            let bytes = std::fs::read(&source).map_err(|source_error| CompileError::Assets {
-                root: project_root.to_path_buf(),
-                source: AssetError::Read {
-                    path: source.clone(),
-                    source: source_error,
-                },
-            })?;
-            let asset =
-                AssetId::new("robot/router.json5").map_err(|source| CompileError::Assets {
-                    root: project_root.to_path_buf(),
-                    source: AssetError::Id { source },
-                })?;
-            assets
-                .insert(asset.clone(), bytes)
-                .map_err(|source| CompileError::Assets {
-                    root: project_root.to_path_buf(),
-                    source,
-                })?;
-            Some(CompiledRouter { asset })
-        } else {
-            None
-        };
-        Ok((assets, router))
+        Ok(assets)
     }
 }
 
@@ -627,11 +592,6 @@ impl CompiledProject {
     }
 
     #[must_use]
-    pub const fn router(&self) -> Option<&CompiledRouter> {
-        self.router.as_ref()
-    }
-
-    #[must_use]
     pub const fn assets(&self) -> &CompiledAssets {
         &self.assets
     }
@@ -643,16 +603,9 @@ impl CompiledProject {
         phoxal_model::Robot,
         Vec<CompiledService>,
         Vec<CompiledDriver>,
-        Option<CompiledRouter>,
         CompiledAssets,
     ) {
-        (
-            self.robot,
-            self.services,
-            self.drivers,
-            self.router,
-            self.assets,
-        )
+        (self.robot, self.services, self.drivers, self.assets)
     }
 }
 
