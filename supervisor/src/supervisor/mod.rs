@@ -66,14 +66,12 @@ pub(crate) async fn run(requested_root: &Path) -> Result<()> {
     state.step_done(StartupStepKind::Bundle);
     let shutdown = CancellationToken::new();
     // Installed before anything is launched, and owning nothing but the token:
-    // a signal that arrives mid-startup is queued by the handler and cancels
-    // the same token the API `stop` command cancels, so the graph is never
-    // orphaned by a supervisor that died under a default disposition.
-    let terminating = tokio::spawn(signal::cancel_on_termination(shutdown.clone())?);
+    // a signal that arrives mid-startup cancels the same token the API `stop`
+    // command cancels, so the graph is never orphaned by a supervisor that
+    // died under a default disposition. One execution per process, so the
+    // handler is never uninstalled.
+    signal::cancel_on_termination(shutdown.clone())?;
     let outcome = execute(runtime, &paths, &state, shutdown.clone()).await;
-    // The listener exists for the duration of one execution; the run is over,
-    // so it must not survive it.
-    terminating.abort();
     shutdown.cancel();
     if let Err(error) = &outcome
         && state.failure().is_none()

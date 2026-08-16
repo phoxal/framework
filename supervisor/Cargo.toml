@@ -20,6 +20,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+# `termination`: SIGTERM and SIGHUP alongside SIGINT, so every "stop" signal
+# reaches the one orderly shutdown path.
+ctrlc = { workspace = true }
 libc = { workspace = true }
 phoxal-bundle = { workspace = true }
 # `router` opens the embedded Zenoh router in this process.
