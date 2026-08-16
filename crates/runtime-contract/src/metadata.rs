@@ -4,12 +4,11 @@
 //! section. The document states the exact framework train the binary was built
 //! from - the one compatibility identity two Phoxal processes compare, by the
 //! compatibility line the two trains belong to - plus the participant's own
-//! facts: what it is, what it requires, and the config it accepts. The record
-//! stays exact so it can name its train; the comparison is the line. The same
-//! contract is persisted with the reusable
-//! artifact in a runtime bundle; keeping one type for both boundaries prevents
-//! a binary's identity and compatibility claims from being copied into a second
-//! DTO.
+//! facts: what it is and the config it accepts. The record stays exact so it can
+//! name its train; the comparison is the line.
+//!
+//! Only build-time tooling reads it: the CLI, when it stages a binary or
+//! generates a config schema. No bundle and no runtime process consults it.
 //!
 //! The document's own `schema` tag is a format discriminator, not a negotiated
 //! identity: a reader refuses a tag it does not implement before it reads a
@@ -20,12 +19,8 @@ use serde::{Deserialize, Serialize};
 use crate::identity::ParticipantArtifactId;
 use crate::version::FrameworkVersion;
 use crate::wire_schema::{
-    DescribeWire, EnumRepresentation, FieldPresence, VariantBody, WireField, WireSchema,
-    WireVariant,
+    DescribeWire, EnumRepresentation, VariantBody, WireField, WireSchema, WireVariant,
 };
-
-/// Maximum participant instances in one compiled runtime execution.
-pub const MAX_RUNTIME_PARTICIPANTS: usize = 64;
 
 /// The format tag of the embedded participant-metadata document.
 ///
@@ -40,9 +35,8 @@ pub const PARTICIPANT_METADATA_SCHEMA_TAG: &str = "phoxal/participant-metadata/v
 /// The complete compatibility contract embedded in one reusable participant
 /// artifact.
 ///
-/// This is the single contract value shared by binary metadata and the
-/// persisted runtime bundle. In particular, it does not contain a launched
-/// instance id: one artifact may serve many runtime participant instances.
+/// It does not contain a launched instance id: one artifact may serve many
+/// launched participants.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantContract {
@@ -54,8 +48,6 @@ pub struct ParticipantContract {
     pub id: ParticipantArtifactId,
     /// The role kind declared by the artifact's role macro.
     pub kind: ParticipantKind,
-    /// The optional static topology requirement.
-    pub requirement: Option<ParticipantRequirement>,
     /// The exact JSON Schema emitted for the artifact's config type.
     pub config_schema: serde_json::Value,
 }
@@ -68,18 +60,12 @@ pub struct ParticipantContract {
 // two against each other rather than trusting either.
 impl DescribeWire for ParticipantContract {
     // Invariant: this states what the derived `Serialize` above writes - one
-    // map of the five declared field names, with `requirement` decodable while
-    // absent because it is an `Option`.
+    // map of the four declared field names.
     fn wire_schema() -> WireSchema {
         WireSchema::structure([
             WireField::required("framework", FrameworkVersion::wire_schema()),
             WireField::required("id", ParticipantArtifactId::wire_schema()),
             WireField::required("kind", ParticipantKind::wire_schema()),
-            WireField::new(
-                "requirement",
-                WireSchema::option(ParticipantRequirement::wire_schema()),
-                FieldPresence::Defaulted,
-            ),
             WireField::required("config_schema", serde_json::Value::wire_schema()),
         ])
     }
@@ -93,7 +79,6 @@ impl DescribeWire for ParticipantContract {
 pub enum ParticipantKind {
     Service,
     Driver,
-    Simulator,
     /// The one mandatory root brain: the robot project's composition root,
     /// built from the root Cargo package and staged as `bin/brain`.
     Brain,
@@ -108,14 +93,13 @@ impl ParticipantKind {
         match self {
             ParticipantKind::Service => "service",
             ParticipantKind::Driver => "driver",
-            ParticipantKind::Simulator => "simulator",
             ParticipantKind::Brain => "brain",
         }
     }
 
     /// Every kind, so the wire declaration and `as_str` cannot cover different
     /// sets.
-    const ALL: [Self; 4] = [Self::Service, Self::Driver, Self::Simulator, Self::Brain];
+    const ALL: [Self; 3] = [Self::Service, Self::Driver, Self::Brain];
 }
 
 impl DescribeWire for ParticipantKind {
@@ -126,41 +110,6 @@ impl DescribeWire for ParticipantKind {
         WireSchema::enumeration(
             EnumRepresentation::ExternallyTagged,
             ParticipantKind::ALL.map(|kind| WireVariant::new(kind.as_str(), VariantBody::Unit)),
-        )
-    }
-}
-
-/// The one topology requirement a participant binary may currently declare.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParticipantRequirement {
-    /// The stock `drive` service's topology and motor-command contract.
-    DifferentialDriveVelocity,
-}
-
-impl ParticipantRequirement {
-    /// The canonical wire token, identical to the serde rename.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::DifferentialDriveVelocity => "differential_drive_velocity",
-        }
-    }
-
-    /// Every requirement, so the wire declaration and `as_str` cannot cover
-    /// different sets.
-    const ALL: [Self; 1] = [Self::DifferentialDriveVelocity];
-}
-
-impl DescribeWire for ParticipantRequirement {
-    // Invariant: this states what the derived `Serialize` above writes - one
-    // externally tagged unit variant, spelled by the `snake_case` rename that
-    // `as_str` also returns.
-    fn wire_schema() -> WireSchema {
-        WireSchema::enumeration(
-            EnumRepresentation::ExternallyTagged,
-            ParticipantRequirement::ALL
-                .map(|requirement| WireVariant::new(requirement.as_str(), VariantBody::Unit)),
         )
     }
 }
@@ -230,10 +179,8 @@ mod tests {
     use super::*;
 
     fn record(fields: &str) -> Vec<u8> {
-        format!(
-            r#"{{"schema":"phoxal/participant-metadata/v0","framework":"0.57.2","requirement":null,{fields}}}"#
-        )
-        .into_bytes()
+        format!(r#"{{"schema":"phoxal/participant-metadata/v0","framework":"0.57.2",{fields}}}"#)
+            .into_bytes()
     }
 
     #[test]
@@ -246,7 +193,6 @@ mod tests {
         assert_eq!(contract.framework, FrameworkVersion::new(0, 57, 2));
         assert_eq!(contract.id.as_str(), "drive");
         assert_eq!(contract.kind, ParticipantKind::Service);
-        assert_eq!(contract.requirement, None);
         assert_eq!(contract.config_schema, serde_json::json!({"type": "null"}));
     }
 
@@ -264,12 +210,7 @@ mod tests {
 
     #[test]
     fn the_kind_wire_token_is_the_serde_rename() {
-        for kind in [
-            ParticipantKind::Service,
-            ParticipantKind::Driver,
-            ParticipantKind::Simulator,
-            ParticipantKind::Brain,
-        ] {
+        for kind in ParticipantKind::ALL {
             let json = serde_json::to_string(&kind).expect("a unit variant serializes");
             assert_eq!(json, format!("\"{}\"", kind.as_str()));
         }
@@ -279,7 +220,7 @@ mod tests {
     /// grammar it does not implement before it reads a field.
     #[test]
     fn an_unknown_schema_tag_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","framework":"0.57.2","id":"drive","kind":"service","requirement":null,"config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","framework":"0.57.2","id":"drive","kind":"service","config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
     }
 
@@ -289,7 +230,7 @@ mod tests {
     fn a_non_canonical_framework_version_is_rejected() {
         for framework in ["\"v0.57.2\"", "\"0.57\"", "\"0.57.2-rc.1\"", "null"] {
             let bytes = format!(
-                r#"{{"schema":"phoxal/participant-metadata/v0","framework":{framework},"id":"drive","kind":"service","requirement":null,"config_schema":null}}"#
+                r#"{{"schema":"phoxal/participant-metadata/v0","framework":{framework},"id":"drive","kind":"service","config_schema":null}}"#
             )
             .into_bytes();
             assert!(
@@ -311,7 +252,7 @@ mod tests {
 
     #[test]
     fn a_record_missing_its_framework_version_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","requirement":null,"config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
     }
 
@@ -325,7 +266,6 @@ mod tests {
                 framework: FrameworkVersion::CURRENT,
                 id: "drive",
                 kind: ParticipantKind::Service,
-                requirement: Some(ParticipantRequirement::DifferentialDriveVelocity),
                 config_schema: serde_json::json!({"type": "null"}),
             },
         };
@@ -337,27 +277,6 @@ mod tests {
         assert_eq!(
             ParticipantMetadata::wire_schema(),
             crate::emit::ParticipantMetadataRecord::wire_schema()
-        );
-    }
-
-    /// The declared shape says an absent `requirement` still decodes, so the
-    /// parser has to agree.
-    #[test]
-    fn an_absent_requirement_decodes_exactly_as_the_declared_shape_says() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","framework":"0.57.2","id":"drive","kind":"service","config_schema":null}"#;
-        let metadata =
-            ParticipantMetadata::from_bytes(bytes).expect("an absent optional field decodes");
-        assert_eq!(metadata.contract().requirement, None);
-    }
-
-    #[test]
-    fn requirement_tokens_round_trip() {
-        let requirement = ParticipantRequirement::DifferentialDriveVelocity;
-        let json = serde_json::to_string(&requirement).expect("requirement serializes");
-        assert_eq!(json, format!("\"{}\"", requirement.as_str()));
-        assert_eq!(
-            serde_json::from_str::<ParticipantRequirement>(&json).expect("requirement parses"),
-            requirement
         );
     }
 }

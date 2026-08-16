@@ -14,7 +14,7 @@
 //! against the trains already published on the line, and refuse a candidate
 //! version too small for what its contracts changed.
 //!
-//! The schema tags on persisted documents (`phoxal/runtime-bundle/v0`,
+//! The schema tags on persisted documents (`phoxal/manifest/v0`,
 //! `phoxal/participant-metadata/v0`) are not identities of this kind. They are
 //! parse-time format discriminators owned by the document that carries them: a
 //! reader refuses a tag it does not implement before it looks at any field.

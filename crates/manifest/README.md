@@ -1,14 +1,23 @@
 # phoxal-manifest
 
 Compiler for authored Phoxal project manifests. It parses project source files,
-validates and resolves them, and produces a canonical `phoxal-model` robot plus
-source-owned service/driver facts, and deterministic assets for build tooling
-such as `phoxal-cli`. It never invents the final simulator or process graph.
+validates and resolves them, and produces one canonical `phoxal-model` robot plus
+the deterministic assets that go beside it, for build tooling such as
+`phoxal-cli`.
 
-The persisted runtime artifact is owned by the sibling `phoxal-bundle` crate.
-This compiler emits source-owned canonical values and deterministic asset
-bytes for build tooling; it does not read or write `runtime.json`, and runtime
-processes do not depend on this crate.
+Everything the compiled robot says is in that one value: its `services` with
+their configuration, its `components` with their driver blocks, and its
+`component_types` with each type's simulation folded in. There is no second list
+of services or drivers to keep in step with it.
+
+`SourceSet::compile` takes the official service set as an argument. Which
+services are official is a build-tooling fact that changes with the packages the
+CLI resolves, so the framework holds no list of its own; the caller's set is
+merged with the authored `services:` map, and an authored entry wins.
+
+Where the compiled robot is written - `manifest.json` beside `assets/` and
+`bin/` - is owned by the sibling `phoxal-bundle` crate. Runtime processes do not
+depend on this crate.
 
 ## Authored documents
 

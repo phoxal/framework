@@ -532,14 +532,15 @@ mod tests {
         let instance_id = crate::identity::ComponentInstanceId::new("wheel-1")
             .expect("the component instance id is normalized");
         let instance = crate::compiler::component_instance(
-            instance_id.clone(),
             component_type.clone(),
             crate::identity::LinkId::new("component_mount"),
             BTreeMap::new(),
+            BTreeMap::new(),
+            None,
         );
         let components = BTreeMap::from([(
             component_type,
-            crate::compiler::component(BTreeMap::new(), component),
+            crate::compiler::component(BTreeMap::new(), component, None),
         )]);
         let instances = BTreeMap::from([(instance_id, instance)]);
 
@@ -570,14 +571,15 @@ mod tests {
         let instance_id = crate::identity::ComponentInstanceId::new("tool-1")
             .expect("the test component instance id is normalized");
         let instance = crate::compiler::component_instance(
-            instance_id.clone(),
             component_type.clone(),
             crate::identity::LinkId::new("arm"),
             BTreeMap::new(),
+            BTreeMap::new(),
+            None,
         );
         let components = BTreeMap::from([(
             component_type,
-            crate::compiler::component(BTreeMap::new(), component),
+            crate::compiler::component(BTreeMap::new(), component, None),
         )]);
         let instances = BTreeMap::from([(instance_id, instance)]);
 

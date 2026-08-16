@@ -166,6 +166,17 @@ topology_identifier!(
     "component instance id"
 );
 
+topology_identifier!(
+    /// The identity of one service the compiled robot runs.
+    ///
+    /// A service's id is also the participant id it is launched under and the
+    /// name of its executable in `bin/`, so it obeys the same token grammar as
+    /// every other launched identity.
+    ServiceId,
+    Service,
+    "service id"
+);
+
 /// A topology identifier that is not one normalized token.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TopologyIdError {
@@ -173,6 +184,8 @@ pub enum TopologyIdError {
     Robot(String),
     #[error("component instance id must be a non-empty normalized token, got {0:?}")]
     ComponentInstance(String),
+    #[error("service id must be a non-empty normalized token, got {0:?}")]
+    Service(String),
 }
 
 /// The identity of one participant instance in a compiled runtime topology.

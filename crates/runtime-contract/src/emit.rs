@@ -19,9 +19,7 @@
 
 use serde::Serialize;
 
-use crate::metadata::{
-    ParticipantContract, ParticipantKind, ParticipantMetadata, ParticipantRequirement,
-};
+use crate::metadata::{ParticipantContract, ParticipantKind, ParticipantMetadata};
 use crate::version::FrameworkVersion;
 use crate::wire_schema::{DescribeWire, WireSchema};
 
@@ -47,7 +45,6 @@ pub struct ParticipantContractRecord<'a> {
     pub framework: FrameworkVersion,
     pub id: &'a str,
     pub kind: ParticipantKind,
-    pub requirement: Option<ParticipantRequirement>,
     pub config_schema: serde_json::Value,
 }
 
@@ -98,21 +95,12 @@ macro_rules! participant_metadata_json {
         framework = $framework:expr,
         id = $id:expr,
         kind = $kind:expr,
-        requirement = $requirement:expr,
         config_schema = $config_schema:expr $(,)?
     ) => {{
         // `concatcp!` takes constants, not method calls, so each value resolves
         // to its canonical spelling one step earlier.
         const __PHOXAL_FRAMEWORK: &str = $framework;
         const __PHOXAL_KIND: &str = $kind.as_str();
-        const __PHOXAL_REQUIREMENT: &str = match $requirement {
-            Some(requirement) => match requirement {
-                $crate::metadata::ParticipantRequirement::DifferentialDriveVelocity => {
-                    "\"differential_drive_velocity\""
-                }
-            },
-            None => "null",
-        };
 
         $crate::emit::concatcp!(
             "{\"schema\":\"phoxal/participant-metadata/v0\",\"framework\":\"",
@@ -121,9 +109,7 @@ macro_rules! participant_metadata_json {
             $id,
             "\",\"kind\":\"",
             __PHOXAL_KIND,
-            "\",\"requirement\":",
-            __PHOXAL_REQUIREMENT,
-            ",\"config_schema\":",
+            "\",\"config_schema\":",
             $config_schema,
             "}"
         )
@@ -141,7 +127,6 @@ mod tests {
         framework = FrameworkVersion::CURRENT_SPELLING,
         id = "drive",
         kind = ParticipantKind::Service,
-        requirement = None,
         config_schema = CONFIG_SCHEMA,
     );
 
@@ -151,7 +136,6 @@ mod tests {
                 framework: FrameworkVersion::CURRENT,
                 id: "drive",
                 kind: ParticipantKind::Service,
-                requirement: None,
                 config_schema: serde_json::json!({"type": "null"}),
             },
         }
@@ -187,7 +171,6 @@ mod tests {
         assert_eq!(contract.framework, FrameworkVersion::CURRENT);
         assert_eq!(contract.id.as_str(), "drive");
         assert_eq!(contract.kind, ParticipantKind::Service);
-        assert_eq!(contract.requirement, None);
         assert_eq!(contract.config_schema, serde_json::json!({"type": "null"}));
     }
 

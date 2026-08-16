@@ -35,12 +35,6 @@ pub struct Manifest {
     /// Sequence and scalar values replace earlier values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extends: Vec<PathBuf>,
-    /// The time domain this robot runs on.
-    ///
-    /// Authored documents omit it and get [`Clock::Real`]; finalization writes
-    /// the resolved value explicitly into the bundle's `robot.yaml`.
-    #[serde(default)]
-    pub clock: Clock,
     pub robot: RobotSection,
     /// The user services this robot runs, keyed by service identity, each with
     /// its user-owned configuration. The Cargo workspace is the candidate set
@@ -53,32 +47,6 @@ pub struct Manifest {
     /// is the root Cargo package's binary, never an authored service.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub services: BTreeMap<String, UserService>,
-}
-
-/// Authored `clock:` - the time domain the robot runs on.
-///
-/// This mirrors [`phoxal_model::Clock`] rather than reusing it: the canonical
-/// value deliberately carries no wire form, and the exhaustive [`From`] impl
-/// below turns any future divergence between the two into a compile error.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Clock {
-    /// Host wall/monotonic time driven by real hardware.
-    #[default]
-    Real,
-    /// Time published by a simulation world authority.
-    Simulated,
-}
-
-impl From<Clock> for phoxal_model::Clock {
-    fn from(clock: Clock) -> Self {
-        match clock {
-            Clock::Real => Self::Real,
-            Clock::Simulated => Self::Simulated,
-        }
-    }
 }
 
 /// The participant identity of the one mandatory root brain.
@@ -125,8 +93,8 @@ pub struct Component {
     pub component: String,
     pub mount_link: String,
     /// Hardware connection metadata. Its presence is what declares a component
-    /// driver participant for this instance, and its body is that participant's
-    /// configuration.
+    /// driver for this instance, and its body is that driver's configuration.
+    /// The driver's participant id is the instance id this block sits under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<DriverConfig>,
     /// What each capability on this instance is declared to be for.
@@ -135,7 +103,7 @@ pub struct Component {
     /// decided from the roles its capabilities declare, so that a robot with
     /// no capability serving a role does not start the service that consumes
     /// it. The compiler resolves these keys against the selected component
-    /// document and persists the typed assignment in `runtime.json`.
+    /// document and persists the typed assignment in `manifest.json`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub roles: BTreeMap<String, Vec<CapabilityRole>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -343,7 +311,6 @@ impl Manifest {
 
         Ok(crate::normalized::Robot {
             id: self.robot.id,
-            clock: self.clock.into(),
             structure: self.robot.structure,
             kinematic: self.robot.kinematic,
             motion_limits: self.robot.motion_limits,
@@ -463,8 +430,6 @@ mod tests {
     use crate::source::SourceError;
     use crate::source::robot::Manifest;
 
-    use super::Clock;
-
     /// The rules a rejected document broke, or an empty list when it failed
     /// before validation ran at all.
     fn robot_violations(error: &SourceError) -> &[super::ValidationError] {
@@ -552,12 +517,14 @@ services:
         Ok(())
     }
 
+    /// A driver block is a bundle fact, not a launch decision: whether the
+    /// robot is driven by hardware or by a simulator is decided when the CLI
+    /// chooses what to start, so the authored document always carries it.
     #[test]
-    fn simulated_source_may_declare_driver_facts_for_finalization() -> anyhow::Result<()> {
+    fn a_component_declares_its_driver_unconditionally() -> anyhow::Result<()> {
         let manifest = Manifest::parse(
             r#"
 schema: phoxal/robot/v0
-clock: simulated
 robot:
   id: test-bot
   motion_limits:
@@ -576,7 +543,6 @@ robot:
 "#,
         )?;
         let Manifest::V0(manifest) = manifest;
-        assert_eq!(manifest.clock, Clock::Simulated);
         assert!(manifest.robot.components["drive"].driver.is_some());
         Ok(())
     }
@@ -827,8 +793,8 @@ robot:
 
         let yaml = serde_yaml::to_string(&robot)?;
         assert!(
-            yaml.starts_with("schema: phoxal/robot/v0\nclock: real\nrobot:\n"),
-            "the schema tag leads, and the resolved clock is always explicit: {yaml}"
+            yaml.starts_with("schema: phoxal/robot/v0\nrobot:\n"),
+            "the schema tag leads: {yaml}"
         );
 
         Ok(())

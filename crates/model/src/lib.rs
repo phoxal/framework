@@ -1,12 +1,15 @@
 //! Canonical immutable runtime robot model.
 //!
-//! The model is constructed by source/build tooling or decoded from the
-//! validated runtime bundle; its wire shape is owned by `phoxal-bundle`.
+//! The model is constructed by source/build tooling and decoded from the
+//! bundle's `manifest.json`. [`manifest`] owns that document: its schema tag
+//! and the envelope around the [`Robot`] body. `phoxal-bundle` owns where the
+//! file sits and how it is read.
 //!
 //! # Paths
 //!
 //! Concepts live in the module that owns them: [`asset`], [`builder`],
-//! [`component`], [`identity`], [`robot`], [`simulation`], [`structure`].
+//! [`component`], [`identity`], [`manifest`], [`robot`], [`simulation`],
+//! [`structure`].
 //!
 //! The crate root is a deliberate facade over the handful of names a consumer
 //! meets first, so that loading, reading or composing a robot does not require
@@ -25,6 +28,7 @@ pub mod builder;
 pub mod component;
 pub mod footprint;
 pub mod identity;
+pub mod manifest;
 pub mod robot;
 pub mod simulation;
 pub mod structure;
@@ -40,4 +44,5 @@ pub use error::{
     PoseOwner, StructureError,
 };
 pub use footprint::FootprintEnvelope;
-pub use robot::{Clock, Robot};
+pub use manifest::ManifestDocument;
+pub use robot::Robot;

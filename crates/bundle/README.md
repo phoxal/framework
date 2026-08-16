@@ -1,31 +1,35 @@
 # phoxal-bundle
 
-Persisted runtime bundle contract for Phoxal.
+The bundle layout, and plain readers and writers for it.
 
-`phoxal-manifest` compiles authored YAML/URDF into canonical source facts.
-Build tooling combines those facts with selected binaries and participant
-metadata to construct one [`RuntimeDocument`]. Runtime participant instances
-select reusable executable artifacts, so one staged binary can implement more
-than one component-bound process. `BundleWriter` streams those executable
-sources into a canonical executable mode and persists the document as
-`runtime.json` beside the indexed `assets/` and supervisor-only `bin/` trees.
-`RuntimeBundle::open_verified` validates the complete artifact and its
-schema, canonical model, participant set, artifact contracts, embedded config
-schemas, normalized paths, file sizes, and SHA-256 digests. `BundleWriter`
-assembles the bundle in a private sibling directory, verifies that candidate
-completely, and only then renames it onto its final name, so a target name is
-either absent or holds a complete bundle. An existing target is refused, so a
-build never modifies an installed bundle. A failed build removes its own
-staging directory.
+```text
+<bundle>/
+├── manifest.json
+├── assets/
+└── bin/
+```
 
-The reader has no source-parser or catalog dependency. A supervisor or builder
-uses `RuntimeBundle::open_verified` to verify the complete installed artifact
-once: the layout admits exactly `runtime.json`, the indexed files below
-`assets/` and `bin/`, and the directories those files need, and every indexed
-file is proven by size and digest as it is read. A participant uses
-`ParticipantBundle::open` to select one typed `ParticipantId` record before
-opening its bus; it checks participant assets lazily rather than re-hashing
-unrelated binaries, and receives one validated `ParticipantRuntimeInputs`
-value. Assets are logical and digest checked as they are read. Binaries are
-never reachable through `ParticipantAssets`, and no asset pathname API is
-exposed.
+`manifest.json` is one `phoxal_model::manifest::ManifestDocument`: the compiled
+robot under the schema tag `phoxal/manifest/v0`. There is no second document
+beside it. The expected process set is `brain` plus every key of the robot's
+`services` and `components`, which anyone holding the manifest derives, and every
+participant reads its own configuration out of the same body. A binary is found
+in `bin/` by the id its process was launched under.
+
+`RuntimeBundle::open` parses the manifest and does nothing else - the supervisor
+and every participant use the same reader, and a process the manifest never
+mentions opens the bundle exactly like one it does. `ParticipantAssets::read`
+reads a file below `assets/` by its `AssetId`; that id is already a validated
+relative path and `BundlePath` validates the join again, so a read cannot leave
+`assets/`.
+
+`BundleWriter::write` takes the manifest, the assets, and a map from
+bundle-relative destination to the executable to copy there. It assembles the
+bundle in a private sibling directory and renames it onto its final name, so the
+target is either absent or a complete bundle; an existing target is refused, and
+a failed write removes its own staging directory.
+
+Nothing here hashes anything. Integrity lives in the archive: `phoxal build`
+writes `build.phoxal` beside its `build.phoxal.sha256`, `phoxal deploy` ships
+both, and `phoxal install` refuses a mismatch. Once a bundle is on disk, what is
+on disk is trusted.

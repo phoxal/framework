@@ -17,11 +17,11 @@ use std::path::{Path, PathBuf};
 
 use phoxal_model::AssetId;
 use phoxal_model::compiler::RobotParts;
-use phoxal_model::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
-use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantArtifactIdError};
+use phoxal_model::identity::{
+    CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, ServiceId,
+};
 
 use source::SourceError;
-use source::robot::driver::DriverConfig;
 
 pub mod build_requirements;
 pub mod schema;
@@ -167,24 +167,14 @@ pub enum CompileError {
         source: AssetError,
     },
 
-    /// A source component type cannot be used as the reusable driver artifact
-    /// identity required by the runtime contract.
-    #[error(
-        "component type '{component_type}' is not a valid driver implementation identity: {source}"
-    )]
-    InvalidDriverImplementation {
-        component_type: String,
+    /// An authored driver block is not representable as the JSON configuration
+    /// the manifest hands to a driver process. This is a defect in this crate,
+    /// not in the document: the block is serde-serializable by construction.
+    #[error("failed to normalize the driver block of component instance '{instance}': {source}")]
+    DriverConfig {
+        instance: String,
         #[source]
-        source: ParticipantArtifactIdError,
-    },
-
-    /// A source service id cannot identify the reusable implementation that
-    /// build tooling must resolve.
-    #[error("service '{service}' is not a valid implementation identity: {source}")]
-    InvalidServiceImplementation {
-        service: String,
-        #[source]
-        source: ParticipantArtifactIdError,
+        source: serde_json::Error,
     },
 }
 
@@ -223,39 +213,16 @@ pub enum AssetError {
 }
 
 /// The complete source compilation result handed to build tooling.
+///
+/// There is nothing here beside the robot and its assets. What used to be a
+/// parallel service list and driver list is inside the robot: a service is a
+/// `services` entry with its configuration, and a driver is a `components` entry
+/// whose `driver` block is present. Build tooling reads the process set off the
+/// robot rather than off a second list that could disagree with it.
 #[derive(Debug, Clone)]
 pub struct CompiledProject {
     robot: phoxal_model::Robot,
-    services: Vec<CompiledService>,
-    drivers: Vec<CompiledDriver>,
     assets: CompiledAssets,
-}
-
-/// One service declared by the authored project.
-///
-/// This is source input for build tooling, not a process or binary
-/// declaration. The tooling layer combines it with workspace/catalog facts
-/// before it creates a persisted runtime participant.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompiledService {
-    pub id: ParticipantArtifactId,
-    pub config: Option<serde_json::Value>,
-}
-
-/// One component instance whose authored source declares a hardware driver.
-///
-/// The implementation identity is retained explicitly so build tooling can
-/// stage one reusable executable for every instance that selects it. The
-/// canonical [`phoxal_model::Robot`] still resolves the component type from
-/// `component_instance`; this fact carries only source-owned driver data.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompiledDriver {
-    /// The reusable executable implementation selected for every instance of
-    /// this component type. Build tooling resolves and stages this artifact
-    /// once, then may bind it to multiple component instances.
-    pub implementation: ParticipantArtifactId,
-    pub component_instance: ComponentInstanceId,
-    pub config: DriverConfig,
 }
 
 /// Deterministic compiled runtime assets.
@@ -266,11 +233,22 @@ impl SourceSet {
     /// Compile authored YAML/URDF sources after the caller resolved component
     /// roots.
     ///
+    /// `official_services` is the set of framework-owned services this robot
+    /// runs. The framework does not know that set: which services are official
+    /// is a build-tooling fact that changes with the packages the CLI resolves,
+    /// so hardcoding it here would put the CLI's catalogue inside the compiler.
+    /// The caller supplies it, and it is merged with the authored `services:`
+    /// map - an official service the document also configures keeps the authored
+    /// configuration.
+    ///
     /// # Errors
     ///
     /// Returns the first [`CompileError`] the sources violate, named by the
     /// stage that owns the invariant.
-    pub fn compile(self) -> Result<CompiledProject, CompileError> {
+    pub fn compile(
+        self,
+        official_services: impl IntoIterator<Item = ServiceId>,
+    ) -> Result<CompiledProject, CompileError> {
         let project_root = canonicalize(&self.project_root)?;
         let robot_manifest = canonicalize(&self.robot_manifest)?;
         // The authored generation ends here: everything past this line reads
@@ -284,15 +262,10 @@ impl SourceSet {
             robot_root: project_root.clone(),
             component_roots: self.component_roots,
         };
-        let (robot, services, drivers) = resolved.compile_model(&manifest)?;
+        let robot = resolved.compile_model(&manifest, official_services)?;
         let assets = resolved.compile_assets(&project_root, &manifest, &robot)?;
 
-        Ok(CompiledProject {
-            robot,
-            services,
-            drivers,
-            assets,
-        })
+        Ok(CompiledProject { robot, assets })
     }
 }
 
@@ -303,12 +276,8 @@ pub(crate) fn referenced_asset_ids(robot: &phoxal_model::Robot) -> BTreeSet<Asse
         .asset_ids()
         .cloned()
         .collect::<BTreeSet<_>>();
-    for instance in robot.components() {
-        // A validated robot never mounts an instance of a type it did not
-        // load, so an absent component type is not reachable here.
-        if let Some(component) = robot.component_for_instance(instance.id().as_str()) {
-            ids.extend(component.structure().asset_ids().cloned());
-        }
+    for component in robot.components() {
+        ids.extend(component.component_type().structure().asset_ids().cloned());
     }
     ids
 }
@@ -329,38 +298,30 @@ impl ResolvedSources {
         })
     }
 
-    /// Build the canonical model and source-owned service/driver facts from
-    /// documents that are already resolved on disk.
+    /// Build the canonical model from documents that are already resolved on
+    /// disk.
     fn compile_model(
         &self,
         manifest: &normalized::Robot,
-    ) -> Result<
-        (
-            phoxal_model::Robot,
-            Vec<CompiledService>,
-            Vec<CompiledDriver>,
-        ),
-        CompileError,
-    > {
+        official_services: impl IntoIterator<Item = ServiceId>,
+    ) -> Result<phoxal_model::Robot, CompileError> {
         let mut component_types = BTreeMap::new();
-        let mut simulation_types = BTreeMap::new();
         for component_type in manifest.used_component_types() {
             let root = self.component_root(component_type)?.clone();
-            let (component, simulation) = self
-                .compile_component_type(component_type, &root)
-                .map_err(|source| CompileError::Component {
-                    component_type: component_type.to_string(),
-                    root,
-                    source: Box::new(source),
-                })?;
-            let type_id = self.identity(ComponentTypeId::new(component_type))?;
-            component_types.insert(type_id.clone(), component);
-            if let Some(simulation) = simulation {
-                simulation_types.insert(type_id, simulation);
-            }
+            let component =
+                self.compile_component_type(component_type, &root)
+                    .map_err(|source| CompileError::Component {
+                        component_type: component_type.to_string(),
+                        root,
+                        source: Box::new(source),
+                    })?;
+            component_types.insert(
+                self.identity(ComponentTypeId::new(component_type))?,
+                component,
+            );
         }
 
-        let mut component_instances = BTreeMap::new();
+        let mut components = BTreeMap::new();
         for (id, authored) in &manifest.instances {
             let component = component_types
                 .get(authored.component_type.as_str())
@@ -400,15 +361,26 @@ impl ResolvedSources {
                     parameters.direction_sign,
                 );
             }
-            let instance_id = self.identity(ComponentInstanceId::new(id))?;
-            component_instances.insert(
-                instance_id.clone(),
-                phoxal_model::compiler::component_instance_with_roles(
-                    instance_id,
+            // The driver block is kept in every mode. Whether a hardware driver
+            // is started is a launch decision the CLI makes; the bundle always
+            // says how the component would be driven.
+            let driver = authored
+                .driver
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|source| CompileError::DriverConfig {
+                    instance: id.clone(),
+                    source,
+                })?;
+            components.insert(
+                self.identity(ComponentInstanceId::new(id))?,
+                phoxal_model::compiler::component_instance(
                     self.identity(ComponentTypeId::new(&authored.component_type))?,
                     LinkId::new(&authored.mount_link),
                     direction_signs,
                     roles,
+                    driver,
                 ),
             );
         }
@@ -421,23 +393,46 @@ impl ResolvedSources {
                 source,
             })?;
 
-        let robot = phoxal_model::compiler::robot(RobotParts {
+        phoxal_model::compiler::robot(RobotParts {
             id: self.identity(RobotId::new(&manifest.id))?,
-            clock: manifest.clock,
             kinematic: manifest.kinematic.clone(),
             motion_limits: manifest.motion_limits,
-            component_instances,
+            services: self.compile_services(manifest, official_services)?,
+            components,
             component_types,
-            simulation_types,
             structure,
         })
         .map_err(|source| CompileError::CanonicalModel {
             path: self.robot_manifest.clone(),
             source,
-        })?;
+        })
+    }
 
-        let (services, drivers) = self.compile_source_facts(manifest)?;
-        Ok((robot, services, drivers))
+    /// Every service this robot runs: the caller's official set, then the
+    /// authored map on top of it.
+    ///
+    /// The authored entry wins, because an author who configures an official
+    /// service is configuring the one that runs, not declaring a second.
+    ///
+    /// The authored map cannot contain the reserved `brain` identity here: every
+    /// entry into this compiler validates the authored document first, and the
+    /// document's own rules own that rejection.
+    fn compile_services(
+        &self,
+        manifest: &normalized::Robot,
+        official_services: impl IntoIterator<Item = ServiceId>,
+    ) -> Result<BTreeMap<ServiceId, phoxal_model::robot::Service>, CompileError> {
+        let mut services = official_services
+            .into_iter()
+            .map(|id| (id, phoxal_model::compiler::service(None)))
+            .collect::<BTreeMap<_, _>>();
+        for (id, config) in &manifest.services {
+            services.insert(
+                self.identity(ServiceId::new(id))?,
+                phoxal_model::compiler::service(config.clone()),
+            );
+        }
+        Ok(services)
     }
 
     /// Load and normalize one component type's documents.
@@ -445,13 +440,7 @@ impl ResolvedSources {
         &self,
         component_type: &str,
         configured_root: &Path,
-    ) -> Result<
-        (
-            phoxal_model::component::Component,
-            Option<phoxal_model::simulation::Simulation>,
-        ),
-        CompileError,
-    > {
+    ) -> Result<phoxal_model::component::Component, CompileError> {
         let root = canonicalize(configured_root)?;
         let authored = source::component::Manifest::load(&root)
             .map_err(|source| CompileError::Document { source })?
@@ -464,17 +453,23 @@ impl ResolvedSources {
                 path: structure_path,
                 source,
             })?;
-        let component = phoxal_model::compiler::component(authored.capabilities, structure);
-
         let simulation_path = root.join("simulation.yaml");
-        if !simulation_path.is_file() {
-            return Ok((component, None));
-        }
-        let authored = source::simulation::Manifest::load(&simulation_path)
-            .map_err(|source| CompileError::Document { source })?
-            .normalize()?;
-        let simulation = phoxal_model::compiler::simulation(authored.capabilities, authored.links);
-        Ok((component, Some(simulation)))
+        let simulation = if simulation_path.is_file() {
+            let simulation = source::simulation::Manifest::load(&simulation_path)
+                .map_err(|source| CompileError::Document { source })?
+                .normalize()?;
+            Some(phoxal_model::compiler::simulation(
+                simulation.capabilities,
+                simulation.links,
+            ))
+        } else {
+            None
+        };
+        Ok(phoxal_model::compiler::component(
+            authored.capabilities,
+            structure,
+            simulation,
+        ))
     }
 
     /// Attribute an identifier rejection to the document that carried it.
@@ -491,54 +486,6 @@ impl ResolvedSources {
     /// Resolve a manifest-declared path against the robot root.
     fn robot_relative(&self, relative: &Path) -> Result<PathBuf, CompileError> {
         canonicalize(&self.robot_root.join(relative))
-    }
-
-    fn compile_source_facts(
-        &self,
-        manifest: &normalized::Robot,
-    ) -> Result<(Vec<CompiledService>, Vec<CompiledDriver>), CompileError> {
-        // `services` cannot contain the reserved `brain` identity here: every
-        // entry into this compiler validates the authored document first, and
-        // the document's own rules own that rejection.
-        let services = manifest
-            .services
-            .iter()
-            .map(|(id, config)| {
-                ParticipantArtifactId::new(id.clone())
-                    .map(|id| CompiledService {
-                        id,
-                        config: config.clone(),
-                    })
-                    .map_err(|source| CompileError::InvalidServiceImplementation {
-                        service: id.clone(),
-                        source,
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let drivers = manifest
-            .instances
-            .iter()
-            .filter_map(|(instance, component)| {
-                component.driver.as_ref().map(|config| {
-                    let implementation =
-                        ParticipantArtifactId::new(component.component_type.clone()).map_err(
-                            |source| CompileError::InvalidDriverImplementation {
-                                component_type: component.component_type.clone(),
-                                source,
-                            },
-                        );
-                    implementation.and_then(|implementation| {
-                        self.identity(ComponentInstanceId::new(instance))
-                            .map(|instance| CompiledDriver {
-                                implementation,
-                                component_instance: instance,
-                                config: config.clone(),
-                            })
-                    })
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((services, drivers))
     }
 
     /// Stage every mesh tree the project owns, then prove the canonical model
@@ -582,30 +529,19 @@ impl CompiledProject {
     }
 
     #[must_use]
-    pub fn services(&self) -> &[CompiledService] {
-        &self.services
-    }
-
-    #[must_use]
-    pub fn drivers(&self) -> &[CompiledDriver] {
-        &self.drivers
-    }
-
-    #[must_use]
     pub const fn assets(&self) -> &CompiledAssets {
         &self.assets
     }
 
+    /// The document this project is persisted as.
     #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        phoxal_model::Robot,
-        Vec<CompiledService>,
-        Vec<CompiledDriver>,
-        CompiledAssets,
-    ) {
-        (self.robot, self.services, self.drivers, self.assets)
+    pub fn into_document(self) -> (phoxal_model::ManifestDocument, CompiledAssets) {
+        (phoxal_model::ManifestDocument::new(self.robot), self.assets)
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (phoxal_model::Robot, CompiledAssets) {
+        (self.robot, self.assets)
     }
 }
 

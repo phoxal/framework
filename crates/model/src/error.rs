@@ -76,13 +76,6 @@ pub enum ModelError {
         id: String,
     },
 
-    /// A component instance is filed under an id other than its own.
-    #[error("component map identity '{key}' does not match embedded id '{embedded}'")]
-    ComponentIdentityMismatch {
-        key: ComponentInstanceId,
-        embedded: ComponentInstanceId,
-    },
-
     /// A component instance names a component type the model did not load.
     #[error("component '{instance}' references unknown component type '{component_type}'")]
     UnknownComponentType {
@@ -125,23 +118,19 @@ pub enum ModelError {
     },
 
     /// A persisted role key must name at least one role.
-    #[error("component '{instance}' capability '{capability_id}' has an empty role assignment")]
-    EmptyCapabilityRoles {
-        instance: ComponentInstanceId,
-        capability_id: CapabilityId,
-    },
+    ///
+    /// The component instance is not named: this is raised while the instance is
+    /// being decoded, before the map key that identifies it is in scope. serde
+    /// prefixes the field path it was decoding, which names the instance.
+    #[error("capability '{capability_id}' has an empty role assignment")]
+    EmptyCapabilityRoles { capability_id: CapabilityId },
 
     /// A persisted role list may not repeat a role and rely on set coercion.
-    #[error("component '{instance}' capability '{capability_id}' repeats role '{role}'")]
+    #[error("capability '{capability_id}' repeats role '{role}'")]
     DuplicateCapabilityRole {
-        instance: ComponentInstanceId,
         capability_id: CapabilityId,
         role: CapabilityRole,
     },
-
-    /// A simulation type has no component type to simulate.
-    #[error("simulation type '{component_type}' has no matching component type")]
-    SimulationWithoutComponentType { component_type: ComponentTypeId },
 
     /// A simulated capability has no counterpart on the component type.
     #[error("simulation capability '{component_type}.{capability_id}' has no component capability")]
@@ -199,7 +188,7 @@ pub enum ModelError {
     FootprintNonFinite,
 
     /// A compiled footprint radius is invalid, which must never enter a
-    /// runtime bundle or authorize motion.
+    /// bundle manifest or authorize motion.
     #[error("stock safety footprint radius must be finite and positive")]
     FootprintRadius,
 
@@ -218,6 +207,10 @@ impl From<phoxal_runtime_contract::identity::TopologyIdError> for ModelError {
             },
             TopologyIdError::ComponentInstance(value) => Self::NotNormalized {
                 kind: IdentifierKind::ComponentInstance,
+                value,
+            },
+            TopologyIdError::Service(value) => Self::NotNormalized {
+                kind: IdentifierKind::Service,
                 value,
             },
         }
@@ -323,6 +316,7 @@ pub enum IdentifierKind {
     ComponentType,
     ComponentInstance,
     Capability,
+    Service,
 }
 
 impl fmt::Display for IdentifierKind {
@@ -334,6 +328,7 @@ impl fmt::Display for IdentifierKind {
             Self::ComponentType => "component type",
             Self::ComponentInstance => "component instance id",
             Self::Capability => "capability id",
+            Self::Service => "service id",
         })
     }
 }

@@ -1,8 +1,8 @@
 //! Canonical logical asset identities.
 //!
-//! The filesystem layout, integrity index, and participant access fence belong
+//! The filesystem layout and the participant asset reader belong
 //! to `phoxal-bundle`. The canonical model carries only the logical identity
-//! that source compilation and the runtime document share.
+//! that source compilation and the persisted manifest share.
 
 use serde::{Deserialize, Serialize};
 

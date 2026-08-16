@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = true
-description = "Phoxal persisted runtime bundle schema, writer, reader, and integrity fence."
+description = "Phoxal bundle layout: the manifest, its assets, and its binaries."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -16,13 +16,10 @@ name = "phoxal_bundle"
 path = "src/lib.rs"
 
 [dependencies]
-jsonschema = { workspace = true }
-phoxal-macros = { workspace = true }
 phoxal-model = { workspace = true }
 phoxal-runtime-contract = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
