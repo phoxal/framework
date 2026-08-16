@@ -10,6 +10,12 @@ Releases below the first `phoxal-protocol` entry preserve the immutable
 
 ## [Unreleased]
 
+## [0.64.0](https://github.com/phoxal/framework/compare/phoxal-protocol-v0.63.0...phoxal-protocol-v0.64.0) - 2026-08-16
+
+### Added
+
+- [**breaking**] send manual intent normalized and put the robot identity in the snapshot ([#462](https://github.com/phoxal/framework/pull/462))
+
 ## [0.63.0](https://github.com/phoxal/framework/compare/phoxal-protocol-v0.62.1...phoxal-protocol-v0.63.0) - 2026-08-16
 
 ### Added
