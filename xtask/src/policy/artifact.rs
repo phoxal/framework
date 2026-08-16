@@ -1,7 +1,7 @@
 //! The official artifact package grammar: where an artifact package lives,
 //! what it is called, where it publishes, and which targets it may carry.
 //!
-//! One artifact is one Cargo package at `{services,components,simulators}/<id>`,
+//! One artifact is one Cargo package at `{services,components}/<id>`,
 //! producing exactly one binary and no library. Discovery reads the workspace
 //! metadata and rejects any package that claims to be an artifact without
 //! obeying the grammar, which is what keeps the directory, the crate name and
@@ -44,12 +44,11 @@ pub enum ArtifactKind {
     /// has exactly one binary target and no library target. `cargo package`
     /// picks the assets up by default, so they need no inclusion rules.
     Component,
-    Simulator,
 }
 
 impl ArtifactKind {
     /// Every kind, in the order discovery reports artifacts.
-    pub const ALL: [Self; 3] = [Self::Service, Self::Component, Self::Simulator];
+    pub const ALL: [Self; 2] = [Self::Service, Self::Component];
 
     /// The top-level directory this kind's packages live under.
     ///
@@ -64,7 +63,6 @@ impl ArtifactKind {
         match self {
             Self::Service => "services",
             Self::Component => "components",
-            Self::Simulator => "simulators",
         }
     }
 
@@ -79,7 +77,6 @@ impl ArtifactKind {
         match self {
             Self::Service => "service",
             Self::Component => "component",
-            Self::Simulator => "simulator",
         }
     }
 
@@ -391,7 +388,7 @@ fn relative_display(root: &Path, path: &Path) -> String {
 /// which packages the train carries. Spelled out in full rather than counted,
 /// because a package silently entering or leaving the release scope is the
 /// failure this rule exists to catch.
-const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 17] = [
+const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 16] = [
     "phoxal/component-bno085",
     "phoxal/component-ddsm115",
     "phoxal/component-oak_d_lite",
@@ -408,7 +405,6 @@ const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 17] = [
     "phoxal/service-perception",
     "phoxal/service-safety",
     "phoxal/service-video",
-    "phoxal/simulator-webots-controller",
 ];
 
 pub(super) fn the_official_artifact_release_scope_is_exact(
@@ -440,17 +436,6 @@ pub(super) fn the_official_artifact_release_scope_is_exact(
         )));
     }
 
-    let simulators = workspace
-        .official_artifacts()
-        .iter()
-        .filter(|artifact| artifact.kind == ArtifactKind::Simulator)
-        .map(OfficialArtifact::package)
-        .collect::<Vec<_>>();
-    if simulators != ["phoxal/simulator-webots-controller"] {
-        violations.push(Violation::new(format!(
-            "the workspace declares simulators {simulators:?}; expected the one Webots controller"
-        )));
-    }
     Ok(violations)
 }
 
@@ -494,11 +479,7 @@ mod tests {
     fn the_directory_and_name_segment_of_every_kind_are_pinned() {
         assert_eq!(
             ArtifactKind::ALL.map(|kind| (kind.directory(), kind.name_segment())),
-            [
-                ("services", "service"),
-                ("components", "component"),
-                ("simulators", "simulator"),
-            ]
+            [("services", "service"), ("components", "component")]
         );
     }
 
@@ -513,7 +494,7 @@ mod tests {
         let error = ArtifactKind::try_from("library").unwrap_err();
         assert_eq!(
             error.to_string(),
-            "'library' names no artifact kind; expected one of services, components, simulators"
+            "'library' names no artifact kind; expected one of services, components"
         );
     }
 
@@ -527,10 +508,6 @@ mod tests {
             ArtifactKind::Component.package_identity(&id("ddsm115")),
             "phoxal/component-ddsm115"
         );
-        assert_eq!(
-            ArtifactKind::Simulator.package_identity(&id("webots-controller")),
-            "phoxal/simulator-webots-controller"
-        );
     }
 
     /// The public identity and the crate name are two renderings of one
@@ -538,7 +515,7 @@ mod tests {
     #[test]
     fn a_package_name_parses_back_into_its_kind_and_id() {
         for kind in ArtifactKind::ALL {
-            let artifact_id = id("webots-controller");
+            let artifact_id = id("oak_d_lite");
             let package_name = kind.package_name(&artifact_id);
             assert_eq!(
                 ArtifactKind::from_package_name(&package_name),
@@ -563,10 +540,10 @@ mod tests {
     /// executables at the wrong channel entirely.
     #[test]
     fn an_executable_publishes_only_to_the_phoxal_registry() {
-        let manifest = root().join("simulators/webots-controller/Cargo.toml");
+        let manifest = root().join("components/ddsm115/Cargo.toml");
         let check = |publish: Option<&[String]>| {
             OfficialArtifact::validate_publish(
-                "phoxal-simulator-webots-controller",
+                "phoxal-component-ddsm115",
                 publish,
                 &root(),
                 &manifest,
@@ -616,12 +593,11 @@ mod tests {
                 id: id("ddsm115")
             }
         );
+        // A directory that names no kind is simply not an artifact; the
+        // simulators tree is gone and `simulators/` is now one such directory.
         assert_eq!(
             classify("simulators/webots/Cargo.toml")?,
-            ManifestClassification::Artifact {
-                kind: ArtifactKind::Simulator,
-                id: id("webots")
-            }
+            ManifestClassification::NonArtifact
         );
         Ok(())
     }

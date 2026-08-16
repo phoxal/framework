@@ -330,17 +330,7 @@ jobs:
           [[ ${#packages[@]} -gt 0 ]] || { echo "no executable packages found" >&2; exit 1; }
           echo "packaging ${#packages[@]} executables at ${TRAIN}"
           for package in "${packages[@]}"; do
-            if [[ "$package" == "phoxal-simulator-webots-controller" ]]; then
-              # The only package that cannot be verified here: it links Webots'
-              # libController, and installing Webots to prove a bin-only crate
-              # compiles is several hundred megabytes for a check CI already
-              # performs on every pull request. What is given up is narrow -
-              # that this specific `.crate` is self-contained - and the package
-              # has sources only, no assets or generated files to omit.
-              cargo package -p "$package" --no-verify
-            else
-              cargo package -p "$package"
-            fi
+            cargo package -p "$package"
           done
 
       - name: Generate GitHub App token

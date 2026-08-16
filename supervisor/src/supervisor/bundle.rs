@@ -1,10 +1,22 @@
-//! Loading the supervisor's sole persisted input.
+//! Reading the supervisor's sole persisted input, and locating the run
+//! directory that owns it.
+//!
+//! Opening a bundle parses `manifest.json` and stops there. There is nothing
+//! else to check: integrity lives in the archive, where `phoxal build` writes
+//! `build.phoxal` beside its `.sha256` and `phoxal install` refuses a mismatch.
+//! Once a bundle is on disk the supervisor trusts what is there, exactly as
+//! every participant reading the same file does. A second fence here would only
+//! re-check bytes nobody re-signed.
+//!
+//! There is no compatibility check either. The supervisor no longer launches
+//! anything, so it is not the executor of the bundle's artifacts; a client that
+//! wants to know which train built this supervisor asks `supervisor/connect`,
+//! which is the endpoint that exists to answer exactly that.
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use phoxal_bundle::RuntimeBundle;
-use phoxal_runtime_contract::version::{CompatibilityLine, FrameworkVersion};
 
 /// The bundle directory's name inside a deployment release. The supervisor is
 /// handed a bundle root and knows nothing about releases, but it does have to
@@ -15,70 +27,14 @@ const RELEASE_BUNDLE_DIR: &str = "bundle";
 /// Where a source project keeps its own release, relative to the project root.
 const PROJECT_RELEASE_SUFFIX: [&str; 2] = [".phoxal", "release"];
 
-/// A bundle built on a framework compatibility line this supervisor does not
-/// execute.
-///
-/// Two Phoxal binaries speak the same contracts exactly when they share a
-/// compatibility line, so `phoxal-supervisor` refuses a bundle whose line is
-/// not its own. It refuses the bundle before it launches a single process.
-/// Agreement among the bundle's own participants is already proven when its
-/// document is read; this is the other half of that invariant, between the
-/// bundle and its executor.
-///
-/// The supervisor names its exact train because that is the provenance an operator
-/// reports; the bundle has only a line to name, since its artifacts may have
-/// been built from different trains on it. The train behind each artifact stays
-/// readable from the document itself.
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "this bundle was built on the phoxal framework {bundle} line, but this phoxal-supervisor \
-     executes framework {supervisor}, on the {0} line; rebuild the bundle on {0}, or run a \
-     phoxal-supervisor from the \
-     {bundle} line",
-    supervisor.compatibility_line()
-)]
-pub(crate) struct IncompatibleBundle {
-    bundle: CompatibilityLine,
-    supervisor: FrameworkVersion,
-}
-
-/// Open and integrity-check the canonical `runtime.json + assets/ + bin/`
-/// boundary, then require its framework compatibility line to be exactly this
-/// supervisor's. Authored source documents are never consulted here.
-pub(crate) fn open(requested: &Path) -> Result<RuntimeBundle> {
-    let metadata = std::fs::symlink_metadata(requested).with_context(|| {
+/// Read the bundle at `root`.
+pub(crate) fn open(root: &Path) -> Result<RuntimeBundle> {
+    RuntimeBundle::open(root).with_context(|| {
         format!(
-            "phoxal-supervisor takes a compiled runtime bundle; {} does not exist",
-            requested.display()
+            "phoxal-supervisor takes a compiled bundle directory; {} is not one",
+            root.display()
         )
-    })?;
-    if !requested.is_dir() {
-        if metadata.file_type().is_file() {
-            bail!(
-                "{} is a file, not a runtime bundle; install or extract it first",
-                requested.display()
-            );
-        }
-        bail!("{} is not a runtime bundle directory", requested.display());
-    }
-    let bundle = RuntimeBundle::open_verified(requested).with_context(|| {
-        format!(
-            "{} is not a valid compiled runtime bundle",
-            requested.display()
-        )
-    })?;
-    let (bundle_line, supervisor) = (
-        bundle.document().framework_line(),
-        FrameworkVersion::CURRENT,
-    );
-    if bundle_line != supervisor.compatibility_line() {
-        return Err(IncompatibleBundle {
-            bundle: bundle_line,
-            supervisor,
-        })
-        .with_context(|| format!("{} cannot be executed here", requested.display()));
-    }
-    Ok(bundle)
+    })
 }
 
 /// The root whose volatile run directory owns this bundle.
@@ -108,116 +64,22 @@ fn strip_tail(path: &Path, tail: &[&str]) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use phoxal_bundle::{
-        AssetIndex, BinaryReference, BinarySource, BundlePath, BundleWriter, ParticipantClock,
-        Runtime, RuntimeDocument, RuntimeParticipant,
-    };
-    use phoxal_model::RobotBuilder;
-    use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantId};
-    use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantKind};
-
     use super::*;
 
-    /// Write a one-brain bundle whose artifact records `framework`, and hand
-    /// back its root. The temporary directory is returned with it because it
-    /// owns the bundle for as long as the test needs it.
-    fn bundle_built_from(framework: FrameworkVersion) -> (tempfile::TempDir, PathBuf) {
-        let root = tempfile::tempdir().expect("temporary bundle parent");
-        let source = BinarySource::open(std::env::current_exe().expect("test executable"))
-            .expect("test executable source");
-        let artifact = ParticipantArtifactId::new("brain").expect("artifact id");
-        let binary_path = BundlePath::new("bin/brain").expect("binary path");
-        let reference = BinaryReference::from_source(
-            binary_path.clone(),
-            ParticipantContract {
-                framework,
-                id: artifact.clone(),
-                kind: ParticipantKind::Brain,
-                requirement: None,
-                config_schema: serde_json::json!({"type": "null"}),
-            },
-            &source,
-        )
-        .expect("binary reference");
-        let runtime = Runtime::new(
-            RobotBuilder::new("rover").build().expect("robot"),
-            BTreeMap::from([(artifact.clone(), reference)]),
-            vec![RuntimeParticipant::new(
-                ParticipantId::new("brain").expect("participant id"),
-                artifact,
-                None,
-                None,
-                ParticipantClock::Real,
-            )],
-            AssetIndex::from_bytes(&BTreeMap::new()).expect("asset index"),
-        )
-        .expect("runtime");
-        let bundle_root = root.path().join("bundle");
-        BundleWriter::write(
-            bundle_root.clone(),
-            &RuntimeDocument::new(runtime),
-            &BTreeMap::new(),
-            &BTreeMap::from([(binary_path, source)]),
-        )
-        .expect("bundle");
-        (root, bundle_root)
-    }
-
-    /// A bundle from another compatibility line is refused before a single
-    /// process starts, and the refusal names both lines and the supervisor's own
-    /// train.
     #[test]
-    fn a_bundle_from_another_line_is_refused_naming_both_lines() {
-        let (_root, path) = bundle_built_from(FrameworkVersion::new(9, 9, 9));
-        let message = format!(
-            "{:#}",
-            open(&path).expect_err("a foreign line has no valid launch here")
-        );
-        assert!(message.contains("9.x line"), "{message}");
-        let supervisor = FrameworkVersion::CURRENT;
-        assert!(
-            message.contains(&format!("{} line", supervisor.compatibility_line())),
-            "{message}"
-        );
-        assert!(message.contains(&supervisor.to_string()), "{message}");
-    }
-
-    /// A bundle another train on this supervisor's line recorded is executed as it
-    /// stands. The trains differing is provenance, not an incompatibility, so
-    /// there is nothing here for an operator to rebuild.
-    #[test]
-    fn a_bundle_from_another_train_on_this_line_is_accepted() {
-        let supervisor = FrameworkVersion::CURRENT;
-        let neighbour = FrameworkVersion::new(
-            supervisor.major(),
-            supervisor.minor(),
-            supervisor.patch().wrapping_add(1),
-        );
-        assert_ne!(neighbour, supervisor);
-        let (_root, path) = bundle_built_from(neighbour);
-        let bundle = open(&path).expect("a train on this line executes here");
-        assert_eq!(
-            bundle.document().framework_line(),
-            supervisor.compatibility_line()
-        );
-    }
-
-    #[test]
-    fn a_source_directory_is_not_a_runtime_bundle() {
+    fn a_directory_without_a_manifest_is_not_a_bundle() {
         let dir = tempfile::tempdir().expect("temporary directory");
         std::fs::write(dir.path().join("robot.yaml"), "schema: phoxal/robot/v0\n")
             .expect("source fixture");
-        let error = open(dir.path()).expect_err("authored YAML is not runtime authority");
-        assert!(format!("{error:#}").contains("runtime.json"));
+        let error = open(dir.path()).expect_err("authored YAML is not a compiled bundle");
+        assert!(format!("{error:#}").contains("manifest.json"), "{error:#}");
     }
 
     /// The run directory a bundle's execution belongs to, for each shape a
     /// bundle root arrives in. The installed cases matter most: the unit starts
-    /// `/var/phoxal/phoxal-supervisor /var/phoxal/bundle`, and the execution's socket and
-    /// locks belong to the release, never to a directory inside the immutable
-    /// release itself.
+    /// `/var/phoxal/phoxal-supervisor /var/phoxal/bundle`, and the execution's
+    /// socket and locks belong to the release, never to a directory inside the
+    /// immutable release itself.
     #[test]
     fn a_bundle_is_owned_by_whatever_owns_the_release_it_sits_in() {
         assert_eq!(

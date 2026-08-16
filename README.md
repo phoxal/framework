@@ -10,8 +10,8 @@ published at <https://phoxal.com>.
 
 - `phoxal/` — robot-authoring facade
 - `crates/` — framework libraries
-- `supervisor/` — framework-train execution supervisor
-- `services/`, `components/`, `simulators/` — official runtime packages
+- `supervisor/` — framework-train execution observer
+- `services/`, `components/` — official runtime packages
 - `examples/` and `fixture/` — development examples and test inputs
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.

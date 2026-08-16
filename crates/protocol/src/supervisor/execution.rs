@@ -1,24 +1,32 @@
-//! Supervisor execution state and acknowledged operations, as wire values.
+//! The supervisor's execution projection, as a wire value.
 //!
-//! The framework supervisor owns the behavior these values describe - restart policy,
-//! lifecycle transitions, and what a command does to a running execution. This
-//! module owns only their shape, their bounds, and the invariants a peer may
-//! rely on after a successful decode.
+//! The supervisor observes; it does not run the graph. Every fact below is
+//! therefore an *expected versus present* fact and nothing else: which runtimes
+//! the manifest says this robot has, which of them currently hold a Ready
+//! lease, and under which producer. There is no desired state, no exit status,
+//! no restart count and no failure evidence, because the process that would
+//! have produced them is not this one - runtimes are launched by the CLI
+//! locally and by systemd on a device, and each of those already owns the child
+//! facts of what it started.
 //!
-//! Snapshot and command use this shared state and operation vocabulary, so each
-//! type has exactly one public path.
+//! This module owns the shape, the bounds, and the invariants a peer may rely
+//! on after a successful decode. What the supervisor does with them is the
+//! supervisor's.
 
-use phoxal_runtime_contract::identity::{ComponentInstanceId, ParticipantId, ProducerId};
-use phoxal_runtime_contract::metadata::{MAX_RUNTIME_PARTICIPANTS, ParticipantKind};
-use phoxal_runtime_contract::wire_schema::{DescribeWire, FieldPresence, WireField, WireSchema};
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
+use phoxal_runtime_contract::metadata::ParticipantKind;
+use phoxal_runtime_contract::wire_schema::{DescribeWire, WireField, WireSchema};
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// Maximum process rows in one snapshot, identical to the runtime bundle cap.
-pub const MAX_PROCESSES: usize = MAX_RUNTIME_PARTICIPANTS;
+/// Maximum process rows in one snapshot.
+///
+/// One row is one expected runtime, and the expected set is `brain` plus every
+/// service and every component instance the manifest declares, so this is a
+/// bound on how large a robot a snapshot can describe rather than a bound on
+/// anything a peer chooses.
+pub const MAX_PROCESSES: usize = 64;
 /// Maximum UTF-8 bytes in one short diagnostic detail.
 pub const MAX_DETAIL_BYTES: usize = 1024;
-/// Maximum UTF-8 bytes in one retained standard-error tail.
-pub const MAX_STDERR_TAIL_BYTES: usize = 8 * 1024;
 
 /// Bounded diagnostic text. Construction truncates; decoding rejects an
 /// over-budget peer so every valid value remains deliverable on the bus.
@@ -91,196 +99,57 @@ impl<const MAX: usize> DescribeWire for DiagnosticText<MAX> {
 }
 
 pub type Detail = DiagnosticText<MAX_DETAIL_BYTES>;
-pub type StderrTail = DiagnosticText<MAX_STDERR_TAIL_BYTES>;
 
-/// What the supervisor intends for one persisted participant.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum DesiredState {
-    Running,
-    /// A projection-only state: no command on this contract changes one
-    /// participant's desired state.
-    Stopped,
-}
-
-/// What the supervisor currently observes for one persisted participant.
+/// Whether one expected runtime currently holds a Ready lease.
+///
+/// These are the only two things presence can express. A runtime that never
+/// started, one that exited, and one whose host is unreachable are all
+/// `Absent` here, and deliberately so: the supervisor watches leases, so it can
+/// report that a runtime is not there but never why. Whoever launched the
+/// runtime knows why.
 #[derive(
     phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessState {
-    Starting,
-    Ready,
-    Degraded,
-    Restarting,
-    Stopping,
-    Failed,
-    Stopped,
+    Absent,
+    Present,
 }
 
-/// The process operation that produced the most recent failure.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ProcessFailureKind {
-    Spawn,
-    Exit,
-    /// Readiness never arrived within the supervisor's window.
-    ReadinessTimeout,
-    /// Readiness arrived, but from a producer the supervisor is not waiting
-    /// for: a second incarnation of the same participant is claiming the slot.
-    ReadinessConflict,
-    Cleanup,
-    ControlPlane,
-    #[serde(other)]
-    Unknown,
-}
-
-/// One unambiguous host exit cause.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[serde(tag = "exit", rename_all = "snake_case")]
-pub enum ExitStatus {
-    Code { code: i32 },
-    Signal { signal: i32 },
-}
-
-/// A normalized wall-clock diagnostic instant. Never used for runtime order.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct WallTime {
-    unix_seconds: i64,
-    nanos: u32,
-}
-
-impl WallTime {
-    /// Construct a normalized wall-clock value.
-    pub fn new(unix_seconds: i64, nanos: u32) -> Result<Self, WallTimeError> {
-        if nanos >= 1_000_000_000 {
-            return Err(WallTimeError { nanos });
-        }
-        Ok(Self {
-            unix_seconds,
-            nanos,
-        })
-    }
-
-    /// Convert a host wall-clock instant into the normalized wire form.
-    #[must_use]
-    pub fn from_system_time(value: std::time::SystemTime) -> Self {
-        match value.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-            Ok(since) => Self {
-                unix_seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
-                nanos: since.subsec_nanos(),
-            },
-            Err(before) => {
-                let before = before.duration();
-                Self {
-                    unix_seconds: i64::try_from(before.as_secs())
-                        .map_or(i64::MIN, |seconds| -seconds - 1),
-                    nanos: 1_000_000_000 - before.subsec_nanos().max(1),
-                }
-            }
-        }
-    }
-
-    #[must_use]
-    pub const fn unix_seconds(self) -> i64 {
-        self.unix_seconds
-    }
-
-    #[must_use]
-    pub const fn nanos(self) -> u32 {
-        self.nanos
-    }
-}
-
-impl<'de> Deserialize<'de> for WallTime {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire {
-            unix_seconds: i64,
-            nanos: u32,
-        }
-        let wire = Wire::deserialize(deserializer)?;
-        Self::new(wire.unix_seconds, wire.nanos).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Evidence for one participant incarnation's most recent failure.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProcessFailure {
-    pub kind: ProcessFailureKind,
-    pub occurred_at: WallTime,
-    pub exit: Option<ExitStatus>,
-    pub detail: Detail,
-    pub stderr_tail: Option<StderrTail>,
-    /// Source bytes removed while bounding `detail` and `stderr_tail`.
-    pub truncated_bytes: u32,
-}
-
-impl ProcessFailure {
-    #[must_use]
-    pub fn new(
-        kind: ProcessFailureKind,
-        occurred_at: WallTime,
-        exit: Option<ExitStatus>,
-        detail: impl AsRef<str>,
-        stderr_tail: Option<impl AsRef<str>>,
-    ) -> Self {
-        let (detail, detail_truncated) = Detail::new_with_truncation(detail);
-        let (stderr_tail, stderr_truncated) = match stderr_tail {
-            Some(value) => {
-                let (value, truncated) = StderrTail::new_with_truncation(value);
-                (Some(value), truncated)
-            }
-            None => (None, 0),
-        };
-        Self {
-            kind,
-            occurred_at,
-            exit,
-            detail,
-            stderr_tail,
-            truncated_bytes: detail_truncated.saturating_add(stderr_truncated),
-        }
-    }
-}
-
-/// One process selected by the persisted runtime document.
+/// One expected runtime of this robot, and whether it is there.
 #[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Process {
     pub participant: ParticipantId,
+    /// Derived from where the manifest names this id: `brain`, a `services`
+    /// key, or a `components` key. It is carried so a client can group rows
+    /// without re-reading the manifest.
     pub kind: ParticipantKind,
-    pub component: Option<ComponentInstanceId>,
-    pub desired: DesiredState,
     pub state: ProcessState,
-    pub pid: Option<u32>,
-    /// The exact Ready producer for this incarnation, absent until observed.
+    /// The exact producer holding the Ready lease, present exactly when
+    /// [`ProcessState::Present`] is.
     pub producer: Option<ProducerId>,
-    pub restarts: u64,
-    pub failure: Option<ProcessFailure>,
 }
 
-/// Whole-execution lifecycle owned by the supervisor.
+/// Whole-execution lifecycle, derived entirely from presence.
+///
+/// There is no failed or stopped state. A runtime being absent is not a
+/// supervisor failure - it is what `Degraded` says - and the supervisor's own
+/// death is observed by every client as the `supervisor/presence` liveliness
+/// token disappearing, which is evidence a dying process cannot publish for
+/// itself anyway.
 #[derive(
     phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Lifecycle {
+    /// At least one expected runtime has never yet been seen present.
     Starting,
+    /// Every expected runtime is present.
     Ready,
+    /// Every expected runtime has been present at some point, and some is not
+    /// present now.
     Degraded,
-    Failed,
-    Stopping,
-    Stopped,
 }
 
 /// The fixed supervisor bootstrap sequence.
@@ -299,16 +168,22 @@ pub enum Lifecycle {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum StartupStepKind {
+    /// Read `manifest.json`.
     Bundle,
+    /// Open the embedded router and the supervisor's own session on it.
     Router,
-    Participants,
 }
 
 impl StartupStepKind {
-    pub const ALL: [Self; 3] = [Self::Bundle, Self::Router, Self::Participants];
+    pub const ALL: [Self; 2] = [Self::Bundle, Self::Router];
 }
 
 /// State of one supervisor startup step.
+///
+/// There is no failed state: both steps complete before the control plane a
+/// client attaches through exists, so a step that failed has no supervisor left
+/// to publish it. A client that can read a snapshot at all is reading one whose
+/// steps are done.
 #[derive(
     phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
 )]
@@ -317,7 +192,6 @@ pub enum StartupStepState {
     Pending,
     Active,
     Done,
-    Failed,
 }
 
 /// Progress for one fixed supervisor startup step.
@@ -330,42 +204,7 @@ pub struct StartupStep {
     pub elapsed_ms: Option<u64>,
 }
 
-/// Why the execution failed when no single participant row is sufficient.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum SupervisorFailureReason {
-    InvalidBundle,
-    RouterUnavailable,
-    RouterLost,
-    LaunchFailed,
-    TeardownFailed,
-    ControlPlaneLost,
-    Internal,
-    #[serde(other)]
-    Unknown,
-}
-
-/// Whole-execution failure evidence.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SupervisorFailure {
-    pub reason: SupervisorFailureReason,
-    pub detail: Detail,
-}
-
-impl SupervisorFailure {
-    #[must_use]
-    pub fn new(reason: SupervisorFailureReason, detail: impl AsRef<str>) -> Self {
-        Self {
-            reason,
-            detail: Detail::new(detail),
-        }
-    }
-}
-
-/// Complete mutable supervisor projection at one execution-local revision.
+/// Complete supervisor projection at one execution-local revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Snapshot {
     /// Strictly increasing within one execution and incomparable across runs.
@@ -374,11 +213,10 @@ pub struct Snapshot {
     pub startup: Vec<StartupStep>,
     /// Ordered by participant id.
     pub processes: Vec<Process>,
-    pub failure: Option<SupervisorFailure>,
 }
 
 impl Snapshot {
-    /// Verify ordering, bounds, and lifecycle relationships before publication.
+    /// Verify ordering, bounds, and presence relationships before publication.
     pub fn validate(&self) -> Result<(), SnapshotError> {
         if self.processes.len() > MAX_PROCESSES {
             return Err(SnapshotError::TooManyProcesses {
@@ -418,30 +256,15 @@ impl Snapshot {
             }
         }
         for process in &self.processes {
-            if (process.kind == ParticipantKind::Driver) != process.component.is_some() {
-                return Err(SnapshotError::InvalidProcessComponent {
+            // Presence *is* the producer holding the lease, so the two can
+            // never disagree: a present row without one names no lease, and an
+            // absent row with one names a lease that is gone.
+            if process.producer.is_some() != (process.state == ProcessState::Present) {
+                return Err(SnapshotError::PresenceProducerMismatch {
                     participant: process.participant.clone(),
-                    kind: process.kind,
+                    state: process.state,
                 });
             }
-            if process.state == ProcessState::Failed && process.failure.is_none() {
-                return Err(SnapshotError::MissingProcessFailure {
-                    participant: process.participant.clone(),
-                });
-            }
-            if process.state == ProcessState::Ready && process.producer.is_none() {
-                return Err(SnapshotError::MissingReadyProducer {
-                    participant: process.participant.clone(),
-                });
-            }
-        }
-        if self.lifecycle == Lifecycle::Failed && self.failure.is_none() {
-            return Err(SnapshotError::MissingSupervisorFailure);
-        }
-        if matches!(self.lifecycle, Lifecycle::Ready | Lifecycle::Degraded)
-            && self.failure.is_some()
-        {
-            return Err(SnapshotError::UnexpectedSupervisorFailure);
         }
         Ok(())
     }
@@ -456,7 +279,6 @@ impl<'de> Deserialize<'de> for Snapshot {
             lifecycle: Lifecycle,
             startup: Vec<StartupStep>,
             processes: Vec<Process>,
-            failure: Option<SupervisorFailure>,
         }
         let wire = Wire::deserialize(deserializer)?;
         let snapshot = Self {
@@ -464,7 +286,6 @@ impl<'de> Deserialize<'de> for Snapshot {
             lifecycle: wire.lifecycle,
             startup: wire.startup,
             processes: wire.processes,
-            failure: wire.failure,
         };
         snapshot.validate().map_err(serde::de::Error::custom)?;
         Ok(snapshot)
@@ -481,14 +302,12 @@ impl Serialize for Snapshot {
             lifecycle: Lifecycle,
             startup: &'a [StartupStep],
             processes: &'a [Process],
-            failure: &'a Option<SupervisorFailure>,
         }
         Wire {
             revision: self.revision,
             lifecycle: self.lifecycle,
             startup: &self.startup,
             processes: &self.processes,
-            failure: &self.failure,
         }
         .serialize(serializer)
     }
@@ -496,9 +315,8 @@ impl Serialize for Snapshot {
 
 impl DescribeWire for Snapshot {
     // Invariant: this states what the `Serialize` above writes through its
-    // `Wire` mirror - one map of those five fields, with `failure` decodable
-    // while absent because the mirror reads it as an `Option`. The relational
-    // rules `validate` enforces are decode-time admissibility, not shape.
+    // `Wire` mirror - one map of those four fields. The relational rules
+    // `validate` enforces are decode-time admissibility, not shape.
     fn wire_schema() -> WireSchema {
         WireSchema::opaque(
             "Snapshot",
@@ -507,11 +325,6 @@ impl DescribeWire for Snapshot {
                 WireField::required("lifecycle", Lifecycle::wire_schema()),
                 WireField::required("startup", <Vec<StartupStep>>::wire_schema()),
                 WireField::required("processes", <Vec<Process>>::wire_schema()),
-                WireField::new(
-                    "failure",
-                    <Option<SupervisorFailure>>::wire_schema(),
-                    FieldPresence::Defaulted,
-                ),
             ]),
         )
     }
@@ -557,62 +370,6 @@ impl<'de> Deserialize<'de> for SnapshotDocument {
     }
 }
 
-/// One acknowledged operation requested from supervisor authority.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
-pub enum Command {
-    /// Compare-and-swap the observed Ready producer. `None` restarts only when
-    /// the supervisor also observes no Ready producer.
-    Restart {
-        participant: ParticipantId,
-        expected_producer: Option<ProducerId>,
-    },
-    Stop {
-        expected_revision: u64,
-    },
-    /// Acknowledge the current revision, then ask the host to restart.
-    Reboot {
-        expected_revision: u64,
-    },
-    /// Acknowledge the current revision, then ask the host to power off.
-    Poweroff {
-        expected_revision: u64,
-    },
-}
-
-/// Outcome of one acknowledged supervisor command.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum CommandOutcome {
-    /// The first snapshot revision that reflects the accepted command.
-    Accepted {
-        at_revision: u64,
-    },
-    Rejected {
-        reason: CommandRejection,
-    },
-}
-
-/// Typed command rejection suitable for caller branching.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum CommandRejection {
-    UnknownParticipant,
-    ProducerFenced,
-    RevisionStale,
-    Busy,
-    UnsupportedHostAction,
-    /// The supervisor's control channel is closing, so it accepts no further
-    /// operation on this execution.
-    ControlClosed,
-    #[serde(other)]
-    Unknown,
-}
-
 /// A snapshot that violates the supervisor wire invariants.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
@@ -633,43 +390,35 @@ pub enum SnapshotError {
         expected: StartupStepKind,
         actual: StartupStepKind,
     },
-    #[error("participant {participant} has an invalid component for kind {kind:?}")]
-    InvalidProcessComponent {
+    #[error("participant {participant} is {state:?} but its producer says otherwise")]
+    PresenceProducerMismatch {
         participant: ParticipantId,
-        kind: ParticipantKind,
+        state: ProcessState,
     },
-    #[error("failed participant {participant} carries no failure evidence")]
-    MissingProcessFailure { participant: ParticipantId },
-    #[error("ready participant {participant} carries no producer")]
-    MissingReadyProducer { participant: ParticipantId },
-    #[error("failed lifecycle carries no supervisor failure")]
-    MissingSupervisorFailure,
-    #[error("running lifecycle carries stale supervisor failure evidence")]
-    UnexpectedSupervisorFailure,
-}
-
-/// A wall-clock value whose nanosecond component is not normalized.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("wall-time nanos must be below 1,000,000,000, got {nanos}")]
-pub struct WallTimeError {
-    nanos: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn process(id: &str) -> Process {
+    fn producer(seed: u128) -> ProducerId {
+        ProducerId::try_from((1_u128 << 124) | seed).expect("a canonical producer id")
+    }
+
+    fn absent(id: &str) -> Process {
         Process {
             participant: ParticipantId::new(id).expect("valid participant id"),
             kind: ParticipantKind::Brain,
-            component: None,
-            desired: DesiredState::Running,
-            state: ProcessState::Starting,
-            pid: Some(42),
+            state: ProcessState::Absent,
             producer: None,
-            restarts: 0,
-            failure: None,
+        }
+    }
+
+    fn present(id: &str, seed: u128) -> Process {
+        Process {
+            state: ProcessState::Present,
+            producer: Some(producer(seed)),
+            ..absent(id)
         }
     }
 
@@ -679,29 +428,28 @@ mod tests {
             lifecycle: Lifecycle::Starting,
             startup: Vec::new(),
             processes,
-            failure: None,
         }
     }
 
     #[test]
     fn process_rows_are_ordered_and_unique() {
         assert_eq!(
-            snapshot(vec![process("brain"), process("drive")]).validate(),
+            snapshot(vec![absent("brain"), absent("drive")]).validate(),
             Ok(())
         );
         assert_eq!(
-            snapshot(vec![process("drive"), process("brain")]).validate(),
+            snapshot(vec![absent("drive"), absent("brain")]).validate(),
             Err(SnapshotError::UnorderedParticipants { index: 1 })
         );
         assert_eq!(
-            snapshot(vec![process("drive"), process("drive")]).validate(),
+            snapshot(vec![absent("drive"), absent("drive")]).validate(),
             Err(SnapshotError::DuplicateParticipant { index: 1 })
         );
     }
 
     #[test]
     fn snapshot_document_round_trips_and_rejects_unknown_fields() {
-        let document = SnapshotDocument::V0(snapshot(vec![process("brain")]));
+        let document = SnapshotDocument::V0(snapshot(vec![present("brain", 7)]));
         let encoded = rmp_serde::to_vec_named(&document).expect("snapshot encodes");
         assert_eq!(
             rmp_serde::from_slice::<SnapshotDocument>(&encoded).expect("snapshot decodes"),
@@ -713,7 +461,6 @@ mod tests {
             "lifecycle": "starting",
             "startup": [],
             "processes": [],
-            "failure": null,
             "extra": true
         }))
         .expect("malformed fixture encodes");
@@ -724,7 +471,7 @@ mod tests {
     fn bounds_and_relational_failures_are_enforced() {
         let mut too_many = snapshot(
             (0..=MAX_PROCESSES)
-                .map(|i| process(&format!("p{i}")))
+                .map(|i| absent(&format!("p{i}")))
                 .collect(),
         );
         too_many
@@ -771,47 +518,30 @@ mod tests {
         assert!(rmp_serde::from_slice::<Detail>(&encoded).is_err());
     }
 
+    /// Presence and the producer are one fact written twice, so the contract
+    /// refuses either half without the other, on validation and on encoding.
     #[test]
     fn every_snapshot_relation_is_enforced_on_validation_and_encoding() {
-        let mut ready = process("brain");
-        ready.state = ProcessState::Ready;
-        let invalid = snapshot(vec![ready]);
+        let mut without_producer = present("brain", 3);
+        without_producer.producer = None;
+        let invalid = snapshot(vec![without_producer]);
         assert!(matches!(
             invalid.validate(),
-            Err(SnapshotError::MissingReadyProducer { .. })
+            Err(SnapshotError::PresenceProducerMismatch {
+                state: ProcessState::Present,
+                ..
+            })
         ));
         assert!(rmp_serde::to_vec_named(&invalid).is_err());
 
-        let mut failed_process = process("brain");
-        failed_process.state = ProcessState::Failed;
+        let mut absent_with_producer = absent("brain");
+        absent_with_producer.producer = Some(producer(4));
         assert!(matches!(
-            snapshot(vec![failed_process]).validate(),
-            Err(SnapshotError::MissingProcessFailure { .. })
-        ));
-
-        let mut failed_supervisor = snapshot(Vec::new());
-        failed_supervisor.lifecycle = Lifecycle::Failed;
-        assert_eq!(
-            failed_supervisor.validate(),
-            Err(SnapshotError::MissingSupervisorFailure)
-        );
-
-        let mut stale_failure = snapshot(Vec::new());
-        stale_failure.lifecycle = Lifecycle::Ready;
-        stale_failure.failure = Some(SupervisorFailure::new(
-            SupervisorFailureReason::Internal,
-            "stale",
-        ));
-        assert_eq!(
-            stale_failure.validate(),
-            Err(SnapshotError::UnexpectedSupervisorFailure)
-        );
-
-        let mut component = process("brain");
-        component.component = Some(ComponentInstanceId::new("base").unwrap());
-        assert!(matches!(
-            snapshot(vec![component]).validate(),
-            Err(SnapshotError::InvalidProcessComponent { .. })
+            snapshot(vec![absent_with_producer]).validate(),
+            Err(SnapshotError::PresenceProducerMismatch {
+                state: ProcessState::Absent,
+                ..
+            })
         ));
 
         let mut startup = snapshot(Vec::new());
@@ -827,96 +557,16 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn restart_fences_both_present_and_absent_producers() {
-        for expected_producer in [
-            None,
-            Some(ProducerId::try_from((1_u128 << 124) | 43).expect("canonical producer id")),
-        ] {
-            let command = Command::Restart {
-                participant: ParticipantId::new("drive").expect("valid participant id"),
-                expected_producer,
-            };
-            let encoded = rmp_serde::to_vec_named(&command).expect("command encodes");
-            assert_eq!(
-                rmp_serde::from_slice::<Command>(&encoded).expect("command decodes"),
-                command
-            );
-        }
-    }
-
-    /// A rejection reason a peer does not know must decode as `Unknown` rather
-    /// than fail the whole reply, and every reason this contract does know must
-    /// survive a round trip under its snake_case spelling.
-    #[test]
-    fn command_rejections_round_trip_and_absorb_an_unknown_reason() {
-        for reason in [
-            CommandRejection::UnknownParticipant,
-            CommandRejection::ProducerFenced,
-            CommandRejection::RevisionStale,
-            CommandRejection::Busy,
-            CommandRejection::UnsupportedHostAction,
-            CommandRejection::ControlClosed,
-        ] {
-            let encoded = rmp_serde::to_vec_named(&reason).expect("reason encodes");
-            assert_eq!(
-                rmp_serde::from_slice::<CommandRejection>(&encoded).expect("reason decodes"),
-                reason
-            );
-        }
-        let foreign = rmp_serde::to_vec_named("invented_by_a_newer_peer").unwrap();
-        assert_eq!(
-            rmp_serde::from_slice::<CommandRejection>(&foreign).unwrap(),
-            CommandRejection::Unknown
-        );
-    }
-
-    #[test]
-    fn wall_time_rejects_non_normalized_values_at_construction_and_decode() {
-        assert!(WallTime::new(1, 1_000_000_000).is_err());
-        let encoded = rmp_serde::to_vec_named(&serde_json::json!({
-            "unix_seconds": 1,
-            "nanos": 1_000_000_000_u32,
-        }))
-        .expect("fixture encodes");
-        assert!(rmp_serde::from_slice::<WallTime>(&encoded).is_err());
-    }
-
-    /// The host clock conversion normalizes both directions around the epoch,
-    /// so a pre-epoch instant is still a decodable value.
-    #[test]
-    fn wall_time_from_a_host_instant_is_normalized_in_both_directions() {
-        let after = WallTime::from_system_time(
-            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::new(7, 250),
-        );
-        assert_eq!((after.unix_seconds(), after.nanos()), (7, 250));
-
-        let before = WallTime::from_system_time(
-            std::time::SystemTime::UNIX_EPOCH - std::time::Duration::new(7, 250),
-        );
-        assert!(before.nanos() < 1_000_000_000);
-        assert_eq!(before.unix_seconds(), -8);
-    }
-
     /// The snapshot's serializer is hand-written through a `Wire` mirror, so
     /// its declared shape is checked against the document that mirror actually
     /// produces - including the derived rows underneath it, which reach across
     /// crates for the participant, producer, and kind identities.
     #[test]
     fn the_declared_snapshot_shape_is_the_shape_the_mirror_writes() {
-        let mut failed = process("drive");
-        failed.state = ProcessState::Failed;
-        failed.producer =
-            Some(ProducerId::try_from((1_u128 << 124) | 9).expect("a canonical producer id"));
-        failed.failure = Some(ProcessFailure::new(
-            ProcessFailureKind::Exit,
-            WallTime::new(17, 250).expect("a normalized wall time"),
-            Some(ExitStatus::Code { code: 3 }),
-            "the process exited",
-            Some("stderr tail"),
-        ));
+        let mut driver = present("drive", 9);
+        driver.kind = ParticipantKind::Driver;
 
-        let mut populated = snapshot(vec![process("brain"), failed]);
+        let mut populated = snapshot(vec![absent("brain"), driver]);
         populated.lifecycle = Lifecycle::Degraded;
         populated.startup.push(StartupStep {
             kind: StartupStepKind::Bundle,
@@ -934,42 +584,11 @@ mod tests {
         assert!(json["processes"].is_array());
     }
 
-    /// The internally tagged command documents, the `#[serde(other)]` decode
-    /// fallback, and the `snake_case` variant spellings are all read from the
-    /// declaration rather than restated here.
+    /// A bounded diagnostic is one string on the wire whatever its budget is.
     #[test]
-    fn the_declared_command_shapes_are_the_shapes_serde_writes() {
-        let command = Command::Restart {
-            participant: ParticipantId::new("drive").expect("a valid participant id"),
-            expected_producer: None,
-        };
-        let json = serde_json::to_value(&command).expect("a command serializes");
-        assert_eq!(Command::wire_schema().conforms(&json), Ok(()));
-        assert_eq!(json["command"], "restart");
-
-        let outcome = CommandOutcome::Rejected {
-            reason: CommandRejection::Busy,
-        };
-        let json = serde_json::to_value(outcome).expect("an outcome serializes");
-        assert_eq!(CommandOutcome::wire_schema().conforms(&json), Ok(()));
-
-        let rejections = CommandRejection::wire_schema();
-        let WireSchema::Enum { variants, .. } = &rejections else {
-            panic!("a rejection is a sum type: {rejections:?}");
-        };
-        assert!(
-            variants.iter().any(|variant| variant.name == "unknown"
-                && variant.body == phoxal_runtime_contract::wire_schema::VariantBody::Other),
-            "the unknown-reason fallback is part of the wire shape: {variants:?}"
-        );
-    }
-
-    /// A bounded diagnostic is one string on the wire whatever its budget is,
-    /// so both aliases declare the same shape.
-    #[test]
-    fn every_diagnostic_budget_declares_the_one_text_shape() {
-        assert_eq!(Detail::wire_schema(), StderrTail::wire_schema());
+    fn a_diagnostic_budget_declares_the_one_text_shape() {
         let json = serde_json::to_value(Detail::new("bounded")).expect("a detail serializes");
+        assert_eq!(Detail::wire_schema(), WireSchema::opaque("DiagnosticText", WireSchema::String));
         assert_eq!(Detail::wire_schema().conforms(&json), Ok(()));
     }
 
@@ -977,9 +596,7 @@ mod tests {
     fn startup_all_is_exhaustive() {
         for kind in StartupStepKind::ALL {
             match kind {
-                StartupStepKind::Bundle
-                | StartupStepKind::Router
-                | StartupStepKind::Participants => {}
+                StartupStepKind::Bundle | StartupStepKind::Router => {}
             }
         }
     }

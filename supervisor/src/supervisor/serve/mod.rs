@@ -15,30 +15,21 @@ use phoxal_bus::{
 };
 use phoxal_model::robot::KinematicConfig;
 use phoxal_protocol::supervisor;
+use phoxal_protocol::supervisor::command::{Command, CommandOutcome, CommandRejection};
 use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
 use phoxal_protocol::supervisor::execution::SnapshotDocument;
-use phoxal_protocol::supervisor::execution::{Command, CommandOutcome, CommandRejection};
 use phoxal_runtime_contract::version::FrameworkVersion;
-use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::state::ExecutionState;
-use crate::process::spec::SupervisorAction;
 
 mod logs;
 mod telemetry;
 
-#[derive(Clone)]
-pub(crate) struct Control {
-    pub(crate) actions: mpsc::Sender<SupervisorAction>,
-    pub(crate) stop: CancellationToken,
-}
-
 pub(crate) async fn serve(
     bus: BusHandle,
     state: ExecutionState,
-    control: Control,
     bundle: RuntimeBundle,
     shutdown: CancellationToken,
 ) -> Result<()> {
@@ -48,7 +39,7 @@ pub(crate) async fn serve(
     tasks.spawn(serve_current(bus.clone(), state.clone()));
     tasks.spawn(serve_info(bus.clone(), bundle.clone()));
     tasks.spawn(serve_bundle(bus.clone(), bundle.root().to_path_buf()));
-    tasks.spawn(serve_commands(bus.clone(), state.clone(), control));
+    tasks.spawn(serve_commands(bus.clone(), state.clone()));
     tasks.spawn(logs::run(bus.clone()));
     tasks.spawn(telemetry::run(bus));
 
@@ -128,9 +119,8 @@ async fn serve_info(bus: BusHandle, bundle: RuntimeBundle) -> Result<()> {
             &incoming,
             &bus,
             &supervisor::info::Info {
-                robot: bundle.document().robot_id().clone(),
-                clock: bundle.document().robot().clock(),
-                manual_drive: manual_drive(bundle.document().robot()),
+                robot: bundle.robot_id().clone(),
+                manual_drive: manual_drive(bundle.robot()),
             },
         )
         .await?;
@@ -192,7 +182,12 @@ fn bundle_entry(root: &Path, requested: &str) -> supervisor::bundle::GetResponse
     })
 }
 
-async fn serve_commands(bus: BusHandle, state: ExecutionState, control: Control) -> Result<()> {
+/// The two host actions, and nothing about the robot graph.
+///
+/// The supervisor started no runtime, so it stops none: `phoxal stop` signals
+/// the processes the session that launched them recorded, and a client attached
+/// to an execution it did not start has nothing here to stop it with.
+async fn serve_commands(bus: BusHandle, state: ExecutionState) -> Result<()> {
     let server = declare::<supervisor::endpoint::command::TopicEndpoint>(&bus).await?;
     loop {
         let incoming = server.recv().await?;
@@ -201,29 +196,13 @@ async fn serve_commands(bus: BusHandle, state: ExecutionState, control: Control)
             None => continue,
         };
         let supervisor::command::Request::V0 { command: request } = request;
-        let (outcome, post_reply) = command(&state, &control, request);
-        // Acceptance must reach the client before Stop cancels the endpoint
-        // tasks; reversing these operations turns a successful stop into an
-        // ambiguous no-responder failure at the caller.
+        let (outcome, action) = command(&state, request);
+        // Acceptance reaches the client before the host is asked to go down;
+        // reversing these turns an accepted reboot into an ambiguous
+        // no-responder failure at the caller.
         reply(&incoming, &bus, &supervisor::command::Reply::V0 { outcome }).await?;
-        post_reply.apply(&control).await;
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum PostReply {
-    #[default]
-    None,
-    Stop,
-    Host(HostAction),
-}
-
-impl PostReply {
-    async fn apply(self, control: &Control) {
-        match self {
-            Self::None => {}
-            Self::Stop => control.stop.cancel(),
-            Self::Host(action) => action.request().await,
+        if let Some(action) = action {
+            action.request().await;
         }
     }
 }
@@ -253,89 +232,32 @@ impl HostAction {
     }
 }
 
-fn command(
-    state: &ExecutionState,
-    control: &Control,
-    command: Command,
-) -> (CommandOutcome, PostReply) {
-    match command {
-        Command::Restart {
-            participant,
-            expected_producer,
-        } => {
-            let Some(entry) = state.roster().resolve(&participant).cloned() else {
-                return (
-                    rejected(CommandRejection::UnknownParticipant),
-                    PostReply::None,
-                );
-            };
-            let producer = state
-                .snapshot()
-                .processes
-                .iter()
-                .find(|process| process.participant == participant)
-                .and_then(|process| process.producer);
-            if producer != expected_producer {
-                return (rejected(CommandRejection::ProducerFenced), PostReply::None);
-            }
-            let outcome = match control
-                .actions
-                .try_send(SupervisorAction::Restart { key: entry.key })
-            {
-                Ok(()) => accepted_at(state),
-                Err(mpsc::error::TrySendError::Full(_)) => rejected(CommandRejection::Busy),
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    rejected(CommandRejection::ControlClosed)
-                }
-            };
-            (outcome, PostReply::None)
-        }
-        Command::Stop { expected_revision } => {
-            let revision = state.snapshot().revision;
-            if revision != expected_revision {
-                return (rejected(CommandRejection::RevisionStale), PostReply::None);
-            }
-            (
-                CommandOutcome::Accepted {
-                    at_revision: revision,
-                },
-                PostReply::Stop,
-            )
-        }
-        Command::Reboot { expected_revision } => {
-            host_action(state, expected_revision, HostAction::Reboot)
-        }
-        Command::Poweroff { expected_revision } => {
-            host_action(state, expected_revision, HostAction::Poweroff)
-        }
-    }
-}
-
-fn host_action(
-    state: &ExecutionState,
-    expected_revision: u64,
-    action: HostAction,
-) -> (CommandOutcome, PostReply) {
+/// Decide one host request against the revision the operator asked from.
+///
+/// The guard is what makes a remote power-off safe to offer at all: it refuses
+/// an action aimed at a view of the robot that has since moved on, so an
+/// operator can never reboot a machine on the strength of a screen that was
+/// already stale when they read it.
+fn command(state: &ExecutionState, command: Command) -> (CommandOutcome, Option<HostAction>) {
+    let (expected_revision, action) = match command {
+        Command::Reboot { expected_revision } => (expected_revision, HostAction::Reboot),
+        Command::Poweroff { expected_revision } => (expected_revision, HostAction::Poweroff),
+    };
     let revision = state.snapshot().revision;
     if revision != expected_revision {
-        return (rejected(CommandRejection::RevisionStale), PostReply::None);
+        return (
+            CommandOutcome::Rejected {
+                reason: CommandRejection::RevisionStale,
+            },
+            None,
+        );
     }
     (
         CommandOutcome::Accepted {
             at_revision: revision,
         },
-        PostReply::Host(action),
+        Some(action),
     )
-}
-
-const fn rejected(reason: CommandRejection) -> CommandOutcome {
-    CommandOutcome::Rejected { reason }
-}
-
-fn accepted_at(state: &ExecutionState) -> CommandOutcome {
-    CommandOutcome::Accepted {
-        at_revision: state.snapshot().revision,
-    }
 }
 
 async fn declare<E: EndpointDescriptor>(bus: &BusHandle) -> Result<ServerQueryable> {

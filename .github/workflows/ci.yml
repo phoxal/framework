@@ -22,9 +22,10 @@ concurrency:
 # build requirements in package.metadata.phoxal.build; phoxal-manifest's
 # `workspace_build_requirements` test keeps this bootstrap input synchronized
 # with their declared union.
-# webots-rs links libController at build time, so the workspace cannot even be
-# cargo checked without a real Webots installation; the reusable workflow
-# installs it and exports WEBOTS_HOME before the clippy and test jobs build.
+# Nothing in the workspace links a native simulator any more: the Webots
+# controller lives in phoxal/simulator-webots and carries that requirement with
+# it, so this workflow installs no simulator and the checks run on a bare
+# runner.
 jobs:
   ci:
     if: >-
@@ -32,8 +33,6 @@ jobs:
       (github.event_name == 'push' &&
        !startsWith(github.event.head_commit.message, 'chore(release): release v'))
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
-    with:
-      webots-version: R2025a
     secrets: inherit
 
   # `examples/hello-rover` is a separate Cargo workspace pinned to a *published*
@@ -42,7 +41,6 @@ jobs:
   # member - it must prove the authoring surface as an external consumer sees
   # it, resolved from the registry - so this job is the only thing that compiles
   # it. `--locked` makes the committed lockfile part of the proof.
-  # It needs no Webots: the example depends on `phoxal` alone.
   hello-rover-example:
     name: examples/hello-rover
     if: >-
@@ -64,7 +62,7 @@ jobs:
   # edges no canonical crate may grow, the Zenoh feature profile, the deleted
   # surfaces that may not return, and what a committed comment may name.
   # It builds nothing it judges - every rule reads `cargo metadata`, the
-  # filesystem or Git - so it links no framework crate and installs no Webots.
+  # filesystem or Git - so it links no framework crate at all.
   # The proofs that need the framework *linked* are ordinary tests in the crates
   # that own them and run in the `ci` job's `cargo test --workspace`.
   policy:
@@ -102,8 +100,7 @@ jobs:
   # a version, so there is no version for it to be judged against. The release
   # PR is where the same comparison becomes a gate, one job below.
   # The checker compiles the five contract crates and a probe against their
-  # published counterparts; that closure has no native build requirements, so
-  # these two jobs deliberately install no Webots.
+  # published counterparts.
   compatibility-report:
     name: compatibility report
     if: >-
@@ -194,9 +191,8 @@ jobs:
   #
   # Deliberately not on pull requests: the drill answers a question no branch
   # asks, and the matrix rows are already proved by `cargo test` on every one.
-  # It reaches no registry and installs no Webots: the drill states its own
-  # baselines, and the pinned tests it runs are in `phoxal-runtime-contract` and
-  # `phoxal-protocol`, neither of which links libController.
+  # It reaches no registry: the drill states its own baselines, and the pinned
+  # tests it runs are in `phoxal-runtime-contract` and `phoxal-protocol`.
   compatibility-rehearsal:
     name: compatibility rehearsal
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

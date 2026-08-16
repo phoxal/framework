@@ -7,8 +7,7 @@
 //! decision reference - so they are a CI gate rather than a crate's tests.
 //! Every rule reads `cargo metadata`, the filesystem or Git and nothing else,
 //! which is what keeps this verb inside the runner's no-framework-crate rule:
-//! the gate never builds the stack it judges, so it needs no Webots and runs on
-//! a bare runner.
+//! the gate never builds the stack it judges, so it runs on a bare runner.
 //!
 //! The proofs that *do* need the framework linked - what a linked participant
 //! binary carries, what the facade and the process-contract crate agree on,

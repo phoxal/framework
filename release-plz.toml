@@ -7,8 +7,7 @@
 #
 # Both are listed here. Executables are listed **so their changes cut trains**:
 # a package release-plz cannot see cannot bump the version, so a commit touching
-# only `simulators/webots-controller` would otherwise produce no release PR at
-# all.
+# only `services/drive` would otherwise produce no release PR at all.
 [workspace]
 release_always = true
 dependencies_update = false
@@ -225,14 +224,6 @@ git_release_enable = false
 
 [[package]]
 name = "phoxal-service-video"
-version_group = "framework-train"
-publish = false
-changelog_update = false
-git_tag_enable = false
-git_release_enable = false
-
-[[package]]
-name = "phoxal-simulator-webots-controller"
 version_group = "framework-train"
 publish = false
 changelog_update = false

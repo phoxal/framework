@@ -1,62 +1,63 @@
-//! The supervisor's authoritative execution state.
+//! The supervisor's single publication authority.
 //!
-//! Process observations and supervisor lifecycle facts are projected through this
-//! single publication authority. Every accepted change republishes one complete snapshot at the next
-//! revision. `revision` is monotonic within the execution and is assigned here,
-//! at the single publication point, so a client that keeps the highest revision
-//! it has seen can never install an older document over a newer one.
+//! Every observation - a startup step finishing, a Ready lease appearing or
+//! disappearing - republishes one complete snapshot at the next revision.
+//! `revision` is monotonic within the execution and assigned here, so a client
+//! that keeps the highest revision it has seen can never install an older
+//! document over a newer one.
+//!
+//! Taking the next revision and installing the snapshot happen under one lock.
+//! Split, two callers could take revisions 4 and 5 and then publish them in the
+//! other order, leaving the watch channel - and therefore every attached
+//! client's `current` answer - resting on revision 4 forever.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use phoxal_protocol::supervisor::execution::{
-    Detail, Snapshot, StartupStep, StartupStepKind, StartupStepState, SupervisorFailure,
-    SupervisorFailureReason,
+    Detail, Snapshot, StartupStep, StartupStepKind, StartupStepState,
 };
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 use tokio::sync::watch;
 
-use super::projection::{ExecutionFacts, project};
-use crate::model::lifecycle::ProjectLifecycle;
-use crate::state::store::SupervisorState;
+use super::presence::Presence;
 
-/// The supervisor's startup sequence, in execution order.
-const STARTUP_SEQUENCE: [StartupStepKind; 3] = [
-    StartupStepKind::Bundle,
-    StartupStepKind::Router,
-    StartupStepKind::Participants,
-];
-
-/// Shared handle to one execution's state. Cloning shares it.
+/// Shared handle to one execution's published state. Cloning shares it.
 #[derive(Clone)]
 pub(crate) struct ExecutionState {
-    board: SupervisorState,
     inner: Arc<Inner>,
 }
 
 struct Inner {
-    board: SupervisorState,
-    data: Mutex<ExecutionData>,
-    revision: AtomicU64,
+    data: Mutex<Data>,
     published: watch::Sender<Snapshot>,
-    /// Held across "take the next revision" *and* "publish it", so two
-    /// concurrent republications can never interleave into a watch channel
-    /// that ends on the lower of the two revisions.
-    publication: Mutex<()>,
 }
 
-struct ExecutionData {
-    facts: ExecutionFacts,
+struct Data {
+    revision: u64,
+    presence: Presence,
     startup: Vec<StartupStep>,
+    /// When each currently active step began, so a finished step can report how
+    /// long it took.
     started: Vec<(StartupStepKind, Instant)>,
-    failure: Option<SupervisorFailure>,
+}
+
+impl Data {
+    fn project(&self) -> Snapshot {
+        Snapshot {
+            revision: self.revision,
+            lifecycle: self.presence.lifecycle(),
+            startup: self.startup.clone(),
+            processes: self.presence.processes(),
+        }
+    }
 }
 
 impl ExecutionState {
-    /// Start an execution from its persisted participant roster before any
-    /// startup step has begun.
-    pub(crate) fn new(board: SupervisorState, facts: ExecutionFacts) -> Self {
-        let startup: Vec<_> = STARTUP_SEQUENCE
+    /// Start an execution from its expected runtime set, before any startup
+    /// step has begun.
+    pub(crate) fn new(presence: Presence) -> Self {
+        let startup = StartupStepKind::ALL
             .into_iter()
             .map(|kind| StartupStep {
                 kind,
@@ -65,31 +66,19 @@ impl ExecutionState {
                 elapsed_ms: None,
             })
             .collect();
-        let initial = project(0, &facts, &startup, None, &board.snapshot());
-        let (published, _) = watch::channel(initial);
-        let inner = Arc::new(Inner {
-            board: board.clone(),
-            data: Mutex::new(ExecutionData {
-                facts,
-                startup,
-                started: Vec::new(),
-                failure: None,
+        let data = Data {
+            revision: 0,
+            presence,
+            startup,
+            started: Vec::new(),
+        };
+        let (published, _) = watch::channel(data.project());
+        Self {
+            inner: Arc::new(Inner {
+                data: Mutex::new(data),
+                published,
             }),
-            revision: AtomicU64::new(0),
-            published,
-            publication: Mutex::new(()),
-        });
-        let weak = Arc::downgrade(&inner);
-        board.publish_with(move |_| {
-            if let Some(inner) = weak.upgrade() {
-                Self::publish(&inner);
-            }
-        });
-        Self { board, inner }
-    }
-
-    pub(crate) fn board(&self) -> &SupervisorState {
-        &self.board
+        }
     }
 
     /// The most recently published snapshot. This is what the `current` query
@@ -98,19 +87,23 @@ impl ExecutionState {
         self.inner.published.borrow().clone()
     }
 
-    /// Observe every published snapshot. Used by the diagnostic publisher.
+    /// Observe every published snapshot, for the snapshot stream.
     pub(crate) fn subscribe(&self) -> watch::Receiver<Snapshot> {
         self.inner.published.subscribe()
     }
 
-    /// The selected process set, for resolving a command's target.
-    pub(crate) fn roster(&self) -> super::roster::Roster {
-        self.data_lock().facts.roster.clone()
+    /// Apply one participant Ready lease change.
+    pub(crate) fn record_presence(
+        &self,
+        participant: &ParticipantId,
+        producer: ProducerId,
+        ready: bool,
+    ) {
+        self.publish(|data| data.presence.record(participant, producer, ready));
     }
 
     pub(crate) fn step_active(&self, kind: StartupStepKind) {
-        {
-            let mut data = self.data_lock();
+        self.publish(|data| {
             let Some(step) = data.startup.iter_mut().find(|step| step.kind == kind) else {
                 return;
             };
@@ -120,132 +113,49 @@ impl ExecutionState {
             step.state = StartupStepState::Active;
             step.elapsed_ms = None;
             data.started.push((kind, Instant::now()));
-        }
-        self.republish();
+        });
     }
 
     pub(crate) fn step_detail(&self, kind: StartupStepKind, detail: impl AsRef<str>) {
-        {
-            let mut data = self.data_lock();
-            let Some(step) = data.startup.iter_mut().find(|step| step.kind == kind) else {
-                return;
-            };
-            step.detail = Some(Detail::new(detail));
-        }
-        self.republish();
+        self.publish(|data| {
+            if let Some(step) = data.startup.iter_mut().find(|step| step.kind == kind) {
+                step.detail = Some(Detail::new(detail));
+            }
+        });
     }
 
     pub(crate) fn step_done(&self, kind: StartupStepKind) {
-        self.finish_step(kind, StartupStepState::Done, None);
-    }
-
-    pub(crate) fn step_failed(&self, kind: StartupStepKind, detail: impl AsRef<str>) {
-        self.finish_step(
-            kind,
-            StartupStepState::Failed,
-            Some(detail.as_ref().to_string()),
-        );
-    }
-
-    fn finish_step(&self, kind: StartupStepKind, state: StartupStepState, detail: Option<String>) {
-        {
-            let mut data = self.data_lock();
+        self.publish(|data| {
             let position = data.started.iter().position(|(step, _)| *step == kind);
             let elapsed = position.map(|position| data.started.remove(position).1.elapsed());
             let Some(step) = data.startup.iter_mut().find(|step| step.kind == kind) else {
                 return;
             };
-            if step.state == state {
+            if step.state == StartupStepState::Done {
                 return;
             }
-            step.state = state;
-            if let Some(detail) = detail {
-                step.detail = Some(Detail::new(detail));
-            }
+            step.state = StartupStepState::Done;
             step.elapsed_ms = elapsed
                 .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
                 .or(step.elapsed_ms);
-        }
-        self.republish();
+        });
     }
 
-    /// Record why the execution failed, as a typed reason plus its evidence.
-    ///
-    /// First cause wins, exactly as the store's own `fail` does: an unwinding
-    /// supervisor hits several failure sites, and only the first one is the actual
-    /// cause. The store is failed in the same call, so lifecycle and reason
-    /// can never be observed apart.
-    pub(crate) fn fail(&self, reason: SupervisorFailureReason, detail: impl AsRef<str>) {
-        let detail = detail.as_ref();
-        {
-            let mut data = self.data_lock();
-            if data.failure.is_none() {
-                data.failure = Some(SupervisorFailure::new(reason, detail));
-            }
-        }
-        // The store invokes the one publication callback after atomically
-        // applying the lifecycle failure.
-        self.board.fail(detail);
+    /// Apply one change and publish the complete snapshot that results, at the
+    /// next revision.
+    fn publish(&self, change: impl FnOnce(&mut Data)) {
+        let mut data = self.lock();
+        change(&mut data);
+        data.revision = data.revision.saturating_add(1);
+        let snapshot = data.project();
+        // Sent while the lock is held, which is what makes the channel's final
+        // value the highest revision rather than whichever writer got there
+        // last. A subscriber only ever borrows the channel, never this lock, so
+        // there is no cycle to deadlock on.
+        self.inner.published.send_replace(snapshot);
     }
 
-    pub(crate) fn failure(&self) -> Option<SupervisorFailure> {
-        self.data_lock().failure.clone()
-    }
-
-    /// Rebuild and publish one complete snapshot at the next revision.
-    ///
-    /// Assigning the revision and installing the snapshot are one critical
-    /// section. Split, two callers can take revisions 4 and 5 and then publish
-    /// them in the other order, leaving the watch channel - and therefore every
-    /// attached client's `current` answer - resting on revision 4 forever.
-    pub(crate) fn republish(&self) {
-        Self::publish(&self.inner);
-    }
-
-    fn publish(inner: &Inner) {
-        let _publication = inner
-            .publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Read the authoritative board only after publication is serialized.
-        // Otherwise a delayed callback could assign a newer revision to an
-        // older clone and make clients retain stale state.
-        let board = inner.board.snapshot();
-        let revision = inner.revision.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut data = inner
-            .data
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // The wire contract refuses a `Failed` lifecycle that carries no
-        // supervisor failure, and this projection feeds the serve path's
-        // encoder: an unclassified board failure would fail that encode and
-        // kill the control plane, so a client would lose the supervisor
-        // entirely instead of learning why the graph failed. The real fix is at
-        // the source - every failure site records its typed reason before the
-        // board's lifecycle turns `Failed` (see `ParticipantStageProgress` and
-        // `process::supervise`). This classifies whatever the board already
-        // holds as evidence, so a future ordering slip degrades to a coarse
-        // reason rather than to no control plane at all.
-        if board.lifecycle == ProjectLifecycle::Failed && data.failure.is_none() {
-            data.failure = Some(SupervisorFailure::new(
-                SupervisorFailureReason::LaunchFailed,
-                board
-                    .failure
-                    .as_deref()
-                    .unwrap_or("the participant graph failed"),
-            ));
-        }
-        let snapshot = project(
-            revision,
-            &data.facts,
-            &data.startup,
-            data.failure.as_ref(),
-            &board,
-        );
-        inner.published.send_replace(snapshot);
-    }
-
-    fn data_lock(&self) -> std::sync::MutexGuard<'_, ExecutionData> {
+    fn lock(&self) -> MutexGuard<'_, Data> {
         self.inner
             .data
             .lock()
@@ -255,16 +165,22 @@ impl ExecutionState {
 
 #[cfg(test)]
 mod tests {
+    use phoxal_bus::{Codec, MessagePack};
+    use phoxal_model::RobotBuilder;
+    use phoxal_protocol::supervisor::execution::{Lifecycle, ProcessState};
+
     use super::*;
-    use crate::supervisor::roster::Roster;
 
     fn state() -> ExecutionState {
-        ExecutionState::new(
-            SupervisorState::new(),
-            ExecutionFacts {
-                roster: Roster::test_fixture(),
-            },
-        )
+        let robot = RobotBuilder::new("rover")
+            .service("drive", None)
+            .build()
+            .expect("a valid robot");
+        ExecutionState::new(Presence::for_robot(&robot).expect("an expected set"))
+    }
+
+    fn producer(seed: u128) -> ProducerId {
+        ProducerId::try_from((1_u128 << 124) | seed).expect("a canonical producer id")
     }
 
     #[test]
@@ -276,7 +192,7 @@ mod tests {
                 .iter()
                 .map(|step| step.kind)
                 .collect::<Vec<_>>(),
-            STARTUP_SEQUENCE
+            StartupStepKind::ALL
         );
         assert!(
             snapshot
@@ -285,6 +201,7 @@ mod tests {
                 .all(|step| step.state == StartupStepState::Pending)
         );
         assert_eq!(snapshot.revision, 0);
+        assert_eq!(snapshot.lifecycle, Lifecycle::Starting);
     }
 
     #[test]
@@ -293,7 +210,7 @@ mod tests {
         let mut revisions = vec![state.snapshot().revision];
         state.step_active(StartupStepKind::Bundle);
         revisions.push(state.snapshot().revision);
-        state.step_detail(StartupStepKind::Bundle, "runtime.json");
+        state.step_detail(StartupStepKind::Bundle, "manifest.json");
         revisions.push(state.snapshot().revision);
         state.step_done(StartupStepKind::Bundle);
         revisions.push(state.snapshot().revision);
@@ -311,86 +228,44 @@ mod tests {
         assert_eq!(done.state, StartupStepState::Done);
         assert_eq!(
             done.detail.as_ref().map(Detail::as_str),
-            Some("runtime.json")
+            Some("manifest.json")
         );
         assert!(done.elapsed_ms.is_some(), "a finished step is timed");
     }
 
+    /// A Ready lease reaches the published snapshot, and what is published is
+    /// always something the serve path can encode.
     #[test]
-    fn the_first_supervisor_failure_wins_and_reaches_the_snapshot_with_the_lifecycle() {
-        let state = state();
-        state.fail(SupervisorFailureReason::RouterLost, "the router went away");
-        state.fail(
-            SupervisorFailureReason::Internal,
-            "and then everything else",
-        );
-
-        let snapshot = state.snapshot();
-        let failure = snapshot.failure.expect("the failure is published");
-        assert_eq!(failure.reason, SupervisorFailureReason::RouterLost);
-        assert_eq!(failure.detail.as_str(), "the router went away");
-        assert_eq!(
-            snapshot.lifecycle,
-            phoxal_protocol::supervisor::execution::Lifecycle::Failed,
-            "the store's lifecycle and the typed reason are one update"
-        );
-    }
-
-    #[test]
-    fn a_board_failure_alone_still_publishes_a_snapshot_the_serve_path_can_encode() {
-        use phoxal_bus::{Codec, MessagePack};
-
-        let state = state();
-        state.board().fail("stage 'starting robot graph' stalled");
-
-        let snapshot = state.snapshot();
-        assert_eq!(
-            snapshot.lifecycle,
-            phoxal_protocol::supervisor::execution::Lifecycle::Failed
-        );
-        let failure = snapshot
-            .failure
-            .clone()
-            .expect("a failed lifecycle always carries its failure");
-        assert_eq!(failure.reason, SupervisorFailureReason::LaunchFailed);
-        assert_eq!(
-            failure.detail.as_str(),
-            "stage 'starting robot graph' stalled"
-        );
-        snapshot
-            .validate()
-            .expect("the wire contract accepts the published snapshot");
-        MessagePack::encode(&snapshot).expect("the serve path encodes the published snapshot");
-    }
-
-    #[test]
-    fn a_store_change_republishes_without_the_process_machinery_knowing_this_type() {
-        use crate::model::process::ProcessState;
-
+    fn a_ready_lease_republishes_an_encodable_snapshot() {
         let state = state();
         let before = state.snapshot().revision;
-        let brain = state
-            .snapshot()
-            .processes
-            .first()
-            .expect("a selected process")
-            .participant
-            .clone();
+        let drive = ParticipantId::new("drive").expect("a valid participant id");
 
-        let core = Roster::test_fixture()
-            .resolve(&brain)
-            .expect("the roster row")
-            .key
-            .clone();
-        state
-            .board()
-            .upsert_process(core.clone(), ProcessState::Ready);
-
+        state.record_presence(&drive, producer(5), true);
         let snapshot = state.snapshot();
         assert!(snapshot.revision > before);
-        assert!(
-            snapshot.processes.iter().any(|process| process.state
-                == phoxal_protocol::supervisor::execution::ProcessState::Ready)
-        );
+        let row = snapshot
+            .processes
+            .iter()
+            .find(|process| process.participant == drive)
+            .expect("the service row");
+        assert_eq!(row.state, ProcessState::Present);
+        assert_eq!(row.producer, Some(producer(5)));
+        snapshot.validate().expect("the wire contract accepts it");
+        MessagePack::encode(&snapshot).expect("the serve path encodes it");
+    }
+
+    /// A subscriber sees every revision the authority published, in order.
+    #[tokio::test]
+    async fn a_subscriber_never_observes_a_lower_revision_than_it_already_has() {
+        let state = state();
+        let mut snapshots = state.subscribe();
+        let mut seen = vec![snapshots.borrow_and_update().revision];
+        for step in StartupStepKind::ALL {
+            state.step_active(step);
+            snapshots.changed().await.expect("the authority is alive");
+            seen.push(snapshots.borrow_and_update().revision);
+        }
+        assert!(seen.windows(2).all(|pair| pair[1] > pair[0]), "{seen:?}");
     }
 }

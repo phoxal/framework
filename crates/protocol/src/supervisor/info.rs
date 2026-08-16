@@ -1,11 +1,17 @@
 //! The immutable facts of one running bundle.
 //!
 //! These are the answers that cannot change while an execution lives: which
-//! robot is running, on which clock, and - when the bundle admits manual
-//! driving at all - the geometry and limits a manual driver has to respect.
-//! Everything that can change belongs to the snapshot instead.
+//! robot is running and - when the bundle admits manual driving at all - the
+//! geometry and limits a manual driver has to respect. Everything that can
+//! change belongs to the snapshot instead.
+//!
+//! The clock is deliberately absent. A bundle records no time domain: real
+//! robot time zero is the host boot and the timeline id is the execution id,
+//! while simulation is a launch decision carried per runtime as `--simulation`
+//! and never written into the manifest. The supervisor is handed a bundle root
+//! and nothing else, so it does not know how the runtimes around it were
+//! started and would have had to invent an answer here.
 
-use phoxal_runtime_contract::clock::Clock;
 use phoxal_runtime_contract::identity::RobotId;
 
 /// Empty request for the immutable facts of one running bundle.
@@ -40,7 +46,6 @@ pub struct ManualDrive {
 #[serde(deny_unknown_fields)]
 pub struct Info {
     pub robot: RobotId,
-    pub clock: Clock,
     pub manual_drive: Option<ManualDrive>,
 }
 
@@ -61,12 +66,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Clock, Info, ManualDrive, RobotId};
+    use super::{Info, ManualDrive, RobotId};
 
     fn info(manual_drive: Option<ManualDrive>) -> Info {
         Info {
             robot: RobotId::new("rover").expect("valid robot id"),
-            clock: Clock::Real,
             manual_drive,
         }
     }

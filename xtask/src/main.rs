@@ -12,7 +12,7 @@
 //! never builds the runtime stack it checks, and the checker can never report
 //! the surface it was itself compiled against; every policy rule reads `cargo
 //! metadata`, the filesystem or Git for the same reason, so the whole runner
-//! stays buildable on a bare machine with no Webots.
+//! stays buildable on a bare machine with no toolchain beyond cargo.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
