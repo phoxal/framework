@@ -14,9 +14,8 @@
 //!
 //! There is no schedulable marker any more: every remaining role - service,
 //! driver, brain - owns a step, so a marker gating one would be satisfied by
-//! every participant that can exist. It existed to keep `#[phoxal::simulator]`
-//! out of the scheduler, and it went with that role (CAMPAIGN.md, "Roles /
-//! macros").
+//! every participant that can exist. It existed to keep the deleted simulator
+//! role out of the scheduler, and it went with that role.
 
 /// The sealing boundary for macro-emitted setup capabilities.
 #[doc(hidden)]

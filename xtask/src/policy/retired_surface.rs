@@ -136,6 +136,59 @@ pub(super) fn retired_compatibility_identities_stay_absent(
     Ok(violations)
 }
 
+/// A bundle carries one document, and a role carries no topology or world
+/// privilege. The second persisted document beside the manifest and its
+/// participant, asset and binary tables are deleted, because a table beside the
+/// manifest is a second answer to what a robot runs. The launch-time time
+/// origin and the per-participant clock declaration are deleted, because robot
+/// time zero is host boot and simulation is a launch decision, so neither is a
+/// fact a bundle or a launcher states. The topology requirement a role declared
+/// and the facade fence that made minting the world clock a participant
+/// privilege are deleted with the simulator role itself: the world clock is
+/// published by an external bus client. None of them may return under its
+/// former exact identifier or attribute spelling.
+pub(super) fn retired_bundle_and_role_vocabulary_stays_absent(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
+    // Split literals keep this rule from becoming its own only violation.
+    let identifiers = [
+        ["Runtime", "Document"].concat(),
+        ["Runtime", "Participant"].concat(),
+        ["Asset", "Index"].concat(),
+        ["Binary", "Reference"].concat(),
+        ["Execution", "Origin"].concat(),
+        ["Participant", "Clock"].concat(),
+        ["Participant", "Requirement"].concat(),
+        ["World", "AuthoritySurface"].concat(),
+        ["Simu", "lator"].concat(),
+    ];
+    // The retired role attribute is matched as literal text rather than as an
+    // identifier pair: the sibling repository the controller moved to is spelled
+    // `phoxal/simulator-webots`, and a pair rule would read that path as this
+    // attribute.
+    let role_attribute = ["phoxal::", "simulator"].concat();
+
+    let mut violations = Vec::new();
+    for relative in source_files(&subject.root)? {
+        let source = read(&subject.root, &relative)?;
+        for term in &identifiers {
+            if contains_identifier(&source, term) {
+                violations.push(Violation::new(format!(
+                    "{} contains identifier {term}",
+                    relative.display()
+                )));
+            }
+        }
+        if source.contains(&role_attribute) {
+            violations.push(Violation::new(format!(
+                "{} contains the retired role attribute {role_attribute}",
+                relative.display()
+            )));
+        }
+    }
+    Ok(violations)
+}
+
 /// Participant kind has one process-contract owner and one private macro
 /// dispatch mirror. The macro enum maps attribute roles to the contract's wire
 /// variants during expansion and never becomes an authored document field.

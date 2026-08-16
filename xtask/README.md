@@ -58,8 +58,13 @@ The corpus is the authored documents this repository already keeps - `fixture/ro
 It is a stated list rather than a glob, because a corpus that discovered itself would shrink silently when a document moved and the gate would go green by reading less.
 Nothing about it is generated: it is authored YAML and URDF, edited in the open like any other test data, and there is no compiled snapshot of it anywhere in the tree.
 
-Both sides are read the way the contract surfaces are: a probe under `target/xtask-compat/source-*` depends on `phoxal-manifest` (baseline at an exact `=x.y.z` registry version, workspace by path), compiles one project through `SourceSet::compile` - the same public entry the CLI compiles a project through - and prints the canonical model, or the refusal, as one JSON document.
+Both sides are read the way the contract surfaces are: a probe under `target/xtask-compat/source-*` depends on `phoxal-manifest` (baseline at an exact `=x.y.z` registry version, workspace by path), compiles one project through `phoxal_manifest::probe`, and prints the canonical model, or the refusal, as one JSON document.
 A probe that reached below that entry would be comparing something no author can write.
+
+`probe` exists for this checker and `phoxal-manifest` documents it as source-compatible across trains, which is what lets **one** program be spelled for both sides: the two readers are asked the same question in the same words, so a difference in the answer is a difference in the reader.
+A program that assembled the canonical document itself out of the compiler's own types would have to be respelled whenever those types moved, and would then compile against only one of the two trains - which is exactly the failure this entry retires.
+A published train from before the entry existed cannot answer at all: the probe crate fails to resolve that one path, the leg reports `unavailable`, and `report` still passes.
+`check-release` allows that only on a train that is already declaring a break - see rule 9.
 
 What this leg proves is still structure: that a document is accepted, and that it compiles to the same model.
 A change of *meaning* inside an unchanged model - a limit reinterpreted, a sign convention flipped - is fixtures' and review's job, and `--declared-impact` is where it is stated.
@@ -152,6 +157,17 @@ Post-1.0 the same rule as rule 5 applies: the shape that fits inside a line is a
 
 Do not edit the fixture to match the new reader.
 The corpus is the record of what the published framework accepted; rewriting it makes the gate agree with the change it was asked to judge.
+
+### 9. The published reader has no probe entry and the source leg did not run
+
+The report says `source: unavailable` and `check-release` refuses unless the candidate is already a breaking release.
+The published train predates `phoxal_manifest::probe`, so there is no reader on that side to ask, and for exactly one train nothing holds the source language to what the published one accepted.
+
+Carry the Conventional Commit breaking marker for that train, which is what the allowance is: a train that is already moving the line is allowed to move it without the leg's confirmation, and no other train is.
+Do not answer it by raising the version - the finding is a missing reader, not an under-sized candidate - and do not delete or rewrite the corpus to make the leg pass.
+
+The state cannot recur: the next train's baseline carries the entry, so the leg runs again on its own.
+If it *does* recur, the entry moved, and moving it is what rule 6 is about - restore the spelling `phoxal-manifest` documents as source-compatible across trains.
 
 ## What it cannot prove
 

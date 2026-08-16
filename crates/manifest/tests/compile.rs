@@ -474,3 +474,50 @@ fn driver_blocks_and_simulations_are_carried_by_the_robot_itself() {
         "a simulation is folded into the component type"
     );
 }
+
+/// The compatibility checker's stable entry answers both ways, in the two
+/// shapes it promises: an acceptance carries the persisted document and the
+/// asset identities, and a refusal carries the reader's own complaint.
+///
+/// The checker compiles one program naming exactly this function against two
+/// trains, so a rename or a reshaped document here silently disables its
+/// authored-source leg. This is what makes that a test failure instead.
+#[test]
+fn the_compatibility_probe_states_both_readings() {
+    let workspace = workspace_root();
+    let accepted = phoxal_manifest::probe(
+        sources(&workspace.join("fixture/robot/rgbd-imu-diff-drive")),
+        &official_services(&["drive"]),
+    );
+    assert_eq!(accepted["accepted"], serde_json::json!(true));
+    assert_eq!(
+        accepted["canonical"]["robot"]["schema"],
+        serde_json::json!("phoxal/manifest/v0")
+    );
+    assert!(
+        accepted["canonical"]["robot"]["services"]
+            .get("drive")
+            .is_some(),
+        "{accepted}"
+    );
+    let assets = accepted["canonical"]["assets"]
+        .as_array()
+        .expect("the accepted reading lists its assets");
+    assert!(!assets.is_empty());
+    for asset in assets {
+        assert!(asset["id"].is_string(), "{asset}");
+        assert!(asset["bytes"].is_u64(), "{asset}");
+    }
+
+    let mut broken = sources(&workspace.join("fixture/robot/rgbd-imu-diff-drive"));
+    broken.robot_manifest = workspace.join("fixture/robot/rgbd-imu-diff-drive/nowhere.yaml");
+    let rejected = phoxal_manifest::probe(broken, &official_services(&[]));
+    assert_eq!(rejected["accepted"], serde_json::json!(false));
+    assert!(
+        rejected["error"]
+            .as_str()
+            .expect("a refusal states its error")
+            .contains("nowhere.yaml"),
+        "{rejected}"
+    );
+}

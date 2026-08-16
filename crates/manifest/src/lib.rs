@@ -269,6 +269,55 @@ impl SourceSet {
     }
 }
 
+/// What this reader makes of one authored project, as one JSON document.
+///
+/// This is the stable entry point `cargo xtask compatibility` reads the
+/// authored-source leg through. That leg compiles **one** probe program against
+/// two crate sets - the published train and this workspace - and a difference
+/// in the answer is only a difference in the reader if the two were asked the
+/// same question in the same words. So the program may name nothing but this
+/// function, and this function **must stay source-compatible across trains**:
+/// renaming it, changing its parameters, or reshaping the document it returns
+/// changes the checker's instrument rather than the compiler it measures. A
+/// train that has to move it is re-baselining the source leg, and the checker
+/// reports the older side as having no probe entry until the moved one is
+/// itself published.
+///
+/// The document is `{"accepted": true, "canonical": ...}` when the project
+/// compiles and `{"accepted": false, "error": "..."}` when it does not. The
+/// canonical half is the persisted manifest document plus the identity and byte
+/// length of every compiled asset: what the comparison is about is which assets
+/// the compiler decided the model references, not the contents of a mesh.
+///
+/// `official_services` is the caller's official service set, exactly as
+/// [`SourceSet::compile`] takes it.
+#[must_use]
+pub fn probe(sources: SourceSet, official_services: &[ServiceId]) -> serde_json::Value {
+    let rejected = |error: String| serde_json::json!({"accepted": false, "error": error});
+    let compiled = match sources.compile(official_services.iter().cloned()) {
+        Ok(compiled) => compiled,
+        Err(error) => return rejected(error.to_string()),
+    };
+    let (document, assets) = compiled.into_document();
+    let assets = assets
+        .iter()
+        .map(|(id, bytes)| serde_json::json!({"bytes": bytes.len(), "id": id.as_str()}))
+        .collect::<Vec<_>>();
+    // A compiled document is serde-serializable by construction, so this arm is
+    // unreachable in practice. It is written as a refusal rather than a panic
+    // because the probe's whole job is to answer, and a checker that saw a
+    // crash could not tell a defect here from a broken build.
+    match serde_json::to_value(&document) {
+        Ok(robot) => serde_json::json!({
+            "accepted": true,
+            "canonical": {"assets": assets, "robot": robot},
+        }),
+        Err(error) => rejected(format!(
+            "failed to render the compiled manifest document: {error}"
+        )),
+    }
+}
+
 /// Every logical asset the canonical model actually references.
 pub(crate) fn referenced_asset_ids(robot: &phoxal_model::Robot) -> BTreeSet<AssetId> {
     let mut ids = robot

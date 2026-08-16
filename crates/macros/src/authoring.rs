@@ -909,9 +909,9 @@ mod tests {
         }
     }
 
-    /// The role attributes accept exactly four keys. `requirement = ...` was one
-    /// of them until the topology declaration was deleted (CAMPAIGN.md, "Roles /
-    /// macros"), so an authored crate that still spells it gets a diagnostic
+    /// The role attributes accept exactly four keys. The retired topology
+    /// declaration was one of them until it was deleted, so an authored crate
+    /// that still spells it gets a diagnostic
     /// naming the keys that remain rather than a silently ignored argument.
     #[test]
     fn a_retired_requirement_argument_is_an_unknown_key() {

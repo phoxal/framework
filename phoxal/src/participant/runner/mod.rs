@@ -19,7 +19,7 @@ use crate::participant::clock::ClockMode;
 use crate::participant::clock::ClockSource;
 #[cfg(feature = "test-harness")]
 use crate::participant::clock::real::RealClock;
-use crate::participant::launch::SupervisedLaunch;
+use crate::participant::launch::Launch;
 #[cfg(feature = "test-harness")]
 use crate::testing::TestHarness;
 
@@ -132,7 +132,7 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     // Parse the launch contract before opening anything. The host's signal is
     // installed immediately after parsing so startup teardown still follows the
     // same steady-state path.
-    let launch = SupervisedLaunch::parse()?;
+    let launch = Launch::parse()?;
     let shutdown = shutdown_signal()?;
 
     startup::run_supervised::<R, _>(launch, shutdown).await

@@ -11,8 +11,7 @@ use phoxal_runtime_contract::metadata::ParticipantKind;
 ///
 /// There is no selection step: the manifest is the robot model plus, for those
 /// that have one, each participant's own configuration, so a participant the
-/// manifest never mentions opens the bundle exactly like one it does
-/// (CAMPAIGN.md, "Participant process contract").
+/// manifest never mentions opens the bundle exactly like one it does.
 pub(crate) fn open_bundle(root: &std::path::Path) -> crate::Result<RuntimeBundle> {
     RuntimeBundle::open(root)
         .with_context(|| format!("failed to open the runtime bundle at {}", root.display()))

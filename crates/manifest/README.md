@@ -56,3 +56,10 @@ and calls a document that stopped compiling, or that compiles to a different
 canonical model, source-breaking. The remedy lives in the versioned DTO's
 `normalize`, which is the only place a generation's syntax and defaults are
 owned; see `xtask/README.md` rule 8.
+
+Both readers are asked through `probe`, the one entry that exists for that
+checker. It is deliberately tiny and **stays source-compatible across trains**,
+because the checker compiles a single program against two crate sets at once: if
+the entry moved, no one program would compile on both sides and the whole leg
+would go quiet. A published train from before it existed reports `unavailable`
+instead, which only a breaking train may release over.

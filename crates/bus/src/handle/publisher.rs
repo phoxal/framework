@@ -171,9 +171,11 @@ impl<E: StreamContract> StreamPublisher<E> {
 /// `StatePublisher`'s bound can stay the precise `StateContract` (see that
 /// type's docs).
 ///
-/// The documented way to build one is `SetupContext::world_clock_publisher` in
-/// the `phoxal` crate, gated on the world-authority surface, and this type is
-/// re-exported from neither `phoxal::bus` nor `phoxal::prelude`.
+/// There is no documented way for a participant to build one: publishing the
+/// world clock is the job of the external client that drives the simulated
+/// world, which mints this publisher through [`Self::mint`] on its own bus
+/// handle. The type is re-exported from neither `phoxal::bus` nor
+/// `phoxal::prelude`.
 pub struct WorldClockPublisher<B: WorldClockContract>(Outbox<B>);
 
 impl<B: WorldClockContract> Clone for WorldClockPublisher<B> {
@@ -192,9 +194,9 @@ impl<E: StateContract> StatePublisher<E> {
 impl<B: WorldClockContract> WorldClockPublisher<B> {
     /// Build the world-clock publisher over a topic.
     ///
-    /// Callable only by `phoxal`'s simulator setup context; see
-    /// [`crate::handle::stamp`]'s module docs for why it must nonetheless be
-    /// `pub`.
+    /// Called by the external client that drives the simulated world and owns
+    /// its clock; no participant reaches it. See [`crate::handle::stamp`]'s
+    /// module docs for the boundary that leaves this `pub`.
     #[doc(hidden)]
     pub fn mint(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
         Ok(WorldClockPublisher(Outbox::new(bus, topic)?))

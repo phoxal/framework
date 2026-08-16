@@ -11,7 +11,7 @@ use phoxal_runtime_contract::contract_surface::{
     ContractRecord, ContractSurface, LaunchArgument, LaunchValueShape,
 };
 
-use crate::participant::launch::SupervisedLaunch;
+use crate::participant::launch::Launch;
 
 /// The canonical rendering of this crate's contract surface.
 #[must_use]
@@ -21,7 +21,7 @@ pub fn contract_surface() -> String {
 
 /// Read the declared arguments off the parser, in its own declaration order.
 fn launch_arguments() -> Vec<LaunchArgument> {
-    SupervisedLaunch::command()
+    Launch::command()
         .get_arguments()
         .map(|argument| {
             LaunchArgument::new(

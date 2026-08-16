@@ -9,8 +9,8 @@ use crate::participant::lock;
 /// The real-execution clock: the host boot clock, read straight onto the
 /// execution's timeline.
 ///
-/// Robot time zero is host boot (CAMPAIGN.md, "Participant process contract"),
-/// so there is no origin to subtract and nothing for a launcher to hand over: a
+/// Robot time zero is host boot, so there is no origin to subtract and nothing
+/// for a launcher to hand over: a
 /// tick *is* a nanosecond of `CLOCK_BOOTTIME`. The domain is host-wide, so two
 /// processes on one host compute the same [`RobotInstant`] for the same physical
 /// moment without exchanging a message, and they do so without having to agree

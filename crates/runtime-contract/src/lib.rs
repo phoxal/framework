@@ -25,7 +25,6 @@
 //! - [`contract_surface`] - the record model each contract-owning crate states
 //!   its whole boundary in, built out of those shapes.
 
-pub mod clock;
 pub mod contract_surface;
 pub mod emit;
 pub mod identity;

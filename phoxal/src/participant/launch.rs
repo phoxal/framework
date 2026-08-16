@@ -3,7 +3,7 @@
 //! A launched participant receives four facts and nothing else: who it is, the
 //! bundle it reads its robot model and its own configuration from, where the
 //! router is, and whether this run follows the simulated world clock instead of
-//! the host clock (CAMPAIGN.md, "Participant process contract").  Clap is the
+//! the host clock.  Clap is the
 //! sole parser.  There is deliberately no environment fallback, JSON launch
 //! envelope, or launch-time copy of a fact the participant can learn for
 //! itself: the execution identity comes from the router it connects to, and
@@ -37,7 +37,7 @@ pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_millis(2000);
     about = "Run one participant from an installed Phoxal bundle.",
     long_about = None
 )]
-pub(crate) struct SupervisedLaunch {
+pub(crate) struct Launch {
     /// The identity this process runs under. It is the liveliness key segment,
     /// and it is what the manifest is read by: a service reads
     /// `services.<id>.config`, a driver reads `components.<id>.driver`.
@@ -64,7 +64,7 @@ pub(crate) struct SupervisedLaunch {
     pub(crate) simulation: bool,
 }
 
-impl SupervisedLaunch {
+impl Launch {
     /// Parse the process argv without consulting process environment state.
     pub(crate) fn parse() -> Result<Self> {
         Self::try_parse().map_err(anyhow::Error::from)
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn accepts_only_the_four_launch_facts() {
-        let launch = SupervisedLaunch::try_parse_from(args()).expect("valid launch argv");
+        let launch = Launch::try_parse_from(args()).expect("valid launch argv");
         assert_eq!(launch.participant_id.as_str(), "drive");
         assert_eq!(launch.bundle_root, PathBuf::from("/var/lib/phoxal/bundle"));
         assert_eq!(launch.connect_endpoints, ["tcp/router-a:7447"]);
@@ -120,7 +120,7 @@ mod tests {
     fn accepts_multiple_connect_endpoints_without_a_comma_encoding() {
         let mut argv = args();
         argv.extend(["--connect", "tcp/router-b:7447", "--simulation"]);
-        let launch = SupervisedLaunch::try_parse_from(argv).expect("valid repeated endpoints");
+        let launch = Launch::try_parse_from(argv).expect("valid repeated endpoints");
         assert_eq!(
             launch.connect_endpoints,
             ["tcp/router-a:7447", "tcp/router-b:7447"]
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn missing_required_fields_fails_before_bundle_or_bus_work() {
-        let error = SupervisedLaunch::try_parse_from(["participant-bin"])
+        let error = Launch::try_parse_from(["participant-bin"])
             .expect_err("required launch fields must not have defaults");
         assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
@@ -139,7 +139,7 @@ mod tests {
     fn a_malformed_participant_id_is_rejected() {
         let mut invalid_participant = args();
         invalid_participant[2] = "Drive";
-        assert!(SupervisedLaunch::try_parse_from(invalid_participant).is_err());
+        assert!(Launch::try_parse_from(invalid_participant).is_err());
     }
 
     /// Every flag the launch contract retired is now an unknown argument rather
@@ -154,8 +154,8 @@ mod tests {
         ] {
             let mut argv = args();
             argv.extend(retired.iter().copied());
-            let error = SupervisedLaunch::try_parse_from(argv)
-                .expect_err("a retired launch flag has no parser");
+            let error =
+                Launch::try_parse_from(argv).expect_err("a retired launch flag has no parser");
             assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{retired:?}");
         }
     }
@@ -165,7 +165,7 @@ mod tests {
     /// launch contract even if the Rust field remained unchanged.
     #[test]
     fn the_long_flag_set_is_exactly_the_four_launch_facts() {
-        let command = SupervisedLaunch::command();
+        let command = Launch::command();
         let mut longs = command
             .get_arguments()
             .filter_map(clap::Arg::get_long)
@@ -202,12 +202,12 @@ mod tests {
     fn empty_connect_endpoint_is_rejected() {
         let mut argv = args();
         argv[6] = "";
-        assert!(SupervisedLaunch::try_parse_from(argv).is_err());
+        assert!(Launch::try_parse_from(argv).is_err());
     }
 
     #[test]
     fn every_process_field_is_clap_only_and_has_no_environment_binding() {
-        let command = SupervisedLaunch::command();
+        let command = Launch::command();
         for argument in command.get_arguments() {
             assert!(
                 argument.get_env().is_none(),

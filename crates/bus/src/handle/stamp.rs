@@ -5,11 +5,11 @@
 //! [`StepToken::mint`], [`WorldStepToken`]'s minter
 //! ([`TimelineAuthority::completed_step`]) and [`TimelineAuthority::mint`] are
 //! `pub` because their only legitimate callers live in *other* crates - the
-//! runner in `phoxal`, and the simulator context it exposes - while the types
-//! live here. Rust has no visibility between "this crate" and "the world", so
-//! `pub(crate)` cannot express that boundary, and no token-based seal can
-//! either: any token this crate could hand `phoxal` is a token every other
-//! crate can obtain the same way.
+//! runner in `phoxal`, and the external client that drives a simulated world
+//! and publishes its clock - while the types live here. Rust has no visibility
+//! between "this crate" and "the world", so `pub(crate)` cannot express that
+//! boundary, and no token-based seal can either: any token this crate could
+//! hand a caller is a token every other crate can obtain the same way.
 //!
 //! So the guarantee is stated exactly as strong as it is. A participant cannot
 //! express robot time it did not reach *by accident*, and cannot do it through
@@ -19,7 +19,10 @@
 //! `StepToken::mint` can. Closing that would mean merging the api, bus, and
 //! runtime crates into one.
 //!
-//! The one crate allowed to call any of them is `phoxal`.
+//! `StepToken::mint` belongs to `phoxal`'s runner and to nothing else. The
+//! world-step minters belong to the one client that drives the simulated world;
+//! the `phoxal` facade re-exports neither of them, so a participant has no
+//! documented path to either.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -93,18 +96,16 @@ impl StepStamp for WorldStepToken {
 /// This is the narrowly scoped answer to "who may say what time it is in a
 /// world nobody schedules". A second authority in one process is rejected at
 /// mint (a per-process runtime backstop). Across processes the invariant is a
-/// selection-time one: exactly one simulator participant is launched into a
-/// simulation, and that selection is enforced by whatever launches the graph,
-/// not by anything this process can observe.
+/// selection-time one: exactly one world-authority client is attached to a
+/// simulated execution, and that selection is enforced by whatever launches the
+/// run, not by anything this process can observe.
 ///
-/// **What the type system closes.** The documented authoring surface has
-/// exactly one path to an authority - `SetupContext::timeline_authority` in the
-/// `phoxal` crate - and that method requires the world-authority surface, which
-/// is sealed behind a supertrait the role macros emit. A `#[phoxal::service]`
-/// or `#[phoxal::driver]` reaching for `ctx.timeline_authority(...)` therefore
-/// fails to compile, and this type is re-exported from neither `phoxal::bus`
-/// nor `phoxal::prelude`. That closes the accidental route; see the module docs
-/// for why [`mint`](Self::mint) cannot close the deliberate one.
+/// **What the type system closes.** The documented authoring surface has no
+/// path to an authority at all: minting a world clock is not a participant
+/// capability, so this type is re-exported from neither `phoxal::bus` nor
+/// `phoxal::prelude` and no `SetupContext` method hands one out. That closes
+/// the accidental route; see the module docs for why [`mint`](Self::mint)
+/// cannot close the deliberate one.
 pub struct TimelineAuthority {
     timeline: TimelineId,
 }
@@ -116,8 +117,8 @@ static TIMELINE_AUTHORITY_HELD: AtomicBool = AtomicBool::new(false);
 
 impl TimelineAuthority {
     /// Take this process's single timeline authority, or fail if it is already
-    /// held. Callable only by `phoxal`'s simulator setup context; see the module
-    /// docs for why it must nonetheless be `pub`.
+    /// held. Called by the external client that drives the simulated world; see
+    /// the module docs for why it must nonetheless be `pub`.
     #[doc(hidden)]
     pub fn mint(timeline: TimelineId) -> Result<Self> {
         if TIMELINE_AUTHORITY_HELD.swap(true, Ordering::AcqRel) {

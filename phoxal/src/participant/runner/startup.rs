@@ -4,8 +4,8 @@
 //! `BusOwner::open`: opening the bundle, reading this participant's own config
 //! out of it, and validating scheduler inputs. The one thing that cannot is the
 //! execution identity: it is the router's, so it is learned from the endpoints
-//! the launch names rather than handed over in argv (CAMPAIGN.md, "Participant
-//! process contract"). The live scheduler is intentionally built by the
+//! the launch names rather than handed over in argv. The live scheduler is
+//! intentionally built by the
 //! lifecycle after the potentially slow bus connection succeeds.
 
 use std::future::Future;
@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::participant::api::Participant;
 use crate::participant::clock::real::RealClock;
 use crate::participant::clock::{ClockMode, ClockReading, ClockSource};
-use crate::participant::launch::{SHUTDOWN_GRACE, SupervisedLaunch};
+use crate::participant::launch::{Launch, SHUTDOWN_GRACE};
 use crate::participant::scheduler::AnyStepScheduler;
 use anyhow::Context as _;
 use phoxal_bundle::RuntimeBundle;
@@ -43,7 +43,7 @@ pub(crate) struct PreparedRun<R: Participant, C: ClockSource> {
 }
 
 /// Run a participant from the strict launch contract.
-pub(crate) async fn run_supervised<R, S>(launch: SupervisedLaunch, shutdown: S) -> crate::Result<()>
+pub(crate) async fn run_supervised<R, S>(launch: Launch, shutdown: S) -> crate::Result<()>
 where
     R: Participant,
     S: Future<Output = ()>,
@@ -160,8 +160,8 @@ fn rendered(endpoints: &[String]) -> String {
 
 /// The real timeline of one execution.
 ///
-/// The real-clock timeline id *is* the execution (CAMPAIGN.md, "Participant
-/// process contract"), so every process in one run dates its instants on the
+/// The real-clock timeline id *is* the execution, so every process in one run
+/// dates its instants on the
 /// same world history without publishing anything. The two identities are
 /// different widths - an execution is 128 bits, a timeline is 64 - so this
 /// derives the timeline deterministically from the execution's high half rather

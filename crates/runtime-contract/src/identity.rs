@@ -398,7 +398,8 @@ fn canonical_hex(value: u128) -> String {
 /// One supervised run.
 ///
 /// The supervisor mints it once per run and every bus participant carries it:
-/// services, drivers, simulators, ad hoc publishers, and later the operator. It
+/// the brain, services, drivers, ad hoc clients such as the external simulation
+/// controller, and later the operator. It
 /// is the bus session root (`phoxal/<execution-id>`), which turns "previous-run
 /// traffic is not observed as current" from an operational assumption into a
 /// structural property. It is transport scoping and never part of a contract

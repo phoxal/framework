@@ -105,13 +105,43 @@ impl Reading {
     }
 }
 
+/// What reading one side's corpus found.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CorpusReading {
+    /// What that side's reader made of every corpus project.
+    Corpus(BTreeMap<&'static str, Reading>),
+    /// That crate set states no [probe entry], so the corpus cannot be read
+    /// through it at all.
+    ///
+    /// Every train published before the entry point existed is in this state,
+    /// which is why it is an outcome rather than a failure. It is the probe
+    /// *crate* failing to build, never the authored project failing to compile:
+    /// a refused document is a reading, and this is the absence of a reader.
+    ///
+    /// [probe entry]: https://docs.rs/phoxal-manifest
+    NoProbeEntry,
+}
+
+impl CorpusReading {
+    /// Whether a failed probe build is the crate set having no probe entry to
+    /// call, rather than a broken build.
+    ///
+    /// The program names `phoxal_manifest::probe` directly, so a crate set that
+    /// predates the entry point fails to resolve exactly that path and nothing
+    /// else.
+    fn is_missing_probe_entry(build_output: &str) -> bool {
+        build_output.contains("cannot find function `probe` in crate `phoxal_manifest`")
+            || build_output.contains("could not find `probe` in `phoxal_manifest`")
+    }
+}
+
 /// Where the checker reads one side's reading of the corpus.
 ///
 /// Compiling is the only faithful implementation; the drill and the tests state
 /// readings outright so the directional rules are proved without one.
 pub(crate) trait AuthoredDocuments {
     /// Read every corpus project through one crate set.
-    fn read(&self, side: &Side) -> Result<BTreeMap<&'static str, Reading>>;
+    fn read(&self, side: &Side) -> Result<CorpusReading>;
 }
 
 /// The corpus, read by compiling a probe against one crate set and running it
@@ -195,13 +225,18 @@ serde_json = "1"
 
 /// The probe program.
 ///
-/// One source serves both sides: it names `SourceSet` and `compile`, the entry
-/// the CLI itself compiles a project through, and nothing below them. That is
-/// the point of the comparison - the two readers are asked the same question in
-/// the same words, so a difference in the answer is a difference in the reader.
+/// One source serves both sides: it names `SourceSet` and `phoxal_manifest::probe`,
+/// the entry `phoxal-manifest` keeps source-compatible across trains precisely
+/// so this program can be spelled once, and nothing below them. That is the
+/// point of the comparison - the two readers are asked the same question in the
+/// same words, so a difference in the answer is a difference in the reader.
+///
+/// A crate set published before that entry existed fails to resolve exactly
+/// this path, which is how [`CorpusReading::NoProbeEntry`] is told apart from a
+/// broken build.
 const PROGRAM: &str = r#"//! Written by `cargo xtask compatibility`. It compiles one authored
-//! project through the public source entry and prints what this reader
-//! made of it, as one JSON document.
+//! project through this reader's compatibility probe entry and prints
+//! what the reader made of it, as one JSON document.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -224,11 +259,10 @@ fn main() {
         robot_manifest,
         component_roots: component_roots(&components_root),
     };
-    let document = match sources.compile() {
-        Ok(compiled) => serde_json::json!({"accepted": true, "canonical": canonical(&compiled)}),
-        Err(error) => serde_json::json!({"accepted": false, "error": error.to_string()}),
-    };
-    println!("{document}");
+    // The official service set is a build-tooling fact rather than an authored
+    // one, and this corpus is about what a human wrote, so the probe states
+    // none: every service in the reading came out of the document itself.
+    println!("{}", phoxal_manifest::probe(sources, &[]));
 }
 
 /// Every authorable component type in the tree, whether this project mounts it
@@ -255,48 +289,39 @@ fn component_roots(components_root: &std::path::Path) -> BTreeMap<String, PathBu
         })
         .collect()
 }
-
-/// Everything the compilation produced, in one deterministic document.
-///
-/// Asset bodies are bytes copied off disk, so they are summarized by identity
-/// and length: what this comparison is about is which assets the compiler
-/// decided the model references, not the contents of a mesh.
-fn canonical(compiled: &phoxal_manifest::CompiledProject) -> serde_json::Value {
-    serde_json::json!({
-        "robot": compiled.robot(),
-        "services": compiled
-            .services()
-            .iter()
-            .map(|service| serde_json::json!({
-                "config": service.config,
-                "id": service.id.as_str(),
-            }))
-            .collect::<Vec<_>>(),
-        "drivers": compiled
-            .drivers()
-            .iter()
-            .map(|driver| serde_json::json!({
-                "component_instance": driver.component_instance.as_str(),
-                "config": driver.config,
-                "implementation": driver.implementation.as_str(),
-            }))
-            .collect::<Vec<_>>(),
-        "assets": compiled
-            .assets()
-            .iter()
-            .map(|(id, bytes)| serde_json::json!({"bytes": bytes.len(), "id": id.as_str()}))
-            .collect::<Vec<_>>(),
-    })
-}
 "#;
 
 impl AuthoredDocuments for SourceProbe {
-    fn read(&self, side: &Side) -> Result<BTreeMap<&'static str, Reading>> {
+    fn read(&self, side: &Side) -> Result<CorpusReading> {
         let directory = self.materialize(side)?;
         eprintln!(
             "reading the {side} authored-source corpus (compiling {})",
             directory.display()
         );
+        // The probe crate is built once, before any project is read, so a
+        // published reader that predates the probe entry is recognized as the
+        // absence of a reader rather than as a corpus every project failed.
+        let build = Command::new(cargo_command())
+            .arg("build")
+            .arg("--quiet")
+            .current_dir(&directory)
+            .output()
+            .with_context(|| {
+                format!(
+                    "failed to build the authored-source probe at {}",
+                    directory.display()
+                )
+            })?;
+        if !build.status.success() {
+            let diagnostics = String::from_utf8_lossy(&build.stderr).into_owned();
+            if CorpusReading::is_missing_probe_entry(&diagnostics) {
+                return Ok(CorpusReading::NoProbeEntry);
+            }
+            bail!(
+                "the {side} authored-source probe failed to build in {}:\n{diagnostics}",
+                directory.display()
+            );
+        }
         let mut readings = BTreeMap::new();
         for project in CORPUS {
             let absolute = |relative: &str| self.workspace_root.join(relative);
@@ -337,13 +362,13 @@ impl AuthoredDocuments for SourceProbe {
             })?;
             readings.insert(project.manifest, self.relative(Reading::read(&document)?));
         }
-        Ok(readings)
+        Ok(CorpusReading::Corpus(readings))
     }
 }
 
 /// What happened to one authored project between the two readers.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum ProjectOutcome {
+pub(crate) enum ProjectOutcome {
     /// Both readers accept it and compile it to the same canonical model.
     Compatible,
     /// The published reader accepted it and this one refuses it.
@@ -414,7 +439,7 @@ impl ProjectOutcome {
 
 /// One project, and what happened to it.
 #[derive(Clone, Debug)]
-struct ProjectResult {
+pub(crate) struct ProjectResult {
     manifest: &'static str,
     outcome: ProjectOutcome,
 }
@@ -444,8 +469,18 @@ impl fmt::Display for ProjectResult {
 
 /// What one reading of the whole corpus, against one baseline, found.
 #[derive(Clone, Debug)]
-pub(crate) struct SourceComparison {
-    results: Vec<ProjectResult>,
+pub(crate) enum SourceComparison {
+    /// Every corpus project, classified directionally.
+    Compared { results: Vec<ProjectResult> },
+    /// The published reader has no probe entry, so there was nothing to
+    /// compare this workspace's reader against.
+    ///
+    /// This constrains no release on its own - an axis that could not be read
+    /// shows nothing, and pretending it showed `unchanged` would be a vacuous
+    /// pass. What it does cost is the leg itself: for one train, no gate holds
+    /// the source language to what the published one accepted, which is why
+    /// `check-release` allows it only on a train that is already breaking.
+    Unavailable,
 }
 
 impl SourceComparison {
@@ -481,35 +516,54 @@ impl SourceComparison {
             });
         }
         results.sort_by_key(|result| result.manifest);
-        Ok(Self { results })
+        Ok(Self::Compared { results })
     }
 
     /// The greatest impact any one project carries.
     pub(crate) fn impact(&self) -> CompatibilityImpact {
-        self.results
-            .iter()
-            .map(|result| result.outcome.impact())
-            .max()
-            .unwrap_or_default()
+        match self {
+            Self::Compared { results } => results
+                .iter()
+                .map(|result| result.outcome.impact())
+                .max()
+                .unwrap_or_default(),
+            Self::Unavailable => CompatibilityImpact::Unchanged,
+        }
     }
 
-    /// Whether every project came through unchanged, which is what lets the
-    /// report say so in one line instead of listing the corpus.
+    /// Whether this reading states itself in one line: a corpus that came
+    /// through unchanged, or a comparison there was no reader to make. Anything
+    /// else lists the corpus, because that is where the finding is.
     pub(crate) fn is_clean(&self) -> bool {
-        self.results
-            .iter()
-            .all(|result| result.outcome == ProjectOutcome::Compatible)
+        match self {
+            Self::Compared { results } => results
+                .iter()
+                .all(|result| result.outcome == ProjectOutcome::Compatible),
+            Self::Unavailable => true,
+        }
+    }
+
+    /// Whether the leg could not be run at all on this train.
+    pub(crate) const fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable)
     }
 }
 
 impl fmt::Display for SourceComparison {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self::Compared { results } = self else {
+            return write!(
+                formatter,
+                "unavailable (the baseline reader has no probe entry: the published train \
+                 predates it, so the authored corpus cannot be compared on this train)"
+            );
+        };
         if self.is_clean() {
-            let read = self.results.len();
+            let read = results.len();
             let projects = if read == 1 { "project" } else { "projects" };
             return write!(formatter, "compatible ({read} authored {projects})");
         }
-        for result in &self.results {
+        for result in results {
             write!(formatter, "\n  {result}")?;
         }
         Ok(())
@@ -726,13 +780,50 @@ mod tests {
         );
     }
 
-    /// One program serves both sides, and it reaches the public compile entry
-    /// and nothing below it - a probe that named an internal stage would be
-    /// comparing something no author can write.
+    /// One program serves both sides, and it reaches the reader through the one
+    /// entry `phoxal-manifest` keeps source-compatible across trains and
+    /// nothing below it - a probe that named an internal stage would be
+    /// comparing something no author can write, and one that assembled the
+    /// canonical document itself would have to be respelled on both sides
+    /// whenever the compiler's own types moved.
     #[test]
-    fn the_probe_program_compiles_through_the_public_entry() {
+    fn the_probe_program_reads_through_the_stable_probe_entry() {
         assert!(PROGRAM.contains("phoxal_manifest::SourceSet"), "{PROGRAM}");
-        assert!(PROGRAM.contains(".compile()"), "{PROGRAM}");
+        assert!(PROGRAM.contains("phoxal_manifest::probe("), "{PROGRAM}");
         assert!(!PROGRAM.contains("normalize"), "{PROGRAM}");
+        assert!(!PROGRAM.contains("CompiledProject"), "{PROGRAM}");
+    }
+
+    /// A published reader from before the probe entry existed fails to resolve
+    /// exactly that path. That one build failure is an outcome; every other one
+    /// is still an error, because a broken build that passed as "unavailable"
+    /// would silently retire the whole leg.
+    #[test]
+    fn a_reader_without_a_probe_entry_is_recognized() {
+        assert!(CorpusReading::is_missing_probe_entry(
+            "error[E0425]: cannot find function `probe` in crate `phoxal_manifest`"
+        ));
+        assert!(CorpusReading::is_missing_probe_entry(
+            "error[E0433]: failed to resolve: could not find `probe` in `phoxal_manifest`"
+        ));
+        assert!(!CorpusReading::is_missing_probe_entry(
+            "error: linking with `cc` failed: exit status: 1"
+        ));
+    }
+
+    /// A leg that could not be run says so in one line and shows no impact of
+    /// its own: an axis nobody could read constrains no release size, and a
+    /// vacuous `compatible` would be a lie about a corpus nothing read.
+    #[test]
+    fn an_unavailable_comparison_is_one_informational_line() {
+        let comparison = SourceComparison::Unavailable;
+        assert_eq!(comparison.impact(), CompatibilityImpact::Unchanged);
+        assert!(comparison.is_unavailable());
+        assert!(comparison.is_clean(), "there is no corpus to list");
+        let rendered = comparison.to_string();
+        assert!(!rendered.contains('\n'), "{rendered}");
+        assert!(rendered.starts_with("unavailable ("), "{rendered}");
+        assert!(rendered.contains("no probe entry"), "{rendered}");
+        assert!(rendered.contains("predates it"), "{rendered}");
     }
 }

@@ -179,8 +179,7 @@ fn main() -> phoxal::Result<()> {
         "launch",
         "runtime",
         "version",
-        // The topology declaration is deleted, not merely unset here
-        // (CAMPAIGN.md, "Roles / macros").
+        // The topology declaration is deleted, not merely unset here.
         "requirement",
     ] {
         assert!(

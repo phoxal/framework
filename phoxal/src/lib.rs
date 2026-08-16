@@ -198,9 +198,9 @@ pub mod api {
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
 /// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) are absent for a
 /// stronger reason: minting a world clock is not a participant capability at
-/// all. The simulated world clock is published by an external bus client
-/// (CAMPAIGN.md, "Roles / macros"), which owns its own session through
-/// `phoxal-bus` directly, so nothing reached through this facade mints one.
+/// all. The simulated world clock is published by an external bus client,
+/// which owns its own session through `phoxal-bus` directly, so nothing reached
+/// through this facade mints one.
 pub mod bus {
     pub use phoxal_bus::{
         ApiFamily, AskQuery, BusError, BusMetadata, CaptureStamp, ClientPublishContract,
@@ -229,9 +229,9 @@ pub mod bus {
 /// the module that owns it ([`model::builder`], [`model::component`],
 /// [`model::identity`], [`model::robot`], [`model::simulation`],
 /// [`model::structure`]). [`AssetId`] is the logical identity shared by source
-/// compilation and the bundle index. Participant asset access is the
-/// bundle-owned, digest-checked [`ParticipantAssetResolver`] capability below;
-/// source compilation does not cross this runtime boundary.
+/// compilation and the staged `assets/` tree. Participant asset access is the
+/// bundle-owned [`ParticipantAssetResolver`] capability below; source
+/// compilation does not cross this runtime boundary.
 ///
 /// [`model::RobotBuilder`] composes a model in memory rather than loading one.
 /// A launched participant never needs it - the runner hands it an already-built

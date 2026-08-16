@@ -47,8 +47,8 @@ pub mod test;
 
 /// Why a participant cannot currently produce a trustworthy robot instant.
 ///
-/// One trigger per clock. The origin-shaped failures went with the origin
-/// (CAMPAIGN.md, "Participant process contract"): real robot time is now the
+/// One trigger per clock. The origin-shaped failures went with the origin:
+/// real robot time is now the
 /// host boot clock itself, so there is no supplied anchor to be missing and no
 /// minted boot identity for a reading to disagree with - a process reads its
 /// clock or it does not. Transport loss is deliberately not a trigger either:
@@ -72,8 +72,8 @@ pub enum TimeUnsynchronized {
 
 /// Which clock a launched participant runs on.
 ///
-/// The launch contract's `--simulation` flag is the whole of this decision
-/// (CAMPAIGN.md, "Participant process contract"): simulation is a launcher
+/// The launch contract's `--simulation` flag is the whole of this decision:
+/// simulation is a launcher
 /// choice, never a bundle fact, and there is no third mode. A real participant
 /// that declares no `#[phoxal::step]` simply never steps; it does not become a
 /// different kind of participant.

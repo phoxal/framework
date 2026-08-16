@@ -206,12 +206,13 @@ pub trait StateContract: EndpointDescriptor {}
 /// Deliberately a SIBLING of [`StateContract`], not a subtrait of it: if the
 /// world clock also implemented `StateContract`, it would still satisfy the
 /// ordinary, unrestricted `state_publisher` builder every participant has,
-/// which would make "only a simulator can mint world steps" an unenforced
+/// which would make "only the world authority mints world steps" an unenforced
 /// convention rather than a compiler rule.
 /// Excluding it from `StateContract` is what makes that builder reject it at
-/// compile time, forcing every caller through the world-authority-gated
-/// `SetupContext::world_clock_publisher` in the `phoxal` crate instead
-/// (`Self: world-authority surface`).
+/// compile time, so the only way to publish the world clock is
+/// [`WorldClockPublisher::mint`](crate::handle::publisher::WorldClockPublisher::mint),
+/// which the external client driving the simulated world calls directly and no
+/// participant reaches: the `phoxal` facade neither exposes it nor names it.
 ///
 /// Bounds [`WorldClockPublisher`](crate::handle::publisher::WorldClockPublisher), a
 /// dedicated handle type separate from

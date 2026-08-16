@@ -105,7 +105,7 @@ impl LocalInstant {
 
     /// Nanoseconds since host boot.
     ///
-    /// Exposed for the execution origin the supervisor mints and for
+    /// Exposed for the real robot timeline, whose zero *is* host boot, and for
     /// diagnostics. It is deliberately not a `From`/`Into` conversion: a bare
     /// integer is not a time type.
     pub const fn boot_ns(self) -> u64 {
@@ -141,9 +141,9 @@ impl LocalInstant {
 /// An exact instant on one world history.
 ///
 /// A tick is one nanosecond. The origin is the timeline's own: for a real
-/// execution it is the supervisor-minted execution origin on the host boot
-/// clock, and for a simulated or replayed timeline it is the world authority's
-/// zero. Two `RobotInstant`s are only meaningful together when their
+/// execution it is host boot, so a tick is a nanosecond of `CLOCK_BOOTTIME` and
+/// nothing anchors it; for a simulated or replayed timeline it is the world
+/// authority's zero. Two `RobotInstant`s are only meaningful together when their
 /// [`TimelineId`]s are equal, so comparison and age are checked operations -
 /// there is no `Ord` and no `Sub`.
 #[derive(
