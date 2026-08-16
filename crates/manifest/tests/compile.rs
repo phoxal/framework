@@ -8,6 +8,15 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use phoxal_manifest::{CompileError, SourceSet};
+use phoxal_model::identity::ServiceId;
+
+/// The official service set a caller supplies. The framework owns no list of
+/// its own, so every compilation in this file states one.
+fn official_services(ids: &[&str]) -> Vec<ServiceId> {
+    ids.iter()
+        .map(|id| ServiceId::new(*id).expect("an official service id is a token"))
+        .collect()
+}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -54,7 +63,7 @@ fn every_repository_robot_compiles_to_the_canonical_model() {
     for relative in roots {
         let root = workspace.join(relative);
         sources(&root)
-            .compile()
+            .compile(official_services(&[]))
             .unwrap_or_else(|error| panic!("failed to compile {relative}: {error}"));
     }
 }
@@ -114,12 +123,13 @@ robot:
         workspace_root().join("components/ddsm115"),
     );
     let compiled = source_set
-        .compile()
+        .compile(official_services(&[]))
         .expect("the stock DDSM115 must compile without consumer overrides");
     let component = compiled
         .robot()
-        .component_for_instance("drive")
-        .expect("mounted stock component");
+        .component("drive")
+        .expect("mounted stock component")
+        .component_type();
     assert_eq!(
         component
             .structure()
@@ -160,7 +170,9 @@ robot:
 #[test]
 fn canonical_mesh_references_are_backed_by_compiled_assets() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
-    let compiled = sources(&root).compile().expect("fixture must compile");
+    let compiled = sources(&root)
+        .compile(official_services(&[]))
+        .expect("fixture must compile");
     let asset_ids = compiled
         .assets()
         .iter()
@@ -174,13 +186,7 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
             compiled
                 .robot()
                 .components()
-                .map(|instance| {
-                    compiled
-                        .robot()
-                        .component_for_instance(instance.id().as_str())
-                        .unwrap()
-                })
-                .flat_map(|component| component.structure().asset_ids()),
+                .flat_map(|component| component.component_type().structure().asset_ids()),
         )
         .map(phoxal_model::AssetId::as_str)
         .collect::<std::collections::BTreeSet<_>>();
@@ -191,7 +197,9 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
 #[test]
 fn authored_capability_roles_are_persisted_and_ordered_in_the_robot_model() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
-    let compiled = sources(&root).compile().expect("fixture must compile");
+    let compiled = sources(&root)
+        .compile(official_services(&[]))
+        .expect("fixture must compile");
     assert_eq!(
         compiled
             .robot()
@@ -202,8 +210,8 @@ fn authored_capability_roles_are_persisted_and_ordered_in_the_robot_model() {
         )]
     );
     assert_eq!(
-        serde_json::to_value(compiled.robot()).unwrap()["component_instances"]["front_center_tof"]
-            ["roles"]["range"],
+        serde_json::to_value(compiled.robot()).unwrap()["components"]["front_center_tof"]["roles"]
+            ["range"],
         serde_json::json!(["mapping", "traversability", "safety"])
     );
 }
@@ -226,7 +234,7 @@ fn missing_canonical_mesh_is_rejected_at_compile_time() {
         "drive_motor".to_string(),
         component_root.path().to_path_buf(),
     );
-    let error = sources.compile().unwrap_err();
+    let error = sources.compile(official_services(&[])).unwrap_err();
     assert!(matches!(error, CompileError::Assets { .. }));
     assert!(
         error
@@ -268,11 +276,12 @@ fn relative_material_texture_is_normalized_into_the_local_component_namespace() 
         "drive_motor".to_string(),
         component_root.path().to_path_buf(),
     );
-    let compiled = sources.compile().unwrap();
+    let compiled = sources.compile(official_services(&[])).unwrap();
     let component = compiled
         .robot()
-        .component_for_instance("front_left_drive")
-        .unwrap();
+        .component("front_left_drive")
+        .unwrap()
+        .component_type();
     assert!(
         component
             .structure()
@@ -286,7 +295,7 @@ fn source_set_errors_preserve_the_failed_input() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
     let mut sources = sources(&root);
     sources.component_roots.remove("imu");
-    let error = sources.compile().unwrap_err();
+    let error = sources.compile(official_services(&[])).unwrap_err();
     assert!(
         matches!(
             &error,
@@ -328,7 +337,7 @@ fn an_authored_behaviors_directory_is_never_read() {
     .unwrap();
 
     let compiled = sources(temp.path())
-        .compile()
+        .compile(official_services(&[]))
         .expect("a behaviors/ directory must be ignored");
     assert!(
         compiled
@@ -339,9 +348,9 @@ fn an_authored_behaviors_directory_is_never_read() {
     );
     assert!(
         compiled
+            .robot()
             .services()
-            .iter()
-            .all(|service| service.id.as_str() != "behavior"),
+            .all(|(id, _)| id.as_str() != "behavior"),
         "no behavior service may be declared"
     );
 }
@@ -355,13 +364,49 @@ fn declared_services_are_emitted_as_source_facts() {
     );
 
     let compiled = sources(temp.path())
-        .compile()
+        .compile(official_services(&["drive"]))
         .expect("a declared source service must compile");
-    assert_eq!(compiled.services().len(), 1);
-    assert_eq!(compiled.services()[0].id.as_str(), "localize");
+    // The official set the caller supplied and the authored map are merged, in
+    // one ordered `services` map on the robot.
     assert_eq!(
-        compiled.services()[0].config,
-        Some(serde_json::json!({"rate_hz": 10}))
+        compiled
+            .robot()
+            .services()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["drive", "localize"]
+    );
+    assert_eq!(compiled.robot().service_config("drive"), None);
+    assert_eq!(
+        compiled.robot().service_config("localize"),
+        Some(&serde_json::json!({"rate_hz": 10}))
+    );
+}
+
+/// An official service the document also configures is the same service, so the
+/// authored configuration is what it runs with.
+#[test]
+fn an_authored_config_wins_over_the_official_service_it_names() {
+    let temp = tempfile::tempdir().unwrap();
+    staged_project(
+        temp.path(),
+        "\nservices:\n  drive:\n    config:\n      max_linear_speed_mps: 0.4\n",
+    );
+
+    let compiled = sources(temp.path())
+        .compile(official_services(&["drive"]))
+        .expect("an authored official service must compile");
+    assert_eq!(
+        compiled
+            .robot()
+            .services()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["drive"]
+    );
+    assert_eq!(
+        compiled.robot().service_config("drive"),
+        Some(&serde_json::json!({"max_linear_speed_mps": 0.4}))
     );
 }
 
@@ -376,7 +421,7 @@ fn a_service_claiming_the_reserved_brain_identity_fails_compilation() {
     sources.project_root = temp.path().to_path_buf();
     sources.robot_manifest = temp.path().join("robot.yaml");
 
-    let error = sources.compile().unwrap_err();
+    let error = sources.compile(official_services(&[])).unwrap_err();
     assert!(matches!(error, CompileError::Document { .. }), "{error}");
     let message = error.to_string();
     assert!(message.contains("services.brain is reserved"), "{message}");
@@ -391,36 +436,88 @@ fn a_service_identity_must_be_a_runtime_artifact_token() {
     sources.project_root = temp.path().to_path_buf();
     sources.robot_manifest = temp.path().join("robot.yaml");
 
-    let error = sources.compile().unwrap_err();
+    let error = sources.compile(official_services(&[])).unwrap_err();
     assert!(matches!(error, CompileError::Document { .. }), "{error}");
     let message = error.to_string();
     assert!(message.contains("services.Bad Service"), "{message}");
     assert!(message.contains("lowercase ASCII"), "{message}");
 }
 
+/// Both facts that used to live beside the robot are now inside it: a driver is
+/// a component whose `driver` block is present, and a simulation is folded into
+/// the component type.
 #[test]
-fn driver_facts_are_source_owned_and_simulation_stays_on_the_robot() {
+fn driver_blocks_and_simulations_are_carried_by_the_robot_itself() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
     let compiled = sources(&source_root)
-        .compile()
-        .expect("driver plus simulator must compile");
-    assert_eq!(compiled.drivers().len(), 4);
+        .compile(official_services(&[]))
+        .expect("the fixture must compile");
+    let driven = compiled
+        .robot()
+        .components()
+        .filter(|component| component.instance().driver().is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(driven.len(), 4);
     assert!(
-        compiled
-            .drivers()
+        driven
             .iter()
-            .all(|driver| driver.implementation.as_str() == "drive_motor")
+            .all(|component| component.instance().component_type().as_str() == "drive_motor")
     );
-    assert_eq!(
-        compiled.drivers()[0].component_instance.as_str(),
-        "front_left_drive"
-    );
+    assert_eq!(driven[0].id().as_str(), "front_left_drive");
     assert!(
         compiled
             .robot()
-            .simulation_for_instance("front_left_drive")
+            .component("front_left_drive")
+            .and_then(|component| component.simulation())
             .is_some(),
-        "simulation membership belongs to the canonical robot"
+        "a simulation is folded into the component type"
+    );
+}
+
+/// The compatibility checker's stable entry answers both ways, in the two
+/// shapes it promises: an acceptance carries the persisted document and the
+/// asset identities, and a refusal carries the reader's own complaint.
+///
+/// The checker compiles one program naming exactly this function against two
+/// trains, so a rename or a reshaped document here silently disables its
+/// authored-source leg. This is what makes that a test failure instead.
+#[test]
+fn the_compatibility_probe_states_both_readings() {
+    let workspace = workspace_root();
+    let accepted = phoxal_manifest::probe(
+        sources(&workspace.join("fixture/robot/rgbd-imu-diff-drive")),
+        &official_services(&["drive"]),
+    );
+    assert_eq!(accepted["accepted"], serde_json::json!(true));
+    assert_eq!(
+        accepted["canonical"]["robot"]["schema"],
+        serde_json::json!("phoxal/manifest/v0")
+    );
+    assert!(
+        accepted["canonical"]["robot"]["services"]
+            .get("drive")
+            .is_some(),
+        "{accepted}"
+    );
+    let assets = accepted["canonical"]["assets"]
+        .as_array()
+        .expect("the accepted reading lists its assets");
+    assert!(!assets.is_empty());
+    for asset in assets {
+        assert!(asset["id"].is_string(), "{asset}");
+        assert!(asset["bytes"].is_u64(), "{asset}");
+    }
+
+    let mut broken = sources(&workspace.join("fixture/robot/rgbd-imu-diff-drive"));
+    broken.robot_manifest = workspace.join("fixture/robot/rgbd-imu-diff-drive/nowhere.yaml");
+    let rejected = phoxal_manifest::probe(broken, &official_services(&[]));
+    assert_eq!(rejected["accepted"], serde_json::json!(false));
+    assert!(
+        rejected["error"]
+            .as_str()
+            .expect("a refusal states its error")
+            .contains("nowhere.yaml"),
+        "{rejected}"
     );
 }

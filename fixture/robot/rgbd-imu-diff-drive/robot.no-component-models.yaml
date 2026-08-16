@@ -1,7 +1,6 @@
 schema: phoxal/robot/v0
-clock: simulated
 robot:
-  id: rgbd-imu-diff-drive-simulated
+  id: without-component-models
   structure: structure.urdf
   motion_limits:
     max_linear_speed_mps: 0.6
@@ -14,7 +13,7 @@ robot:
     - front_left_drive.encoder
   components:
     front_left_drive:
-      component: drive_motor
+      component: drive_motor_no_simulation
       mount_link: front_left_wheel_mount
       driver:
         connection:

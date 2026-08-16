@@ -17,7 +17,6 @@
 //!   and its strict parser.
 //! - [`emit`] - the one sanctioned writer of that record, in both of its
 //!   evaluation modes.
-//! - [`origin`] - the boot-anchored origin of one real execution.
 //! - [`rendezvous`] - the shared host paths and advisory locking through which
 //!   a client and the one execution supervisor find and fence each other.
 //! - [`wire_schema`] - the deterministic model of the shapes those contracts
@@ -26,12 +25,10 @@
 //! - [`contract_surface`] - the record model each contract-owning crate states
 //!   its whole boundary in, built out of those shapes.
 
-pub mod clock;
 pub mod contract_surface;
 pub mod emit;
 pub mod identity;
 pub mod metadata;
-pub mod origin;
 pub mod rendezvous;
 pub mod version;
 pub mod wire_schema;

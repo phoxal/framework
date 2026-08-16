@@ -34,6 +34,9 @@ pub(crate) enum RunbookRule {
     /// Rule 8: a document the published reader accepted is now rejected, or
     /// compiles to something else.
     AuthoredSourceBreak,
+    /// Rule 9: the published reader has no probe entry, so the authored-source
+    /// leg could not run at all on this train.
+    UnreadableSourceBaseline,
 }
 
 impl RunbookRule {
@@ -45,6 +48,7 @@ impl RunbookRule {
             Self::ToolchainFloorRaised => "rule 4",
             Self::UnderSizedCandidate => "rule 7",
             Self::AuthoredSourceBreak => "rule 8",
+            Self::UnreadableSourceBaseline => "rule 9",
         }
     }
 
@@ -66,6 +70,10 @@ impl RunbookRule {
             Self::AuthoredSourceBreak => {
                 "an authored document stopped being read the way it was - restore it in the \
                  normalizer, or take the break to the next line with the breaking marker"
+            }
+            Self::UnreadableSourceBaseline => {
+                "the authored-source leg could not run - carry the breaking marker for this one \
+                 train, or wait for a published reader that carries the probe entry"
             }
         }
     }
@@ -158,6 +166,7 @@ mod tests {
             RunbookRule::ToolchainFloorRaised,
             RunbookRule::UnderSizedCandidate,
             RunbookRule::AuthoredSourceBreak,
+            RunbookRule::UnreadableSourceBaseline,
         ] {
             for number in rule.numbering().trim_start_matches("rules ").split(" and ") {
                 let heading = format!("### {}.", number.trim_start_matches("rule "));

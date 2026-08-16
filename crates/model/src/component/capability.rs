@@ -9,7 +9,7 @@ use crate::identity::{ComponentInstanceId, JointId, LinkId};
 ///
 /// Roles are source/runtime contract facts rather than service names. Keeping
 /// the closed vocabulary in the canonical model means every reader of a
-/// finalized runtime document agrees on the same spelling and set of values.
+/// compiled manifest agrees on the same spelling and set of values.
 #[derive(
     phoxal_macros::DescribeWire,
     serde::Serialize,

@@ -1,4 +1,4 @@
-//! `phoxal-supervisor` - the Phoxal Framework execution supervisor.
+//! `phoxal-supervisor` - the Phoxal Framework execution observer.
 //!
 //! ```text
 //! phoxal-supervisor <BUNDLE_ROOT>
@@ -7,10 +7,9 @@
 //! That is the entire command line, and deliberately so.
 //! There is no `run`, `start`, `attach`, `stop`, `status`, `log`, `build`,
 //! `install`, `deploy`, `doctor`, or `upgrade` subcommand; no `--drivers`,
-//! `--driver`, or simulation flag; and no execution options of any kind. Clock
-//! and participant selection are already written into the finalized manifest by
-//! whoever built the bundle, so the bundle root is the supervisor's complete
-//! input.
+//! `--driver`, or simulation flag; and no execution options of any kind. The
+//! bundle root is the supervisor's complete input, and everything it needs is
+//! in the `manifest.json` inside it.
 //!
 //! `clap` parses that one operand. It is not here to advertise a surface this
 //! binary does not have - there is still nothing to choose - but because the
@@ -22,19 +21,17 @@
 //! nothing and risks getting a convention subtly wrong.
 //!
 //! The one non-executing invocation is `--version`. It exists because `phoxal`
-//! reports the framework-owned executable's package version. It is diagnostic,
-//! not an execution option or a compatibility gate: bundle compatibility comes
-//! from the framework train its artifacts carry, which the supervisor reads
-//! from the bundle itself.
+//! reports the framework-owned executable's package version. It is diagnostic:
+//! a client that needs the framework train this supervisor speaks asks
+//! `supervisor/connect`, the one endpoint frozen across every framework line.
 //!
-//! Everything an operator does *to* a running execution goes through the
-//! supervisor API on the bus - `phoxal attach`, `phoxal status`, `phoxal stop`
-//! - not through a second invocation of this binary.
+//! This process launches nothing. It runs the router the graph meets on,
+//! watches which of the robot's expected runtimes are present, retains their
+//! logs and telemetry, serves the bundle, and can reboot or power off its host.
+//! Whoever started a runtime - `phoxal` locally, systemd on a device - is what
+//! restarts or stops it.
 
-mod model;
-mod process;
 mod router;
-mod state;
 mod supervisor;
 mod systemd;
 
@@ -44,7 +41,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-/// Run one compiled bundle.
+/// Observe one compiled bundle's execution.
 ///
 /// `version` is spelled out rather than left to clap's `#[command(version)]`
 /// shorthand so the printed line is unambiguously this package's version, and
@@ -58,23 +55,23 @@ use tracing_subscriber::EnvFilter;
     long_about = LONG_ABOUT,
 )]
 struct Cli {
-    /// The compiled bundle directory to validate and execute.
+    /// The compiled bundle directory whose execution to observe.
     #[arg(value_name = "BUNDLE_ROOT")]
     bundle_root: PathBuf,
 }
 
-const ABOUT: &str = "phoxal-supervisor - the Phoxal Framework execution supervisor";
+const ABOUT: &str = "phoxal-supervisor - the Phoxal Framework execution observer";
 
 const LONG_ABOUT: &str = "\
-phoxal-supervisor - the Phoxal Framework execution supervisor
+phoxal-supervisor - the Phoxal Framework execution observer
 
-<BUNDLE_ROOT> is a compiled bundle directory: runtime.json, assets/, and bin/.
-Build one with `phoxal build`. The supervisor validates and executes it; it never
-builds, and it takes no other options - the clock and the participant set are
-already written into runtime.json.
+<BUNDLE_ROOT> is a compiled bundle directory: manifest.json, assets/, and bin/.
+Build one with `phoxal build`. The supervisor runs the router, reports which of
+the robot's runtimes are present, and retains their logs and telemetry. It
+launches no runtime and takes no other options.
 
-`--version` reports this supervisor package's own version. Bundle compatibility
-uses the framework contract train, never this diagnostic product version.";
+`--version` reports this supervisor package's own version. The framework train
+this supervisor speaks is answered by the `supervisor/connect` endpoint.";
 
 /// Multi-thread: Zenoh refuses to run on Tokio's current-thread scheduler, and
 /// the router runs in this process.

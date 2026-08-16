@@ -14,19 +14,50 @@ use crate::error::{
 use crate::footprint::FootprintEnvelope;
 use crate::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, LinkId,
-    MODULE_INSTANCE_SEPARATOR, RobotId,
+    MODULE_INSTANCE_SEPARATOR, RobotId, ServiceId,
 };
 use crate::simulation::Simulation;
 use crate::structure::{Joint, JointKind, Structure};
-pub use phoxal_runtime_contract::clock::Clock;
 
-/// One resolved component instance in the canonical robot.
+/// One service this robot runs.
+///
+/// Official and user services alike: presence in [`Robot::services`] is what
+/// declares the service, and the config is the only thing that distinguishes
+/// one entry from another. The config stays an opaque JSON value because its
+/// shape belongs to the service binary, which validates it against the schema it
+/// embeds; the model carries it without an opinion.
+#[derive(phoxal_macros::DescribeWire, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Service {
+    config: Option<serde_json::Value>,
+}
+
+impl Service {
+    pub(crate) const fn new(config: Option<serde_json::Value>) -> Self {
+        Self { config }
+    }
+
+    /// The user-owned configuration this service is launched with.
+    #[must_use]
+    pub const fn config(&self) -> Option<&serde_json::Value> {
+        self.config.as_ref()
+    }
+}
+
+/// One mounted component instance in the canonical robot.
+///
+/// The instance is keyed by its own id in [`Robot::components`], so it carries
+/// no copy of that id: the map is the identity.
 #[derive(phoxal_macros::DescribeWire, Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
-    id: ComponentInstanceId,
+    #[serde(rename = "type")]
     component_type: ComponentTypeId,
     mount_link: LinkId,
+    /// The hardware connection block, present exactly when this instance is
+    /// driven by a component driver. It is the driver participant's own
+    /// configuration, opaque here for the same reason a service config is.
+    driver: Option<serde_json::Value>,
     direction_signs: BTreeMap<CapabilityId, i8>,
     /// Authored purpose(s) for each capability. An absent key means that the
     /// capability was not selected for any role and creates no obligation.
@@ -39,9 +70,10 @@ impl<'de> serde::Deserialize<'de> for ComponentInstance {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
-            id: ComponentInstanceId,
+            #[serde(rename = "type")]
             component_type: ComponentTypeId,
             mount_link: LinkId,
+            driver: Option<serde_json::Value>,
             direction_signs: BTreeMap<CapabilityId, i8>,
             #[serde(default)]
             roles: BTreeMap<CapabilityId, Vec<CapabilityRole>>,
@@ -52,7 +84,6 @@ impl<'de> serde::Deserialize<'de> for ComponentInstance {
         for (capability_id, authored) in wire.roles {
             if authored.is_empty() {
                 return Err(serde::de::Error::custom(ModelError::EmptyCapabilityRoles {
-                    instance: wire.id.clone(),
                     capability_id,
                 }));
             }
@@ -61,7 +92,6 @@ impl<'de> serde::Deserialize<'de> for ComponentInstance {
                 if !canonical.insert(role) {
                     return Err(serde::de::Error::custom(
                         ModelError::DuplicateCapabilityRole {
-                            instance: wire.id.clone(),
                             capability_id,
                             role,
                         },
@@ -71,11 +101,11 @@ impl<'de> serde::Deserialize<'de> for ComponentInstance {
             roles.insert(capability_id, canonical);
         }
         Ok(Self::new(
-            wire.id,
             wire.component_type,
             wire.mount_link,
             wire.direction_signs,
             roles,
+            wire.driver,
         ))
     }
 }
@@ -566,37 +596,41 @@ pub enum KinematicKind {
 }
 
 /// Fully normalized runtime-facing robot model.
+///
+/// This is the whole of what `manifest.json` carries: the robot's identity and
+/// structure, the motion it may make, the services it runs, and the components
+/// it mounts together with the types behind them. Everything a launched
+/// participant needs to know about the robot - including its own configuration -
+/// is read from here, so there is no second persisted document to agree with.
 #[derive(Debug, Clone)]
 pub struct Robot {
     id: RobotId,
-    clock: Clock,
     motion: MotionModel,
-    component_instances: BTreeMap<ComponentInstanceId, ComponentInstance>,
+    services: BTreeMap<ServiceId, Service>,
+    components: BTreeMap<ComponentInstanceId, ComponentInstance>,
     component_types: BTreeMap<ComponentTypeId, Component>,
-    simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
     /// Compiler-derived stock-safety facts. `None` is explicitly persisted
     /// when the authored robot has no collision geometry.
     footprint: Option<FootprintEnvelope>,
 }
 
-/// The canonical robot wire shape used by a persisted runtime document.
+/// The canonical robot wire shape used by the persisted manifest.
 ///
-/// This is intentionally private to the model crate: bundle layout and the
-/// schema tag belong to `phoxal-bundle`, while the model owns the exact fields
-/// and the validation that turns them into a `Robot`. Keeping the wire helper
-/// here also means deserialization can never construct an invalid robot by
-/// bypassing [`Robot::new`].
+/// This is intentionally private to the model crate: bundle layout belongs to
+/// `phoxal-bundle`, while the model owns the exact fields and the validation
+/// that turns them into a `Robot`. Keeping the wire helper here also means
+/// deserialization can never construct an invalid robot by bypassing
+/// [`Robot::new`].
 #[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RobotWire {
     id: RobotId,
-    clock: Clock,
     kinematic: KinematicConfig,
     motion_limits: MotionLimits,
-    component_instances: BTreeMap<ComponentInstanceId, ComponentInstance>,
+    services: BTreeMap<ServiceId, Service>,
+    components: BTreeMap<ComponentInstanceId, ComponentInstance>,
     component_types: BTreeMap<ComponentTypeId, Component>,
-    simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     structure: Structure,
     footprint: PersistedFootprint,
 }
@@ -604,7 +638,7 @@ struct RobotWire {
 /// A required wire field whose value may be `null`.
 ///
 /// `Option<T>` is normally permissive in a derived serde struct: both a
-/// missing key and `null` become `None`. Runtime documents need to distinguish
+/// missing key and `null` become `None`. The manifest needs to distinguish
 /// them so every persisted robot says explicitly whether a footprint exists.
 #[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize)]
 struct PersistedFootprint(Option<FootprintEnvelope>);
@@ -613,12 +647,11 @@ impl serde::Serialize for Robot {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         RobotWire {
             id: self.id.clone(),
-            clock: self.clock,
             kinematic: self.motion.kinematic.clone(),
             motion_limits: self.motion.limits,
-            component_instances: self.component_instances.clone(),
+            services: self.services.clone(),
+            components: self.components.clone(),
             component_types: self.component_types.clone(),
-            simulation_types: self.simulation_types.clone(),
             structure: self.structure.clone(),
             footprint: PersistedFootprint(self.footprint),
         }
@@ -643,12 +676,11 @@ impl<'de> serde::Deserialize<'de> for Robot {
         Self::new(
             RobotParts {
                 id: wire.id,
-                clock: wire.clock,
                 kinematic: wire.kinematic,
                 motion_limits: wire.motion_limits,
-                component_instances: wire.component_instances,
+                services: wire.services,
+                components: wire.components,
                 component_types: wire.component_types,
-                simulation_types: wire.simulation_types,
                 structure: wire.structure,
             },
             wire.footprint.0,
@@ -657,26 +689,63 @@ impl<'de> serde::Deserialize<'de> for Robot {
     }
 }
 
+/// One mounted component, read as the single fact it is: the instance, the type
+/// behind it, and how a simulated world models that type.
+///
+/// This exists so no consumer joins [`Robot::components`] and
+/// [`Robot::component_types`] by hand. Joining them is the one lookup every
+/// participant, the supervisor and the simulator all need, and doing it in three
+/// places is three chances to disagree about what an absent type means.
+#[derive(Clone, Copy, Debug)]
+pub struct ComponentView<'a> {
+    id: &'a ComponentInstanceId,
+    instance: &'a ComponentInstance,
+    component_type: &'a Component,
+}
+
+impl<'a> ComponentView<'a> {
+    /// The mounted instance's identity.
+    #[must_use]
+    pub const fn id(&self) -> &'a ComponentInstanceId {
+        self.id
+    }
+
+    /// The mounted instance: its type, mount, driver block and per-capability
+    /// parameters.
+    #[must_use]
+    pub const fn instance(&self) -> &'a ComponentInstance {
+        self.instance
+    }
+
+    /// The component type this instance mounts.
+    #[must_use]
+    pub const fn component_type(&self) -> &'a Component {
+        self.component_type
+    }
+
+    /// How a simulated world models this component, when a document authored a
+    /// simulation for its type.
+    #[must_use]
+    pub const fn simulation(&self) -> Option<&'a Simulation> {
+        self.component_type.simulation()
+    }
+}
+
 impl ComponentInstance {
     pub(crate) const fn new(
-        id: ComponentInstanceId,
         component_type: ComponentTypeId,
         mount_link: LinkId,
         direction_signs: BTreeMap<CapabilityId, i8>,
         roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
+        driver: Option<serde_json::Value>,
     ) -> Self {
         Self {
-            id,
             component_type,
             mount_link,
+            driver,
             direction_signs,
             roles,
         }
-    }
-
-    #[must_use]
-    pub const fn id(&self) -> &ComponentInstanceId {
-        &self.id
     }
 
     #[must_use]
@@ -688,6 +757,21 @@ impl ComponentInstance {
     #[must_use]
     pub const fn mount_link(&self) -> &LinkId {
         &self.mount_link
+    }
+
+    /// The hardware connection block, present exactly when a component driver
+    /// runs for this instance. It is that driver's own configuration, and the
+    /// driver's participant id is this instance's id.
+    #[must_use]
+    pub const fn driver(&self) -> Option<&serde_json::Value> {
+        self.driver.as_ref()
+    }
+
+    /// The authored direction sign for each capability this instance overrides.
+    /// An absent capability turns forward.
+    #[must_use]
+    pub const fn direction_signs(&self) -> &BTreeMap<CapabilityId, i8> {
+        &self.direction_signs
     }
 
     /// Authored role assignments, ordered by capability and role.
@@ -774,11 +858,10 @@ impl Robot {
     ) -> Result<Self, ModelError> {
         let robot = Self {
             id: parts.id,
-            clock: parts.clock,
             motion: MotionModel::new(parts.kinematic, parts.motion_limits),
-            component_instances: parts.component_instances,
+            services: parts.services,
+            components: parts.components,
             component_types: parts.component_types,
-            simulation_types: parts.simulation_types,
             structure: parts.structure,
             footprint,
         };
@@ -791,54 +874,72 @@ impl Robot {
         &self.id
     }
 
-    /// The time domain this robot runs on.
-    #[must_use]
-    pub const fn clock(&self) -> Clock {
-        self.clock
-    }
-
     #[must_use]
     pub const fn motion(&self) -> &MotionModel {
         &self.motion
     }
 
-    /// Every mounted component instance, ordered by instance id.
-    pub fn components(&self) -> impl ExactSizeIterator<Item = &ComponentInstance> {
-        self.component_instances.values()
+    /// Every service this robot runs, ordered by service id.
+    pub fn services(&self) -> impl ExactSizeIterator<Item = (&ServiceId, &Service)> {
+        self.services.iter()
+    }
+
+    /// The named service, if this robot runs one.
+    #[must_use]
+    pub fn service(&self, id: &str) -> Option<&Service> {
+        self.services.get(id)
+    }
+
+    /// The configuration the named service is launched with.
+    ///
+    /// `None` covers both "this robot does not run that service" and "it runs
+    /// with no configuration", which is the same answer to the one question a
+    /// service asks about itself at startup.
+    #[must_use]
+    pub fn service_config(&self, id: &str) -> Option<&serde_json::Value> {
+        self.service(id)?.config()
+    }
+
+    /// Every mounted component, ordered by instance id.
+    pub fn components(&self) -> impl Iterator<Item = ComponentView<'_>> {
+        self.components
+            .iter()
+            .filter_map(|(id, instance)| self.view(id, instance))
     }
 
     /// Every mounted instance's identity, ordered.
     pub fn component_ids(&self) -> impl ExactSizeIterator<Item = &ComponentInstanceId> {
-        self.component_instances.keys()
+        self.components.keys()
     }
 
-    /// The named instance, if the robot mounts one.
+    /// The named component: its instance, its type, and its simulation.
     #[must_use]
-    pub fn component_instance(&self, id: &str) -> Option<&ComponentInstance> {
-        self.component_instances.get(id)
+    pub fn component(&self, id: &str) -> Option<ComponentView<'_>> {
+        let (id, instance) = self.components.get_key_value(id)?;
+        self.view(id, instance)
     }
 
-    /// The component type behind the named instance.
+    /// Every declared component type, ordered by type id.
+    pub fn component_types(&self) -> impl ExactSizeIterator<Item = (&ComponentTypeId, &Component)> {
+        self.component_types.iter()
+    }
+
+    /// Join one instance with the type behind it.
     ///
-    /// Absent exactly when the instance is: a validated robot never mounts an
-    /// instance of a type it did not load.
-    #[must_use]
-    pub fn component_for_instance(&self, id: &str) -> Option<&Component> {
-        self.component_types
-            .get(self.component_instance(id)?.component_type())
-    }
-
-    /// The simulation for a component *type*, when one was authored.
-    #[must_use]
-    pub fn simulation_for_component_type(&self, component_type: &str) -> Option<&Simulation> {
-        self.simulation_types.get(component_type)
-    }
-
-    /// The simulation behind the named instance, when one was authored.
-    #[must_use]
-    pub fn simulation_for_instance(&self, component_id: &str) -> Option<&Simulation> {
-        let instance = self.component_instance(component_id)?;
-        self.simulation_for_component_type(instance.component_type().as_str())
+    /// A validated robot never mounts an instance of a type it did not load, so
+    /// the `None` arm is unreachable rather than a component being dropped. It
+    /// stays a `filter_map`/`?` rather than a panic so the impossible case
+    /// degrades into a smaller answer instead of taking the process down.
+    fn view<'a>(
+        &'a self,
+        id: &'a ComponentInstanceId,
+        instance: &'a ComponentInstance,
+    ) -> Option<ComponentView<'a>> {
+        Some(ComponentView {
+            id,
+            instance,
+            component_type: self.component_types.get(instance.component_type())?,
+        })
     }
 
     /// The robot's own structure, in flattened runtime identities.
@@ -875,20 +976,14 @@ impl Robot {
     /// the process down.
     pub fn capability_refs(&self, selects: impl Fn(&Capability) -> bool) -> Vec<CapabilityRef> {
         let mut references = self
-            .component_instances
-            .values()
-            .filter_map(|instance| {
-                Some((
-                    instance.id(),
-                    self.component_types.get(instance.component_type())?,
-                ))
-            })
-            .flat_map(|(component_id, component)| {
+            .components()
+            .flat_map(|component| {
                 component
+                    .component_type()
                     .capabilities()
                     .filter(|(_, capability)| selects(capability))
                     .map(move |(capability_id, _)| {
-                        CapabilityRef::new(component_id.clone(), capability_id.clone())
+                        CapabilityRef::new(component.id().clone(), capability_id.clone())
                     })
             })
             .collect::<Vec<_>>();
@@ -900,23 +995,21 @@ impl Robot {
     /// `(component id, capability id)`.
     #[must_use]
     pub fn capabilities_with_role(&self, role: CapabilityRole) -> Vec<CapabilityRef> {
-        self.component_instances
-            .values()
-            .filter_map(|instance| {
-                self.component_types
-                    .get(instance.component_type())
-                    .map(|component| (instance, component))
-            })
-            .flat_map(|(instance, component)| {
-                instance
+        self.components()
+            .flat_map(|component| {
+                component
+                    .instance()
                     .roles()
                     .iter()
                     .filter(move |(capability_id, roles)| {
                         roles.contains(&role)
-                            && component.capability(capability_id.as_str()).is_some()
+                            && component
+                                .component_type()
+                                .capability(capability_id.as_str())
+                                .is_some()
                     })
                     .map(move |(capability_id, _)| {
-                        CapabilityRef::new(instance.id().clone(), capability_id.clone())
+                        CapabilityRef::new(component.id().clone(), capability_id.clone())
                     })
             })
             .collect()
@@ -991,7 +1084,9 @@ impl Robot {
     }
 
     fn resolve(&self, reference: &CapabilityRef) -> Option<(&Component, &Capability)> {
-        let component = self.component_for_instance(reference.component_id.as_str())?;
+        let component = self
+            .component(reference.component_id.as_str())?
+            .component_type;
         let capability = component.capability(reference.capability_id.as_str())?;
         Some((component, capability))
     }
@@ -1005,7 +1100,8 @@ impl Robot {
 
     /// The authored direction sign, defaulting to `1` when none was authored.
     fn direction_sign(&self, reference: &CapabilityRef) -> i8 {
-        self.component_instance(reference.component_id.as_str())
+        self.components
+            .get(reference.component_id.as_str())
             .and_then(|instance| {
                 instance
                     .direction_signs
@@ -1019,8 +1115,7 @@ impl Robot {
         self.motion.limits.validate()?;
         self.validate_robot_structure()?;
         self.validate_component_types()?;
-        self.validate_component_instances()?;
-        self.validate_simulation_types()?;
+        self.validate_components()?;
         self.validate_kinematic()?;
         self.validate_footprint()
     }
@@ -1069,6 +1164,35 @@ impl Robot {
                     });
                 }
             }
+            Self::validate_simulation(component_type, component)?;
+        }
+        Ok(())
+    }
+
+    /// A simulation never introduces a capability of its own: every entry
+    /// models one the type already declares, of the same kind.
+    fn validate_simulation(
+        component_type: &ComponentTypeId,
+        component: &Component,
+    ) -> Result<(), ModelError> {
+        let Some(simulation) = component.simulation() else {
+            return Ok(());
+        };
+        for (capability_id, simulated) in simulation.capabilities() {
+            let capability = component
+                .capability(capability_id.as_str())
+                .ok_or_else(|| ModelError::SimulationWithoutCapability {
+                    component_type: component_type.clone(),
+                    capability_id: capability_id.clone(),
+                })?;
+            if simulated.kind() != capability.kind() {
+                return Err(ModelError::SimulationCapabilityKindMismatch {
+                    component_type: component_type.clone(),
+                    capability_id: capability_id.clone(),
+                    simulated: simulated.kind(),
+                    declared: capability.kind(),
+                });
+            }
         }
         Ok(())
     }
@@ -1076,8 +1200,8 @@ impl Robot {
     /// Validate only the envelope's universal scalar invariant.
     ///
     /// Collision geometry is authored source and is deliberately unavailable
-    /// to a runtime document. Its conservative envelope is derived once by the
-    /// source compiler, then persisted as a value or explicit `null`.
+    /// to the persisted manifest. Its conservative envelope is derived once by
+    /// the source compiler, then persisted as a value or explicit `null`.
     fn validate_footprint(&self) -> Result<(), ModelError> {
         if let Some(footprint) = self.footprint {
             FootprintEnvelope::new(footprint.radius_m)?;
@@ -1085,15 +1209,9 @@ impl Robot {
         Ok(())
     }
 
-    fn validate_component_instances(&self) -> Result<(), ModelError> {
-        for (id, instance) in &self.component_instances {
+    fn validate_components(&self) -> Result<(), ModelError> {
+        for (id, instance) in &self.components {
             Self::reject_reserved_separator(IdentifierKind::ComponentInstance, id.as_str())?;
-            if id != instance.id() {
-                return Err(ModelError::ComponentIdentityMismatch {
-                    key: id.clone(),
-                    embedded: instance.id().clone(),
-                });
-            }
             let component = self
                 .component_types
                 .get(instance.component_type())
@@ -1131,33 +1249,6 @@ impl Robot {
                     return Err(ModelError::UnknownRoleCapability {
                         instance: id.clone(),
                         capability_id: capability_id.clone(),
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_simulation_types(&self) -> Result<(), ModelError> {
-        for (component_type, simulation) in &self.simulation_types {
-            let component = self.component_types.get(component_type).ok_or_else(|| {
-                ModelError::SimulationWithoutComponentType {
-                    component_type: component_type.clone(),
-                }
-            })?;
-            for (capability_id, simulated) in simulation.capabilities() {
-                let capability = component
-                    .capability(capability_id.as_str())
-                    .ok_or_else(|| ModelError::SimulationWithoutCapability {
-                        component_type: component_type.clone(),
-                        capability_id: capability_id.clone(),
-                    })?;
-                if simulated.kind() != capability.kind() {
-                    return Err(ModelError::SimulationCapabilityKindMismatch {
-                        component_type: component_type.clone(),
-                        capability_id: capability_id.clone(),
-                        simulated: simulated.kind(),
-                        declared: capability.kind(),
                     });
                 }
             }
@@ -1577,22 +1668,22 @@ mod tests {
             }
         }))
         .expect("a well-formed capability fixture");
-        compiler::component(capabilities, component_structure())
+        compiler::component(capabilities, component_structure(), None)
     }
 
-    fn instance(id: &str) -> ComponentInstance {
+    fn instance() -> ComponentInstance {
         compiler::component_instance(
-            ComponentInstanceId::new(id).expect("a normalized instance id"),
             ComponentTypeId::new("drive").expect("a normalized type id"),
             LinkId::new("base_link"),
             BTreeMap::new(),
+            BTreeMap::new(),
+            None,
         )
     }
 
     fn robot_with_structure(structure: Structure, instance_ids: &[&str]) -> Robot {
         compiler::robot(RobotParts {
             id: RobotId::new("rover").expect("a normalized robot id"),
-            clock: Clock::Real,
             kinematic: KinematicConfig::Omnidirectional {
                 actuators: Vec::new(),
                 encoders: Vec::new(),
@@ -1601,12 +1692,13 @@ mod tests {
                 max_linear_speed_mps: 1.0,
                 max_angular_speed_radps: 1.0,
             },
-            component_instances: instance_ids
+            services: BTreeMap::new(),
+            components: instance_ids
                 .iter()
                 .map(|id| {
                     (
                         ComponentInstanceId::new(*id).expect("a normalized instance id"),
-                        instance(id),
+                        instance(),
                     )
                 })
                 .collect(),
@@ -1616,7 +1708,6 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            simulation_types: BTreeMap::new(),
             structure,
         })
         .expect("a valid canonical robot")
@@ -1672,12 +1763,11 @@ mod tests {
         let value = serde_json::to_value(&robot).expect("robot serializes");
 
         let mut empty = value.clone();
-        empty["component_instances"]["front"]["roles"] = json!({"eye": []});
+        empty["components"]["front"]["roles"] = json!({"eye": []});
         assert!(serde_json::from_value::<Robot>(empty).is_err());
 
         let mut duplicate = value;
-        duplicate["component_instances"]["front"]["roles"] =
-            json!({"eye": ["perception", "perception"]});
+        duplicate["components"]["front"]["roles"] = json!({"eye": ["perception", "perception"]});
         assert!(serde_json::from_value::<Robot>(duplicate).is_err());
     }
 
@@ -1727,11 +1817,11 @@ mod tests {
     #[test]
     fn a_routine_lookup_miss_is_absence_not_failure() {
         let robot = robot_with(&["front"]);
-        assert!(robot.component_instance("front").is_some());
-        assert!(robot.component_instance("nope").is_none());
-        assert!(robot.component_for_instance("front").is_some());
-        assert!(robot.component_for_instance("nope").is_none());
-        assert!(robot.simulation_for_instance("front").is_none());
+        let front = robot.component("front").expect("the instance is mounted");
+        assert_eq!(front.id().as_str(), "front");
+        assert_eq!(front.instance().mount_link(), &LinkId::new("base_link"));
+        assert!(front.simulation().is_none());
+        assert!(robot.component("nope").is_none());
         assert!(robot.capability(&reference("front", "spin")).is_some());
         assert!(robot.capability(&reference("front", "nope")).is_none());
         assert!(robot.capability(&reference("nope", "spin")).is_none());

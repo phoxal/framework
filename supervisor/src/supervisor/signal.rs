@@ -1,18 +1,15 @@
 //! Termination signals, routed into the one orderly stop the supervisor has.
 //!
-//! A termination signal is the same request as the API `stop` command, so it
-//! must cancel the same token: the graph goes Stopping, every child is torn
-//! down through the SIGTERM/grace/SIGKILL budget, the lifecycle reaches Stopped,
-//! and the process exits 0. Nothing here records a failure, because being asked
-//! to stop is not one.
+//! There is no graph to tear down: this process started nothing. An orderly
+//! stop is closing the control plane, the bus session, and the embedded router,
+//! in that order, and exiting 0. Nothing here records a failure, because being
+//! asked to stop is not one.
 //!
-//! Without this, the supervisor dies under the default disposition of SIGTERM
-//! and orphans the graph: participants run in their own process groups, so they
-//! survive their supervisor and get reparented to init. Under systemd the
-//! unit's `KillMode=control-group` would still reach them through the cgroup,
-//! but the plain-SIGTERM cases - a `kill` in a development shell on macOS or
-//! Linux, or a foreground `phoxal` client cleaning up the supervisor it owns -
-//! have no such backstop and must be handled here.
+//! Handling the signal at all still matters. Under the default disposition of
+//! SIGTERM the process would die where it stands, taking the router down
+//! without closing it: every participant would lose its links to a socket that
+//! vanished mid-session rather than to a router that finished with them, and
+//! the lock and socket the next run needs would be left behind.
 //!
 //! The handler comes from `ctrlc` with its `termination` feature, which covers
 //! SIGINT, SIGTERM, and SIGHUP in one registration: SIGTERM is what a service
@@ -33,10 +30,9 @@ use tokio_util::sync::CancellationToken;
 /// launched means a startup-time signal is caught rather than lethal.
 ///
 /// A second signal while the stop is already in flight does nothing extra: the
-/// token is already cancelled, and teardown is bounded by each participant's
-/// shutdown grace and the SIGKILL escalation behind it, so there is nothing an
-/// impatient repeat could usefully shorten. SIGKILL remains the operator's
-/// escape hatch, as always.
+/// token is already cancelled, and what is left is bounded transport close, so
+/// there is nothing an impatient repeat could usefully shorten. SIGKILL remains
+/// the operator's escape hatch, as always.
 pub(crate) fn cancel_on_termination(shutdown: CancellationToken) -> Result<()> {
     ctrlc::set_handler(move || {
         tracing::info!("termination signal received; stopping execution");
@@ -57,7 +53,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_termination_signal_cancels_the_token_the_api_stop_uses() {
+    async fn a_termination_signal_cancels_the_orderly_shutdown_token() {
         let shutdown = CancellationToken::new();
         cancel_on_termination(shutdown.clone()).expect("the handler installs");
         assert!(!shutdown.is_cancelled());

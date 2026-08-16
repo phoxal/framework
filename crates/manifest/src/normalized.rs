@@ -21,10 +21,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use phoxal_model::CapabilityRole;
 use phoxal_model::component::capability::CapabilityKind;
 use phoxal_model::identity::{CapabilityId, LinkId};
 use phoxal_model::robot::{KinematicConfig, MotionLimits};
-use phoxal_model::{CapabilityRole, Clock};
 
 use crate::source::robot::driver::DriverConfig;
 
@@ -33,7 +33,6 @@ use crate::source::robot::driver::DriverConfig;
 pub(crate) struct Robot {
     /// The authored robot identifier, still unvalidated as an identity.
     pub id: String,
-    pub clock: Clock,
     /// The URDF structure path, relative to the resolved robot root.
     pub structure: PathBuf,
     pub kinematic: KinematicConfig,

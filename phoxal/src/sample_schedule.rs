@@ -1,4 +1,4 @@
-//! Logical-time publish schedules shared by component and simulator producers.
+//! Logical-time publish schedules shared by every sample producer.
 
 use std::num::NonZeroU64;
 

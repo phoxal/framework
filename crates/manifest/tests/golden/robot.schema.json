@@ -1,7 +1,7 @@
 {
   "$defs": {
     "CapabilityRole": {
-      "description": "The canonical purpose assigned to a component capability by an authored\nrobot manifest.\n\nRoles are source/runtime contract facts rather than service names. Keeping\nthe closed vocabulary in the canonical model means every reader of a\nfinalized runtime document agrees on the same spelling and set of values.",
+      "description": "The canonical purpose assigned to a component capability by an authored\nrobot manifest.\n\nRoles are source/runtime contract facts rather than service names. Keeping\nthe closed vocabulary in the canonical model means every reader of a\ncompiled manifest agrees on the same spelling and set of values.",
       "enum": [
         "localization",
         "mapping",
@@ -11,21 +11,6 @@
         "safety"
       ],
       "type": "string"
-    },
-    "Clock": {
-      "description": "Authored `clock:` - the time domain the robot runs on.\n\nThis mirrors [`phoxal_model::Clock`] rather than reusing it: the canonical\nvalue deliberately carries no wire form, and the exhaustive [`From`] impl\nbelow turns any future divergence between the two into a compile error.",
-      "oneOf": [
-        {
-          "const": "real",
-          "description": "Host wall/monotonic time driven by real hardware.",
-          "type": "string"
-        },
-        {
-          "const": "simulated",
-          "description": "Time published by a simulation world authority.",
-          "type": "string"
-        }
-      ]
     },
     "Component": {
       "additionalProperties": false,
@@ -43,7 +28,7 @@
               "type": "null"
             }
           ],
-          "description": "Hardware connection metadata. Its presence is what declares a component\ndriver participant for this instance, and its body is that participant's\nconfiguration."
+          "description": "Hardware connection metadata. Its presence is what declares a component\ndriver for this instance, and its body is that driver's configuration.\nThe driver's participant id is the instance id this block sits under."
         },
         "mount_link": {
           "type": "string"
@@ -61,7 +46,7 @@
             },
             "type": "array"
           },
-          "description": "What each capability on this instance is declared to be for.\n\nThis is the input to service activation: which services a robot runs is\ndecided from the roles its capabilities declare, so that a robot with\nno capability serving a role does not start the service that consumes\nit. The compiler resolves these keys against the selected component\ndocument and persists the typed assignment in `runtime.json`.",
+          "description": "What each capability on this instance is declared to be for.\n\nThis is the input to service activation: which services a robot runs is\ndecided from the roles its capabilities declare, so that a robot with\nno capability serving a role does not start the service that consumes\nit. The compiler resolves these keys against the selected component\ndocument and persists the typed assignment in `manifest.json`.",
           "type": "object"
         }
       },
@@ -813,11 +798,6 @@
       "additionalProperties": false,
       "description": "Exact top-level `robot.yaml` v0 document.",
       "properties": {
-        "clock": {
-          "$ref": "#/$defs/Clock",
-          "default": "real",
-          "description": "The time domain this robot runs on.\n\nAuthored documents omit it and get [`Clock::Real`]; finalization writes\nthe resolved value explicitly into the bundle's `robot.yaml`."
-        },
         "extends": {
           "description": "Ordered parent robot documents composed before this leaf manifest.\n\nParent maps are deep-merged in declaration order, then the leaf wins.\nSequence and scalar values replace earlier values.",
           "items": {

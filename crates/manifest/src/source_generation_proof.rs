@@ -28,14 +28,12 @@ use crate::normalized;
 /// A robot source language that is not the one the product ships.
 ///
 /// Every difference here is deliberate: `identity` instead of `robot.id`,
-/// `frame` instead of `robot.structure`, a `mounts` sequence instead of a
-/// `robot.components` map, and a time domain whose spellings are its own.
+/// `frame` instead of `robot.structure`, and a `mounts` sequence instead of a
+/// `robot.components` map.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TestAltRobotDto {
     identity: String,
-    #[serde(default)]
-    time_domain: AltTimeDomain,
     frame: PathBuf,
     drive: KinematicConfig,
     limits: AltLimits,
@@ -43,14 +41,6 @@ struct TestAltRobotDto {
     mounts: Vec<AltMount>,
     #[serde(default)]
     programs: Vec<AltProgram>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum AltTimeDomain {
-    #[default]
-    Wall,
-    World,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,10 +119,6 @@ impl TestAltRobotDto {
     fn normalize(self) -> normalized::Robot {
         normalized::Robot {
             id: self.identity,
-            clock: match self.time_domain {
-                AltTimeDomain::Wall => phoxal_model::Clock::Real,
-                AltTimeDomain::World => phoxal_model::Clock::Simulated,
-            },
             structure: self.frame,
             kinematic: self.drive,
             motion_limits: phoxal_model::robot::MotionLimits {
@@ -314,26 +300,30 @@ fn compile(project_root: &Path, robot: &normalized::Robot) -> crate::CompiledPro
         robot_root: project_root.clone(),
         component_roots: component_roots(robot),
     };
-    let (model, services, drivers) = resolved.compile_model(robot).expect("the model compiles");
+    let model = resolved
+        .compile_model(robot, OFFICIAL_SERVICES.map(official))
+        .expect("the model compiles");
     let assets = resolved
         .compile_assets(&project_root, robot, &model)
         .expect("the assets compile");
     crate::CompiledProject {
         robot: model,
-        services,
-        drivers,
         assets,
     }
+}
+
+/// A caller-supplied official service set, so the proof covers the merge with
+/// the authored `services:` map rather than only the authored half.
+const OFFICIAL_SERVICES: [&str; 2] = ["drive", "localize"];
+
+fn official(id: &str) -> phoxal_model::identity::ServiceId {
+    phoxal_model::identity::ServiceId::new(id).expect("an official service id is a token")
 }
 
 /// What a compiled project is, as bytes, for comparison across generations.
 fn rendered(project: &crate::CompiledProject) -> String {
     let mut rendered = serde_json::to_string_pretty(project.robot()).expect("the model serializes");
-    rendered.push_str(&format!(
-        "\n{:#?}\n{:#?}\n",
-        project.services(),
-        project.drivers()
-    ));
+    rendered.push('\n');
     for (id, bytes) in project.assets().iter() {
         rendered.push_str(&format!("{} {}\n", id.as_str(), bytes.len()));
     }

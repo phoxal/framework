@@ -9,7 +9,7 @@ use crate::index::PublishedVersions;
 use crate::probe::{ContractSurfaces, Extraction, Side};
 use crate::release::ReleaseStep;
 use crate::runbook::{RunbookPointer, RunbookRule};
-use crate::source::{AuthoredDocuments, SourceComparison};
+use crate::source::{AuthoredDocuments, CorpusReading, SourceComparison};
 use crate::surface::{CompatibilityImpact, RecordChange, SurfaceSet};
 use crate::toolchain::{RustVersion, ToolchainFloor};
 
@@ -51,8 +51,11 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
     ///
     /// The authored source is read first, because it is the one axis that
     /// speaks whatever the contract surfaces do: `phoxal-manifest` is not a
-    /// wire surface, so a published reader always exists to compare against
-    /// even on a train that states no surface at all.
+    /// wire surface, so a published reader is comparable even on a train that
+    /// states no surface at all - as long as that reader carries the probe
+    /// entry the corpus is read through. One that predates it leaves the leg
+    /// unavailable rather than failing the run; a workspace that dropped the
+    /// entry is a defect in this repository and does fail.
     ///
     /// The contract baseline is read next: when the published crates carry no
     /// surface there is nothing to compare against, and compiling the workspace
@@ -64,10 +67,7 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
         let baseline = train.version.clone();
         let floor =
             ToolchainFloor::between(train.rust_version.clone(), self.workspace_floor.clone());
-        let source = SourceComparison::between(
-            &self.documents.read(&Side::Baseline(train.clone()))?,
-            &self.documents.read(&Side::Current)?,
-        )?;
+        let source = self.compare_authored_source(&train)?;
 
         let Extraction::Surfaces(published) = self.surfaces.extract(&Side::Baseline(train))? else {
             return Ok(CompatibilityReport {
@@ -75,6 +75,7 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
                 workspace_version: self.workspace_version.clone(),
                 floor,
                 source,
+                declared,
                 outcome: Outcome::NoComparableBaseline,
             });
         };
@@ -93,12 +94,36 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
             outcome: Outcome::Compared {
                 effective: mechanical.max(declared).max(source.impact()),
                 mechanical,
-                declared,
                 changes,
             },
             source,
+            declared,
             baseline,
         })
+    }
+
+    /// Read the corpus through both readers and classify the difference.
+    ///
+    /// A published reader with no probe entry is the one side whose absence is
+    /// an outcome: the entry is younger than that train, and no version of it
+    /// can be made to answer. The workspace side has no such excuse - the entry
+    /// is in the tree in front of it - so a workspace that cannot be read is an
+    /// error naming what went missing.
+    fn compare_authored_source(
+        &self,
+        train: &crate::index::PublishedTrain,
+    ) -> Result<SourceComparison> {
+        let baseline = self.documents.read(&Side::Baseline(train.clone()))?;
+        let CorpusReading::Corpus(current) = self.documents.read(&Side::Current)? else {
+            bail!(
+                "the workspace `phoxal-manifest` states no compatibility probe entry, so this \
+                 workspace's authored source cannot be read at all"
+            );
+        };
+        let CorpusReading::Corpus(baseline) = baseline else {
+            return Ok(SourceComparison::Unavailable);
+        };
+        SourceComparison::between(&baseline, &current)
     }
 }
 
@@ -108,6 +133,13 @@ pub(crate) struct CompatibilityReport {
     workspace_version: Version,
     floor: ToolchainFloor,
     source: SourceComparison,
+    /// What the caller declared on top of whatever the axes mechanically show.
+    ///
+    /// It lives on the report rather than inside [`Outcome::Compared`] because
+    /// an axis that could not be compared at all still has to know it: an
+    /// unreadable authored-source baseline is tolerated only on a train that is
+    /// already declaring a break.
+    declared: CompatibilityImpact,
     outcome: Outcome,
 }
 
@@ -124,12 +156,11 @@ impl CompatibilityReport {
         let mut requirements = Vec::new();
         if let Outcome::Compared {
             mechanical,
-            declared,
             changes,
             ..
         } = &self.outcome
         {
-            let impact = (*mechanical).max(*declared);
+            let impact = (*mechanical).max(self.declared);
             requirements.push(ReleaseRequirement::Contracts {
                 impact,
                 step: ReleaseStep::required(impact, &self.baseline),
@@ -162,11 +193,26 @@ impl CompatibilityReport {
             .max()
     }
 
+    /// The release this candidate is being sized as, over every axis that could
+    /// be read.
+    fn effective_impact(&self) -> CompatibilityImpact {
+        match &self.outcome {
+            Outcome::Compared { effective, .. } => *effective,
+            Outcome::NoComparableBaseline => self.declared.max(self.source.impact()),
+        }
+    }
+
     /// The failure one command must return, if any.
     ///
     /// Frozen bootstrap drift is unreleasable and therefore fails both the
     /// ordinary report and the release gate. Every other release-size finding
     /// remains report-only until `check-release` asks to gate the candidate.
+    ///
+    /// An unavailable authored-source leg is checked before the release size,
+    /// because it is a precondition rather than a version: no candidate is big
+    /// enough to buy a train that nothing held its source language to, and
+    /// naming the missing leg first is what tells the reader that raising the
+    /// version will not answer it.
     pub(crate) fn command_failure(&self, gates_the_release: bool) -> Option<CompatibilityFailure> {
         if self.requirements().iter().any(|requirement| {
             matches!(
@@ -176,12 +222,15 @@ impl CompatibilityReport {
         }) {
             return Some(CompatibilityFailure::FrozenBootstrapDrift);
         }
-        if gates_the_release {
-            self.release_shortfall()
-                .map(CompatibilityFailure::InsufficientRelease)
-        } else {
-            None
+        if !gates_the_release {
+            return None;
         }
+        if self.source.is_unavailable() && self.effective_impact() != CompatibilityImpact::Breaking
+        {
+            return Some(CompatibilityFailure::UnreadableSourceBaseline);
+        }
+        self.release_shortfall()
+            .map(CompatibilityFailure::InsufficientRelease)
     }
 
     /// The authored-source line: one word when the whole corpus came through
@@ -226,7 +275,6 @@ impl fmt::Display for CompatibilityReport {
         writeln!(formatter, "toolchain: {}", self.floor)?;
         let Outcome::Compared {
             mechanical,
-            declared,
             effective,
             changes,
         } = &self.outcome
@@ -245,7 +293,7 @@ impl fmt::Display for CompatibilityReport {
         // Everything the surfaces alone do not account for is named, so a
         // reader is never left guessing which axis raised the release.
         let raised = [
-            (declared > mechanical, "declared"),
+            (self.declared > *mechanical, "declared"),
             (self.source.impact() > *mechanical, "the authored source"),
         ]
         .into_iter()
@@ -395,8 +443,6 @@ enum Outcome {
     Compared {
         /// What the surfaces themselves show.
         mechanical: CompatibilityImpact,
-        /// What the caller declared on top of them.
-        declared: CompatibilityImpact,
         /// The greatest of the surfaces, the declaration and the authored
         /// source, which is what the release must carry.
         effective: CompatibilityImpact,
@@ -417,6 +463,9 @@ pub(crate) struct InsufficientRelease {
 pub(crate) enum CompatibilityFailure {
     /// The frozen attachment bootstrap changed; no version can make it valid.
     FrozenBootstrapDrift,
+    /// The published reader carries no probe entry, so the authored-source leg
+    /// did not run, on a candidate that is not itself a breaking release.
+    UnreadableSourceBaseline,
     /// `check-release` found a candidate smaller than the required release.
     InsufficientRelease(InsufficientRelease),
 }
@@ -428,6 +477,14 @@ impl fmt::Display for CompatibilityFailure {
                 formatter,
                 "the frozen supervisor bootstrap drifted and is unreleasable at any version. {}",
                 RunbookPointer::to([RunbookRule::FrozenBootstrapDrift])
+            ),
+            Self::UnreadableSourceBaseline => write!(
+                formatter,
+                "the authored-source comparison is unavailable and this candidate is not a \
+                 breaking release: the published reader has no probe entry, so nothing holds this \
+                 train's source language to what the published one accepted. Only a train already \
+                 declaring a break may release over an unread corpus. {}",
+                RunbookPointer::to([RunbookRule::UnreadableSourceBaseline])
             ),
             Self::InsufficientRelease(shortfall) => shortfall.fmt(formatter),
         }
@@ -553,6 +610,8 @@ mod tests {
     #[derive(Clone, Copy)]
     struct FixtureDocuments {
         current_accepts: bool,
+        /// Whether the published reader carries the probe entry at all.
+        baseline_reads: bool,
     }
 
     impl FixtureDocuments {
@@ -561,6 +620,7 @@ mod tests {
         const fn unchanged() -> Self {
             Self {
                 current_accepts: true,
+                baseline_reads: true,
             }
         }
 
@@ -568,12 +628,24 @@ mod tests {
         const fn regressed() -> Self {
             Self {
                 current_accepts: false,
+                baseline_reads: true,
+            }
+        }
+
+        /// A published train from before the probe entry existed.
+        const fn without_a_baseline_reader() -> Self {
+            Self {
+                current_accepts: true,
+                baseline_reads: false,
             }
         }
     }
 
     impl AuthoredDocuments for FixtureDocuments {
-        fn read(&self, side: &Side) -> Result<BTreeMap<&'static str, Reading>> {
+        fn read(&self, side: &Side) -> Result<CorpusReading> {
+            if matches!(side, Side::Baseline(_)) && !self.baseline_reads {
+                return Ok(CorpusReading::NoProbeEntry);
+            }
             let accepted = Reading::Accepted {
                 canonical: json!({"id": "r"}),
             };
@@ -584,7 +656,9 @@ mod tests {
             } else {
                 accepted
             };
-            Ok([("robot.yaml", reading)].into_iter().collect())
+            Ok(CorpusReading::Corpus(
+                [("robot.yaml", reading)].into_iter().collect(),
+            ))
         }
     }
 
@@ -671,6 +745,70 @@ mod tests {
                 "{report}"
             );
         }
+    }
+
+    /// A published reader from before the probe entry existed leaves the leg
+    /// with nothing to compare against. That is an informational line rather
+    /// than a finding: `report` prints it and passes, and it raises no release
+    /// requirement of its own.
+    #[test]
+    fn a_baseline_without_a_probe_entry_is_reported_and_passes_report() {
+        let report = CompatibilityCheck::new(
+            FixtureTrain(Version::new(0, 62, 1)),
+            FixtureSurfaces::new(&[endpoint("robot/a")], &[endpoint("robot/a")]),
+            FixtureDocuments::without_a_baseline_reader(),
+            Version::new(0, 62, 2),
+            floor(FLOOR),
+        )
+        .run(CompatibilityImpact::Unchanged)
+        .expect("the comparison runs");
+        let rendered = report.to_string();
+        assert!(rendered.contains("source:    unavailable ("), "{rendered}");
+        assert!(rendered.contains("no probe entry"), "{rendered}");
+        assert!(rendered.contains("impact:    unchanged"), "{rendered}");
+        assert!(report.release_shortfall().is_none(), "{rendered}");
+        assert!(report.command_failure(false).is_none(), "{rendered}");
+    }
+
+    /// The allowance is exactly one train wide: `check-release` takes an
+    /// unreadable source baseline only on a candidate that is already declaring
+    /// a break, and refuses it on any smaller one. A bigger version is not the
+    /// remedy, so the refusal names the missing reader rather than a minimum.
+    #[test]
+    fn an_unreadable_source_baseline_gates_every_train_that_is_not_breaking() {
+        let check = |declared| {
+            CompatibilityCheck::new(
+                FixtureTrain(Version::new(0, 62, 1)),
+                FixtureSurfaces::new(&[endpoint("robot/a")], &[endpoint("robot/a")]),
+                FixtureDocuments::without_a_baseline_reader(),
+                Version::new(0, 63, 0),
+                floor(FLOOR),
+            )
+            .run(declared)
+            .expect("the comparison runs")
+        };
+
+        for tolerated in [
+            CompatibilityImpact::Unchanged,
+            CompatibilityImpact::Additive,
+        ] {
+            let failure = check(tolerated)
+                .command_failure(true)
+                .expect("only a breaking train may release over an unread corpus")
+                .to_string();
+            assert!(failure.contains("no probe entry"), "{tolerated}: {failure}");
+            assert!(
+                failure.contains("not a breaking release"),
+                "{tolerated}: {failure}"
+            );
+            assert!(failure.contains("rule 9"), "{tolerated}: {failure}");
+        }
+
+        let breaking = check(CompatibilityImpact::Breaking);
+        assert!(
+            breaking.command_failure(true).is_none(),
+            "a declared break carries the allowance: {breaking}"
+        );
     }
 
     /// An unchanged surface leaves the release free, so a workspace sitting one

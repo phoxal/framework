@@ -7,8 +7,7 @@
 //! decision reference - so they are a CI gate rather than a crate's tests.
 //! Every rule reads `cargo metadata`, the filesystem or Git and nothing else,
 //! which is what keeps this verb inside the runner's no-framework-crate rule:
-//! the gate never builds the stack it judges, so it needs no Webots and runs on
-//! a bare runner.
+//! the gate never builds the stack it judges, so it runs on a bare runner.
 //!
 //! The proofs that *do* need the framework linked - what a linked participant
 //! binary carries, what the facade and the process-contract crate agree on,
@@ -188,7 +187,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 13] = [
+const RULES: [Rule; 14] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -224,6 +223,10 @@ const RULES: [Rule; 13] = [
     Rule {
         name: "retired compatibility identities stay absent",
         check: retired_surface::retired_compatibility_identities_stay_absent,
+    },
+    Rule {
+        name: "retired bundle and role vocabulary stays absent",
+        check: retired_surface::retired_bundle_and_role_vocabulary_stays_absent,
     },
     Rule {
         name: "participant kind declarations match the two explicit owners",

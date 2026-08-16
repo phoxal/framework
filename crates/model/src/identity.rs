@@ -10,7 +10,7 @@ use std::fmt;
 
 use crate::error::{IdentifierKind, ModelError};
 
-pub use phoxal_runtime_contract::identity::{ComponentInstanceId, RobotId};
+pub use phoxal_runtime_contract::identity::{ComponentInstanceId, RobotId, ServiceId};
 
 /// The separator that joins a component instance id to a component-local
 /// structural id when a component's structure is flattened into the robot's.

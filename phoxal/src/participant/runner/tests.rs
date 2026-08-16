@@ -7,14 +7,13 @@ use super::lifecycle::{
 use crate::bus::{RobotInstant, TimelineId};
 use crate::participant::api::Participant;
 use crate::participant::bus_log;
-use crate::participant::clock::TimeUnsynchronized;
 use crate::participant::clock::real::RealClock;
+use crate::participant::clock::{ClockMode, TimeUnsynchronized};
 use crate::participant::context::SetupContext;
 use crate::participant::managed::{
     ManagedTaskExit, ManagedTaskFailure, ManagedTaskPolicy, ManagedTasks,
 };
 use crate::participant::scheduler::AnyStepScheduler;
-use phoxal_bundle::ParticipantClock;
 use phoxal_bus::{BusConfig, BusFault, BusOwner, ParticipantReadyEvents, ParticipantReadyStatus};
 use phoxal_runtime_contract::identity::ParticipantId;
 use std::sync::OnceLock;
@@ -29,6 +28,10 @@ fn at(timeline: u64, ticks: u64) -> RobotInstant {
     )
 }
 
+fn test_timeline() -> TimelineId {
+    TimelineId::from_raw(1).expect("test timeline must be nonzero")
+}
+
 #[tokio::test]
 async fn shutdown_request_remains_sticky_after_source_completes() {
     let mut shutdown = ShutdownController::new(std::future::ready(()));
@@ -39,26 +42,19 @@ async fn shutdown_request_remains_sticky_after_source_completes() {
         .expect("a completed shutdown source must remain immediately observable");
 }
 
-/// A stepless real participant keeps the origin-anchored clock, so its
-/// recurring beat reads real robot time instead of faulting on a clock that
-/// was never there. Only a truly clockless launch leaves the runner without
-/// one.
+/// A stepless real participant keeps its host clock, so its recurring beat
+/// reads real robot time instead of faulting on a clock that was never there.
+/// Having no cadence is not having no time.
 #[test]
-fn a_stepless_real_participant_keeps_the_origin_clock() {
-    let (scheduler, handle) = AnyStepScheduler::for_clock_mode(ParticipantClock::Real, None, None)
+fn a_stepless_real_participant_keeps_its_host_clock() {
+    let (scheduler, handle) = AnyStepScheduler::for_clock_mode(ClockMode::Real, None, None)
         .expect("a stepless real participant builds without a scheduler");
     assert!(handle.is_none());
+    assert!(matches!(scheduler, AnyStepScheduler::Disabled));
 
-    let origin = phoxal_runtime_contract::origin::ExecutionOrigin::try_mint()
-        .expect("the host boot clock is readable");
-    let clock = RealClock::new(origin).expect("an origin-anchored clock builds");
     assert!(matches!(
-        runner_clock(&scheduler, Some(clock)),
+        runner_clock(&scheduler, Some(RealClock::new(test_timeline()))),
         Ok(RunnerClock::Delegated(_))
-    ));
-    assert!(matches!(
-        runner_clock::<RealClock>(&scheduler, None),
-        Ok(RunnerClock::Disabled)
     ));
 }
 
@@ -256,18 +252,14 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
     .await
     .expect("open in-process bus");
     let (scheduler, clock_handle) = AnyStepScheduler::for_clock_mode(
-        ParticipantClock::Real,
+        ClockMode::Real,
         None,
-        Some(RobotInstant::new(
-            TimelineId::from_raw(1).expect("valid timeline"),
-            0,
-        )),
+        Some(RobotInstant::new(test_timeline(), 0)),
     )
     .expect("real scheduler");
     assert!(clock_handle.is_none());
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
-    let clock = RealClock::new(phoxal_runtime_contract::origin::ExecutionOrigin::mint())
-        .expect("current-boot origin");
+    let clock = RealClock::new(test_timeline());
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let setup_started = hanging_setup_started().notified();
     let start_task = tokio::spawn(async move {
@@ -285,7 +277,7 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
                 clock: RunnerClock::Delegated(clock),
                 scheduler,
                 schedule: None,
-                clock_mode: ParticipantClock::Real,
+                clock_mode: ClockMode::Real,
                 tasks: RunnerTasks {
                     simulation_clock: None,
                     bus_log: bus_log_task,
@@ -372,9 +364,8 @@ async fn assert_owner_worker_failure_reaches_lifecycle(
         .participant_ready_events()
         .await
         .expect("observe exact Ready changes");
-    let (scheduler, clock_handle) =
-        AnyStepScheduler::for_clock_mode(ParticipantClock::Clockless, None, None)
-            .expect("disabled scheduler");
+    let (scheduler, clock_handle) = AnyStepScheduler::for_clock_mode(ClockMode::Real, None, None)
+        .expect("a stepless real participant needs no scheduler");
     assert!(clock_handle.is_none());
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
     let mut shutdown = ShutdownController::new(std::future::pending());
@@ -387,10 +378,10 @@ async fn assert_owner_worker_failure_reaches_lifecycle(
             shutdown_grace: Duration::from_secs(1),
             bundle: None,
             config: (),
-            clock: RunnerClock::Disabled,
+            clock: RunnerClock::Delegated(RealClock::new(test_timeline())),
             scheduler,
             schedule: None,
-            clock_mode: ParticipantClock::Clockless,
+            clock_mode: ClockMode::Real,
             tasks: RunnerTasks {
                 simulation_clock: None,
                 bus_log: bus_log_task,

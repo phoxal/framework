@@ -19,8 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::component::Component;
 use crate::component::capability::{Capability, CapabilityRole};
 use crate::error::ModelError;
-use crate::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
-use crate::robot::{Clock, ComponentInstance, KinematicConfig, MotionLimits, Robot};
+use crate::identity::{
+    CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, ServiceId,
+};
+use crate::robot::{ComponentInstance, KinematicConfig, MotionLimits, Robot, Service};
 use crate::simulation::{self, Simulation};
 use crate::structure::Structure;
 
@@ -30,12 +32,11 @@ use crate::structure::Structure;
 /// one pass, and [`robot`] validates the whole before any of it is observable.
 pub struct RobotParts {
     pub id: RobotId,
-    pub clock: Clock,
     pub kinematic: KinematicConfig,
     pub motion_limits: MotionLimits,
-    pub component_instances: BTreeMap<ComponentInstanceId, ComponentInstance>,
+    pub services: BTreeMap<ServiceId, Service>,
+    pub components: BTreeMap<ComponentInstanceId, ComponentInstance>,
     pub component_types: BTreeMap<ComponentTypeId, Component>,
-    pub simulation_types: BTreeMap<ComponentTypeId, Simulation>,
     pub structure: Structure,
 }
 
@@ -49,13 +50,21 @@ pub fn structure(document: serde_json::Value) -> Result<Structure, ModelError> {
     Ok(Structure::from_compiler_value(document)?)
 }
 
-/// Build one component type from its normalized capabilities and structure.
+/// Build one component type from its normalized capabilities, structure, and
+/// the simulation modelling it, when a document authored one.
 #[must_use]
 pub fn component(
     capabilities: BTreeMap<CapabilityId, Capability>,
     structure: Structure,
+    simulation: Option<Simulation>,
 ) -> Component {
-    Component::new(capabilities, structure)
+    Component::new(capabilities, structure, simulation)
+}
+
+/// Build one service entry from its user-owned configuration.
+#[must_use]
+pub const fn service(config: Option<serde_json::Value>) -> Service {
+    Service::new(config)
 }
 
 /// Build one component type's simulation from its normalized capabilities and
@@ -69,32 +78,18 @@ pub fn simulation(
 }
 
 /// Build one mounted component instance.
+///
+/// The instance carries no id: it is filed under one in
+/// [`RobotParts::components`], and that key is the identity.
 #[must_use]
 pub fn component_instance(
-    id: ComponentInstanceId,
-    component_type: ComponentTypeId,
-    mount_link: LinkId,
-    direction_signs: BTreeMap<CapabilityId, i8>,
-) -> ComponentInstance {
-    ComponentInstance::new(
-        id,
-        component_type,
-        mount_link,
-        direction_signs,
-        BTreeMap::<CapabilityId, BTreeSet<CapabilityRole>>::new(),
-    )
-}
-
-/// Build one mounted component instance with authored capability roles.
-#[must_use]
-pub fn component_instance_with_roles(
-    id: ComponentInstanceId,
     component_type: ComponentTypeId,
     mount_link: LinkId,
     direction_signs: BTreeMap<CapabilityId, i8>,
     roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
+    driver: Option<serde_json::Value>,
 ) -> ComponentInstance {
-    ComponentInstance::new(id, component_type, mount_link, direction_signs, roles)
+    ComponentInstance::new(component_type, mount_link, direction_signs, roles, driver)
 }
 
 /// Assemble and validate the canonical robot.
@@ -103,13 +98,10 @@ pub fn component_instance_with_roles(
 ///
 /// Returns the first [`ModelError`] the assembled model violates.
 pub fn robot(parts: RobotParts) -> Result<Robot, ModelError> {
-    // The footprint is a source/build product. Persisted runtime documents
-    // carry this value (or an explicit `null`) and never reconstruct it from
+    // The footprint is a source/build product. A persisted manifest carries
+    // this value (or an explicit `null`) and never reconstructs it from
     // collision geometry.
-    let footprint = crate::footprint::compile(
-        &parts.structure,
-        &parts.component_instances,
-        &parts.component_types,
-    )?;
+    let footprint =
+        crate::footprint::compile(&parts.structure, &parts.components, &parts.component_types)?;
     Robot::new(parts, footprint)
 }

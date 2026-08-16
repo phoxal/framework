@@ -98,8 +98,9 @@ use crate::component::capability::{
 use crate::error::ModelError;
 use crate::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId, RobotId,
+    ServiceId,
 };
-use crate::robot::{Clock, KinematicConfig, MotionLimits, Robot};
+use crate::robot::{KinematicConfig, MotionLimits, Robot};
 use crate::simulation;
 use crate::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, Geometry, JointKind, Structure};
 
@@ -697,8 +698,8 @@ struct InstanceSpec {
 #[derive(Debug)]
 pub struct RobotBuilder {
     id: String,
-    clock: Clock,
     motion_limits: MotionLimits,
+    services: BTreeMap<String, Option<serde_json::Value>>,
     /// The drive, already normalized. Held as a `Result` so that a malformed
     /// capability reference is reported by [`RobotBuilder::build`] rather than
     /// forcing every caller to handle one mid-chain.
@@ -729,10 +730,9 @@ pub struct ComponentBuilder {
 impl RobotBuilder {
     /// A robot with the given id, no components and no drive.
     ///
-    /// It starts on the real clock, with an omnidirectional kinematic config
-    /// declaring no actuators - the one
-    /// geometry that describes nothing a robot without a drive would have to
-    /// invent.
+    /// It starts with an omnidirectional kinematic config declaring no
+    /// actuators - the one geometry that describes nothing a robot without a
+    /// drive would have to invent - and runs no services.
     ///
     /// ```
     /// use phoxal_model::builder::RobotBuilder;
@@ -740,15 +740,15 @@ impl RobotBuilder {
     /// let robot = RobotBuilder::new("rover").build()?;
     ///
     /// assert_eq!(robot.id().as_str(), "rover");
-    /// assert_eq!(robot.clock(), phoxal_model::Clock::Real);
+    /// assert_eq!(robot.services().len(), 0);
     /// # Ok::<(), phoxal_model::ModelError>(())
     /// ```
     #[must_use]
     pub fn new(id: &str) -> Self {
         Self {
             id: id.to_owned(),
-            clock: Clock::Real,
             motion_limits: DEFAULT_MOTION_LIMITS,
+            services: BTreeMap::new(),
             kinematic: Ok(KinematicConfig::Omnidirectional {
                 actuators: Vec::new(),
                 encoders: Vec::new(),
@@ -760,20 +760,25 @@ impl RobotBuilder {
         }
     }
 
-    /// Put this robot on the given time domain.
+    /// Run one service on this robot, with the given configuration.
+    ///
+    /// Declaring the same service twice replaces the earlier configuration.
     ///
     /// ```
-    /// use phoxal_model::Clock;
     /// use phoxal_model::builder::RobotBuilder;
     ///
-    /// let robot = RobotBuilder::new("rover").clock(Clock::Simulated).build()?;
+    /// let robot = RobotBuilder::new("rover")
+    ///     .service("drive", None)
+    ///     .service("mission", Some(serde_json::json!({ "speed": 1 })))
+    ///     .build()?;
     ///
-    /// assert_eq!(robot.clock(), Clock::Simulated);
+    /// assert_eq!(robot.service_config("mission"), Some(&serde_json::json!({ "speed": 1 })));
+    /// assert_eq!(robot.service_config("drive"), None);
     /// # Ok::<(), phoxal_model::ModelError>(())
     /// ```
     #[must_use]
-    pub const fn clock(mut self, clock: Clock) -> Self {
-        self.clock = clock;
+    pub fn service(mut self, id: &str, config: Option<serde_json::Value>) -> Self {
+        self.services.insert(id.to_owned(), config);
         self
     }
 
@@ -984,8 +989,12 @@ impl RobotBuilder {
     pub fn build(self) -> Result<Robot, ModelError> {
         let id = RobotId::new(self.id)?;
         let kinematic = self.kinematic?;
-        let types = build_types(self.types)?;
-        let mut component_instances = BTreeMap::new();
+        let component_types = build_types(self.types)?;
+        let mut services = BTreeMap::new();
+        for (service, config) in self.services {
+            services.insert(ServiceId::new(service)?, compiler::service(config));
+        }
+        let mut components = BTreeMap::new();
         let mut mounts = BTreeSet::new();
         for (instance, spec) in self.instances {
             let instance = ComponentInstanceId::new(instance)?;
@@ -998,25 +1007,25 @@ impl RobotBuilder {
             for (capability, sign) in spec.direction_signs {
                 direction_signs.insert(CapabilityId::new(capability)?, sign);
             }
-            component_instances.insert(
-                instance.clone(),
+            components.insert(
+                instance,
                 compiler::component_instance(
-                    instance,
                     ComponentTypeId::new(spec.component_type)?,
                     mount_link,
                     direction_signs,
+                    BTreeMap::new(),
+                    None,
                 ),
             );
         }
         let structure = robot_structure(&id, self.joints, &mounts, &self.bodies)?;
         compiler::robot(RobotParts {
             id,
-            clock: self.clock,
             kinematic,
             motion_limits: self.motion_limits,
-            component_instances,
-            component_types: types.components,
-            simulation_types: types.simulations,
+            services,
+            components,
+            component_types,
             structure,
         })
     }
@@ -1099,9 +1108,13 @@ impl ComponentTypeBuilder {
     ///     .build()?;
     ///
     /// let camera = robot
-    ///     .component_for_instance("front_camera")
-    ///     .expect("the mounted type is loaded");
-    /// let lens = camera.structure().link("lens").expect("the stated link");
+    ///     .component("front_camera")
+    ///     .expect("the instance is mounted");
+    /// let lens = camera
+    ///     .component_type()
+    ///     .structure()
+    ///     .link("lens")
+    ///     .expect("the stated link");
     /// assert_eq!(lens.visuals().len(), 1);
     /// # Ok::<(), phoxal_model::ModelError>(())
     /// ```
@@ -1140,7 +1153,8 @@ impl ComponentTypeBuilder {
     ///     .component("left_drive", "drive_motor")
     ///     .build()?;
     ///
-    /// assert!(robot.simulation_for_instance("left_drive").is_some());
+    /// let drive = robot.component("left_drive").expect("the instance is mounted");
+    /// assert!(drive.simulation().is_some());
     /// # Ok::<(), phoxal_model::ModelError>(())
     /// ```
     #[must_use]
@@ -1482,20 +1496,11 @@ impl Kinematics<'_> {
     }
 }
 
-/// The normalized component types, and the simulations modelling them.
-///
-/// The two are produced together because a simulation is keyed by the type it
-/// models, and returned together so neither can be assembled without the other.
-#[derive(Debug)]
-struct NormalizedTypes {
-    components: BTreeMap<ComponentTypeId, Component>,
-    simulations: BTreeMap<ComponentTypeId, simulation::Simulation>,
-}
-
-/// Normalize every component type, and the simulations that model them.
-fn build_types(types: BTreeMap<String, TypeSpec>) -> Result<NormalizedTypes, ModelError> {
+/// Normalize every component type, each with the simulation that models it.
+fn build_types(
+    types: BTreeMap<String, TypeSpec>,
+) -> Result<BTreeMap<ComponentTypeId, Component>, ModelError> {
     let mut component_types = BTreeMap::new();
-    let mut simulation_types = BTreeMap::new();
     for (component_type, spec) in types {
         let component_type = ComponentTypeId::new(component_type)?;
         let mut capabilities = BTreeMap::new();
@@ -1506,28 +1511,27 @@ fn build_types(types: BTreeMap<String, TypeSpec>) -> Result<NormalizedTypes, Mod
             component_structure(&component_type, &capabilities, spec.joints, &spec.bodies)?;
         // A simulation is only carried for a type that states one: an empty
         // simulation and no simulation are different facts.
-        if !spec.simulated.is_empty() || !spec.contact_materials.is_empty() {
+        let simulation = if spec.simulated.is_empty() && spec.contact_materials.is_empty() {
+            None
+        } else {
             let mut simulated = BTreeMap::new();
             for (capability, modelled) in spec.simulated {
                 simulated.insert(CapabilityId::new(capability)?, modelled);
             }
-            simulation_types.insert(
-                component_type.clone(),
-                compiler::simulation(
-                    simulated,
-                    spec.contact_materials
-                        .into_iter()
-                        .map(|(link, material)| (LinkId::new(link), Some(material)))
-                        .collect(),
-                ),
-            );
-        }
-        component_types.insert(component_type, compiler::component(capabilities, structure));
+            Some(compiler::simulation(
+                simulated,
+                spec.contact_materials
+                    .into_iter()
+                    .map(|(link, material)| (LinkId::new(link), Some(material)))
+                    .collect(),
+            ))
+        };
+        component_types.insert(
+            component_type,
+            compiler::component(capabilities, structure, simulation),
+        );
     }
-    Ok(NormalizedTypes {
-        components: component_types,
-        simulations: simulation_types,
-    })
+    Ok(component_types)
 }
 
 /// The component structure its stated joints, links and capability targets
@@ -1777,7 +1781,7 @@ mod tests {
     };
     use crate::error::{IdentifierKind, ModelError, StructureError};
     use crate::identity::{CapabilityRef, JointId, LinkId};
-    use crate::robot::{Clock, DriveKinematics, KinematicConfig, MotionLimits};
+    use crate::robot::{DriveKinematics, KinematicConfig, MotionLimits};
     use crate::simulation;
     use crate::structure::{Geometry, JointKind};
 
@@ -1815,7 +1819,8 @@ mod tests {
             .expect("every capability kind composes a valid robot");
 
         let component = robot
-            .component_for_instance("kitchen_sink")
+            .component("kitchen_sink")
+            .map(|component| component.component_type())
             .expect("the mounted type is loaded");
         let mut kinds = component
             .capabilities()
@@ -1855,7 +1860,8 @@ mod tests {
         // A joint target names a joint the component structure carries, and
         // the motor and the encoder measuring it share one.
         let component = robot
-            .component_for_instance("left_drive")
+            .component("left_drive")
+            .map(|component| component.component_type())
             .expect("the mounted type is loaded");
         assert!(component.structure().joint("axle").is_some());
         assert!(component.structure().link("axle_link").is_some());
@@ -2036,9 +2042,10 @@ mod tests {
     }
 
     #[test]
-    fn identity_clock_and_limits_are_carried_as_stated() {
+    fn identity_services_and_limits_are_carried_as_stated() {
         let robot = RobotBuilder::new("rover")
-            .clock(Clock::Simulated)
+            .service("drive", None)
+            .service("mission", Some(serde_json::json!({ "speed": 1 })))
             .motion_limits(MotionLimits {
                 max_linear_speed_mps: 0.6,
                 max_angular_speed_radps: 2.0,
@@ -2047,8 +2054,23 @@ mod tests {
             .expect("a valid robot");
 
         assert_eq!(robot.id().as_str(), "rover");
-        assert_eq!(robot.clock(), Clock::Simulated);
         assert_eq!(robot.motion().limits().max_linear_speed_mps, 0.6);
+        assert_eq!(
+            robot
+                .services()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["drive", "mission"]
+        );
+        // A declared service with no configuration and an undeclared one are
+        // different facts, and `service` is what tells them apart.
+        assert!(robot.service("drive").is_some());
+        assert_eq!(robot.service_config("drive"), None);
+        assert_eq!(
+            robot.service_config("mission"),
+            Some(&serde_json::json!({ "speed": 1 }))
+        );
+        assert!(robot.service("nope").is_none());
     }
 
     /// The structure a caller states is theirs; only what they leave out is
@@ -2186,7 +2208,8 @@ mod tests {
             .expect("a valid robot");
 
         let structure = robot
-            .component_for_instance("head")
+            .component("head")
+            .map(|component| component.component_type())
             .expect("the mounted type is loaded")
             .structure();
         assert_eq!(structure.root_link(), &LinkId::new("mount"));
@@ -2301,7 +2324,8 @@ mod tests {
             .expect("a valid robot");
 
         let simulation = robot
-            .simulation_for_instance("left_drive")
+            .component("left_drive")
+            .and_then(|component| component.simulation())
             .expect("the drive states a simulation");
         assert_eq!(
             simulation
@@ -2317,7 +2341,12 @@ mod tests {
                 .and_then(|(_, link)| link.contact_material()),
             Some("rubber")
         );
-        assert!(robot.simulation_for_instance("front_camera").is_none());
+        assert!(
+            robot
+                .component("front_camera")
+                .and_then(|component| component.simulation())
+                .is_none()
+        );
     }
 
     /// A simulation may only model a capability its component declares, of the
@@ -2488,8 +2517,9 @@ mod tests {
         );
         assert_eq!(
             robot
-                .component_instance("front_camera")
+                .component("front_camera")
                 .expect("the instance is mounted")
+                .instance()
                 .mount_link(),
             &LinkId::new("mast")
         );
@@ -2501,7 +2531,7 @@ mod tests {
             .build()
             .expect("the defaults compose a valid robot");
 
-        assert_eq!(robot.components().len(), 0);
+        assert_eq!(robot.component_ids().len(), 0);
         assert_eq!(
             robot.structure().root_link(),
             &LinkId::new("base_footprint")

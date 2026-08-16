@@ -551,9 +551,9 @@ mod tests {
     fn document() -> Value {
         json!({
             "body": {"fields": [], "kind": "struct"},
-            "name": "RuntimeDocument",
+            "name": "ManifestDocument",
             "record": "document",
-            "tag": "phoxal/runtime-bundle/v0",
+            "tag": "phoxal/manifest/v0",
         })
     }
 

@@ -5,13 +5,14 @@
 //! [`TimelineId`](crate::bus::TimelineId) - but the *tick mechanism*
 //! deliberately is not:
 //!
-//! - **Real execution.** Cadence runs from the host's suspend-aware monotonic
-//!   boot clock ([`LocalInstant`](crate::bus::LocalInstant)) against a
-//!   supervisor-minted execution origin. Control ticks never wait on a bus
-//!   message: making real-mode cadence depend on a published clock would put the
-//!   control loop behind a transport that is explicitly allowed to drop samples
-//!   under saturation, and one-way published ticks cannot bound offset across
-//!   hosts anyway.
+//! - **Real execution.** Robot time zero is host boot, so a real reading is the
+//!   host's suspend-aware monotonic boot clock
+//!   ([`LocalInstant`](crate::bus::LocalInstant)) read straight onto the
+//!   execution's timeline - there is no origin to anchor against and nothing to
+//!   distribute. Control ticks never wait on a bus message: making real-mode
+//!   cadence depend on a published clock would put the control loop behind a
+//!   transport that is explicitly allowed to drop samples under saturation, and
+//!   one-way published ticks cannot bound offset across hosts anyway.
 //! - **Simulation and replay.** Exact discrete steps advanced by the world
 //!   authority (the simulation controller). No interpolation. Pause means no
 //!   new step; reset means a new timeline.
@@ -46,23 +47,42 @@ pub mod test;
 
 /// Why a participant cannot currently produce a trustworthy robot instant.
 ///
-/// These are the complete same-host triggers. Transport loss is deliberately
-/// **not** one of them: same-host robot time has no bus discipline feed, so a
-/// dropped sample says nothing about the clock.
+/// One trigger per clock. The origin-shaped failures went with the origin:
+/// real robot time is now the
+/// host boot clock itself, so there is no supplied anchor to be missing and no
+/// minted boot identity for a reading to disagree with - a process reads its
+/// clock or it does not. Transport loss is deliberately not a trigger either:
+/// same-host robot time has no bus discipline feed, so a dropped sample says
+/// nothing about the clock.
+///
 /// `pub` because it is named by [`ClockReading`], which [`ClockSource::read`]
 /// returns and the in-process runner seam therefore exposes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TimeUnsynchronized {
-    /// The supervisor supplied no execution origin, or an unparsable one.
-    #[error("the launch contract carried no valid execution origin")]
-    MissingOrigin,
-    /// The origin was minted against a different host boot, so it does not name
-    /// an instant on this host's boot clock at all.
-    #[error("the execution origin belongs to a different host boot")]
-    ForeignBoot,
     /// The host clock could not be read, or read backwards.
     #[error("the host boot clock read failed or regressed")]
     ClockFault,
+    /// A simulated participant's world authority has not published a first step
+    /// yet, so there is no world history to date anything on. This is a world
+    /// that has not started rather than a clock that was lost, which is why the
+    /// runner's recurring beat deliberately does not fault on it.
+    #[error("the simulated world authority has published no step yet")]
+    NoWorldHistory,
+}
+
+/// Which clock a launched participant runs on.
+///
+/// The launch contract's `--simulation` flag is the whole of this decision:
+/// simulation is a launcher
+/// choice, never a bundle fact, and there is no third mode. A real participant
+/// that declares no `#[phoxal::step]` simply never steps; it does not become a
+/// different kind of participant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClockMode {
+    /// Host boot clock, on the execution's timeline.
+    Real,
+    /// The world clock published on `runtime/simulation/clock`.
+    Simulation,
 }
 
 /// What a clock can currently say.

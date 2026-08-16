@@ -14,7 +14,7 @@ use super::{Subject, Violation};
 ///
 /// This is an explicit tuple rather than an extensible kind grammar: the
 /// supervisor is framework infrastructure, never a service, component,
-/// simulator, catalogue entry, or runtime-graph participant.
+/// catalogue entry, or bundle participant.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Spec {
     package_name: &'static str,

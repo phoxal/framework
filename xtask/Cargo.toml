@@ -12,7 +12,7 @@
 # the checker can never report the surface it was itself compiled against; the
 # policy gate reads `cargo metadata`, the filesystem and Git for the same
 # reason. That is what makes `cargo xtask` cheap and lets it run on a bare
-# machine with no Webots.
+# machine with no toolchain beyond cargo.
 [package]
 name = "xtask"
 version.workspace = true

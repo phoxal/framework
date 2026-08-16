@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use crate::check::CompatibilityCheck;
 use crate::index::{PublishedTrain, PublishedVersion, PublishedVersions};
 use crate::probe::{ContractSurfaces, Extraction, Side};
-use crate::source::{AuthoredDocuments, Reading};
+use crate::source::{AuthoredDocuments, CorpusReading, Reading};
 use crate::surface::{CONTRACT_CRATES, CompatibilityImpact};
 use crate::toolchain::RustVersion;
 
@@ -314,8 +314,8 @@ impl StatedSource {
 }
 
 impl AuthoredDocuments for StatedSource {
-    fn read(&self, side: &Side) -> Result<BTreeMap<&'static str, Reading>> {
-        Ok(self.readings(side))
+    fn read(&self, side: &Side) -> Result<CorpusReading> {
+        Ok(CorpusReading::Corpus(self.readings(side)))
     }
 }
 

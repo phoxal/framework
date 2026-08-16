@@ -102,7 +102,7 @@ pub enum ContractRecord {
     Document {
         /// The owning declaration's name, so a diff names the type to open.
         name: String,
-        /// The document's own format tag, such as `phoxal/runtime-bundle/v0`.
+        /// The document's own format tag, such as `phoxal/manifest/v0`.
         tag: String,
         /// The complete document shape, tag included.
         body: WireSchema,

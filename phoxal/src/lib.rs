@@ -6,7 +6,7 @@
 //! [Zenoh](https://zenoh.io), framework-owned semantic API contracts,
 //! and a
 //! participant authoring model where a role marker plus a direct trait
-//! implementation is a complete service, driver, or simulator. The framework owns the
+//! implementation is a complete service or driver. The framework owns the
 //! awkward parts - argument parsing, bus connection, scheduling, query serving,
 //! shutdown, and health - so the code you write is the robot's behavior, not its
 //! plumbing.
@@ -31,9 +31,8 @@
 //!   [`Participant`] implementation owns lifecycle
 //!   behavior, and [`run`] turns the marker into a binary. Use `service` for ordinary robot
 //!   participants, `driver` for a participant launched once per
-//!   `robot.components` entry, `simulator` for simulation-only
-//!   participants, and `brain` for the robot project's one mandatory
-//!   composition root.
+//!   `robot.components` entry, and `brain` for the robot project's one
+//!   mandatory composition root.
 //!
 //! ## Author a participant
 //!
@@ -97,16 +96,13 @@
 //!   blocking entrypoint. For a custom Tokio main, call
 //!   [`phoxal::tokio::run::<R>().await`](tokio::run).
 //!
-//! The four authoring kinds share the same metadata path but describe
+//! The three authoring kinds share the same metadata path but describe
 //! different runtime roles:
 //!
 //! - [`macro@service`] is the ordinary typed participant surface.
-//! - [`macro@driver`] is launched once per `robot.components` entry. Only a
-//!   driver can call
-//!   [`SetupContext::component`]
-//!   to read the bound component instance.
-//! - [`macro@simulator`] is a normal participant for simulation-only processes.
-//!   It carries a distinct kind and marker for simulation clock ownership.
+//! - [`macro@driver`] is launched once per `robot.components` entry, under that
+//!   entry's own id. Only a driver can call [`SetupContext::component`] to read
+//!   the component it is bound to.
 //! - [`macro@brain`] is the robot project's one mandatory composition root:
 //!   the root Cargo package's binary, staged as `bin/brain`. Its identity is
 //!   fixed to `brain` and its `Config` is always `()`; it owns mission and
@@ -131,8 +127,8 @@
 //!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
 //!   the four non-interchangeable time types, endpoint-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
-//! - [`model`] - immutable canonical runtime robot facts supplied from the
-//!   finalized `runtime.json`; bundle assembly and host-side reading live in
+//! - [`model`] - immutable canonical robot facts read from the bundle's
+//!   `manifest.json`; bundle assembly and host-side reading live in
 //!   `phoxal-bundle`, while authored document readers live in
 //!   `phoxal-manifest` as a build/source dependency only.
 //! - [`geometry`] and [`SampleSchedule`] - the small shared arithmetic every
@@ -201,12 +197,10 @@ pub mod api {
 ///
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
 /// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) are absent for a
-/// stronger reason: they are world-clock authority, which only a
-/// `#[phoxal::simulator]` may hold. A simulator reaches them through its
-/// role-gated [`SetupContext`] methods and nowhere else, so keeping them off
-/// the browsable surface leaves exactly one route to them. See
-/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority)'s own docs for how
-/// strong that guarantee is.
+/// stronger reason: minting a world clock is not a participant capability at
+/// all. The simulated world clock is published by an external bus client,
+/// which owns its own session through `phoxal-bus` directly, so nothing reached
+/// through this facade mints one.
 pub mod bus {
     pub use phoxal_bus::{
         ApiFamily, AskQuery, BusError, BusMetadata, CaptureStamp, ClientPublishContract,
@@ -228,23 +222,23 @@ pub mod bus {
     };
 }
 
-/// The canonical runtime robot model a [`phoxal_bundle::RuntimeBundle`] yields.
+/// The canonical robot model a [`phoxal_bundle::RuntimeBundle`] yields.
 ///
 /// This mirrors `phoxal-model`'s own facade one-for-one and adds nothing: the
 /// names below are the canonical ones, and everything else is reached through
 /// the module that owns it ([`model::builder`], [`model::component`],
 /// [`model::identity`], [`model::robot`], [`model::simulation`],
 /// [`model::structure`]). [`AssetId`] is the logical identity shared by source
-/// compilation and the bundle index. Participant asset access is the
-/// bundle-owned, digest-checked [`ParticipantAssetResolver`] capability below;
-/// source compilation does not cross this runtime boundary.
+/// compilation and the staged `assets/` tree. Participant asset access is the
+/// bundle-owned [`ParticipantAssetResolver`] capability below; source
+/// compilation does not cross this runtime boundary.
 ///
 /// [`model::RobotBuilder`] composes a model in memory rather than loading one.
 /// A launched participant never needs it - the runner hands it an already-built
 /// [`model::Robot`] - but a test or a tool that has no bundle does.
 pub mod model {
     pub use phoxal_model::{
-        CapabilityRole, Clock, FootprintEnvelope, IdentifierKind, JointOwner, KinematicScalarField,
+        CapabilityRole, FootprintEnvelope, IdentifierKind, JointOwner, KinematicScalarField,
         LinkRole, ModelError, MotionLimitField, PoseOwner, Robot, RobotBuilder, StructureError,
         builder, component, footprint, identity, robot, simulation, structure,
     };
@@ -265,10 +259,6 @@ pub use phoxal_macros::service;
 /// Link a participant state struct to its `Config`/`Api` types as a
 /// component driver.
 pub use phoxal_macros::driver;
-
-/// Link a participant state struct to its `Config`/`Api` types as a
-/// simulation participant.
-pub use phoxal_macros::simulator;
 
 /// Declare the one mandatory root brain, the robot project's composition root.
 ///
@@ -321,7 +311,7 @@ pub mod prelude {
 ///
 /// This is not public API. Nothing here carries a stability guarantee, nothing
 /// here is documented for authors, and the only code allowed to name any of it
-/// is a `#[phoxal::service]` / `driver` / `simulator` / `brain` / `step` /
+/// is a `#[phoxal::service]` / `driver` / `brain` / `step` /
 /// `#[derive(phoxal::Config)]` expansion. Every item is listed explicitly and
 /// individually below: a glob re-export here would silently publish the whole
 /// participant engine as public API, so the list is the boundary.
@@ -344,24 +334,14 @@ pub mod __private {
     /// compatibility artifact - there is no Cargo package-metadata table and no
     /// version file. The document's own grammar is the tag on
     /// `ParticipantMetadata` itself, a format discriminator rather than a
-    /// negotiated identity, so it needs no entry here. Topology requirements
-    /// are a closed typed declaration; they are not inferred from package names
-    /// or a service registry.
+    /// negotiated identity, so it needs no entry here.
     pub mod compatibility {
-        use phoxal_runtime_contract::metadata::ParticipantRequirement;
         use phoxal_runtime_contract::version::FrameworkVersion;
 
         /// The canonical spelling of the framework train this binary was built
         /// from. The const-eval metadata writer needs a string; the value it
         /// spells is `FrameworkVersion::CURRENT`.
         pub const FRAMEWORK: &str = FrameworkVersion::CURRENT_SPELLING;
-        /// The default declaration for participants without a static topology
-        /// requirement.
-        pub const NO_REQUIREMENT: Option<ParticipantRequirement> = None;
-        /// The stock differential-drive participant's declared topology and
-        /// motor-command requirement.
-        pub const STOCK_DRIVE_REQUIREMENT: Option<ParticipantRequirement> =
-            Some(ParticipantRequirement::DifferentialDriveVelocity);
 
         pub use phoxal_runtime_contract::participant_metadata_json;
     }
@@ -378,7 +358,7 @@ pub mod __private {
     pub use crate::participant::spec::ParticipantSpec;
 
     /// The authoring kind a role attribute records in `ParticipantSpec::KIND`.
-    pub use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantRequirement};
+    pub use phoxal_runtime_contract::metadata::ParticipantKind;
 
     /// The cadence `#[phoxal::step(hz = …)]` returns from
     /// `Participant::__step_schedule`.

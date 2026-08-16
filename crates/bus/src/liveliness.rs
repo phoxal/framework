@@ -286,8 +286,41 @@ impl BusOwner {
     /// Declare this bus participant's Ready lease. Call only after setup succeeds.
     pub async fn declare_participant_ready(&self) -> Result<ParticipantReadyToken> {
         let bus = self.handle();
-        let key = ParticipantReadyKey::for_bus(&bus)?;
-        let token = bus
+        self.declare_ready(ParticipantReadyKey::for_bus(&bus)?)
+            .await
+    }
+
+    /// Declare a Ready lease for `participant` under this session's producer.
+    ///
+    /// One process may stand for several participants: the Webots controller is
+    /// a single external bus client that simulates every component driver of a
+    /// robot, and the supervisor watches presence per participant id. Without
+    /// this, that one client could present at most one of the drivers it
+    /// actually runs, and every other component would read as absent for the
+    /// whole simulated execution. The producer stays this session's, so all the
+    /// leases one client declares this way appear and disappear together with
+    /// it, which is exactly the truth: they share a process.
+    ///
+    /// [`Self::declare_liveliness_key`] still refuses the participant prefix.
+    /// That method mints infrastructure keys, and readiness is producer
+    /// qualified; this is the one door onto another participant's Ready key, and
+    /// it goes through the same key builder as a participant's own.
+    pub async fn declare_participant_ready_as(
+        &self,
+        participant: &ParticipantId,
+    ) -> Result<ParticipantReadyToken> {
+        let bus = self.handle();
+        self.declare_ready(ParticipantReadyKey::new(
+            bus.root(),
+            participant.as_str(),
+            bus.producer(),
+        )?)
+        .await
+    }
+
+    async fn declare_ready(&self, key: ParticipantReadyKey) -> Result<ParticipantReadyToken> {
+        let token = self
+            .handle()
             .session()?
             .liveliness()
             .declare_token(key.as_str())
@@ -588,6 +621,52 @@ mod tests {
             format!("{ROOT}/liveliness/participants/*/*")
         );
         assert!(selector.includes(&key.key));
+    }
+
+    /// The lease a client declares for a participant it stands in for is the
+    /// ordinary participant Ready key: same shape, same producer as the
+    /// client's own lease, and inside the execution-wide observer's selector.
+    /// An observer therefore cannot tell a simulated driver from one running in
+    /// its own process, which is the whole point.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_stand_in_lease_is_an_ordinary_participant_ready_key() {
+        use crate::session::BusConfig;
+        use phoxal_runtime_contract::identity::ExecutionId;
+
+        let controller = ParticipantId::new("webots").unwrap();
+        let driver = ParticipantId::new("front_left_drive").unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+            ExecutionId::mint(),
+            controller.clone(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+
+        let stand_in = owner.declare_participant_ready_as(&driver).await.unwrap();
+        assert_eq!(stand_in.participant(), &driver);
+        assert_eq!(stand_in.producer(), bus.producer());
+
+        let expected =
+            ParticipantReadyKey::new(bus.root(), driver.as_str(), bus.producer()).unwrap();
+        assert_eq!(
+            expected.as_str(),
+            format!(
+                "{}/{PARTICIPANT_LIVELINESS_PREFIX}/{driver}/{}",
+                bus.root(),
+                bus.producer()
+            )
+        );
+        assert!(
+            ParticipantReadyKey::selector(bus.root())
+                .unwrap()
+                .includes(&expected.key)
+        );
+
+        let own = owner.declare_participant_ready().await.unwrap();
+        assert_eq!(own.producer(), stand_in.producer());
+        assert_eq!(own.participant(), &controller);
+        owner.close().await;
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! The contract surface this crate owns: the participant launch contract.
 //!
-//! A supervised participant's whole process boundary on the way in is its
-//! argv. The record below is read out of the clap definition itself rather
-//! than restated beside it, so a renamed flag, a newly optional argument, or an
+//! A launched participant's whole process boundary on the way in is its argv.
+//! The record below is read out of the clap definition itself rather than
+//! restated beside it, so a renamed flag, a newly optional argument, or an
 //! option that started accepting repetition changes the surface by
 //! construction - there is no second list to forget to update.
 
@@ -11,7 +11,7 @@ use phoxal_runtime_contract::contract_surface::{
     ContractRecord, ContractSurface, LaunchArgument, LaunchValueShape,
 };
 
-use crate::participant::launch::SupervisedLaunch;
+use crate::participant::launch::Launch;
 
 /// The canonical rendering of this crate's contract surface.
 #[must_use]
@@ -21,7 +21,7 @@ pub fn contract_surface() -> String {
 
 /// Read the declared arguments off the parser, in its own declaration order.
 fn launch_arguments() -> Vec<LaunchArgument> {
-    SupervisedLaunch::command()
+    Launch::command()
         .get_arguments()
         .map(|argument| {
             LaunchArgument::new(
@@ -58,12 +58,10 @@ mod tests {
     #[test]
     fn the_launch_record_is_the_supervisor_owned_argv_contract() {
         let expected = ContractSurface::new([ContractRecord::launch([
-            LaunchArgument::new("execution-id", true, false, LaunchValueShape::Text),
             LaunchArgument::new("participant-id", true, false, LaunchValueShape::Text),
             LaunchArgument::new("bundle-root", true, false, LaunchValueShape::Text),
             LaunchArgument::new("connect", true, true, LaunchValueShape::Text),
-            LaunchArgument::new("execution-origin", false, false, LaunchValueShape::Text),
-            LaunchArgument::new("shutdown-grace-ms", false, false, LaunchValueShape::Text),
+            LaunchArgument::new("simulation", false, false, LaunchValueShape::Flag),
         ])]);
         assert_eq!(contract_surface(), expected.canonical_json());
     }
@@ -78,17 +76,16 @@ mod tests {
         assert!(rendered.contains(r#""record":"launch""#), "{rendered}");
     }
 
-    /// Every supervisor-owned argument consumes an argv token; the launch
-    /// contract has no bare switches of its own.
+    /// `--simulation` is the launch contract's only bare switch: it is a
+    /// launcher decision with no value to carry. Everything else names a fact
+    /// and therefore consumes an argv token.
     #[test]
-    fn every_supervisor_owned_argument_consumes_a_value() {
-        for argument in launch_arguments() {
-            assert_eq!(
-                argument.value,
-                LaunchValueShape::Text,
-                "{} is not a value-taking option",
-                argument.name
-            );
-        }
+    fn simulation_is_the_only_bare_switch() {
+        let flags = launch_arguments()
+            .into_iter()
+            .filter(|argument| argument.value == LaunchValueShape::Flag)
+            .map(|argument| argument.name)
+            .collect::<Vec<_>>();
+        assert_eq!(flags, ["simulation"]);
     }
 }
