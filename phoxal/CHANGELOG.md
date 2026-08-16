@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.0](https://github.com/phoxal/framework/compare/v0.62.1...v0.63.0) - 2026-08-16
+
+### Added
+
+- [**breaking**] one bundle, one manifest, and an observe-only supervisor ([#460](https://github.com/phoxal/framework/pull/460))
+
 ## [0.62.1](https://github.com/phoxal/framework/compare/v0.62.0...v0.62.1) - 2026-08-16
 
 ### Other

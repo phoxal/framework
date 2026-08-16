@@ -5,6 +5,12 @@ train.
 
 ## Unreleased
 
+## [0.63.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.62.1...phoxal-bundle-v0.63.0) - 2026-08-16
+
+### Added
+
+- [**breaking**] one bundle, one manifest, and an observe-only supervisor ([#460](https://github.com/phoxal/framework/pull/460))
+
 ## [0.62.0](https://github.com/phoxal/framework/compare/phoxal-bundle-v0.61.2...phoxal-bundle-v0.62.0) - 2026-08-16
 
 ### Added

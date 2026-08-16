@@ -10,6 +10,12 @@ Releases below the first `phoxal-protocol` entry preserve the immutable
 
 ## [Unreleased]
 
+## [0.63.0](https://github.com/phoxal/framework/compare/phoxal-protocol-v0.62.1...phoxal-protocol-v0.63.0) - 2026-08-16
+
+### Added
+
+- [**breaking**] one bundle, one manifest, and an observe-only supervisor ([#460](https://github.com/phoxal/framework/pull/460))
+
 ## [0.61.0](https://github.com/phoxal/framework/compare/phoxal-protocol-v0.60.1...phoxal-protocol-v0.61.0) - 2026-08-14
 
 ### Other
