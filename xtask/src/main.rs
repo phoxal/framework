@@ -1,14 +1,18 @@
 //! The framework workspace's command runner, reached as `cargo xtask <verb>`.
 //!
-//! Today it carries one verb group: `compatibility`, which compares the
-//! contract surfaces this workspace declares, and the authored documents this
-//! workspace reads, against the latest published framework train, and says what
-//! release those changes require.
+//! It carries two verbs. `compatibility` compares the contract surfaces this
+//! workspace declares, and the authored documents this workspace reads, against
+//! the latest published framework train, and says what release those changes
+//! require. `policy` enforces the rules the workspace must obey as a whole -
+//! package grammar, dependency direction, retired surfaces, comment
+//! references - which no single crate owns.
 //!
 //! The runner depends on no framework crate. Both sides of a comparison are
 //! read out of separately compiled probe projects, so building the checker
 //! never builds the runtime stack it checks, and the checker can never report
-//! the surface it was itself compiled against.
+//! the surface it was itself compiled against; every policy rule reads `cargo
+//! metadata`, the filesystem or Git for the same reason, so the whole runner
+//! stays buildable on a bare machine with no Webots.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -19,6 +23,7 @@ use semver::Version;
 
 mod check;
 mod index;
+mod policy;
 mod probe;
 mod readiness;
 mod rehearsal;
@@ -65,19 +70,23 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
 }
 
 fn run() -> Result<ExitCode> {
-    let Verb::Compatibility(verb) = Cli::parse().verb;
-    match verb {
-        CompatibilityVerb::Report { options } => compare(&options, false),
-        CompatibilityVerb::CheckRelease { options } => compare(&options, true),
-        CompatibilityVerb::RehearseV1 => {
+    match Cli::parse().verb {
+        Verb::Compatibility(CompatibilityVerb::Report { options }) => compare(&options, false),
+        Verb::Compatibility(CompatibilityVerb::CheckRelease { options }) => compare(&options, true),
+        Verb::Compatibility(CompatibilityVerb::RehearseV1) => {
             let report = Rehearsal::new(workspace_root()?).run()?;
             println!("{report}");
             Ok(report.exit_code())
         }
-        CompatibilityVerb::V1Readiness {
+        Verb::Compatibility(CompatibilityVerb::V1Readiness {
             allow_rust_version_raise,
-        } => {
+        }) => {
             let report = V1Readiness::new(workspace_root()?, allow_rust_version_raise).run()?;
+            println!("{report}");
+            Ok(report.exit_code())
+        }
+        Verb::Policy => {
+            let report = policy::run()?;
             println!("{report}");
             Ok(report.exit_code())
         }
@@ -120,6 +129,12 @@ enum Verb {
     /// Compare this workspace's contract surfaces against the published train.
     #[command(subcommand)]
     Compatibility(CompatibilityVerb),
+    /// Enforce the rules the workspace must obey as a whole.
+    ///
+    /// Reads `cargo metadata`, the filesystem and Git only, so it needs no
+    /// native toolchain and builds nothing it judges. The proofs that need the
+    /// framework linked are ordinary tests in the crates that own them.
+    Policy,
 }
 
 #[derive(Debug, Subcommand)]
@@ -207,11 +222,25 @@ mod tests {
     }
 
     fn parse(arguments: [&str; 4]) -> CompatibilityVerb {
-        let Verb::Compatibility(verb) =
+        let parsed =
             Cli::try_parse_from(arguments.iter().take_while(|argument| !argument.is_empty()))
                 .expect("the verb parses")
                 .verb;
+        let Verb::Compatibility(verb) = parsed else {
+            panic!("{arguments:?} is a compatibility verb");
+        };
         verb
+    }
+
+    /// The gate CI runs is one word, because a maintainer runs the same one.
+    #[test]
+    fn the_policy_gate_parses_under_its_documented_name() {
+        assert!(matches!(
+            Cli::try_parse_from(["cargo xtask", "policy"])
+                .expect("the verb parses")
+                .verb,
+            Verb::Policy
+        ));
     }
 
     /// The two comparing subcommands differ only in whether they gate the

@@ -12,17 +12,18 @@
 //! [`ArtifactKind`] owns both spellings and is the only place that knows they
 //! differ.
 
+use std::collections::BTreeSet;
 use std::fmt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use anyhow::{Context, Result, bail};
 use cargo_metadata::Target;
-use cargo_metadata::semver::Version;
 
-use crate::executable::PHOXAL_PROVIDER;
-use crate::executable::{validate_executable_targets, validate_registry_publish};
-use crate::{
-    FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, library_package_name,
+use super::executable::PHOXAL_PROVIDER;
+use super::executable::{validate_executable_targets, validate_registry_publish};
+use super::{
+    FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, Subject, Violation,
+    library_package_name,
 };
 
 /// The Cargo `package.name` prefix backing [`PHOXAL_PROVIDER`]: the package
@@ -186,10 +187,6 @@ impl ArtifactId {
         }
         Ok(Self(value.to_owned()))
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl fmt::Display for ArtifactId {
@@ -206,8 +203,6 @@ impl fmt::Display for ArtifactId {
 pub struct OfficialArtifact {
     pub kind: ArtifactKind,
     pub id: ArtifactId,
-    pub version: Version,
-    pub crate_dir: PathBuf,
 }
 
 impl OfficialArtifact {
@@ -222,13 +217,6 @@ impl OfficialArtifact {
     /// `phoxal-component-ddsm115`.
     pub fn package_name(&self) -> String {
         self.kind.package_name(&self.id)
-    }
-
-    /// The release binary's name. Discovery rejects any artifact package whose
-    /// one binary target is not named after the package, so the binary and the
-    /// package share a name by construction.
-    pub fn bin_name(&self) -> String {
-        self.package_name()
     }
 
     /// Every official executable publishes to the `phoxal` registry and only
@@ -298,16 +286,7 @@ pub(crate) fn discover_package(
         &manifest_path,
     )?;
     OfficialArtifact::validate_targets(&package_name, &package.targets)?;
-    let crate_dir = manifest_path
-        .parent()
-        .with_context(|| format!("{package_name} manifest has no parent directory"))?
-        .to_path_buf();
-    Ok(Some(OfficialArtifact {
-        kind,
-        id,
-        version: package.version.clone(),
-        crate_dir,
-    }))
+    Ok(Some(OfficialArtifact { kind, id }))
 }
 
 /// What a workspace member's manifest path says the package is.
@@ -405,15 +384,85 @@ fn relative_display(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
+/// The exact set of official artifacts this workspace releases.
+///
+/// Discovery has already rejected anything that claims to be an artifact
+/// without obeying the grammar, so what is left to state is the scope itself:
+/// which packages the train carries. Spelled out in full rather than counted,
+/// because a package silently entering or leaving the release scope is the
+/// failure this rule exists to catch.
+const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 17] = [
+    "phoxal/component-bno085",
+    "phoxal/component-ddsm115",
+    "phoxal/component-oak_d_lite",
+    "phoxal/component-vl53l1x",
+    "phoxal/component-zed_f9p",
+    "phoxal/service-drive",
+    "phoxal/service-frame",
+    "phoxal/service-joint",
+    "phoxal/service-localize",
+    "phoxal/service-map",
+    "phoxal/service-motion",
+    "phoxal/service-navigation",
+    "phoxal/service-odometry",
+    "phoxal/service-perception",
+    "phoxal/service-safety",
+    "phoxal/service-video",
+    "phoxal/simulator-webots-controller",
+];
+
+pub(super) fn the_official_artifact_release_scope_is_exact(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
+    let workspace = match subject.executables() {
+        Ok(workspace) => workspace,
+        Err(violation) => return Ok(vec![violation]),
+    };
+    let discovered = workspace
+        .official_artifacts()
+        .iter()
+        .map(OfficialArtifact::package)
+        .collect::<BTreeSet<_>>();
+    let expected = OFFICIAL_ARTIFACT_RELEASE_SCOPE
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+
+    let mut violations = Vec::new();
+    for package in discovered.difference(&expected) {
+        violations.push(Violation::new(format!(
+            "{package} is discovered as an official artifact but is not in the release scope"
+        )));
+    }
+    for package in expected.difference(&discovered) {
+        violations.push(Violation::new(format!(
+            "{package} is in the release scope but is no longer discovered as an official artifact"
+        )));
+    }
+
+    let simulators = workspace
+        .official_artifacts()
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::Simulator)
+        .map(OfficialArtifact::package)
+        .collect::<Vec<_>>();
+    if simulators != ["phoxal/simulator-webots-controller"] {
+        violations.push(Violation::new(format!(
+            "the workspace declares simulators {simulators:?}; expected the one Webots controller"
+        )));
+    }
+    Ok(violations)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use cargo_metadata::{MetadataCommand, TargetKind};
 
-    use crate::executable::{is_allowed_target_kind, is_library_target_kind};
-    use crate::registry::Workspace;
-    use crate::workspace_root;
+    use super::super::executable::{is_allowed_target_kind, is_library_target_kind};
+    use super::super::registry::Workspace;
 
     use super::*;
 
@@ -504,7 +553,7 @@ mod tests {
     #[test]
     fn an_artifact_id_is_never_empty() {
         assert!(ArtifactId::new("").is_err());
-        assert_eq!(id("drive").as_str(), "drive");
+        assert_eq!(id("drive").to_string(), "drive");
     }
 
     /// An executable publishes to the `phoxal` registry and nowhere else. The
@@ -592,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn library_and_policy_crate_paths_are_excluded() -> Result<()> {
+    fn library_crate_paths_are_excluded() -> Result<()> {
         assert_eq!(
             classify("phoxal/Cargo.toml")?,
             ManifestClassification::Excluded
@@ -603,10 +652,6 @@ mod tests {
         );
         assert_eq!(
             classify("crates/fixture/Cargo.toml")?,
-            ManifestClassification::Excluded
-        );
-        assert_eq!(
-            classify("workspace-policy/Cargo.toml")?,
             ManifestClassification::Excluded
         );
         Ok(())
@@ -807,9 +852,8 @@ path = "src/example.rs"
         let [artifact] = workspace.official_artifacts() else {
             bail!("the fixture workspace declares exactly one artifact");
         };
-        assert_eq!(artifact.id.as_str(), "test");
+        assert_eq!(artifact.id.to_string(), "test");
         assert_eq!(artifact.package_name(), "phoxal-component-test");
-        assert_eq!(artifact.bin_name(), "phoxal-component-test");
         Ok(())
     }
 
@@ -865,62 +909,20 @@ path = "src/example.rs"
         Ok(())
     }
 
+    /// The release scope names every artifact by its public identity, so a
+    /// listed package that no longer parses back into a kind and id would be a
+    /// scope nothing could ever satisfy.
     #[test]
-    fn real_workspace_release_scope_is_valid() -> Result<()> {
-        use std::collections::BTreeSet;
-
-        let workspace_manifest = workspace_root()?.join("Cargo.toml");
-        let workspace =
-            Workspace::discover(MetadataCommand::new().manifest_path(workspace_manifest))?;
-
-        let actual = workspace
-            .official_artifacts()
-            .iter()
-            .map(OfficialArtifact::package)
-            .collect::<BTreeSet<_>>();
-        let expected = BTreeSet::from([
-            "phoxal/component-bno085",
-            "phoxal/component-ddsm115",
-            "phoxal/component-oak_d_lite",
-            "phoxal/component-vl53l1x",
-            "phoxal/component-zed_f9p",
-            "phoxal/service-drive",
-            "phoxal/service-frame",
-            "phoxal/service-joint",
-            "phoxal/service-localize",
-            "phoxal/service-map",
-            "phoxal/service-motion",
-            "phoxal/service-navigation",
-            "phoxal/service-odometry",
-            "phoxal/service-perception",
-            "phoxal/service-safety",
-            "phoxal/service-video",
-            "phoxal/simulator-webots-controller",
-        ])
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-        assert_eq!(actual, expected);
-        assert!(
-            !actual.contains("phoxal/service-power"),
-            "the removed power service must not remain in the release scope"
-        );
-
-        assert_eq!(
-            workspace
-                .official_artifacts()
-                .iter()
-                .filter(|artifact| artifact.kind == ArtifactKind::Service)
-                .count(),
-            11
-        );
-        let simulators = workspace
-            .official_artifacts()
-            .iter()
-            .filter(|artifact| artifact.kind == ArtifactKind::Simulator)
-            .map(OfficialArtifact::package)
-            .collect::<Vec<_>>();
-        assert_eq!(simulators, ["phoxal/simulator-webots-controller"]);
-        Ok(())
+    fn every_package_in_the_release_scope_is_a_well_formed_artifact_identity() {
+        for package in OFFICIAL_ARTIFACT_RELEASE_SCOPE {
+            let segment = package
+                .strip_prefix(PHOXAL_PROVIDER)
+                .and_then(|tail| tail.strip_prefix('/'))
+                .unwrap_or_else(|| panic!("{package} is not provider-qualified"));
+            let (kind, id) =
+                ArtifactKind::from_package_name(&format!("{PHOXAL_PACKAGE_PREFIX}{segment}"))
+                    .unwrap_or_else(|| panic!("{package} names no artifact kind and id"));
+            assert_eq!(kind.package_identity(&id), package);
+        }
     }
 }

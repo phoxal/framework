@@ -3,7 +3,7 @@
 # the workspace root, where the tests that need documents rather than a bundle
 # read them by path. Splitting the two is what lets this crate obey the
 # library rule like any other - `phoxal-fixture` at `crates/fixture` - instead
-# of being the one member `workspace-policy` had to exempt.
+# of being the one member `cargo xtask policy` had to exempt.
 name = "phoxal-fixture"
 edition.workspace = true
 rust-version.workspace = true

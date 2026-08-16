@@ -55,11 +55,22 @@ phoxal-bundle = { workspace = true }
 # the feature off.
 phoxal-bus = { workspace = true, features = ["test-harness"] }
 jsonschema = { workspace = true }
+# Reads the built-artifact linker section back out in
+# `tests/participant_metadata.rs` - the one honest way to prove the ELF
+# `--gc-sections` defeat (`phoxal-macros`' `link_section_attrs`/
+# `Participant::__retain_embedded_metadata`) actually holds through a real link,
+# not just at the source level. Version pinned to match `phoxal-cli`'s own
+# object-file reader (`crates/core/src/check/participant_metadata.rs`), the only
+# other place in either repository that parses this section.
+object = "0.36"
 # Test-only: raising SIGINT/SIGTERM at the test process is the only honest way to
 # prove the runner's shutdown trigger covers the signal a supervisor stops with.
 libc = { workspace = true }
 schemars = { workspace = true }
 serial_test = { workspace = true }
+# `tests/participant_metadata.rs` builds a throwaway participant crate against
+# this one and throws it away again.
+tempfile = { workspace = true }
 trybuild = { workspace = true }
 # `test-util` (paused/mocked virtual time) is additive to the `[dependencies]`
 # `tokio` features above and only applies to test/bench/example builds, never

@@ -8,7 +8,9 @@
 use std::path::Path;
 
 use anyhow::Result;
-use workspace_policy::{tracked_source, workspace_root};
+
+use super::tracked_source;
+use super::{Subject, Violation};
 
 const OWNED_DIRECTORY_TEST_MODULES: [&str; 1] = ["phoxal/src/participant/runner/tests.rs"];
 
@@ -27,28 +29,33 @@ fn is_generic_source_test_module(path: &Path) -> bool {
 
 /// Every otherwise-generic unit-test module is named for the boundary it
 /// proves, so ownership remains visible when the crate grows.
-#[test]
-fn unit_test_modules_have_an_explicit_owner() -> Result<()> {
-    let root = workspace_root()?;
-    let tracked = tracked_source::files(root)?;
+pub(super) fn unit_test_modules_have_an_explicit_owner(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
+    let tracked = tracked_source::files(&subject.root)?;
+    let mut violations = Vec::new();
     for allowed in OWNED_DIRECTORY_TEST_MODULES {
-        assert!(
-            tracked.iter().any(|path| path == Path::new(allowed)),
-            "{allowed} is allowlisted but no longer exists"
-        );
+        if !tracked.iter().any(|path| path == Path::new(allowed)) {
+            violations.push(Violation::new(format!(
+                "{allowed} is allowlisted but no longer exists"
+            )));
+        }
     }
-    let violations = tracked
-        .into_iter()
-        .filter(|path| is_generic_source_test_module(path))
-        .filter(|path| {
-            !OWNED_DIRECTORY_TEST_MODULES
-                .iter()
-                .any(|allowed| path == Path::new(allowed))
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        violations.is_empty(),
-        "unit-test modules must be named for the boundary they prove: {violations:?}"
+    violations.extend(
+        tracked
+            .into_iter()
+            .filter(|path| is_generic_source_test_module(path))
+            .filter(|path| {
+                !OWNED_DIRECTORY_TEST_MODULES
+                    .iter()
+                    .any(|allowed| path == Path::new(allowed))
+            })
+            .map(|path| {
+                Violation::new(format!(
+                    "{} must be named for the boundary it proves",
+                    path.display()
+                ))
+            }),
     );
-    Ok(())
+    Ok(violations)
 }

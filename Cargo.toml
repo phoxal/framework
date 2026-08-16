@@ -43,15 +43,13 @@ members = [
     "services/safety",
     "services/video",
     "simulators/webots-controller",
-    "workspace-policy",
     "xtask",
 ]
-# Keep the internal automation crates out of plain root cargo builds:
-# `workspace-policy` exists to be a test target, and `xtask` is the command
-# runner a maintainer invokes by name. Both are still built and tested by the
+# Keep the workspace's command runner out of plain root cargo builds: `xtask`
+# is the runner a maintainer invokes by name (`cargo xtask <verb>`), not part of
+# what this workspace produces. It is still built and tested by the
 # `--workspace` commands CI runs.
-# Invariant: default-members must contain every workspace member except
-# workspace-policy and xtask.
+# Invariant: default-members must contain every workspace member except xtask.
 # When adding a workspace member, add it to both members and default-members;
 # otherwise plain cargo build/test silently skips it.
 default-members = [
@@ -87,6 +85,9 @@ default-members = [
 [workspace.dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.89"
+# The workspace's own manifest reader, shared by the `cargo xtask policy` gate
+# and by the two crates whose tests read the workspace the same way.
+cargo_metadata = "0.23.1"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 const_format = "0.2"
 ctrlc = { version = "3.5.2", features = ["termination"] }

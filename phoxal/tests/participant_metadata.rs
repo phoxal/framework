@@ -20,10 +20,19 @@
 //! run confirms the section and its contents without exercising the ELF path.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::Value;
-use workspace_policy::workspace_root;
+
+/// The workspace this crate is part of: the facade sits directly at the
+/// workspace root, so its manifest directory's parent is that root.
+fn workspace_root() -> Result<PathBuf> {
+    Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("the facade's manifest directory has no workspace parent")?
+        .to_path_buf())
+}
 
 /// The two linker-section names a participant's embedded metadata can live
 /// under (`crates/macros/src/authoring.rs`'s `link_section_attrs`):

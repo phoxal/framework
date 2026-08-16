@@ -43,6 +43,11 @@ test-harness = []
 router = ["zenoh/unstable"]
 
 [dev-dependencies]
+# `tests/frozen_wire_protocol.rs` reads the resolved `zenoh-protocol` out of the
+# graph Cargo actually compiles, which is the only place the version this crate
+# freezes can be compared against the one the transport speaks.
+anyhow = { workspace = true }
+cargo_metadata = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 

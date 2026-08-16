@@ -33,5 +33,8 @@ workspace = true
 # Only the tests reach for a catch-all error type; every public entry point in
 # this crate returns a typed one.
 anyhow = { workspace = true }
+# `tests/workspace_build_requirements.rs` reads this crate's own build-requirement
+# reader over every manifest the workspace declares, so it needs the member list.
+cargo_metadata = { workspace = true }
 jsonschema = { workspace = true, default-features = false }
 tempfile = { workspace = true }

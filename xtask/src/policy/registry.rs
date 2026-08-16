@@ -2,14 +2,17 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
+// Reaching a workspace by manifest path is the fixture tests' entry alone: a
+// rule reads the one metadata the run already has.
+#[cfg(test)]
+use anyhow::Context;
+#[cfg(test)]
 use cargo_metadata::MetadataCommand;
 
-use crate::executable::{publishes_to_phoxal, relative_display};
-use crate::framework_executable::{
-    FrameworkExecutable, SPECS, spec_for_manifest, spec_for_package,
-};
-use crate::{
+use super::executable::{publishes_to_phoxal, relative_display};
+use super::framework_executable::{SPECS, Spec, spec_for_manifest, spec_for_package};
+use super::{
     artifact::{OfficialArtifact, discover_package},
     executable::PHOXAL_PROVIDER,
 };
@@ -21,17 +24,29 @@ use crate::{
 #[derive(Debug)]
 pub struct Workspace {
     official_artifacts: Vec<OfficialArtifact>,
-    framework_executables: Vec<FrameworkExecutable>,
+    framework_executables: Vec<Spec>,
 }
 
 impl Workspace {
-    /// Read and validate all executable packages, including completeness of the
-    /// exact framework-owned executable list.
+    /// Read and validate all executable packages of the workspace `command`
+    /// names, including completeness of the exact framework-owned executable
+    /// list.
+    ///
+    /// Only the fixture tests below reach a workspace by manifest path; a rule
+    /// reads the one metadata the run already has through
+    /// [`Self::from_metadata`].
+    #[cfg(test)]
     pub fn discover(command: &mut MetadataCommand) -> Result<Self> {
         let metadata = command
             .no_deps()
             .exec()
             .context("failed to read cargo metadata")?;
+        Self::from_metadata(&metadata)
+    }
+
+    /// The same validation over metadata a caller has already read, so a run
+    /// that several rules stand on asks Cargo once.
+    pub fn from_metadata(metadata: &cargo_metadata::Metadata) -> Result<Self> {
         let root = metadata.workspace_root.clone().into_std_path_buf();
         let mut official_artifacts = Vec::new();
         let mut framework_executables = Vec::new();
@@ -39,7 +54,8 @@ impl Workspace {
         for package in metadata.workspace_packages() {
             let manifest_path = package.manifest_path.clone().into_std_path_buf();
             if let Some(spec) = spec_for_manifest(&root, &manifest_path) {
-                framework_executables.push(spec.validate(package, &root, &manifest_path)?);
+                spec.validate(package, &root, &manifest_path)?;
+                framework_executables.push(spec);
                 continue;
             }
             if let Some(spec) = spec_for_package(package.name.as_str()) {
@@ -70,11 +86,11 @@ impl Workspace {
                 .cmp(&right.kind)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        framework_executables.sort_by_key(|executable| executable.spec.package_name());
+        framework_executables.sort_by_key(|spec| spec.package_name());
 
         let found = framework_executables
             .iter()
-            .map(|executable| executable.spec)
+            .copied()
             .collect::<BTreeSet<_>>();
         let missing = SPECS
             .iter()
@@ -98,7 +114,7 @@ impl Workspace {
         &self.official_artifacts
     }
 
-    pub fn framework_executables(&self) -> &[FrameworkExecutable] {
+    pub fn framework_executables(&self) -> &[Spec] {
         &self.framework_executables
     }
 }
@@ -159,14 +175,7 @@ autolib = false
         let [supervisor] = workspace.framework_executables() else {
             bail!("the exact supervisor must be the sole framework executable");
         };
-        assert_eq!(supervisor.spec, SPECS[0]);
-        assert_eq!(
-            supervisor
-                .crate_dir
-                .file_name()
-                .and_then(|name| name.to_str()),
-            Some("supervisor")
-        );
+        assert_eq!(*supervisor, SPECS[0]);
         Ok(())
     }
 

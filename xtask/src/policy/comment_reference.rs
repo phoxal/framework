@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::tracked_source;
+use super::tracked_source;
+use super::{Subject, Violation};
 
 /// The owner whose trackers are this project's own. A reference into them is
 /// history, so it is rejected even when it is fully qualified.
@@ -128,6 +129,29 @@ impl fmt::Display for CommentReference {
             self.text
         )
     }
+}
+
+/// The workspace-wide gate.
+///
+/// Historical rationale belongs in Git and in the issue tracker, where it stays
+/// accurate; a decision id pasted into a comment is a pointer that rots
+/// silently and that a reader cannot resolve from the source alone. Comments
+/// here carry the invariant that holds today, and this rule is what keeps the
+/// previous state from creeping back in one comment at a time. A genuinely
+/// load-bearing upstream reference is still allowed in its fully qualified
+/// `<owner>/<repo>#<number>` form, because that names the condition under which
+/// a workaround can be removed.
+pub(super) fn comments_carry_no_issue_or_decision_references(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
+    Ok(CommentReference::scan_tree(&subject.root)?
+        .iter()
+        .map(|reference| {
+            Violation::new(format!(
+                "{reference}: state the invariant, do not cite a tracker"
+            ))
+        })
+        .collect())
 }
 
 /// The references in one comment fragment that this rule rejects.
@@ -387,7 +411,6 @@ fn hash_comment_start(line: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace_root;
 
     fn scan(source: &str, syntax: CommentSyntax) -> Vec<String> {
         CommentReference::scan_source(Path::new("probe"), source, syntax)
@@ -507,39 +530,5 @@ mod tests {
         );
         assert_eq!(CommentSyntax::for_path(Path::new("CHANGELOG.md")), None);
         assert_eq!(CommentSyntax::for_path(Path::new("Cargo.lock")), None);
-    }
-
-    /// The rule holds over the crate that defines it, whatever the rest of the
-    /// tree still carries. This is also the only test that walks a real
-    /// directory tree rather than a synthetic source.
-    #[test]
-    fn this_crate_carries_no_issue_or_decision_references() -> Result<()> {
-        let found = CommentReference::scan_tree(&workspace_root()?.join("workspace-policy"))?;
-        assert!(found.is_empty(), "{}", report(&found));
-        Ok(())
-    }
-
-    /// The workspace-wide gate.
-    ///
-    /// Historical rationale belongs in Git and in the issue tracker, where it
-    /// stays accurate; a decision id pasted into a comment is a pointer that
-    /// rots silently and that a reader cannot resolve from the source alone.
-    /// Comments here carry the invariant that holds today, and this test is
-    /// what keeps the previous state from creeping back in one comment at a
-    /// time. A genuinely load-bearing upstream reference is still allowed in
-    /// its fully qualified `<owner>/<repo>#<number>` form, because that names
-    /// the condition under which a workaround can be removed.
-    #[test]
-    fn comments_across_the_workspace_carry_no_issue_or_decision_references() -> Result<()> {
-        let found = CommentReference::scan_tree(workspace_root()?)?;
-        assert!(found.is_empty(), "{}", report(&found));
-        Ok(())
-    }
-
-    fn report(found: &[CommentReference]) -> String {
-        std::iter::once("comments must state the invariant, not cite a tracker:".to_owned())
-            .chain(found.iter().map(CommentReference::to_string))
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
