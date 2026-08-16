@@ -4,11 +4,10 @@ use std::time::Duration;
 
 use crate::bus::{LocalInstant, RobotInstant, StepToken, StreamReceiver, TimelineId};
 use crate::participant::api::Participant;
-use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
+use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
-use phoxal_bundle::ParticipantClock;
 use phoxal_protocol::runtime::endpoint::simulation::ClockEndpoint;
 
 use super::ShutdownController;
@@ -122,7 +121,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     let faulted = LocalInstant::clock_faulted()
                         .then_some(TimeUnsynchronized::ClockFault)
                         .or_else(|| match (period, self.clock_mode) {
-                            (None, ParticipantClock::Real) => match self.clock.read() {
+                            (None, ClockMode::Real) => match self.clock.read() {
                                 ClockReading::Unsynchronized(reason) => Some(reason),
                                 ClockReading::Synchronized(_) => None,
                             },

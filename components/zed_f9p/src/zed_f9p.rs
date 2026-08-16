@@ -42,9 +42,8 @@ mod tests {
         ))
         .await
         .expect("the in-process test bus opens");
-        let launch = phoxal::testing::TestHarness::new("zed-f9p-test")
-            .expect("valid test participant")
-            .with_execution_origin(phoxal::testing::ExecutionOrigin::mint());
+        let launch =
+            phoxal::testing::TestHarness::new("zed-f9p-test").expect("valid test participant");
         let result =
             phoxal::testing::run_test_harness::<ZedF9p, _>(&bus, launch, std::future::pending())
                 .await;
