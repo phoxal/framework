@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use nalgebra::{Isometry3, Translation3, Unit, UnitQuaternion, Vector3};
 use phoxal::api;
 use phoxal::model::Robot;
@@ -28,30 +28,24 @@ pub(crate) struct FrameConfig {
 impl FrameConfig {
     pub(crate) fn from_robot(robot: &Robot) -> Result<Self> {
         let mut config = Self::from_structure(robot.structure())?;
-        for instance in robot.components() {
-            let component = robot
-                .component_for_instance(instance.id().as_str())
-                .with_context(|| {
-                    format!(
-                        "robot mounts '{}' but declares no such component type",
-                        instance.id()
-                    )
-                })?;
+        for mounted in robot.components() {
+            let id = mounted.id();
+            let structure = mounted.component_type().structure();
             config.add_joint(
-                instance.mount_link().clone(),
-                component.structure().root_link().namespaced(instance.id()),
+                mounted.instance().mount_link().clone(),
+                structure.root_link().namespaced(id),
                 JointMeta {
-                    joint_id: JointId::new(MOUNT_ATTACH_JOINT).namespaced(instance.id()),
+                    joint_id: JointId::new(MOUNT_ATTACH_JOINT).namespaced(id),
                     kind: JointKind::Fixed,
                     origin: Isometry3::identity(),
                     axis_xyz: [0.0; 3],
                 },
             )?;
-            for joint in component.structure().joints() {
+            for joint in structure.joints() {
                 config.add_joint(
-                    joint.parent().namespaced(instance.id()),
-                    joint.child().namespaced(instance.id()),
-                    JointMeta::from_joint(joint)?.namespaced(instance.id()),
+                    joint.parent().namespaced(id),
+                    joint.child().namespaced(id),
+                    JointMeta::from_joint(joint)?.namespaced(id),
                 )?;
             }
         }

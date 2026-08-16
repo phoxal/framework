@@ -424,11 +424,7 @@ impl DriveState {
     }
 }
 
-#[phoxal::service(
-    state = DriveState,
-    api = Api,
-    requirement = phoxal::__private::compatibility::STOCK_DRIVE_REQUIREMENT
-)]
+#[phoxal::service(state = DriveState, api = Api)]
 pub(crate) struct Drive;
 
 impl Participant for Drive {

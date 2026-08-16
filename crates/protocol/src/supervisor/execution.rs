@@ -9,12 +9,17 @@
 //! type has exactly one public path.
 
 use phoxal_runtime_contract::identity::{ComponentInstanceId, ParticipantId, ProducerId};
-use phoxal_runtime_contract::metadata::{MAX_RUNTIME_PARTICIPANTS, ParticipantKind};
+use phoxal_runtime_contract::metadata::ParticipantKind;
 use phoxal_runtime_contract::wire_schema::{DescribeWire, FieldPresence, WireField, WireSchema};
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// Maximum process rows in one snapshot, identical to the runtime bundle cap.
-pub const MAX_PROCESSES: usize = MAX_RUNTIME_PARTICIPANTS;
+/// Maximum process rows in one snapshot.
+///
+/// Stated here rather than shared with a bundle-side cap: a bundle no longer
+/// enumerates participants at all, so there is no second list for this to agree
+/// with. The bound is the snapshot's own, and it is what keeps one decode
+/// deliverable on the bus.
+pub const MAX_PROCESSES: usize = 64;
 /// Maximum UTF-8 bytes in one short diagnostic detail.
 pub const MAX_DETAIL_BYTES: usize = 1024;
 /// Maximum UTF-8 bytes in one retained standard-error tail.

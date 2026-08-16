@@ -1,6 +1,5 @@
-// The brain owns policy, not privilege: it is neither component-bound (a
-// driver/simulator capability) nor a world-clock authority (a simulator
-// capability).
+// The brain owns policy, not privilege: it is not component-bound, which is a
+// driver capability.
 use phoxal::prelude::*;
 
 #[phoxal::brain]
@@ -13,8 +12,6 @@ impl Participant for PrivilegedBrain {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let _component = ctx.component()?;
-        let _authority = ctx.timeline_authority(TimelineId::mint())?;
-        let _clock = ctx.world_clock_publisher()?;
         Ok(((), ()))
     }
 }

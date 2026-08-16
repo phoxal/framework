@@ -14,14 +14,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::participant::api::Participant;
 use crate::participant::bus_log;
 #[cfg(feature = "test-harness")]
+use crate::participant::clock::ClockMode;
+#[cfg(feature = "test-harness")]
 use crate::participant::clock::ClockSource;
 #[cfg(feature = "test-harness")]
 use crate::participant::clock::real::RealClock;
 use crate::participant::launch::SupervisedLaunch;
 #[cfg(feature = "test-harness")]
 use crate::testing::TestHarness;
-#[cfg(feature = "test-harness")]
-use phoxal_bundle::ParticipantClock;
 
 pub(crate) mod event_loop;
 pub(crate) mod inputs;
@@ -129,9 +129,9 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     R::__retain_embedded_metadata();
 
     bus_log::init_tracing();
-    // Parse the supervised process contract before opening anything. A
-    // supervisor's signal is installed immediately after parsing so startup
-    // teardown still follows the same steady-state path.
+    // Parse the launch contract before opening anything. The host's signal is
+    // installed immediately after parsing so startup teardown still follows the
+    // same steady-state path.
     let launch = SupervisedLaunch::parse()?;
     let shutdown = shutdown_signal()?;
 
@@ -152,9 +152,9 @@ where
 {
     bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
-    let clock = RealClock::new(harness.execution_origin)?;
-    let config = inputs::participant_config::<R::Config>(None)?;
-    startup::validate_clock_inputs::<R, _>(ParticipantClock::Real, Some(&clock))?;
+    let clock = RealClock::new(harness.timeline);
+    let config = inputs::deserialize_config::<R::Config>(None)?;
+    startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(
         PreparedRun::<R, RealClock> {
@@ -164,7 +164,7 @@ where
             shutdown_grace: harness.shutdown_grace,
             bundle: None,
             config,
-            clock_mode: ParticipantClock::Real,
+            clock_mode: ClockMode::Real,
             clock: Some(clock),
             query_reply_delay,
         },
@@ -183,16 +183,14 @@ pub async fn run_test_harness_with_clock<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: Participant
-        + crate::__private::surface::TypedIoSurface
-        + crate::__private::surface::SchedulableSurface,
+    R: Participant + crate::__private::surface::TypedIoSurface,
     C: ClockSource,
     S: Future<Output = ()>,
 {
     bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
-    let config = inputs::participant_config::<R::Config>(None)?;
-    startup::validate_clock_inputs::<R, _>(ParticipantClock::Real, Some(&clock))?;
+    let config = inputs::deserialize_config::<R::Config>(None)?;
+    startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(
         PreparedRun::<R, C> {
@@ -202,7 +200,7 @@ where
             shutdown_grace: harness.shutdown_grace,
             bundle: None,
             config,
-            clock_mode: ParticipantClock::Real,
+            clock_mode: ClockMode::Real,
             clock: Some(clock),
             query_reply_delay,
         },

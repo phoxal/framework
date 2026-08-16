@@ -10,14 +10,13 @@ use std::time::Duration;
 use crate::participant::api::Participant;
 use crate::participant::bus_log::{self, BusLogTask};
 use crate::participant::clock::simulation::SimulationClock;
-use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
+use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{SetupContext, TimelineRetention};
 use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::SimulationClockHandle;
 use crate::participant::scheduler::{AnyStepScheduler, StepSchedule};
-use phoxal_bundle::ParticipantClock;
-use phoxal_bundle::ParticipantRuntimeInputs;
+use phoxal_bundle::RuntimeBundle;
 use phoxal_bus::{BusFault, BusHandle, BusOwner, ParticipantReadyToken};
 use phoxal_runtime_contract::identity::ParticipantId;
 
@@ -131,7 +130,6 @@ impl std::error::Error for ParticipantFault {
 pub(crate) enum RunnerClock<C: ClockSource> {
     Delegated(C),
     Simulation(SimulationClock),
-    Disabled,
 }
 
 impl<C: ClockSource> ClockSource for RunnerClock<C> {
@@ -139,7 +137,6 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
         match self {
             Self::Delegated(clock) => clock.read(),
             Self::Simulation(clock) => clock.read(),
-            Self::Disabled => ClockReading::Unsynchronized(TimeUnsynchronized::MissingOrigin),
         }
     }
 }
@@ -148,9 +145,9 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
 /// launch-validated clock.
 ///
 /// A disabled scheduler does not mean a disabled clock: a stepless real
-/// participant still dates the state it serves, so it keeps the
-/// origin-anchored clock the launch validated. Only a clockless participant,
-/// which expresses no robot time, runs without one.
+/// participant still dates the state it serves, so it keeps the host clock the
+/// launch built. Only a simulated participant reads its instants from somewhere
+/// else, and the scheduler it runs on is that source.
 pub(crate) fn runner_clock<C: ClockSource>(
     scheduler: &AnyStepScheduler,
     clock: Option<C>,
@@ -159,16 +156,17 @@ pub(crate) fn runner_clock<C: ClockSource>(
         AnyStepScheduler::Simulation(simulation) => {
             Ok(RunnerClock::Simulation(simulation.simulation_clock()))
         }
-        AnyStepScheduler::Real(_) => match clock {
+        // Both remaining shapes are real launches - one with a cadence, one
+        // without - and a real launch always carries a host clock. Reaching the
+        // `None` arm means the caller assembled a real run without one, which
+        // reads as a clock this process cannot read; the participant fails
+        // rather than dating its state on an invented instant.
+        AnyStepScheduler::Real(_) | AnyStepScheduler::Disabled => match clock {
             Some(clock) => Ok(RunnerClock::Delegated(clock)),
             None => Err(ClockDisciplineLost {
-                reason: TimeUnsynchronized::MissingOrigin,
+                reason: TimeUnsynchronized::ClockFault,
             }),
         },
-        AnyStepScheduler::Disabled => Ok(match clock {
-            Some(clock) => RunnerClock::Delegated(clock),
-            None => RunnerClock::Disabled,
-        }),
     }
 }
 
@@ -187,12 +185,12 @@ pub(crate) struct StartInputs<R: Participant, C: ClockSource> {
     pub(crate) session: BusLease,
     pub(crate) participant_id: ParticipantId,
     pub(crate) shutdown_grace: Duration,
-    pub(crate) bundle: Option<ParticipantRuntimeInputs>,
+    pub(crate) bundle: Option<RuntimeBundle>,
     pub(crate) config: R::Config,
     pub(crate) clock: RunnerClock<C>,
     pub(crate) scheduler: AnyStepScheduler,
     pub(crate) schedule: Option<StepSchedule>,
-    pub(crate) clock_mode: ParticipantClock,
+    pub(crate) clock_mode: ClockMode,
     pub(crate) tasks: RunnerTasks,
 }
 
@@ -264,14 +262,11 @@ where
     } = prepared;
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
     let schedule = R::__step_schedule();
-    let now = if clock_mode == ParticipantClock::Real {
-        let reading =
-            clock
-                .as_ref()
-                .map(ClockSource::read)
-                .unwrap_or(ClockReading::Unsynchronized(
-                    TimeUnsynchronized::MissingOrigin,
-                ));
+    let now = if clock_mode == ClockMode::Real {
+        let reading = clock
+            .as_ref()
+            .map(ClockSource::read)
+            .unwrap_or(ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault));
         match reading {
             ClockReading::Synchronized(_) => reading.instant(),
             ClockReading::Unsynchronized(reason) => {
@@ -358,7 +353,7 @@ pub(crate) struct Runner<R: Participant, C: ClockSource> {
     pub(crate) clock: RunnerClock<C>,
     pub(crate) scheduler: AnyStepScheduler,
     pub(crate) schedule: Option<StepSchedule>,
-    pub(crate) clock_mode: ParticipantClock,
+    pub(crate) clock_mode: ClockMode,
     pub(crate) timeline_retentions: Vec<TimelineRetention>,
     pub(crate) queries: Option<QuerySurface<R>>,
     pub(crate) runtime_performance_publisher: RuntimePerformancePublisher,
@@ -397,9 +392,10 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             clock_mode,
             tasks,
         } = inputs;
-        // The selected runtime record (or explicit test harness) was already
-        // deserialized before entering this transport-owned startup path.
-        let mut ctx = SetupContext::<R>::new(bus.clone(), bundle);
+        // The bundle (or explicit test harness) was already opened and this
+        // participant's config deserialized before entering this
+        // transport-owned startup path.
+        let mut ctx = SetupContext::<R>::new(bus.clone(), bundle, participant_id.clone());
         ctx.spawn_managed_with(
             "bus-log-drain",
             ManagedTaskPolicy::Finite,

@@ -5,15 +5,14 @@
 //! - [`protocol_tree!`] - declares the framework protocol catalogue.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
-//! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
-//!   [`macro@brain`] - declare a unit marker's `Config`/`State`/`Api` types
-//!   and identity (`ParticipantSpec`).
+//! - [`macro@service`] / [`macro@driver`] / [`macro@brain`] - declare a unit
+//!   marker's `Config`/`State`/`Api` types and identity (`ParticipantSpec`).
 //! - [`macro@step`] - records cadence on the ordinary `Participant::step`
 //!   override. Setup, reset, shutdown, and query handlers are plain Rust.
 //!
 //! The participant authoring macros (`macro@service` / `macro@driver` /
-//! `macro@simulator` / `macro@brain` / `macro@step`) reference the framework
-//! through `::phoxal::…`; the engine crate makes that path resolve to itself with
+//! `macro@brain` / `macro@step`) reference the framework through
+//! `::phoxal::…`; the engine crate makes that path resolve to itself with
 //! `extern crate self as phoxal;`.
 
 mod authoring;
@@ -99,18 +98,6 @@ pub fn driver(attr: TokenStream, item: TokenStream) -> TokenStream {
     authoring::expand_participant(attr.into(), item.into(), authoring::ParticipantKind::Driver)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
-}
-
-/// The simulator-shaped counterpart to [`service`].
-#[proc_macro_attribute]
-pub fn simulator(attr: TokenStream, item: TokenStream) -> TokenStream {
-    authoring::expand_participant(
-        attr.into(),
-        item.into(),
-        authoring::ParticipantKind::Simulator,
-    )
-    .unwrap_or_else(syn::Error::into_compile_error)
-    .into()
 }
 
 /// Declare the one mandatory root brain: the robot project's composition root.

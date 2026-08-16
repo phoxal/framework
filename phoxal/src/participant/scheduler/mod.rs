@@ -28,7 +28,7 @@ use anyhow::Context as _;
 use tokio::sync::watch;
 
 use crate::bus::RobotInstant;
-use phoxal_bundle::ParticipantClock;
+use crate::participant::clock::ClockMode;
 
 pub(crate) mod real;
 pub(crate) mod simulation;
@@ -106,26 +106,23 @@ pub(crate) trait StepScheduler: Send + Sync + 'static {
 }
 
 /// The runner's concrete scheduler choice for the active
-/// [`ParticipantClock`](phoxal_bundle::ParticipantClock):
-/// [`ParticipantClock::Real`](phoxal_bundle::ParticipantClock::Real) selects
-/// [`RealScheduler`],
-/// [`ParticipantClock::Simulation`](phoxal_bundle::ParticipantClock::Simulation)
-/// selects [`SimulationScheduler`]. A single non-generic type lets the runner
-/// hold "the scheduler" without threading a third generic parameter through
-/// the runner alongside `R`/`C`; a replay scheduler would add a
-/// variant here rather than change any call site.
+/// [`ClockMode`]: [`ClockMode::Real`] selects [`RealScheduler`],
+/// [`ClockMode::Simulation`] selects [`SimulationScheduler`]. A single
+/// non-generic type lets the runner hold "the scheduler" without threading a
+/// third generic parameter through the runner alongside `R`/`C`; a replay
+/// scheduler would add a variant here rather than change any call site.
 pub(crate) enum AnyStepScheduler {
     /// Wall-clock scheduling (the default).
     Real(RealScheduler),
     /// Logical-time scheduling, driven by a
     /// [`SimulationClockHandle`](simulation::SimulationClockHandle).
     Simulation(SimulationScheduler),
-    /// No scheduling at all: a participant outside robot time.
+    /// No cadence to release: a real participant that declares no
+    /// `#[phoxal::step]`.
     ///
-    /// Tools and the externally driven simulation controller have no
-    /// `Participant::step` (the authoring macros reject one) and no robot time
-    /// to schedule it against. This releases no tick ever, rather than
-    /// pretending to run a cadence nobody drives.
+    /// It still reads real robot time - it dates the state it serves - it just
+    /// has no tick to fire, so this releases none ever rather than pretending to
+    /// run a cadence nobody declared.
     Disabled,
 }
 
@@ -138,7 +135,7 @@ impl AnyStepScheduler {
     /// so simulation's watch channel and real mode's timer anchors are never
     /// constructed and discarded during local preflight.
     pub(crate) fn validate_clock_mode(
-        clock_mode: ParticipantClock,
+        clock_mode: ClockMode,
         schedule: Option<StepSchedule>,
         now: Option<RobotInstant>,
     ) -> crate::Result<()> {
@@ -146,18 +143,14 @@ impl AnyStepScheduler {
         // construction, but retain no scheduler state here.
         let _period = schedule.map(|schedule| schedule.period());
         match clock_mode {
-            ParticipantClock::Real if schedule.is_none() => Ok(()),
-            ParticipantClock::Real => {
+            ClockMode::Real if schedule.is_none() => Ok(()),
+            ClockMode::Real => {
                 now.context(
                     "a real participant cannot anchor its cadence without a synchronized clock",
                 )?;
                 Ok(())
             }
-            ParticipantClock::Simulation => Ok(()),
-            ParticipantClock::Clockless if schedule.is_some() => {
-                anyhow::bail!("a participant with a step schedule cannot use clockless mode")
-            }
-            ParticipantClock::Clockless => Ok(()),
+            ClockMode::Simulation => Ok(()),
         }
     }
 
@@ -175,15 +168,15 @@ impl AnyStepScheduler {
     /// [`RobotInstant`] drives the scheduler through - the runner's live
     /// `runtime/simulation/clock` subscription, a test, a REPL.
     pub(crate) fn for_clock_mode(
-        clock_mode: ParticipantClock,
+        clock_mode: ClockMode,
         schedule: Option<StepSchedule>,
         now: Option<RobotInstant>,
     ) -> crate::Result<(Self, Option<SimulationClockHandle>)> {
         Self::validate_clock_mode(clock_mode, schedule, now)?;
         let period = schedule.map(|schedule| schedule.period());
         Ok(match clock_mode {
-            ParticipantClock::Real if schedule.is_none() => (AnyStepScheduler::Disabled, None),
-            ParticipantClock::Real => {
+            ClockMode::Real if schedule.is_none() => (AnyStepScheduler::Disabled, None),
+            ClockMode::Real => {
                 // A real participant has no instant to anchor its cadence on
                 // until the clock is trustworthy. Anchoring on an invented
                 // timeline would publish a world history nobody authored, so the
@@ -202,17 +195,13 @@ impl AnyStepScheduler {
                     None,
                 )
             }
-            ParticipantClock::Simulation => {
+            ClockMode::Simulation => {
                 // No seed at all: there is no world history until the authority
                 // publishes one, and instant zero of an invented timeline would
                 // be a world nobody authored.
                 let (scheduler, handle) = SimulationScheduler::new(period);
                 (AnyStepScheduler::Simulation(scheduler), Some(handle))
             }
-            // A clockless participant has no cadence and no clock feed to
-            // subscribe: it is driven by host events or by the simulator that
-            // owns it, and it expresses no robot time.
-            ParticipantClock::Clockless => (AnyStepScheduler::Disabled, None),
         })
     }
 
@@ -283,7 +272,7 @@ mod tests {
         let schedule = Some(StepSchedule::hz(100.0));
 
         let (real, real_handle) =
-            AnyStepScheduler::for_clock_mode(ParticipantClock::Real, schedule, Some(at(1, 0)))
+            AnyStepScheduler::for_clock_mode(ClockMode::Real, schedule, Some(at(1, 0)))
                 .expect("real scheduler");
         assert!(matches!(real, AnyStepScheduler::Real(_)));
         assert!(
@@ -292,7 +281,7 @@ mod tests {
         );
 
         let (simulation, simulation_handle) =
-            AnyStepScheduler::for_clock_mode(ParticipantClock::Simulation, schedule, None)
+            AnyStepScheduler::for_clock_mode(ClockMode::Simulation, schedule, None)
                 .expect("simulation scheduler");
         assert!(matches!(simulation, AnyStepScheduler::Simulation(_)));
         assert!(
@@ -309,22 +298,10 @@ mod tests {
     #[test]
     fn a_real_participant_without_a_step_schedule_allocates_no_step_scheduler() {
         let (scheduler, handle) =
-            AnyStepScheduler::for_clock_mode(ParticipantClock::Real, None, Some(at(1, 0)))
+            AnyStepScheduler::for_clock_mode(ClockMode::Real, None, Some(at(1, 0)))
                 .expect("runner clock");
         assert!(matches!(scheduler, AnyStepScheduler::Disabled));
         assert!(handle.is_none());
-    }
-
-    #[test]
-    fn a_clockless_participant_cannot_silently_disable_its_declared_step() {
-        let error = AnyStepScheduler::for_clock_mode(
-            ParticipantClock::Clockless,
-            Some(StepSchedule::hz(50.0)),
-            None,
-        )
-        .err()
-        .expect("clockless mode cannot drive a scheduled transition");
-        assert!(error.to_string().contains("step schedule"));
     }
 
     #[test]
@@ -333,36 +310,24 @@ mod tests {
         // tick zero, which publishes a world history nobody authored. Refusing
         // to start is the ordinary failure the supervisor already handles.
         assert!(
-            AnyStepScheduler::for_clock_mode(
-                ParticipantClock::Real,
-                Some(StepSchedule::hz(50.0)),
-                None
-            )
-            .is_err()
+            AnyStepScheduler::for_clock_mode(ClockMode::Real, Some(StepSchedule::hz(50.0)), None)
+                .is_err()
         );
     }
 
     #[test]
     fn preflight_scheduler_validation_does_not_construct_a_live_scheduler() {
         AnyStepScheduler::validate_clock_mode(
-            ParticipantClock::Simulation,
+            ClockMode::Simulation,
             Some(StepSchedule::hz(20.0)),
             None,
         )
         .expect("simulation facts do not need a seed instant or a live channel");
-        AnyStepScheduler::validate_clock_mode(ParticipantClock::Clockless, None, None)
-            .expect("clockless facts are valid without a scheduler");
+        AnyStepScheduler::validate_clock_mode(ClockMode::Real, None, None)
+            .expect("a stepless real participant needs no anchor");
         assert!(
             AnyStepScheduler::validate_clock_mode(
-                ParticipantClock::Clockless,
-                Some(StepSchedule::hz(20.0)),
-                None,
-            )
-            .is_err()
-        );
-        assert!(
-            AnyStepScheduler::validate_clock_mode(
-                ParticipantClock::Real,
+                ClockMode::Real,
                 Some(StepSchedule::hz(20.0)),
                 None,
             )
@@ -371,7 +336,7 @@ mod tests {
     }
 
     /// The exact scheduler + handle `for_clock_mode` selects for
-    /// [`ParticipantClock::Simulation`], driven purely by robot time - no real
+    /// [`ClockMode::Simulation`], driven purely by robot time - no real
     /// sleeping, no live bus/Webots feed. This is the deterministic proof that
     /// simulation mode schedules ticks from robot time; the full live path (the
     /// clock feed wiring and the wire-key match with the simulation
@@ -383,7 +348,7 @@ mod tests {
         let period_ns = duration_nanos(schedule.period());
 
         let (scheduler, handle) =
-            AnyStepScheduler::for_clock_mode(ParticipantClock::Simulation, Some(schedule), None)
+            AnyStepScheduler::for_clock_mode(ClockMode::Simulation, Some(schedule), None)
                 .expect("simulation scheduler");
         let handle = handle.expect("simulation mode must hand back a driving handle");
 

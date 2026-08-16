@@ -37,7 +37,7 @@ impl ClockSource for SimulationClock {
         // within a timeline and needs no latching of its own.
         match *self.rx.borrow() {
             Some(instant) => ClockReading::Synchronized(instant),
-            None => ClockReading::Unsynchronized(TimeUnsynchronized::MissingOrigin),
+            None => ClockReading::Unsynchronized(TimeUnsynchronized::NoWorldHistory),
         }
     }
 }

@@ -123,7 +123,6 @@ fn main() -> phoxal::Result<()> {
                 framework: FrameworkVersion::CURRENT,
                 id: "brain",
                 kind: ParticipantKind::Brain,
-                requirement: None,
                 config_schema: serde_json::json!({"type": "null"}),
             },
         })?,
@@ -173,7 +172,17 @@ fn main() -> phoxal::Result<()> {
         Some(compat::FRAMEWORK),
         "the embedded record must carry the exact framework train version: {meta:?}"
     );
-    for absent in ["api", "schemas", "bus", "launch", "runtime", "version"] {
+    for absent in [
+        "api",
+        "schemas",
+        "bus",
+        "launch",
+        "runtime",
+        "version",
+        // The topology declaration is deleted, not merely unset here
+        // (CAMPAIGN.md, "Roles / macros").
+        "requirement",
+    ] {
         assert!(
             !object.contains_key(absent),
             "the framework train version is the whole compatibility claim, so '{absent}' must be \

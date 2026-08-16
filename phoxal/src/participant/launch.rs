@@ -1,47 +1,50 @@
 //! The one process-boundary launch contract.
 //!
-//! A supervised participant receives only facts owned by the execution
-//! supervisor: the execution identity, the compiled participant identity, the
-//! immutable runtime bundle, router endpoints, the optional real-time origin,
-//! and the teardown grace.  Clap is the sole parser.  There is deliberately no
-//! environment fallback, JSON launch envelope, local execution mint, or
-//! launch-time copy of facts already authoritative in `runtime.json`.
+//! A launched participant receives four facts and nothing else: who it is, the
+//! bundle it reads its robot model and its own configuration from, where the
+//! router is, and whether this run follows the simulated world clock instead of
+//! the host clock (CAMPAIGN.md, "Participant process contract").  Clap is the
+//! sole parser.  There is deliberately no environment fallback, JSON launch
+//! envelope, or launch-time copy of a fact the participant can learn for
+//! itself: the execution identity comes from the router it connects to, and
+//! robot time zero is host boot, so neither is an argument.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::Result;
 use clap::Parser;
-use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId};
-use phoxal_runtime_contract::origin::ExecutionOrigin;
+use phoxal_runtime_contract::identity::ParticipantId;
 
-/// Default bounded shutdown grace, in milliseconds.
-pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
-const DEFAULT_SHUTDOWN_GRACE_VALUE: &str = const_format::formatcp!("{}", DEFAULT_SHUTDOWN_GRACE_MS);
-
-/// The strict process-boundary contract for one supervised participant.
+/// The bounded grace a participant gets for `Participant::shutdown` and owned
+/// cleanup.
 ///
-/// Every field is required except the execution origin and the shutdown grace
-/// default.  Robot identity, participant configuration, component binding,
-/// and scheduler policy are read from the selected compiled runtime record;
-/// the participant bus owner mints its own producer identity after that record
-/// has been validated.  No field has an environment fallback.
+/// A framework-internal constant rather than a launch argument: the launcher
+/// has nothing to say about how long this participant's own teardown takes, and
+/// a per-process knob only invited two hosts to disagree about it. A launcher
+/// that needs a process gone sooner already has SIGKILL.
+pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_millis(2000);
+
+/// The strict process-boundary contract for one launched participant.
+///
+/// Robot identity, participant configuration, component binding, and scheduler
+/// policy are read from `manifest.json` under `--bundle-root`; the participant
+/// bus owner mints its own producer identity once the execution is known. No
+/// field has an environment fallback.
 #[derive(Clone, Debug, Parser)]
 #[command(
     name = "phoxal-participant",
-    about = "Run one participant from a validated Phoxal runtime bundle.",
+    about = "Run one participant from an installed Phoxal bundle.",
     long_about = None
 )]
 pub(crate) struct SupervisedLaunch {
-    /// The supervisor-owned execution identity and router key root.
-    #[arg(long, value_name = "ID", value_parser = parse_execution_id)]
-    pub(crate) execution_id: ExecutionId,
-
-    /// The exact participant record to select from runtime.json.
+    /// The identity this process runs under. It is the liveliness key segment,
+    /// and it is what the manifest is read by: a service reads
+    /// `services.<id>.config`, a driver reads `components.<id>.driver`.
     #[arg(long, value_name = "ID", value_parser = parse_participant_id)]
     pub(crate) participant_id: ParticipantId,
 
-    /// The installed runtime bundle containing runtime.json, assets/, and bin/.
+    /// The installed bundle containing manifest.json, assets/, and bin/.
     #[arg(long, value_name = "DIR")]
     pub(crate) bundle_root: PathBuf,
 
@@ -54,18 +57,11 @@ pub(crate) struct SupervisedLaunch {
     )]
     pub(crate) connect_endpoints: Vec<String>,
 
-    /// The supervisor-minted origin for real robot time.
-    #[arg(long, value_name = "ORIGIN", value_parser = parse_execution_origin)]
-    pub(crate) execution_origin: Option<ExecutionOrigin>,
-
-    /// Maximum time granted to participant shutdown and owned cleanup.
-    #[arg(
-        long = "shutdown-grace-ms",
-        value_name = "MILLISECONDS",
-        default_value = DEFAULT_SHUTDOWN_GRACE_VALUE,
-        value_parser = parse_shutdown_grace
-    )]
-    pub(crate) shutdown_grace: Duration,
+    /// Follow the world clock on `runtime/simulation/clock` instead of the host
+    /// clock. Simulation is a launch decision, never a bundle fact, so nothing
+    /// in the manifest can turn it on.
+    #[arg(long = "simulation")]
+    pub(crate) simulation: bool,
 }
 
 impl SupervisedLaunch {
@@ -75,19 +71,10 @@ impl SupervisedLaunch {
     }
 }
 
-fn parse_execution_id(value: &str) -> std::result::Result<ExecutionId, String> {
-    ExecutionId::parse(value).map_err(|error| error.to_string())
-}
-
 fn parse_participant_id(value: &str) -> std::result::Result<ParticipantId, String> {
     value
         .parse()
         .map_err(|error: phoxal_runtime_contract::identity::ParticipantIdError| error.to_string())
-}
-
-fn parse_execution_origin(value: &str) -> std::result::Result<ExecutionOrigin, String> {
-    ExecutionOrigin::decode(value)
-        .ok_or_else(|| "execution origin must be <boot>:<boot-ns>:<nonzero-timeline>".to_string())
 }
 
 fn parse_connect_endpoint(value: &str) -> std::result::Result<String, String> {
@@ -100,29 +87,14 @@ fn parse_connect_endpoint(value: &str) -> std::result::Result<String, String> {
     Ok(value.to_string())
 }
 
-fn parse_shutdown_grace(value: &str) -> std::result::Result<Duration, String> {
-    let milliseconds = value.parse::<u64>().map_err(|error| {
-        format!("shutdown grace must be an integer number of milliseconds: {error}")
-    })?;
-    if milliseconds == 0 {
-        return Err("shutdown grace must be greater than zero milliseconds".to_string());
-    }
-    Ok(Duration::from_millis(milliseconds))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::{CommandFactory, error::ErrorKind};
 
-    const EXECUTION: &str = "10000000000000000000000000000001";
-    const ORIGIN: &str = "7:42:9";
-
     fn args() -> Vec<&'static str> {
         vec![
             "participant-bin",
-            "--execution-id",
-            EXECUTION,
             "--participant-id",
             "drive",
             "--bundle-root",
@@ -133,66 +105,66 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_the_supervisor_owned_fields() {
-        let launch = SupervisedLaunch::try_parse_from(args()).expect("valid supervised argv");
-        assert_eq!(launch.execution_id.to_string(), EXECUTION);
+    fn accepts_only_the_four_launch_facts() {
+        let launch = SupervisedLaunch::try_parse_from(args()).expect("valid launch argv");
         assert_eq!(launch.participant_id.as_str(), "drive");
         assert_eq!(launch.bundle_root, PathBuf::from("/var/lib/phoxal/bundle"));
         assert_eq!(launch.connect_endpoints, ["tcp/router-a:7447"]);
-        assert_eq!(launch.execution_origin, None);
-        assert_eq!(
-            launch.shutdown_grace,
-            Duration::from_millis(DEFAULT_SHUTDOWN_GRACE_MS)
+        assert!(
+            !launch.simulation,
+            "the host clock is the default; simulation is opted into"
         );
     }
 
     #[test]
     fn accepts_multiple_connect_endpoints_without_a_comma_encoding() {
         let mut argv = args();
-        argv.extend([
-            "--connect",
-            "tcp/router-b:7447",
-            "--execution-origin",
-            ORIGIN,
-        ]);
+        argv.extend(["--connect", "tcp/router-b:7447", "--simulation"]);
         let launch = SupervisedLaunch::try_parse_from(argv).expect("valid repeated endpoints");
         assert_eq!(
             launch.connect_endpoints,
             ["tcp/router-a:7447", "tcp/router-b:7447"]
         );
-        assert_eq!(
-            launch.execution_origin,
-            Some(ExecutionOrigin::decode(ORIGIN).expect("test origin"))
-        );
+        assert!(launch.simulation);
     }
 
     #[test]
-    fn missing_required_fields_fails_before_runtime_or_bus_work() {
+    fn missing_required_fields_fails_before_bundle_or_bus_work() {
         let error = SupervisedLaunch::try_parse_from(["participant-bin"])
-            .expect_err("required supervised fields must not have defaults");
+            .expect_err("required launch fields must not have defaults");
         assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
-    fn malformed_identity_and_origin_are_rejected() {
-        let mut invalid_execution = args();
-        invalid_execution[2] = "short";
-        assert!(SupervisedLaunch::try_parse_from(invalid_execution).is_err());
-
+    fn a_malformed_participant_id_is_rejected() {
         let mut invalid_participant = args();
-        invalid_participant[4] = "Drive";
+        invalid_participant[2] = "Drive";
         assert!(SupervisedLaunch::try_parse_from(invalid_participant).is_err());
+    }
 
-        let mut invalid_origin = args();
-        invalid_origin.extend(["--execution-origin", "not-an-origin"]);
-        assert!(SupervisedLaunch::try_parse_from(invalid_origin).is_err());
+    /// Every flag the launch contract retired is now an unknown argument rather
+    /// than a quietly accepted one, so a launcher still passing a fact the
+    /// participant now learns for itself fails loudly at startup.
+    #[test]
+    fn the_retired_launch_facts_are_rejected_as_unknown_arguments() {
+        for retired in [
+            vec!["--execution-id", "10000000000000000000000000000001"],
+            vec!["--execution-origin", "7:42:9"],
+            vec!["--shutdown-grace-ms", "500"],
+        ] {
+            let mut argv = args();
+            argv.extend(retired.iter().copied());
+            let error = SupervisedLaunch::try_parse_from(argv)
+                .expect_err("a retired launch flag has no parser");
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "{retired:?}");
+        }
     }
 
     /// The process boundary is exactly this flag set under exactly these
     /// spellings. A renamed long option or parser alias would create a second
     /// launch contract even if the Rust field remained unchanged.
     #[test]
-    fn the_long_flag_set_is_exactly_the_supervisor_owned_fields() {
+    fn the_long_flag_set_is_exactly_the_four_launch_facts() {
         let command = SupervisedLaunch::command();
         let mut longs = command
             .get_arguments()
@@ -201,14 +173,7 @@ mod tests {
         longs.sort_unstable();
         assert_eq!(
             longs,
-            [
-                "bundle-root",
-                "connect",
-                "execution-id",
-                "execution-origin",
-                "participant-id",
-                "shutdown-grace-ms",
-            ]
+            ["bundle-root", "connect", "participant-id", "simulation"]
         );
         for argument in command.get_arguments() {
             assert!(
@@ -234,16 +199,9 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_grace_must_be_nonzero() {
-        let mut argv = args();
-        argv.extend(["--shutdown-grace-ms", "0"]);
-        assert!(SupervisedLaunch::try_parse_from(argv).is_err());
-    }
-
-    #[test]
     fn empty_connect_endpoint_is_rejected() {
         let mut argv = args();
-        argv[8] = "";
+        argv[6] = "";
         assert!(SupervisedLaunch::try_parse_from(argv).is_err());
     }
 

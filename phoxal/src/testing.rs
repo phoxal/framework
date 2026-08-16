@@ -13,35 +13,37 @@ use phoxal_runtime_contract::identity::{ParticipantId, ParticipantIdError};
 pub use crate::participant::clock::ClockSource;
 pub use crate::participant::clock::test::TestClock;
 pub use crate::participant::runner::{run_test_harness, run_test_harness_with_clock};
-pub use phoxal_runtime_contract::origin::ExecutionOrigin;
+pub use phoxal_runtime_contract::identity::TimelineId;
 
 /// Explicit in-process test input.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct TestHarness {
     pub(crate) participant_id: ParticipantId,
-    pub(crate) execution_origin: ExecutionOrigin,
+    pub(crate) timeline: TimelineId,
     pub(crate) shutdown_grace: Duration,
     pub(crate) query_reply_delay: Option<Duration>,
 }
 
 impl TestHarness {
     /// Construct an explicit test-harness input for a participant id.
+    ///
+    /// A launched participant derives its real timeline from the execution the
+    /// router reports; a harness has no router, so it mints one here and lets a
+    /// test name it explicitly when two harnesses have to share a world history.
     pub fn new(participant_id: impl Into<String>) -> std::result::Result<Self, ParticipantIdError> {
         Ok(Self {
             participant_id: ParticipantId::new(participant_id)?,
-            execution_origin: ExecutionOrigin::mint(),
-            shutdown_grace: Duration::from_millis(
-                crate::participant::launch::DEFAULT_SHUTDOWN_GRACE_MS,
-            ),
+            timeline: TimelineId::mint(),
+            shutdown_grace: crate::participant::launch::SHUTDOWN_GRACE,
             query_reply_delay: None,
         })
     }
 
-    /// Use a caller-selected execution origin in a test clock domain.
+    /// Use a caller-selected timeline for this harness's robot time.
     #[must_use]
-    pub fn with_execution_origin(mut self, origin: ExecutionOrigin) -> Self {
-        self.execution_origin = origin;
+    pub fn with_timeline(mut self, timeline: TimelineId) -> Self {
+        self.timeline = timeline;
         self
     }
 

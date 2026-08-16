@@ -1,6 +1,6 @@
 //! The participant authoring model: `#[derive(phoxal::Config)]`, the
-//! `#[phoxal::service]` / `#[phoxal::driver]` / `#[phoxal::simulator]` /
-//! `#[phoxal::brain]` role attributes, and the method-level
+//! `#[phoxal::service]` / `#[phoxal::driver]` / `#[phoxal::brain]` role
+//! attributes, and the method-level
 //! `#[phoxal::step(hz = N)]`. Role attributes emit the static
 //! [`ParticipantSpec`] contract; authors implement `Participant` directly for
 //! lifecycle behavior.
@@ -201,14 +201,13 @@ impl SerdeAttrLocation {
 }
 
 // ---------------------------------------------------------------------------
-// #[phoxal::service] / #[phoxal::driver] / #[phoxal::simulator] / #[phoxal::brain]
+// #[phoxal::service] / #[phoxal::driver] / #[phoxal::brain]
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
 pub enum ParticipantKind {
     Service,
     Driver,
-    Simulator,
     Brain,
 }
 
@@ -222,7 +221,6 @@ impl ParticipantKind {
         match self {
             ParticipantKind::Service => "#[phoxal::service]",
             ParticipantKind::Driver => "#[phoxal::driver]",
-            ParticipantKind::Simulator => "#[phoxal::simulator]",
             ParticipantKind::Brain => "#[phoxal::brain]",
         }
     }
@@ -234,7 +232,6 @@ impl ParticipantKind {
         let variant = match self {
             ParticipantKind::Service => quote!(Service),
             ParticipantKind::Driver => quote!(Driver),
-            ParticipantKind::Simulator => quote!(Simulator),
             ParticipantKind::Brain => quote!(Brain),
         };
         quote!(#phoxal::__private::ParticipantKind::#variant)
@@ -248,7 +245,7 @@ impl ParticipantKind {
     fn fixed_id(self) -> Option<&'static str> {
         match self {
             ParticipantKind::Brain => Some(BRAIN_ID),
-            ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Simulator => None,
+            ParticipantKind::Service | ParticipantKind::Driver => None,
         }
     }
 
@@ -262,9 +259,9 @@ impl ParticipantKind {
     /// The `(...)` keys this role accepts, for the unknown-key diagnostic.
     fn accepted_keys(self) -> &'static str {
         if self.accepts_config() {
-            "id, config, state, api, or requirement"
+            "id, config, state, or api"
         } else {
-            "state, api, or requirement"
+            "state or api"
         }
     }
 
@@ -281,25 +278,17 @@ impl ParticipantKind {
         match self {
             // The brain is deliberately identical to a service here: the
             // ordinary checked typed-I/O surface and a schedulable step, with
-            // no component-bound or world-authority capability.
+            // no component binding.
             ParticipantKind::Service | ParticipantKind::Brain => {
                 quote! {
                     impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
                     impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
-                    impl #phoxal::__private::surface::SchedulableSurface for #struct_name {}
                 }
             }
             ParticipantKind::Driver => quote! {
                 impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
                 impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
                 impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {}
-                impl #phoxal::__private::surface::SchedulableSurface for #struct_name {}
-            },
-            ParticipantKind::Simulator => quote! {
-                impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
-                impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
-                impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {}
-                impl #phoxal::__private::surface::WorldAuthoritySurface for #struct_name {}
             },
         }
     }
@@ -359,17 +348,11 @@ fn validate_participant_id(value: &LitStr) -> syn::Result<()> {
 /// into the bare id it was built from.
 ///
 /// `cargo xtask policy` enforces that convention for the kinds it knows -
-/// service, component, simulator. `driver` and `tool` are in this list but not
-/// in that one: they are kinds of the canonical participant taxonomy with no
-/// directory in this workspace yet, so stripping them here is forward-looking
-/// rather than enforced.
-const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
-    "phoxal-service-",
-    "phoxal-driver-",
-    "phoxal-tool-",
-    "phoxal-simulator-",
-    "phoxal-component-",
-];
+/// service and component. `driver` is in this list but not in that one: it is a
+/// kind of the canonical participant taxonomy with no directory in this
+/// workspace yet, so stripping it here is forward-looking rather than enforced.
+const PARTICIPANT_PACKAGE_PREFIXES: &[&str] =
+    &["phoxal-service-", "phoxal-driver-", "phoxal-component-"];
 
 /// The default participant id when `id = "…"` is omitted: `CARGO_PKG_NAME`
 /// with a leading `phoxal-<kind>-` stripped when present, otherwise the
@@ -388,11 +371,10 @@ const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
 ///
 /// The package name is the default rather than the marker struct's name
 /// because it is the one that actually matches the intended id: measured
-/// against all 25 official participants, the package name minus its kind
-/// prefix matches 25/25, while kebab-casing the struct name matches only
-/// 16/25 - it fails every tool (`struct ToolLog` kebabs to `tool-log`, not
-/// `log`), `WebotsControllerSimulator`, and the two components with an
-/// underscore in their id (`oak_d_lite` kebabs to `oak-d-lite`). A crate that
+/// across the official participant set, the package name minus its kind prefix
+/// matches every one of them, while kebab-casing the struct name fails the
+/// components with an underscore in their id (`oak_d_lite` kebabs to
+/// `oak-d-lite`). A crate that
 /// defines more than one participant still needs an explicit `id = "…"` per
 /// struct - they cannot all default to the one package name - which is why the
 /// override stays fully supported.
@@ -413,7 +395,6 @@ struct ParticipantArgs {
     config: Option<Type>,
     state: Option<Type>,
     api: Option<Type>,
-    requirement: Option<Expr>,
 }
 
 impl ParticipantArgs {
@@ -452,10 +433,6 @@ impl ParticipantArgs {
             } else if meta.path.is_ident("api") {
                 let value: Type = meta.value()?.parse()?;
                 args.api = Some(value);
-                Ok(())
-            } else if meta.path.is_ident("requirement") {
-                let value: Expr = meta.value()?.parse()?;
-                args.requirement = Some(value);
                 Ok(())
             } else {
                 Err(meta.error(format!(
@@ -544,9 +521,6 @@ pub fn expand_participant(
     let config_ty: Type = args.config.unwrap_or_else(|| syn::parse_quote!(()));
     let state_ty: Type = args.state.unwrap_or_else(|| syn::parse_quote!(()));
     let api_ty: Type = args.api.unwrap_or_else(|| syn::parse_quote!(()));
-    let requirement = args
-        .requirement
-        .unwrap_or_else(|| syn::parse_quote!(::phoxal::__private::compatibility::NO_REQUIREMENT));
 
     let phoxal = quote!(::phoxal);
     let artifact_kind = kind.artifact_kind(&phoxal);
@@ -578,7 +552,6 @@ pub fn expand_participant(
 
         impl #phoxal::__private::ParticipantSpec for #struct_name {
             const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
-            const REQUIREMENT: Option<#phoxal::__private::ParticipantRequirement> = #requirement;
             const ID: &'static str = #id;
             // The participant-authoring facade family, spliced from the
             // framework path rather than named by the author: a participant
@@ -620,7 +593,6 @@ pub fn expand_participant(
                 framework = #phoxal::__private::compatibility::FRAMEWORK,
                 id = #id,
                 kind = #artifact_kind,
-                requirement = #requirement,
                 config_schema =
                     <#config_ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON,
             );
@@ -676,8 +648,6 @@ pub fn expand_step(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStr
     Ok(quote! {
         #[doc(hidden)]
         fn __step_schedule() -> ::core::option::Option<#phoxal::__private::StepSchedule> {
-            fn __assert_schedulable_surface<T: #phoxal::__private::surface::SchedulableSurface>() {}
-            __assert_schedulable_surface::<Self>();
             ::core::option::Option::Some(#phoxal::__private::StepSchedule::hz(#hz))
         }
 
@@ -756,11 +726,6 @@ mod tests {
     fn default_participant_id_strips_the_kind_prefix_for_every_official_directory() {
         assert_eq!(default_participant_id("phoxal-service-drive"), "drive");
         assert_eq!(default_participant_id("phoxal-driver-bno085"), "bno085");
-        assert_eq!(default_participant_id("phoxal-tool-log"), "log");
-        assert_eq!(
-            default_participant_id("phoxal-simulator-webots-controller"),
-            "webots-controller"
-        );
         assert_eq!(
             default_participant_id("phoxal-component-ddsm115"),
             "ddsm115"
@@ -881,16 +846,8 @@ mod tests {
             "{expanded}"
         );
         assert!(
-            expanded.contains("SchedulableSurface for Brain"),
-            "{expanded}"
-        );
-        assert!(
             !expanded.contains("ComponentBoundSurface"),
             "the brain must not be component-bound: {expanded}"
-        );
-        assert!(
-            !expanded.contains("WorldAuthoritySurface"),
-            "the brain must not own simulator world authority: {expanded}"
         );
     }
 
@@ -942,10 +899,6 @@ mod tests {
             expanded.contains("compatibility :: FRAMEWORK"),
             "the embedded record must name compatibility::FRAMEWORK: {expanded}"
         );
-        assert!(
-            expanded.contains("compatibility :: NO_REQUIREMENT"),
-            "participants without a topology declaration must emit the explicit none requirement: {expanded}"
-        );
         // The framework train version is the whole compatibility claim, so the
         // per-boundary constants it replaced must not reappear beside it.
         for retired in ["API", "API_TOKEN", "BUS", "LAUNCH", "RUNTIME"] {
@@ -956,23 +909,23 @@ mod tests {
         }
     }
 
+    /// The role attributes accept exactly four keys. `requirement = ...` was one
+    /// of them until the topology declaration was deleted (CAMPAIGN.md, "Roles /
+    /// macros"), so an authored crate that still spells it gets a diagnostic
+    /// naming the keys that remain rather than a silently ignored argument.
     #[test]
-    fn an_explicit_participant_requirement_reaches_the_metadata_writer() {
-        let expanded = compact_tokens(
-            expand_participant(
-                quote! {
-                    requirement = ::phoxal::__private::compatibility::STOCK_DRIVE_REQUIREMENT
-                },
-                quote! { struct Probe; },
-                ParticipantKind::Service,
-            )
-            .expect("an explicit requirement expands"),
-        );
+    fn a_retired_requirement_argument_is_an_unknown_key() {
+        let error = expand_participant(
+            quote! { requirement = SomeRequirement },
+            quote! { struct Probe; },
+            ParticipantKind::Service,
+        )
+        .expect_err("`requirement` is not a role-attribute key");
         assert!(
-            expanded.contains(
-                "requirement = :: phoxal :: __private :: compatibility :: STOCK_DRIVE_REQUIREMENT"
-            ),
-            "the declared requirement must be passed to the metadata writer: {expanded}"
+            error
+                .to_string()
+                .contains("expected id, config, state, or api"),
+            "{error}"
         );
     }
 
@@ -985,7 +938,6 @@ mod tests {
         for kind in [
             ParticipantKind::Service,
             ParticipantKind::Driver,
-            ParticipantKind::Simulator,
             ParticipantKind::Brain,
         ] {
             let expanded = compact_tokens(
@@ -1021,7 +973,6 @@ mod tests {
         for kind in [
             ParticipantKind::Service,
             ParticipantKind::Driver,
-            ParticipantKind::Simulator,
             ParticipantKind::Brain,
         ] {
             let expanded = compact_tokens(
@@ -1077,7 +1028,6 @@ mod tests {
         .to_string();
 
         assert!(expanded.contains("__step_schedule"));
-        assert!(expanded.contains("__assert_schedulable_surface"));
         assert!(expanded.contains("StepSchedule :: hz (50f64)"));
         assert!(expanded.contains("fn step"));
     }
