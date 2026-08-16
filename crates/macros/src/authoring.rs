@@ -358,11 +358,11 @@ fn validate_participant_id(value: &LitStr) -> syn::Result<()> {
 /// `phoxal-<kind>-<id>`. Stripping one of these turns the package name back
 /// into the bare id it was built from.
 ///
-/// `workspace-policy`'s `expected_package_name` enforces that convention for
-/// the kinds it knows - service, component, tool, simulator. `driver` is in
-/// this list but not in that one: it is a kind of the canonical participant
-/// taxonomy with no directory in this workspace yet, so stripping it here is
-/// forward-looking rather than enforced.
+/// `cargo xtask policy` enforces that convention for the kinds it knows -
+/// service, component, simulator. `driver` and `tool` are in this list but not
+/// in that one: they are kinds of the canonical participant taxonomy with no
+/// directory in this workspace yet, so stripping them here is forward-looking
+/// rather than enforced.
 const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
     "phoxal-service-",
     "phoxal-driver-",

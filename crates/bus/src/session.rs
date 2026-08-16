@@ -61,8 +61,8 @@ pub(crate) const BUS_KEY_PREFIX: &str = "phoxal";
 ///
 /// The value is stated here rather than read from Zenoh: `zenoh-protocol` is an
 /// internal crate of the transport and states its own constant for its own use.
-/// `workspace-policy` holds the two together, so this declaration cannot go
-/// stale behind a Zenoh upgrade.
+/// `tests/frozen_wire_protocol.rs` holds the two together, so this declaration
+/// cannot go stale behind a Zenoh upgrade.
 pub(crate) const ZENOH_WIRE_PROTOCOL_VERSION: u8 = 9;
 
 /// Capacity (in samples) of each ordered outbound lane. Coalesced state and

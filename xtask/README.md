@@ -8,6 +8,7 @@ cargo xtask compatibility report          # what changed, and what release it ne
 cargo xtask compatibility check-release   # the same, and fail if this version is too small
 cargo xtask compatibility rehearse-v1     # drill the Stable-line semantics, offline
 cargo xtask compatibility v1-readiness    # everything that has to hold before a 1.0
+cargo xtask policy                        # the rules no single crate owns
 ```
 
 `report` and `check-release` accept `--declared-impact <unchanged|additive|breaking>`.
@@ -220,6 +221,19 @@ A statement naming both eras is fine and is how these facts should be written: "
 A statement deriving a standing rule from the pre-1.0 era alone is not, and the gate names the file to rewrite.
 
 The command exits zero only when every machine-decidable condition holds, and it always ends by naming what no gate can decide: the flip itself is the maintainer's act.
+
+## The workspace policy
+
+`cargo xtask policy` is the second gate this runner carries, and it answers a different question: not what a change does to the published contracts, but whether the workspace still obeys the rules no single crate owns.
+
+It runs every rule, prints one report of `PASS`/`FAIL` lines with each violation named under its rule, and exits non-zero if any rule failed.
+The rules are the directory/naming/publish grammar every official package obeys, the exact release scope, the supervisor's place outside the artifact catalogue and inside the release train, the direction of the public library graph and the edges no canonical crate may grow, the Zenoh feature profile, the deleted surfaces that may not return under their old identifiers, where a unit-test module may sit, and what a committed comment may name.
+
+Every rule reads `cargo metadata`, the filesystem or Git and nothing else.
+That is what keeps the runner's no-framework-crate rule intact: the gate never builds the stack it judges, so it needs no Webots and runs on a bare runner in CI as its own job.
+
+The proofs that *do* need the framework linked are not here and cannot be.
+They are ordinary tests in the crates that own them - what a linked participant binary carries and what the facade and the process-contract crate agree on in `phoxal`, the frozen Zenoh wire protocol version in `phoxal-bus`, the build-requirement union in `phoxal-manifest` - and they run under `cargo test --workspace`.
 
 ## Tests
 

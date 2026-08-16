@@ -2471,6 +2471,7 @@ dependencies = [
  "const_format",
  "jsonschema",
  "libc",
+ "object",
  "phoxal-bundle",
  "phoxal-bus",
  "phoxal-fixture",
@@ -2482,6 +2483,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -2508,6 +2510,8 @@ dependencies = [
 name = "phoxal-bus"
 version = "0.62.0"
 dependencies = [
+ "anyhow",
+ "cargo_metadata",
  "getrandom 0.3.4",
  "libc",
  "phoxal-macros",
@@ -2602,6 +2606,7 @@ name = "phoxal-manifest"
 version = "0.62.0"
 dependencies = [
  "anyhow",
+ "cargo_metadata",
  "jsonschema",
  "phoxal-model",
  "phoxal-runtime-contract",
@@ -4961,24 +4966,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
-name = "workspace-policy"
-version = "0.62.0"
-dependencies = [
- "anyhow",
- "cargo_metadata",
- "object",
- "phoxal",
- "phoxal-bus",
- "phoxal-manifest",
- "phoxal-model",
- "phoxal-runtime-contract",
- "serde",
- "serde_json",
- "tempfile",
- "toml_edit",
-]
-
-[[package]]
 name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5013,11 +5000,13 @@ name = "xtask"
 version = "0.62.0"
 dependencies = [
  "anyhow",
+ "cargo_metadata",
  "clap",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
+ "toml_edit",
  "ureq",
 ]
 

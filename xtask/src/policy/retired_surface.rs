@@ -11,7 +11,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use workspace_policy::{tracked_source, workspace_root};
+
+use super::tracked_source;
+use super::{Subject, Violation};
+
+/// This module, which spells the vocabulary it hunts for in full inside its own
+/// detection tests and would otherwise be its own only violation.
+const SELF: &str = "xtask/src/policy/retired_surface.rs";
 
 fn source_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(tracked_source::files(root)?
@@ -48,9 +54,7 @@ fn contains_identifier_pair(source: &str, first: &str, second: &str) -> bool {
 /// one clap-only process contract, the bus supplies its clock directly, and a
 /// managed task is either critical or finite. Deleted parallel axes must not
 /// return under their former exact identifiers or flag spellings.
-#[test]
-fn retired_runtime_vocabulary_stays_absent() -> Result<()> {
-    let root = workspace_root()?;
+pub(super) fn retired_runtime_vocabulary_stays_absent(subject: &Subject) -> Result<Vec<Violation>> {
     // Split literals keep this rule from becoming its own only violation.
     let identifiers = [
         ["Robot", "Namespace"].concat(),
@@ -66,33 +70,32 @@ fn retired_runtime_vocabulary_stays_absent() -> Result<()> {
     let robot_namespace = (["ro", "bot"].concat(), ["name", "space"].concat());
 
     let mut violations = Vec::new();
-    for relative in source_files(root)? {
-        let path = root.join(&relative);
-        let source = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
+    for relative in source_files(&subject.root)? {
+        let source = read(&subject.root, &relative)?;
         for term in &identifiers {
             if contains_identifier(&source, term) {
-                violations.push(format!("{} contains identifier {term}", relative.display()));
+                violations.push(Violation::new(format!(
+                    "{} contains identifier {term}",
+                    relative.display()
+                )));
             }
         }
         for flag in &flag_spellings {
             if source.contains(flag) {
-                violations.push(format!("{} contains flag {flag}", relative.display()));
+                violations.push(Violation::new(format!(
+                    "{} contains flag {flag}",
+                    relative.display()
+                )));
             }
         }
         if contains_identifier_pair(&source, &robot_namespace.0, &robot_namespace.1) {
-            violations.push(format!(
+            violations.push(Violation::new(format!(
                 "{} contains the retired authored namespace path",
                 relative.display()
-            ));
+            )));
         }
     }
-    assert!(
-        violations.is_empty(),
-        "retired runtime surfaces returned:\n{}",
-        violations.join("\n")
-    );
-    Ok(())
+    Ok(violations)
 }
 
 /// Compatibility is one identity: the framework train version every
@@ -103,9 +106,9 @@ fn retired_runtime_vocabulary_stays_absent() -> Result<()> {
 /// contracts are grouped by semantic family instead, so the generated revision
 /// catalogue and the marker trait that called a family a version are retired
 /// with them.
-#[test]
-fn retired_compatibility_identities_stay_absent() -> Result<()> {
-    let root = workspace_root()?;
+pub(super) fn retired_compatibility_identities_stay_absent(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
     // Split literals keep this rule from becoming its own only violation.
     let identifiers = [
         ["Participant", "Schemas"].concat(),
@@ -119,46 +122,93 @@ fn retired_compatibility_identities_stay_absent() -> Result<()> {
     ];
 
     let mut violations = Vec::new();
-    for relative in source_files(root)? {
-        let path = root.join(&relative);
-        let source = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
+    for relative in source_files(&subject.root)? {
+        let source = read(&subject.root, &relative)?;
         for term in &identifiers {
             if contains_identifier(&source, term) {
-                violations.push(format!("{} contains identifier {term}", relative.display()));
+                violations.push(Violation::new(format!(
+                    "{} contains identifier {term}",
+                    relative.display()
+                )));
             }
         }
     }
-    assert!(
-        violations.is_empty(),
-        "retired compatibility identities returned:\n{}",
-        violations.join("\n")
-    );
-    Ok(())
+    Ok(violations)
 }
 
 /// Participant kind has one process-contract owner and one private macro
 /// dispatch mirror. The macro enum maps attribute roles to the contract's wire
 /// variants during expansion and never becomes an authored document field.
-#[test]
-fn participant_kind_declarations_match_the_two_explicit_owners() -> Result<()> {
-    let root = workspace_root()?;
+pub(super) fn participant_kind_declarations_match_the_two_explicit_owners(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
     let declaration = ("enum", ["Participant", "Kind"].concat());
     let expected = [
         PathBuf::from("crates/macros/src/authoring.rs"),
         PathBuf::from("crates/runtime-contract/src/metadata.rs"),
     ];
     let mut owners = Vec::new();
-    for relative in source_files(root)? {
-        let source = fs::read_to_string(root.join(&relative))
-            .with_context(|| format!("failed to read {}", relative.display()))?;
+    for relative in source_files(&subject.root)? {
+        let source = read(&subject.root, &relative)?;
         if contains_identifier_pair(&source, declaration.0, &declaration.1) {
             owners.push(relative);
         }
     }
     owners.sort_unstable();
-    assert_eq!(owners, expected, "participant-kind ownership drifted");
-    Ok(())
+
+    let mut violations = Vec::new();
+    for owner in &owners {
+        if !expected.contains(owner) {
+            violations.push(Violation::new(format!(
+                "{} declares the participant-kind enum; only its two explicit owners may",
+                owner.display()
+            )));
+        }
+    }
+    for owner in &expected {
+        if !owners.contains(owner) {
+            violations.push(Violation::new(format!(
+                "{} is an explicit participant-kind owner but no longer declares the enum",
+                owner.display()
+            )));
+        }
+    }
+    Ok(violations)
+}
+
+/// A source-reference type is used under its canonical name. Public type
+/// aliases and renamed public re-exports would preserve an obsolete parallel
+/// spelling, including restricted-visibility and multiline forms.
+pub(super) fn source_reference_alias_shims_stay_absent(
+    subject: &Subject,
+) -> Result<Vec<Violation>> {
+    let source_reference = ["Source", "Ref"].concat();
+    let mut violations = Vec::new();
+    for relative in source_files(&subject.root)? {
+        if relative == Path::new(SELF) {
+            // This module defines the detection vocabulary and is not a product
+            // surface that can expose an alias to a consumer.
+            continue;
+        }
+        let source = read(&subject.root, &relative)?;
+        let mut offset = 0;
+        for statement in source.split_inclusive(';') {
+            if let Some(item_offset) = public_source_reference_alias(statement, &source_reference) {
+                violations.push(Violation::new(format!(
+                    "{}:{}",
+                    relative.display(),
+                    source[..offset + item_offset].lines().count() + 1
+                )));
+            }
+            offset += statement.len();
+        }
+    }
+    Ok(violations)
+}
+
+fn read(root: &Path, relative: &Path) -> Result<String> {
+    fs::read_to_string(root.join(relative))
+        .with_context(|| format!("failed to read {}", relative.display()))
 }
 
 /// The byte offset and keyword of a public `type` or `use` item beginning a
@@ -223,43 +273,9 @@ fn public_source_reference_alias(statement: &str, source_reference: &str) -> Opt
     matched.then_some(offset)
 }
 
-/// A source-reference type is used under its canonical name. Public type
-/// aliases and renamed public re-exports would preserve an obsolete parallel
-/// spelling, including restricted-visibility and multiline forms.
-#[test]
-fn source_reference_alias_shims_stay_absent() -> Result<()> {
-    let root = workspace_root()?;
-    let source_reference = ["Source", "Ref"].concat();
-    let mut violations = Vec::new();
-    for relative in source_files(root)? {
-        if relative.starts_with("workspace-policy") {
-            // This test defines the detection vocabulary and is not a product
-            // surface that can expose an alias to a consumer.
-            continue;
-        }
-        let source = fs::read_to_string(root.join(&relative))
-            .with_context(|| format!("failed to read {}", relative.display()))?;
-        let mut offset = 0;
-        for statement in source.split_inclusive(';') {
-            if let Some(item_offset) = public_source_reference_alias(statement, &source_reference) {
-                violations.push(format!(
-                    "{}:{}",
-                    relative.display(),
-                    source[..offset + item_offset].lines().count() + 1
-                ));
-            }
-            offset += statement.len();
-        }
-    }
-    assert!(
-        violations.is_empty(),
-        "source-reference alias shims returned: {violations:?}"
-    );
-    Ok(())
-}
-
+#[cfg(test)]
 mod tests {
-    use super::public_source_reference_alias;
+    use super::*;
 
     fn source_reference() -> String {
         ["Source", "Ref"].concat()
@@ -319,5 +335,16 @@ mod tests {
             &name
         )
         .is_none());
+    }
+
+    /// The exemption is a path, so it stops applying the moment this module
+    /// moves - and the rule would then report itself.
+    #[test]
+    fn the_self_exemption_names_this_module() {
+        assert!(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/policy/retired_surface.rs")
+                .ends_with(SELF)
+        );
     }
 }
