@@ -2400,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-bundle"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "phoxal-model",
  "phoxal-runtime-contract",
@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-bus"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -2462,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-bno085"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-ddsm115"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2482,7 +2482,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-vl53l1x"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2502,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-zed_f9p"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-fixture"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "phoxal-bundle",
  "phoxal-manifest",
@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-manifest"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-model"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "phoxal-macros",
  "phoxal-runtime-contract",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-protocol"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-contract"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "const_format",
  "getrandom 0.3.4",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-drive"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2606,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-frame"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-joint"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2623,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-localize"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-map"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2648,7 +2648,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2658,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-odometry"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2666,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-perception"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "phoxal",
  "tracing",
@@ -2674,7 +2674,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2683,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-video"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-supervisor"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4894,7 +4894,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtask"
-version = "0.64.0"
+version = "0.65.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",

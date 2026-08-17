@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.64.0...phoxal-bus-v0.65.0) - 2026-08-17
+
+### Added
+
+- [**breaking**] answer identity from the manifest, shrink the snapshot to presence, log runtimes over the bus only ([#464](https://github.com/phoxal/framework/pull/464))
+
 ## [0.63.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.62.1...phoxal-bus-v0.63.0) - 2026-08-16
 
 ### Added
