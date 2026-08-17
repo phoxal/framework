@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -38,7 +38,6 @@ struct ActivePublisher {
 pub(crate) struct BusLogState {
     active: Mutex<Option<ActivePublisher>>,
     dropped: AtomicU64,
-    max_level: AtomicU8,
     next_token: AtomicU64,
 }
 
@@ -47,21 +46,7 @@ impl BusLogState {
         Self {
             active: Mutex::new(None),
             dropped: AtomicU64::new(0),
-            max_level: AtomicU8::new(Self::gate(Level::INFO)),
             next_token: AtomicU64::new(1),
-        }
-    }
-
-    /// A level as this gate ranks it: smaller is more severe, so "at most
-    /// `max_level`" is a single integer comparison on the hot path rather than
-    /// a `tracing::Level` ordering behind a lock.
-    const fn gate(level: Level) -> u8 {
-        match level {
-            Level::ERROR => 1,
-            Level::WARN => 2,
-            Level::INFO => 3,
-            Level::DEBUG => 4,
-            Level::TRACE => 5,
         }
     }
 
@@ -80,17 +65,19 @@ impl BusLogState {
     }
 
     fn should_publish(&self, metadata: &Metadata<'_>) -> bool {
-        self.allows(*metadata.level(), metadata.target())
+        self.allows(metadata.target())
     }
 
-    fn allows(&self, level: Level, target: &str) -> bool {
-        if target_is_filtered(target) {
-            return false;
-        }
-        if IN_BUS_LOG_PUBLISH.with(Cell::get) {
-            return false;
-        }
-        Self::gate(level) <= self.max_level.load(Ordering::Relaxed)
+    /// Which records this layer may publish.
+    ///
+    /// The level is not decided here: the subscriber's own filter - `RUST_LOG`,
+    /// `info` by default - already answered that before the event reached any
+    /// layer, and a second level gate underneath it could only make `RUST_LOG`
+    /// a lie. What is left is the reentrancy the bus itself would otherwise
+    /// cause: the transport's own records, and anything logged while this layer
+    /// is publishing, would each produce the next record forever.
+    fn allows(&self, target: &str) -> bool {
+        !target_is_filtered(target) && !IN_BUS_LOG_PUBLISH.with(Cell::get)
     }
 
     fn install_sender(&self, sender: mpsc::Sender<LogRecord>) -> u64 {
@@ -317,6 +304,16 @@ fn state() -> Arc<BusLogState> {
 
 /// Install the process-wide tracing subscriber and bus-log capture layer.
 ///
+/// A runtime's records go one way: onto `runtime/logs`, into the supervisor's
+/// retention, out of `supervisor/logs`. There is deliberately no console layer
+/// beside it, so a runtime writes nothing to stdout or stderr through tracing -
+/// a child process launched by a session is not where an operator reads its
+/// logs, and a second copy on a pipe nobody watches is only a way for the two
+/// to disagree. A panic still reaches stderr: that is `std`, not tracing, and
+/// it is the one thing the bus path cannot carry because it ends the process.
+///
+/// `RUST_LOG` selects the level, defaulting to `info`.
+///
 /// Logging owns its global state and initialization seam. The participant
 /// runner only asks for logging to be initialized at each public entrypoint;
 /// it does not expose logging internals back to this module.
@@ -327,11 +324,10 @@ pub(crate) fn init_tracing() {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
-        let filter = EnvFilter::new("info");
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
         let bus_layer = BusLogLayer::new(state());
         let _ = tracing_subscriber::registry()
             .with(filter)
-            .with(tracing_subscriber::fmt::layer().with_target(true))
             .with(bus_layer)
             .try_init();
     });
@@ -474,20 +470,13 @@ mod tests {
     }
 
     #[test]
-    fn level_gate_defaults_to_info_plus() {
+    fn reentrancy_targets_are_filtered_and_everything_else_publishes() {
         let state = BusLogState::new();
-        assert!(state.allows(Level::INFO, "app"));
-        assert!(state.allows(Level::WARN, "app"));
-        assert!(!state.allows(Level::DEBUG, "app"));
-    }
-
-    #[test]
-    fn reentrancy_targets_are_filtered() {
-        let state = BusLogState::new();
-        assert!(!state.allows(Level::INFO, "zenoh"));
-        assert!(!state.allows(Level::INFO, "zenoh_transport"));
-        assert!(!state.allows(Level::INFO, "phoxal_bus::session"));
-        assert!(!state.allows(Level::INFO, "phoxal.bus"));
+        assert!(state.allows("app"));
+        assert!(!state.allows("zenoh"));
+        assert!(!state.allows("zenoh_transport"));
+        assert!(!state.allows("phoxal_bus::session"));
+        assert!(!state.allows("phoxal.bus"));
     }
 
     #[tokio::test]

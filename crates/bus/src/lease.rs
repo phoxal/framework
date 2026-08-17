@@ -316,22 +316,45 @@ impl<B> FixedSourceLease<B> {
         }
     }
 
+    /// Trace one admission decision.
+    ///
+    /// One record either way, at two levels: acquiring and renewing are what
+    /// every packet on a live input does, and at a setpoint's cadence an
+    /// info-level line per packet buries everything else a run has to say. A
+    /// rejection is the opposite - a packet that did *not* reach the receiver -
+    /// so it stays where an operator sees it without asking.
     fn trace(&self, producer: ProducerId, sequence: u64, decision: LeaseDecision) {
-        tracing::info!(
-            target: LEASE_TRACE_TARGET,
-            input = self.input,
-            expected_participant = %self.expected_participant,
-            producer = %producer,
-            sequence,
-            observation = self.observations,
-            decision = ?decision,
-            ready_count = self.ready.len(),
-            "fixed-source authority decision"
-        );
+        match decision {
+            LeaseDecision::Rejected(_) => tracing::info!(
+                target: LEASE_TRACE_TARGET,
+                input = self.input,
+                expected_participant = %self.expected_participant,
+                producer = %producer,
+                sequence,
+                observation = self.observations,
+                decision = ?decision,
+                ready_count = self.ready.len(),
+                "fixed-source authority decision"
+            ),
+            LeaseDecision::Acquired | LeaseDecision::Renewed => tracing::debug!(
+                target: LEASE_TRACE_TARGET,
+                input = self.input,
+                expected_participant = %self.expected_participant,
+                producer = %producer,
+                sequence,
+                observation = self.observations,
+                decision = ?decision,
+                ready_count = self.ready.len(),
+                "fixed-source authority decision"
+            ),
+        }
     }
 
+    /// An expiring hold is the ordinary end of a source that stopped sending,
+    /// not a fault, so it is traced at the same level as the admissions that
+    /// preceded it.
     fn trace_expiry(&self, producer: ProducerId, sequence: u64, observation: u64, decision: &str) {
-        tracing::info!(
+        tracing::debug!(
             target: LEASE_TRACE_TARGET,
             input = self.input,
             expected_participant = %self.expected_participant,
@@ -551,15 +574,29 @@ impl<B> ExclusiveProducerLease<B> {
             }
         };
         self.observations = self.observations.saturating_add(1);
-        tracing::info!(
-            target: LEASE_TRACE_TARGET,
-            input = self.input,
-            producer = %producer,
-            sequence,
-            observation = self.observations,
-            decision = ?decision,
-            "external authority decision"
-        );
+        // Same split as the fixed-source lease: an operator's setpoint renews
+        // this lease on every packet, so admission is debug and only a refused
+        // packet is worth an ordinary run's attention.
+        match decision {
+            LeaseDecision::Rejected(_) => tracing::info!(
+                target: LEASE_TRACE_TARGET,
+                input = self.input,
+                producer = %producer,
+                sequence,
+                observation = self.observations,
+                decision = ?decision,
+                "external authority decision"
+            ),
+            LeaseDecision::Acquired | LeaseDecision::Renewed => tracing::debug!(
+                target: LEASE_TRACE_TARGET,
+                input = self.input,
+                producer = %producer,
+                sequence,
+                observation = self.observations,
+                decision = ?decision,
+                "external authority decision"
+            ),
+        }
         if matches!(decision, LeaseDecision::Acquired | LeaseDecision::Renewed) {
             self.owner = Some((producer, sequence));
             self.held = Some(Held {
@@ -663,7 +700,7 @@ impl<B> ExclusiveProducerLease<B> {
     }
 
     fn expire(&mut self, producer: ProducerId, sequence: u64, observation: u64, decision: &str) {
-        tracing::info!(
+        tracing::debug!(
             target: LEASE_TRACE_TARGET,
             input = self.input,
             producer = %producer,

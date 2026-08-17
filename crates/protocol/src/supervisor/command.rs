@@ -7,9 +7,11 @@
 //! no business stopping it through a process that never started it either.
 //!
 //! What is left is the one thing only the machine running the supervisor can
-//! do for a remote operator: cycle its own power. Both requests are guarded by
-//! the snapshot revision the operator was looking at when they asked, so a
-//! reboot cannot be issued against a view of the robot that has since moved on.
+//! do for a remote operator: cycle its own power. Neither request is fenced by
+//! a snapshot revision. Whether a reboot is safe is a fact about the machine
+//! and the operator's intent, not about how many times a Ready lease has moved
+//! since the operator last looked, so a request here is a plain acknowledged
+//! one.
 //!
 //! The supervisor decides whether a request is allowed; this module owns only
 //! the request and reply documents. The schema tags are parse-time format
@@ -22,10 +24,10 @@ use serde::{Deserialize, Serialize};
 #[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
-    /// Acknowledge the current revision, then ask the host to restart.
-    Reboot { expected_revision: u64 },
-    /// Acknowledge the current revision, then ask the host to power off.
-    Poweroff { expected_revision: u64 },
+    /// Ask the host to restart.
+    Reboot,
+    /// Ask the host to power off.
+    Poweroff,
 }
 
 /// Outcome of one acknowledged supervisor command.
@@ -34,21 +36,9 @@ pub enum Command {
 )]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CommandOutcome {
-    /// The snapshot revision the accepted command was acknowledged against.
+    /// The snapshot revision the command was accepted at, so a client can tell
+    /// which view of the execution the host acted from.
     Accepted { at_revision: u64 },
-    Rejected { reason: CommandRejection },
-}
-
-/// Typed command rejection suitable for caller branching.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum CommandRejection {
-    /// The operator asked against a snapshot the supervisor has moved past.
-    RevisionStale,
-    #[serde(other)]
-    Unknown,
 }
 
 #[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -67,18 +57,16 @@ pub enum Reply {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_runtime_contract::wire_schema::{DescribeWire, VariantBody, WireSchema};
+    use phoxal_runtime_contract::wire_schema::DescribeWire;
 
-    use super::{Command, CommandOutcome, CommandRejection, Reply, Request};
+    use super::{Command, CommandOutcome, Reply, Request};
 
     /// The documents carry their own format tag, independent of the endpoint
     /// key they travel on.
     #[test]
     fn command_documents_round_trip_with_explicit_schema_tags() {
         let request = Request::V0 {
-            command: Command::Reboot {
-                expected_revision: 17,
-            },
+            command: Command::Reboot,
         };
         let encoded = rmp_serde::to_vec_named(&request).unwrap();
         assert_eq!(rmp_serde::from_slice::<Request>(&encoded).unwrap(), request);
@@ -98,18 +86,11 @@ mod tests {
         );
     }
 
-    /// Both host actions are revision guarded, and both survive the bus codec
-    /// under their snake_case spelling.
+    /// Both host actions survive the bus codec under their snake_case
+    /// spelling, and neither carries anything beyond which action it is.
     #[test]
-    fn every_host_action_round_trips_revision_guarded() {
-        for command in [
-            Command::Reboot {
-                expected_revision: 3,
-            },
-            Command::Poweroff {
-                expected_revision: 3,
-            },
-        ] {
+    fn every_host_action_round_trips() {
+        for command in [Command::Reboot, Command::Poweroff] {
             let encoded = rmp_serde::to_vec_named(&command).expect("command encodes");
             assert_eq!(
                 rmp_serde::from_slice::<Command>(&encoded).expect("command decodes"),
@@ -117,41 +98,8 @@ mod tests {
             );
         }
         assert_eq!(
-            serde_json::to_value(Command::Poweroff {
-                expected_revision: 3
-            })
-            .unwrap()["command"],
+            serde_json::to_value(Command::Poweroff).unwrap()["command"],
             "poweroff"
-        );
-    }
-
-    /// A rejection reason a peer does not know must decode as `Unknown` rather
-    /// than fail the whole reply, and the fallback is part of the declared wire
-    /// shape rather than a fact restated here.
-    #[test]
-    fn command_rejections_round_trip_and_absorb_an_unknown_reason() {
-        let encoded =
-            rmp_serde::to_vec_named(&CommandRejection::RevisionStale).expect("reason encodes");
-        assert_eq!(
-            rmp_serde::from_slice::<CommandRejection>(&encoded).expect("reason decodes"),
-            CommandRejection::RevisionStale
-        );
-
-        let foreign = rmp_serde::to_vec_named("invented_by_a_newer_peer").unwrap();
-        assert_eq!(
-            rmp_serde::from_slice::<CommandRejection>(&foreign).unwrap(),
-            CommandRejection::Unknown
-        );
-
-        let rejections = CommandRejection::wire_schema();
-        let WireSchema::Enum { variants, .. } = &rejections else {
-            panic!("a rejection is a sum type: {rejections:?}");
-        };
-        assert!(
-            variants
-                .iter()
-                .any(|variant| variant.name == "unknown" && variant.body == VariantBody::Other),
-            "the unknown-reason fallback is part of the wire shape: {variants:?}"
         );
     }
 
@@ -160,16 +108,12 @@ mod tests {
     #[test]
     fn the_declared_command_shapes_are_the_shapes_serde_writes() {
         let request = Request::V0 {
-            command: Command::Reboot {
-                expected_revision: 5,
-            },
+            command: Command::Reboot,
         };
         let json = serde_json::to_value(request).expect("a request serializes");
         assert_eq!(Request::wire_schema().conforms(&json), Ok(()));
 
-        let outcome = CommandOutcome::Rejected {
-            reason: CommandRejection::RevisionStale,
-        };
+        let outcome = CommandOutcome::Accepted { at_revision: 5 };
         let json = serde_json::to_value(outcome).expect("an outcome serializes");
         assert_eq!(CommandOutcome::wire_schema().conforms(&json), Ok(()));
     }

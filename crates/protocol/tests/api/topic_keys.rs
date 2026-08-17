@@ -105,6 +105,10 @@ fn supervisor_family_keys_are_pinned() {
             <crate::supervisor::endpoint::connect::TopicEndpoint as EndpointDescriptor>::KIND,
         ),
         (
+            <crate::supervisor::endpoint::info::TopicEndpoint as EndpointDescriptor>::TOPIC,
+            <crate::supervisor::endpoint::info::TopicEndpoint as EndpointDescriptor>::KIND,
+        ),
+        (
             <crate::supervisor::endpoint::snapshot::TopicEndpoint as EndpointDescriptor>::TOPIC,
             <crate::supervisor::endpoint::snapshot::TopicEndpoint as EndpointDescriptor>::KIND,
         ),
@@ -141,6 +145,7 @@ fn supervisor_family_keys_are_pinned() {
         declared,
         [
             ("supervisor/connect", EndpointKind::Query),
+            ("supervisor/info", EndpointKind::Query),
             ("supervisor/snapshot", EndpointKind::Stream),
             ("supervisor/snapshot/current", EndpointKind::Query),
             ("supervisor/command", EndpointKind::Query),

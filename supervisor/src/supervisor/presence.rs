@@ -63,16 +63,22 @@ impl Row {
 
 impl Presence {
     /// The expected runtime set of one compiled robot: `brain`, every service,
-    /// and every component instance.
+    /// and every component instance that declares a `driver` block.
     ///
-    /// The manifest is the only input, and every consumer derives the same set
-    /// from it the same way. There is no separate participant list to disagree
-    /// with the robot.
-    pub(crate) fn for_robot(robot: &Robot) -> anyhow::Result<Self> {
+    /// The manifest is the only input, and this is the same derivation every
+    /// launcher performs - a component without a driver launches no process,
+    /// so expecting one would leave the graph permanently incomplete. There is
+    /// no separate participant list to disagree with the robot.
+    #[expect(
+        clippy::expect_used,
+        reason = "a service and component-instance id are validated `is_topology_token` values and \
+                  `brain` is a literal in that same alphabet, which is exactly what a participant \
+                  id accepts, so no robot the bundle could have parsed reaches the failure arm"
+    )]
+    pub(crate) fn for_robot(robot: &Robot) -> Self {
         let mut rows = BTreeMap::new();
-        let mut insert = |id: &str, kind: ParticipantKind| -> anyhow::Result<()> {
-            let participant = ParticipantId::new(id)
-                .map_err(|error| anyhow::anyhow!("{id} is not a usable participant id: {error}"))?;
+        let mut insert = |id: &str, kind: ParticipantKind| {
+            let participant = ParticipantId::new(id).expect("a model id is a participant id");
             rows.insert(
                 participant,
                 Row {
@@ -80,19 +86,20 @@ impl Presence {
                     producers: Vec::new(),
                 },
             );
-            Ok(())
         };
-        insert(BRAIN, ParticipantKind::Brain)?;
+        insert(BRAIN, ParticipantKind::Brain);
         for (service, _) in robot.services() {
-            insert(service.as_str(), ParticipantKind::Service)?;
+            insert(service.as_str(), ParticipantKind::Service);
         }
-        for component in robot.component_ids() {
-            insert(component.as_str(), ParticipantKind::Driver)?;
+        for component in robot.components() {
+            if component.instance().driver().is_some() {
+                insert(component.id().as_str(), ParticipantKind::Driver);
+            }
         }
-        Ok(Self {
+        Self {
             rows,
             completed: false,
-        })
+        }
     }
 
     /// Apply one Ready lease change.
@@ -165,20 +172,26 @@ mod tests {
         ParticipantId::new(id).expect("a valid participant id")
     }
 
-    /// A robot with one service and one component instance, so the expected set
-    /// covers all three kinds.
+    /// A robot with one service, one driven component instance and one
+    /// driverless one, so the expected set covers all three kinds and the one
+    /// component that launches nothing.
     fn presence() -> Presence {
         let robot = RobotBuilder::new("rover")
             .service("drive", None)
             .component_type("motor", |motor| motor.motor("spin", "axle"))
-            .component("left", "motor")
+            .component_with("left", "motor", |mounted| {
+                mounted.driver(serde_json::json!({ "connection": "can0" }))
+            })
+            .component("simulated_only", "motor")
             .build()
             .expect("a valid robot");
-        Presence::for_robot(&robot).expect("the expected set is derivable")
+        Presence::for_robot(&robot)
     }
 
+    /// A component instance without a driver block launches no process, so it
+    /// is not a row: expecting one would hold the graph in `Starting` forever.
     #[test]
-    fn the_expected_set_is_the_brain_plus_the_services_and_components() {
+    fn the_expected_set_is_the_brain_plus_the_services_and_the_driven_components() {
         let rows = presence().processes();
         assert_eq!(
             rows.iter()
@@ -212,7 +225,11 @@ mod tests {
         );
 
         presence.record(&participant("left"), producer(3), true);
-        assert_eq!(presence.lifecycle(), Lifecycle::Ready);
+        assert_eq!(
+            presence.lifecycle(),
+            Lifecycle::Ready,
+            "the driverless instance launches no process, so nothing waits for it"
+        );
 
         presence.record(&participant("left"), producer(3), false);
         assert_eq!(presence.lifecycle(), Lifecycle::Degraded);
@@ -271,11 +288,8 @@ mod tests {
         let mut presence = presence();
         presence.record(&participant("brain"), producer(1), true);
         let snapshot = Snapshot {
-            robot: phoxal_runtime_contract::identity::RobotId::new("rover")
-                .expect("a canonical robot id"),
             revision: 1,
             lifecycle: presence.lifecycle(),
-            startup: Vec::new(),
             processes: presence.processes(),
         };
         snapshot.validate().expect("the projection is publishable");

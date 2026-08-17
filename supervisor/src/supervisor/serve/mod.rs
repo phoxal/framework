@@ -13,8 +13,9 @@ use phoxal_bus::{
     BusHandle, Codec, EndpointDescriptor, IncomingQuery, MessagePack, QueryFailure,
     ServerQueryable, StreamPublisher,
 };
+use phoxal_model::manifest::ManifestDocument;
 use phoxal_protocol::supervisor;
-use phoxal_protocol::supervisor::command::{Command, CommandOutcome, CommandRejection};
+use phoxal_protocol::supervisor::command::{Command, CommandOutcome};
 use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
 use phoxal_protocol::supervisor::execution::SnapshotDocument;
 use phoxal_runtime_contract::version::FrameworkVersion;
@@ -34,6 +35,7 @@ pub(crate) async fn serve(
 ) -> Result<()> {
     let mut tasks = JoinSet::new();
     tasks.spawn(serve_connect(bus.clone()));
+    tasks.spawn(serve_info(bus.clone(), bundle.manifest().clone()));
     tasks.spawn(serve_snapshots(bus.clone(), state.clone()));
     tasks.spawn(serve_current(bus.clone(), state.clone()));
     tasks.spawn(serve_bundle(bus.clone(), bundle.root().to_path_buf()));
@@ -62,9 +64,9 @@ pub(crate) async fn serve(
 /// It answers with this supervisor's framework train and nothing else, and it is
 /// declared alongside every other endpoint so a client that disagrees learns
 /// that from the first thing it asks rather than from a decode failure. The
-/// robot this supervisor runs is not here: it rides the snapshot every client
-/// subscribes to anyway, which keeps this document exactly what every framework
-/// line can decode.
+/// robot this supervisor runs is not here: a client asks `supervisor/info` for
+/// it once the two trains have agreed, which keeps this document exactly what
+/// every framework line can decode.
 async fn serve_connect(bus: BusHandle) -> Result<()> {
     let server = declare::<supervisor::endpoint::connect::TopicEndpoint>(&bus).await?;
     loop {
@@ -80,6 +82,24 @@ async fn serve_connect(bus: BusHandle) -> Result<()> {
 fn connect_reply() -> ConnectReply {
     ConnectReply::V0 {
         framework: FrameworkVersion::CURRENT,
+    }
+}
+
+/// Which robot this supervisor is running.
+///
+/// The answer is the manifest document the supervisor opened, so a client
+/// reads exactly what every participant of this execution reads instead of a
+/// projection that could disagree with it. The supervisor holds one bundle for
+/// the life of the process, so the reply never changes.
+async fn serve_info(bus: BusHandle, manifest: ManifestDocument) -> Result<()> {
+    let server = declare::<supervisor::endpoint::info::TopicEndpoint>(&bus).await?;
+    loop {
+        let incoming = server.recv().await?;
+        let supervisor::info::InfoRequest {} = match decode(&incoming).await? {
+            Some(request) => request,
+            None => continue,
+        };
+        reply(&incoming, &bus, &manifest).await?;
     }
 }
 
@@ -129,9 +149,14 @@ async fn serve_bundle(bus: BusHandle, root: PathBuf) -> Result<()> {
 ///
 /// An empty path, an absolute path, and any component that is not a plain name
 /// are refused outright: they are requests this endpoint never answers, which
-/// is a different answer than an entry the bundle does not have. Everything
-/// else joins onto the root, and whether a readable file is there decides the
-/// answer.
+/// is a different answer than an entry the bundle does not have.
+///
+/// Passing that spelling check is not enough to be inside the bundle, because
+/// a symlink under the root can point anywhere on the host. Both sides are
+/// therefore canonicalized and compared: what leaves this process is a file
+/// whose real location is under the bundle's real root, and a path that
+/// resolves outside it is refused rather than reported missing, because the
+/// entry exists and the supervisor is declining to serve it.
 fn bundle_entry(root: &Path, requested: &str) -> supervisor::bundle::GetResponse {
     let path = Path::new(requested);
     let refusable = requested.is_empty()
@@ -142,7 +167,15 @@ fn bundle_entry(root: &Path, requested: &str) -> supervisor::bundle::GetResponse
     if refusable {
         return supervisor::bundle::GetResponse::InvalidPath;
     }
-    let resolved = root.join(path);
+    let Ok(canonical_root) = root.canonicalize() else {
+        return supervisor::bundle::GetResponse::Missing;
+    };
+    let Ok(resolved) = canonical_root.join(path).canonicalize() else {
+        return supervisor::bundle::GetResponse::Missing;
+    };
+    if !resolved.starts_with(&canonical_root) {
+        return supervisor::bundle::GetResponse::InvalidPath;
+    }
     if !resolved.is_file() {
         return supervisor::bundle::GetResponse::Missing;
     }
@@ -170,9 +203,7 @@ async fn serve_commands(bus: BusHandle, state: ExecutionState) -> Result<()> {
         // reversing these turns an accepted reboot into an ambiguous
         // no-responder failure at the caller.
         reply(&incoming, &bus, &supervisor::command::Reply::V0 { outcome }).await?;
-        if let Some(action) = action {
-            action.request().await;
-        }
+        action.request().await;
     }
 }
 
@@ -201,31 +232,22 @@ impl HostAction {
     }
 }
 
-/// Decide one host request against the revision the operator asked from.
+/// Accept one host request, and say which execution revision it was accepted
+/// at.
 ///
-/// The guard is what makes a remote power-off safe to offer at all: it refuses
-/// an action aimed at a view of the robot that has since moved on, so an
-/// operator can never reboot a machine on the strength of a screen that was
-/// already stale when they read it.
-fn command(state: &ExecutionState, command: Command) -> (CommandOutcome, Option<HostAction>) {
-    let (expected_revision, action) = match command {
-        Command::Reboot { expected_revision } => (expected_revision, HostAction::Reboot),
-        Command::Poweroff { expected_revision } => (expected_revision, HostAction::Poweroff),
+/// The revision is evidence, not a fence: whether cycling this machine's power
+/// is safe is the operator's judgment about the machine, and how many times a
+/// Ready lease has moved since they last looked says nothing about it.
+fn command(state: &ExecutionState, command: Command) -> (CommandOutcome, HostAction) {
+    let action = match command {
+        Command::Reboot => HostAction::Reboot,
+        Command::Poweroff => HostAction::Poweroff,
     };
-    let revision = state.snapshot().revision;
-    if revision != expected_revision {
-        return (
-            CommandOutcome::Rejected {
-                reason: CommandRejection::RevisionStale,
-            },
-            None,
-        );
-    }
     (
         CommandOutcome::Accepted {
-            at_revision: revision,
+            at_revision: state.snapshot().revision,
         },
-        Some(action),
+        action,
     )
 }
 
