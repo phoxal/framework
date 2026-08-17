@@ -92,18 +92,26 @@ async fn main() -> ExitCode {
     }
 }
 
+/// The supervisor's own diagnostics, on stderr.
+///
+/// Under systemd stderr is the journal; interactively it is the terminal the
+/// operator launched from, and locally `phoxal` captures it to a file. Either
+/// way it is the only channel the supervisor has before the bus exists, and it
+/// is deliberately not the bus log stream: the process that retains everyone
+/// else's records cannot also be a client of its own retention.
+///
+/// The default quietens the transport rather than the supervisor: Zenoh's own
+/// info-level chatter says nothing about this robot, and the unix-socket link
+/// warns on every ordinary participant disconnect. `RUST_LOG` replaces the
+/// whole default when it is set.
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    // Under systemd, stderr is the journal; interactively it is the terminal
-    // the operator launched from. Either way it is the only diagnostic channel
-    // the supervisor has before the bus exists.
-    // `JOURNAL_STREAM` means stderr is the journal, which does not render
-    // escape codes - only a real terminal gets colour.
-    let ansi = std::env::var_os("JOURNAL_STREAM").is_none()
-        && std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
-        .with_ansi(ansi)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
 }
+
+const DEFAULT_LOG_FILTER: &str = "info,zenoh=warn,zenoh_link_unixsock_stream=error";
