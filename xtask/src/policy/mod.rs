@@ -187,7 +187,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 15] = [
+const RULES: [Rule; 12] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -217,20 +217,8 @@ const RULES: [Rule; 15] = [
         check: dependencies::zenoh_dependency_profiles_keep_transport_compression_disabled,
     },
     Rule {
-        name: "retired runtime vocabulary stays absent",
-        check: retired_surface::retired_runtime_vocabulary_stays_absent,
-    },
-    Rule {
-        name: "retired compatibility identities stay absent",
-        check: retired_surface::retired_compatibility_identities_stay_absent,
-    },
-    Rule {
-        name: "retired bundle and role vocabulary stays absent",
-        check: retired_surface::retired_bundle_and_role_vocabulary_stays_absent,
-    },
-    Rule {
-        name: "retired manual-drive envelope stays absent",
-        check: retired_surface::retired_manual_drive_envelope_stays_absent,
+        name: "retired surfaces stay absent",
+        check: retired_surface::retired_surfaces_stay_absent,
     },
     Rule {
         name: "participant kind declarations match the two explicit owners",
