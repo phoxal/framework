@@ -1,10 +1,9 @@
 //! The supervisor's single publication authority.
 //!
-//! Every observation - a startup step finishing, a Ready lease appearing or
-//! disappearing - republishes one complete snapshot at the next revision.
-//! `revision` is monotonic within the execution and assigned here, so a client
-//! that keeps the highest revision it has seen can never install an older
-//! document over a newer one.
+//! Every observation - a Ready lease appearing or disappearing - republishes
+//! one complete snapshot at the next revision. `revision` is monotonic within
+//! the execution and assigned here, so a client that keeps the highest revision
+//! it has seen can never install an older document over a newer one.
 //!
 //! Taking the next revision and installing the snapshot happen under one lock.
 //! Split, two callers could take revisions 4 and 5 and then publish them in the
@@ -12,12 +11,9 @@
 //! client's `current` answer - resting on revision 4 forever.
 
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
 
-use phoxal_protocol::supervisor::execution::{
-    Detail, Snapshot, StartupStep, StartupStepKind, StartupStepState,
-};
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId, RobotId};
+use phoxal_protocol::supervisor::execution::Snapshot;
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 use tokio::sync::watch;
 
 use super::presence::Presence;
@@ -34,49 +30,27 @@ struct Inner {
 }
 
 struct Data {
-    /// Read once from the opened bundle. The supervisor runs one bundle for the
-    /// life of the process, so this never changes and every published revision
-    /// repeats it.
-    robot: RobotId,
     revision: u64,
     presence: Presence,
-    startup: Vec<StartupStep>,
-    /// When each currently active step began, so a finished step can report how
-    /// long it took.
-    started: Vec<(StartupStepKind, Instant)>,
 }
 
 impl Data {
     fn project(&self) -> Snapshot {
         Snapshot {
-            robot: self.robot.clone(),
             revision: self.revision,
             lifecycle: self.presence.lifecycle(),
-            startup: self.startup.clone(),
             processes: self.presence.processes(),
         }
     }
 }
 
 impl ExecutionState {
-    /// Start an execution from the robot it runs and its expected runtime set,
-    /// before any startup step has begun.
-    pub(crate) fn new(robot: RobotId, presence: Presence) -> Self {
-        let startup = StartupStepKind::ALL
-            .into_iter()
-            .map(|kind| StartupStep {
-                kind,
-                state: StartupStepState::Pending,
-                detail: None,
-                elapsed_ms: None,
-            })
-            .collect();
+    /// Start an execution from its expected runtime set, before any of them
+    /// has been seen.
+    pub(crate) fn new(presence: Presence) -> Self {
         let data = Data {
-            robot,
             revision: 0,
             presence,
-            startup,
-            started: Vec::new(),
         };
         let (published, _) = watch::channel(data.project());
         Self {
@@ -106,45 +80,6 @@ impl ExecutionState {
         ready: bool,
     ) {
         self.publish(|data| data.presence.record(participant, producer, ready));
-    }
-
-    pub(crate) fn step_active(&self, kind: StartupStepKind) {
-        self.publish(|data| {
-            let Some(step) = data.startup.iter_mut().find(|step| step.kind == kind) else {
-                return;
-            };
-            if step.state == StartupStepState::Active {
-                return;
-            }
-            step.state = StartupStepState::Active;
-            step.elapsed_ms = None;
-            data.started.push((kind, Instant::now()));
-        });
-    }
-
-    pub(crate) fn step_detail(&self, kind: StartupStepKind, detail: impl AsRef<str>) {
-        self.publish(|data| {
-            if let Some(step) = data.startup.iter_mut().find(|step| step.kind == kind) {
-                step.detail = Some(Detail::new(detail));
-            }
-        });
-    }
-
-    pub(crate) fn step_done(&self, kind: StartupStepKind) {
-        self.publish(|data| {
-            let position = data.started.iter().position(|(step, _)| *step == kind);
-            let elapsed = position.map(|position| data.started.remove(position).1.elapsed());
-            let Some(step) = data.startup.iter_mut().find(|step| step.kind == kind) else {
-                return;
-            };
-            if step.state == StartupStepState::Done {
-                return;
-            }
-            step.state = StartupStepState::Done;
-            step.elapsed_ms = elapsed
-                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-                .or(step.elapsed_ms);
-        });
     }
 
     /// Apply one change and publish the complete snapshot that results, at the
@@ -182,10 +117,7 @@ mod tests {
             .service("drive", None)
             .build()
             .expect("a valid robot");
-        ExecutionState::new(
-            robot.id().clone(),
-            Presence::for_robot(&robot).expect("an expected set"),
-        )
+        ExecutionState::new(Presence::for_robot(&robot))
     }
 
     fn producer(seed: u128) -> ProducerId {
@@ -193,57 +125,20 @@ mod tests {
     }
 
     #[test]
-    fn the_startup_sequence_is_the_supervisors_own_and_starts_entirely_pending() {
+    fn an_execution_starts_at_revision_zero_with_nothing_seen() {
         let snapshot = state().snapshot();
-        assert_eq!(
-            snapshot
-                .startup
-                .iter()
-                .map(|step| step.kind)
-                .collect::<Vec<_>>(),
-            StartupStepKind::ALL
-        );
-        assert!(
-            snapshot
-                .startup
-                .iter()
-                .all(|step| step.state == StartupStepState::Pending)
-        );
         assert_eq!(snapshot.revision, 0);
         assert_eq!(snapshot.lifecycle, Lifecycle::Starting);
-    }
-
-    #[test]
-    fn every_change_publishes_a_strictly_higher_revision() {
-        let state = state();
-        let mut revisions = vec![state.snapshot().revision];
-        state.step_active(StartupStepKind::Bundle);
-        revisions.push(state.snapshot().revision);
-        state.step_detail(StartupStepKind::Bundle, "manifest.json");
-        revisions.push(state.snapshot().revision);
-        state.step_done(StartupStepKind::Bundle);
-        revisions.push(state.snapshot().revision);
         assert!(
-            revisions.windows(2).all(|pair| pair[1] > pair[0]),
-            "{revisions:?}"
+            snapshot
+                .processes
+                .iter()
+                .all(|process| process.state == ProcessState::Absent)
         );
-
-        let done = state
-            .snapshot()
-            .startup
-            .into_iter()
-            .find(|step| step.kind == StartupStepKind::Bundle)
-            .expect("the bundle step");
-        assert_eq!(done.state, StartupStepState::Done);
-        assert_eq!(
-            done.detail.as_ref().map(Detail::as_str),
-            Some("manifest.json")
-        );
-        assert!(done.elapsed_ms.is_some(), "a finished step is timed");
     }
 
-    /// A Ready lease reaches the published snapshot, and what is published is
-    /// always something the serve path can encode.
+    /// A Ready lease reaches the published snapshot at a higher revision, and
+    /// what is published is always something the serve path can encode.
     #[test]
     fn a_ready_lease_republishes_an_encodable_snapshot() {
         let state = state();
@@ -270,8 +165,9 @@ mod tests {
         let state = state();
         let mut snapshots = state.subscribe();
         let mut seen = vec![snapshots.borrow_and_update().revision];
-        for step in StartupStepKind::ALL {
-            state.step_active(step);
+        let brain = ParticipantId::new("brain").expect("a valid participant id");
+        for ready in [true, false, true] {
+            state.record_presence(&brain, producer(1), ready);
             snapshots.changed().await.expect("the authority is alive");
             seen.push(snapshots.borrow_and_update().revision);
         }

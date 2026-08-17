@@ -33,7 +33,6 @@ use phoxal_bus::{
     ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
 use phoxal_protocol::supervisor::connect::PRESENCE_KEY;
-use phoxal_protocol::supervisor::execution::StartupStepKind;
 use phoxal_runtime_contract::identity::ExecutionId;
 use phoxal_runtime_contract::rendezvous::RuntimeRendezvous;
 use tokio_util::sync::CancellationToken;
@@ -59,16 +58,7 @@ pub(crate) async fn run(requested_root: &Path) -> Result<()> {
         "phoxal-supervisor starting"
     );
 
-    let state = ExecutionState::new(
-        runtime.robot_id().clone(),
-        Presence::for_robot(runtime.robot())?,
-    );
-    state.step_active(StartupStepKind::Bundle);
-    state.step_detail(
-        StartupStepKind::Bundle,
-        runtime.root().display().to_string(),
-    );
-    state.step_done(StartupStepKind::Bundle);
+    let state = ExecutionState::new(Presence::for_robot(runtime.robot()));
 
     let shutdown = CancellationToken::new();
     // Installed before the router is opened, so a signal arriving mid-startup
@@ -86,7 +76,6 @@ async fn execute(
     state: &ExecutionState,
     shutdown: CancellationToken,
 ) -> Result<()> {
-    state.step_active(StartupStepKind::Router);
     let execution = ExecutionId::mint();
     let endpoint = router_endpoint(&paths.checked_supervisor_socket()?);
     // The loss reason is recorded rather than published: by the time it is
@@ -131,11 +120,7 @@ async fn execute(
         Ok(identity) => identity,
         Err(error) => return Err(abort_router_startup(router, Some(owner), error.into()).await),
     };
-    state.step_detail(
-        StartupStepKind::Router,
-        format!("{execution} on {endpoint}"),
-    );
-    state.step_done(StartupStepKind::Router);
+    tracing::info!(%execution, endpoint = %endpoint, "supervisor control plane is up");
 
     // Declared before the control plane starts serving, so a participant that
     // was already up is seen through the observer's history rather than missed.

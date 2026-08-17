@@ -22,7 +22,7 @@ use super::{Subject, Violation, is_library_package};
 /// Stated as the complete list rather than as a set of bans: a graph that is
 /// only forbidden from growing particular edges says nothing about the one it
 /// grows next.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 18] = [
     ("phoxal", "phoxal-protocol"),
     ("phoxal", "phoxal-bus"),
     ("phoxal", "phoxal-bundle"),
@@ -31,6 +31,10 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     ("phoxal", "phoxal-runtime-contract"),
     ("phoxal-protocol", "phoxal-bus"),
     ("phoxal-protocol", "phoxal-macros"),
+    // The supervisor's identity endpoint answers with the compiled robot
+    // itself, so the manifest document is a protocol body. The direction stays
+    // one-way: `phoxal-model` knows nothing about the wire it travels on.
+    ("phoxal-protocol", "phoxal-model"),
     ("phoxal-protocol", "phoxal-runtime-contract"),
     // Every crate that owns a wire or document contract derives the wire
     // shape of its own declarations, so the derive reaches each of them.

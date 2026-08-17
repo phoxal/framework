@@ -40,6 +40,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+# Component driver blocks are opaque JSON on the model, so stating a driven
+# instance in a fixture robot needs the JSON value type.
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

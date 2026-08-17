@@ -10,7 +10,8 @@ use std::fs;
 
 use phoxal_bus::{Codec, EndpointDescriptor, EndpointKind, MessagePack, QueryEndpointDescriptor};
 use phoxal_model::builder::RobotBuilder;
-use phoxal_protocol::supervisor::command::{Command, CommandOutcome, CommandRejection};
+use phoxal_model::manifest::ManifestDocument;
+use phoxal_protocol::supervisor::command::{Command, CommandOutcome};
 use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
 use phoxal_protocol::{runtime, supervisor};
 use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
@@ -37,6 +38,14 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
         ConnectRequest::V0 {},
         connect_reply(),
     );
+
+    assert_endpoint::<supervisor::endpoint::info::TopicEndpoint>(
+        "supervisor/info",
+        EndpointKind::Query,
+    );
+    let request =
+        MessagePack::encode(&supervisor::info::InfoRequest {}).expect("a request encodes");
+    MessagePack::decode::<supervisor::info::InfoRequest>(&request).expect("a request decodes");
 
     let state = present_state().0;
     let snapshot = supervisor::execution::SnapshotDocument::V0(state.snapshot());
@@ -91,9 +100,7 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
     assert_query_round_trip::<supervisor::endpoint::command::TopicEndpoint>(
         "supervisor/command",
         supervisor::command::Request::V0 {
-            command: Command::Reboot {
-                expected_revision: 23,
-            },
+            command: Command::Reboot,
         },
         supervisor::command::Reply::V0 {
             outcome: CommandOutcome::Accepted { at_revision: 23 },
@@ -107,6 +114,36 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
         supervisor::bundle::GetResponse::Found {
             bytes: vec![1, 2, 3],
         },
+    );
+}
+
+/// The identity endpoint answers with the bundle's own manifest document, so a
+/// client decodes the same document every participant of this execution reads.
+#[test]
+fn the_info_reply_is_the_manifest_document_itself() {
+    fn reply_is_the_manifest_document(
+        reply: <supervisor::endpoint::info::TopicEndpoint as QueryEndpointDescriptor>::Response,
+    ) -> ManifestDocument {
+        reply
+    }
+
+    let manifest = ManifestDocument::new(
+        RobotBuilder::new("rover")
+            .service("drive", None)
+            .build()
+            .expect("fixture robot"),
+    );
+    let encoded = MessagePack::encode(&manifest).expect("the manifest encodes");
+    let decoded = MessagePack::decode::<
+        <supervisor::endpoint::info::TopicEndpoint as QueryEndpointDescriptor>::Response,
+    >(&encoded)
+    .expect("the manifest decodes");
+    let decoded = reply_is_the_manifest_document(decoded);
+    assert_eq!(decoded.robot().id().as_str(), "rover");
+    assert_eq!(
+        MessagePack::encode(&decoded).expect("the decoded manifest encodes"),
+        encoded,
+        "the reply is the document, not a projection of it"
     );
 }
 
@@ -142,25 +179,52 @@ fn bundle_entry_serves_only_plain_relative_files() {
     }
 }
 
-/// Both host actions are guarded by the revision the operator was looking at,
-/// and neither is performed before the acceptance has been decided.
+/// A path can spell nothing but plain names and still leave the bundle, if
+/// something under the root is a symlink out of it. What the endpoint serves is
+/// decided by where the entry really is, not by how it was spelled.
+#[cfg(unix)]
 #[test]
-fn host_actions_are_revision_guarded_and_scheduled_after_the_reply() {
+fn bundle_entry_refuses_an_entry_that_resolves_outside_the_bundle() {
+    let outside = tempfile::tempdir().expect("a directory outside the bundle");
+    fs::write(outside.path().join("secret"), b"secret").expect("outside fixture");
+    fs::create_dir(outside.path().join("elsewhere")).expect("outside directory");
+    fs::write(outside.path().join("elsewhere/secret"), b"secret").expect("outside fixture");
+
+    let root = tempfile::tempdir().expect("temporary bundle root");
+    fs::write(root.path().join("manifest.json"), b"manifest").expect("manifest fixture");
+    std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("escape"))
+        .expect("a symlink out of the bundle");
+    std::os::unix::fs::symlink(
+        outside.path().join("elsewhere"),
+        root.path().join("elsewhere"),
+    )
+    .expect("a symlinked directory out of the bundle");
+
+    for refused in ["escape", "elsewhere/secret"] {
+        assert_eq!(
+            bundle_entry(root.path(), refused),
+            supervisor::bundle::GetResponse::InvalidPath,
+            "{refused:?}"
+        );
+    }
+    // The bundle's own entries are unaffected by the check.
+    assert_eq!(
+        bundle_entry(root.path(), "manifest.json"),
+        supervisor::bundle::GetResponse::Found {
+            bytes: b"manifest".to_vec(),
+        }
+    );
+}
+
+/// Both host actions are accepted as asked, and the acceptance names the
+/// revision the execution was at when the supervisor took the request.
+#[test]
+fn host_actions_are_accepted_at_the_current_revision() {
     let (state, _) = present_state();
     let revision = state.snapshot().revision;
     for (request, expected) in [
-        (
-            Command::Reboot {
-                expected_revision: revision,
-            },
-            HostAction::Reboot,
-        ),
-        (
-            Command::Poweroff {
-                expected_revision: revision,
-            },
-            HostAction::Poweroff,
-        ),
+        (Command::Reboot, HostAction::Reboot),
+        (Command::Poweroff, HostAction::Poweroff),
     ] {
         let (outcome, action) = command(&state, request);
         assert_eq!(
@@ -169,34 +233,14 @@ fn host_actions_are_revision_guarded_and_scheduled_after_the_reply() {
                 at_revision: revision
             }
         );
-        assert_eq!(action, Some(expected));
-
-        let stale = match expected {
-            HostAction::Reboot => Command::Reboot {
-                expected_revision: revision + 1,
-            },
-            HostAction::Poweroff => Command::Poweroff {
-                expected_revision: revision + 1,
-            },
-        };
-        let (outcome, action) = command(&state, stale);
-        assert_eq!(
-            outcome,
-            CommandOutcome::Rejected {
-                reason: CommandRejection::RevisionStale,
-            }
-        );
-        assert_eq!(action, None);
+        assert_eq!(action, expected);
     }
 }
 
 /// One expected runtime, present under a known producer.
 fn present_state() -> (ExecutionState, ParticipantId) {
     let robot = RobotBuilder::new("rover").build().expect("fixture robot");
-    let state = ExecutionState::new(
-        robot.id().clone(),
-        Presence::for_robot(&robot).expect("an expected set"),
-    );
+    let state = ExecutionState::new(Presence::for_robot(&robot));
     let participant = ParticipantId::new("brain").expect("fixture participant");
     state.record_presence(
         &participant,

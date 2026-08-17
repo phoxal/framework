@@ -2571,6 +2571,7 @@ version = "0.64.0"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
+ "phoxal-model",
  "phoxal-runtime-contract",
  "rmp-serde",
  "serde",
@@ -2702,6 +2703,7 @@ dependencies = [
  "phoxal-protocol",
  "phoxal-runtime-contract",
  "serde",
+ "serde_json",
  "system_shutdown",
  "tempfile",
  "tokio",
