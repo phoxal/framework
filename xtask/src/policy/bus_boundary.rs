@@ -9,10 +9,11 @@
 //! renamed - and a renamed semantic module *is* a wire change, which is exactly
 //! what the compatibility gate is supposed to be able to see.
 //!
-//! Neither rule judges the runner. `xtask` links no framework crate, publishes
-//! on no bus, and its topic-shaped literals are stated fixtures for the
-//! checker's own matrix; a rule that read them would be reporting its own test
-//! data.
+//! Neither rule judges the runner or the fixture crate. `xtask` links no
+//! framework crate, publishes on no bus, and its topic-shaped literals are
+//! stated fixtures for the checker's own matrix; `crates/fixture` is
+//! unpublished dev-only test support that no robot ever links. A rule that read
+//! either would be reporting its own test data.
 
 use std::fs;
 
@@ -29,8 +30,11 @@ const BUS_MODULE: &str = "phoxal/src/bus/";
 /// declarations every topic and every endpoint implementation derives from.
 const ENDPOINT_TREE: &str = "phoxal/src/bus/tree.rs";
 
-/// The workspace tree this pair of rules does not read.
-const NOT_A_BUS_CONSUMER: &str = "xtask/";
+/// The workspace trees this pair of rules does not read.
+///
+/// `xtask/` is the runner: it links no framework crate and publishes on no bus.
+/// `crates/fixture/` is unpublished dev-only test support that no robot links.
+const UNJUDGED_TREES: [&str; 2] = ["xtask/", "crates/fixture/"];
 
 /// How raw transport access is spelled.
 const TRANSPORT_TOKENS: [&str; 2] = ["zenoh::", "use zenoh"];
@@ -40,6 +44,16 @@ const TRANSPORT_TOKENS: [&str; 2] = ["zenoh::", "use zenoh"];
 /// Matched as the opening of a string literal, because a complete topic string
 /// is exactly what nothing outside the tree may author.
 const TOPIC_ROOTS: [&str; 3] = ["\"robot/", "\"runtime/", "\"supervisor/"];
+
+/// The one literal beginning with a family root that is not a topic.
+///
+/// A compiled bundle's asset tree is rooted at `robot/` too - `robot/meshes/…`
+/// is the path below `<bundle>/assets` that the manifest's structure resolves
+/// against - so the asset root and the robot *family* root collide as text and
+/// nothing but their meaning tells them apart. The rule deliberately reads past
+/// this one: an asset id is a filesystem layout the bundle owns, not a key any
+/// peer subscribes to, and the topic tree has no say in it.
+const ASSET_TREE_ROOT: &str = "\"robot/meshes";
 
 /// The traits an endpoint declaration implements.
 const ENDPOINT_TRAITS: [&str; 2] = ["QueryEndpoint", "Endpoint"];
@@ -83,10 +97,14 @@ pub(super) fn endpoints_and_topics_are_never_authored(subject: &Subject) -> Resu
                      the compatibility record"
                 )));
             }
-            if test_code.get(number - 1) == Some(&true) {
+            // The bus module owns key grammar: the liveliness and presence keys
+            // and the execution roots a composed topic hangs under are stated
+            // there because that is where they are defined. A literal in it is
+            // the owner spelling its own key, not a second copy of the tree.
+            if path.starts_with(BUS_MODULE) || test_code.get(number - 1) == Some(&true) {
                 continue;
             }
-            if let Some(root) = TOPIC_ROOTS.iter().find(|root| line.contains(**root)) {
+            if let Some(root) = authored_topic_root(line) {
                 violations.push(Violation::new(format!(
                     "{path}:{number} authors a {}… key; a topic is the family root plus the \
                      module path plus the endpoint leaf, and is never spelled out",
@@ -117,7 +135,21 @@ fn judged_sources(subject: &Subject) -> Result<Vec<(String, String)>> {
 
 /// Whether a workspace-relative path is one this pair of rules reads at all.
 fn is_judged(path: &str) -> bool {
-    path.ends_with(".rs") && !path.starts_with(NOT_A_BUS_CONSUMER)
+    path.ends_with(".rs")
+        && !UNJUDGED_TREES
+            .iter()
+            .any(|unjudged| path.starts_with(unjudged))
+}
+
+/// The family root of the topic key one line authors, if it authors one.
+///
+/// [`ASSET_TREE_ROOT`] is read past rather than reported, so a line holding both
+/// an asset path and a real key is still a finding.
+fn authored_topic_root(line: &str) -> Option<&'static str> {
+    TOPIC_ROOTS.into_iter().find(|root| {
+        line.match_indices(root)
+            .any(|(start, _)| !line[start..].starts_with(ASSET_TREE_ROOT))
+    })
 }
 
 /// One source's lines, numbered from one.
@@ -309,15 +341,39 @@ mod tests {
         assert!(!is_test_file("phoxal/src/participant/query.rs"));
     }
 
-    /// The runner is out of scope for a stated reason, and everything that can
-    /// actually reach a bus is in it.
+    /// The runner and the fixture crate are out of scope for a stated reason,
+    /// and everything that can actually reach a bus is in scope.
     #[test]
-    fn the_runner_is_the_one_tree_these_rules_do_not_read() {
+    fn the_runner_and_the_fixture_crate_are_the_trees_these_rules_do_not_read() {
         assert!(is_judged("phoxal/src/participant/query.rs"));
         assert!(is_judged("supervisor/src/router.rs"));
         assert!(is_judged("services/drive/src/drive.rs"));
+        assert!(is_judged("crates/macros/src/lib.rs"));
         assert!(!is_judged("xtask/src/rehearsal.rs"));
+        assert!(!is_judged("crates/fixture/src/lib.rs"));
         assert!(!is_judged("phoxal/Cargo.toml"));
+    }
+
+    /// The bundle's asset tree is rooted at `robot/` too, and only its meaning
+    /// separates it from the robot family root. A line that holds both is still
+    /// a finding: reading past the asset root is not a licence for the key
+    /// beside it.
+    #[test]
+    fn the_bundle_asset_root_is_read_past_and_nothing_else_is() {
+        for allowed in [
+            "        collect(project_root, \"robot/meshes\")?;",
+            "        None => format!(\"robot/meshes/{relative}\"),",
+        ] {
+            assert_eq!(authored_topic_root(allowed), None, "{allowed}");
+        }
+        for authored in [
+            "const KEY: &str = \"robot/drive/state\";",
+            "    let asset = (\"robot/meshes/base.stl\", \"robot/drive/state\");",
+            "        \"runtime/simulation/clock\"",
+            "pub const PRESENCE_KEY: &str = \"supervisor/presence\";",
+        ] {
+            assert!(authored_topic_root(authored).is_some(), "{authored}");
+        }
     }
 
     /// The endpoint tree is inside the module that owns the transport, which is
