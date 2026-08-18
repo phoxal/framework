@@ -1,9 +1,9 @@
 //! The wire ABI: the Zenoh encoding string, the codec id it names, and the body
 //! codec that id selects.
 //!
-//! A family-rooted Zenoh key carries wire identity
-//! (`<Endpoint as EndpointDescriptor>::TOPIC`, e.g. `robot/drive/target`), while
-//! the encoding string records the codec. A receiver therefore sees only
+//! A family-rooted Zenoh key carries wire identity - the concrete key the api
+//! tree rendered for an endpoint, such as `robot/drive/target` - while the
+//! encoding string records the codec. A receiver therefore sees only
 //! samples for its subscribed contract key and validates their encoding.
 //!
 //! The body is always the plain payload: the codec never adds a compatibility

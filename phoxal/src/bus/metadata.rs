@@ -2,9 +2,8 @@
 //!
 //! The wire body is the plain MessagePack payload; provenance rides here, in
 //! the Zenoh attachment. Identity is not carried in the envelope at all - it
-//! lives in the Zenoh key itself, which is
-//! `<Endpoint as EndpointDescriptor>::TOPIC`, so a receiver's per-key
-//! subscription is the whole fast-reject.
+//! lives in the Zenoh key itself, the concrete key the api tree rendered for
+//! the endpoint, so a receiver's per-key subscription is the whole fast-reject.
 //!
 //! Provenance is a [`SourceAttribution`] plus a per-producer sequence, and the
 //! production instant is an explicit `Option<`[`TimeWindow`]`>` - a sample that
