@@ -2,7 +2,7 @@ name: release-plz
 
 # Publishing a train is two ordinary publications, in order:
 #
-#   1. release-plz publishes the eight library crates to crates.io.
+#   1. release-plz publishes the two library crates to crates.io.
 #   2. This workflow packages every executable with `cargo package` and adds the
 #      `.crate` files to the static `phoxal` registry, which GitHub Pages then
 #      serves.

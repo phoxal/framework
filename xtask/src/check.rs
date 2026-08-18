@@ -81,8 +81,8 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
         };
         let Extraction::Surfaces(current) = self.surfaces.extract(&Side::Current)? else {
             bail!(
-                "the workspace crates state no contract surface, so this workspace cannot be \
-                 compared against anything"
+                "the workspace framework library states no contract surface, so this workspace \
+                 cannot be compared against anything"
             );
         };
 
