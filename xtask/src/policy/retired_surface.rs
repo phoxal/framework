@@ -16,18 +16,13 @@ use anyhow::{Context, Result};
 use super::tracked_source;
 use super::{Subject, Violation};
 
-/// The gate's own modules, which spell the vocabulary they hunt for in full and
-/// would otherwise be their own only violations.
+/// This module, which spells the vocabulary it hunts for in full and would
+/// otherwise be its own only violation.
 ///
-/// [`super::consumer_profile`] is here because one host module a participant may
-/// not import - `phoxal::simulator` - is spelled exactly like the retired
-/// simulator role attribute. Naming each exemption as a path means it stops
-/// applying the moment the module moves, and
-/// [`the_exemptions_name_modules_that_exist`] fails when one does.
-const SPELL_THE_VOCABULARY: [&str; 2] = [
-    "xtask/src/policy/retired_surface.rs",
-    "xtask/src/policy/consumer_profile.rs",
-];
+/// It is one path, not a pattern: naming the exemption as a path means it stops
+/// applying the moment this module moves, and
+/// [`the_exemptions_name_modules_that_exist`] fails when it does.
+const SPELL_THE_VOCABULARY: [&str; 1] = ["xtask/src/policy/retired_surface.rs"];
 
 /// Whether a scanned path is one of them.
 fn spells_the_vocabulary(relative: &Path) -> bool {
@@ -236,12 +231,20 @@ const RETIRED: [Retired; 32] = [
         why: "the simulator role is gone; a simulated world is an ordinary external client",
     },
     Retired {
-        // Literal text rather than an adjacent pair: the sibling repository the
-        // controller moved to is spelled `phoxal/simulator-webots`, and a pair
-        // rule would read that path as this attribute.
-        token: Token::Text("phoxal::simulator"),
+        // The attribute spelling, opening bracket included. The module path
+        // `phoxal::simulator` is the 0.66 external simulator host SDK and means
+        // the opposite of the retired role: a simulator owns a world from
+        // outside the graph rather than being one participant inside it. Only
+        // the attribute may not come back, so only the attribute is matched.
+        //
+        // Literal text rather than an adjacent pair for a second reason too:
+        // the sibling repository the controller moved to is spelled
+        // `phoxal/simulator-webots`, and a pair rule would read that path as
+        // this attribute.
+        token: Token::Text("#[phoxal::simulator"),
         train: "0.63.0",
-        why: "the simulator role attribute went with the role itself",
+        why: "the simulator role attribute went with the role itself; the module path \
+              `phoxal::simulator` is the external host SDK that replaced it",
     },
     // Driving intent crosses the wire normalized, so the robot's physics stay
     // in the robot. A client that re-derives a twist from geometry it was

@@ -713,9 +713,13 @@ impl BusHandle {
 
     /// Test-only failure injection for proving that the participant lifecycle
     /// observes an actual owner-owned outbound worker termination.
-    #[cfg(any(test, feature = "test-harness"))]
-    #[doc(hidden)]
-    pub fn __test_abort_outbound_drain(&self) -> Result<()> {
+    ///
+    /// `cfg(test)` and crate-private: the only callers are this crate's own
+    /// unit tests. It used to ride the `test-harness` feature so a downstream
+    /// test could reach it, and nothing downstream ever did - which left a
+    /// hidden abort on a public type in every harness build.
+    #[cfg(test)]
+    pub(crate) fn __test_abort_outbound_drain(&self) -> Result<()> {
         let inner = self.live_inner()?;
         let drain = lock(&inner.drain);
         let drain = drain.as_ref().ok_or(BusError::Closed)?;
@@ -725,9 +729,11 @@ impl BusHandle {
 
     /// Test-only failure injection for proving that the owner-side worker
     /// reaper is itself supervised as mandatory transport infrastructure.
-    #[cfg(any(test, feature = "test-harness"))]
-    #[doc(hidden)]
-    pub fn __test_abort_worker_reaper(&self) -> Result<()> {
+    ///
+    /// `cfg(test)` and crate-private, for the same reason as
+    /// [`Self::__test_abort_outbound_drain`].
+    #[cfg(test)]
+    pub(crate) fn __test_abort_worker_reaper(&self) -> Result<()> {
         let inner = self.live_inner()?;
         let reaper = lock(&inner.workers.reaper);
         let reaper = reaper.as_ref().ok_or(BusError::Closed)?;

@@ -413,4 +413,4 @@ impl WorldTime {
 }
 
 #[cfg(test)]
-mod tests;
+mod world_session_tests;
