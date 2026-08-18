@@ -392,23 +392,25 @@ mod tests {
     fn a_library_crate_directory_names_exactly_one_package() {
         assert_eq!(library_package_name("phoxal").as_deref(), Some("phoxal"));
         assert_eq!(
-            library_package_name("crates/protocol").as_deref(),
-            Some("phoxal-protocol")
+            library_package_name("crates/macros").as_deref(),
+            Some("phoxal-macros")
         );
         // Being unpublished changes nothing about where a crate lives.
         assert_eq!(
             library_package_name("crates/fixture").as_deref(),
             Some("phoxal-fixture")
         );
+        // A hyphenated suffix maps through unchanged; no such crate exists
+        // today, and the rule has to hold for the one that might.
         assert_eq!(
-            library_package_name("crates/runtime-contract").as_deref(),
-            Some("phoxal-runtime-contract")
+            library_package_name("crates/wire-schema").as_deref(),
+            Some("phoxal-wire-schema")
         );
 
         assert_eq!(library_package_name("crates"), None);
         assert_eq!(library_package_name("crates/"), None);
-        assert_eq!(library_package_name("crates/protocol/inner"), None);
-        assert_eq!(library_package_name("phoxal-protocol"), None);
+        assert_eq!(library_package_name("crates/macros/inner"), None);
+        assert_eq!(library_package_name("phoxal-macros"), None);
         assert_eq!(library_package_name("services/drive"), None);
         assert_eq!(library_package_name("cratesfoo"), None);
     }
@@ -437,7 +439,7 @@ mod tests {
                 },
                 Finding {
                     name: "a rule that does not",
-                    violations: vec![Violation::new("phoxal-bus -> phoxal-model")],
+                    violations: vec![Violation::new("phoxal-macros -> phoxal")],
                 },
             ],
         };
@@ -448,7 +450,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("        phoxal-bus -> phoxal-model"),
+            rendered.contains("        phoxal-macros -> phoxal"),
             "{rendered}"
         );
         assert!(rendered.contains("2 rules checked, 1 failed"), "{rendered}");

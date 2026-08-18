@@ -1,6 +1,7 @@
 # phoxal
 
-The public Rust facade for Phoxal participants.
+The one Phoxal framework library: the participant SDK, the wire-contract
+families, the typed bus, the canonical robot model, and the runtime bundle.
 
 Use the API documentation on <https://docs.rs/phoxal> and the public Phoxal
 documentation at <https://phoxal.com>. The source is intentionally the

@@ -630,7 +630,7 @@
       "type": "string"
     },
     "StructuralTarget": {
-      "description": "The component-local structural item a capability is attached to.\n\nAuthored structural ids are URDF names, whose grammar is wider than a\ncanonical token, so they stay plain strings until the compiler adopts them\ninto `phoxal-model`'s `LinkId` / `JointId`.",
+      "description": "The component-local structural item a capability is attached to.\n\nAuthored structural ids are URDF names, whose grammar is wider than a\ncanonical token, so they stay plain strings until the compiler adopts them\ninto the canonical model's `LinkId` / `JointId`.",
       "oneOf": [
         {
           "properties": {

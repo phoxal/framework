@@ -8,8 +8,8 @@ published at <https://phoxal.com>.
 
 ## Repository
 
-- `phoxal/` — robot-authoring facade
-- `crates/` — framework libraries
+- `phoxal/` — the one framework library
+- `crates/` — the proc-macro package and the test fixture stager
 - `supervisor/` — framework-train execution observer
 - `services/`, `components/` — official runtime packages
 - `examples/` and `fixture/` — development examples and test inputs
