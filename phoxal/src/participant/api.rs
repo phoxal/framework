@@ -20,7 +20,9 @@ use crate::participant::scheduler::StepSchedule;
 /// deliberately synchronous: they consume the snapshots and bounded queues
 /// already admitted by setup-owned tasks, so an external dependency cannot
 /// hold the runner's scheduler hostage.
-#[expect(
+// `allow` rather than `expect`: the lint only fires for a publicly reachable
+// trait, and only the `participant` profile publishes this one.
+#[allow(
     async_fn_in_trait,
     reason = "setup and shutdown are awaited directly by the runner; scheduled state transitions remain synchronous"
 )]

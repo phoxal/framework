@@ -16,25 +16,41 @@
 //! down would reach anyone. What a client sees instead is the
 //! `supervisor/presence` liveliness token disappearing, which is the one piece
 //! of evidence that survives its author.
+//!
+//! # This is an implementation, not an SDK
+//!
+//! The whole module tree is compiled only by the `supervisor` profile, which
+//! the exact-train `phoxal-supervisor` package enables and nothing else does.
+//! That package is a `main.rs` over [`run`]: it parses one operand, installs a
+//! subscriber, and calls in here. Everything a client has to agree with this
+//! process about is [`crate::supervisor::api`] and
+//! [`crate::supervisor::rendezvous`], which are ordinary contracts.
+//!
+//! Because the implementation lives in the same crate as the transport it
+//! owns, `BusOwner`, `BusConfig` and the embedded router are crate-private
+//! rather than a public seam: there is nothing here for another process to
+//! build against.
 
 pub(crate) mod bundle;
 pub(crate) mod lock;
 pub(crate) mod presence;
+pub(crate) mod router;
 pub(crate) mod serve;
 pub(crate) mod signal;
 pub(crate) mod state;
+pub(crate) mod systemd;
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, bail};
-use phoxal::bus::{
+use crate::bus::{
     BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
     ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
-use phoxal::identity::ExecutionId;
-use phoxal::supervisor::api::connect::PRESENCE_KEY;
-use phoxal::supervisor::rendezvous::RuntimeRendezvous;
+use crate::identity::ExecutionId;
+use crate::supervisor::api::connect::PRESENCE_KEY;
+use crate::supervisor::rendezvous::RuntimeRendezvous;
 use tokio_util::sync::CancellationToken;
 
 use presence::Presence;
@@ -42,7 +58,17 @@ use state::ExecutionState;
 
 const SUPERVISOR_LABEL: &str = "phoxal-supervisor";
 
-pub(crate) async fn run(requested_root: &Path) -> Result<()> {
+/// Observe one compiled bundle's execution until it ends.
+///
+/// `requested_root` is a bundle directory: `manifest.json`, `assets/`, `bin/`.
+/// This is the whole entry point of the `phoxal-supervisor` executable.
+///
+/// # Errors
+///
+/// Returns an error when the bundle cannot be opened, the supervisor lock is
+/// already held, the embedded router cannot bind or disappears under the run,
+/// or the control plane ends unexpectedly.
+pub async fn run(requested_root: &Path) -> Result<()> {
     let canonical = requested_root.canonicalize().with_context(|| {
         format!(
             "failed to canonicalize bundle root {}",
@@ -71,7 +97,7 @@ pub(crate) async fn run(requested_root: &Path) -> Result<()> {
 }
 
 async fn execute(
-    runtime: phoxal::bundle::RuntimeBundle,
+    runtime: crate::bundle::RuntimeBundle,
     paths: &RuntimeRendezvous,
     state: &ExecutionState,
     shutdown: CancellationToken,
@@ -88,9 +114,9 @@ async fn execute(
         Arc::new(move |reason: String| {
             let _ = router_loss.set(reason);
             shutdown.cancel();
-        }) as crate::router::RouterLost
+        }) as self::router::RouterLost
     };
-    let router = crate::router::start_embedded_router(execution, endpoint.clone(), router_lost)
+    let router = self::router::start_embedded_router(execution, endpoint.clone(), router_lost)
         .await
         .context("the embedded router did not start")?;
 
@@ -179,7 +205,7 @@ fn finish_after_transport_close(
 }
 
 async fn abort_router_startup(
-    router: crate::router::EmbeddedRouter,
+    router: self::router::EmbeddedRouter,
     owner: Option<BusOwner>,
     error: anyhow::Error,
 ) -> anyhow::Error {
@@ -216,7 +242,7 @@ async fn observe_participants(
 fn notify_systemd(
     shutdown: CancellationToken,
 ) -> Result<Option<tokio::task::JoinHandle<Result<()>>>> {
-    let notify = crate::systemd::notify::SdNotify::from_env().unwrap_or_else(|error| {
+    let notify = self::systemd::notify::SdNotify::from_env().unwrap_or_else(|error| {
         tracing::warn!("ignoring an unusable systemd notify socket: {error:#}");
         None
     });
@@ -264,7 +290,7 @@ async fn verify_router_identity(
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::BusCloseTimeout;
+    use crate::bus::BusCloseTimeout;
 
     use super::*;
 

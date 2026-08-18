@@ -12,8 +12,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use phoxal::identity::{ParticipantId, ProducerId};
-use phoxal::supervisor::api::execution::Snapshot;
+use crate::identity::{ParticipantId, ProducerId};
+use crate::supervisor::api::execution::Snapshot;
 use tokio::sync::watch;
 
 use super::presence::Presence;
@@ -106,9 +106,9 @@ impl ExecutionState {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::{Codec, MessagePack};
-    use phoxal::model::RobotBuilder;
-    use phoxal::supervisor::api::execution::{Lifecycle, ProcessState};
+    use crate::bus::{Codec, MessagePack};
+    use crate::model::RobotBuilder;
+    use crate::supervisor::api::execution::{Lifecycle, ProcessState};
 
     use super::*;
 

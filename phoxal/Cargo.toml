@@ -17,14 +17,45 @@ categories = ["science::robotics", "simulation"]
 name = "phoxal"
 path = "src/lib.rs"
 
+# The consumer profiles. A profile is one supported consumer role: it decides
+# which modules `src/lib.rs` declares as `pub`, and - for the two host roles
+# that need crates a robot binary has no business linking - which optional
+# dependencies compile. It is never an authority boundary: Cargo unifies
+# features, and who may do what at runtime remains process ownership and the
+# constructible API.
+#
+# Every profile compiles the same code. The one place a feature may be named in
+# this crate's source is `src/lib.rs`, and `cargo xtask policy` rejects it
+# anywhere else.
 [features]
-# Off in every shipped participant binary. It exposes the explicit in-process
-# harness, deterministic `TestClock`, and clock-injection seam, which exist only
-# so tests can drive a participant on a caller-owned bus, plus the bus's own
-# hidden worker-failure injection. A downstream crate enables it as a
-# **dev**-dependency feature, because a participant crate's tests are a separate
-# compilation unit that cannot enable this crate's `cfg(test)`.
-test-harness = []
+default = ["participant"]
+
+# Ordinary robot services, drivers, and the root brain: the robot `api`, the
+# role attributes, the runner, the prelude, and the typed handles they build.
+participant = []
+
+# The CLI, Operator, and any other application attaching to a running
+# execution: `phoxal::session`, the runtime and supervisor contract families,
+# the participant launch encoder, and the embedded participant metadata reader.
+# Visibility only - a session build compiles nothing a participant build lacks.
+session = []
+
+# Webots, Isaac Sim, or another external world adapter: `phoxal::simulator`,
+# the runtime contract family, the bundle reader, and `model::simulation`.
+# Visibility only, for the same reason as `session`.
+simulator = []
+
+# The exact-train `phoxal-supervisor` executable, and nothing else: it compiles
+# `phoxal::supervisor::host`, the whole supervisor implementation, plus the
+# embedded Zenoh router the graph meets on.
+#
+# `zenoh/unstable` is the router's: `link_events_listener()` observes links
+# coming and going and has no stable equivalent. Pulling it in *here* rather
+# than on the workspace dependency keeps that surface out of every participant
+# build. `libc` is deliberately absent from this list - `bus::time` and
+# `supervisor::rendezvous` need it in every profile, so it is a plain
+# dependency rather than one this profile turns on.
+supervisor = ["zenoh/unstable", "dep:ctrlc", "dep:system_shutdown", "dep:tokio-util"]
 
 # The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
 # URDF, their JSON Schemas, and the project compiler. Off by default: a launched
@@ -33,23 +64,22 @@ test-harness = []
 # a robot binary.
 authoring = ["dep:serde_yaml", "dep:toml", "dep:urdf-rs"]
 
-# The supervisor's embedded Zenoh router. Off by default so participants never
-# see a router in their API surface; only the framework-owned
-# `phoxal-supervisor` executable enables it.
-#
-# It carries `zenoh/unstable`, which the router needs for two APIs with no
-# stable equivalent: `Session::info().locators()` to report the endpoints it
-# actually bound (an ephemeral `:0` is otherwise unknowable), and
-# `link_events_listener()` to observe links coming and going. Pulling `unstable`
-# in *here* rather than on the workspace dependency keeps that surface out of
-# every participant build - only the supervisor gets it.
-router = ["zenoh/unstable"]
+# Explicit participant test support: the in-process harness, the deterministic
+# `TestClock`, and the clock-injection seam, which exist only so tests can drive
+# a participant on a caller-owned bus. Off in every shipped participant binary.
+# A downstream crate enables it as a **dev**-dependency feature, because a
+# participant crate's tests are a separate compilation unit that cannot enable
+# this crate's `cfg(test)`.
+test-harness = ["participant"]
 
 [dependencies]
 phoxal-macros = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 const_format = { workspace = true }
+# `termination`: SIGTERM and SIGHUP alongside SIGINT, so every "stop" signal
+# reaches the supervisor's one orderly shutdown path.
+ctrlc = { workspace = true, optional = true }
 getrandom = { workspace = true }
 libc = { workspace = true }
 rmp-serde = { workspace = true }
@@ -63,8 +93,13 @@ serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true, optional = true }
+# The supervisor asks its own host to reboot or power off.
+system_shutdown = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs"] }
+# `rt`: the supervisor's one shutdown token, cancelled from the signal handler
+# and awaited by everything it owns.
+tokio-util = { workspace = true, features = ["rt"], optional = true }
 toml = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -75,6 +110,15 @@ zenoh = { workspace = true }
 # cannot see dependencies named only inside attributes.
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
+
+# docs.rs builds every profile, so `phoxal::session`, `phoxal::simulator` and
+# `phoxal::authoring` have published documentation and every host item carries
+# an "available on crate feature …" badge. The crate root still reads
+# participant-first: ordering, not omission, is what makes the default consumer
+# the first one a reader meets.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 # The tests load the workspace fixture robot as a finalized bundle. Staging it
@@ -111,10 +155,29 @@ tokio = { workspace = true, features = ["test-util"] }
 [lints]
 workspace = true
 
+# An integration test is an external crate, so it sees exactly one profile's
+# public surface. The ones below name a host family or the explicit harness and
+# therefore declare the profile that publishes it; `cargo test -p phoxal
+# --all-features` is what runs the whole set.
 [[test]]
 name = "runtime_serialized_smoke"
 path = "tests/runtime_serialized_smoke.rs"
-required-features = ["test-harness"]
+required-features = ["test-harness", "session"]
+
+[[test]]
+name = "api"
+path = "tests/api.rs"
+required-features = ["session"]
+
+[[test]]
+name = "bus_bindings"
+path = "tests/bus_bindings.rs"
+required-features = ["session"]
+
+[[test]]
+name = "wire_key_composition"
+path = "tests/wire_key_composition.rs"
+required-features = ["test-harness", "session"]
 
 [[test]]
 name = "authoring_compile"

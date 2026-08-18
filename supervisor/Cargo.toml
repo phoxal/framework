@@ -19,27 +19,18 @@ name = "phoxal-supervisor"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = { workspace = true }
 clap = { workspace = true }
-# `termination`: SIGTERM and SIGHUP alongside SIGINT, so every "stop" signal
-# reaches the one orderly shutdown path.
-ctrlc = { workspace = true }
-libc = { workspace = true }
-# `router` opens the embedded Zenoh router in this process.
-# The supervisor is the only crate in the workspace that enables it.
-phoxal = { workspace = true, features = ["router"] }
-serde = { workspace = true }
-system_shutdown = { workspace = true }
+# The `supervisor` profile compiles `phoxal::supervisor::host` - the whole
+# behavior of this executable - plus the embedded Zenoh router it runs. This is
+# the only package in the workspace that enables it, and it takes the exact
+# train: the supervisor and the library it is the body of are one artifact split
+# across two packages.
+#
+# `default-features = false` drops the participant profile: this process is not
+# a participant, and nothing here authors on that surface.
+phoxal = { workspace = true, features = ["supervisor"] }
 tokio = { workspace = true, features = ["full"] }
-tokio-util = { workspace = true, features = ["rt"] }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-
-[dev-dependencies]
-# Component driver blocks are opaque JSON on the model, so stating a driven
-# instance in a fixture robot needs the JSON value type.
-serde_json = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

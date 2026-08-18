@@ -724,8 +724,10 @@ impl NavigationState {
 mod tests {
     use std::time::Duration;
 
-    use phoxal::bus::{BusConfig, BusOwner, Querier, StatePublisher, StepToken};
-    use phoxal::testing::{ClockSource, TestClock, TestHarness, run_test_harness_with_clock};
+    use phoxal::bus::{Querier, StatePublisher};
+    use phoxal::testing::{
+        ClockSource, TestBus, TestClock, TestHarness, run_test_harness_with_clock, step_token,
+    };
 
     use super::*;
 
@@ -892,15 +894,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn start_cancel_queries_are_idempotent_and_lossless_over_the_real_bus() {
-        let participant = phoxal::bus::ParticipantId::new("navigation-test")
-            .expect("valid navigation participant");
-        let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-            phoxal::bus::ExecutionId::mint(),
-            participant,
-            Vec::new(),
-        ))
-        .await
-        .expect("open shared bus");
+        let session = TestBus::for_participant("navigation-test")
+            .await
+            .expect("open shared bus");
+        let bus = session.handle().clone();
         let start = Querier::new(
             bus.clone(),
             &api::topics().navigation().start().client(),
@@ -942,7 +939,7 @@ mod tests {
         );
         let client = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let step = StepToken::mint(clock.read().instant().expect("test clock is synchronized"));
+            let step = step_token(clock.read().instant().expect("test clock is synchronized"));
             localization
                 .publish(
                     &step,
@@ -1039,7 +1036,7 @@ mod tests {
 
         let (runner_result, ()) = tokio::join!(runner, client);
         runner_result.expect("navigation runner completed cleanly");
-        owner.close().await;
+        session.close().await;
     }
 
     fn request_id(value: &str) -> api::navigation::RequestId {

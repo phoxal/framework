@@ -137,26 +137,108 @@
 //! - The **official service set** ships alongside this crate in the workspace
 //!   `services/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
 //!   participants authored on exactly this surface, useful as reference reading.
+//!
+//! ## Host SDKs
+//!
+//! A robot developer writes participants; the processes *around* a robot -
+//! the CLI and Operator applications that attach to a running execution, an
+//! external simulator that owns a world, the source compiler behind
+//! `phoxal build` - are separate consumer roles. They are the same crate and
+//! the same train, selected by a Cargo feature so that none of them crowds the
+//! participant surface above.
+//!
+//! - **`session`** - `phoxal::session`: attach to one running execution.
+//!   [`Session`](session::Session) uniquely owns the transport and the
+//!   lifecycle; a cloneable [`SessionHandle`](session::SessionHandle) performs
+//!   typed operations. It also publishes the `runtime` and `supervisor`
+//!   contract families, the participant launch encoder, and the embedded
+//!   participant-metadata reader.
+//! - **`simulator`** - `phoxal::simulator`: stand an external world process in
+//!   for a robot's component drivers.
+//!   [`SimulatorSession`](simulator::SimulatorSession) owns typed component IO,
+//!   delegated presence, and the world clock, without handing out the raw
+//!   transport underneath.
+//! - **`authoring`** - `phoxal::authoring`: the authored-source layer
+//!   (`robot.yaml`, `component.yaml`, `simulation.yaml`, URDF), its JSON
+//!   schemas, and the compiler that turns them into a [`model::Robot`]. A
+//!   launched participant never reads an authored document.
+//!
+//! The supervisor's own implementation is `phoxal::supervisor::host`, behind
+//! the `supervisor` profile and hidden from these docs: it is the body of the
+//! framework-owned `phoxal-supervisor` executable, not an SDK. Everything a
+//! client has to agree with it about is [`supervisor::api`] and
+//! [`supervisor::rendezvous`], which the `session` profile publishes.
+//!
+//! Profiles are additive compilation and visibility controls, never authority
+//! boundaries: Cargo unifies features, and who may do what at runtime remains
+//! process ownership and the constructible API.
 
+// docs.rs builds with every profile enabled and this cfg set, so each
+// profile-gated module carries an "available on crate feature …" badge instead
+// of being missing from the published documentation.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 // Generated macro output refers to the framework as `::phoxal::…`; make that
 // path resolve to this crate so the role/config macros and the `DescribeWire`
 // derive expand the same way inside the framework as they do in a downstream
 // service crate.
 extern crate self as phoxal;
 
+// # Consumer profiles
+//
+// This file is the only place in `phoxal/src` where a Cargo feature may be
+// named, and `cargo xtask policy` enforces it. A profile decides which modules
+// are `pub`; it never forks a code path inside a module, because the moment it
+// does the one library starts growing the old package topology back as
+// scattered `#[cfg]`s.
+//
+// Two module trees are the stated exceptions, gated as a unit at their
+// declaration below because their whole content belongs to one role and pulls
+// dependencies a robot binary has no business linking: `authoring` and
+// `supervisor::host`. `session`, `simulator`, `testing` and the embedded
+// router join them for the narrower reason that nothing else in their own
+// profile would use them, and an unused private module is dead code.
+
 pub mod geometry;
 mod sample_schedule;
 
-/// The participant engine.
-///
-/// Only [`participant::metadata`] is a public path: the artifact record every
-/// participant binary embeds, and its strict reader. Everything else here is
-/// the runner's own machinery, reached through the crate-root facade, the
-/// [`prelude`], and [`__private`].
+// The participant engine, whose own docs say what is public in it. This is the
+// one tree no profile hides: the role attributes expand to
+// `$crate::participant::metadata::concatcp!` *inside a participant's own
+// crate*, so that path has to be public wherever a participant is authored,
+// and the CLI and the supervisor read the same document back out of a linked
+// binary.
+//
+// What a profile does change is whether the engine is reachable at all. Only
+// `participant` publishes the runner, the role attributes and the prelude, so
+// every other profile compiles the engine - the compatibility aggregate reads
+// the launch contract out of it - and reaches none of it.
+#[cfg(feature = "participant")]
+pub mod participant;
+#[cfg(not(feature = "participant"))]
+#[allow(
+    dead_code,
+    reason = "the participant engine is reached through the crate-root facade \
+              only the `participant` profile publishes; a profile that does not \
+              publish it still compiles it, so all of it reads as unreachable here"
+)]
 pub mod participant;
 
 /// The typed contract and handle vocabulary, and the transport under it.
 pub mod bus;
+
+/// The embedded Zenoh router the graph meets on.
+///
+/// Its file is `bus/router.rs`, because the router and the participants that
+/// dial it must agree on the transport policy [`bus`] pins, and because the
+/// bus module is the one place in this crate that may name Zenoh at all. It is
+/// declared *here* rather than by `bus/mod.rs` because it needs
+/// `zenoh/unstable`, which only the `supervisor` profile carries, and a
+/// profile gate may live nowhere but this file.
+///
+/// Crate-private in every profile: raw fabric ownership is not an SDK.
+#[cfg(feature = "supervisor")]
+#[path = "bus/router.rs"]
+pub(crate) mod router;
 
 /// The canonical robot model a [`bundle::RuntimeBundle`] yields.
 ///
@@ -170,7 +252,26 @@ pub mod bus;
 pub mod model;
 
 /// The compiled runtime bundle: `manifest.json`, its assets, and its binaries.
+///
+/// A participant reads its bundle through the runner - `ctx.robot()` and
+/// `ctx.assets()` - rather than by opening one, so the reader and the writer
+/// here are the host roles' surface.
+#[cfg(any(feature = "simulator", feature = "supervisor", feature = "authoring"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "simulator", feature = "supervisor", feature = "authoring")))
+)]
 pub mod bundle;
+#[cfg(not(any(feature = "simulator", feature = "supervisor", feature = "authoring")))]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "a profile that does not publish a tree still compiles it - the \
+              compatibility aggregate reads every contract family, and the runner \
+              reads the bundle - so everything in it reads as unreachable here. The \
+              profile that does publish it is where these lints have something to say."
+)]
+mod bundle;
 
 /// The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
 /// URDF, their JSON Schemas, and the compiler that turns them into a
@@ -179,6 +280,7 @@ pub mod bundle;
 /// Build/source tooling only. A launched participant reads the compiled
 /// `manifest.json`, never authored documents, so this module is off by default.
 #[cfg(feature = "authoring")]
+#[cfg_attr(docsrs, doc(cfg(feature = "authoring")))]
 pub mod authoring;
 
 /// The identities that cross a Phoxal process boundary: execution, participant,
@@ -189,23 +291,117 @@ pub mod identity;
 /// to establish that they speak the same contracts.
 pub mod version;
 
-/// The `runtime` contract family: what a running Phoxal process says about
-/// itself.
+/// What a running Phoxal process says about itself: the `runtime` contract
+/// family.
+///
+/// A participant emits its logs and telemetry here through the runner and
+/// never names the family, so it is a host-role surface: the applications that
+/// read a running execution, the simulator that publishes its world clock, and
+/// the supervisor that retains both.
+#[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
+)]
 pub mod runtime;
+#[cfg(not(any(feature = "session", feature = "simulator", feature = "supervisor")))]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "a profile that does not publish a tree still compiles it - the \
+              compatibility aggregate reads every contract family, and the runner \
+              reads the bundle - so everything in it reads as unreachable here. The \
+              profile that does publish it is where these lints have something to say."
+)]
+mod runtime;
 
-/// The supervisor boundary: its wire contracts, and the host paths and advisory
-/// locking a client and the one execution supervisor find each other through.
-pub mod supervisor;
+/// Declare the `supervisor` boundary at the visibility this profile gives it.
+///
+/// The tree is written once, here, because `supervisor::host` is gated on its
+/// own profile *inside* a module whose own visibility flips - and a profile
+/// gate may live nowhere but this file. Expanding one declaration twice is what
+/// keeps the two visibilities from drifting apart.
+macro_rules! supervisor_boundary {
+    ( $( #[$attribute:meta] )* $visibility:vis mod supervisor ; ) => {
+        $( #[$attribute] )*
+        /// The supervisor boundary.
+        ///
+        /// The framework-owned `phoxal-supervisor` process owns supervisor
+        /// state and behavior. What lives here is what everything else has to
+        /// agree with it about: [`api`](supervisor::api), the wire vocabulary a
+        /// supervisor speaks, and [`rendezvous`](supervisor::rendezvous), the
+        /// host paths and advisory locking through which a client and the one
+        /// execution supervisor find and fence each other.
+        $visibility mod supervisor {
+            /// The `supervisor` contract family.
+            pub mod api;
+
+            /// Where a client and the one execution supervisor meet on a host:
+            /// the socket and lock paths, and the advisory fencing over them.
+            pub mod rendezvous;
+
+            /// The supervisor implementation itself.
+            ///
+            /// Not an SDK and not documented: this is the body of the
+            /// framework-owned `phoxal-supervisor` executable, which is a
+            /// `main.rs` over [`run`](host::run). It is compiled only by the
+            /// exact-train `supervisor` profile.
+            #[cfg(feature = "supervisor")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "supervisor")))]
+            #[doc(hidden)]
+            pub mod host;
+        }
+    };
+}
+
+#[cfg(any(feature = "session", feature = "supervisor"))]
+supervisor_boundary!(
+    pub mod supervisor;
+);
+#[cfg(not(any(feature = "session", feature = "supervisor")))]
+supervisor_boundary!(
+    #[allow(
+        dead_code,
+        unused_imports,
+        reason = "a profile that does not publish a tree still compiles it - the \
+                  compatibility aggregate reads every contract family - so everything \
+                  in it reads as unreachable here. The profile that does publish it is \
+                  where these lints have something to say."
+    )]
+    mod supervisor;
+);
+
+/// Application-neutral attachment to one running execution.
+///
+/// [`Session`](session::Session) uniquely owns one execution's transport and
+/// lifecycle; a cloneable [`SessionHandle`](session::SessionHandle) performs
+/// typed operations on it and cannot close it.
+#[cfg(feature = "session")]
+#[cfg_attr(docsrs, doc(cfg(feature = "session")))]
+pub mod session;
+
+/// The external simulator host SDK.
+///
+/// A simulator is not a participant: it owns a world, stands in for several
+/// component-driver identities, and follows its own lifecycle.
+/// [`SimulatorSession`](simulator::SimulatorSession) is the whole of what the
+/// framework hands it.
+#[cfg(feature = "simulator")]
+#[cfg_attr(docsrs, doc(cfg(feature = "simulator")))]
+pub mod simulator;
 
 /// The contract surface this crate owns: the participant launch contract.
 ///
 /// Not public API. It exists so compatibility CI can read this crate's declared
-/// process boundary out of the crate itself.
+/// process boundary out of the crate itself. It is the same aggregate in every
+/// profile: hiding a contract family from participant rustdoc must not remove
+/// it from the train.
 #[doc(hidden)]
 pub mod __compat;
 
 /// Explicit in-process participant testing support.
 #[cfg(feature = "test-harness")]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-harness")))]
 pub mod testing;
 
 /// The `robot` contract family, the surface a participant authors against.
@@ -213,7 +409,22 @@ pub mod testing;
 /// This is the robot family and only the robot family. The `runtime` and
 /// `supervisor` families are host-tooling surfaces, reached through
 /// [`runtime::api`] and [`supervisor::api`].
+#[cfg(any(feature = "participant", feature = "session", feature = "simulator"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "participant", feature = "session", feature = "simulator")))
+)]
 pub mod api;
+#[cfg(not(any(feature = "participant", feature = "session", feature = "simulator")))]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "a profile that does not publish a tree still compiles it - the \
+              compatibility aggregate reads every contract family, and the runner \
+              reads the bundle - so everything in it reads as unreachable here. The \
+              profile that does publish it is where these lints have something to say."
+)]
+mod api;
 
 /// The two declarations the api tree is built from, at the crate root so a
 /// family module reads `crate::nodes!` / `crate::endpoints!` whatever its
@@ -226,46 +437,70 @@ pub use anyhow::Result;
 
 /// Derive a participant config's compile-time JSON Schema from a `Config`
 /// struct.
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::Config;
 
 /// Link a participant state struct to its `Config`/`Api` types as a checked
 /// service.
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::service;
 
 /// Link a participant state struct to its `Config`/`Api` types as a
 /// component driver.
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::driver;
 
 /// Declare the one mandatory root brain, the robot project's composition root.
 ///
 /// Fixed identity `brain` and `Config = ()`; otherwise exactly the checked
 /// service surface.
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::brain;
 
 /// Attach a cadence to `Participant::step`.
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::step;
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
 /// This is the default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use participant::runner::run;
 
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use crate::bundle::ParticipantAssets as ParticipantAssetResolver;
 pub use crate::model::AssetId;
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use participant::api::Participant;
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use participant::context::{QueryContext, ResetContext, SetupContext, StepContext};
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use participant::managed::ManagedTaskPolicy;
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
 /// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub mod tokio {
     #[doc(inline)]
     pub use crate::participant::runner::run_async as run;
 }
 
 /// Everything a participant author imports with `use phoxal::prelude::*;`.
+#[cfg(feature = "participant")]
+#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{

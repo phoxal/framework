@@ -181,12 +181,14 @@ where
 /// [`WorldClock`], a sibling rather than a subtype, which is what makes the
 /// ordinary state publisher reject it at compile time.
 ///
-/// There is no documented way for a participant to build one: publishing the
-/// world clock is the job of the external client that drives the simulated
-/// world, which mints this publisher through [`Self::mint`] on its own bus
-/// handle. The type is re-exported from neither `phoxal::bus` nor
-/// `phoxal::prelude`.
-pub struct WorldClockPublisher<B: Endpoint<Semantics = WorldClock>>(Outbox<B>);
+/// Crate-private, like the authority that stamps it: publishing the world
+/// clock is world ownership, and the only holder is [`crate::simulator`]'s
+/// world time, which the external world adapter drives.
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
+pub(crate) struct WorldClockPublisher<B: Endpoint<Semantics = WorldClock>>(Outbox<B>);
 
 impl<B: Endpoint<Semantics = WorldClock>> Clone for WorldClockPublisher<B> {
     fn clone(&self) -> Self {
@@ -201,14 +203,15 @@ impl<E: Endpoint<Semantics = State>> StatePublisher<E> {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 impl<B: Endpoint<Semantics = WorldClock>> WorldClockPublisher<B> {
     /// Build the world-clock publisher over a topic.
     ///
-    /// Called by the external client that drives the simulated world and owns
-    /// its clock; no participant reaches it. See [`crate::bus::handle::stamp`]'s
-    /// module docs for the boundary that leaves this `pub`.
-    #[doc(hidden)]
-    pub fn mint(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
+    /// [`crate::simulator`]'s world time is its only caller.
+    pub(crate) fn mint(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
         Ok(WorldClockPublisher(Outbox::new(bus, topic)?))
     }
 

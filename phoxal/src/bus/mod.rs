@@ -36,6 +36,14 @@
 //! `StreamReceiver`); the generic ring implementations remain internal.
 //! Code *inside* the framework always imports from the owning module, never
 //! through this facade.
+//!
+//! Three things this module owns are absent from that surface on purpose, and
+//! are named only by the modules that own them: `BusOwner` and `BusConfig`
+//! (opening a session), `TimelineAuthority` and `WorldClockPublisher` (owning
+//! a world), and the embedded `Router`. No consumer profile receives raw
+//! transport, world, or fabric ownership - `phoxal::session`,
+//! `phoxal::simulator` and `phoxal::supervisor::host` each own one on their
+//! consumer's behalf.
 
 pub mod abi;
 pub mod contract;
@@ -46,8 +54,6 @@ pub mod liveliness;
 mod lock;
 pub mod metadata;
 pub mod query;
-#[cfg(feature = "router")]
-pub mod router;
 pub mod runtime_metrics;
 pub mod server;
 pub mod session;
@@ -81,10 +87,9 @@ pub use contract::{
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{
     EventPublisher, SamplePublisher, SetpointPublisher, StatePublisher, StreamPublisher,
-    WorldClockPublisher,
 };
 pub use handle::querier::{DEFAULT_QUERY_TIMEOUT, Querier};
-pub use handle::stamp::{StepStamp, StepToken, TimelineAuthority, WorldStepToken};
+pub use handle::stamp::{StepStamp, StepToken, WorldStepToken};
 pub use handle::subscriber::{
     EventReceiver, MAX_SETPOINT_SOURCES, MAX_STREAM_SOURCES, Observed, ReceiveTerminal,
     SampleReceiver, SetpointReceiver, StateView, StreamEvent, StreamReceiver, TimelineRetention,
@@ -103,16 +108,18 @@ pub use metadata::{
     StreamPosition,
 };
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
-#[cfg(feature = "router")]
-pub use router::{Router, RouterWatch};
 pub use runtime_metrics::{
     RuntimeBufferKind, RuntimeDirection, RuntimeMetricKey, RuntimeMetricSnapshot,
 };
 pub use server::{IncomingQuery, ServerQueryable};
-pub use session::{
-    BusCloseReport, BusCloseTimeout, BusConfig, BusFault, BusHandle, BusHealth, BusOwner,
-    BusTerminal,
-};
+pub use session::{BusCloseReport, BusCloseTimeout, BusFault, BusHandle, BusHealth, BusTerminal};
+/// Opening a session, and the inputs that open one.
+///
+/// Crate-private: owning the transport is what `phoxal::session`,
+/// `phoxal::simulator` and the participant runner each do on their consumer's
+/// behalf, and a second, unbranded copy of the transport beside them is exactly
+/// what the typed handle vocabulary could then promise nothing about.
+pub(crate) use session::{BusConfig, BusOwner};
 pub use time::{
     CaptureStamp, LocalInstant, RetiredTimelines, RobotInstant, RobotTimeError, TimeWindow, Timed,
     TimelineMismatch, WallTimestamp,

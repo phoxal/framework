@@ -42,8 +42,14 @@ use crate::bus::RobotInstant;
 
 pub(crate) mod real;
 pub(crate) mod simulation;
-#[cfg(feature = "test-harness")]
-pub mod test;
+// Reached only through `crate::testing`, which the `test-harness` profile
+// declares; the module itself is compiled in every profile so that no domain
+// module has to know which profile it is in.
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
+pub(crate) mod test;
 
 /// Why a participant cannot currently produce a trustworthy robot instant.
 ///

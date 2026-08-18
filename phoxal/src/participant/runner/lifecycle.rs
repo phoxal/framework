@@ -33,9 +33,12 @@ use super::teardown::{
 /// lifecycle. The borrowed variant is only constructed by the explicit test
 /// harness, whose caller owns the bus session and therefore cannot declare a
 /// Ready lease or close the transport.
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 pub(crate) enum BusLease {
     Owned(BusOwner),
-    #[cfg(feature = "test-harness")]
     Borrowed,
 }
 
@@ -546,7 +549,6 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // Critical setup/query failure cannot win the await and briefly make
         // an unhealthy participant visible.
         let ready = match &session {
-            #[cfg(feature = "test-harness")]
             BusLease::Borrowed => {
                 if shutdown.is_requested() {
                     if let Some(queries) = queries.take() {
@@ -708,13 +710,11 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
 }
 
 async fn close_session(session: BusLease, deadline: ShutdownDeadline) -> TeardownReport {
-    #[cfg(feature = "test-harness")]
+    // A borrowed session belongs to the test harness's caller, which closes it
+    // itself; the runner closes only what it opened.
     let BusLease::Owned(owner) = session else {
         return TeardownReport::default();
     };
-    #[cfg(not(feature = "test-harness"))]
-    let BusLease::Owned(owner) = session;
-
     let close = owner.close_until(deadline.instant()).await;
     if close.is_clean() {
         TeardownReport::default()

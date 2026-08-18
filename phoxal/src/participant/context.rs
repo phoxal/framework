@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface};
-use crate::ParticipantAssetResolver;
+use crate::bundle::ParticipantAssets as ParticipantAssetResolver;
 use crate::bundle::RuntimeBundle;
 use crate::bus::{
     AskQuery, DEFAULT_QUERY_TIMEOUT, Endpoint, Event, EventPublisher, EventReceiver, Observed,

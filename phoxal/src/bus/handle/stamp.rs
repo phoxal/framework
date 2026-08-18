@@ -1,28 +1,24 @@
 //! Proof that a step happened, and the authority that mints world steps.
 //!
-//! # These constructors are `pub`, and that is honest, not a seal
+//! # Every minter is `pub(crate)`
 //!
-//! [`StepToken::mint`], [`WorldStepToken`]'s minter
-//! ([`TimelineAuthority::completed_step`]) and [`TimelineAuthority::mint`] are
-//! `pub` because their only legitimate callers live in *other* crates - the
-//! runner in `phoxal`, and the external client that drives a simulated world
-//! and publishes its clock - while the types live here. Rust has no visibility
-//! between "this crate" and "the world", so `pub(crate)` cannot express that
-//! boundary, and no token-based seal can either: any token this crate could
-//! hand a caller is a token every other crate can obtain the same way.
+//! [`StepToken::mint`], [`TimelineAuthority::mint`] and the world-step minter
+//! [`TimelineAuthority::completed_step`] have exactly two legitimate callers,
+//! and both are in this crate: the participant runner, which releases a
+//! scheduled step, and [`crate::simulator`]'s world time, which completes a
+//! world advance. Nothing outside `phoxal` may express a robot instant it did
+//! not reach, because nothing outside `phoxal` can name a minter.
 //!
-//! So the guarantee is stated exactly as strong as it is. A participant cannot
-//! express robot time it did not reach *by accident*, and cannot do it through
-//! the documented authoring surface at all - the role markers make handing a
-//! token to the wrong publisher a compile error, and `phoxal::prelude` does not
-//! name these minters. A participant that deliberately writes
-//! `StepToken::mint` can. Closing that would mean merging the api, bus, and
-//! runtime crates into one.
+//! That is a change of kind, not of degree. While the framework was six
+//! packages these constructors had to be `pub` for the runner and the
+//! simulator client to reach them across a crate boundary, and the guarantee
+//! was stated as "not by accident". One crate makes `pub(crate)` say exactly
+//! what was meant, so the deliberate route is closed too.
 //!
-//! `StepToken::mint` belongs to `phoxal`'s runner and to nothing else. The
-//! world-step minters belong to the one client that drives the simulated world;
-//! the `phoxal` facade re-exports neither of them, so a participant has no
-//! documented path to either.
+//! [`WorldStepToken`] itself stays public: `phoxal::simulator` hands one to
+//! the world adapter for every completed step, which is how that adapter
+//! stamps the step's outputs. Holding one is proof, never authority - there is
+//! no public way to make one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -56,10 +52,9 @@ pub struct StepToken {
 }
 
 impl StepToken {
-    /// Mint the token for one released step. Callable only by `phoxal`'s
-    /// runner; see the module docs for why it must nonetheless be `pub`.
-    #[doc(hidden)]
-    pub const fn mint(at: RobotInstant) -> Self {
+    /// Mint the token for one released step. The participant runner is its
+    /// only caller.
+    pub(crate) const fn mint(at: RobotInstant) -> Self {
         StepToken { at }
     }
 }
@@ -100,27 +95,36 @@ impl StepStamp for WorldStepToken {
 /// simulated execution, and that selection is enforced by whatever launches the
 /// run, not by anything this process can observe.
 ///
-/// **What the type system closes.** The documented authoring surface has no
-/// path to an authority at all: minting a world clock is not a participant
-/// capability, so this type is re-exported from neither `phoxal::bus` nor
-/// `phoxal::prelude` and no `SetupContext` method hands one out. That closes
-/// the accidental route; see the module docs for why [`mint`](Self::mint)
-/// cannot close the deliberate one.
-pub struct TimelineAuthority {
+/// **What the type system closes.** Nothing outside this crate can name an
+/// authority, let alone mint one: minting a world clock is not a participant
+/// capability and not an SDK capability either. The one holder is
+/// [`crate::simulator`]'s world time, which hands its owner completed steps
+/// and never the authority behind them.
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
+pub(crate) struct TimelineAuthority {
     timeline: TimelineId,
 }
 
 /// One authority per process: the runtime backstop. The cross-process "exactly
 /// one authority" rule is a selection-time property of which participants are
 /// launched, not something this process can observe.
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 static TIMELINE_AUTHORITY_HELD: AtomicBool = AtomicBool::new(false);
 
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 impl TimelineAuthority {
     /// Take this process's single timeline authority, or fail if it is already
-    /// held. Called by the external client that drives the simulated world; see
-    /// the module docs for why it must nonetheless be `pub`.
-    #[doc(hidden)]
-    pub fn mint(timeline: TimelineId) -> Result<Self> {
+    /// held. [`crate::simulator`] is its only caller.
+    pub(crate) fn mint(timeline: TimelineId) -> Result<Self> {
         if TIMELINE_AUTHORITY_HELD.swap(true, Ordering::AcqRel) {
             return Err(BusError::DuplicateTimelineAuthority);
         }

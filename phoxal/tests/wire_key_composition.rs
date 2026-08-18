@@ -7,17 +7,15 @@
 //! either root convention would drift it silently. This test opens a real
 //! in-process session and asserts the final key.
 
-use phoxal::bus::{BusConfig, BusOwner, ExecutionId};
+use phoxal::testing::TestBus;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_family_topic_composes_under_the_execution_scoped_root() {
-    let config = BusConfig::for_participant(
-        ExecutionId::mint(),
-        phoxal::bus::ParticipantId::new("composition").expect("valid participant id"),
-        Vec::new(),
-    );
-    let execution = config.execution();
-    let (owner, bus) = BusOwner::open(config).await.expect("open in-process bus");
+    let session = TestBus::for_participant("composition")
+        .await
+        .expect("open in-process bus");
+    let execution = session.execution();
+    let bus = session.handle();
 
     // The tree's half: relative, family-led, no revision segment.
     let bootstrap = phoxal::supervisor::api::topics().connect().client();
@@ -30,5 +28,5 @@ async fn a_family_topic_composes_under_the_execution_scoped_root() {
         format!("phoxal/{execution}/supervisor/connect")
     );
 
-    owner.close().await;
+    session.close().await;
 }

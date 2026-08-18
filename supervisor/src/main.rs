@@ -30,10 +30,12 @@
 //! logs and telemetry, serves the bundle, and can reboot or power off its host.
 //! Whoever started a runtime - `phoxal` locally, systemd on a device - is what
 //! restarts or stops it.
-
-mod router;
-mod supervisor;
-mod systemd;
+//!
+//! The behavior itself is `phoxal::supervisor::host`, compiled by the
+//! framework library's exact-train `supervisor` profile. This package is the
+//! executable: one operand, one subscriber, one call. Keeping it a separate
+//! package and a separate process is the point - what moved into the library
+//! is the implementation, not the boundary.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -81,7 +83,7 @@ async fn main() -> ExitCode {
     // needing a subscriber installed.
     let cli = Cli::parse();
     init_tracing();
-    match supervisor::run(&cli.bundle_root).await {
+    match phoxal::supervisor::host::run(&cli.bundle_root).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // Stderr is the supervisor's diagnostic channel under systemd,

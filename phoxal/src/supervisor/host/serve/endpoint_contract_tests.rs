@@ -8,22 +8,22 @@
 use std::fmt::Debug;
 use std::fs;
 
-use phoxal::bus::{
+use crate::bus::{
     Codec, Endpoint, EndpointKind, EndpointSemantics, MessagePack, Publish, QueryEndpoint,
     ServeQuery, Topic,
 };
-use phoxal::identity::{ParticipantId, ProducerId};
-use phoxal::model::builder::RobotBuilder;
-use phoxal::model::manifest::ManifestDocument;
-use phoxal::runtime::api as runtime;
-use phoxal::supervisor::api as supervisor;
-use phoxal::supervisor::api::command::{Command, CommandOutcome};
-use phoxal::supervisor::api::connect::{ConnectReply, ConnectRequest};
-use phoxal::version::FrameworkVersion;
+use crate::identity::{ParticipantId, ProducerId};
+use crate::model::builder::RobotBuilder;
+use crate::model::manifest::ManifestDocument;
+use crate::runtime::api as runtime;
+use crate::supervisor::api as supervisor;
+use crate::supervisor::api::command::{Command, CommandOutcome};
+use crate::supervisor::api::connect::{ConnectReply, ConnectRequest};
+use crate::version::FrameworkVersion;
 
 use super::{HostAction, bundle_entry, command, connect_reply};
-use crate::supervisor::presence::Presence;
-use crate::supervisor::state::ExecutionState;
+use crate::supervisor::host::presence::Presence;
+use crate::supervisor::host::state::ExecutionState;
 
 #[test]
 fn connect_reply_reports_the_owner_framework_train() {

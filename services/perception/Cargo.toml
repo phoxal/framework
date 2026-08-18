@@ -15,7 +15,7 @@ name = "phoxal-service-perception"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
+phoxal = { workspace = true, features = ["participant"] }
 tracing = { workspace = true }
 
 [lints]

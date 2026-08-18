@@ -6,11 +6,15 @@
 //! process whose only failure mode was "the fabric went away", which the
 //! supervisor cannot survive anyway.
 //!
-//! It lives with the bus rather than in the CLI because the router and the
-//! participants that dial it must agree on transport policy - see
-//! `crate::bus::session::apply_phoxal_transport_policy`, which both paths share.
-//! It is behind the `router` feature so participant authors never see a router
-//! in their API surface: only the supervisor enables it.
+//! Its file sits in `bus/` because the router and the participants that dial
+//! it must agree on transport policy - see
+//! `crate::bus::session::apply_phoxal_transport_policy`, which both paths
+//! share - and because the bus module is the one place in this crate that may
+//! name Zenoh at all. It is nonetheless declared by `lib.rs`, as `crate::router`
+//! under the `supervisor` profile: it needs `zenoh/unstable`, which only that
+//! profile carries, and a profile gate may live nowhere but the crate root.
+//!
+//! Nothing here is public in any profile. Raw fabric ownership is not an SDK.
 
 use crate::identity::ExecutionId;
 
@@ -23,10 +27,10 @@ use crate::bus::session::{
 ///
 /// The router owns no keys, publishes nothing, and subscribes to nothing. It
 /// routes, and it stays alive until dropped or [`Router::close`]d. Participants,
-/// including the supervisor's own [`crate::bus::BusHandle`], reach it as ordinary clients
-/// over the endpoints it listens on.
+/// including the supervisor's own [`crate::bus::BusHandle`], reach it as
+/// ordinary clients over the endpoints it listens on.
 #[derive(Debug)]
-pub struct Router {
+pub(crate) struct Router {
     session: zenoh::Session,
 }
 
@@ -42,7 +46,7 @@ impl Router {
     /// endpoint. There is no readiness probe to run afterwards and no window in
     /// which the endpoint exists but does not accept. `router_config` pins
     /// the settings that guarantee this.
-    pub async fn open(execution: ExecutionId, listen_endpoints: &[String]) -> Result<Self> {
+    pub(crate) async fn open(execution: ExecutionId, listen_endpoints: &[String]) -> Result<Self> {
         validate_listen_endpoints(listen_endpoints)?;
         let session = zenoh::open(router_config(execution, listen_endpoints)?)
             .await
@@ -64,24 +68,8 @@ impl Router {
         Ok(Router { session })
     }
 
-    /// The endpoints the router actually bound.
-    ///
-    /// This is the answer to "which port did I get". Asking to listen on
-    /// `tcp/0.0.0.0:0` binds an ephemeral port chosen by the OS, and this is the
-    /// only way to learn it - the requested endpoint string still says `:0`.
-    /// Callers that pin a port get back what they asked for.
-    pub async fn bound_endpoints(&self) -> Vec<String> {
-        self.session
-            .info()
-            .locators()
-            .await
-            .iter()
-            .map(ToString::to_string)
-            .collect()
-    }
-
     /// Close the router, dropping every link to it.
-    pub async fn close(self) -> Result<()> {
+    pub(crate) async fn close(self) -> Result<()> {
         self.session
             .close()
             .await
@@ -111,7 +99,7 @@ fn validate_listen_endpoints(listen_endpoints: &[String]) -> Result<()> {
 /// local unix socket identifies its peer only by a generated UUID, so watching
 /// those would duplicate Liveliness with strictly worse information.
 #[derive(Debug)]
-pub struct RouterWatch {
+pub(crate) struct RouterWatch {
     session: zenoh::Session,
     _listener: zenoh::session::LinkEventsListener<()>,
 }
@@ -123,7 +111,10 @@ impl RouterWatch {
     /// loss; a Zenoh client reconnects transparently, so a later recovery is
     /// not reported here - the caller has already decided what a lost fabric
     /// means by then.
-    pub async fn open(endpoint: &str, on_lost: impl Fn() + Send + Sync + 'static) -> Result<Self> {
+    pub(crate) async fn open(
+        endpoint: &str,
+        on_lost: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self> {
         let session = zenoh::open(client_config(endpoint)?)
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
@@ -150,7 +141,7 @@ impl RouterWatch {
 
     /// Stop watching. Call this before closing the router being watched, so an
     /// ordinary shutdown is not reported as a loss.
-    pub async fn close(self) -> Result<()> {
+    pub(crate) async fn close(self) -> Result<()> {
         self.session
             .close()
             .await

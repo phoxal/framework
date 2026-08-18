@@ -135,7 +135,10 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service and component crates' dependency on `phoxal`.
-phoxal = { path = "phoxal", version = "=0.65.0" }
+# `default-features = false`: `phoxal` carries one consumer profile per
+# supported role, and a member that inherits a default profile never says which
+# role it is. Every member below names its own.
+phoxal = { path = "phoxal", version = "=0.65.0", default-features = false }
 phoxal-macros = { path = "crates/macros", version = "=0.65.0" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the

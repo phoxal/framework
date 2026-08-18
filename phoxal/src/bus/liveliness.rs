@@ -257,6 +257,10 @@ impl KeyLivelinessObserver {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 impl BusOwner {
     /// Declare one exact execution-scoped infrastructure presence lease.
     ///

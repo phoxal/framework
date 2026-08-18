@@ -81,7 +81,7 @@ pub(crate) const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// contributes to a key: two executions never share a key, even when they run
 /// the same logical robot.
 #[derive(Clone, Debug)]
-pub struct BusConfig {
+pub(crate) struct BusConfig {
     /// The supervised run this session joins. It is the key root, so traffic
     /// from a previous execution - an ad hoc publisher, an attached tool, a
     /// replayed recording, a second checkout of the same project - physically
@@ -98,6 +98,10 @@ pub struct BusConfig {
     connect_endpoints: Vec<String>,
 }
 
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 impl BusConfig {
     /// Build a participant bus configuration.
     pub fn for_participant(
@@ -251,7 +255,11 @@ struct TransportErrors {
 /// `BusOwner` is deliberately not `Clone`: it is the only value that can
 /// initiate terminal close, owns the outbound and subscription workers, and
 /// contains the producer identity pinned to this session incarnation.
-pub struct BusOwner {
+///
+/// Crate-private. Owning the transport is what `phoxal::session`,
+/// `phoxal::simulator`, `phoxal::supervisor::host` and the participant runner
+/// each do on their consumer's behalf; no consumer profile receives it.
+pub(crate) struct BusOwner {
     inner: Arc<BusInner>,
     liveness: Arc<AtomicBool>,
 }
@@ -1122,7 +1130,13 @@ impl BusOwner {
 }
 
 /// The Zenoh session identity a run's router opens with.
-#[cfg(any(test, feature = "router"))]
+///
+/// Compiled in every profile, because a domain module never asks which profile
+/// it is in. Its one non-test caller is the embedded router, which only the
+/// `supervisor` profile compiles, so every other profile builds it and uses it
+/// nowhere - which is a dead-code report worth allowing rather than a second
+/// shape of this module.
+#[allow(dead_code, reason = "the embedded router is its only non-test caller")]
 pub(crate) fn zenoh_id_for(execution: ExecutionId) -> Result<ZenohId> {
     ZenohId::try_from(&u128::from(execution).to_le_bytes()[..])
         .map_err(|error| BusError::Transport(format!("execution {execution}: {error}")))
