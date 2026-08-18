@@ -4,7 +4,9 @@ use super::lifecycle::{
     BusLease, ClockDisciplineLost, LoopExit, ParticipantFault, Runner, RunnerClock, RunnerTasks,
     StartOutcome, close_session_with_result, runner_clock,
 };
+use crate::bus::{BusConfig, BusFault, BusOwner, ParticipantReadyEvents, ParticipantReadyStatus};
 use crate::bus::{RobotInstant, TimelineId};
+use crate::identity::ParticipantId;
 use crate::participant::api::Participant;
 use crate::participant::bus_log;
 use crate::participant::clock::real::RealClock;
@@ -14,8 +16,6 @@ use crate::participant::managed::{
     ManagedTaskExit, ManagedTaskFailure, ManagedTaskPolicy, ManagedTasks,
 };
 use crate::participant::scheduler::AnyStepScheduler;
-use phoxal_bus::{BusConfig, BusFault, BusOwner, ParticipantReadyEvents, ParticipantReadyStatus};
-use phoxal_runtime_contract::identity::ParticipantId;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -245,7 +245,7 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
 
     let participant_id = ParticipantId::new("hanging-startup").expect("valid participant id");
     let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-        phoxal_runtime_contract::identity::ExecutionId::mint(),
+        crate::identity::ExecutionId::mint(),
         participant_id.clone(),
         Vec::new(),
     ))
@@ -348,13 +348,13 @@ async fn wait_for_ready_status(events: &ParticipantReadyEvents, status: Particip
 
 async fn assert_owner_worker_failure_reaches_lifecycle(
     worker: &str,
-    abort: impl FnOnce(&phoxal_bus::BusHandle) -> phoxal_bus::Result<()>,
+    abort: impl FnOnce(&crate::bus::BusHandle) -> crate::bus::Result<()>,
 ) {
     BUS_FAULT_SHUTDOWN_CALLED.store(false, Ordering::Release);
     let participant_id =
         ParticipantId::new("transport-fault-lifecycle").expect("valid participant id");
     let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-        phoxal_runtime_contract::identity::ExecutionId::mint(),
+        crate::identity::ExecutionId::mint(),
         participant_id.clone(),
         Vec::new(),
     ))

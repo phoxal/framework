@@ -121,25 +121,25 @@ impl TopicDef {
 impl Descriptor {
     pub(super) fn endpoint_kind(&self) -> TokenStream {
         match self {
-            Self::State(_) => quote! { ::phoxal_bus::EndpointKind::State },
-            Self::Sample(_) => quote! { ::phoxal_bus::EndpointKind::Sample },
-            Self::Event(_) => quote! { ::phoxal_bus::EndpointKind::Event },
-            Self::Stream { .. } => quote! { ::phoxal_bus::EndpointKind::Stream },
-            Self::Setpoint(_) => quote! { ::phoxal_bus::EndpointKind::Setpoint },
-            Self::Query { .. } => quote! { ::phoxal_bus::EndpointKind::Query },
+            Self::State(_) => quote! { ::phoxal::bus::EndpointKind::State },
+            Self::Sample(_) => quote! { ::phoxal::bus::EndpointKind::Sample },
+            Self::Event(_) => quote! { ::phoxal::bus::EndpointKind::Event },
+            Self::Stream { .. } => quote! { ::phoxal::bus::EndpointKind::Stream },
+            Self::Setpoint(_) => quote! { ::phoxal::bus::EndpointKind::Setpoint },
+            Self::Query { .. } => quote! { ::phoxal::bus::EndpointKind::Query },
         }
     }
 
     /// The transport family selected by this descriptor.
     pub(super) fn delivery_family(&self) -> TokenStream {
         match self {
-            Self::State(_) => quote! { ::phoxal_bus::DeliveryFamily::State },
-            Self::Sample(_) => quote! { ::phoxal_bus::DeliveryFamily::Sample },
-            Self::Setpoint(_) => quote! { ::phoxal_bus::DeliveryFamily::Setpoint },
+            Self::State(_) => quote! { ::phoxal::bus::DeliveryFamily::State },
+            Self::Sample(_) => quote! { ::phoxal::bus::DeliveryFamily::Sample },
+            Self::Setpoint(_) => quote! { ::phoxal::bus::DeliveryFamily::Setpoint },
             Self::Stream { .. } | Self::Event(_) => {
-                quote! { ::phoxal_bus::DeliveryFamily::Stream }
+                quote! { ::phoxal::bus::DeliveryFamily::Stream }
             }
-            Self::Query { .. } => quote! { ::phoxal_bus::DeliveryFamily::Query },
+            Self::Query { .. } => quote! { ::phoxal::bus::DeliveryFamily::Query },
         }
     }
 
@@ -147,13 +147,13 @@ impl Descriptor {
     /// ordered transport with streams while retaining their step-time marker.
     pub(super) fn delivery_marker_trait(&self) -> TokenStream {
         match self {
-            Self::Setpoint(_) => quote! { ::phoxal_bus::SetpointDeliveryContract },
+            Self::Setpoint(_) => quote! { ::phoxal::bus::SetpointDeliveryContract },
             Self::Stream { .. } | Self::Event(_) => {
-                quote! { ::phoxal_bus::StreamDeliveryContract }
+                quote! { ::phoxal::bus::StreamDeliveryContract }
             }
-            Self::Sample(_) => quote! { ::phoxal_bus::SampleDeliveryContract },
+            Self::Sample(_) => quote! { ::phoxal::bus::SampleDeliveryContract },
             Self::State(_) => {
-                quote! { ::phoxal_bus::StateDeliveryContract }
+                quote! { ::phoxal::bus::StateDeliveryContract }
             }
             Self::Query { .. } => {
                 unreachable!("query bodies have no pub/sub delivery marker")
@@ -163,11 +163,11 @@ impl Descriptor {
 
     pub(super) fn semantic_marker_trait(&self) -> Option<TokenStream> {
         match self {
-            Self::Setpoint(_) => Some(quote! { ::phoxal_bus::SetpointContract }),
-            Self::Stream { .. } => Some(quote! { ::phoxal_bus::StreamContract }),
-            Self::State(_) => Some(quote! { ::phoxal_bus::StateContract }),
-            Self::Event(_) => Some(quote! { ::phoxal_bus::EventContract }),
-            Self::Sample(_) => Some(quote! { ::phoxal_bus::SampleContract }),
+            Self::Setpoint(_) => Some(quote! { ::phoxal::bus::SetpointContract }),
+            Self::Stream { .. } => Some(quote! { ::phoxal::bus::StreamContract }),
+            Self::State(_) => Some(quote! { ::phoxal::bus::StateContract }),
+            Self::Event(_) => Some(quote! { ::phoxal::bus::EventContract }),
+            Self::Sample(_) => Some(quote! { ::phoxal::bus::SampleContract }),
             Self::Query { .. } => None,
         }
     }
@@ -180,8 +180,8 @@ impl Descriptor {
     /// `Stream<_, Out>` semantic markers without copying an endpoint allowlist.
     pub(super) fn client_role_marker_trait(&self) -> Option<TokenStream> {
         match self.owner_role() {
-            OwnerRole::Publishes => Some(quote! { ::phoxal_bus::ClientReceiveContract }),
-            OwnerRole::Consumes => Some(quote! { ::phoxal_bus::ClientPublishContract }),
+            OwnerRole::Publishes => Some(quote! { ::phoxal::bus::ClientReceiveContract }),
+            OwnerRole::Consumes => Some(quote! { ::phoxal::bus::ClientPublishContract }),
             OwnerRole::Serves => None,
         }
     }

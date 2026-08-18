@@ -31,7 +31,7 @@
 //!   [`TimelineAuthority`](stamp::TimelineAuthority) mints for the world
 //!   authority alone.
 //! - [`SamplePublisher<B>`](publisher::SamplePublisher) publishes with
-//!   a [`CaptureStamp`](crate::time::CaptureStamp) the driver derived from its
+//!   a [`CaptureStamp`](crate::bus::time::CaptureStamp) the driver derived from its
 //!   device clock, and honestly represents an untranslated capture rather than
 //!   inventing one.
 //! - [`SetpointPublisher<B>`](publisher::SetpointPublisher) and
@@ -40,7 +40,7 @@
 //!
 //! # Receiving is bus-stamped
 //!
-//! Every subscription stamps a [`LocalInstant`](crate::time::LocalInstant)
+//! Every subscription stamps a [`LocalInstant`](crate::bus::time::LocalInstant)
 //! immediately after `recv_async()` returns and **before** decode, so ring
 //! residence and decode cost are inside every consumer's measured age rather
 //! than outside it. Observation time is process-local and receiver-specific, so
@@ -49,7 +49,7 @@
 //! # Delivery-family QoS
 //!
 //! Pub/sub admission is selected by the contract's
-//! [`crate::DeliveryFamily`]. Every
+//! [`crate::bus::DeliveryFamily`]. Every
 //! publish returns immediately and the one session-owned drain remains the
 //! only Zenoh publisher:
 //!
@@ -81,10 +81,10 @@ pub mod subscriber;
 
 use zenoh::sample::Sample;
 
-use crate::abi::{Codec, CodecId, EncodingError, EncodingMetadata, MessagePack};
-use crate::contract::{EndpointDescriptor, Payload};
-use crate::error::{BusError, MetadataProblem, Result};
-use crate::metadata::BusMetadata;
+use crate::bus::abi::{Codec, CodecId, EncodingError, EncodingMetadata, MessagePack};
+use crate::bus::contract::{EndpointDescriptor, Payload};
+use crate::bus::error::{BusError, MetadataProblem, Result};
+use crate::bus::metadata::BusMetadata;
 
 /// Decode one Zenoh sample into the payload of endpoint `E`, validating the codec before
 /// touching the payload.
@@ -140,8 +140,10 @@ pub(crate) fn decode_payload<B: Payload>(sample: &Sample, topic: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abi::CodecError;
-    use crate::test_support::{Target, TargetEndpoint, sample, sample_with, sample_with_encoding};
+    use crate::bus::abi::CodecError;
+    use crate::bus::test_support::{
+        Target, TargetEndpoint, sample, sample_with, sample_with_encoding,
+    };
 
     const TOPIC: &str = "yTEST/drive/target";
 

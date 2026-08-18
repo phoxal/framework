@@ -1,4 +1,4 @@
-use phoxal_bus::ProducerId;
+use phoxal::bus::ProducerId;
 use serde_json::{Value, json};
 
 use super::instant;
@@ -140,7 +140,7 @@ fn perception_rejects_unbounded_batches_and_detector_identity_on_both_codecs() {
             .unwrap();
     let body = crate::robot::perception::Detections::try_new(
         crate::robot::perception::SourceRef::parse("front_camera.rgb").unwrap(),
-        phoxal_bus::TimeWindow::exact(instant(7)),
+        phoxal::bus::TimeWindow::exact(instant(7)),
         Vec::new(),
     )
     .unwrap();
@@ -172,7 +172,7 @@ fn perception_constructors_enforce_the_same_bounds_as_deserialization() {
     let detection = Detection::try_new("crate", 0.5, [0.0; 3], "camera").unwrap();
     let error = Detections::try_new(
         crate::robot::perception::SourceRef::parse("front_camera.rgb").unwrap(),
-        phoxal_bus::TimeWindow::exact(instant(7)),
+        phoxal::bus::TimeWindow::exact(instant(7)),
         vec![detection; 4_097],
     )
     .unwrap_err();

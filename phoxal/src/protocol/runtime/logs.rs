@@ -46,7 +46,7 @@ pub enum LogValue {
     Bool(bool),
     I64(i64),
     U64(u64),
-    F64(#[serde(deserialize_with = "crate::runtime::logs::deserialize_finite_f64")] f64),
+    F64(#[serde(deserialize_with = "crate::protocol::runtime::logs::deserialize_finite_f64")] f64),
     String(String),
 }
 
@@ -86,7 +86,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use phoxal_runtime_contract::wire_schema::{DescribeWire, EnumRepresentation, WireSchema};
+    use crate::__compat::wire::{DescribeWire, EnumRepresentation, WireSchema};
 
     use super::{Event, Level, LogValue, Timestamp};
 

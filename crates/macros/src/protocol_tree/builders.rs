@@ -119,8 +119,8 @@ impl Node {
         match &self.var {
             Some(var) => quote! {
                 #[doc = #name_str]
-                pub fn #name(self, #var: impl ::core::fmt::Display) -> ::core::result::Result<#target, ::phoxal_bus::KeySegmentError> {
-                    let #var = ::phoxal_bus::KeySegment::new(#var.to_string())?;
+                pub fn #name(self, #var: impl ::core::fmt::Display) -> ::core::result::Result<#target, ::phoxal::bus::KeySegmentError> {
+                    let #var = ::phoxal::bus::KeySegment::new(#var.to_string())?;
                     Ok(#name::Builder::__from(self, #var))
                 }
             },
@@ -167,7 +167,7 @@ impl Node {
         let ancestor_field_idents: Vec<Ident> = (0..ancestor_vars.len()).map(seg_field).collect();
         let field_decls: Vec<TokenStream> = field_idents
             .iter()
-            .map(|f| quote! { pub(super) #f: ::phoxal_bus::KeySegment })
+            .map(|f| quote! { pub(super) #f: ::phoxal::bus::KeySegment })
             .collect();
 
         // The `__from` constructor: a static node takes only the parent builder; a
@@ -197,7 +197,7 @@ impl Node {
                 // This node's var is the next positional field after the ancestors'.
                 let new_field = seg_field(ancestor_vars.len());
                 quote! {
-                    pub(super) fn __from(#parent_pat: #parent_builder_ty, #var: ::phoxal_bus::KeySegment) -> Self {
+                    pub(super) fn __from(#parent_pat: #parent_builder_ty, #var: ::phoxal::bus::KeySegment) -> Self {
                         Self { #(#parent_fields,)* #new_field: #var }
                     }
                 }
@@ -219,15 +219,15 @@ impl Node {
             let (fmt_str, doc_key) = topic.leaf.builder_key_parts(tree_id, &path);
             let doc = format!("Wire topic: `{doc_key}`.");
             let constructor = if field_idents.is_empty() {
-                quote! { ::phoxal_bus::Topic::new_static(#fmt_str) }
+                quote! { ::phoxal::bus::Topic::new_static(#fmt_str) }
             } else {
                 quote! {
-                    ::phoxal_bus::Topic::new_owned(::std::format!(#fmt_str, #(self.#field_idents),*))
+                    ::phoxal::bus::Topic::new_owned(::std::format!(#fmt_str, #(self.#field_idents),*))
                 }
             };
             leaf_methods.extend(quote! {
                 #[doc = #doc]
-                pub fn #leaf(self) -> ::phoxal_bus::Topic<#kind_ty> {
+                pub fn #leaf(self) -> ::phoxal::bus::Topic<#kind_ty> {
                     #constructor
                 }
             });
@@ -273,22 +273,22 @@ impl TopicDef {
             Descriptor::Query { .. } => {
                 let endpoint = self.endpoint_ident();
                 let endpoint =
-                    quote! { crate::#family::endpoint #(::#endpoint_path)* :: #endpoint };
+                    quote! { crate::protocol::#family::endpoint #(::#endpoint_path)* :: #endpoint };
                 match side {
-                    Side::Client => quote! { ::phoxal_bus::AskQuery<#endpoint> },
-                    Side::Owner => quote! { ::phoxal_bus::ServeQuery<#endpoint> },
+                    Side::Client => quote! { ::phoxal::bus::AskQuery<#endpoint> },
+                    Side::Owner => quote! { ::phoxal::bus::ServeQuery<#endpoint> },
                 }
             }
             _ => {
                 let endpoint = self.endpoint_ident();
                 let endpoint =
-                    quote! { crate::#family::endpoint #(::#endpoint_path)* :: #endpoint };
+                    quote! { crate::protocol::#family::endpoint #(::#endpoint_path)* :: #endpoint };
                 match (side, self.descriptor.owner_role()) {
                     (Side::Owner, OwnerRole::Publishes) | (Side::Client, OwnerRole::Consumes) => {
-                        quote! { ::phoxal_bus::Publish<#endpoint> }
+                        quote! { ::phoxal::bus::Publish<#endpoint> }
                     }
                     (Side::Client, OwnerRole::Publishes) | (Side::Owner, OwnerRole::Consumes) => {
-                        quote! { ::phoxal_bus::Subscribe<#endpoint> }
+                        quote! { ::phoxal::bus::Subscribe<#endpoint> }
                     }
                     (_, OwnerRole::Serves) => unreachable!("query handled above"),
                 }

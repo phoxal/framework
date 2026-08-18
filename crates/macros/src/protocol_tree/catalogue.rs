@@ -223,7 +223,10 @@ fn qualify_endpoint_payloads(
             ));
         }
         let leaf = path.segments[0].ident.clone();
-        let mut qualified: syn::Path = syn::parse_quote!(crate);
+        // The one invocation of this macro lives in `phoxal::protocol`, so a
+        // catalogue path is rooted there. Hard-coded because this macro is
+        // deleted outright in the next step; nothing generalizes it.
+        let mut qualified: syn::Path = syn::parse_quote!(crate::protocol);
         for segment in logical_path {
             qualified
                 .segments

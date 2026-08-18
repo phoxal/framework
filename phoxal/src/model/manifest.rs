@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::robot::Robot;
+use crate::model::robot::Robot;
 
 /// The only manifest schema this framework train reads or writes.
 ///
@@ -60,7 +60,7 @@ impl ManifestDocument {
 #[cfg(test)]
 mod tests {
     use super::{MANIFEST_SCHEMA, ManifestDocument};
-    use crate::builder::RobotBuilder;
+    use crate::model::builder::RobotBuilder;
 
     fn document() -> ManifestDocument {
         ManifestDocument::new(

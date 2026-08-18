@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use phoxal_model::AssetId;
-use phoxal_model::manifest::ManifestDocument;
+use crate::model::AssetId;
+use crate::model::manifest::ManifestDocument;
 
-use crate::{
+use crate::bundle::{
     ASSETS_DIR, BIN_DIR, BundleError, BundlePath, BundleRoot, MANIFEST_FILE, ParticipantAssets,
     RuntimeBundle, copy_executable_source, create_staging_root, ensure_staging_directory,
     prepare_publish_parent, publish_staging_root, reject_existing_target, write_new_file,

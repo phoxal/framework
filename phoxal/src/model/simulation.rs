@@ -7,8 +7,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::component::capability::CapabilityKind;
-use crate::identity::{CapabilityId, LinkId};
+use crate::model::component::capability::CapabilityKind;
+use crate::model::identity::{CapabilityId, LinkId};
 
 /// The simulated behaviour of one component type.
 #[derive(
@@ -129,8 +129,8 @@ impl Capability {
     PartialEq,
     Eq,
     Default,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ActuatorType {
     #[default]
@@ -148,8 +148,8 @@ pub enum ActuatorType {
     Copy,
     PartialEq,
     Eq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CameraProjection {
     Planar,

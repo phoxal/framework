@@ -6,8 +6,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::source::Violations;
-use crate::source::document::{Document, DocumentKind, Origin, SourceError};
+use crate::authoring::source::Violations;
+use crate::authoring::source::document::{Document, DocumentKind, Origin, SourceError};
 
 /// A versioned authored `simulation.yaml` document; the schema tag selects
 /// the variant.
@@ -73,7 +73,9 @@ impl Manifest {
     /// # Errors
     ///
     /// Returns whatever the selected generation's normalization rejects.
-    pub(crate) fn normalize(self) -> Result<crate::normalized::Simulation, crate::CompileError> {
+    pub(crate) fn normalize(
+        self,
+    ) -> Result<crate::authoring::normalized::Simulation, crate::authoring::CompileError> {
         match self {
             Self::V0(body) => body.normalize(),
         }

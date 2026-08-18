@@ -26,10 +26,10 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use phoxal_runtime_contract::identity::TimelineId;
+use crate::identity::TimelineId;
 
-use crate::error::{BusError, Result};
-use crate::time::RobotInstant;
+use crate::bus::error::{BusError, Result};
+use crate::bus::time::RobotInstant;
 
 mod sealed {
     pub trait Sealed {}
@@ -48,7 +48,7 @@ pub trait StepStamp: sealed::Sealed {
 /// instant.
 ///
 /// Handing it to
-/// [`StatePublisher::publish`](crate::handle::publisher::StatePublisher::publish)
+/// [`StatePublisher::publish`](crate::bus::handle::publisher::StatePublisher::publish)
 /// is the sole way a service expresses robot time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StepToken {
@@ -159,7 +159,7 @@ impl Drop for TimelineAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::timeline;
+    use crate::bus::test_support::timeline;
 
     #[test]
     fn only_one_timeline_authority_exists_at_a_time() {

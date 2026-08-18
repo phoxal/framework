@@ -6,16 +6,16 @@
 //! root is execution-scoped, a previous run's tokens are on different keys
 //! entirely and can never be mistaken for the current run's.
 
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
+use crate::identity::{ParticipantId, ProducerId};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleKind;
 
-use crate::error::{BusError, KeyProblem, Result};
-use crate::metadata::ParticipantSourceIdentity;
-use crate::session::{BusHandle, BusOwner};
+use crate::bus::error::{BusError, KeyProblem, Result};
+use crate::bus::metadata::ParticipantSourceIdentity;
+use crate::bus::session::{BusHandle, BusOwner};
 
 pub(crate) const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 
@@ -630,8 +630,8 @@ mod tests {
     /// its own process, which is the whole point.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_stand_in_lease_is_an_ordinary_participant_ready_key() {
-        use crate::session::BusConfig;
-        use phoxal_runtime_contract::identity::ExecutionId;
+        use crate::bus::session::BusConfig;
+        use crate::identity::ExecutionId;
 
         let controller = ParticipantId::new("webots").unwrap();
         let driver = ParticipantId::new("front_left_drive").unwrap();

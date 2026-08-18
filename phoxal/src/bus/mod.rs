@@ -1,5 +1,3 @@
-//! # phoxal-bus
-//!
 //! The Phoxal bus ABI floor: the Zenoh-native wire boundary, plus API-version,
 //! payload, and endpoint-descriptor primitives the bus client is generic over.
 //!
@@ -25,18 +23,18 @@
 //! ([`BusMetadata`] and [`QueryFailure`]), and the encoding string. Beneath them
 //! sits the Zenoh wire protocol version, without which no session forms in the
 //! first place. All five are preserved across framework majors, are emitted in
-//! this crate's contract surface, and are pinned by their own tests in the
+//! this module's contract surface, and are pinned by their own tests in the
 //! modules that own them. A change to any of them is a bootstrap-breaking
 //! event; see `xtask/README.md` "When a gate fails", rule 3 "A frozen bootstrap
 //! fact drifted".
 //!
-//! # The crate-root facade
+//! # The module-root facade
 //!
 //! Every author-facing item below is re-exported from the module that owns it,
-//! as one deliberate flat surface for downstream crates. The receive surface
-//! is delivery-specific (`StateView`, `SetpointReceiver`, `SampleReceiver`,
-//! and `StreamReceiver`); the generic ring implementations remain internal.
-//! Code *inside* this crate always imports from the owning module, never
+//! as one deliberate flat surface for consumers. The receive surface is
+//! delivery-specific (`StateView`, `SetpointReceiver`, `SampleReceiver`, and
+//! `StreamReceiver`); the generic ring implementations remain internal.
+//! Code *inside* the framework always imports from the owning module, never
 //! through this facade.
 
 pub mod abi;
@@ -63,15 +61,15 @@ mod test_support;
 
 /// The runtime identities the bus carries.
 ///
-/// They are owned by `phoxal-runtime-contract`, which is where they are
-/// documented and which is the path to name them by outside the bus. They are
+/// They are owned by [`crate::identity`], which is where they are documented
+/// and which is the path to name them by outside the bus. They are
 /// re-exported here because they appear in this crate's own signatures
 /// ([`BusConfig::execution`](session::BusConfig::execution),
 /// [`SourceAttribution::producer`](metadata::SourceAttribution::producer),
 /// [`RobotInstant::timeline`](time::RobotInstant::timeline)), so a caller
 /// working against the bus should not have to reach for a second crate to name
 /// what the bus hands it.
-pub use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
+pub use crate::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
@@ -128,30 +126,30 @@ pub use topic::{
 /// The contract surface this crate owns: the envelopes that ride beside a body
 /// and the exact wire text a peer has to spell.
 ///
-/// Not public API. It exists so compatibility CI can read this crate's declared
-/// process boundary out of the crate itself.
+/// Not public API. It exists so compatibility CI can read this declared
+/// process boundary out of the code that declares it.
 ///
-/// Endpoints are deliberately absent: this crate owns the transport floor, and
-/// every concrete endpoint is declared by `phoxal-protocol`. So are
+/// Endpoints are deliberately absent: this module owns the transport floor, and
+/// every concrete endpoint is declared by the protocol tree. So are
 /// [`DeliveryFamily`] and [`EndpointKind`], which are compile-time typing with
 /// no bytes of their own - they reach a surface only as the spelling on an
 /// endpoint record, which is where they actually decide something.
 ///
-/// Most of what this crate declares is bootstrap-reachable, so the
+/// Most of what this module declares is bootstrap-reachable, so the
 /// compatibility checker classifies it as the frozen bootstrap and routes any
 /// drift in it to the stop rule. `participant-ready-key` is the exception: an
 /// attaching client composes it only after the bootstrap has already told it
 /// the two peers agree.
 #[doc(hidden)]
 pub mod __compat {
-    use phoxal_runtime_contract::contract_surface::{ContractRecord, ContractSurface};
-    use phoxal_runtime_contract::wire_schema::DescribeWire;
+    use crate::__compat::surface::{ContractRecord, ContractSurface};
+    use crate::__compat::wire::DescribeWire;
 
-    use crate::abi::CodecId;
-    use crate::liveliness::PARTICIPANT_LIVELINESS_PREFIX;
-    use crate::metadata::BusMetadata;
-    use crate::query::QueryFailure;
-    use crate::session::{BUS_KEY_PREFIX, ZENOH_WIRE_PROTOCOL_VERSION};
+    use crate::bus::abi::CodecId;
+    use crate::bus::liveliness::PARTICIPANT_LIVELINESS_PREFIX;
+    use crate::bus::metadata::BusMetadata;
+    use crate::bus::query::QueryFailure;
+    use crate::bus::session::{BUS_KEY_PREFIX, ZENOH_WIRE_PROTOCOL_VERSION};
 
     /// The canonical rendering of this crate's contract surface.
     #[must_use]
@@ -231,16 +229,16 @@ pub mod __compat {
         /// bus actually writes.
         #[test]
         fn the_declared_envelope_shapes_are_the_shapes_the_bus_writes() {
-            use phoxal_runtime_contract::identity::{ParticipantId, TimelineId};
-            use phoxal_runtime_contract::wire_schema::DescribeWire;
+            use crate::__compat::wire::DescribeWire;
+            use crate::identity::{ParticipantId, TimelineId};
 
-            use crate::abi::CodecId;
-            use crate::metadata::{
+            use crate::bus::abi::CodecId;
+            use crate::bus::metadata::{
                 BusMetadata, ParticipantSourceIdentity, SourceAttribution, StreamPosition,
             };
-            use crate::query::{QueryCode, QueryFailure};
-            use crate::test_support::producer;
-            use crate::time::{RobotInstant, TimeWindow};
+            use crate::bus::query::{QueryCode, QueryFailure};
+            use crate::bus::test_support::producer;
+            use crate::bus::time::{RobotInstant, TimeWindow};
 
             let metadata = BusMetadata {
                 codec: CodecId::MessagePack.as_u8(),

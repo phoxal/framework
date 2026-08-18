@@ -22,8 +22,6 @@ anyhow = { workspace = true }
 # Tests use only the explicit caller-owned harness; shipped binaries do not
 # enable this bypass feature.
 phoxal = { workspace = true, features = ["test-harness"] }
-
-phoxal-bus = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

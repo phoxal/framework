@@ -7,13 +7,13 @@
 
 use std::fmt;
 
-use crate::component::capability::{CapabilityKind, CapabilityRole, StructuralKind};
-use crate::identity::{
+use crate::model::component::capability::{CapabilityKind, CapabilityRole, StructuralKind};
+use crate::model::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId,
     MODULE_INSTANCE_SEPARATOR,
 };
-use crate::robot::KinematicKind;
-use crate::structure::JointKind;
+use crate::model::robot::KinematicKind;
+use crate::model::structure::JointKind;
 
 /// A canonical robot model that violates the runtime model's invariants.
 #[derive(Debug, thiserror::Error)]
@@ -197,9 +197,9 @@ pub enum ModelError {
     Structure(#[from] StructureError),
 }
 
-impl From<phoxal_runtime_contract::identity::TopologyIdError> for ModelError {
-    fn from(error: phoxal_runtime_contract::identity::TopologyIdError) -> Self {
-        use phoxal_runtime_contract::identity::TopologyIdError;
+impl From<crate::identity::TopologyIdError> for ModelError {
+    fn from(error: crate::identity::TopologyIdError) -> Self {
+        use crate::identity::TopologyIdError;
         match error {
             TopologyIdError::Robot(value) => Self::NotNormalized {
                 kind: IdentifierKind::RobotId,

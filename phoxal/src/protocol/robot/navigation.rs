@@ -134,16 +134,16 @@ impl TryFrom<RequestIdWire> for RequestId {
 )]
 #[serde(try_from = "NavigationOperationIdWire")]
 pub struct NavigationOperationId {
-    producer: ::phoxal_bus::ProducerId,
+    producer: ::phoxal::bus::ProducerId,
     sequence: u64,
 }
 
 impl NavigationOperationId {
-    pub fn new(producer: ::phoxal_bus::ProducerId, sequence: u64) -> Option<Self> {
+    pub fn new(producer: ::phoxal::bus::ProducerId, sequence: u64) -> Option<Self> {
         (sequence != 0).then_some(Self { producer, sequence })
     }
     #[must_use]
-    pub const fn producer(&self) -> ::phoxal_bus::ProducerId {
+    pub const fn producer(&self) -> ::phoxal::bus::ProducerId {
         self.producer
     }
     #[must_use]
@@ -155,7 +155,7 @@ impl NavigationOperationId {
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NavigationOperationIdWire {
-    producer: ::phoxal_bus::ProducerId,
+    producer: ::phoxal::bus::ProducerId,
     sequence: u64,
 }
 

@@ -19,8 +19,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::source::document::{ComposeError, Document, DocumentKind, Origin, SourceError};
-use crate::source::{document_path, strict_yaml};
+use crate::authoring::source::document::{
+    ComposeError, Document, DocumentKind, Origin, SourceError,
+};
+use crate::authoring::source::{document_path, strict_yaml};
 
 /// A versioned authored `robot.yaml` document; the schema tag selects the variant.
 ///
@@ -125,7 +127,9 @@ impl Manifest {
     /// # Errors
     ///
     /// Returns whatever the selected generation's normalization rejects.
-    pub(crate) fn normalize(self) -> Result<crate::normalized::Robot, crate::CompileError> {
+    pub(crate) fn normalize(
+        self,
+    ) -> Result<crate::authoring::normalized::Robot, crate::authoring::CompileError> {
         match self {
             Self::V0(body) => body.normalize(),
         }

@@ -3,7 +3,7 @@
 //!
 //! This vocabulary sits beside the versioned document bodies rather than inside
 //! one of them: it is the shape the compiler hands to build tooling as
-//! [`crate::CompiledDriver::config`], so it belongs to the document family
+//! [`crate::authoring::CompiledDriver::config`], so it belongs to the document family
 //! rather than to one generation of its grammar. A generation that spells the
 //! block differently converts into these types in its own normalizer, and the
 //! compiler below the normalization boundary keeps seeing exactly one driver

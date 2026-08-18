@@ -16,14 +16,14 @@
 //!
 //! Receiver-side observation time is deliberately absent: it is process-local
 //! and receiver-specific, so it belongs on
-//! [`Observed`](crate::handle::subscriber::Observed), never on the wire.
+//! [`Observed`](crate::bus::handle::subscriber::Observed), never on the wire.
 
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
-use phoxal_runtime_contract::wire_schema::{DescribeWire, WireSchema};
+use crate::__compat::wire::{DescribeWire, WireSchema};
+use crate::identity::{ParticipantId, ProducerId};
 use serde::{Deserialize, Serialize};
 
-use crate::abi::CodecId;
-use crate::time::{RobotInstant, TimeWindow};
+use crate::bus::abi::CodecId;
+use crate::bus::time::{RobotInstant, TimeWindow};
 
 const MAX_METADATA_BYTES: usize = 4 * 1024;
 pub(crate) const MAX_SOURCE_LABEL_BYTES: usize = 512;
@@ -239,9 +239,9 @@ impl BusMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal_runtime_contract::identity::TimelineId;
+    use crate::identity::TimelineId;
 
-    use crate::test_support::producer;
+    use crate::bus::test_support::producer;
 
     /// The label's serializer is hand-written, so the declared shape is checked
     /// against a real serialized value rather than asserted.

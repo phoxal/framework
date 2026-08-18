@@ -8,9 +8,9 @@
 use std::borrow::Borrow;
 use std::fmt;
 
-use crate::error::{IdentifierKind, ModelError};
+use crate::model::error::{IdentifierKind, ModelError};
 
-pub use phoxal_runtime_contract::identity::{ComponentInstanceId, RobotId, ServiceId};
+pub use crate::identity::{ComponentInstanceId, RobotId, ServiceId};
 
 /// The separator that joins a component instance id to a component-local
 /// structural id when a component's structure is flattened into the robot's.
@@ -31,7 +31,7 @@ pub const MODULE_INSTANCE_SEPARATOR: &str = "__";
 /// distinct authored identifiers collide into a single runtime identity.
 #[must_use]
 pub fn is_valid_token(value: &str) -> bool {
-    phoxal_runtime_contract::identity::is_topology_token(value)
+    crate::identity::is_topology_token(value)
 }
 
 /// Declare a newtype whose values are exactly the strings [`is_valid_token`]
@@ -137,14 +137,14 @@ macro_rules! token_identifier {
             }
         }
 
-        impl phoxal_runtime_contract::wire_schema::DescribeWire for $name {
+        impl crate::__compat::wire::DescribeWire for $name {
             // Invariant: this states what `#[serde(into = "String")]` above
             // writes - the bare normalized token as one string. The token
             // grammar itself is a decode rule, not a shape.
-            fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
-                phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+            fn wire_schema() -> crate::__compat::wire::WireSchema {
+                crate::__compat::wire::WireSchema::opaque(
                     stringify!($name),
-                    phoxal_runtime_contract::wire_schema::WireSchema::String,
+                    crate::__compat::wire::WireSchema::String,
                 )
             }
         }
@@ -251,13 +251,13 @@ macro_rules! structural_identifier {
             }
         }
 
-        impl phoxal_runtime_contract::wire_schema::DescribeWire for $name {
+        impl crate::__compat::wire::DescribeWire for $name {
             // Invariant: this states what `#[serde(transparent)]` above writes -
             // the authored structural name as one string, with no wrapper.
-            fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
-                phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+            fn wire_schema() -> crate::__compat::wire::WireSchema {
+                crate::__compat::wire::WireSchema::opaque(
                     stringify!($name),
-                    phoxal_runtime_contract::wire_schema::WireSchema::String,
+                    crate::__compat::wire::WireSchema::String,
                 )
             }
         }
@@ -278,12 +278,20 @@ structural_identifier!(
 ///
 /// The wire form is that single dotted string, not a two-field object.
 #[derive(
-    serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 // The wire form is one dotted string, so that is also the schema: describing
 // the two private halves would describe a shape no document ever carries.
-#[cfg_attr(feature = "schemars", schemars(with = "String", inline))]
+#[schemars(with = "String", inline)]
 #[serde(try_from = "String", into = "String")]
 pub struct CapabilityRef {
     pub component_id: ComponentInstanceId,
@@ -338,14 +346,14 @@ impl From<CapabilityRef> for String {
     }
 }
 
-impl phoxal_runtime_contract::wire_schema::DescribeWire for CapabilityRef {
+impl crate::__compat::wire::DescribeWire for CapabilityRef {
     // Invariant: this states what `#[serde(into = "String")]` above writes -
     // the one dotted `component.capability` string, never the two-field struct
     // the type is made of.
-    fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
-        phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+    fn wire_schema() -> crate::__compat::wire::WireSchema {
+        crate::__compat::wire::WireSchema::opaque(
             "CapabilityRef",
-            phoxal_runtime_contract::wire_schema::WireSchema::String,
+            crate::__compat::wire::WireSchema::String,
         )
     }
 }

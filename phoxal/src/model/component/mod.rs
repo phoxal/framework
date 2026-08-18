@@ -1,14 +1,14 @@
 //! Canonical component facts used after authored documents are loaded.
 //!
-//! Runtime consumers use these unversioned values through [`crate::Robot`].
+//! Runtime consumers use these unversioned values through [`crate::model::Robot`].
 
 pub mod capability;
 
 use std::collections::BTreeMap;
 
-use crate::identity::CapabilityId;
-use crate::simulation::Simulation;
-use crate::structure::Structure;
+use crate::model::identity::CapabilityId;
+use crate::model::simulation::Simulation;
+use crate::model::structure::Structure;
 use capability::Capability;
 
 /// One component *type*: the capabilities and structure every instance of it

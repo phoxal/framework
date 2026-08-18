@@ -1,7 +1,7 @@
 //! The machine-readable statement of what one crate puts on a process
 //! boundary.
 //!
-//! [`wire_schema`](crate::wire_schema) says what one *type* serializes to. This
+//! [`wire_schema`](crate::__compat::wire) says what one *type* serializes to. This
 //! module says which contracts a crate owns at all: which endpoints exist and
 //! what each carries, which persisted documents it defines, which envelope
 //! rides beside every sample, which wire constants a peer has to spell exactly,
@@ -34,7 +34,7 @@
 //! report a break that never happened in every baseline comparison at once.
 //! Change the rendering only together with a deliberate re-baseline.
 
-use crate::wire_schema::{WireSchema, render_list, render_string};
+use crate::__compat::wire::{WireSchema, render_list, render_string};
 
 /// Everything one crate declares at a process boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -361,7 +361,7 @@ fn render_optional(schema: Option<&WireSchema>, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire_schema::{WireField, WireSchema};
+    use crate::__compat::wire::{WireField, WireSchema};
 
     fn body() -> WireSchema {
         WireSchema::structure([WireField::required("value", WireSchema::U8)])

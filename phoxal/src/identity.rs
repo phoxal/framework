@@ -28,7 +28,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::wire_schema::{DescribeWire, WireSchema};
+use crate::__compat::wire::{DescribeWire, WireSchema};
 
 /// The grammar shared by the topology identities that appear in a persisted
 /// runtime document.

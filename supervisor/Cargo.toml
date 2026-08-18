@@ -25,13 +25,9 @@ clap = { workspace = true }
 # reaches the one orderly shutdown path.
 ctrlc = { workspace = true }
 libc = { workspace = true }
-phoxal-bundle = { workspace = true }
 # `router` opens the embedded Zenoh router in this process.
 # The supervisor is the only crate in the workspace that enables it.
-phoxal-bus = { workspace = true, features = ["router"] }
-phoxal-model = { workspace = true }
-phoxal-protocol = { workspace = true }
-phoxal-runtime-contract = { workspace = true }
+phoxal = { workspace = true, features = ["router"] }
 serde = { workspace = true }
 system_shutdown = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

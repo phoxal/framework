@@ -8,17 +8,17 @@
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use phoxal_bundle::RuntimeBundle;
-use phoxal_bus::{
+use phoxal::bundle::RuntimeBundle;
+use phoxal::bus::{
     BusHandle, Codec, EndpointDescriptor, IncomingQuery, MessagePack, QueryFailure,
     ServerQueryable, StreamPublisher,
 };
-use phoxal_model::manifest::ManifestDocument;
-use phoxal_protocol::supervisor;
-use phoxal_protocol::supervisor::command::{Command, CommandOutcome};
-use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
-use phoxal_protocol::supervisor::execution::SnapshotDocument;
-use phoxal_runtime_contract::version::FrameworkVersion;
+use phoxal::model::manifest::ManifestDocument;
+use phoxal::supervisor::api as supervisor;
+use phoxal::supervisor::api::command::{Command, CommandOutcome};
+use phoxal::supervisor::api::connect::{ConnectReply, ConnectRequest};
+use phoxal::supervisor::api::execution::SnapshotDocument;
+use phoxal::version::FrameworkVersion;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 

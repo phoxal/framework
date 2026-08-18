@@ -12,11 +12,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::ModelError;
-use crate::component::Component;
-use crate::identity::ComponentInstanceId;
-use crate::robot::ComponentInstance;
-use crate::structure::{Collision, Geometry, Joint, JointKind, Structure};
+use crate::model::ModelError;
+use crate::model::component::Component;
+use crate::model::identity::ComponentInstanceId;
+use crate::model::robot::ComponentInstance;
+use crate::model::structure::{Collision, Geometry, Joint, JointKind, Structure};
 
 const AXIS_INVARIANCE_TOLERANCE: f64 = 1.0e-9;
 
@@ -57,7 +57,7 @@ impl<'de> serde::Deserialize<'de> for FootprintEnvelope {
 pub fn compile(
     structure: &Structure,
     instances: &BTreeMap<ComponentInstanceId, ComponentInstance>,
-    components: &BTreeMap<crate::identity::ComponentTypeId, Component>,
+    components: &BTreeMap<crate::model::identity::ComponentTypeId, Component>,
 ) -> Result<Option<FootprintEnvelope>, ModelError> {
     let mut radius = structure_radius(structure, MovableCollisionPolicy::Reject)?;
     for instance in instances.values() {
@@ -191,7 +191,7 @@ fn rotation_keeps_collision_fixed(joint: &Joint, collision: &Collision) -> bool 
 
 fn collision_shape_radius(
     geometry: &Geometry,
-    link: &crate::identity::LinkId,
+    link: &crate::model::identity::LinkId,
 ) -> Result<f64, ModelError> {
     match geometry {
         Geometry::Box { size } => Ok(half_norm(*size)),
@@ -210,7 +210,7 @@ fn link_transform(structure: &Structure, target: &str) -> Result<Transform, Mode
         current: &str,
         transform: Transform,
         target: &str,
-        movable_joint: Option<&crate::identity::JointId>,
+        movable_joint: Option<&crate::model::identity::JointId>,
     ) -> Result<Option<Transform>, ModelError> {
         if current == target {
             if let Some(joint) = movable_joint {
@@ -386,8 +386,8 @@ mod tests {
         })
     }
 
-    fn structure(links: Value, joints: Value) -> crate::structure::Structure {
-        crate::compiler::structure(json!({
+    fn structure(links: Value, joints: Value) -> crate::model::structure::Structure {
+        crate::model::compiler::structure(json!({
             "name": "footprint-test",
             "links": links,
             "joints": joints,
@@ -471,7 +471,7 @@ mod tests {
         );
         assert!(matches!(
             compile(&mesh, &BTreeMap::new(), &BTreeMap::new()),
-            Err(crate::ModelError::FootprintMesh { .. })
+            Err(crate::model::ModelError::FootprintMesh { .. })
         ));
 
         let movable = structure(
@@ -495,7 +495,7 @@ mod tests {
         );
         assert!(matches!(
             compile(&movable, &BTreeMap::new(), &BTreeMap::new()),
-            Err(crate::ModelError::FootprintMovableJoint { .. })
+            Err(crate::model::ModelError::FootprintMovableJoint { .. })
         ));
     }
 
@@ -527,26 +527,26 @@ mod tests {
                 "limit": { "lower": 0.0, "upper": 0.0, "effort": 0.0, "velocity": 1.0 }
             }]),
         );
-        let component_type = crate::identity::ComponentTypeId::new("wheel")
+        let component_type = crate::model::identity::ComponentTypeId::new("wheel")
             .expect("the component type id is normalized");
-        let instance_id = crate::identity::ComponentInstanceId::new("wheel-1")
+        let instance_id = crate::model::identity::ComponentInstanceId::new("wheel-1")
             .expect("the component instance id is normalized");
-        let instance = crate::compiler::component_instance(
+        let instance = crate::model::compiler::component_instance(
             component_type.clone(),
-            crate::identity::LinkId::new("component_mount"),
+            crate::model::identity::LinkId::new("component_mount"),
             BTreeMap::new(),
             BTreeMap::new(),
             None,
         );
         let components = BTreeMap::from([(
             component_type,
-            crate::compiler::component(BTreeMap::new(), component, None),
+            crate::model::compiler::component(BTreeMap::new(), component, None),
         )]);
         let instances = BTreeMap::from([(instance_id, instance)]);
 
         assert!(matches!(
             compile(&robot, &instances, &components),
-            Err(crate::ModelError::FootprintMovableJoint { joint })
+            Err(crate::model::ModelError::FootprintMovableJoint { joint })
                 if joint.as_str() == "motor_joint"
         ));
     }
@@ -566,26 +566,26 @@ mod tests {
             }]),
         );
         let component = structure(json!([link("body", sphere_collision(0.1))]), json!([]));
-        let component_type = crate::identity::ComponentTypeId::new("tool")
+        let component_type = crate::model::identity::ComponentTypeId::new("tool")
             .expect("the test component type id is normalized");
-        let instance_id = crate::identity::ComponentInstanceId::new("tool-1")
+        let instance_id = crate::model::identity::ComponentInstanceId::new("tool-1")
             .expect("the test component instance id is normalized");
-        let instance = crate::compiler::component_instance(
+        let instance = crate::model::compiler::component_instance(
             component_type.clone(),
-            crate::identity::LinkId::new("arm"),
+            crate::model::identity::LinkId::new("arm"),
             BTreeMap::new(),
             BTreeMap::new(),
             None,
         );
         let components = BTreeMap::from([(
             component_type,
-            crate::compiler::component(BTreeMap::new(), component, None),
+            crate::model::compiler::component(BTreeMap::new(), component, None),
         )]);
         let instances = BTreeMap::from([(instance_id, instance)]);
 
         assert!(matches!(
             compile(&robot, &instances, &components),
-            Err(crate::ModelError::FootprintMovableJoint { .. })
+            Err(crate::model::ModelError::FootprintMovableJoint { .. })
         ));
     }
 }

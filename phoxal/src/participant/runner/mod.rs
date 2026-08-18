@@ -142,7 +142,7 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
 /// The harness never opens or closes the bus and cannot claim a Ready lease.
 #[cfg(feature = "test-harness")]
 pub async fn run_test_harness<R, S>(
-    bus: &phoxal_bus::BusHandle,
+    bus: &crate::bus::BusHandle,
     harness: TestHarness,
     shutdown: S,
 ) -> crate::Result<()>
@@ -177,7 +177,7 @@ where
 #[cfg(feature = "test-harness")]
 #[doc(hidden)]
 pub async fn run_test_harness_with_clock<R, C, S>(
-    bus: &phoxal_bus::BusHandle,
+    bus: &crate::bus::BusHandle,
     harness: TestHarness,
     clock: C,
     shutdown: S,

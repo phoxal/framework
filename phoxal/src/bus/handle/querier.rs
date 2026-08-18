@@ -7,13 +7,13 @@ use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::Sample;
 
-use crate::abi::{Codec, MessagePack};
-use crate::contract::{Payload, QueryEndpointDescriptor};
-use crate::error::Result;
-use crate::handle::decode_payload;
-use crate::query::{QueryError, QueryFailure};
-use crate::session::BusHandle;
-use crate::topic::{AskQuery, Topic};
+use crate::bus::abi::{Codec, MessagePack};
+use crate::bus::contract::{Payload, QueryEndpointDescriptor};
+use crate::bus::error::Result;
+use crate::bus::handle::decode_payload;
+use crate::bus::query::{QueryError, QueryFailure};
+use crate::bus::session::BusHandle;
+use crate::bus::topic::{AskQuery, Topic};
 
 /// The Phoxal-pinned finite query timeout - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,7 +52,7 @@ impl<Req: Payload, Resp: Payload> Querier<Req, Resp> {
     ///
     /// The author-facing path is `ctx.querier(...)` in `Participant::setup`.
     /// `pub` only because the generated api tree and the runner live in other
-    /// crates; see [`crate::handle::stamp`]'s module docs.
+    /// crates; see [`crate::bus::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub fn new<E>(bus: BusHandle, topic: &Topic<AskQuery<E>>, timeout: Duration) -> Result<Self>
     where
@@ -159,9 +159,9 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    use crate::query::QueryCode;
-    use crate::session::BusOwner;
-    use crate::test_support::{GetEndpoint, GetRequest, GetResponse, participant_config};
+    use crate::bus::query::QueryCode;
+    use crate::bus::session::BusOwner;
+    use crate::bus::test_support::{GetEndpoint, GetRequest, GetResponse, participant_config};
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -283,7 +283,7 @@ mod tests {
 
         let report = owner.close().await;
         assert!(report.timed_out.iter().any(|timeout| {
-            matches!(timeout, crate::BusCloseTimeout::Operations(count) if *count > 0)
+            matches!(timeout, crate::bus::BusCloseTimeout::Operations(count) if *count > 0)
         }));
         let _ = query_task.await;
         server_task.abort();

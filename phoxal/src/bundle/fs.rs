@@ -4,9 +4,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use phoxal_model::manifest::ManifestDocument;
+use crate::model::manifest::ManifestDocument;
 
-use crate::{BundleError, BundlePath, MANIFEST_FILE};
+use crate::bundle::{BundleError, BundlePath, MANIFEST_FILE};
 
 /// The mode the writer gives every staged directory and executable.
 const EXECUTABLE_MODE: u32 = 0o755;

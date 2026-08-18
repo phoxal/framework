@@ -1,4 +1,4 @@
-use phoxal_bundle::RuntimeBundle;
+use phoxal::bundle::RuntimeBundle;
 use phoxal_fixture::staged_bundle;
 
 /// One `manifest.json` serves every consumer, and the one lookup all of them

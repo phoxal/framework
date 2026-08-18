@@ -21,12 +21,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use phoxal_model::CapabilityRole;
-use phoxal_model::component::capability::CapabilityKind;
-use phoxal_model::identity::{CapabilityId, LinkId};
-use phoxal_model::robot::{KinematicConfig, MotionLimits};
+use crate::model::CapabilityRole;
+use crate::model::component::capability::CapabilityKind;
+use crate::model::identity::{CapabilityId, LinkId};
+use crate::model::robot::{KinematicConfig, MotionLimits};
 
-use crate::source::robot::driver::DriverConfig;
+use crate::authoring::source::robot::driver::DriverConfig;
 
 /// One authored robot, in the form the compiler consumes.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,13 +74,13 @@ pub(crate) struct CapabilityParameters {
 /// One authored component type, in the form the compiler consumes.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Component {
-    pub capabilities: BTreeMap<CapabilityId, phoxal_model::component::capability::Capability>,
+    pub capabilities: BTreeMap<CapabilityId, crate::model::component::capability::Capability>,
 }
 
 /// One authored component type's simulated behaviour.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Simulation {
-    pub capabilities: BTreeMap<CapabilityId, phoxal_model::simulation::Capability>,
+    pub capabilities: BTreeMap<CapabilityId, crate::model::simulation::Capability>,
     pub links: BTreeMap<LinkId, Option<String>>,
 }
 
@@ -96,7 +96,7 @@ impl Robot {
 
 #[cfg(test)]
 mod tests {
-    use crate::source::robot::Manifest;
+    use crate::authoring::source::robot::Manifest;
 
     /// Two spellings of one robot that differ only in the order an author
     /// happened to write things down.

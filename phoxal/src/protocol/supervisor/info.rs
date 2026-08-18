@@ -1,7 +1,7 @@
 //! What robot this supervisor is running.
 //!
 //! The answer is the bundle's own `manifest.json`, handed back exactly as it
-//! is on disk: one schema-tagged [`phoxal_model::manifest::ManifestDocument`].
+//! is on disk: one schema-tagged [`crate::model::manifest::ManifestDocument`].
 //! A client that needs the robot identity, the mounted components or a
 //! runtime's configuration therefore reads the same document every participant
 //! reads, instead of a second projection of it that could disagree.
@@ -20,4 +20,4 @@
 pub struct InfoRequest {}
 
 /// The bundle's manifest document, byte-identical to `manifest.json`.
-pub type InfoReply = phoxal_model::manifest::ManifestDocument;
+pub type InfoReply = crate::model::manifest::ManifestDocument;

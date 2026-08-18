@@ -1,4 +1,4 @@
-use crate::robot::perception::SourceRef;
+use crate::protocol::robot::perception::SourceRef;
 
 /// Ask to open a video stream for one exact camera capability at an
 /// optional size. The pre-v1 backend currently has no encoded

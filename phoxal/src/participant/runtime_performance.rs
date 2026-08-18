@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use phoxal_bus::{
+use crate::bus::{
     BusHandle, RobotInstant, RuntimeBufferKind, RuntimeDirection, RuntimeMetricSnapshot,
     StreamPublisher,
 };
-use phoxal_protocol::runtime;
+use crate::runtime::api as runtime;
 
 use crate::participant::duration_nanos;
 use crate::participant::scheduler::StepSchedule;
@@ -350,7 +350,7 @@ fn mean(total: u128, count: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal_bus::{RuntimeMetricKey, RuntimeMetricSnapshot};
+    use crate::bus::{RuntimeMetricKey, RuntimeMetricSnapshot};
 
     fn row(index: usize) -> RuntimeMetricSnapshot {
         RuntimeMetricSnapshot {
@@ -461,7 +461,7 @@ mod tests {
     fn lateness_uses_fired_at_minus_target_independently_of_missed_ticks() {
         let schedule = StepSchedule::hz(100.0);
         let mut performance = RuntimePerformance::new(Some(schedule));
-        let line = phoxal_bus::TimelineId::mint();
+        let line = crate::bus::TimelineId::mint();
         let observation = performance
             .begin_step(
                 RobotInstant::new(line, 100),

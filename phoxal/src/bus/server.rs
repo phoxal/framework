@@ -2,7 +2,7 @@
 //! runner uses to drive typed participant query handlers.
 //!
 //! This is the responder side of the request/response leg whose caller is
-//! [`Querier`](crate::handle::querier::Querier). [`BusHandle::declare_server`] declares a
+//! [`Querier`](crate::bus::handle::querier::Querier). [`BusHandle::declare_server`] declares a
 //! `complete` queryable on one topic key; [`ServerQueryable::recv`] yields each
 //! [`IncomingQuery`], which exposes the raw request bytes + its [`BusMetadata`]
 //! and the two reply legs:
@@ -21,11 +21,11 @@ use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::query::{Query as ZenohQuery, Queryable};
 
-use crate::abi::{CodecId, EncodingMetadata};
-use crate::error::{BusError, MetadataProblem, Result};
-use crate::metadata::BusMetadata;
-use crate::query::QueryFailure;
-use crate::session::BusHandle;
+use crate::bus::abi::{CodecId, EncodingMetadata};
+use crate::bus::error::{BusError, MetadataProblem, Result};
+use crate::bus::metadata::BusMetadata;
+use crate::bus::query::QueryFailure;
+use crate::bus::session::BusHandle;
 
 /// Serves requests for one owner-bound query endpoint.
 ///
@@ -96,7 +96,7 @@ impl IncomingQuery {
         let encoding: EncodingMetadata = encoding
             .to_string()
             .parse()
-            .map_err(|e: crate::abi::EncodingError| self.malformed(e.into()))?;
+            .map_err(|e: crate::bus::abi::EncodingError| self.malformed(e.into()))?;
         if encoding.codec_id() != Some(CodecId::MessagePack) {
             return Err(BusError::UnsupportedCodec {
                 codec: encoding.codec,
@@ -177,8 +177,8 @@ mod tests {
     use serial_test::serial;
     use zenoh::bytes::Encoding;
 
-    use crate::session::BusOwner;
-    use crate::test_support::{GetRequest, metadata, participant_config};
+    use crate::bus::session::BusOwner;
+    use crate::bus::test_support::{GetRequest, metadata, participant_config};
 
     /// A request whose encoding string and attachment disagree about the codec
     /// does not agree with itself about how to read its own body, so the server

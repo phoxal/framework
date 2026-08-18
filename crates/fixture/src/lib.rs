@@ -25,10 +25,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use phoxal_bundle::{BundlePath, BundleWriter, RuntimeBundle};
-use phoxal_manifest::{SourceSet, source};
-use phoxal_model::identity::ServiceId;
-use phoxal_model::{ManifestDocument, Robot};
+use phoxal::authoring::{SourceSet, source};
+use phoxal::bundle::{BundlePath, BundleWriter, RuntimeBundle};
+use phoxal::model::identity::ServiceId;
+use phoxal::model::{ManifestDocument, Robot};
 use tempfile::TempDir;
 
 /// The official services the CLI would resolve for this fixture.
@@ -172,7 +172,7 @@ pub fn manifest() -> ManifestDocument {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_bundle::RuntimeBundle;
+    use phoxal::bundle::RuntimeBundle;
 
     use super::{robot, staged_bundle, staged_bundle_without_component_models};
 

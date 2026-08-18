@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use phoxal_bus::{BusHandle, Codec, MessagePack, StreamEvent, StreamPublisher, StreamReceiver};
-use phoxal_protocol::{runtime, supervisor};
+use phoxal::bus::{BusHandle, Codec, MessagePack, StreamEvent, StreamPublisher, StreamReceiver};
+use phoxal::runtime::api as runtime;
+use phoxal::supervisor::api as supervisor;
 use tokio::task::JoinSet;
 
 const RETENTION: Duration = Duration::from_secs(5 * 60);

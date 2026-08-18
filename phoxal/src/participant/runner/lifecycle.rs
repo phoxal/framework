@@ -7,6 +7,9 @@
 use std::future::Future;
 use std::time::Duration;
 
+use crate::bundle::RuntimeBundle;
+use crate::bus::{BusFault, BusHandle, BusOwner, ParticipantReadyToken};
+use crate::identity::ParticipantId;
 use crate::participant::api::Participant;
 use crate::participant::bus_log::{self, BusLogTask};
 use crate::participant::clock::simulation::SimulationClock;
@@ -16,9 +19,6 @@ use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTas
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::SimulationClockHandle;
 use crate::participant::scheduler::{AnyStepScheduler, StepSchedule};
-use phoxal_bundle::RuntimeBundle;
-use phoxal_bus::{BusFault, BusHandle, BusOwner, ParticipantReadyToken};
-use phoxal_runtime_contract::identity::ParticipantId;
 
 use super::ShutdownController;
 use super::query::QuerySurface;
@@ -526,7 +526,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             )
             .await;
         }
-        if let phoxal_bus::BusTerminal::Fatal(fault) = bus.terminal() {
+        if let crate::bus::BusTerminal::Fatal(fault) = bus.terminal() {
             if let Some(queries) = queries.take() {
                 queries.close();
             }

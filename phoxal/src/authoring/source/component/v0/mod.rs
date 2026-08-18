@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use phoxal_model::identity::is_valid_token;
+use crate::model::identity::is_valid_token;
 use serde::{Deserialize, Serialize};
 
 use capability::{Capability, StructuralTarget};
@@ -167,11 +167,16 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::CompileError::Transcode`] when an authored capability
+    /// Returns [`crate::authoring::CompileError::Transcode`] when an authored capability
     /// does not adopt into its canonical counterpart.
-    pub(crate) fn normalize(self) -> Result<crate::normalized::Component, crate::CompileError> {
-        Ok(crate::normalized::Component {
-            capabilities: crate::source::transcode(&self.capabilities, "component capabilities")?,
+    pub(crate) fn normalize(
+        self,
+    ) -> Result<crate::authoring::normalized::Component, crate::authoring::CompileError> {
+        Ok(crate::authoring::normalized::Component {
+            capabilities: crate::authoring::source::transcode(
+                &self.capabilities,
+                "component capabilities",
+            )?,
         })
     }
 
@@ -251,7 +256,7 @@ fn is_valid_positive(value: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::source::component::Manifest;
+    use crate::authoring::source::component::Manifest;
 
     #[test]
     fn schema_is_required_and_exact() -> anyhow::Result<()> {

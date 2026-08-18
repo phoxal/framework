@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use phoxal_manifest::{CompileError, SourceSet};
-use phoxal_model::identity::ServiceId;
+use phoxal::authoring::{CompileError, SourceSet};
+use phoxal::model::identity::ServiceId;
 
 /// The official service set a caller supplies. The framework owns no list of
 /// its own, so every compilation in this file states one.
@@ -21,15 +21,16 @@ fn official_services(ids: &[&str]) -> Vec<ServiceId> {
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(2)
-        .expect("this crate sits at crates/<name> under the workspace root")
+        .nth(1)
+        .expect("this crate sits at phoxal/ under the workspace root")
         .to_path_buf()
 }
 
 fn sources(project_root: &Path) -> SourceSet {
-    let manifest = phoxal_manifest::source::robot::Manifest::load(project_root.join("robot.yaml"))
-        .expect("repository robot manifest must parse");
-    let phoxal_manifest::source::robot::Manifest::V0(manifest) = manifest;
+    let manifest =
+        phoxal::authoring::source::robot::Manifest::load(project_root.join("robot.yaml"))
+            .expect("repository robot manifest must parse");
+    let phoxal::authoring::source::robot::Manifest::V0(manifest) = manifest;
     let workspace = workspace_root();
     let component_roots = manifest
         .used_component_types()
@@ -136,7 +137,7 @@ robot:
             .joint("motor_joint")
             .expect("stock motor joint")
             .kind(),
-        phoxal_model::structure::JointKind::Continuous
+        phoxal::model::structure::JointKind::Continuous
     );
     assert_eq!(
         component
@@ -188,7 +189,7 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
                 .components()
                 .flat_map(|component| component.component_type().structure().asset_ids()),
         )
-        .map(phoxal_model::AssetId::as_str)
+        .map(phoxal::model::AssetId::as_str)
         .collect::<std::collections::BTreeSet<_>>();
     assert!(model_ids.contains("components/drive_motor/meshes/drive_motor.obj"));
     assert!(model_ids.is_subset(&asset_ids));
@@ -203,10 +204,10 @@ fn authored_capability_roles_are_persisted_and_ordered_in_the_robot_model() {
     assert_eq!(
         compiled
             .robot()
-            .capabilities_with_role(phoxal_model::CapabilityRole::Safety),
-        vec![phoxal_model::identity::CapabilityRef::new(
-            phoxal_model::identity::ComponentInstanceId::new("front_center_tof").unwrap(),
-            phoxal_model::identity::CapabilityId::new("range").unwrap(),
+            .capabilities_with_role(phoxal::model::CapabilityRole::Safety),
+        vec![phoxal::model::identity::CapabilityRef::new(
+            phoxal::model::identity::ComponentInstanceId::new("front_center_tof").unwrap(),
+            phoxal::model::identity::CapabilityId::new("range").unwrap(),
         )]
     );
     assert_eq!(
@@ -485,7 +486,7 @@ fn driver_blocks_and_simulations_are_carried_by_the_robot_itself() {
 #[test]
 fn the_compatibility_probe_states_both_readings() {
     let workspace = workspace_root();
-    let accepted = phoxal_manifest::probe(
+    let accepted = phoxal::authoring::probe(
         sources(&workspace.join("fixture/robot/rgbd-imu-diff-drive")),
         &official_services(&["drive"]),
     );
@@ -511,7 +512,7 @@ fn the_compatibility_probe_states_both_readings() {
 
     let mut broken = sources(&workspace.join("fixture/robot/rgbd-imu-diff-drive"));
     broken.robot_manifest = workspace.join("fixture/robot/rgbd-imu-diff-drive/nowhere.yaml");
-    let rejected = phoxal_manifest::probe(broken, &official_services(&[]));
+    let rejected = phoxal::authoring::probe(broken, &official_services(&[]));
     assert_eq!(rejected["accepted"], serde_json::json!(false));
     assert!(
         rejected["error"]

@@ -3,13 +3,13 @@
 //! The product grammar has exactly one robot generation today, so nothing in
 //! the shipped crate demonstrates what happens when a second one arrives. This
 //! module is that demonstration, and it is test-only on purpose: the DTO below
-//! is not registered in [`crate::source::robot::Manifest`], carries no schema
+//! is not registered in [`crate::authoring::source::robot::Manifest`], carries no schema
 //! tag in the product grammar, and no authored document can select it.
 //!
 //! What it proves is structural. A document written in a deliberately different
 //! source language - renamed keys, sequences where the current generation uses
 //! maps, a driver block spelled its own way, its own defaults - normalizes into
-//! exactly the same [`crate::normalized::Robot`] as the equivalent current
+//! exactly the same [`crate::authoring::normalized::Robot`] as the equivalent current
 //! document, and compiles through the same compiler to the same canonical
 //! output. A real future generation therefore costs one DTO and one
 //! `normalize`, and no second copy of the compiler.
@@ -19,11 +19,11 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use phoxal_model::CapabilityRole;
-use phoxal_model::component::capability::CapabilityKind;
-use phoxal_model::robot::KinematicConfig;
+use crate::model::CapabilityRole;
+use crate::model::component::capability::CapabilityKind;
+use crate::model::robot::KinematicConfig;
 
-use crate::normalized;
+use crate::authoring::normalized;
 
 /// A robot source language that is not the one the product ships.
 ///
@@ -121,7 +121,7 @@ impl TestAltRobotDto {
             id: self.identity,
             structure: self.frame,
             kinematic: self.drive,
-            motion_limits: phoxal_model::robot::MotionLimits {
+            motion_limits: crate::model::robot::MotionLimits {
                 max_linear_speed_mps: self.limits.linear_mps,
                 max_angular_speed_radps: self.limits.angular_radps,
             },
@@ -135,9 +135,9 @@ impl TestAltRobotDto {
                             component_type: mount.kind,
                             mount_link: mount.link,
                             driver: mount.hardware.map(|hardware| {
-                                crate::source::robot::driver::DriverConfig {
+                                crate::authoring::source::robot::driver::DriverConfig {
                                     connection:
-                                        crate::source::robot::driver::ConnectionConfig::Can {
+                                        crate::authoring::source::robot::driver::ConnectionConfig::Can {
                                             bus: hardware.can_bus,
                                             node_id: hardware.can_node,
                                         },
@@ -288,14 +288,14 @@ fn component_roots(robot: &normalized::Robot) -> BTreeMap<String, PathBuf> {
         .collect()
 }
 
-/// Compile one normalized robot exactly the way [`crate::SourceSet::compile`]
+/// Compile one normalized robot exactly the way [`crate::authoring::SourceSet::compile`]
 /// does, so both generations go through the same compiler and not merely
 /// through the same function names.
-fn compile(project_root: &Path, robot: &normalized::Robot) -> crate::CompiledProject {
+fn compile(project_root: &Path, robot: &normalized::Robot) -> crate::authoring::CompiledProject {
     let project_root = project_root
         .canonicalize()
         .expect("the staged project resolves");
-    let resolved = crate::ResolvedSources {
+    let resolved = crate::authoring::ResolvedSources {
         robot_manifest: project_root.join("robot.yaml"),
         robot_root: project_root.clone(),
         component_roots: component_roots(robot),
@@ -306,7 +306,7 @@ fn compile(project_root: &Path, robot: &normalized::Robot) -> crate::CompiledPro
     let assets = resolved
         .compile_assets(&project_root, robot, &model)
         .expect("the assets compile");
-    crate::CompiledProject {
+    crate::authoring::CompiledProject {
         robot: model,
         assets,
     }
@@ -316,12 +316,12 @@ fn compile(project_root: &Path, robot: &normalized::Robot) -> crate::CompiledPro
 /// the authored `services:` map rather than only the authored half.
 const OFFICIAL_SERVICES: [&str; 2] = ["drive", "localize"];
 
-fn official(id: &str) -> phoxal_model::identity::ServiceId {
-    phoxal_model::identity::ServiceId::new(id).expect("an official service id is a token")
+fn official(id: &str) -> crate::model::identity::ServiceId {
+    crate::model::identity::ServiceId::new(id).expect("an official service id is a token")
 }
 
 /// What a compiled project is, as bytes, for comparison across generations.
-fn rendered(project: &crate::CompiledProject) -> String {
+fn rendered(project: &crate::authoring::CompiledProject) -> String {
     let mut rendered = serde_json::to_string_pretty(project.robot()).expect("the model serializes");
     rendered.push('\n');
     for (id, bytes) in project.assets().iter() {
@@ -336,7 +336,7 @@ fn a_second_source_generation_normalizes_into_the_same_robot() {
     let temp = tempfile::tempdir().expect("a staging directory");
     staged_project(temp.path());
 
-    let current = crate::source::robot::Manifest::load(temp.path().join("robot.yaml"))
+    let current = crate::authoring::source::robot::Manifest::load(temp.path().join("robot.yaml"))
         .expect("the current-generation document parses")
         .normalize()
         .expect("the current-generation document normalizes");
@@ -356,7 +356,7 @@ fn a_second_source_generation_compiles_to_the_same_canonical_output() {
     let temp = tempfile::tempdir().expect("a staging directory");
     staged_project(temp.path());
 
-    let current = crate::source::robot::Manifest::load(temp.path().join("robot.yaml"))
+    let current = crate::authoring::source::robot::Manifest::load(temp.path().join("robot.yaml"))
         .expect("the current-generation document parses")
         .normalize()
         .expect("the current-generation document normalizes");

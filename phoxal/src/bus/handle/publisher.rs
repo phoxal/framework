@@ -6,17 +6,17 @@
 
 use std::marker::PhantomData;
 
-use crate::abi::{Codec, MessagePack};
-use crate::contract::{
+use crate::bus::abi::{Codec, MessagePack};
+use crate::bus::contract::{
     DeliveryFamily, EndpointDescriptor, EventContract, SampleContract, SetpointContract,
     StateContract, StreamContract, WorldClockContract,
 };
-use crate::error::{BusError, Result};
-use crate::handle::stamp::StepStamp;
-use crate::runtime_metrics::RuntimeMetricHandle;
-use crate::session::{BusHandle, OUTBOUND_CAPACITY};
-use crate::time::{CaptureStamp, TimeWindow};
-use crate::topic::{Publish, Topic};
+use crate::bus::error::{BusError, Result};
+use crate::bus::handle::stamp::StepStamp;
+use crate::bus::runtime_metrics::RuntimeMetricHandle;
+use crate::bus::session::{BusHandle, OUTBOUND_CAPACITY};
+use crate::bus::time::{CaptureStamp, TimeWindow};
+use crate::bus::topic::{Publish, Topic};
 
 /// The shared publish path: encode, build provenance, enqueue. Private, so the
 /// only public way to reach it is through an endpoint-kind publisher.
@@ -63,7 +63,7 @@ impl<E: EndpointDescriptor> Outbox<E> {
         })
     }
 
-    /// Encode `body`, build the [`BusMetadata`](crate::metadata::BusMetadata),
+    /// Encode `body`, build the [`BusMetadata`](crate::bus::metadata::BusMetadata),
     /// and admit it to the family-specific outbound lane. Returns immediately;
     /// no publisher path blocks the step loop.
     fn emit(&self, produced_at: Option<TimeWindow>, body: E::Payload) -> Result<()> {
@@ -195,7 +195,7 @@ impl<B: WorldClockContract> WorldClockPublisher<B> {
     /// Build the world-clock publisher over a topic.
     ///
     /// Called by the external client that drives the simulated world and owns
-    /// its clock; no participant reaches it. See [`crate::handle::stamp`]'s
+    /// its clock; no participant reaches it. See [`crate::bus::handle::stamp`]'s
     /// module docs for the boundary that leaves this `pub`.
     #[doc(hidden)]
     pub fn mint(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
@@ -265,17 +265,17 @@ impl<E: EventContract> EventPublisher<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{
+    use crate::bus::contract::{
         ApiFamily, EndpointDescriptor, EndpointKind, SampleContract, SetpointContract,
         SetpointDeliveryContract, StateContract, StreamContract,
     };
-    use crate::error::BusError;
-    use crate::handle::subscriber::SetpointReceiver;
-    use crate::runtime_metrics::RuntimeBufferKind;
-    use crate::session::{BusOwner, OUTBOUND_CAPACITY, OUTBOUND_MAX_BYTES};
-    use crate::test_support::{Target, TargetEndpoint, participant_config, step};
-    use crate::time::CaptureStamp;
-    use crate::topic::{Subscribe, Topic};
+    use crate::bus::error::BusError;
+    use crate::bus::handle::subscriber::SetpointReceiver;
+    use crate::bus::runtime_metrics::RuntimeBufferKind;
+    use crate::bus::session::{BusOwner, OUTBOUND_CAPACITY, OUTBOUND_MAX_BYTES};
+    use crate::bus::test_support::{Target, TargetEndpoint, participant_config, step};
+    use crate::bus::time::CaptureStamp;
+    use crate::bus::topic::{Subscribe, Topic};
     use serial_test::serial;
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]

@@ -4,7 +4,7 @@
 //! in this process rather than as a supervised child. What
 //! that deletes is the point: there is no router binary to stage or resolve, no
 //! spawn, no readiness probe polling a socket, and no full-graph recovery epoch
-//! driven by a child exit. [`phoxal_bus::Router::open`] returning means the
+//! driven by a child exit. [`phoxal::bus::Router::open`] returning means the
 //! endpoint is bound - `phoxal-bus` pins the Zenoh listen settings that make
 //! that true - so the router is simply ready or the run failed to start.
 //!
@@ -25,10 +25,10 @@ pub(crate) type RouterLost = Arc<dyn Fn(String) + Send + Sync>;
 /// [`EmbeddedRouter::close`]ing it takes every link down with it.
 #[derive(Debug)]
 pub(crate) struct EmbeddedRouter {
-    router: phoxal_bus::Router,
+    router: phoxal::bus::Router,
     /// Watches this router from the outside. Closed before the router is, so
     /// an ordinary shutdown is never reported as a loss.
-    watch: phoxal_bus::RouterWatch,
+    watch: phoxal::bus::RouterWatch,
 }
 
 impl EmbeddedRouter {
@@ -64,7 +64,7 @@ impl EmbeddedRouter {
 /// caller decides what losing the router means to it: for the supervisor it is a
 /// typed `RouterLost` failure that terminates the execution.
 pub(crate) async fn start_embedded_router(
-    execution: phoxal_runtime_contract::identity::ExecutionId,
+    execution: phoxal::identity::ExecutionId,
     endpoint: String,
     on_lost: RouterLost,
 ) -> Result<EmbeddedRouter> {
@@ -73,7 +73,7 @@ pub(crate) async fn start_embedded_router(
     // One execution equals one router lifetime: the router's ZID IS the
     // execution id, so a client that reads the router id has learned the
     // execution without asking anyone.
-    let router = phoxal_bus::Router::open(execution, std::slice::from_ref(&endpoint))
+    let router = phoxal::bus::Router::open(execution, std::slice::from_ref(&endpoint))
         .await
         .with_context(|| format!("failed to open the embedded router on {endpoint}"))?;
 
@@ -83,7 +83,7 @@ pub(crate) async fn start_embedded_router(
     // watch dials the router from the outside and answers the one question the
     // router's own session cannot answer about itself.
     let lost_endpoint = endpoint.clone();
-    let watch = phoxal_bus::RouterWatch::open(&endpoint, move || {
+    let watch = phoxal::bus::RouterWatch::open(&endpoint, move || {
         tracing::error!("the router at {lost_endpoint} is gone; the robot graph is unreachable");
         on_lost(format!(
             "the embedded router at {lost_endpoint} went away while the session was running"

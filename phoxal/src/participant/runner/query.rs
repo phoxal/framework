@@ -2,11 +2,11 @@
 //! `Participant::setup`.
 
 use crate::bus::QueryFailure;
+use crate::bus::{BusHandle, IncomingQuery};
 use crate::participant::api::Participant;
 use crate::participant::context::QueryContext;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use crate::participant::query::{QueryRegistration, ServerOutcome};
-use phoxal_bus::{BusHandle, IncomingQuery};
 use std::time::Duration;
 use tokio::sync::mpsc;
 

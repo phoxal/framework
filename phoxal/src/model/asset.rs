@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::ModelError;
+use crate::model::error::ModelError;
 
 /// A normalized, forward-slash logical asset identifier.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -53,13 +53,13 @@ impl<'de> Deserialize<'de> for AssetId {
     }
 }
 
-impl phoxal_runtime_contract::wire_schema::DescribeWire for AssetId {
+impl crate::__compat::wire::DescribeWire for AssetId {
     // Invariant: this states what the `Serialize` above writes - the normalized
     // forward-slash identity as one string.
-    fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
-        phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+    fn wire_schema() -> crate::__compat::wire::WireSchema {
+        crate::__compat::wire::WireSchema::opaque(
             "AssetId",
-            phoxal_runtime_contract::wire_schema::WireSchema::String,
+            crate::__compat::wire::WireSchema::String,
         )
     }
 }

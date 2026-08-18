@@ -1,4 +1,4 @@
-use crate::robot::map::GridWireError;
+use crate::protocol::robot::map::GridWireError;
 
 /// Why safety is stopping or limiting body motion. The
 /// map/footprint reasons are deliberately distinct so a fail
@@ -67,7 +67,7 @@ pub struct ConstraintSource {
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
-#[serde(try_from = "crate::robot::safety::SafetyConstraintWire")]
+#[serde(try_from = "crate::protocol::robot::safety::SafetyConstraintWire")]
 pub enum Constraint {
     Limited {
         reason: ConstraintReason,
@@ -75,15 +75,15 @@ pub enum Constraint {
         max_linear_speed_mps: f32,
         max_angular_speed_radps: f32,
         observed_value: Option<f32>,
-        valid_from: ::phoxal_bus::RobotInstant,
-        expires_at: ::phoxal_bus::RobotInstant,
+        valid_from: ::phoxal::bus::RobotInstant,
+        expires_at: ::phoxal::bus::RobotInstant,
     },
     Stopped {
         reason: ConstraintReason,
         source: ConstraintSource,
         observed_value: Option<f32>,
-        valid_from: ::phoxal_bus::RobotInstant,
-        expires_at: ::phoxal_bus::RobotInstant,
+        valid_from: ::phoxal::bus::RobotInstant,
+        expires_at: ::phoxal::bus::RobotInstant,
     },
 }
 
@@ -93,7 +93,7 @@ pub enum Constraint {
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
-#[serde(try_from = "crate::robot::safety::SafetyMotionPermissionWire")]
+#[serde(try_from = "crate::protocol::robot::safety::SafetyMotionPermissionWire")]
 pub enum MotionPermission {
     Clear,
     Limited {
@@ -109,12 +109,12 @@ pub enum MotionPermission {
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
-#[serde(try_from = "crate::robot::safety::SafetyMotionConstraintsWire")]
+#[serde(try_from = "crate::protocol::robot::safety::SafetyMotionConstraintsWire")]
 pub struct MotionConstraints {
     pub sequence: u64,
     pub permission: MotionPermission,
     pub constraints: Vec<Constraint>,
-    pub expires_at: ::phoxal_bus::RobotInstant,
+    pub expires_at: ::phoxal::bus::RobotInstant,
 }
 
 #[derive(
@@ -161,17 +161,17 @@ pub enum SafetyMotionPermissionWire {
     Clear,
     Limited {
         #[serde(
-            deserialize_with = "crate::robot::safety::deserialize_finite_nonnegative_safety_limit"
+            deserialize_with = "crate::protocol::robot::safety::deserialize_finite_nonnegative_safety_limit"
         )]
         effective_linear_speed_mps: f32,
         #[serde(
-            deserialize_with = "crate::robot::safety::deserialize_finite_nonnegative_safety_limit"
+            deserialize_with = "crate::protocol::robot::safety::deserialize_finite_nonnegative_safety_limit"
         )]
         effective_angular_speed_radps: f32,
-        reasons: Vec<crate::robot::safety::ConstraintReason>,
+        reasons: Vec<crate::protocol::robot::safety::ConstraintReason>,
     },
     Stopped {
-        reasons: Vec<crate::robot::safety::ConstraintReason>,
+        reasons: Vec<crate::protocol::robot::safety::ConstraintReason>,
     },
 }
 
@@ -180,32 +180,32 @@ pub enum SafetyMotionPermissionWire {
 #[serde(deny_unknown_fields)]
 pub enum SafetyConstraintWire {
     Limited {
-        reason: crate::robot::safety::ConstraintReason,
-        source: crate::robot::safety::ConstraintSource,
+        reason: crate::protocol::robot::safety::ConstraintReason,
+        source: crate::protocol::robot::safety::ConstraintSource,
         #[serde(
-            deserialize_with = "crate::robot::safety::deserialize_finite_nonnegative_safety_limit"
+            deserialize_with = "crate::protocol::robot::safety::deserialize_finite_nonnegative_safety_limit"
         )]
         max_linear_speed_mps: f32,
         #[serde(
-            deserialize_with = "crate::robot::safety::deserialize_finite_nonnegative_safety_limit"
+            deserialize_with = "crate::protocol::robot::safety::deserialize_finite_nonnegative_safety_limit"
         )]
         max_angular_speed_radps: f32,
         #[serde(
-            deserialize_with = "crate::robot::safety::deserialize_optional_finite_safety_value"
+            deserialize_with = "crate::protocol::robot::safety::deserialize_optional_finite_safety_value"
         )]
         observed_value: Option<f32>,
-        valid_from: ::phoxal_bus::RobotInstant,
-        expires_at: ::phoxal_bus::RobotInstant,
+        valid_from: ::phoxal::bus::RobotInstant,
+        expires_at: ::phoxal::bus::RobotInstant,
     },
     Stopped {
-        reason: crate::robot::safety::ConstraintReason,
-        source: crate::robot::safety::ConstraintSource,
+        reason: crate::protocol::robot::safety::ConstraintReason,
+        source: crate::protocol::robot::safety::ConstraintSource,
         #[serde(
-            deserialize_with = "crate::robot::safety::deserialize_optional_finite_safety_value"
+            deserialize_with = "crate::protocol::robot::safety::deserialize_optional_finite_safety_value"
         )]
         observed_value: Option<f32>,
-        valid_from: ::phoxal_bus::RobotInstant,
-        expires_at: ::phoxal_bus::RobotInstant,
+        valid_from: ::phoxal::bus::RobotInstant,
+        expires_at: ::phoxal::bus::RobotInstant,
     },
 }
 
@@ -216,10 +216,10 @@ pub struct SafetyMotionConstraintsWire {
     pub sequence: u64,
     pub permission: SafetyMotionPermissionWire,
     pub constraints: Vec<SafetyConstraintWire>,
-    pub expires_at: ::phoxal_bus::RobotInstant,
+    pub expires_at: ::phoxal::bus::RobotInstant,
 }
 
-impl TryFrom<SafetyMotionPermissionWire> for crate::robot::safety::MotionPermission {
+impl TryFrom<SafetyMotionPermissionWire> for crate::protocol::robot::safety::MotionPermission {
     type Error = GridWireError;
 
     fn try_from(value: SafetyMotionPermissionWire) -> Result<Self, Self::Error> {
@@ -244,7 +244,7 @@ impl TryFrom<SafetyMotionPermissionWire> for crate::robot::safety::MotionPermiss
     }
 }
 
-impl TryFrom<SafetyConstraintWire> for crate::robot::safety::Constraint {
+impl TryFrom<SafetyConstraintWire> for crate::protocol::robot::safety::Constraint {
     type Error = GridWireError;
 
     fn try_from(value: SafetyConstraintWire) -> Result<Self, Self::Error> {
@@ -305,7 +305,7 @@ impl TryFrom<SafetyConstraintWire> for crate::robot::safety::Constraint {
     }
 }
 
-impl TryFrom<SafetyMotionConstraintsWire> for crate::robot::safety::MotionConstraints {
+impl TryFrom<SafetyMotionConstraintsWire> for crate::protocol::robot::safety::MotionConstraints {
     type Error = GridWireError;
 
     fn try_from(value: SafetyMotionConstraintsWire) -> Result<Self, Self::Error> {
@@ -314,7 +314,7 @@ impl TryFrom<SafetyMotionConstraintsWire> for crate::robot::safety::MotionConstr
             .constraints
             .into_iter()
             .map(TryInto::try_into)
-            .collect::<Result<Vec<crate::robot::safety::Constraint>, GridWireError>>()?;
+            .collect::<Result<Vec<crate::protocol::robot::safety::Constraint>, GridWireError>>()?;
         let expected = expected_safety_permission(&constraints)?;
         if permission != expected {
             return Err(GridWireError(
@@ -323,12 +323,12 @@ impl TryFrom<SafetyMotionConstraintsWire> for crate::robot::safety::MotionConstr
         }
         for constraint in &constraints {
             let (valid_from, expires_at) = match constraint {
-                crate::robot::safety::Constraint::Limited {
+                crate::protocol::robot::safety::Constraint::Limited {
                     valid_from,
                     expires_at,
                     ..
                 }
-                | crate::robot::safety::Constraint::Stopped {
+                | crate::protocol::robot::safety::Constraint::Stopped {
                     valid_from,
                     expires_at,
                     ..
@@ -358,30 +358,30 @@ impl TryFrom<SafetyMotionConstraintsWire> for crate::robot::safety::MotionConstr
 }
 
 fn expected_safety_permission(
-    constraints: &[crate::robot::safety::Constraint],
-) -> Result<crate::robot::safety::MotionPermission, GridWireError> {
+    constraints: &[crate::protocol::robot::safety::Constraint],
+) -> Result<crate::protocol::robot::safety::MotionPermission, GridWireError> {
     let reasons = constraints
         .iter()
         .map(|constraint| match constraint {
-            crate::robot::safety::Constraint::Limited { reason, .. }
-            | crate::robot::safety::Constraint::Stopped { reason, .. } => reason.clone(),
+            crate::protocol::robot::safety::Constraint::Limited { reason, .. }
+            | crate::protocol::robot::safety::Constraint::Stopped { reason, .. } => reason.clone(),
         })
         .collect::<Vec<_>>();
     if constraints.iter().any(|constraint| {
         matches!(
             constraint,
-            crate::robot::safety::Constraint::Stopped { .. }
+            crate::protocol::robot::safety::Constraint::Stopped { .. }
         )
     }) {
-        return Ok(crate::robot::safety::MotionPermission::Stopped { reasons });
+        return Ok(crate::protocol::robot::safety::MotionPermission::Stopped { reasons });
     }
     if constraints.is_empty() {
-        return Ok(crate::robot::safety::MotionPermission::Clear);
+        return Ok(crate::protocol::robot::safety::MotionPermission::Clear);
     }
     let mut linear = f32::MAX;
     let mut angular = f32::MAX;
     for constraint in constraints {
-        let crate::robot::safety::Constraint::Limited {
+        let crate::protocol::robot::safety::Constraint::Limited {
             max_linear_speed_mps,
             max_angular_speed_radps,
             ..
@@ -392,7 +392,7 @@ fn expected_safety_permission(
         linear = linear.min(*max_linear_speed_mps);
         angular = angular.min(*max_angular_speed_radps);
     }
-    Ok(crate::robot::safety::MotionPermission::Limited {
+    Ok(crate::protocol::robot::safety::MotionPermission::Limited {
         effective_linear_speed_mps: linear,
         effective_angular_speed_radps: angular,
         reasons,

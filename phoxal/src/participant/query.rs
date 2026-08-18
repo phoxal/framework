@@ -138,14 +138,14 @@ mod tests {
     use super::QueryRegistration;
     use crate::bus::{Codec, MessagePack, QueryCode, QueryFailure};
     use crate::prelude::*;
-    use phoxal_protocol::supervisor;
+    use crate::supervisor::api as supervisor;
 
     struct Api;
 
     #[derive(Default)]
     struct QueryState {
         calls: Vec<String>,
-        requesters: Vec<phoxal_bus::ProducerId>,
+        requesters: Vec<crate::bus::ProducerId>,
     }
 
     #[phoxal::service(id = "query-test", state = QueryState, api = Api)]
@@ -189,9 +189,9 @@ mod tests {
         let api = Api;
         let mut state = QueryState::default();
         let first_producer =
-            phoxal_bus::ProducerId::try_from((1_u128 << 124) | 1).expect("canonical test producer");
+            crate::bus::ProducerId::try_from((1_u128 << 124) | 1).expect("canonical test producer");
         let second_producer =
-            phoxal_bus::ProducerId::try_from((1_u128 << 124) | 2).expect("canonical test producer");
+            crate::bus::ProducerId::try_from((1_u128 << 124) | 2).expect("canonical test producer");
 
         let first = MessagePack::encode(&supervisor::bundle::GetRequest {
             path: "ok".to_string(),

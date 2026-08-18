@@ -6,8 +6,8 @@
 //! finite-value vocabulary as ingestion, so a retained record and a live event
 //! never disagree about what a field means.
 
-use crate::runtime::logs::{Level, LogValue, Timestamp};
-use crate::runtime::telemetry::Cursor;
+use crate::protocol::runtime::logs::{Level, LogValue, Timestamp};
+use crate::protocol::runtime::telemetry::Cursor;
 
 /// One page of retained records, newest first.
 ///

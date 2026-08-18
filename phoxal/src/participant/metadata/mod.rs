@@ -13,14 +13,28 @@
 //! The document's own `schema` tag is a format discriminator, not a negotiated
 //! identity: a reader refuses a tag it does not implement before it reads a
 //! field.
+//!
+//! The write side sits here too: [`ParticipantMetadataRecord`] is the one
+//! sanctioned writer of the same document, and
+//! [`participant_metadata_json!`](crate::participant_metadata_json) is its
+//! const-eval mode, which is what a role attribute expands into.
+
+mod emit;
+
+pub use emit::{ParticipantContractRecord, ParticipantMetadataRecord};
+
+/// `const_format::concatcp!`, made reachable as
+/// `$crate::participant::metadata::concatcp!` for the const-eval writer.
+#[doc(hidden)]
+pub use emit::concatcp;
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::ParticipantArtifactId;
-use crate::version::FrameworkVersion;
-use crate::wire_schema::{
+use crate::__compat::wire::{
     DescribeWire, EnumRepresentation, VariantBody, WireField, WireSchema, WireVariant,
 };
+use crate::identity::ParticipantArtifactId;
+use crate::version::FrameworkVersion;
 
 /// The format tag of the embedded participant-metadata document.
 ///
@@ -118,7 +132,7 @@ impl DescribeWire for ParticipantKind {
 /// `__DATA,__phoxal_meta` section at compile time.
 ///
 /// Deserialize-only on purpose: the sole writer is
-/// [`crate::emit::ParticipantMetadataRecord`], so a reader can never
+/// [`crate::participant::metadata::ParticipantMetadataRecord`], so a reader can never
 /// accidentally re-persist a document it merely parsed.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "schema", deny_unknown_fields)]
@@ -173,6 +187,51 @@ impl ParticipantMetadata {
 #[derive(Debug, thiserror::Error)]
 #[error("participant metadata is not a readable phoxal document: {0}")]
 pub struct MetadataError(#[from] serde_json::Error);
+
+/// The contract surface this module owns: the participant-metadata document
+/// every binary embeds.
+///
+/// Not public API. It exists so compatibility CI can read a declared process
+/// boundary out of the code that declares it, and its shape may change with the
+/// checker.
+#[doc(hidden)]
+pub mod __compat {
+    use super::{PARTICIPANT_METADATA_SCHEMA_TAG, ParticipantMetadata};
+    use crate::__compat::surface::{ContractRecord, ContractSurface};
+    use crate::__compat::wire::DescribeWire;
+
+    /// The canonical rendering of this module's contract surface.
+    #[must_use]
+    pub fn contract_surface() -> String {
+        ContractSurface::new([ContractRecord::document(
+            "ParticipantMetadata",
+            PARTICIPANT_METADATA_SCHEMA_TAG,
+            ParticipantMetadata::wire_schema(),
+        )])
+        .canonical_json()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::contract_surface;
+
+        /// The surface is one JSON document, it names the embedded document's
+        /// tag, and two calls produce the same bytes - which is what lets a
+        /// checker compare it with a stored baseline by string equality.
+        #[test]
+        fn the_surface_is_deterministic_json_naming_the_metadata_document() {
+            let rendered = contract_surface();
+            serde_json::from_str::<serde_json::Value>(&rendered).expect("the surface is JSON");
+            assert_eq!(contract_surface(), rendered);
+            assert!(
+                rendered.contains(super::PARTICIPANT_METADATA_SCHEMA_TAG),
+                "{rendered}"
+            );
+            assert!(rendered.contains(r#""record":"document""#), "{rendered}");
+            assert!(rendered.contains("config_schema"), "{rendered}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -261,8 +320,8 @@ mod tests {
     /// about the flattened contract it merges under the tag.
     #[test]
     fn the_declared_document_shape_is_the_shape_the_writer_emits() {
-        let emitted = crate::emit::ParticipantMetadataRecord::V0 {
-            contract: crate::emit::ParticipantContractRecord {
+        let emitted = crate::participant::metadata::ParticipantMetadataRecord::V0 {
+            contract: crate::participant::metadata::ParticipantContractRecord {
                 framework: FrameworkVersion::CURRENT,
                 id: "drive",
                 kind: ParticipantKind::Service,
@@ -276,7 +335,7 @@ mod tests {
         // two types are one document in two evaluation modes.
         assert_eq!(
             ParticipantMetadata::wire_schema(),
-            crate::emit::ParticipantMetadataRecord::wire_schema()
+            crate::participant::metadata::ParticipantMetadataRecord::wire_schema()
         );
     }
 }

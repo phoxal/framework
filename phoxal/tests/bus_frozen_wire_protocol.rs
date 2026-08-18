@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 
-/// The workspace this crate is part of: the parent of its own parent, since a
-/// library crate is `phoxal-<suffix>` at `crates/<suffix>`.
+/// The workspace this crate is part of: the parent of its own directory, since
+/// the framework library sits at `phoxal/` under the workspace root.
 fn workspace_root() -> Result<PathBuf> {
     Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(2)
+        .nth(1)
         .context("this crate's manifest directory has no workspace root")?
         .to_path_buf())
 }
@@ -84,7 +84,7 @@ fn the_frozen_zenoh_wire_protocol_version_is_the_one_the_transport_speaks() -> R
 
     let declared =
         format!(r#"{{"name":"zenoh-wire-protocol","record":"identifier","value":"{spoken}"}}"#);
-    let surface = phoxal_bus::__compat::contract_surface();
+    let surface = phoxal::bus::__compat::contract_surface();
     assert!(
         surface.contains(&declared),
         "phoxal-bus freezes a Zenoh wire protocol version the linked transport does not speak. \

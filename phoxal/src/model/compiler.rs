@@ -16,15 +16,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::component::Component;
-use crate::component::capability::{Capability, CapabilityRole};
-use crate::error::ModelError;
-use crate::identity::{
+use crate::model::component::Component;
+use crate::model::component::capability::{Capability, CapabilityRole};
+use crate::model::error::ModelError;
+use crate::model::identity::{
     CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, ServiceId,
 };
-use crate::robot::{ComponentInstance, KinematicConfig, MotionLimits, Robot, Service};
-use crate::simulation::{self, Simulation};
-use crate::structure::Structure;
+use crate::model::robot::{ComponentInstance, KinematicConfig, MotionLimits, Robot, Service};
+use crate::model::simulation::{self, Simulation};
+use crate::model::structure::Structure;
 
 /// The normalized inputs a canonical [`Robot`] is assembled from.
 ///
@@ -101,7 +101,10 @@ pub fn robot(parts: RobotParts) -> Result<Robot, ModelError> {
     // The footprint is a source/build product. A persisted manifest carries
     // this value (or an explicit `null`) and never reconstructs it from
     // collision geometry.
-    let footprint =
-        crate::footprint::compile(&parts.structure, &parts.components, &parts.component_types)?;
+    let footprint = crate::model::footprint::compile(
+        &parts.structure,
+        &parts.components,
+        &parts.component_types,
+    )?;
     Robot::new(parts, footprint)
 }

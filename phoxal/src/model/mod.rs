@@ -2,8 +2,18 @@
 //!
 //! The model is constructed by source/build tooling and decoded from the
 //! bundle's `manifest.json`. [`manifest`] owns that document: its schema tag
-//! and the envelope around the [`Robot`] body. `phoxal-bundle` owns where the
-//! file sits and how it is read.
+//! and the envelope around the [`Robot`] body, and it lives here rather than in
+//! [`crate::bundle`] so the compiler that writes it and the reader that loads it
+//! both reach it through the module that owns the body. [`crate::bundle`] owns
+//! where the file sits and how it is read; this module owns no filesystem layout
+//! at all, and the authored project documents are `crate::authoring`.
+//!
+//! [`Robot`] is the whole of a compiled robot: its identity and structure, the
+//! motion it may make, the `services` it runs with their configuration, the
+//! `components` it mounts, and the `component_types` behind them with the
+//! simulation folded into each. [`Robot::component`](robot::Robot::component)
+//! joins an instance with its type and simulation, so no consumer joins those
+//! maps by hand.
 //!
 //! # Paths
 //!
@@ -11,14 +21,14 @@
 //! [`component`], [`identity`], [`manifest`], [`robot`], [`simulation`],
 //! [`structure`].
 //!
-//! The crate root is a deliberate facade over the handful of names a consumer
+//! This module's root is a deliberate facade over the handful of names a consumer
 //! meets first, so that loading, reading or composing a robot does not require
 //! learning the module layout. Those names - and the error vocabulary, whose
 //! module is private precisely so the root is its only path - are the canonical
-//! ones; write `phoxal_model::Robot`, not `phoxal_model::robot::Robot`.
+//! ones; write `phoxal::model::Robot`, not `phoxal::model::robot::Robot`.
 //! Everything else is named through its owning module.
 //!
-//! Modules inside this crate import from the owning module, never through this
+//! Code inside the framework imports from the owning module, never through this
 //! facade.
 
 mod error;

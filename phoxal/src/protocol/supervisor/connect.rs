@@ -31,7 +31,7 @@
 //! All of them are preserved across framework majors on the same terms as the
 //! documents below.
 
-use phoxal_runtime_contract::version::FrameworkVersion;
+use crate::version::FrameworkVersion;
 
 /// Execution-scoped supervisor presence lease. This is a Liveliness key, not
 /// an endpoint payload, and therefore deliberately sits outside the endpoint
@@ -92,12 +92,12 @@ pub enum ConnectReply {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_bus::EndpointDescriptor;
+    use crate::bus::EndpointDescriptor;
     use serde_json::json;
 
     use super::{ConnectReply, ConnectRequest, FrameworkVersion, PRESENCE_KEY};
 
-    type ConnectEndpoint = crate::supervisor::endpoint::connect::TopicEndpoint;
+    type ConnectEndpoint = crate::protocol::supervisor::endpoint::connect::TopicEndpoint;
 
     /// The key is written out rather than read back from the descriptor: a
     /// frozen bootstrap that inherits its key from whatever the tree currently
@@ -126,7 +126,7 @@ mod tests {
     fn the_composed_bootstrap_wire_key_is_pinned_to_its_literal() {
         const EXECUTION: &str = "1c8f3a5b7d9e0f2a4b6c8d0e1f325476";
 
-        let surface = phoxal_bus::__compat::contract_surface();
+        let surface = crate::bus::__compat::contract_surface();
         assert!(
             surface.contains(
                 r#"{"name":"bus-key-composition","record":"identifier","value":"phoxal/{execution}/{topic}"}"#
@@ -194,7 +194,7 @@ mod tests {
     /// never the three-field struct it is made of.
     #[test]
     fn the_bootstrap_documents_are_pinned_to_their_declared_wire_shape() {
-        use phoxal_runtime_contract::wire_schema::DescribeWire;
+        use crate::__compat::wire::DescribeWire;
 
         assert_eq!(
             ConnectRequest::wire_schema().canonical_json(),

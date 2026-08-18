@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = true
-description = "Phoxal - production-oriented autonomous robot framework: the runtime engine and model (the api contract tree lives in phoxal-protocol, the typed bus in phoxal-bus)."
+description = "Phoxal - production-oriented autonomous robot framework: the one framework library, holding the runtime engine, the api contract tree, the typed bus, the canonical model, and the bundle."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -20,40 +20,74 @@ path = "src/lib.rs"
 [features]
 # Off in every shipped participant binary. It exposes the explicit in-process
 # harness, deterministic `TestClock`, and clock-injection seam, which exist only
-# so tests can drive a participant on a caller-owned bus. A downstream crate
-# enables it as a **dev**-dependency feature, because a participant crate's
-# tests are a separate compilation unit that cannot enable this crate's
-# `cfg(test)`.
-test-harness = ["phoxal-bus/test-harness"]
+# so tests can drive a participant on a caller-owned bus, plus the bus's own
+# hidden worker-failure injection. A downstream crate enables it as a
+# **dev**-dependency feature, because a participant crate's tests are a separate
+# compilation unit that cannot enable this crate's `cfg(test)`.
+test-harness = []
+
+# The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
+# URDF, their JSON Schemas, and the project compiler. Off by default: a launched
+# participant reads the compiled `manifest.json` and never an authored document,
+# so its readers - and the YAML/TOML/URDF parsers under them - have no place in
+# a robot binary.
+authoring = ["dep:serde_yaml", "dep:toml", "dep:urdf-rs"]
+
+# The supervisor's embedded Zenoh router. Off by default so participants never
+# see a router in their API surface; only the framework-owned
+# `phoxal-supervisor` executable enables it.
+#
+# It carries `zenoh/unstable`, which the router needs for two APIs with no
+# stable equivalent: `Session::info().locators()` to report the endpoints it
+# actually bound (an ephemeral `:0` is otherwise unknowable), and
+# `link_events_listener()` to observe links coming and going. Pulling `unstable`
+# in *here* rather than on the workspace dependency keeps that surface out of
+# every participant build - only the supervisor gets it.
+router = ["zenoh/unstable"]
 
 [dependencies]
-phoxal-protocol = { workspace = true }
-phoxal-bus = { workspace = true }
-phoxal-bundle = { workspace = true }
 phoxal-macros = { workspace = true }
-phoxal-model = { workspace = true }
-phoxal-runtime-contract = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 const_format = { workspace = true }
+getrandom = { workspace = true }
+libc = { workspace = true }
+rmp-serde = { workspace = true }
+# Not optional, and not a `cfg_attr` gate inside the model: a feature that
+# changes what a canonical type derives is a second shape of the same type, and
+# the authored-source layer points editor schemas at the one canonical
+# definition. The weight is a derive, and the alternative is `cfg(feature = …)`
+# inside a domain module.
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs"] }
+toml = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+urdf-rs = { workspace = true, optional = true }
+zenoh = { workspace = true }
+
+# `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
+# cannot see dependencies named only inside attributes.
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
 
 [dev-dependencies]
 # The tests load the workspace fixture robot as a finalized bundle. Staging it
 # is a crate rather than a test helper because both a unit test in `src/` and
 # an integration test in `tests/` need it, and a dev-dependency is the only
-# thing both can reach; a versionless one is stripped on publish.
+# thing both can reach; a versionless one is stripped on publish. It depends on
+# this crate in turn, which is a dev-dependency cycle Cargo permits.
 phoxal-fixture = { workspace = true }
-phoxal-bundle = { workspace = true }
-# Enables only the bus's hidden worker-failure injection while this crate's
-# unit tests prove Ready revocation and teardown. Production dependencies keep
-# the feature off.
-phoxal-bus = { workspace = true, features = ["test-harness"] }
+# `tests/bus_frozen_wire_protocol.rs` reads the resolved `zenoh-protocol` out of
+# the graph Cargo actually compiles, and
+# `tests/authoring_workspace_build_requirements.rs` reads every workspace
+# manifest through this crate's own build-requirement reader.
+cargo_metadata = { workspace = true }
 jsonschema = { workspace = true }
 # Reads the built-artifact linker section back out in
 # `tests/participant_metadata.rs` - the one honest way to prove the ELF
@@ -63,10 +97,6 @@ jsonschema = { workspace = true }
 # object-file reader (`crates/core/src/check/participant_metadata.rs`), the only
 # other place in either repository that parses this section.
 object = "0.36"
-# Test-only: raising SIGINT/SIGTERM at the test process is the only honest way to
-# prove the runner's shutdown trigger covers the signal a supervisor stops with.
-libc = { workspace = true }
-schemars = { workspace = true }
 serial_test = { workspace = true }
 # `tests/participant_metadata.rs` builds a throwaway participant crate against
 # this one and throws it away again.
@@ -85,6 +115,26 @@ workspace = true
 name = "runtime_serialized_smoke"
 path = "tests/runtime_serialized_smoke.rs"
 required-features = ["test-harness"]
+
+[[test]]
+name = "authoring_compile"
+path = "tests/authoring_compile.rs"
+required-features = ["authoring"]
+
+[[test]]
+name = "authoring_schema"
+path = "tests/authoring_schema.rs"
+required-features = ["authoring"]
+
+[[test]]
+name = "authoring_source_boundary"
+path = "tests/authoring_source_boundary.rs"
+required-features = ["authoring"]
+
+[[test]]
+name = "authoring_workspace_build_requirements"
+path = "tests/authoring_workspace_build_requirements.rs"
+required-features = ["authoring"]
 
 [[example]]
 name = "runtime_control_loop"

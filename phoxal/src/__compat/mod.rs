@@ -1,17 +1,38 @@
-//! The contract surface this crate owns: the participant launch contract.
+//! The compatibility machinery, and the contract surface the crate root itself
+//! owns: the participant launch contract.
 //!
-//! A launched participant's whole process boundary on the way in is its argv.
-//! The record below is read out of the clap definition itself rather than
-//! restated beside it, so a renamed flag, a newly optional argument, or an
-//! option that started accepting repetition changes the surface by
-//! construction - there is no second list to forget to update.
+//! [`surface`] is the record model each contract-owning module states its whole
+//! boundary in; [`wire`] is the deterministic model of the shapes those
+//! contracts put on the wire, which compatibility CI checks against published
+//! baselines. The other modules that own a boundary state it beside their own
+//! definitions - `bus::__compat`, `bundle::__compat`,
+//! `participant::metadata::__compat`, and the protocol tree's generated
+//! [`protocol`].
+//!
+//! The record below is this module's own: a launched participant's whole
+//! process boundary on the way in is its argv. It is read out of the clap
+//! definition itself rather than restated beside it, so a renamed flag, a newly
+//! optional argument, or an option that started accepting repetition changes the
+//! surface by construction - there is no second list to forget to update.
+
+pub mod surface;
+pub mod wire;
 
 use clap::CommandFactory;
-use phoxal_runtime_contract::contract_surface::{
-    ContractRecord, ContractSurface, LaunchArgument, LaunchValueShape,
-};
 
+use crate::__compat::surface::{ContractRecord, ContractSurface, LaunchArgument, LaunchValueShape};
 use crate::participant::launch::Launch;
+
+/// The generated endpoint catalogue and contract surface of the protocol tree.
+///
+/// The tree itself is `crate::protocol`, which is private, so the three items
+/// its consumers need are re-exported here. They exist for the framework's own
+/// tests and for compatibility CI, and nothing about them is public API.
+#[doc(hidden)]
+pub use crate::protocol::{
+    __compat as protocol, API_CONTRACT_MANIFEST, ApiContractManifestContract,
+    ApiContractManifestFamily,
+};
 
 /// The canonical rendering of this crate's contract surface.
 #[must_use]
@@ -46,7 +67,7 @@ fn launch_arguments() -> Vec<LaunchArgument> {
 #[cfg(test)]
 mod tests {
     use super::{contract_surface, launch_arguments};
-    use phoxal_runtime_contract::contract_surface::{
+    use crate::__compat::surface::{
         ContractRecord, ContractSurface, LaunchArgument, LaunchValueShape,
     };
 

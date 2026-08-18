@@ -2,13 +2,13 @@
 
 use std::path::PathBuf;
 
-use crate::BundlePathError;
+use crate::bundle::BundlePathError;
 
 /// Why reading or writing a bundle failed.
 ///
 /// Every variant is an I/O or layout fact. There is no "this bundle is not a
 /// valid execution plan" family any more: the manifest either parses into a
-/// validated [`phoxal_model::Robot`] or it does not, and the model owns that
+/// validated [`crate::model::Robot`] or it does not, and the model owns that
 /// judgment.
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {

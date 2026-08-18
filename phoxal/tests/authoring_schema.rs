@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use phoxal_manifest::source::DocumentKind;
+use phoxal::authoring::source::DocumentKind;
 
 fn golden_path(kind: DocumentKind) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use phoxal_model::identity::is_valid_token;
+use crate::model::identity::is_valid_token;
 
 use super::{KinematicConfig, Manifest, Parameters, ValidationError};
 
@@ -214,8 +214,8 @@ fn is_valid_motion_limit(value: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::source::robot::Manifest;
-    use crate::source::robot::v0::ValidationError;
+    use crate::authoring::source::robot::Manifest;
+    use crate::authoring::source::robot::v0::ValidationError;
 
     /// A manifest whose single component declares role hints for two
     /// capabilities. `depth_roles` is spliced in as the `depth:` entry.
@@ -250,7 +250,7 @@ robot:
             .expect_err("the document must be rejected");
         error
             .violations()
-            .and_then(crate::source::Violations::robot)
+            .and_then(crate::authoring::source::Violations::robot)
             .expect("a rejected robot document carries robot violations")
             .to_vec()
     }

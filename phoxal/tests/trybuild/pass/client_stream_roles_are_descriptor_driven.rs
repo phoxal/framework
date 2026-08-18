@@ -8,12 +8,12 @@ fn receive_stream<E: StreamContract + ClientReceiveContract>(_: Topic<Subscribe<
 
 fn main() {
     publish_stream(
-        phoxal_protocol::robot::topic::client()
+        phoxal::api::topic::client()
             .component("speaker")
             .expect("valid component segment")
             .speaker("audio")
             .expect("valid capability segment")
             .stream(),
     );
-    receive_stream(phoxal_protocol::supervisor::topic::client().logs().follow());
+    receive_stream(phoxal::supervisor::api::topic::client().logs().follow());
 }

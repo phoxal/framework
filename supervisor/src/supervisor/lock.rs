@@ -41,7 +41,7 @@ impl SupervisorLock {
             .write(true)
             .open(path)
             .with_context(|| format!("failed to open the supervisor lock {}", path.display()))?;
-        if phoxal_runtime_contract::rendezvous::try_advisory_lock(&file, true).is_err() {
+        if phoxal::supervisor::rendezvous::try_advisory_lock(&file, true).is_err() {
             bail!(
                 "another phoxal-supervisor already owns this bundle's execution (the supervisor \
                  lock {} is held); attach to it or stop it rather than starting a second \

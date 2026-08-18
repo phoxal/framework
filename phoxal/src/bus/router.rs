@@ -8,15 +8,15 @@
 //!
 //! It lives in `phoxal-bus` rather than in the CLI because the router and the
 //! participants that dial it must agree on transport policy - see
-//! `crate::session::apply_phoxal_transport_policy`, which both paths share.
+//! `crate::bus::session::apply_phoxal_transport_policy`, which both paths share.
 //! It is behind the `router` feature so participant authors, who reach the bus
 //! through the `phoxal` facade, never see a router in their API surface: only
 //! the supervisor enables it.
 
-use phoxal_runtime_contract::identity::ExecutionId;
+use crate::identity::ExecutionId;
 
-use crate::error::{BusError, Result};
-use crate::session::{
+use crate::bus::error::{BusError, Result};
+use crate::bus::session::{
     apply_phoxal_transport_policy, client_config, execution_from_zid, zenoh_id_for,
 };
 
@@ -24,7 +24,7 @@ use crate::session::{
 ///
 /// The router owns no keys, publishes nothing, and subscribes to nothing. It
 /// routes, and it stays alive until dropped or [`Router::close`]d. Participants,
-/// including the supervisor's own [`crate::BusHandle`], reach it as ordinary clients
+/// including the supervisor's own [`crate::bus::BusHandle`], reach it as ordinary clients
 /// over the endpoints it listens on.
 #[derive(Debug)]
 pub struct Router {

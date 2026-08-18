@@ -19,11 +19,11 @@
 
 use serde::Serialize;
 
-use crate::metadata::{ParticipantContract, ParticipantKind, ParticipantMetadata};
+use crate::__compat::wire::{DescribeWire, WireSchema};
+use crate::participant::metadata::{ParticipantContract, ParticipantKind, ParticipantMetadata};
 use crate::version::FrameworkVersion;
-use crate::wire_schema::{DescribeWire, WireSchema};
 
-/// `const_format::concatcp!`, made reachable as `$crate::emit::concatcp!`.
+/// `const_format::concatcp!`, made reachable as `$crate::participant::metadata::concatcp!`.
 ///
 /// [`participant_metadata_json!`](crate::participant_metadata_json) expands
 /// inside a participant's own crate, which does not depend on `const_format`,
@@ -102,7 +102,7 @@ macro_rules! participant_metadata_json {
         const __PHOXAL_FRAMEWORK: &str = $framework;
         const __PHOXAL_KIND: &str = $kind.as_str();
 
-        $crate::emit::concatcp!(
+        $crate::participant::metadata::concatcp!(
             "{\"schema\":\"phoxal/participant-metadata/v0\",\"framework\":\"",
             __PHOXAL_FRAMEWORK,
             "\",\"id\":\"",
@@ -119,7 +119,7 @@ macro_rules! participant_metadata_json {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::ParticipantMetadata;
+    use crate::participant::metadata::ParticipantMetadata;
 
     const CONFIG_SCHEMA: &str = r#"{"type":"null"}"#;
 

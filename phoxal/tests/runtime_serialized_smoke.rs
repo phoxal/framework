@@ -1,11 +1,11 @@
-use phoxal_protocol::supervisor;
+use phoxal::supervisor::api as supervisor;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use phoxal::bus::{BusConfig, BusOwner, ExecutionId};
 use phoxal::prelude::*;
 use phoxal::testing::{TestHarness, run_test_harness};
-use phoxal_bus::{BusConfig, BusOwner, ExecutionId};
 use tokio::sync::Notify;
 
 static STEP_COUNT: AtomicUsize = AtomicUsize::new(0);

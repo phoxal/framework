@@ -215,7 +215,7 @@ impl TryFrom<DetectionWire> for Detection {
 #[serde(try_from = "DetectionsWire")]
 pub struct Detections {
     source: SourceRef,
-    captured_at: ::phoxal_bus::TimeWindow,
+    captured_at: ::phoxal::bus::TimeWindow,
     detections: Vec<Detection>,
 }
 
@@ -223,7 +223,7 @@ pub struct Detections {
 #[serde(deny_unknown_fields)]
 struct DetectionsWire {
     source: SourceRef,
-    captured_at: ::phoxal_bus::TimeWindow,
+    captured_at: ::phoxal::bus::TimeWindow,
     detections: Vec<Detection>,
 }
 
@@ -245,7 +245,7 @@ impl Detections {
     /// Construct a source-captured detection batch with bounded memory.
     pub fn try_new(
         source: SourceRef,
-        captured_at: ::phoxal_bus::TimeWindow,
+        captured_at: ::phoxal::bus::TimeWindow,
         detections: Vec<Detection>,
     ) -> Result<Self, InvalidDetections> {
         if detections.len() > MAX_DETECTIONS {
@@ -266,7 +266,7 @@ impl Detections {
 
     /// The source capture window preserved from the input measurement.
     #[must_use]
-    pub fn captured_at(&self) -> ::phoxal_bus::TimeWindow {
+    pub fn captured_at(&self) -> ::phoxal::bus::TimeWindow {
         self.captured_at
     }
 

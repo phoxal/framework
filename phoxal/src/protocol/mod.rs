@@ -2,6 +2,9 @@
 //! Phoxal process boundary and the semantic endpoint that carries it, grouped
 //! into families.
 //!
+//! This module is private: each family is published through the semantic module
+//! that owns it, so a payload type has exactly one supported path.
+//!
 //! Payload structs, enums, implementations, and tests are ordinary Rust items
 //! in family-first modules. One `protocol_tree!` catalogue declares their
 //! endpoints and generates deterministic descriptors and typed topic builders.
@@ -12,14 +15,16 @@
 //! leading segment of every key it declares: it names a semantic namespace,
 //! not a revision. There are three:
 //!
-//! - [`robot`] - the robot domain a participant authors against. `phoxal::api`
-//!   re-exports this family and only this one.
+//! - [`robot`] - the robot domain a participant authors against.
+//!   [`crate::api`] re-exports this family and only this one.
 //! - [`runtime`] - facts a running Phoxal process emits about itself: its log
 //!   events, its bus and step telemetry, and the authoritative simulation
-//!   clock. Any process publishes here; the family names no collector.
+//!   clock. Any process publishes here; the family names no collector. Reached
+//!   as [`crate::runtime::api`].
 //! - [`supervisor`] - the wire vocabulary a supervisor speaks. The
 //!   framework-owned `phoxal-supervisor` process owns supervisor state and
-//!   behavior; this crate owns only what an answer looks like.
+//!   behavior; this module owns only what an answer looks like. Reached as
+//!   [`crate::supervisor::api`].
 //!
 //! Compatibility is owned entirely by the framework train version each
 //! participant binary embeds, compared by the compatibility line the two

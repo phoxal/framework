@@ -8,12 +8,12 @@
 
 use std::time::Duration;
 
-use phoxal_runtime_contract::identity::{ParticipantId, ParticipantIdError};
+use crate::identity::{ParticipantId, ParticipantIdError};
 
+pub use crate::identity::TimelineId;
 pub use crate::participant::clock::ClockSource;
 pub use crate::participant::clock::test::TestClock;
 pub use crate::participant::runner::{run_test_harness, run_test_harness_with_clock};
-pub use phoxal_runtime_contract::identity::TimelineId;
 
 /// Explicit in-process test input.
 #[doc(hidden)]

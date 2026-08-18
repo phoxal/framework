@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-use crate::asset::AssetId;
-use crate::component::capability::StructuralKind;
-use crate::error::{LinkRole, PoseOwner, StructureError};
-use crate::identity::{JointId, LinkId};
+use crate::model::asset::AssetId;
+use crate::model::component::capability::StructuralKind;
+use crate::model::error::{LinkRole, PoseOwner, StructureError};
+use crate::model::identity::{JointId, LinkId};
 
 const MIN_AXIS_NORM_SQUARED: f64 = 1.0e-16;
 const PSD_RELATIVE_TOLERANCE: f64 = 1.0e-12;
@@ -844,14 +844,14 @@ impl<'de> Deserialize<'de> for Structure {
     }
 }
 
-impl phoxal_runtime_contract::wire_schema::DescribeWire for Structure {
+impl crate::__compat::wire::DescribeWire for Structure {
     // Invariant: the `Serialize` above re-emits the canonical document this
     // type was built from, and that document is `Summary` serialized, so the
     // summary's shape is exactly what goes on the wire.
-    fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
-        phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+    fn wire_schema() -> crate::__compat::wire::WireSchema {
+        crate::__compat::wire::WireSchema::opaque(
             "Structure",
-            <Summary as phoxal_runtime_contract::wire_schema::DescribeWire>::wire_schema(),
+            <Summary as crate::__compat::wire::DescribeWire>::wire_schema(),
         )
     }
 }
@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     /// Every structural fact the canonical model carries must be statable
-    /// through [`crate::builder::RobotBuilder`]. A field the builder cannot
+    /// through [`crate::model::builder::RobotBuilder`]. A field the builder cannot
     /// state is a robot that can only be described by authored documents, and
     /// the builder silently substituting a default for it is worse still.
     ///
@@ -1022,8 +1022,8 @@ mod tests {
     /// is exhaustive for the same reason.
     #[test]
     fn every_structural_field_is_statable_through_the_builder() {
-        use crate::asset::AssetId;
-        use crate::builder;
+        use crate::model::asset::AssetId;
+        use crate::model::builder;
 
         let mesh = AssetId::new("meshes/mast.stl").expect("a normalized asset id");
         let texture = AssetId::new("textures/paint.png").expect("a normalized asset id");

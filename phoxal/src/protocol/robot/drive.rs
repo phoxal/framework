@@ -16,9 +16,9 @@ pub enum StopReason {
 )]
 #[serde(deny_unknown_fields)]
 pub struct Target {
-    #[serde(deserialize_with = "crate::robot::drive::deserialize_finite_target_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::drive::deserialize_finite_target_scalar")]
     pub(crate) linear_x_mps: f32,
-    #[serde(deserialize_with = "crate::robot::drive::deserialize_finite_target_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::drive::deserialize_finite_target_scalar")]
     pub(crate) angular_z_radps: f32,
 }
 
@@ -106,7 +106,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use phoxal_runtime_contract::wire_schema::{DescribeWire, WireSchema};
+    use crate::__compat::wire::{DescribeWire, WireSchema};
 
     use super::{State, StopReason, Target};
 

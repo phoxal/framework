@@ -5,19 +5,19 @@
 pub enum Command {
     Position(
         #[serde(
-            deserialize_with = "crate::robot::component::motor::deserialize_finite_motor_scalar"
+            deserialize_with = "crate::protocol::robot::component::motor::deserialize_finite_motor_scalar"
         )]
         f32,
     ),
     Velocity(
         #[serde(
-            deserialize_with = "crate::robot::component::motor::deserialize_finite_motor_scalar"
+            deserialize_with = "crate::protocol::robot::component::motor::deserialize_finite_motor_scalar"
         )]
         f32,
     ),
     Torque(
         #[serde(
-            deserialize_with = "crate::robot::component::motor::deserialize_finite_motor_scalar"
+            deserialize_with = "crate::protocol::robot::component::motor::deserialize_finite_motor_scalar"
         )]
         f32,
     ),

@@ -1,7 +1,7 @@
 //! The persisted bundle boundary.
 //!
-//! `phoxal-manifest` compiles authored YAML/URDF into a canonical robot; this
-//! crate owns the artifact that remains after that source tree is gone.
+//! `crate::authoring` compiles authored YAML/URDF into a canonical robot; this
+//! module owns the artifact that remains after that source tree is gone.
 //!
 //! ```text
 //! <bundle>/
@@ -15,6 +15,20 @@
 //! manifest's `services` and `components`, which anyone holding the manifest can
 //! derive, and every participant reads its own configuration out of the same
 //! document. A binary is found in `bin/` by the id it was launched under.
+//!
+//! [`RuntimeBundle::open`] parses the manifest and does nothing else - the
+//! supervisor and every participant use the same reader, and a process the
+//! manifest never mentions opens the bundle exactly like one it does.
+//! [`ParticipantAssets::read`] reads a file below `assets/` by its
+//! [`AssetId`](crate::model::AssetId); that id is already a validated relative
+//! path and [`BundlePath`] validates the join again, so a read cannot leave
+//! `assets/`.
+//!
+//! [`BundleWriter::write`] takes the manifest, the assets, and a map from
+//! bundle-relative destination to the executable to copy there. It assembles the
+//! bundle in a private sibling directory and renames it onto its final name, so
+//! the target is either absent or a complete bundle; an existing target is
+//! refused, and a failed write removes its own staging directory.
 //!
 //! Nothing here verifies anything beyond "the manifest parses". Integrity lives
 //! in the archive: `phoxal build` writes `build.phoxal` alongside its
@@ -60,9 +74,9 @@ mod bundle_boundary_tests;
 /// with the writer about every one of them.
 #[doc(hidden)]
 pub mod __compat {
-    use phoxal_model::manifest::{MANIFEST_SCHEMA, ManifestDocument};
-    use phoxal_runtime_contract::contract_surface::{ContractRecord, ContractSurface};
-    use phoxal_runtime_contract::wire_schema::DescribeWire;
+    use crate::__compat::surface::{ContractRecord, ContractSurface};
+    use crate::__compat::wire::DescribeWire;
+    use crate::model::manifest::{MANIFEST_SCHEMA, ManifestDocument};
 
     /// The canonical rendering of this crate's contract surface.
     #[must_use]

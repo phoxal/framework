@@ -9,5 +9,5 @@ impl<E: ClientReceiveContract> ReceiveProof for E {
 }
 
 fn main() {
-    phoxal_protocol::robot::endpoint::component::speaker::StreamEndpoint::prove();
+    phoxal::api::endpoint::component::speaker::StreamEndpoint::prove();
 }

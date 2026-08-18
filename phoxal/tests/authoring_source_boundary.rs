@@ -14,12 +14,14 @@
 //!
 //! Exempt are the schemas themselves, which are what a generation *is*, and the
 //! editor-schema generator, whose whole job is to name the versioned document
-//! roots. Everything else under `src/` is below the boundary and must be able
-//! to compile a robot without knowing which source language authored it.
+//! roots. Everything else under `src/authoring/` is below the boundary and must
+//! be able to compile a robot without knowing which source language authored
+//! it.
 
 use std::path::{Path, PathBuf};
 
-/// Files that legitimately name a schema generation, relative to `src/`.
+/// Files that legitimately name a schema generation, relative to
+/// `src/authoring/`.
 ///
 /// `source/` holds the versioned DTOs and their normalizers - the boundary
 /// itself. `schema.rs` derives the published editor schemas from the versioned
@@ -27,12 +29,12 @@ use std::path::{Path, PathBuf};
 const EXEMPT: [&str; 2] = ["source", "schema.rs"];
 
 fn source_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/authoring")
 }
 
 fn rust_files(directory: &Path, exempt: &[&str], found: &mut Vec<PathBuf>) {
     let mut entries = std::fs::read_dir(directory)
-        .expect("the crate's source tree is readable")
+        .expect("the authored-source tree is readable")
         .map(|entry| entry.expect("a readable directory entry").path())
         .collect::<Vec<_>>();
     entries.sort();

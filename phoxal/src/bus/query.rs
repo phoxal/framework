@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::abi::truncate_utf8;
+use crate::bus::abi::truncate_utf8;
 
 const MAX_QUERY_FAILURE_BYTES: usize = 64 * 1024;
 const MAX_QUERY_MESSAGE_BYTES: usize = 60 * 1024;

@@ -8,7 +8,7 @@ use super::config::ParticipantConfig;
 pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The authoring kind that produced this artifact, as the framework-owned
     /// value the embedded metadata record declares.
-    const KIND: phoxal_runtime_contract::metadata::ParticipantKind;
+    const KIND: crate::participant::metadata::ParticipantKind;
     /// The participant id (`id = "…"`, default derived from the crate's
     /// `CARGO_PKG_NAME`; see `#[phoxal::service]`'s docs).
     const ID: &'static str;

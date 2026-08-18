@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 // The closed vocabularies below are canonical: an authored document and the
 // runtime model must agree on exactly which names exist, so there is one
 // definition of each and this layer only describes it for editors. They are
-// imported, not re-exported: `phoxal_model::component::capability` stays their
+// imported, not re-exported: `crate::model::component::capability` stays their
 // only path.
-use phoxal_model::component::capability::{
+use crate::model::component::capability::{
     CameraMode, CapabilityKind, EncoderType, GnssCoordinateSystem, LidarOutput, MotorCommand,
 };
 

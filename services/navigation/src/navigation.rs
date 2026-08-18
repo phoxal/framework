@@ -724,8 +724,8 @@ impl NavigationState {
 mod tests {
     use std::time::Duration;
 
+    use phoxal::bus::{BusConfig, BusOwner, Querier, StatePublisher, StepToken};
     use phoxal::testing::{ClockSource, TestClock, TestHarness, run_test_harness_with_clock};
-    use phoxal_bus::{BusConfig, BusOwner, Querier, StatePublisher, StepToken};
 
     use super::*;
 
@@ -892,10 +892,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn start_cancel_queries_are_idempotent_and_lossless_over_the_real_bus() {
-        let participant = phoxal_bus::ParticipantId::new("navigation-test")
+        let participant = phoxal::bus::ParticipantId::new("navigation-test")
             .expect("valid navigation participant");
         let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-            phoxal_bus::ExecutionId::mint(),
+            phoxal::bus::ExecutionId::mint(),
             participant,
             Vec::new(),
         ))

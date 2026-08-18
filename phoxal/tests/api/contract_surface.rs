@@ -1,7 +1,7 @@
 //! The generated contract surface: every declared endpoint, with the wire
 //! shape of every body it carries.
 
-use phoxal_runtime_contract::wire_schema::DescribeWire;
+use phoxal::__compat::wire::DescribeWire;
 use serde_json::Value;
 
 fn surface() -> Value {

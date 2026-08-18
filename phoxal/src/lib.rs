@@ -113,13 +113,12 @@
 //!
 //! ## Where to look next
 //!
-//! - The `phoxal-protocol` crate (`phoxal::api`, …) - the contract-family
-//!   modules: family-local wire bodies, the [`ApiFamily`](bus::ApiFamily) /
-//!   endpoint descriptor traits and family-local topic builders, all generated
-//!   from one `protocol_tree!` catalogue.
+//! - [`api`] - the `robot` contract family: family-local wire bodies, the
+//!   [`ApiFamily`](bus::ApiFamily) / endpoint descriptor traits and family-local
+//!   topic builders, all generated from one `protocol_tree!` catalogue.
 //!   A participant imports it directly with `use phoxal::api as api;`.
-//!   The runner also links it for framework-owned out-of-band infrastructure
-//!   contracts such as bus logs.
+//!   The runner also uses the sibling [`runtime::api`] family for
+//!   framework-owned out-of-band infrastructure contracts such as bus logs.
 //! - [`prelude`] - everything a participant author imports with
 //!   `use phoxal::prelude::*;`: the handle types, [`SetupContext`],
 //!   [`StepContext`], and [`Result`].
@@ -128,27 +127,83 @@
 //!   the four non-interchangeable time types, endpoint-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
 //! - [`model`] - immutable canonical robot facts read from the bundle's
-//!   `manifest.json`; bundle assembly and host-side reading live in
-//!   `phoxal-bundle`, while authored document readers live in
-//!   `phoxal-manifest` as a build/source dependency only.
+//!   `manifest.json`; bundle assembly and host-side reading are [`bundle`],
+//!   while the authored document readers are `authoring`, a build/source
+//!   surface behind the `authoring` feature that a launched participant never
+//!   compiles.
 //! - [`geometry`] and [`SampleSchedule`] - the small shared arithmetic every
 //!   official participant would otherwise reimplement.
 //! - The **official service set** ships alongside this crate in the workspace
 //!   `services/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
 //!   participants authored on exactly this surface, useful as reference reading.
 
-// Generated macro output refers to the framework as `::phoxal::…`; make that path
-// resolve to this crate so role/config macros work inside the engine's own tests, the
-// same as in downstream service crates. Only the in-crate test build units expand
-// macros to `::phoxal::…`, so the alias is needed only under `cfg(test)`; gating
-// it there keeps the non-test build free of an unused `extern crate` (no need for
-// an `allow(unused_extern_crates)`).
-#[cfg(test)]
+// Generated macro output refers to the framework as `::phoxal::…`; make that
+// path resolve to this crate so the role/config macros, the `DescribeWire`
+// derive and the protocol tree expand the same way inside the framework as they
+// do in a downstream service crate. Unconditional, because `protocol_tree!` now
+// expands *here* and names `::phoxal::bus::…` and `::phoxal::__compat::…` in
+// every build, not only in the in-crate test units.
 extern crate self as phoxal;
 
 pub mod geometry;
-mod participant;
 mod sample_schedule;
+
+/// The participant engine.
+///
+/// Only [`participant::metadata`] is a public path: the artifact record every
+/// participant binary embeds, and its strict reader. Everything else here is
+/// the runner's own machinery, reached through the crate-root facade, the
+/// [`prelude`], and [`__private`].
+pub mod participant;
+
+/// The framework-owned wire-contract catalogue.
+///
+/// Private on purpose: a contract family is reached through the semantic module
+/// that owns it - [`api`] for `robot`, [`runtime::api`], [`supervisor::api`] -
+/// so a payload type has exactly one supported path.
+mod protocol;
+
+/// The typed contract and handle vocabulary, and the transport under it.
+pub mod bus;
+
+/// The canonical robot model a [`bundle::RuntimeBundle`] yields.
+///
+/// The names re-exported at [`model`]'s own root are the canonical ones;
+/// everything else is reached through the module that owns it
+/// ([`model::builder`], [`model::component`], [`model::identity`],
+/// [`model::robot`], [`model::simulation`], [`model::structure`]).
+/// [`AssetId`] is the logical identity shared by source compilation and the
+/// staged `assets/` tree. Participant asset access is the bundle-owned
+/// [`ParticipantAssetResolver`] capability below.
+pub mod model;
+
+/// The compiled runtime bundle: `manifest.json`, its assets, and its binaries.
+pub mod bundle;
+
+/// The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
+/// URDF, their JSON Schemas, and the compiler that turns them into a
+/// [`model::Robot`].
+///
+/// Build/source tooling only. A launched participant reads the compiled
+/// `manifest.json`, never authored documents, so this module is off by default.
+#[cfg(feature = "authoring")]
+pub mod authoring;
+
+/// The identities that cross a Phoxal process boundary: execution, participant,
+/// producer, timeline, and participant-artifact ids.
+pub mod identity;
+
+/// The framework train version, and the compatibility line two binaries compare
+/// to establish that they speak the same contracts.
+pub mod version;
+
+/// The `runtime` contract family: what a running Phoxal process says about
+/// itself.
+pub mod runtime;
+
+/// The supervisor boundary: its wire contracts, and the host paths and advisory
+/// locking a client and the one execution supervisor find each other through.
+pub mod supervisor;
 
 /// The contract surface this crate owns: the participant launch contract.
 ///
@@ -163,85 +218,11 @@ pub mod testing;
 
 /// The `robot` contract family, the surface a participant authors against.
 ///
-/// The facade exposes the robot family only. The `runtime` and `supervisor`
-/// families are host-tooling surfaces, reached through `phoxal_protocol` directly.
+/// This is the robot family and only the robot family. The `runtime` and
+/// `supervisor` families are host-tooling surfaces, reached through
+/// [`runtime::api`] and [`supervisor::api`].
 pub mod api {
-    pub use phoxal_protocol::robot::*;
-}
-
-/// Typed contract and handle vocabulary for normal participant authoring.
-///
-/// This is the bus surface a checked participant browses: the contract traits,
-/// the codec, the [`BusMetadata`](bus::BusMetadata) attachment, the four
-/// non-interchangeable time types, the endpoint-typed handles, and side-branded
-/// [`Topic`](bus::Topic) values. Participants build their IO through
-/// [`SetupContext`] and the api-local topic builders, so session construction,
-/// ownership, raw handles, incoming queries, and server queryables have no
-/// place here. Host tooling that owns a session depends on `phoxal-bus`
-/// directly; a participant cannot open a second session through this facade.
-///
-/// [`ClientPublishContract`](bus::ClientPublishContract) and
-/// [`ClientReceiveContract`](bus::ClientReceiveContract) are descriptor-derived
-/// external-client roles, not participant capabilities. `ClientPublishContract`
-/// marks owner-consumed Setpoint and `Stream<_, In>` endpoints; `In` flows from
-/// the client into the owner. `ClientReceiveContract` marks owner-published
-/// State, Sample, Event, and `Stream<_, Out>` endpoints; `Out` flows from the
-/// owner to the client. Query endpoints use their query brands and implement
-/// neither role. These markers are the narrow facade exception to the rule
-/// that session-owning host tooling uses `phoxal-bus` directly: generic client
-/// APIs need descriptor role bounds without gaining session construction,
-/// ownership, or raw transport access. The public traits must remain
-/// implementable because `protocol_tree!` can expand in downstream crates;
-/// only macro-generated descriptor implementations belong to the supported
-/// protocol surface.
-///
-/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
-/// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) are absent for a
-/// stronger reason: minting a world clock is not a participant capability at
-/// all. The simulated world clock is published by an external bus client,
-/// which owns its own session through `phoxal-bus` directly, so nothing reached
-/// through this facade mints one.
-pub mod bus {
-    pub use phoxal_bus::{
-        ApiFamily, AskQuery, BusError, BusMetadata, CaptureStamp, ClientPublishContract,
-        ClientReceiveContract, Codec, CodecError, CodecId, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
-        Endpoint, EndpointDescriptor, EndpointKind, EventContract, EventPublisher, EventReceiver,
-        ExclusiveProducerLease, FixedSourceAdmission, FixedSourceLease, KeySegment,
-        KeySegmentError, LEASE_TRACE_TARGET, LeaseDecision, LeaseRejection, LocalInstant,
-        MAX_READY_PRODUCERS, MessagePack, Observed, ParticipantId, ParticipantReadyEvent,
-        ParticipantReadyEvents, ParticipantReadyObserver, ParticipantReadyStatus,
-        ParticipantSourceIdentity, Payload, ProducerId, Publish, Querier, QueryCode,
-        QueryEndpointDescriptor, QueryError, QueryFailure, QueryResult, ReceiveTerminal, Result,
-        RobotInstant, RobotTimeError, SampleContract, SampleDeliveryContract, SamplePublisher,
-        SampleReceiver, ServeQuery, SetpointContract, SetpointDeliveryContract, SetpointPublisher,
-        SetpointReceiver, SourceAttribution, SourceLabel, StateContract, StateDeliveryContract,
-        StatePublisher, StateView, StepStamp, StepToken, StreamContract, StreamDeliveryContract,
-        StreamPublisher, StreamReceiver, Subscribe, TimeWindow, Timed, TimelineId,
-        TimelineMismatch, Topic, TopicKind, WallTimestamp, WildcardPublish, WorldClockContract,
-        WorldStepToken,
-    };
-}
-
-/// The canonical robot model a [`phoxal_bundle::RuntimeBundle`] yields.
-///
-/// This mirrors `phoxal-model`'s own facade one-for-one and adds nothing: the
-/// names below are the canonical ones, and everything else is reached through
-/// the module that owns it ([`model::builder`], [`model::component`],
-/// [`model::identity`], [`model::robot`], [`model::simulation`],
-/// [`model::structure`]). [`AssetId`] is the logical identity shared by source
-/// compilation and the staged `assets/` tree. Participant asset access is the
-/// bundle-owned [`ParticipantAssetResolver`] capability below; source
-/// compilation does not cross this runtime boundary.
-///
-/// [`model::RobotBuilder`] composes a model in memory rather than loading one.
-/// A launched participant never needs it - the runner hands it an already-built
-/// [`model::Robot`] - but a test or a tool that has no bundle does.
-pub mod model {
-    pub use phoxal_model::{
-        CapabilityRole, FootprintEnvelope, IdentifierKind, JointOwner, KinematicScalarField,
-        LinkRole, ModelError, MotionLimitField, PoseOwner, Robot, RobotBuilder, StructureError,
-        builder, component, footprint, identity, robot, simulation, structure,
-    };
+    pub use crate::protocol::robot::*;
 }
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
@@ -275,11 +256,11 @@ pub use phoxal_macros::step;
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub use participant::runner::run;
 
+pub use crate::bundle::ParticipantAssets as ParticipantAssetResolver;
+pub use crate::model::AssetId;
 pub use participant::api::Participant;
 pub use participant::context::{QueryContext, ResetContext, SetupContext, StepContext};
 pub use participant::managed::ManagedTaskPolicy;
-pub use phoxal_bundle::ParticipantAssets as ParticipantAssetResolver;
-pub use phoxal_model::AssetId;
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
 /// Async host runner entrypoint for custom Tokio mains
@@ -328,7 +309,7 @@ pub mod __private {
     /// speak the same contracts exactly when they were built from the same
     /// compatibility line, and the exact train the binary records is what a
     /// validator reads that line from. So there is one constant here, owned by
-    /// `phoxal-runtime-contract`. The role macros splice it into the
+    /// [`crate::version`]. The role macros splice it into the
     /// participant's embedded `.phoxal_meta` document at compile time through
     /// `participant_metadata_json!`; that embedded document is the only
     /// compatibility artifact - there is no Cargo package-metadata table and no
@@ -336,14 +317,14 @@ pub mod __private {
     /// `ParticipantMetadata` itself, a format discriminator rather than a
     /// negotiated identity, so it needs no entry here.
     pub mod compatibility {
-        use phoxal_runtime_contract::version::FrameworkVersion;
+        use crate::version::FrameworkVersion;
 
         /// The canonical spelling of the framework train this binary was built
         /// from. The const-eval metadata writer needs a string; the value it
         /// spells is `FrameworkVersion::CURRENT`.
         pub const FRAMEWORK: &str = FrameworkVersion::CURRENT_SPELLING;
 
-        pub use phoxal_runtime_contract::participant_metadata_json;
+        pub use crate::participant_metadata_json;
     }
 
     /// Const-eval plumbing for the embedded metadata static: `ConstSchema`,
@@ -358,7 +339,7 @@ pub mod __private {
     pub use crate::participant::spec::ParticipantSpec;
 
     /// The authoring kind a role attribute records in `ParticipantSpec::KIND`.
-    pub use phoxal_runtime_contract::metadata::ParticipantKind;
+    pub use crate::participant::metadata::ParticipantKind;
 
     /// The cadence `#[phoxal::step(hz = …)]` returns from
     /// `Participant::__step_schedule`.

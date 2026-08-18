@@ -8,14 +8,15 @@
 use std::fmt::Debug;
 use std::fs;
 
-use phoxal_bus::{Codec, EndpointDescriptor, EndpointKind, MessagePack, QueryEndpointDescriptor};
-use phoxal_model::builder::RobotBuilder;
-use phoxal_model::manifest::ManifestDocument;
-use phoxal_protocol::supervisor::command::{Command, CommandOutcome};
-use phoxal_protocol::supervisor::connect::{ConnectReply, ConnectRequest};
-use phoxal_protocol::{runtime, supervisor};
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
-use phoxal_runtime_contract::version::FrameworkVersion;
+use phoxal::bus::{Codec, EndpointDescriptor, EndpointKind, MessagePack, QueryEndpointDescriptor};
+use phoxal::identity::{ParticipantId, ProducerId};
+use phoxal::model::builder::RobotBuilder;
+use phoxal::model::manifest::ManifestDocument;
+use phoxal::runtime::api as runtime;
+use phoxal::supervisor::api as supervisor;
+use phoxal::supervisor::api::command::{Command, CommandOutcome};
+use phoxal::supervisor::api::connect::{ConnectReply, ConnectRequest};
+use phoxal::version::FrameworkVersion;
 
 use super::{HostAction, bundle_entry, command, connect_reply};
 use crate::supervisor::presence::Presence;

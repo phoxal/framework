@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::Result;
+use crate::identity::ParticipantId;
 use clap::Parser;
-use phoxal_runtime_contract::identity::ParticipantId;
 
 /// The bounded grace a participant gets for `Participant::shutdown` and owned
 /// cleanup.
@@ -74,7 +74,7 @@ impl Launch {
 fn parse_participant_id(value: &str) -> std::result::Result<ParticipantId, String> {
     value
         .parse()
-        .map_err(|error: phoxal_runtime_contract::identity::ParticipantIdError| error.to_string())
+        .map_err(|error: crate::identity::ParticipantIdError| error.to_string())
 }
 
 fn parse_connect_endpoint(value: &str) -> std::result::Result<String, String> {

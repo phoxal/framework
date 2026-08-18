@@ -8,10 +8,10 @@
 //! ([`BusError::Transport`] and [`KeyProblem::NotAKeyExpression`]) carry
 //! Zenoh's own message and are named so that is visible at the use site.
 
-use phoxal_runtime_contract::identity::{ExecutionId, IdentityError, ProducerId};
+use crate::identity::{ExecutionId, IdentityError, ProducerId};
 
-use crate::abi::{CodecError, EncodingError};
-use crate::topic::WildcardPublish;
+use crate::bus::abi::{CodecError, EncodingError};
+use crate::bus::topic::WildcardPublish;
 
 /// A bus-layer error.
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +71,7 @@ pub enum BusError {
     #[error("unsupported codec id {codec} on '{topic}'")]
     UnsupportedCodec {
         /// The id the wire carried. Deliberately a raw `u8`: it is precisely
-        /// the ids that are *not* a [`CodecId`](crate::abi::CodecId) that reach
+        /// the ids that are *not* a [`CodecId`](crate::bus::abi::CodecId) that reach
         /// here.
         codec: u8,
         /// The family-rooted topic key it arrived on.
@@ -216,7 +216,7 @@ pub enum MetadataProblem {
     /// The encoding string is not a Phoxal encoding string.
     #[error("malformed encoding string: {0}")]
     MalformedEncoding(#[from] EncodingError),
-    /// The sample carried no [`BusMetadata`](crate::metadata::BusMetadata)
+    /// The sample carried no [`BusMetadata`](crate::bus::metadata::BusMetadata)
     /// attachment.
     #[error("missing a BusMetadata attachment")]
     MissingAttachment,

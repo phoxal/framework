@@ -23,7 +23,7 @@ pub struct SubmapRequest {
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
-#[serde(try_from = "crate::robot::map::GridPointWire")]
+#[serde(try_from = "crate::protocol::robot::map::GridPointWire")]
 pub struct Point {
     pub x_m: f64,
     pub y_m: f64,
@@ -33,7 +33,7 @@ pub struct Point {
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
-#[serde(try_from = "crate::robot::map::GridPoseWire")]
+#[serde(try_from = "crate::protocol::robot::map::GridPoseWire")]
 pub struct Pose {
     pub x_m: f64,
     pub y_m: f64,
@@ -44,7 +44,7 @@ pub struct Pose {
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
-#[serde(try_from = "crate::robot::map::GridBoundsWire")]
+#[serde(try_from = "crate::protocol::robot::map::GridBoundsWire")]
 pub struct Bounds {
     pub min_x_m: f64,
     pub min_y_m: f64,
@@ -69,16 +69,16 @@ pub enum Occupancy {
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
-#[serde(try_from = "crate::robot::map::GridWindowWire")]
+#[serde(try_from = "crate::protocol::robot::map::GridWindowWire")]
 pub struct GridWindow {
     pub frame_id: String,
     pub origin_pose: Pose,
     pub cell_origin: Point,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_positive_resolution")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_positive_resolution")]
     pub resolution_m: f32,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_nonzero_map_dimension")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_nonzero_map_dimension")]
     pub width: u32,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_nonzero_map_dimension")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_nonzero_map_dimension")]
     pub height: u32,
     pub cells: Vec<Occupancy>,
     pub revision: u64,
@@ -100,7 +100,7 @@ pub enum SubmapResponse {
     },
     OutOfBounds {
         requested: Bounds,
-        #[serde(deserialize_with = "crate::robot::map::deserialize_nonempty_frame_id")]
+        #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_nonempty_frame_id")]
         frame_id: String,
         revision: u64,
     },
@@ -158,13 +158,13 @@ where
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GridBoundsWire {
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub min_x_m: f64,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub min_y_m: f64,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub max_x_m: f64,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub max_y_m: f64,
 }
 
@@ -172,11 +172,11 @@ pub struct GridBoundsWire {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GridPoseWire {
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub x_m: f64,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub y_m: f64,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub yaw_rad: f64,
 }
 
@@ -184,9 +184,9 @@ pub struct GridPoseWire {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GridPointWire {
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub x_m: f64,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_map_scalar")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_map_scalar")]
     pub y_m: f64,
 }
 
@@ -194,20 +194,20 @@ pub struct GridPointWire {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GridWindowWire {
-    #[serde(deserialize_with = "crate::robot::map::deserialize_nonempty_frame_id")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_nonempty_frame_id")]
     pub frame_id: String,
-    pub origin_pose: crate::robot::map::Pose,
-    pub cell_origin: crate::robot::map::Point,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_finite_positive_resolution")]
+    pub origin_pose: crate::protocol::robot::map::Pose,
+    pub cell_origin: crate::protocol::robot::map::Point,
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_finite_positive_resolution")]
     pub resolution_m: f32,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_nonzero_map_dimension")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_nonzero_map_dimension")]
     pub width: u32,
-    #[serde(deserialize_with = "crate::robot::map::deserialize_nonzero_map_dimension")]
+    #[serde(deserialize_with = "crate::protocol::robot::map::deserialize_nonzero_map_dimension")]
     pub height: u32,
-    pub cells: Vec<crate::robot::map::Occupancy>,
+    pub cells: Vec<crate::protocol::robot::map::Occupancy>,
     pub revision: u64,
-    pub requested: crate::robot::map::Bounds,
-    pub covered: crate::robot::map::Bounds,
+    pub requested: crate::protocol::robot::map::Bounds,
+    pub covered: crate::protocol::robot::map::Bounds,
 }
 
 #[doc(hidden)]
@@ -222,7 +222,7 @@ impl std::fmt::Display for GridWireError {
 
 impl std::error::Error for GridWireError {}
 
-impl TryFrom<GridBoundsWire> for crate::robot::map::Bounds {
+impl TryFrom<GridBoundsWire> for crate::protocol::robot::map::Bounds {
     type Error = GridWireError;
 
     fn try_from(value: GridBoundsWire) -> Result<Self, Self::Error> {
@@ -238,7 +238,7 @@ impl TryFrom<GridBoundsWire> for crate::robot::map::Bounds {
     }
 }
 
-impl TryFrom<GridPoseWire> for crate::robot::map::Pose {
+impl TryFrom<GridPoseWire> for crate::protocol::robot::map::Pose {
     type Error = GridWireError;
 
     fn try_from(value: GridPoseWire) -> Result<Self, Self::Error> {
@@ -250,7 +250,7 @@ impl TryFrom<GridPoseWire> for crate::robot::map::Pose {
     }
 }
 
-impl TryFrom<GridPointWire> for crate::robot::map::Point {
+impl TryFrom<GridPointWire> for crate::protocol::robot::map::Point {
     type Error = GridWireError;
 
     fn try_from(value: GridPointWire) -> Result<Self, Self::Error> {
@@ -261,7 +261,7 @@ impl TryFrom<GridPointWire> for crate::robot::map::Point {
     }
 }
 
-impl TryFrom<GridWindowWire> for crate::robot::map::GridWindow {
+impl TryFrom<GridWindowWire> for crate::protocol::robot::map::GridWindow {
     type Error = GridWireError;
 
     fn try_from(value: GridWindowWire) -> Result<Self, Self::Error> {

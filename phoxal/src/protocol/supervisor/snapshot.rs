@@ -6,7 +6,7 @@
 //! replacement, so a consumer never reconstructs state from a diff it may have
 //! missed.
 
-use crate::supervisor::execution::SnapshotDocument;
+use crate::protocol::supervisor::execution::SnapshotDocument;
 
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,

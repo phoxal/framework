@@ -227,7 +227,7 @@ impl ParticipantKind {
 
     /// The framework-owned kind value this role declares. Emitted as a path,
     /// never as a token: the wire spelling belongs to
-    /// `phoxal_runtime_contract::ParticipantKind`'s serde rename.
+    /// `phoxal::participant::metadata::ParticipantKind`'s serde rename.
     fn artifact_kind(self, phoxal: &TokenStream) -> TokenStream {
         let variant = match self {
             ParticipantKind::Service => quote!(Service),

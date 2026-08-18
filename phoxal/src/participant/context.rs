@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface};
 use crate::ParticipantAssetResolver;
+use crate::bundle::RuntimeBundle;
 use crate::bus::{
     AskQuery, DEFAULT_QUERY_TIMEOUT, EventContract, EventPublisher, EventReceiver, Observed,
     Publish, Querier, QueryEndpointDescriptor, RobotInstant, SampleContract,
@@ -15,12 +16,11 @@ use crate::bus::{
     StateDeliveryContract, StatePublisher, StateView, StepToken, StreamContract,
     StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimelineId, Topic,
 };
+use crate::bus::{BusHandle, ParticipantId};
 use crate::model::Robot;
 use crate::participant::api::Participant;
 use crate::participant::managed::{ManagedTaskOutput, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::query::QueryRegistration;
-use phoxal_bundle::RuntimeBundle;
-use phoxal_bus::{BusHandle, ParticipantId};
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 
@@ -34,16 +34,16 @@ pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 /// authoritative for requester ownership.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryContext {
-    producer: phoxal_bus::ProducerId,
+    producer: crate::bus::ProducerId,
 }
 
 impl QueryContext {
-    pub(crate) fn new(producer: phoxal_bus::ProducerId) -> Self {
+    pub(crate) fn new(producer: crate::bus::ProducerId) -> Self {
         Self { producer }
     }
 
     /// The exact producer/session that sent this query.
-    pub fn producer(&self) -> phoxal_bus::ProducerId {
+    pub fn producer(&self) -> crate::bus::ProducerId {
         self.producer
     }
 }
@@ -67,7 +67,7 @@ pub struct SetupContext<R: Participant> {
 
 impl<R: Participant> SetupContext<R> {
     /// The producer identity of this participant's unique bus owner.
-    pub fn producer(&self) -> phoxal_bus::ProducerId {
+    pub fn producer(&self) -> crate::bus::ProducerId {
         self.bus.producer()
     }
 
@@ -76,7 +76,7 @@ impl<R: Participant> SetupContext<R> {
     /// so its observer remains alive for the participant lifetime.
     pub async fn participant_ready_events(
         &self,
-    ) -> crate::Result<phoxal_bus::ParticipantReadyEvents> {
+    ) -> crate::Result<crate::bus::ParticipantReadyEvents> {
         Ok(self.bus.participant_ready_events().await?)
     }
 
@@ -85,8 +85,8 @@ impl<R: Participant> SetupContext<R> {
     /// bounded authority-evidence queue.
     pub async fn participant_ready_events_for(
         &self,
-        participant: &phoxal_bus::ParticipantId,
-    ) -> crate::Result<phoxal_bus::ParticipantReadyEvents> {
+        participant: &crate::bus::ParticipantId,
+    ) -> crate::Result<crate::bus::ParticipantReadyEvents> {
         Ok(self.bus.participant_ready_events_for(participant).await?)
     }
 
@@ -95,9 +95,9 @@ impl<R: Participant> SetupContext<R> {
     /// before the next sample can enter a retained state view.
     pub async fn observe_participant_ready_for(
         &self,
-        participant: &phoxal_bus::ParticipantId,
-        callback: impl Fn(phoxal_bus::ParticipantReadyEvent) + Send + Sync + 'static,
-    ) -> crate::Result<phoxal_bus::ParticipantReadyObserver> {
+        participant: &crate::bus::ParticipantId,
+        callback: impl Fn(crate::bus::ParticipantReadyEvent) + Send + Sync + 'static,
+    ) -> crate::Result<crate::bus::ParticipantReadyObserver> {
         Ok(self
             .bus
             .observe_participant_ready_for(participant, callback)

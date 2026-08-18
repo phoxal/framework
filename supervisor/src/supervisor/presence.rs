@@ -13,10 +13,10 @@
 
 use std::collections::BTreeMap;
 
-use phoxal_model::Robot;
-use phoxal_protocol::supervisor::execution::{Lifecycle, Process, ProcessState};
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
-use phoxal_runtime_contract::metadata::ParticipantKind;
+use phoxal::identity::{ParticipantId, ProducerId};
+use phoxal::model::Robot;
+use phoxal::participant::metadata::ParticipantKind;
+use phoxal::supervisor::api::execution::{Lifecycle, Process, ProcessState};
 
 /// The expected runtimes of one robot and their observed Ready leases.
 #[derive(Clone, Debug)]
@@ -160,7 +160,7 @@ const BRAIN: &str = "brain";
 
 #[cfg(test)]
 mod tests {
-    use phoxal_model::RobotBuilder;
+    use phoxal::model::RobotBuilder;
 
     use super::*;
 
@@ -283,7 +283,7 @@ mod tests {
     /// the serve path can always encode what this produces.
     #[test]
     fn the_projection_is_always_a_publishable_snapshot() {
-        use phoxal_protocol::supervisor::execution::Snapshot;
+        use phoxal::supervisor::api::execution::Snapshot;
 
         let mut presence = presence();
         presence.record(&participant("brain"), producer(1), true);

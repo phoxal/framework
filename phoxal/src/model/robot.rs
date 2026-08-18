@@ -3,21 +3,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::compiler::RobotParts;
-use crate::component::Component;
-use crate::component::capability::{
+use crate::model::compiler::RobotParts;
+use crate::model::component::Component;
+use crate::model::component::capability::{
     Capability, CapabilityKind, CapabilityRole, Encoder, Motor, StructuralKind, StructuralTarget,
 };
-use crate::error::{
+use crate::model::error::{
     IdentifierKind, JointOwner, KinematicScalarField, ModelError, MotionLimitField,
 };
-use crate::footprint::FootprintEnvelope;
-use crate::identity::{
+use crate::model::footprint::FootprintEnvelope;
+use crate::model::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, LinkId,
     MODULE_INSTANCE_SEPARATOR, RobotId, ServiceId,
 };
-use crate::simulation::Simulation;
-use crate::structure::{Joint, JointKind, Structure};
+use crate::model::simulation::Simulation;
+use crate::model::structure::{Joint, JointKind, Structure};
 
 /// One service this robot runs.
 ///
@@ -119,9 +119,15 @@ pub struct MotionModel {
 
 /// The outer envelope every motion command is clamped to.
 #[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq,
+    phoxal_macros::DescribeWire,
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct MotionLimits {
     pub max_linear_speed_mps: f64,
@@ -130,9 +136,14 @@ pub struct MotionLimits {
 
 /// The drive geometry, and the capabilities that realize it.
 #[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
+    phoxal_macros::DescribeWire,
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    PartialEq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KinematicConfig {
     Differential {
@@ -659,13 +670,13 @@ impl serde::Serialize for Robot {
     }
 }
 
-impl phoxal_runtime_contract::wire_schema::DescribeWire for Robot {
+impl crate::__compat::wire::DescribeWire for Robot {
     // Invariant: the `Serialize` above builds a `RobotWire` and writes that, so
     // the wire helper's shape is the whole of what a persisted robot is.
-    fn wire_schema() -> phoxal_runtime_contract::wire_schema::WireSchema {
-        phoxal_runtime_contract::wire_schema::WireSchema::opaque(
+    fn wire_schema() -> crate::__compat::wire::WireSchema {
+        crate::__compat::wire::WireSchema::opaque(
             "Robot",
-            <RobotWire as phoxal_runtime_contract::wire_schema::DescribeWire>::wire_schema(),
+            <RobotWire as crate::__compat::wire::DescribeWire>::wire_schema(),
         )
     }
 }
@@ -1360,7 +1371,7 @@ mod kinematics_tests {
         AckermannDrive, BodyTwist, DifferentialDrive, DriveKinematics, KinematicConfig,
         KinematicScalarField, MecanumDrive, ModelError,
     };
-    use crate::identity::CapabilityRef;
+    use crate::model::identity::CapabilityRef;
 
     const DIFFERENTIAL: DifferentialDrive = DifferentialDrive::new(0.1, 0.5);
     const MECANUM: MecanumDrive = MecanumDrive::new(0.1, 0.4, 0.6);
@@ -1574,7 +1585,7 @@ mod kinematics_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::{self, RobotParts};
+    use crate::model::compiler::{self, RobotParts};
     use serde_json::{Value, json};
 
     const INERTIAL: &str = r#"{
@@ -1724,7 +1735,7 @@ mod tests {
     /// type anywhere below it whose shape drifted fails here.
     #[test]
     fn the_declared_robot_shape_is_the_shape_serde_writes() {
-        use phoxal_runtime_contract::wire_schema::DescribeWire;
+        use crate::__compat::wire::DescribeWire;
 
         for robot in [
             robot_with(&["left"]),

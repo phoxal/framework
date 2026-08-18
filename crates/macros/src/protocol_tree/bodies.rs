@@ -29,7 +29,7 @@ impl MaterializedTree {
                 /// Zero-variant marker identifying this contract family.
                 #[derive(Clone, Copy, Debug)]
                 pub enum Api {}
-                impl ::phoxal_bus::ApiFamily for Api {
+                impl ::phoxal::bus::ApiFamily for Api {
                     const ID: &'static str = #id;
                 }
 
@@ -115,14 +115,14 @@ impl Node {
                     descriptors.extend(quote! {
                         #[derive(Clone, Copy, Debug)]
                         pub struct #endpoint;
-                        impl ::phoxal_bus::EndpointDescriptor for #endpoint {
-                            type Api = crate::#tree_module::Api;
+                        impl ::phoxal::bus::EndpointDescriptor for #endpoint {
+                            type Api = crate::protocol::#tree_module::Api;
                             type Payload = #payload;
                             const NAME: &'static str = #endpoint_name;
                             const FAMILY: &'static str = #tree_id;
                             const CONTRACT: &'static str = #endpoint_contract;
                             const TOPIC: &'static str = #key;
-                            const KIND: ::phoxal_bus::EndpointKind = #endpoint_kind;
+                            const KIND: ::phoxal::bus::EndpointKind = #endpoint_kind;
                         }
                         impl #delivery_marker for #endpoint {}
                         #temporal_marker
@@ -135,16 +135,16 @@ impl Node {
                     descriptors.extend(quote! {
                         #[derive(Clone, Copy, Debug)]
                         pub struct #endpoint;
-                        impl ::phoxal_bus::EndpointDescriptor for #endpoint {
-                            type Api = crate::#tree_module::Api;
+                        impl ::phoxal::bus::EndpointDescriptor for #endpoint {
+                            type Api = crate::protocol::#tree_module::Api;
                             type Payload = #request;
                             const NAME: &'static str = #endpoint_name;
                             const FAMILY: &'static str = #tree_id;
                             const CONTRACT: &'static str = #endpoint_contract;
                             const TOPIC: &'static str = #key;
-                            const KIND: ::phoxal_bus::EndpointKind = #endpoint_kind;
+                            const KIND: ::phoxal::bus::EndpointKind = #endpoint_kind;
                         }
-                        impl ::phoxal_bus::QueryEndpointDescriptor for #endpoint {
+                        impl ::phoxal::bus::QueryEndpointDescriptor for #endpoint {
                             type Request = #request;
                             type Response = #response;
                         }

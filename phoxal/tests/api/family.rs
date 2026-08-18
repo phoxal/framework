@@ -1,6 +1,6 @@
 //! The contract families this crate declares, and the catalogue they emit.
 
-use phoxal_bus::{ApiFamily, EndpointDescriptor, EndpointKind};
+use phoxal::bus::{ApiFamily, EndpointDescriptor, EndpointKind};
 
 use crate::robot as api;
 

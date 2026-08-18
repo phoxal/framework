@@ -11,7 +11,7 @@ use anyhow::Result;
 #[test]
 fn the_facade_framework_version_is_the_workspace_train_version() -> Result<()> {
     use phoxal::__private::compatibility as compat;
-    use phoxal_runtime_contract::version::FrameworkVersion;
+    use phoxal::version::FrameworkVersion;
 
     // Serialized, not `Display`: what a peer writes on the wire is what a
     // reader has to accept.
@@ -46,7 +46,7 @@ fn compiled_asset_id_rules_match_at_the_producer_and_consumer_boundary() {
     ];
     for (value, accepted) in cases {
         assert_eq!(
-            phoxal_model::AssetId::new(value).is_ok(),
+            phoxal::model::AssetId::new(value).is_ok(),
             accepted,
             "manifest producer disagreed for {value:?}"
         );

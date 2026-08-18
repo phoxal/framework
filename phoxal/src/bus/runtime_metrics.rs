@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::lock::lock;
+use crate::bus::lock::lock;
 
 /// Which way samples move through the buffer a row describes.
 ///
@@ -328,13 +328,13 @@ mod tests {
     use zenoh::bytes::Encoding;
     use zenoh::key_expr::OwnedKeyExpr;
 
-    use crate::abi::CodecId;
-    use crate::contract::EndpointDescriptor;
-    use crate::handle::publisher::StatePublisher;
-    use crate::handle::subscriber::{Latest, Subscriber};
-    use crate::session::BusOwner;
-    use crate::test_support::{Target, TargetEndpoint, metadata, participant_config, step};
-    use crate::topic::{Publish, Subscribe, Topic};
+    use crate::bus::abi::CodecId;
+    use crate::bus::contract::EndpointDescriptor;
+    use crate::bus::handle::publisher::StatePublisher;
+    use crate::bus::handle::subscriber::{Latest, Subscriber};
+    use crate::bus::session::BusOwner;
+    use crate::bus::test_support::{Target, TargetEndpoint, metadata, participant_config, step};
+    use crate::bus::topic::{Publish, Subscribe, Topic};
 
     /// Every variant here has to reach the wire.
     ///

@@ -61,7 +61,7 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
 /// baseline, so a serde feature whose serialized form this cannot compute -
 /// `flatten`, adjacent tagging, an arbitrary `serialize_with` - is a compile
 /// error pointing at a hand-written
-/// `phoxal_runtime_contract::wire_schema::DescribeWire`, never an approximate
+/// `phoxal::__compat::wire::DescribeWire`, never an approximate
 /// schema.
 #[proc_macro_derive(DescribeWire, attributes(serde))]
 pub fn derive_describe_wire(input: TokenStream) -> TokenStream {

@@ -28,13 +28,13 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result, bail};
-use phoxal_bus::{
+use phoxal::bus::{
     BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
     ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
-use phoxal_protocol::supervisor::connect::PRESENCE_KEY;
-use phoxal_runtime_contract::identity::ExecutionId;
-use phoxal_runtime_contract::rendezvous::RuntimeRendezvous;
+use phoxal::identity::ExecutionId;
+use phoxal::supervisor::api::connect::PRESENCE_KEY;
+use phoxal::supervisor::rendezvous::RuntimeRendezvous;
 use tokio_util::sync::CancellationToken;
 
 use presence::Presence;
@@ -71,7 +71,7 @@ pub(crate) async fn run(requested_root: &Path) -> Result<()> {
 }
 
 async fn execute(
-    runtime: phoxal_bundle::RuntimeBundle,
+    runtime: phoxal::bundle::RuntimeBundle,
     paths: &RuntimeRendezvous,
     state: &ExecutionState,
     shutdown: CancellationToken,
@@ -264,7 +264,7 @@ async fn verify_router_identity(
 
 #[cfg(test)]
 mod tests {
-    use phoxal_bus::BusCloseTimeout;
+    use phoxal::bus::BusCloseTimeout;
 
     use super::*;
 

@@ -79,7 +79,7 @@ pub struct ManualCommand {
 pub enum Decision {
     Active {
         source: Source,
-        target: crate::robot::drive::Target,
+        target: crate::protocol::robot::drive::Target,
     },
     Stopped {
         reason: ZeroReason,

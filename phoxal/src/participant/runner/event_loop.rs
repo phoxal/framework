@@ -8,7 +8,7 @@ use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsync
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
-use phoxal_protocol::runtime::endpoint::simulation::ClockEndpoint;
+use crate::runtime::api::endpoint::simulation::ClockEndpoint;
 
 use super::ShutdownController;
 use super::lifecycle::{LoopExit, Runner};
@@ -231,7 +231,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         }
     }
 
-    fn serve_query(&mut self, request: (usize, phoxal_bus::IncomingQuery)) -> crate::Result<()> {
+    fn serve_query(&mut self, request: (usize, crate::bus::IncomingQuery)) -> crate::Result<()> {
         let Some(queries) = &self.queries else {
             return Ok(());
         };
@@ -242,12 +242,10 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
 /// Subscribe the authoritative `runtime/simulation/clock` hand and drive the live
 /// scheduler from exact production instants for the task's lifetime.
 pub(crate) async fn simulation_clock_feed(
-    bus: phoxal_bus::BusHandle,
+    bus: crate::bus::BusHandle,
     handle: SimulationClockHandle,
 ) -> crate::Result<()> {
-    let topic = phoxal_protocol::runtime::topic::client()
-        .simulation()
-        .clock();
+    let topic = crate::runtime::api::topic::client().simulation().clock();
     let subscriber = match StreamReceiver::<ClockEndpoint>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),
@@ -284,7 +282,7 @@ pub(crate) async fn simulation_clock_feed(
 /// does not.
 async fn next_query<R: Participant>(
     queries: &mut Option<QuerySurface<R>>,
-) -> (usize, phoxal_bus::IncomingQuery) {
+) -> (usize, crate::bus::IncomingQuery) {
     match queries {
         Some(queries) => queries.next_request().await,
         None => std::future::pending().await,

@@ -6,8 +6,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::source::Violations;
-use crate::source::document::{Document, DocumentKind, Origin, SourceError};
+use crate::authoring::source::Violations;
+use crate::authoring::source::document::{Document, DocumentKind, Origin, SourceError};
 
 /// A versioned authored `component.yaml` document; the schema tag selects the
 /// variant.
@@ -92,21 +92,22 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::CompileError::Document`] when the document breaks its
-    /// own rules, and [`crate::CompileError::Transcode`] when an authored
+    /// Returns [`crate::authoring::CompileError::Document`] when the document breaks its
+    /// own rules, and [`crate::authoring::CompileError::Transcode`] when an authored
     /// capability does not adopt into its canonical counterpart.
     pub(crate) fn normalize(
         self,
         component_type: &str,
         root: &Path,
-    ) -> Result<crate::normalized::Component, crate::CompileError> {
-        self.validate_as(component_type)
-            .map_err(|violations| crate::CompileError::Document {
+    ) -> Result<crate::authoring::normalized::Component, crate::authoring::CompileError> {
+        self.validate_as(component_type).map_err(|violations| {
+            crate::authoring::CompileError::Document {
                 source: SourceError::Invalid {
-                    origin: Origin::File(crate::source::document_path(root, Self::KIND)),
+                    origin: Origin::File(crate::authoring::source::document_path(root, Self::KIND)),
                     violations: Violations::Component(violations),
                 },
-            })?;
+            }
+        })?;
         match self {
             Self::V0(body) => body.normalize(),
         }
@@ -116,7 +117,7 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::Manifest;
-    use crate::source::Violations;
+    use crate::authoring::source::Violations;
 
     fn violations(text: &str) -> Vec<super::v0::ValidationError> {
         Manifest::parse(text)

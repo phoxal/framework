@@ -1,7 +1,7 @@
 //! Portable JSON Schema documents for authored manifest editors.
 //!
 //! These schemas describe the serde wire shape of the current authored v0
-//! documents. They are an editor aid only; [`crate::source`] parsing and
+//! documents. They are an editor aid only; [`crate::authoring::source`] parsing and
 //! validation remain authoritative for semantic and cross-file constraints.
 //!
 //! The generation entry point is a method on [`DocumentKind`], the same value
@@ -9,7 +9,7 @@
 
 use schemars::{SchemaGenerator, generate::SchemaSettings};
 
-use crate::source::DocumentKind;
+use crate::authoring::source::DocumentKind;
 
 impl DocumentKind {
     /// The stable file name for this document kind's generated editor schema.
@@ -31,11 +31,13 @@ impl DocumentKind {
     pub fn generate(self) -> serde_json::Value {
         let mut schema = match self {
             Self::Robot => SchemaGenerator::new(SchemaSettings::draft2020_12())
-                .into_root_schema_for::<crate::source::robot::Manifest>(),
+                .into_root_schema_for::<crate::authoring::source::robot::Manifest>(),
             Self::Component => SchemaGenerator::new(SchemaSettings::draft2020_12())
-                .into_root_schema_for::<crate::source::component::Manifest>(),
+                .into_root_schema_for::<crate::authoring::source::component::Manifest>(
+            ),
             Self::Simulation => SchemaGenerator::new(SchemaSettings::draft2020_12())
-                .into_root_schema_for::<crate::source::simulation::Manifest>(),
+                .into_root_schema_for::<crate::authoring::source::simulation::Manifest>(
+            ),
         };
         let (title, description) = self.schema_metadata();
         schema.insert("title".into(), title.into());
@@ -63,7 +65,7 @@ impl DocumentKind {
 
 #[cfg(test)]
 mod tests {
-    use crate::source::DocumentKind;
+    use crate::authoring::source::DocumentKind;
 
     fn validator(kind: DocumentKind) -> jsonschema::Validator {
         let document_schema = kind.generate();
@@ -281,9 +283,9 @@ robot:
         let value = yaml_value(document);
         assert_valid(&validator(DocumentKind::Robot), &value);
 
-        let manifest: crate::source::robot::Manifest =
+        let manifest: crate::authoring::source::robot::Manifest =
             serde_yaml::from_str(document).expect("document should match the serde DTO");
-        let crate::source::robot::Manifest::V0(manifest) = manifest;
+        let crate::authoring::source::robot::Manifest::V0(manifest) = manifest;
         assert!(
             manifest.validate().is_err(),
             "semantic validation remains authoritative"

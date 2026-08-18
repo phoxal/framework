@@ -9,11 +9,11 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
+use crate::identity::{ParticipantId, ProducerId};
 
-use crate::liveliness::{ParticipantReadyEvent, ParticipantReadyStatus};
-use crate::metadata::ParticipantSourceIdentity;
-use crate::time::{LocalInstant, RobotInstant, RobotTimeError};
+use crate::bus::liveliness::{ParticipantReadyEvent, ParticipantReadyStatus};
+use crate::bus::metadata::ParticipantSourceIdentity;
+use crate::bus::time::{LocalInstant, RobotInstant, RobotTimeError};
 
 /// The maximum number of simultaneously observed Ready incarnations retained
 /// by one fixed-source receiver.  More than one is already a fail-closed
@@ -550,7 +550,7 @@ impl<B> ExclusiveProducerLease<B> {
     /// Offer a body, acquiring the lease when it is free.
     pub fn offer(
         &mut self,
-        source: &crate::metadata::SourceAttribution,
+        source: &crate::bus::metadata::SourceAttribution,
         sequence: u64,
         observed_at: LocalInstant,
         body: B,
@@ -717,7 +717,7 @@ impl<B> ExclusiveProducerLease<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal_runtime_contract::identity::TimelineId;
+    use crate::identity::TimelineId;
 
     fn producer(value: u128) -> ProducerId {
         ProducerId::try_from((1_u128 << 124) | value).expect("canonical test producer")
@@ -734,8 +734,8 @@ mod tests {
         ParticipantSourceIdentity::new(participant.clone(), producer)
     }
 
-    fn external(producer: ProducerId) -> crate::metadata::SourceAttribution {
-        crate::metadata::SourceAttribution::External {
+    fn external(producer: ProducerId) -> crate::bus::metadata::SourceAttribution {
+        crate::bus::metadata::SourceAttribution::External {
             producer,
             label: None,
         }
@@ -1075,7 +1075,7 @@ mod tests {
 
         assert_eq!(
             lease.offer(
-                &crate::metadata::SourceAttribution::Participant(source),
+                &crate::bus::metadata::SourceAttribution::Participant(source),
                 0,
                 at,
                 "participant body",

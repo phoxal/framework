@@ -21,12 +21,12 @@
 //!
 //! The identity lives on the process-boundary floor rather than in the crate
 //! that implements a contract, because the record that declares it
-//! ([`crate::metadata::ParticipantMetadata`]) sits below `phoxal-bus`,
+//! ([`crate::participant::metadata::ParticipantMetadata`]) sits below `phoxal-bus`,
 //! `phoxal-protocol`, and `phoxal-manifest` in the graph.
 
 use serde::{Deserialize, Serialize};
 
-use crate::wire_schema::{DescribeWire, WireSchema};
+use crate::__compat::wire::{DescribeWire, WireSchema};
 
 /// The framework train one binary was built from, and therefore the whole of
 /// what it claims about compatibility.

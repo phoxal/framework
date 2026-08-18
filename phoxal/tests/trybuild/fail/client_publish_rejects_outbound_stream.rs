@@ -9,5 +9,5 @@ impl<E: ClientPublishContract> PublishProof for E {
 }
 
 fn main() {
-    phoxal_protocol::supervisor::endpoint::logs::FollowEndpoint::prove();
+    phoxal::supervisor::api::endpoint::logs::FollowEndpoint::prove();
 }

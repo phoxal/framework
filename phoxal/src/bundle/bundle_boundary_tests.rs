@@ -9,11 +9,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use phoxal_model::builder::RobotBuilder;
-use phoxal_model::manifest::ManifestDocument;
-use phoxal_model::{AssetId, Robot};
+use crate::model::builder::RobotBuilder;
+use crate::model::manifest::ManifestDocument;
+use crate::model::{AssetId, Robot};
 
-use crate::{
+use crate::bundle::{
     ASSETS_DIR, BIN_DIR, BundleError, BundlePath, BundleWriter, MANIFEST_FILE, RuntimeBundle,
 };
 

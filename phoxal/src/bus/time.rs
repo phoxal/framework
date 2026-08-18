@@ -26,7 +26,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
 
-use phoxal_runtime_contract::identity::TimelineId;
+use crate::identity::TimelineId;
 use serde::{Deserialize, Serialize};
 
 /// Comparing or subtracting instants that belong to different world histories.
@@ -463,7 +463,7 @@ impl<T> Timed<T> {
 /// uncertainty; when it cannot, it says *that*, rather than inventing an
 /// instant that a consumer would then trust.
 ///
-/// Observation time (see [`Observed`](crate::handle::subscriber::Observed)) remains
+/// Observation time (see [`Observed`](crate::bus::handle::subscriber::Observed)) remains
 /// available for detecting transport silence and does not replace capture time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureStamp {

@@ -7,14 +7,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
-use phoxal_manifest::build_requirements::BuildRequirements;
+use phoxal::authoring::build_requirements::BuildRequirements;
 
-/// The workspace this crate is part of: the parent of its own parent, since a
-/// library crate is `phoxal-<suffix>` at `crates/<suffix>`.
+/// The workspace this crate is part of: the parent of its own directory, since
+/// the framework library sits at `phoxal/` under the workspace root.
 fn workspace_root() -> Result<PathBuf> {
     Ok(Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(2)
+        .nth(1)
         .context("this crate's manifest directory has no workspace root")?
         .to_path_buf())
 }

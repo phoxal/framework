@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
-use phoxal_bus::{BusHandle, StreamEvent, StreamPublisher, StreamReceiver};
-use phoxal_protocol::{runtime, supervisor};
+use phoxal::bus::{BusHandle, StreamEvent, StreamPublisher, StreamReceiver};
+use phoxal::runtime::api as runtime;
+use phoxal::supervisor::api as supervisor;
 use tokio::task::JoinSet;
 
 const RETAINED_RECORDS: usize = 1_000;

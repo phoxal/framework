@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use phoxal_runtime_contract::wire_schema::{DescribeWire, WireSchema};
+use crate::__compat::wire::{DescribeWire, WireSchema};
 use serde::{Deserialize, Serialize};
 
 /// A normalized bundle-relative path: forward slashes only, no leading slash,

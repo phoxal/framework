@@ -11,13 +11,41 @@
 //! version-independent form; and the compiler in this module reads only that.
 //! So a new source generation is a new DTO plus a new `normalize` - never a
 //! second copy of the compiler.
+//!
+//! [`SourceSet::compile`] takes the official service set as an argument. Which
+//! services are official is a build-tooling fact that changes with the packages
+//! the CLI resolves, so the framework holds no list of its own; the caller's set
+//! is merged with the authored `services:` map, and an authored entry wins.
+//! Where the compiled robot is written - `manifest.json` beside `assets/` and
+//! `bin/` - is [`crate::bundle`]. Runtime processes compile none of this.
+//!
+//! # What a release owes an author
+//!
+//! This is not a wire surface - no two binaries negotiate over a `robot.yaml` -
+//! so the contract-surface comparison cannot see a grammar change here at all.
+//! The promise it does carry is directional: a newer compatible framework keeps
+//! reading every document an older compatible framework accepted, with the same
+//! meaning, and is free to accept more.
+//!
+//! `cargo xtask compatibility report` gates that. It compiles a corpus of the
+//! repository's authored projects through both this reader and the published
+//! one, and calls a document that stopped compiling, or that compiles to a
+//! different canonical model, source-breaking. The remedy lives in the versioned
+//! DTO's `normalize`, which is the only place a generation's syntax and defaults
+//! are owned; see `xtask/README.md` rule 8.
+//!
+//! Both readers are asked through [`probe`], the one entry that exists for that
+//! checker. It is deliberately tiny and **stays source-compatible across
+//! trains**, because the checker compiles a single program against two crate
+//! sets at once: if the entry moved, no one program would compile on both sides
+//! and the whole leg would go quiet.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use phoxal_model::AssetId;
-use phoxal_model::compiler::RobotParts;
-use phoxal_model::identity::{
+use crate::model::AssetId;
+use crate::model::compiler::RobotParts;
+use crate::model::identity::{
     CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, ServiceId,
 };
 
@@ -137,8 +165,8 @@ pub enum CompileError {
     CapabilityKindMismatch {
         instance: String,
         capability_id: String,
-        authored: phoxal_model::component::capability::CapabilityKind,
-        declared: phoxal_model::component::capability::CapabilityKind,
+        authored: crate::model::component::capability::CapabilityKind,
+        declared: crate::model::component::capability::CapabilityKind,
     },
 
     /// An authored value and its canonical counterpart disagree on their
@@ -156,7 +184,7 @@ pub enum CompileError {
     CanonicalModel {
         path: PathBuf,
         #[source]
-        source: phoxal_model::ModelError,
+        source: crate::model::ModelError,
     },
 
     /// A runtime asset tree could not be read.
@@ -202,7 +230,7 @@ pub enum AssetError {
     #[error("invalid logical asset id: {source}")]
     Id {
         #[source]
-        source: phoxal_model::ModelError,
+        source: crate::model::ModelError,
     },
 
     #[error("duplicate compiled asset '{id}'", id = id.as_str())]
@@ -221,7 +249,7 @@ pub enum AssetError {
 /// robot rather than off a second list that could disagree with it.
 #[derive(Debug, Clone)]
 pub struct CompiledProject {
-    robot: phoxal_model::Robot,
+    robot: crate::model::Robot,
     assets: CompiledAssets,
 }
 
@@ -319,7 +347,7 @@ pub fn probe(sources: SourceSet, official_services: &[ServiceId]) -> serde_json:
 }
 
 /// Every logical asset the canonical model actually references.
-pub(crate) fn referenced_asset_ids(robot: &phoxal_model::Robot) -> BTreeSet<AssetId> {
+pub(crate) fn referenced_asset_ids(robot: &crate::model::Robot) -> BTreeSet<AssetId> {
     let mut ids = robot
         .structure()
         .asset_ids()
@@ -353,7 +381,7 @@ impl ResolvedSources {
         &self,
         manifest: &normalized::Robot,
         official_services: impl IntoIterator<Item = ServiceId>,
-    ) -> Result<phoxal_model::Robot, CompileError> {
+    ) -> Result<crate::model::Robot, CompileError> {
         let mut component_types = BTreeMap::new();
         for component_type in manifest.used_component_types() {
             let root = self.component_root(component_type)?.clone();
@@ -424,7 +452,7 @@ impl ResolvedSources {
                 })?;
             components.insert(
                 self.identity(ComponentInstanceId::new(id))?,
-                phoxal_model::compiler::component_instance(
+                crate::model::compiler::component_instance(
                     self.identity(ComponentTypeId::new(&authored.component_type))?,
                     LinkId::new(&authored.mount_link),
                     direction_signs,
@@ -442,7 +470,7 @@ impl ResolvedSources {
                 source,
             })?;
 
-        phoxal_model::compiler::robot(RobotParts {
+        crate::model::compiler::robot(RobotParts {
             id: self.identity(RobotId::new(&manifest.id))?,
             kinematic: manifest.kinematic.clone(),
             motion_limits: manifest.motion_limits,
@@ -470,15 +498,15 @@ impl ResolvedSources {
         &self,
         manifest: &normalized::Robot,
         official_services: impl IntoIterator<Item = ServiceId>,
-    ) -> Result<BTreeMap<ServiceId, phoxal_model::robot::Service>, CompileError> {
+    ) -> Result<BTreeMap<ServiceId, crate::model::robot::Service>, CompileError> {
         let mut services = official_services
             .into_iter()
-            .map(|id| (id, phoxal_model::compiler::service(None)))
+            .map(|id| (id, crate::model::compiler::service(None)))
             .collect::<BTreeMap<_, _>>();
         for (id, config) in &manifest.services {
             services.insert(
                 self.identity(ServiceId::new(id))?,
-                phoxal_model::compiler::service(config.clone()),
+                crate::model::compiler::service(config.clone()),
             );
         }
         Ok(services)
@@ -489,7 +517,7 @@ impl ResolvedSources {
         &self,
         component_type: &str,
         configured_root: &Path,
-    ) -> Result<phoxal_model::component::Component, CompileError> {
+    ) -> Result<crate::model::component::Component, CompileError> {
         let root = canonicalize(configured_root)?;
         let authored = source::component::Manifest::load(&root)
             .map_err(|source| CompileError::Document { source })?
@@ -507,14 +535,14 @@ impl ResolvedSources {
             let simulation = source::simulation::Manifest::load(&simulation_path)
                 .map_err(|source| CompileError::Document { source })?
                 .normalize()?;
-            Some(phoxal_model::compiler::simulation(
+            Some(crate::model::compiler::simulation(
                 simulation.capabilities,
                 simulation.links,
             ))
         } else {
             None
         };
-        Ok(phoxal_model::compiler::component(
+        Ok(crate::model::compiler::component(
             authored.capabilities,
             structure,
             simulation,
@@ -524,7 +552,7 @@ impl ResolvedSources {
     /// Attribute an identifier rejection to the document that carried it.
     fn identity<T, E>(&self, result: Result<T, E>) -> Result<T, CompileError>
     where
-        E: Into<phoxal_model::ModelError>,
+        E: Into<crate::model::ModelError>,
     {
         result.map_err(|source| CompileError::CanonicalModel {
             path: self.robot_manifest.clone(),
@@ -543,7 +571,7 @@ impl ResolvedSources {
         &self,
         project_root: &Path,
         manifest: &normalized::Robot,
-        robot: &phoxal_model::Robot,
+        robot: &crate::model::Robot,
     ) -> Result<CompiledAssets, CompileError> {
         let mut assets = CompiledAssets::default();
         let mut collect = |root: &Path, staged: &str| -> Result<(), CompileError> {
@@ -573,7 +601,7 @@ impl ResolvedSources {
 
 impl CompiledProject {
     #[must_use]
-    pub const fn robot(&self) -> &phoxal_model::Robot {
+    pub const fn robot(&self) -> &crate::model::Robot {
         &self.robot
     }
 
@@ -584,12 +612,12 @@ impl CompiledProject {
 
     /// The document this project is persisted as.
     #[must_use]
-    pub fn into_document(self) -> (phoxal_model::ManifestDocument, CompiledAssets) {
-        (phoxal_model::ManifestDocument::new(self.robot), self.assets)
+    pub fn into_document(self) -> (crate::model::ManifestDocument, CompiledAssets) {
+        (crate::model::ManifestDocument::new(self.robot), self.assets)
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (phoxal_model::Robot, CompiledAssets) {
+    pub fn into_parts(self) -> (crate::model::Robot, CompiledAssets) {
         (self.robot, self.assets)
     }
 }
@@ -664,10 +692,10 @@ mod tests {
     #[test]
     fn asset_ids_are_normalized() {
         for invalid in ["", "/a", "../a", "a/../b", "a\\b", "a//b"] {
-            assert!(phoxal_model::AssetId::new(invalid).is_err(), "{invalid}");
+            assert!(crate::model::AssetId::new(invalid).is_err(), "{invalid}");
         }
         assert_eq!(
-            phoxal_model::AssetId::new("meshes/base.stl")
+            crate::model::AssetId::new("meshes/base.stl")
                 .unwrap()
                 .as_str(),
             "meshes/base.stl"

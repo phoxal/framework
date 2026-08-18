@@ -26,7 +26,7 @@ pub struct Clock {
 // semantic descriptor: it is what keeps the ordinary state publisher from
 // minting world steps, so only the dedicated world-clock publisher - which no
 // participant reaches - can take this endpoint.
-impl ::phoxal_bus::WorldClockContract
-    for crate::runtime::endpoint::simulation::ClockEndpoint
+impl ::phoxal::bus::WorldClockContract
+    for crate::protocol::runtime::endpoint::simulation::ClockEndpoint
 {
 }

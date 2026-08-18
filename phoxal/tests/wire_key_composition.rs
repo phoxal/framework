@@ -7,15 +7,15 @@
 //! change to either root convention would drift it silently. This test opens a
 //! real in-process session and asserts the final key.
 
-use phoxal_bus::{BusConfig, BusOwner, EndpointDescriptor, ExecutionId};
+use phoxal::bus::{BusConfig, BusOwner, EndpointDescriptor, ExecutionId};
 
-type ConnectEndpoint = phoxal_protocol::supervisor::endpoint::connect::TopicEndpoint;
+type ConnectEndpoint = phoxal::supervisor::api::endpoint::connect::TopicEndpoint;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_family_topic_composes_under_the_execution_scoped_root() {
     let config = BusConfig::for_participant(
         ExecutionId::mint(),
-        phoxal_bus::ParticipantId::new("composition").expect("valid participant id"),
+        phoxal::bus::ParticipantId::new("composition").expect("valid participant id"),
         Vec::new(),
     );
     let execution = config.execution();

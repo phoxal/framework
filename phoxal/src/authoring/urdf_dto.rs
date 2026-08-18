@@ -115,7 +115,7 @@ pub enum UrdfError {
     },
 
     #[error(transparent)]
-    Canonical(#[from] phoxal_model::ModelError),
+    Canonical(#[from] crate::model::ModelError),
 }
 
 /// Which structural item a name belongs to.
@@ -199,7 +199,7 @@ impl Structure {
     pub(crate) fn into_canonical(
         self,
         component_type: Option<&str>,
-    ) -> Result<phoxal_model::structure::Structure, UrdfError> {
+    ) -> Result<crate::model::structure::Structure, UrdfError> {
         let root_link = self.validate_tree()?.to_string();
         validate_robot_frame_conventions(&self.robot, &root_link)?;
         self.normalize(component_type)
@@ -214,7 +214,7 @@ impl Structure {
     pub(crate) fn into_canonical_fragment(
         self,
         component_type: &str,
-    ) -> Result<phoxal_model::structure::Structure, UrdfError> {
+    ) -> Result<crate::model::structure::Structure, UrdfError> {
         self.validate_tree()?;
         self.normalize(Some(component_type))
     }
@@ -222,11 +222,11 @@ impl Structure {
     fn normalize(
         &self,
         component_type: Option<&str>,
-    ) -> Result<phoxal_model::structure::Structure, UrdfError> {
+    ) -> Result<crate::model::structure::Structure, UrdfError> {
         let mut value = serde_json::to_value(wire::Structure::from(&self.robot))
             .map_err(|source| UrdfError::Normalize { source })?;
         normalize_asset_references(&mut value, component_type)?;
-        Ok(phoxal_model::compiler::structure(value)?)
+        Ok(crate::model::compiler::structure(value)?)
     }
 
     /// Check the document is a single acyclic link tree with unique names.
@@ -353,7 +353,7 @@ fn normalize_asset_id(
         None => format!("robot/meshes/{relative}"),
         Some(component_type) => format!("components/{component_type}/meshes/{relative}"),
     };
-    Ok(phoxal_model::AssetId::new(logical)?.as_str().to_string())
+    Ok(crate::model::AssetId::new(logical)?.as_str().to_string())
 }
 
 fn validate_links_and_joints(robot: &Robot) -> Result<(), UrdfError> {

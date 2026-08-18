@@ -6,10 +6,10 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use super::{SchedulerTick, StepScheduler};
+use crate::bus::RetiredTimelines;
 use crate::bus::RobotInstant;
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::{duration_nanos, lock};
-use phoxal_bus::RetiredTimelines;
 
 /// Simulation scheduler: releases ticks from **robot** time advanced by the
 /// world authority, never a real sleep.

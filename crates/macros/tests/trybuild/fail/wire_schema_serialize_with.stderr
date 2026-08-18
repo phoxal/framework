@@ -1,4 +1,4 @@
-error: #[derive(DescribeWire)] does not support `serialize_with`/`with` on a field: the shape that function writes is not readable from this declaration; hand-implement `phoxal_runtime_contract::wire_schema::DescribeWire` beside this type's custom serializer and declare the wire form it writes
+error: #[derive(DescribeWire)] does not support `serialize_with`/`with` on a field: the shape that function writes is not readable from this declaration; hand-implement `phoxal::__compat::wire::DescribeWire` beside this type's custom serializer and declare the wire form it writes
  --> tests/trybuild/fail/wire_schema_serialize_with.rs:6:30
   |
 6 |     #[serde(serialize_with = "write_it")]

@@ -2,9 +2,9 @@
 
 use std::io::Read;
 
-use phoxal_model::AssetId;
+use crate::model::AssetId;
 
-use crate::{ASSETS_DIR, BundleError, BundlePath, BundleRoot, open_bundle_file};
+use crate::bundle::{ASSETS_DIR, BundleError, BundlePath, BundleRoot, open_bundle_file};
 
 /// Reads the files below `<bundle>/assets`.
 ///

@@ -126,8 +126,8 @@ impl ManifestFamily {
                 pub payload: Option<&'static str>,
                 pub request: Option<&'static str>,
                 pub response: Option<&'static str>,
-                pub kind: ::phoxal_bus::EndpointKind,
-                pub delivery: ::phoxal_bus::DeliveryFamily,
+                pub kind: ::phoxal::bus::EndpointKind,
+                pub delivery: ::phoxal::bus::DeliveryFamily,
             }
 
             /// Every endpoint declared by the materialized trees.
@@ -156,7 +156,7 @@ impl ManifestFamily {
                     ManifestBodies::PubSub(payload) => {
                         let payload = wire_schema_of(payload);
                         quote! {
-                            ::phoxal_runtime_contract::contract_surface::ContractRecord::topic(
+                            ::phoxal::__compat::surface::ContractRecord::topic(
                                 #name, #topic, #kind.as_str(), #delivery.as_str(), #payload,
                             )
                         }
@@ -165,7 +165,7 @@ impl ManifestFamily {
                         let request = wire_schema_of(request);
                         let response = wire_schema_of(response);
                         quote! {
-                            ::phoxal_runtime_contract::contract_surface::ContractRecord::query(
+                            ::phoxal::__compat::surface::ContractRecord::query(
                                 #name, #topic, #kind.as_str(), #delivery.as_str(), #request, #response,
                             )
                         }
@@ -185,7 +185,7 @@ impl ManifestFamily {
                 /// The canonical rendering of this crate's contract surface.
                 #[must_use]
                 pub fn contract_surface() -> ::std::string::String {
-                    ::phoxal_runtime_contract::contract_surface::ContractSurface::new(
+                    ::phoxal::__compat::surface::ContractSurface::new(
                         ::std::vec![#(#records),*],
                     )
                     .canonical_json()
@@ -198,7 +198,7 @@ impl ManifestFamily {
 fn wire_schema_of(body: &BodyPath) -> TokenStream {
     let path = &body.path;
     quote! {
-        <#path as ::phoxal_runtime_contract::wire_schema::DescribeWire>::wire_schema()
+        <#path as ::phoxal::__compat::wire::DescribeWire>::wire_schema()
     }
 }
 

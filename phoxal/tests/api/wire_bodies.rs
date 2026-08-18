@@ -6,8 +6,8 @@ use super::{instant, round_trip};
 use crate::robot as api;
 use serde::de::DeserializeOwned;
 
-fn producer(value: u128) -> phoxal_bus::ProducerId {
-    phoxal_bus::ProducerId::try_from((1_u128 << 124) | value).expect("canonical producer")
+fn producer(value: u128) -> phoxal::bus::ProducerId {
+    phoxal::bus::ProducerId::try_from((1_u128 << 124) | value).expect("canonical producer")
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn video_open_source_is_canonical_and_validated_during_deserialization() {
 fn perception_source_capture_preserves_source_and_capture_window() {
     let body = api::perception::Detections::try_new(
         api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
-        phoxal_bus::TimeWindow::exact(instant(42)),
+        phoxal::bus::TimeWindow::exact(instant(42)),
         Vec::new(),
     )
     .unwrap();
@@ -552,7 +552,7 @@ fn domain_bodies_round_trip_through_messagepack() {
     round_trip(
         &api::perception::Detections::try_new(
             api::perception::SourceRef::parse("front_camera.rgb").unwrap(),
-            phoxal_bus::TimeWindow::exact(instant(7)),
+            phoxal::bus::TimeWindow::exact(instant(7)),
             vec![detection],
         )
         .unwrap(),

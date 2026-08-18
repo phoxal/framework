@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::identity::{ComponentInstanceId, JointId, LinkId};
+use crate::model::identity::{ComponentInstanceId, JointId, LinkId};
 
 /// The canonical purpose assigned to a component capability by an authored
 /// robot manifest.
@@ -22,8 +22,8 @@ use crate::identity::{ComponentInstanceId, JointId, LinkId};
     PartialOrd,
     Ord,
     Hash,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityRole {
     Localization,
@@ -87,8 +87,8 @@ pub enum Capability {
     Copy,
     PartialEq,
     Eq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EncoderType {
     Incremental,
@@ -104,8 +104,8 @@ pub enum EncoderType {
     Copy,
     PartialEq,
     Eq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MotorCommand {
     Position,
@@ -173,8 +173,8 @@ impl StructuralTarget {
     Copy,
     PartialEq,
     Eq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LidarOutput {
     Ranges,
@@ -190,8 +190,8 @@ pub enum LidarOutput {
     Copy,
     PartialEq,
     Eq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CameraMode {
     Mono,
@@ -208,8 +208,8 @@ pub enum CameraMode {
     Default,
     PartialEq,
     Eq,
+    schemars::JsonSchema,
 )]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GnssCoordinateSystem {
     #[default]
@@ -510,7 +510,7 @@ pub struct Led {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::ComponentInstanceId;
+    use crate::model::identity::ComponentInstanceId;
 
     #[test]
     fn a_structural_target_is_a_tagged_id_on_the_wire() {

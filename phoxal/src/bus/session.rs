@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, ProducerId};
+use crate::identity::{ExecutionId, ParticipantId, ProducerId};
 use tokio::sync::{Notify, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use zenoh::bytes::{Encoding, ZBytes};
@@ -26,16 +26,16 @@ use zenoh::config::ZenohId;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::qos::CongestionControl;
 
-use crate::abi::truncate_utf8;
-use crate::contract::DeliveryFamily;
-use crate::error::{BusError, KeyProblem, OutboundBound, Result, SessionIdRole};
-use crate::lock::lock;
-use crate::metadata::{
+use crate::bus::abi::truncate_utf8;
+use crate::bus::contract::DeliveryFamily;
+use crate::bus::error::{BusError, KeyProblem, OutboundBound, Result, SessionIdRole};
+use crate::bus::lock::lock;
+use crate::bus::metadata::{
     BusMetadata, MAX_SOURCE_LABEL_BYTES, SourceAttribution, SourceLabel, StreamPosition,
 };
-use crate::outbound::{Outbound, OutboundScheduler};
-use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
-use crate::time::TimeWindow;
+use crate::bus::outbound::{Outbound, OutboundScheduler};
+use crate::bus::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
+use crate::bus::time::TimeWindow;
 
 /// First chunk of every Phoxal bus key. It exists so a Phoxal execution is
 /// recognisable in a trace and cannot collide with a non-Phoxal key tree
@@ -136,7 +136,7 @@ impl BusConfig {
     pub(crate) fn attribution(&self, producer: ProducerId) -> SourceAttribution {
         match (&self.participant, &self.diagnostic_label) {
             (Some(participant), _) => SourceAttribution::Participant(
-                crate::metadata::ParticipantSourceIdentity::new(participant.clone(), producer),
+                crate::bus::metadata::ParticipantSourceIdentity::new(participant.clone(), producer),
             ),
             (None, label) => SourceAttribution::External {
                 producer,
@@ -640,7 +640,7 @@ impl BusHandle {
     pub(crate) fn metadata(&self, produced_at: Option<TimeWindow>) -> Result<BusMetadata> {
         self.live_inner()?;
         Ok(BusMetadata {
-            codec: crate::abi::CodecId::MessagePack.as_u8(),
+            codec: crate::bus::abi::CodecId::MessagePack.as_u8(),
             sequence: self.next_sequence()?,
             stream_position: None,
             produced_at,
@@ -656,7 +656,7 @@ impl BusHandle {
     /// Drain this session's queue-pressure counters for one rollup window.
     ///
     /// Interval counters reset; declared rows and depth gauges persist. See
-    /// [`crate::runtime_metrics`] for what a row means and what it does not.
+    /// [`crate::bus::runtime_metrics`] for what a row means and what it does not.
     pub fn take_runtime_metrics(&self) -> Result<Vec<RuntimeMetricSnapshot>> {
         let operation = self.admit_operation()?;
         let inner = Arc::clone(&operation.inner);
@@ -867,7 +867,7 @@ impl BusHandle {
             });
         }
         let attachment = metadata.encode().map_err(|error| {
-            BusError::metadata(&key, crate::error::MetadataProblem::Encode(error))
+            BusError::metadata(&key, crate::bus::error::MetadataProblem::Encode(error))
         })?;
         let outbound = Outbound::new(
             key.clone(),
@@ -1379,7 +1379,7 @@ fn signal_fatal(inner: &BusInner, fault: BusFault) {
 ///
 /// Streams are the exception: their contract is lossless per producer, the
 /// outbox refuses admission instead of evicting
-/// ([`crate::outbound::OutboundScheduler::admit`]), and a receiver treats a
+/// ([`crate::bus::outbound::OutboundScheduler::admit`]), and a receiver treats a
 /// missing position as fatal by design. A transport-level drop therefore
 /// manufactures exactly the gap the whole family is built to make impossible,
 /// and it lands on every subscriber simultaneously - one dropped world-clock
@@ -1473,7 +1473,7 @@ const CONNECT_TIMEOUT_MS: u64 = 20_000;
 ///
 /// Both ends of a Phoxal link read these from here - participants through
 /// [`zenoh_config`], the supervisor's embedded router through
-/// [`crate::router`]. That single source is the point: a router disagreeing
+/// [`crate::bus::router`]. That single source is the point: a router disagreeing
 /// with its clients about lease or keepalive produces exactly the kind of
 /// intermittent link churn that is hardest to diagnose. They are applied after
 /// any authored defaults so the runtime contract is explicit at the final
@@ -1562,11 +1562,11 @@ mod tests {
 
     use serial_test::serial;
 
-    use crate::contract::EndpointDescriptor;
-    use crate::handle::publisher::StatePublisher;
-    use crate::handle::subscriber::{Latest, Subscriber};
-    use crate::test_support::{Target, TargetEndpoint, participant_config, step};
-    use crate::topic::{Publish, Subscribe, Topic};
+    use crate::bus::contract::EndpointDescriptor;
+    use crate::bus::handle::publisher::StatePublisher;
+    use crate::bus::handle::subscriber::{Latest, Subscriber};
+    use crate::bus::test_support::{Target, TargetEndpoint, participant_config, step};
+    use crate::bus::topic::{Publish, Subscribe, Topic};
 
     fn test_producer(value: u128) -> ProducerId {
         ProducerId::try_from((1_u128 << 124) | value).expect("canonical test producer")

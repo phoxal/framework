@@ -1,4 +1,4 @@
-error: #[derive(DescribeWire)] does not support generic types: one declaration would stand for a family of different wire shapes; hand-implement `phoxal_runtime_contract::wire_schema::DescribeWire` beside this type's custom serializer and declare the wire form it writes
+error: #[derive(DescribeWire)] does not support generic types: one declaration would stand for a family of different wire shapes; hand-implement `phoxal::__compat::wire::DescribeWire` beside this type's custom serializer and declare the wire form it writes
  --> tests/trybuild/fail/wire_schema_generic.rs:5:15
   |
 5 | struct Bounded<const MAX: usize>(String);

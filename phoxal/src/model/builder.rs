@@ -39,14 +39,14 @@
 //! Generated links carry a unit inertial and no geometry, and generated joints
 //! sit at their parent's origin turning about Z. State a [`Joint`] or a
 //! [`Link`] to say otherwise: between them they reach every field the canonical
-//! [`structure`](crate::structure) carries.
+//! [`structure`](crate::model::structure) carries.
 //!
 //! # Why the structural values are stated twice
 //!
 //! [`Joint`], [`Link`], [`Inertial`], [`Inertia`], [`Visual`], [`Collision`],
 //! [`Material`], [`JointLimit`], [`Calibration`], [`Dynamics`], [`Mimic`] and
 //! [`Safety`] name the same facts as their counterparts in
-//! [`structure`](crate::structure), and exist only because the canonical types
+//! [`structure`](crate::model::structure), and exist only because the canonical types
 //! deliberately cannot be built from raw values. A canonical structural value
 //! exists only as part of a validated [`Structure`], so it has no public
 //! constructor and none is added here; what the builder holds is a plain
@@ -61,7 +61,7 @@
 //! drifting apart.
 //!
 //! ```
-//! use phoxal_model::builder::{Kinematics, RobotBuilder};
+//! use crate::model::builder::{Kinematics, RobotBuilder};
 //!
 //! let robot = RobotBuilder::new("rover")
 //!     .component_type("drive_motor", |motor| {
@@ -80,29 +80,29 @@
 //!     .build()?;
 //!
 //! assert_eq!(robot.component_ids().len(), 2);
-//! # Ok::<(), phoxal_model::ModelError>(())
+//! # Ok::<(), crate::model::ModelError>(())
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
-use crate::asset::AssetId;
-use crate::compiler::{self, RobotParts};
-use crate::component::Component;
-use crate::component::capability::{
+use crate::model::asset::AssetId;
+use crate::model::compiler::{self, RobotParts};
+use crate::model::component::Component;
+use crate::model::component::capability::{
     Accelerometer, Battery, Camera, CameraMode, Capability, Depth, EmergencyStop, Encoder,
     EncoderType, Gnss, GnssCoordinateSystem, Gyroscope, Imu, Led, Lidar, LidarOutput, Magnetometer,
     Microphone, Mmwave, Motor, MotorCommand, Range, Speaker, StructuralTarget,
 };
-use crate::error::ModelError;
-use crate::identity::{
+use crate::model::error::ModelError;
+use crate::model::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId, RobotId,
     ServiceId,
 };
-use crate::robot::{KinematicConfig, MotionLimits, Robot};
-use crate::simulation;
-use crate::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, Geometry, JointKind, Structure};
+use crate::model::robot::{KinematicConfig, MotionLimits, Robot};
+use crate::model::simulation;
+use crate::model::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, Geometry, JointKind, Structure};
 
 /// The root link of every component structure this module generates.
 pub const COMPONENT_ROOT_LINK: &str = "mount";
@@ -134,7 +134,7 @@ const DEFAULT_PUBLISH_RATE_HZ: f64 = 50.0;
 /// checks.
 ///
 /// ```
-/// use phoxal_model::builder::{Kinematics, RobotBuilder};
+/// use crate::model::builder::{Kinematics, RobotBuilder};
 ///
 /// let robot = RobotBuilder::new("car")
 ///     .component_type("steer", |steer| steer.motor("turn", "kingpin"))
@@ -153,7 +153,7 @@ const DEFAULT_PUBLISH_RATE_HZ: f64 = 50.0;
 ///     .build()?;
 ///
 /// assert!(robot.motion().kinematic().drive_kinematics().is_ok());
-/// # Ok::<(), phoxal_model::ModelError>(())
+/// # Ok::<(), crate::model::ModelError>(())
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub enum Kinematics<'a> {
@@ -207,8 +207,8 @@ pub enum Kinematics<'a> {
 /// calibration, dynamics, mimic or safety.
 ///
 /// ```
-/// use phoxal_model::builder::{Joint, JointLimit, RobotBuilder};
-/// use phoxal_model::structure::JointKind;
+/// use crate::model::builder::{Joint, JointLimit, RobotBuilder};
+/// use crate::model::structure::JointKind;
 ///
 /// let robot = RobotBuilder::new("rover")
 ///     .joint(Joint {
@@ -230,7 +230,7 @@ pub enum Kinematics<'a> {
 /// let mast = robot.structure().joint("mast_joint").expect("the stated joint");
 /// assert_eq!(mast.limit().upper(), 1.5);
 /// assert!(robot.structure().link("mast").is_some());
-/// # Ok::<(), phoxal_model::ModelError>(())
+/// # Ok::<(), crate::model::ModelError>(())
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Joint<'a> {
@@ -373,7 +373,7 @@ pub struct Safety {
 /// inertial a generated link does, and no geometry at all.
 ///
 /// ```
-/// use phoxal_model::builder::{Inertia, Inertial, Link, RobotBuilder};
+/// use crate::model::builder::{Inertia, Inertial, Link, RobotBuilder};
 ///
 /// let robot = RobotBuilder::new("rover")
 ///     .link(Link {
@@ -394,7 +394,7 @@ pub struct Safety {
 ///
 /// let base = robot.structure().link("base_link").expect("the stated link");
 /// assert_eq!(base.inertial().mass_kg(), 12.0);
-/// # Ok::<(), phoxal_model::ModelError>(())
+/// # Ok::<(), crate::model::ModelError>(())
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct Link<'a> {
@@ -474,9 +474,9 @@ impl Default for Inertia {
 /// [`Visual::new`] takes it and leaves the rest to `..`.
 ///
 /// ```
-/// use phoxal_model::AssetId;
-/// use phoxal_model::builder::{Link, Material, RobotBuilder, Visual};
-/// use phoxal_model::structure::Geometry;
+/// use crate::model::AssetId;
+/// use crate::model::builder::{Link, Material, RobotBuilder, Visual};
+/// use crate::model::structure::Geometry;
 ///
 /// let robot = RobotBuilder::new("rover")
 ///     .link(Link {
@@ -497,7 +497,7 @@ impl Default for Inertia {
 ///
 /// let base = robot.structure().link("base_link").expect("the stated link");
 /// assert_eq!(base.visuals().len(), 1);
-/// # Ok::<(), phoxal_model::ModelError>(())
+/// # Ok::<(), crate::model::ModelError>(())
 /// ```
 #[derive(Clone, Debug)]
 pub struct Visual<'a> {
@@ -688,7 +688,7 @@ struct InstanceSpec {
 /// statement rather than a sequence of fallible steps.
 ///
 /// ```
-/// use phoxal_model::builder::RobotBuilder;
+/// use crate::model::builder::RobotBuilder;
 ///
 /// let robot = RobotBuilder::new("rover")
 ///     .component_type("rgbd", |camera| camera.camera("rgb", "lens"))
@@ -696,7 +696,7 @@ struct InstanceSpec {
 ///     .build()?;
 ///
 /// assert_eq!(robot.id().as_str(), "rover");
-/// # Ok::<(), phoxal_model::ModelError>(())
+/// # Ok::<(), crate::model::ModelError>(())
 /// ```
 #[derive(Debug)]
 pub struct RobotBuilder {
@@ -738,13 +738,13 @@ impl RobotBuilder {
     /// drive would have to invent - and runs no services.
     ///
     /// ```
-    /// use phoxal_model::builder::RobotBuilder;
+    /// use crate::model::builder::RobotBuilder;
     ///
     /// let robot = RobotBuilder::new("rover").build()?;
     ///
     /// assert_eq!(robot.id().as_str(), "rover");
     /// assert_eq!(robot.services().len(), 0);
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn new(id: &str) -> Self {
@@ -768,7 +768,7 @@ impl RobotBuilder {
     /// Declaring the same service twice replaces the earlier configuration.
     ///
     /// ```
-    /// use phoxal_model::builder::RobotBuilder;
+    /// use crate::model::builder::RobotBuilder;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .service("drive", None)
@@ -777,7 +777,7 @@ impl RobotBuilder {
     ///
     /// assert_eq!(robot.service_config("mission"), Some(&serde_json::json!({ "speed": 1 })));
     /// assert_eq!(robot.service_config("drive"), None);
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn service(mut self, id: &str, config: Option<serde_json::Value>) -> Self {
@@ -820,11 +820,11 @@ impl RobotBuilder {
     /// on the robot. Stating the same link twice replaces the earlier body.
     ///
     /// ```
-    /// use phoxal_model::AssetId;
-    /// use phoxal_model::builder::{
+    /// use crate::model::AssetId;
+    /// use crate::model::builder::{
     ///     Collision, Inertia, Inertial, Link, Material, RobotBuilder, Visual,
     /// };
-    /// use phoxal_model::structure::Geometry;
+    /// use crate::model::structure::Geometry;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .link(Link {
@@ -862,7 +862,7 @@ impl RobotBuilder {
     /// let chassis = robot.structure().link("chassis").expect("the stated link");
     /// assert_eq!(chassis.inertial().mass_kg(), 12.0);
     /// assert_eq!(chassis.collisions().len(), 1);
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn link(mut self, link: Link<'_>) -> Self {
@@ -887,7 +887,7 @@ impl RobotBuilder {
     /// type is stated once and mounted as many times as needed.
     ///
     /// ```
-    /// use phoxal_model::builder::RobotBuilder;
+    /// use crate::model::builder::RobotBuilder;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .component_type("drive_motor", |motor| {
@@ -898,7 +898,7 @@ impl RobotBuilder {
     ///     .build()?;
     ///
     /// assert_eq!(robot.capability_refs(|_| true).len(), 4);
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn component_type(
@@ -932,7 +932,7 @@ impl RobotBuilder {
     /// Mounting the same instance twice replaces the earlier mount.
     ///
     /// ```
-    /// use phoxal_model::builder::RobotBuilder;
+    /// use crate::model::builder::RobotBuilder;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .component_type("drive_motor", |motor| motor.motor("spin", "axle"))
@@ -945,7 +945,7 @@ impl RobotBuilder {
     ///
     /// let (_motor, sign) = robot.require_motor(&"right_drive.spin".parse()?)?;
     /// assert_eq!(sign, -1);
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn component_with(
@@ -980,8 +980,8 @@ impl RobotBuilder {
     /// enforces on a compiled bundle.
     ///
     /// ```
-    /// use phoxal_model::{IdentifierKind, ModelError};
-    /// use phoxal_model::builder::RobotBuilder;
+    /// use crate::model::{IdentifierKind, ModelError};
+    /// use crate::model::builder::RobotBuilder;
     ///
     /// let rejected = RobotBuilder::new("Rover").build();
     ///
@@ -1043,11 +1043,11 @@ impl ComponentTypeBuilder {
     /// target, that its shorthand does not offer.
     ///
     /// ```
-    /// use phoxal_model::builder::RobotBuilder;
-    /// use phoxal_model::component::capability::{
+    /// use crate::model::builder::RobotBuilder;
+    /// use crate::model::component::capability::{
     ///     Capability, Motor, MotorCommand, StructuralTarget,
     /// };
-    /// use phoxal_model::identity::JointId;
+    /// use crate::model::identity::JointId;
     ///
     /// let robot = RobotBuilder::new("arm-bot")
     ///     .component_type("joint_motor", |joint_motor| {
@@ -1067,7 +1067,7 @@ impl ComponentTypeBuilder {
     ///
     /// let (motor, _sign) = robot.require_motor(&"arm.lift".parse()?)?;
     /// assert_eq!(motor.gear_ratio, 50.0);
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn capability(mut self, capability: &str, declared: Capability) -> Self {
@@ -1094,8 +1094,8 @@ impl ComponentTypeBuilder {
     /// on the component. Stating the same link twice replaces the earlier body.
     ///
     /// ```
-    /// use phoxal_model::builder::{Link, RobotBuilder, Visual};
-    /// use phoxal_model::structure::Geometry;
+    /// use crate::model::builder::{Link, RobotBuilder, Visual};
+    /// use crate::model::structure::Geometry;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .component_type("rgbd", |camera| {
@@ -1120,7 +1120,7 @@ impl ComponentTypeBuilder {
     ///     .link("lens")
     ///     .expect("the stated link");
     /// assert_eq!(lens.visuals().len(), 1);
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn link(mut self, link: Link<'_>) -> Self {
@@ -1144,8 +1144,8 @@ impl ComponentTypeBuilder {
     /// which [`RobotBuilder::build`] checks.
     ///
     /// ```
-    /// use phoxal_model::builder::RobotBuilder;
-    /// use phoxal_model::simulation;
+    /// use crate::model::builder::RobotBuilder;
+    /// use crate::model::simulation;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .component_type("drive_motor", |motor| {
@@ -1159,7 +1159,7 @@ impl ComponentTypeBuilder {
     ///
     /// let drive = robot.component("left_drive").expect("the instance is mounted");
     /// assert!(drive.simulation().is_some());
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn simulated(mut self, capability: &str, simulated: simulation::Capability) -> Self {
@@ -1444,7 +1444,7 @@ impl ComponentBuilder {
     /// launches no process.
     ///
     /// ```
-    /// use phoxal_model::builder::RobotBuilder;
+    /// use crate::model::builder::RobotBuilder;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .component_type("drive_motor", |motor| motor.motor("spin", "axle"))
@@ -1455,7 +1455,7 @@ impl ComponentBuilder {
     ///
     /// let left = robot.component("left_drive").expect("the mounted instance");
     /// assert!(left.instance().driver().is_some());
-    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// # Ok::<(), crate::model::ModelError>(())
     /// ```
     #[must_use]
     pub fn driver(mut self, driver: serde_json::Value) -> Self {
@@ -1807,15 +1807,15 @@ mod tests {
         Collision, Dynamics, Inertial, Joint, JointLimit, Kinematics, Link, Material, Mimic,
         RobotBuilder, Visual,
     };
-    use crate::asset::AssetId;
-    use crate::component::capability::{
+    use crate::model::asset::AssetId;
+    use crate::model::component::capability::{
         Capability, CapabilityKind, Motor, MotorCommand, StructuralTarget,
     };
-    use crate::error::{IdentifierKind, ModelError, StructureError};
-    use crate::identity::{CapabilityRef, JointId, LinkId};
-    use crate::robot::{DriveKinematics, KinematicConfig, MotionLimits};
-    use crate::simulation;
-    use crate::structure::{Geometry, JointKind};
+    use crate::model::error::{IdentifierKind, ModelError, StructureError};
+    use crate::model::identity::{CapabilityRef, JointId, LinkId};
+    use crate::model::robot::{DriveKinematics, KinematicConfig, MotionLimits};
+    use crate::model::simulation;
+    use crate::model::structure::{Geometry, JointKind};
 
     fn reference(value: &str) -> CapabilityRef {
         value.parse().expect("a well formed capability reference")

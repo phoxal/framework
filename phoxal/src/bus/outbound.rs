@@ -8,9 +8,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::contract::DeliveryFamily;
-use crate::error::OutboundBound;
-use crate::runtime_metrics::RuntimeMetricHandle;
+use crate::bus::contract::DeliveryFamily;
+use crate::bus::error::OutboundBound;
+use crate::bus::runtime_metrics::RuntimeMetricHandle;
 
 /// One accepted item waiting for the session-owned Zenoh drain.
 pub(crate) struct Outbound {
@@ -294,8 +294,8 @@ fn pop_map(map: &mut BTreeMap<String, Outbound>, order: &mut VecDeque<String>) -
 mod tests {
     use super::*;
 
-    use crate::contract::DeliveryFamily;
-    use crate::runtime_metrics::RuntimeMetrics;
+    use crate::bus::contract::DeliveryFamily;
+    use crate::bus::runtime_metrics::RuntimeMetrics;
 
     fn outbound(metrics: &RuntimeMetrics, family: DeliveryFamily, key: &str, body: u8) -> Outbound {
         let metric = metrics.register_outbound(key, 2);

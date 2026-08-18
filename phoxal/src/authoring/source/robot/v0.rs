@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 
 // Kinematics and motion limits are canonical domain facts with exactly one
 // definition. This document describes the shape they take in authored YAML; it
-// does not re-export them, so `phoxal_model::robot` stays their only path.
-use phoxal_model::CapabilityRole;
-use phoxal_model::robot::{KinematicConfig, MotionLimits};
+// does not re-export them, so `crate::model::robot` stays their only path.
+use crate::model::CapabilityRole;
+use crate::model::robot::{KinematicConfig, MotionLimits};
 
 // The hardware connection block is shared across robot document generations
 // rather than owned by this one, so it is named here at its established
@@ -139,8 +139,8 @@ impl Parameters {
     /// The compiler compares this against the kind the component type declares,
     /// so it returns the canonical kind rather than a parallel spelling of it.
     #[must_use]
-    pub const fn kind(&self) -> phoxal_model::component::capability::CapabilityKind {
-        use phoxal_model::component::capability::CapabilityKind;
+    pub const fn kind(&self) -> crate::model::component::capability::CapabilityKind {
+        use crate::model::component::capability::CapabilityKind;
         match self {
             Self::Motor(_) => CapabilityKind::Motor,
             Self::Encoder(_) => CapabilityKind::Encoder,
@@ -272,7 +272,9 @@ impl Manifest {
     /// Returns no error today: every v0 value already has a normalized
     /// counterpart. The boundary stays fallible because normalization is a
     /// generation's own obligation, and a later generation's may not be total.
-    pub(crate) fn normalize(self) -> Result<crate::normalized::Robot, crate::CompileError> {
+    pub(crate) fn normalize(
+        self,
+    ) -> Result<crate::authoring::normalized::Robot, crate::authoring::CompileError> {
         let instances = self
             .robot
             .components
@@ -284,7 +286,7 @@ impl Manifest {
                     .map(|(capability, parameters)| {
                         (
                             capability,
-                            crate::normalized::CapabilityParameters {
+                            crate::authoring::normalized::CapabilityParameters {
                                 kind: parameters.kind(),
                                 direction_sign: parameters.direction_sign(),
                             },
@@ -298,7 +300,7 @@ impl Manifest {
                     .collect();
                 (
                     id,
-                    crate::normalized::ComponentInstance {
+                    crate::authoring::normalized::ComponentInstance {
                         component_type: component.component,
                         mount_link: component.mount_link,
                         driver: component.driver,
@@ -309,7 +311,7 @@ impl Manifest {
             })
             .collect();
 
-        Ok(crate::normalized::Robot {
+        Ok(crate::authoring::normalized::Robot {
             id: self.robot.id,
             structure: self.robot.structure,
             kinematic: self.robot.kinematic,
@@ -337,7 +339,7 @@ impl Manifest {
             errors.push(ValidationError::EmptyRobotId);
         }
         for id in self.services.keys() {
-            if !phoxal_model::identity::is_valid_token(id) {
+            if !crate::model::identity::is_valid_token(id) {
                 errors.push(ValidationError::InvalidToken {
                     field: format!("services.{id}"),
                     value: id.clone(),
@@ -427,15 +429,15 @@ const fn default_direction_sign() -> i8 {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::source::SourceError;
-    use crate::source::robot::Manifest;
+    use crate::authoring::source::SourceError;
+    use crate::authoring::source::robot::Manifest;
 
     /// The rules a rejected document broke, or an empty list when it failed
     /// before validation ran at all.
     fn robot_violations(error: &SourceError) -> &[super::ValidationError] {
         error
             .violations()
-            .and_then(crate::source::Violations::robot)
+            .and_then(crate::authoring::source::Violations::robot)
             .unwrap_or_default()
     }
 
@@ -611,7 +613,7 @@ robot:
         let Manifest::V0(manifest) = manifest;
         assert_eq!(
             manifest.robot.components["sensor"].roles["range"],
-            vec![phoxal_model::CapabilityRole::Safety]
+            vec![crate::model::CapabilityRole::Safety]
         );
         Ok(())
     }
@@ -807,11 +809,11 @@ robot:
     fn the_driver_block_keeps_its_established_authored_path() {
         assert_eq!(
             std::any::TypeId::of::<super::DriverConfig>(),
-            std::any::TypeId::of::<crate::source::robot::driver::DriverConfig>()
+            std::any::TypeId::of::<crate::authoring::source::robot::driver::DriverConfig>()
         );
         assert_eq!(
             std::any::TypeId::of::<super::ConnectionConfig>(),
-            std::any::TypeId::of::<crate::source::robot::driver::ConnectionConfig>()
+            std::any::TypeId::of::<crate::authoring::source::robot::driver::ConnectionConfig>()
         );
     }
 

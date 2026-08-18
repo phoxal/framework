@@ -57,7 +57,7 @@ pub enum Reply {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_runtime_contract::wire_schema::DescribeWire;
+    use crate::__compat::wire::DescribeWire;
 
     use super::{Command, CommandOutcome, Reply, Request};
 

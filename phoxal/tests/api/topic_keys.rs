@@ -1,7 +1,7 @@
 //! Endpoint key composition: how a node's path in the tree becomes a
 //! wire key.
 
-use phoxal_bus::EndpointDescriptor;
+use phoxal::bus::EndpointDescriptor;
 
 use crate::robot as api;
 
@@ -61,7 +61,7 @@ fn dynamic_endpoint_topic_is_derived_from_node_path() {
 /// key carries no invented leaf segment.
 #[test]
 fn runtime_family_keys_are_pinned() {
-    use phoxal_bus::EndpointKind;
+    use phoxal::bus::EndpointKind;
 
     for (topic, kind) in [
         (
@@ -97,7 +97,7 @@ fn runtime_family_keys_are_pinned() {
 /// family, so the word never appears inside one of these keys.
 #[test]
 fn supervisor_family_keys_are_pinned() {
-    use phoxal_bus::EndpointKind;
+    use phoxal::bus::EndpointKind;
 
     let declared = [
         (

@@ -1,4 +1,4 @@
-error: #[derive(DescribeWire)] does not support `#[serde(skip)]` on a wire type: a field skipped on one side only is a shape the two sides disagree about; hand-implement `phoxal_runtime_contract::wire_schema::DescribeWire` beside this type's custom serializer and declare the wire form it writes
+error: #[derive(DescribeWire)] does not support `#[serde(skip)]` on a wire type: a field skipped on one side only is a shape the two sides disagree about; hand-implement `phoxal::__compat::wire::DescribeWire` beside this type's custom serializer and declare the wire form it writes
  --> tests/trybuild/fail/wire_schema_skipped_field.rs:7:5
   |
 7 | /     #[serde(skip)]

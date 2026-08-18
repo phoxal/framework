@@ -7,19 +7,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use phoxal_runtime_contract::identity::TimelineId;
+use crate::identity::TimelineId;
 use tokio::sync::Notify;
 use zenoh::key_expr::OwnedKeyExpr;
 
-use crate::contract::{DeliveryFamily, EndpointDescriptor, EventContract};
-use crate::error::{BusError, KeyProblem, Result};
-use crate::handle::decode_sample;
-use crate::lock::lock;
-use crate::metadata::BusMetadata;
-use crate::runtime_metrics::RuntimeMetricHandle;
-use crate::session::{BusFault, BusHandle};
-use crate::time::{LocalInstant, RetiredTimelines, TimeWindow};
-use crate::topic::{Subscribe, Topic};
+use crate::bus::contract::{DeliveryFamily, EndpointDescriptor, EventContract};
+use crate::bus::error::{BusError, KeyProblem, Result};
+use crate::bus::handle::decode_sample;
+use crate::bus::lock::lock;
+use crate::bus::metadata::BusMetadata;
+use crate::bus::runtime_metrics::RuntimeMetricHandle;
+use crate::bus::session::{BusFault, BusHandle};
+use crate::bus::time::{LocalInstant, RetiredTimelines, TimeWindow};
+use crate::bus::topic::{Subscribe, Topic};
 
 /// Foreign-timeline samples are quarantined for a small number of possible next
 /// world histories. Each timeline remains bounded by the receiving handle's
@@ -254,7 +254,7 @@ impl<E: EndpointDescriptor> Latest<E> {
     ///
     /// The author-facing path is `ctx.state_view(...)` in `Participant::setup`.
     /// `pub` only because the generated api tree and the runner live in other
-    /// crates; see [`crate::handle::stamp`]'s module docs.
+    /// crates; see [`crate::bus::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Self::new_inner(bus, topic, None).await
@@ -357,7 +357,7 @@ impl<E: EndpointDescriptor> Latest<E> {
     ///
     /// A framework lifecycle hook driven by the runner's clock handling; `pub`
     /// only because the runner lives in the `phoxal` crate. See
-    /// [`crate::handle::stamp`]'s module docs.
+    /// [`crate::bus::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub fn retain_timeline(&self, timeline: TimelineId) {
         let (filtered, occupied) = lock(&self.state).retain_timeline(timeline);
@@ -424,7 +424,7 @@ impl<E: EndpointDescriptor> Subscriber<E> {
     /// Build the delivery family's bounded receive storage over a topic.
     ///
     /// `pub` only because the delivery-specific wrappers and the runner live
-    /// in other crates; see [`crate::handle::stamp`]'s module docs.
+    /// in other crates; see [`crate::bus::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         let family = E::KIND.delivery_family();
@@ -537,7 +537,7 @@ impl<E: EndpointDescriptor> Subscriber<E> {
     ///
     /// A framework lifecycle hook driven by the runner's clock handling; `pub`
     /// only because the runner lives in the `phoxal` crate. See
-    /// [`crate::handle::stamp`]'s module docs.
+    /// [`crate::bus::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub fn retain_timeline(&self, timeline: TimelineId) {
         self.ring.retain_timeline(timeline);
@@ -561,7 +561,7 @@ pub struct StateView<E: EndpointDescriptor> {
     inner: Latest<E>,
 }
 
-impl<E: crate::contract::StateDeliveryContract> StateView<E> {
+impl<E: crate::bus::contract::StateDeliveryContract> StateView<E> {
     /// Construct the state view for a typed subscription.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
@@ -621,7 +621,7 @@ pub struct SetpointReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
 }
 
-impl<E: crate::contract::SetpointDeliveryContract> SetpointReceiver<E> {
+impl<E: crate::bus::contract::SetpointDeliveryContract> SetpointReceiver<E> {
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Ok(Self {
@@ -666,7 +666,7 @@ pub struct SampleReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
 }
 
-impl<E: crate::contract::SampleDeliveryContract> SampleReceiver<E> {
+impl<E: crate::bus::contract::SampleDeliveryContract> SampleReceiver<E> {
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Ok(Self {
@@ -708,7 +708,7 @@ impl<E: crate::contract::SampleDeliveryContract> SampleReceiver<E> {
 pub struct StreamReceiver<E: EndpointDescriptor> {
     inner: Subscriber<E>,
     topic: String,
-    next_positions: Mutex<HashMap<crate::ProducerId, Option<u64>>>,
+    next_positions: Mutex<HashMap<crate::bus::ProducerId, Option<u64>>>,
 }
 
 /// The fixed number of producer histories one setpoint receiver retains.
@@ -737,7 +737,7 @@ pub enum StreamEvent<B> {
     },
 }
 
-impl<E: crate::contract::StreamDeliveryContract> StreamReceiver<E> {
+impl<E: crate::bus::contract::StreamDeliveryContract> StreamReceiver<E> {
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Ok(Self {
@@ -886,7 +886,7 @@ impl<E: EventContract> EventReceiver<E> {
 
 fn classify_stream<B>(
     topic: &str,
-    next_positions: &Mutex<HashMap<crate::ProducerId, Option<u64>>>,
+    next_positions: &Mutex<HashMap<crate::bus::ProducerId, Option<u64>>>,
     item: Observed<B>,
 ) -> Result<StreamEvent<B>> {
     let producer = item.metadata.source.producer();
@@ -972,8 +972,8 @@ struct RingState<B> {
 /// pending. A separate instance is kept for each quarantined timeline so the
 /// delivery family never bypasses temporal barriers.
 struct SetpointBuffer<B> {
-    values: HashMap<crate::ProducerId, Observed<B>>,
-    order: VecDeque<crate::ProducerId>,
+    values: HashMap<crate::bus::ProducerId, Observed<B>>,
+    order: VecDeque<crate::bus::ProducerId>,
 }
 
 impl<B> SetpointBuffer<B> {
@@ -988,7 +988,7 @@ impl<B> SetpointBuffer<B> {
         self.values.len()
     }
 
-    fn contains(&self, producer: crate::ProducerId) -> bool {
+    fn contains(&self, producer: crate::bus::ProducerId) -> bool {
         self.values.contains_key(&producer)
     }
 
@@ -1004,7 +1004,7 @@ impl<B> SetpointBuffer<B> {
         }
     }
 
-    fn pop_front(&mut self) -> Option<(crate::ProducerId, Observed<B>)> {
+    fn pop_front(&mut self) -> Option<(crate::bus::ProducerId, Observed<B>)> {
         while let Some(producer) = self.order.pop_front() {
             if let Some(item) = self.values.remove(&producer) {
                 return Some((producer, item));
@@ -1043,7 +1043,7 @@ struct PendingSetpointTimeline<B> {
 }
 
 impl<B> RingState<B> {
-    fn setpoint_source_present(&self, producer: crate::ProducerId) -> bool {
+    fn setpoint_source_present(&self, producer: crate::bus::ProducerId) -> bool {
         self.setpoints.contains(producer)
             || self
                 .pending_setpoints
@@ -1640,24 +1640,24 @@ mod tests {
 
     use serial_test::serial;
 
-    use crate::abi::CodecId;
-    use crate::contract::{
+    use crate::bus::abi::CodecId;
+    use crate::bus::contract::{
         ApiFamily, EndpointDescriptor, EndpointKind, StateContract, StreamContract,
         StreamDeliveryContract,
     };
-    use crate::handle::publisher::{SetpointPublisher, StatePublisher};
-    use crate::lease::{FixedSourceLease, LeaseDecision, LeaseRejection};
-    use crate::liveliness::ParticipantReadyStatus;
-    use crate::metadata::{ParticipantSourceIdentity, SourceAttribution};
-    use crate::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
-    use crate::session::BusOwner;
-    use crate::test_support::{
+    use crate::bus::handle::publisher::{SetpointPublisher, StatePublisher};
+    use crate::bus::lease::{FixedSourceLease, LeaseDecision, LeaseRejection};
+    use crate::bus::liveliness::ParticipantReadyStatus;
+    use crate::bus::metadata::{ParticipantSourceIdentity, SourceAttribution};
+    use crate::bus::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
+    use crate::bus::session::BusOwner;
+    use crate::bus::test_support::{
         Manual, ManualEndpoint, Target, TargetEndpoint, participant_config, producer, step,
         timeline,
     };
-    use crate::time::RobotInstant;
-    use crate::topic::{Publish, Subscribe};
-    use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
+    use crate::bus::time::RobotInstant;
+    use crate::bus::topic::{Publish, Subscribe};
+    use crate::identity::{ParticipantId, ProducerId};
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct NonCloneBody {
@@ -1710,8 +1710,7 @@ mod tests {
                 produced_at: line
                     .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
                 source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
-                    phoxal_runtime_contract::identity::ParticipantId::new("test")
-                        .expect("test participant"),
+                    crate::identity::ParticipantId::new("test").expect("test participant"),
                     producer(1),
                 )),
             },
@@ -1722,7 +1721,7 @@ mod tests {
     fn stream_observed(body: u8, position: Option<u64>) -> Observed<u8> {
         let mut observed = observed(body, None);
         observed.metadata.stream_position =
-            position.map(|sequence| crate::metadata::StreamPosition { sequence });
+            position.map(|sequence| crate::bus::metadata::StreamPosition { sequence });
         observed
     }
 

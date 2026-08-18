@@ -52,13 +52,14 @@ pub(crate) use document::document_path;
 pub(crate) fn transcode<T: serde::Serialize, U: serde::de::DeserializeOwned>(
     authored: &T,
     what: &'static str,
-) -> Result<U, crate::CompileError> {
-    let value =
-        serde_json::to_value(authored).map_err(|source| crate::CompileError::Transcode {
+) -> Result<U, crate::authoring::CompileError> {
+    let value = serde_json::to_value(authored).map_err(|source| {
+        crate::authoring::CompileError::Transcode {
             authored: what,
             source,
-        })?;
-    serde_json::from_value(value).map_err(|source| crate::CompileError::Transcode {
+        }
+    })?;
+    serde_json::from_value(value).map_err(|source| crate::authoring::CompileError::Transcode {
         authored: what,
         source,
     })

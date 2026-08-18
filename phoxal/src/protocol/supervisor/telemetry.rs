@@ -2,11 +2,11 @@
 //!
 //! Retention depth and eviction are the supervisor's decisions; this module owns
 //! the paged request and the record shape a consumer reads back. A record is a
-//! retained [`Rollup`](crate::runtime::telemetry::Rollup) with the
+//! retained [`Rollup`](crate::protocol::runtime::telemetry::Rollup) with the
 //! attribution retention has to store explicitly, because the bus envelope that
 //! carried it is gone by the time the view is served.
 
-use crate::runtime::telemetry::{Cursor, Step, Topic};
+use crate::protocol::runtime::telemetry::{Cursor, Step, Topic};
 
 /// One page of retained records, newest first.
 ///

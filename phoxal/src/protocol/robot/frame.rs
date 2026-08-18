@@ -21,7 +21,7 @@ pub struct FrameTransform {
     pub child_frame_id: String,
     pub translation_m: [f64; 3],
     pub rotation_quat_xyzw: [f64; 4],
-    pub stamp: Option<::phoxal_bus::RobotInstant>,
+    pub stamp: Option<::phoxal::bus::RobotInstant>,
 }
 
 impl FrameTransform {
@@ -30,7 +30,7 @@ impl FrameTransform {
         child_frame_id: String,
         translation_m: [f64; 3],
         rotation_quat_xyzw: [f64; 4],
-        stamp: Option<::phoxal_bus::RobotInstant>,
+        stamp: Option<::phoxal::bus::RobotInstant>,
     ) -> Result<Self, FrameTransformError> {
         if !valid_frame_id(&parent_frame_id) || !valid_frame_id(&child_frame_id) {
             return Err(FrameTransformError::InvalidFrameId);
@@ -100,7 +100,7 @@ pub struct Tree {
 pub struct LookupRequest {
     pub target_frame_id: String,
     pub source_frame_id: String,
-    pub at: Option<::phoxal_bus::RobotInstant>,
+    pub at: Option<::phoxal::bus::RobotInstant>,
 }
 
 #[derive(
@@ -117,7 +117,7 @@ struct FrameTransformWire {
     child_frame_id: String,
     translation_m: [f64; 3],
     rotation_quat_xyzw: [f64; 4],
-    stamp: Option<::phoxal_bus::RobotInstant>,
+    stamp: Option<::phoxal::bus::RobotInstant>,
 }
 
 impl TryFrom<FrameTransformWire> for FrameTransform {
@@ -138,7 +138,7 @@ impl TryFrom<FrameTransformWire> for FrameTransform {
 struct LookupRequestWire {
     target_frame_id: String,
     source_frame_id: String,
-    at: Option<::phoxal_bus::RobotInstant>,
+    at: Option<::phoxal::bus::RobotInstant>,
 }
 
 impl TryFrom<LookupRequestWire> for LookupRequest {

@@ -11,7 +11,7 @@ use phoxal::bus::{
     BusMetadata, CodecId, EndpointDescriptor, ParticipantSourceIdentity, ProducerId, RobotInstant,
     SourceAttribution, TimeWindow, TimelineId,
 };
-use phoxal_protocol::supervisor;
+use phoxal::supervisor::api as supervisor;
 
 #[test]
 fn encoding_string_carries_only_the_codec() {
@@ -41,7 +41,7 @@ fn bus_metadata_for_a_real_endpoint_round_trips() {
         stream_position: None,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
         source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
-            phoxal_bus::ParticipantId::new("tester").expect("test participant"),
+            phoxal::bus::ParticipantId::new("tester").expect("test participant"),
             ProducerId::try_from((1_u128 << 124) | 1).expect("a test producer is canonical"),
         )),
     };

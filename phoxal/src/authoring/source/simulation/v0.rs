@@ -6,14 +6,14 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use phoxal_model::identity::is_valid_token;
+use crate::model::identity::is_valid_token;
 use serde::{Deserialize, Serialize};
 
 // The simulator's closed vocabularies are canonical, so this layer describes
 // the one definition rather than keeping a second copy of it. `phoxal_model`
 // stays their only path.
-use phoxal_model::component::capability::CapabilityKind;
-use phoxal_model::simulation::{ActuatorType, CameraProjection};
+use crate::model::component::capability::CapabilityKind;
+use crate::model::simulation::{ActuatorType, CameraProjection};
 
 /// Exact top-level `simulation.yaml` v0 document.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -88,17 +88,22 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::CompileError::Transcode`] when an authored capability
+    /// Returns [`crate::authoring::CompileError::Transcode`] when an authored capability
     /// does not adopt into its canonical counterpart.
-    pub(crate) fn normalize(self) -> Result<crate::normalized::Simulation, crate::CompileError> {
-        Ok(crate::normalized::Simulation {
-            capabilities: crate::source::transcode(&self.capabilities, "simulation capabilities")?,
+    pub(crate) fn normalize(
+        self,
+    ) -> Result<crate::authoring::normalized::Simulation, crate::authoring::CompileError> {
+        Ok(crate::authoring::normalized::Simulation {
+            capabilities: crate::authoring::source::transcode(
+                &self.capabilities,
+                "simulation capabilities",
+            )?,
             links: self
                 .links
                 .into_iter()
                 .map(|(id, link)| {
                     (
-                        phoxal_model::identity::LinkId::new(id),
+                        crate::model::identity::LinkId::new(id),
                         link.contact_material,
                     )
                 })

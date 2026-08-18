@@ -11,20 +11,20 @@
 //! The golden tests that bind the bus to the real generated tree live in the
 //! `phoxal` crate.
 
-use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
+use crate::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 use serde::{Deserialize, Serialize};
 use zenoh::key_expr::KeyExpr;
 use zenoh::sample::{Sample, SampleBuilder};
 
-use crate::abi::CodecId;
-use crate::contract::{
+use crate::bus::abi::CodecId;
+use crate::bus::contract::{
     ApiFamily, EndpointDescriptor, EndpointKind, QueryEndpointDescriptor, SetpointContract,
     StateContract,
 };
-use crate::handle::stamp::StepToken;
-use crate::metadata::{BusMetadata, ParticipantSourceIdentity, SourceAttribution};
-use crate::session::BusConfig;
-use crate::time::{RobotInstant, TimeWindow};
+use crate::bus::handle::stamp::StepToken;
+use crate::bus::metadata::{BusMetadata, ParticipantSourceIdentity, SourceAttribution};
+use crate::bus::session::BusConfig;
+use crate::bus::time::{RobotInstant, TimeWindow};
 
 /// The stand-in API identity used by test endpoint descriptors.
 pub(crate) enum TestApi {}
@@ -140,8 +140,7 @@ pub(crate) fn metadata() -> BusMetadata {
         stream_position: None,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline(1), 42))),
         source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
-            phoxal_runtime_contract::identity::ParticipantId::new("tester")
-                .expect("test participant"),
+            crate::identity::ParticipantId::new("tester").expect("test participant"),
             producer(1),
         )),
     }

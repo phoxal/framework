@@ -35,9 +35,9 @@ pub trait ComponentBoundSurface: sealing::Sealed {}
 #[cfg(test)]
 mod tests {
     use super::{ComponentBoundSurface, TypedIoSurface};
+    use crate::participant::metadata::ParticipantKind;
     use crate::participant::spec::ParticipantSpec;
     use crate::prelude::*;
-    use phoxal_runtime_contract::metadata::ParticipantKind;
 
     #[phoxal::driver(id = "marker-driver")]
     struct MarkerDriver;

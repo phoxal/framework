@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use phoxal_bundle::RuntimeBundle;
+use phoxal::bundle::RuntimeBundle;
 
 /// The bundle directory's name inside a deployment release. The supervisor is
 /// handed a bundle root and knows nothing about releases, but it does have to

@@ -17,9 +17,9 @@
 //! on after a successful decode. What the supervisor does with them is the
 //! supervisor's.
 
-use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
-use phoxal_runtime_contract::metadata::ParticipantKind;
-use phoxal_runtime_contract::wire_schema::{DescribeWire, WireField, WireSchema};
+use crate::identity::{ParticipantId, ProducerId};
+use crate::participant::metadata::ParticipantKind;
+use crate::__compat::wire::{DescribeWire, WireField, WireSchema};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Whether one expected runtime currently holds a Ready lease.

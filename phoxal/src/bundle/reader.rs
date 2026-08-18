@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
-use phoxal_model::identity::RobotId;
-use phoxal_model::manifest::ManifestDocument;
-use phoxal_model::{AssetId, Robot};
+use crate::model::identity::RobotId;
+use crate::model::manifest::ManifestDocument;
+use crate::model::{AssetId, Robot};
 
-use crate::{BundleError, BundleRoot, ParticipantAssets, read_manifest_document};
+use crate::bundle::{BundleError, BundleRoot, ParticipantAssets, read_manifest_document};
 
 /// An opened bundle: its manifest, and access to its assets.
 ///

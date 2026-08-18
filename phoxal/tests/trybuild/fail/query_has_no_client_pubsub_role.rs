@@ -16,7 +16,7 @@ impl<E: ClientReceiveContract> ReceiveProof for E {
     fn prove_receive() {}
 }
 
-type Query = phoxal_protocol::supervisor::endpoint::bundle::GetEndpoint;
+type Query = phoxal::supervisor::api::endpoint::bundle::GetEndpoint;
 
 fn main() {
     Query::prove_publish();
