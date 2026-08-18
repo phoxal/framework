@@ -250,7 +250,16 @@ The command exits zero only when every machine-decidable condition holds, and it
 `cargo xtask policy` is the second gate this runner carries, and it answers a different question: not what a change does to the published contracts, but whether the workspace still obeys the rules no single crate owns.
 
 It runs every rule, prints one report of `PASS`/`FAIL` lines with each violation named under its rule, and exits non-zero if any rule failed.
-The rules are the directory/naming/publish grammar every official package obeys, the exact release scope, the supervisor's place outside the artifact catalogue and inside the release train, the direction of the public library graph and the edges no canonical crate may grow, the Zenoh feature profile, the deleted surfaces that may not return under their old identifiers, where a unit-test module may sit, and what a committed comment may name.
+The rules are the directory/naming/publish grammar every official package obeys, the exact release scope, the supervisor's place outside the artifact catalogue and inside the release train, the direction of the public library graph and the edges no canonical crate may grow, the retired library packages nothing may depend on again, the Zenoh feature profile, the deleted surfaces that may not return under their old identifiers, where a unit-test module may sit, and what a committed comment may name.
+
+Four of them guard the one-library topology itself:
+
+- **feature gates live only in the framework crate root.** A consumer profile decides which modules `phoxal/src/lib.rs` declares as public; it never forks a code path inside a module, because that is how one library grows the old package graph back as scattered `#[cfg]`s.
+- **official participants reach for no host profile.** Services, component drivers and the worked examples author on the participant surface: they name neither `phoxal::session`, `phoxal::simulator` nor `phoxal::supervisor::host`, and they enable none of the host features. Cargo unifies features and cannot stop a downstream crate from doing otherwise; this is policy over the code this project ships, and it says nothing about anyone else's.
+- **raw transport access stays inside the bus module.** A crate that names Zenoh directly holds a second, unbranded copy of the transport that the typed handle vocabulary can no longer promise anything about.
+- **endpoints and topic keys are never authored by hand.** A written-out `"robot/drive/state"` is a second copy of the topic tree, and it drifts the moment a semantic module is renamed - which is itself a wire change the compatibility gate is meant to see. Test code is exempt for the opposite reason: a test naming a key is the pin that would notice the rename.
+
+Neither bus rule reads `xtask/`: the runner links no framework crate, publishes on no bus, and its topic-shaped literals are stated fixtures for the checker's own matrix.
 
 Every rule reads `cargo metadata`, the filesystem or Git and nothing else.
 That is what keeps the runner's no-framework-crate rule intact: the gate never builds the stack it judges, so it runs on a bare runner in CI as its own job.

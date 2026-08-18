@@ -16,11 +16,25 @@ use anyhow::{Context, Result};
 use super::tracked_source;
 use super::{Subject, Violation};
 
-/// This module, which spells the vocabulary it hunts for in full and would
-/// otherwise be its own only violation. Naming the exemption as a path means it
-/// stops applying the moment the module moves, and
-/// [`the_self_exemption_names_this_module`] fails when it does.
-const SELF: &str = "xtask/src/policy/retired_surface.rs";
+/// The gate's own modules, which spell the vocabulary they hunt for in full and
+/// would otherwise be their own only violations.
+///
+/// [`super::consumer_profile`] is here because one host module a participant may
+/// not import - `phoxal::simulator` - is spelled exactly like the retired
+/// simulator role attribute. Naming each exemption as a path means it stops
+/// applying the moment the module moves, and
+/// [`the_exemptions_name_modules_that_exist`] fails when one does.
+const SPELL_THE_VOCABULARY: [&str; 2] = [
+    "xtask/src/policy/retired_surface.rs",
+    "xtask/src/policy/consumer_profile.rs",
+];
+
+/// Whether a scanned path is one of them.
+fn spells_the_vocabulary(relative: &Path) -> bool {
+    SPELL_THE_VOCABULARY
+        .iter()
+        .any(|exempt| relative == Path::new(exempt))
+}
 
 /// How a retired spelling is recognized in committed source.
 enum Token {
@@ -279,7 +293,7 @@ fn contains_identifier_pair(source: &str, first: &str, second: &str) -> bool {
 pub(super) fn retired_surfaces_stay_absent(subject: &Subject) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
     for relative in source_files(&subject.root)? {
-        if relative == Path::new(SELF) {
+        if spells_the_vocabulary(&relative) {
             continue;
         }
         let source = read(&subject.root, &relative)?;
@@ -312,7 +326,7 @@ pub(super) fn participant_kind_declarations_match_the_two_explicit_owners(
     ];
     let mut owners = Vec::new();
     for relative in source_files(&subject.root)? {
-        if relative == Path::new(SELF) {
+        if spells_the_vocabulary(&relative) {
             continue;
         }
         let source = read(&subject.root, &relative)?;
@@ -351,7 +365,7 @@ pub(super) fn source_reference_alias_shims_stay_absent(
     let source_reference = "SourceRef";
     let mut violations = Vec::new();
     for relative in source_files(&subject.root)? {
-        if relative == Path::new(SELF) {
+        if spells_the_vocabulary(&relative) {
             continue;
         }
         let source = read(&subject.root, &relative)?;
@@ -517,14 +531,20 @@ mod tests {
         .is_none());
     }
 
-    /// The exemption is a path, so it stops applying the moment this module
+    /// Each exemption is a path, so it stops applying the moment that module
     /// moves - and the rules would then report themselves.
     #[test]
-    fn the_self_exemption_names_this_module() {
-        assert!(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/policy/retired_surface.rs")
-                .ends_with(SELF)
-        );
+    fn the_exemptions_name_modules_that_exist() {
+        let runner = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the runner sits in the workspace");
+        for exempt in SPELL_THE_VOCABULARY {
+            assert!(
+                runner.join(exempt).is_file(),
+                "{exempt} is exempt from the retired-surface scan but does not exist"
+            );
+            assert!(spells_the_vocabulary(Path::new(exempt)));
+        }
+        assert!(!spells_the_vocabulary(Path::new("phoxal/src/lib.rs")));
     }
 }
