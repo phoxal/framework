@@ -23,6 +23,7 @@ use semver::Version;
 
 mod check;
 mod index;
+mod legacy;
 mod policy;
 mod probe;
 mod readiness;

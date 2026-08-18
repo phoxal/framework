@@ -1,9 +1,18 @@
 //! What each side of a comparison declares, and what changed between them.
 //!
-//! A surface document is the canonical JSON one contract-owning crate renders
-//! for itself. This module reads a set of them as records, names each record by
-//! the fields that make it the *same* record on both sides, and turns the
-//! difference into a typed impact plus the field-level detail behind it.
+//! A surface document is the canonical JSON a contract-owning crate renders for
+//! itself. This module reads the documents one side stated as records, names
+//! each record by the fields that make it the *same* record on both sides, and
+//! turns the difference into a typed impact plus the field-level detail behind
+//! it.
+//!
+//! A side normally states one document, because the framework is one library.
+//! It states several only for a baseline that predates the merge (see
+//! [`crate::legacy`]), and the records are unioned either way: identity carries
+//! no crate name, so a record that changed which crate declares it is still the
+//! same record. That is the honest reading - a peer routes on the record, and
+//! has never been able to see which Cargo package the other side compiled it
+//! from.
 //!
 //! Below identity a record is compared as opaque JSON. The checker holds no
 //! second copy of the wire-schema model, so a change to that model needs no
@@ -16,75 +25,16 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde_json::Value;
 
-/// One crate that owns a contract surface.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ContractCrate {
-    /// The stable identity used to key this carrier's records.
-    pub(crate) carrier: &'static str,
-    /// The Cargo package that owns the carrier in this workspace.
-    pub(crate) workspace_package: &'static str,
-    /// Where this workspace holds it, relative to the workspace root.
-    pub(crate) workspace_directory: &'static str,
-    /// The package whose registry history normally supplies the baseline.
-    pub(crate) published_package: &'static str,
-    /// A one-time predecessor consulted only while the new package has no
-    /// registry history at all.
-    pub(crate) predecessor_package: Option<&'static str>,
-}
-
-impl ContractCrate {
-    /// The Rust path the probe project reaches this stable carrier through.
-    ///
-    /// Cargo aliases the selected package to this name when package ownership
-    /// differs, so the probe program stays byte-identical across a rename.
-    pub(crate) fn module(self) -> String {
-        self.carrier.replace('-', "_")
-    }
-}
-
-/// The crates that declare a Phoxal process boundary.
+/// The one crate that declares the Phoxal process/wire boundary.
 ///
-/// One train publishes all five together, so they are also the crates whose
-/// published versions a baseline is resolved from. A crate that grows a
-/// `__compat` module belongs here; one that is absent contributes nothing to a
-/// comparison, which is how a boundary would silently stop being checked.
-pub(crate) const CONTRACT_CRATES: [ContractCrate; 5] = [
-    ContractCrate {
-        carrier: "phoxal",
-        workspace_package: "phoxal",
-        workspace_directory: "phoxal",
-        published_package: "phoxal",
-        predecessor_package: None,
-    },
-    ContractCrate {
-        carrier: "phoxal-protocol",
-        workspace_package: "phoxal-protocol",
-        workspace_directory: "crates/protocol",
-        published_package: "phoxal-protocol",
-        predecessor_package: Some("phoxal-api"),
-    },
-    ContractCrate {
-        carrier: "phoxal-bundle",
-        workspace_package: "phoxal-bundle",
-        workspace_directory: "crates/bundle",
-        published_package: "phoxal-bundle",
-        predecessor_package: None,
-    },
-    ContractCrate {
-        carrier: "phoxal-bus",
-        workspace_package: "phoxal-bus",
-        workspace_directory: "crates/bus",
-        published_package: "phoxal-bus",
-        predecessor_package: None,
-    },
-    ContractCrate {
-        carrier: "phoxal-runtime-contract",
-        workspace_package: "phoxal-runtime-contract",
-        workspace_directory: "crates/runtime-contract",
-        published_package: "phoxal-runtime-contract",
-        predecessor_package: None,
-    },
-];
+/// It is the whole framework library, so it is also the crate whose published
+/// versions a baseline is resolved from: one train, one carrier, one release
+/// decision.
+pub(crate) const CONTRACT_CRATE: &str = "phoxal";
+
+/// Where this workspace holds [`CONTRACT_CRATE`], relative to the workspace
+/// root.
+pub(crate) const CONTRACT_CRATE_DIRECTORY: &str = "phoxal";
 
 /// The records the attachment bootstrap freezes, by the identity a comparison
 /// names them under.
@@ -103,25 +53,21 @@ pub(crate) const CONTRACT_CRATES: [ContractCrate; 5] = [
 /// with no autonomous remedy - so the checker names it as such instead of
 /// leaving the reader to notice which of many records it was.
 ///
-/// `phoxal-bus identifier participant-ready-key` is deliberately absent: a
-/// client composes it only after the bootstrap has already answered.
+/// `identifier participant-ready-key` is deliberately absent: a client composes
+/// it only after the bootstrap has already answered.
 ///
 /// The set is restated here for the same reason the record kinds are: the
 /// checker depends on no framework crate. It cannot go stale silently - a
 /// renamed or removed frozen record loses this identity, which the comparison
 /// reports as a removal and this list still recognizes.
-const FROZEN_RECORDS: [(&str, RecordKind, &str); 7] = [
-    (
-        "phoxal-protocol",
-        RecordKind::Endpoint,
-        "supervisor supervisor/connect",
-    ),
-    ("phoxal-bus", RecordKind::Envelope, "BusMetadata"),
-    ("phoxal-bus", RecordKind::Envelope, "QueryFailure"),
-    ("phoxal-bus", RecordKind::Identifier, "bus-key-composition"),
-    ("phoxal-bus", RecordKind::Identifier, "bus-key-root"),
-    ("phoxal-bus", RecordKind::Identifier, "encoding"),
-    ("phoxal-bus", RecordKind::Identifier, "zenoh-wire-protocol"),
+const FROZEN_RECORDS: [(RecordKind, &str); 7] = [
+    (RecordKind::Endpoint, "supervisor supervisor/connect"),
+    (RecordKind::Envelope, "BusMetadata"),
+    (RecordKind::Envelope, "QueryFailure"),
+    (RecordKind::Identifier, "bus-key-composition"),
+    (RecordKind::Identifier, "bus-key-root"),
+    (RecordKind::Identifier, "encoding"),
+    (RecordKind::Identifier, "zenoh-wire-protocol"),
 ];
 
 /// The kinds of record a surface document carries.
@@ -204,19 +150,22 @@ impl RecordKind {
 /// A change to anything outside the identity is a change *to* that record; a
 /// change to the identity itself is a removal plus an addition, which is the
 /// honest reading, because a peer holding the old key finds nothing.
+///
+/// The crate that declared the record is deliberately not part of it. Nothing
+/// on the wire carries a Cargo package name, so a record that moves between
+/// modules - or between the libraries a train used to publish - is the same
+/// record, and the comparison says so.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RecordIdentity {
-    crate_name: String,
     kind: RecordKind,
     key: String,
 }
 
 impl RecordIdentity {
-    /// Name the record one crate declared.
-    fn of(crate_name: &str, record: &Value) -> Result<Self> {
+    /// Name one declared record.
+    fn of(record: &Value) -> Result<Self> {
         let kind = RecordKind::of(record)?;
         Ok(Self {
-            crate_name: crate_name.to_owned(),
             kind,
             key: kind.identity_key(record)?,
         })
@@ -225,7 +174,7 @@ impl RecordIdentity {
 
 impl fmt::Display for RecordIdentity {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} {}", self.crate_name, self.kind.token())?;
+        formatter.write_str(self.kind.token())?;
         if self.key.is_empty() {
             return Ok(());
         }
@@ -240,28 +189,25 @@ pub(crate) struct SurfaceSet {
 }
 
 impl SurfaceSet {
-    /// Read one side's surface documents, keyed by the crate that rendered
-    /// each.
+    /// Read one side's surface documents as one record set.
     ///
-    /// Every contract crate must be present: a missing document is a probe that
-    /// silently stopped covering a boundary, not a boundary without records.
-    pub(crate) fn read(documents: &BTreeMap<String, Value>) -> Result<Self> {
+    /// A side states one document per crate it was read from - one normally,
+    /// five for a baseline that predates the merge - and the union is what that
+    /// side declares. Two documents naming one record is a probe that read the
+    /// same boundary twice, which would hide a difference in one of the copies,
+    /// so it is refused rather than resolved.
+    pub(crate) fn read(documents: &[Value]) -> Result<Self> {
+        if documents.is_empty() {
+            bail!("a side of the comparison stated no contract surface at all");
+        }
         let mut records = BTreeMap::new();
-        for contract_crate in CONTRACT_CRATES {
-            let document = documents.get(contract_crate.carrier).with_context(|| {
-                format!("{} rendered no contract surface", contract_crate.carrier)
-            })?;
+        for document in documents {
             let declared = document
                 .get("records")
                 .and_then(Value::as_array)
-                .with_context(|| {
-                    format!(
-                        "{}'s contract surface holds no records",
-                        contract_crate.carrier
-                    )
-                })?;
+                .context("a contract surface holds no records")?;
             for record in declared {
-                let identity = RecordIdentity::of(contract_crate.carrier, record)?;
+                let identity = RecordIdentity::of(record)?;
                 if records.insert(identity.clone(), record.clone()).is_some() {
                     bail!("{identity} is declared twice in one contract surface");
                 }
@@ -329,11 +275,9 @@ impl RecordChange {
     /// frozen one exactly where it was, which is what the freeze protects.
     pub(crate) fn breaks_the_frozen_bootstrap(&self) -> bool {
         self.breaks_a_peer()
-            && FROZEN_RECORDS.iter().any(|(crate_name, kind, key)| {
-                self.identity.crate_name == *crate_name
-                    && self.identity.kind == *kind
-                    && self.identity.key == *key
-            })
+            && FROZEN_RECORDS
+                .iter()
+                .any(|(kind, key)| self.identity.kind == *kind && self.identity.key == *key)
     }
 }
 
@@ -548,12 +492,12 @@ mod tests {
         })
     }
 
-    fn document() -> Value {
+    fn document(name: &str, tag: &str) -> Value {
         json!({
             "body": {"fields": [], "kind": "struct"},
-            "name": "ManifestDocument",
+            "name": name,
             "record": "document",
-            "tag": "phoxal/manifest/v0",
+            "tag": tag,
         })
     }
 
@@ -561,29 +505,22 @@ mod tests {
         json!({"body": {"fields": [], "kind": "struct"}, "name": "BusMetadata", "record": "envelope"})
     }
 
-    /// A full side of a comparison: every contract crate present, each with the
-    /// records that crate owns.
-    fn side(
-        endpoints: Vec<Value>,
-        constants: Vec<Value>,
-        launch: Value,
-    ) -> BTreeMap<String, Value> {
-        let bus = std::iter::once(envelope())
+    /// One side of a comparison: the one document the framework library states,
+    /// holding every record the side declares.
+    fn side(endpoints: Vec<Value>, constants: Vec<Value>, launch: Value) -> Vec<Value> {
+        let records = std::iter::once(launch)
+            .chain(std::iter::once(envelope()))
+            .chain(std::iter::once(document(
+                "ManifestDocument",
+                "phoxal/manifest/v0",
+            )))
+            .chain(endpoints)
             .chain(constants)
             .collect::<Vec<_>>();
-        BTreeMap::from([
-            ("phoxal".to_owned(), json!({"records": [launch]})),
-            ("phoxal-protocol".to_owned(), json!({"records": endpoints})),
-            ("phoxal-bundle".to_owned(), json!({"records": [document()]})),
-            ("phoxal-bus".to_owned(), json!({"records": bus})),
-            (
-                "phoxal-runtime-contract".to_owned(),
-                json!({"records": [document()]}),
-            ),
-        ])
+        vec![json!({ "records": records })]
     }
 
-    fn baseline() -> BTreeMap<String, Value> {
+    fn baseline() -> Vec<Value> {
         side(
             vec![endpoint("robot/drive/state", "speed", "f64")],
             vec![identifier("bus-encoding", "phoxal/v0;codec=1")],
@@ -591,7 +528,7 @@ mod tests {
         )
     }
 
-    fn compare(current: &BTreeMap<String, Value>) -> (CompatibilityImpact, Vec<RecordChange>) {
+    fn compare(current: &[Value]) -> (CompatibilityImpact, Vec<RecordChange>) {
         let changes = SurfaceSet::read(&baseline())
             .expect("the baseline reads")
             .changes_to(&SurfaceSet::read(current).expect("the current side reads"));
@@ -620,15 +557,15 @@ mod tests {
         assert_eq!(impact, CompatibilityImpact::Additive);
         let report = rendered(&changes);
         assert!(
-            report.contains("added    phoxal-protocol endpoint robot robot/drive/command"),
+            report.contains("added    endpoint robot robot/drive/command"),
             "{report}"
         );
     }
 
-    /// Stable carrier mapping cannot hide an endpoint change: the diagnostic
-    /// names the exact record and path rather than only that something moved.
+    /// The diagnostic names the exact record and path rather than only that
+    /// something moved.
     #[test]
-    fn carrier_mapping_keeps_an_exact_endpoint_change_visible() {
+    fn an_exact_endpoint_change_stays_visible() {
         let (impact, changes) = compare(&side(
             vec![endpoint("robot/drive/state", "speed", "u32")],
             vec![identifier("bus-encoding", "phoxal/v0;codec=1")],
@@ -637,7 +574,7 @@ mod tests {
         assert_eq!(impact, CompatibilityImpact::Breaking);
         let report = rendered(&changes);
         assert!(
-            report.contains("changed  phoxal-protocol endpoint robot robot/drive/state"),
+            report.contains("changed  endpoint robot robot/drive/state"),
             "{report}"
         );
         assert!(
@@ -663,10 +600,10 @@ mod tests {
         );
     }
 
-    /// Stable carrier mapping cannot turn a removed endpoint into a package
-    /// rename: a peer that still publishes on that key talks to nobody.
+    /// A removed endpoint is a break: a peer that still publishes on that key
+    /// talks to nobody.
     #[test]
-    fn carrier_mapping_keeps_an_endpoint_removal_visible() {
+    fn an_endpoint_removal_stays_visible() {
         let (impact, changes) = compare(&side(
             Vec::new(),
             vec![identifier("bus-encoding", "phoxal/v0;codec=1")],
@@ -675,7 +612,7 @@ mod tests {
         assert_eq!(impact, CompatibilityImpact::Breaking);
         let report = rendered(&changes);
         assert!(
-            report.contains("removed  phoxal-protocol endpoint robot robot/drive/state"),
+            report.contains("removed  endpoint robot robot/drive/state"),
             "{report}"
         );
     }
@@ -691,7 +628,7 @@ mod tests {
         assert_eq!(impact, CompatibilityImpact::Breaking);
         let report = rendered(&changes);
         assert!(
-            report.contains("changed  phoxal-bus identifier bus-encoding"),
+            report.contains("changed  identifier bus-encoding"),
             "{report}"
         );
         assert!(
@@ -711,7 +648,7 @@ mod tests {
         ));
         assert_eq!(impact, CompatibilityImpact::Breaking);
         let report = rendered(&changes);
-        assert!(report.contains("changed  phoxal launch"), "{report}");
+        assert!(report.contains("changed  launch"), "{report}");
         assert!(
             report.contains(r#"$.arguments[0].name: "execution-id" -> "execution""#),
             "{report}"
@@ -735,32 +672,77 @@ mod tests {
         );
     }
 
+    /// The merge itself: the last multi-crate train stated the same records
+    /// from five documents that this workspace states from one. Identity
+    /// carries no crate name, so the union is the same record set and the
+    /// comparison sees no change at all - which is exactly the evidence the
+    /// merge release has to produce.
+    #[test]
+    fn a_legacy_baseline_of_five_documents_unions_to_the_single_carrier_surface() {
+        let legacy = vec![
+            json!({"records": [launch("execution-id", true)]}),
+            json!({"records": [endpoint("robot/drive/state", "speed", "f64")]}),
+            json!({"records": [
+                envelope(),
+                identifier("bus-encoding", "phoxal/v0;codec=1"),
+            ]}),
+            json!({"records": [document("ManifestDocument", "phoxal/manifest/v0")]}),
+            json!({"records": [document("ParticipantMetadata", "phoxal/participant-metadata/v0")]}),
+        ];
+        let mut merged = baseline();
+        let records = merged[0]["records"]
+            .as_array_mut()
+            .expect("the merged side holds records");
+        records.push(document(
+            "ParticipantMetadata",
+            "phoxal/participant-metadata/v0",
+        ));
+
+        let changes = SurfaceSet::read(&legacy)
+            .expect("the legacy union reads")
+            .changes_to(&SurfaceSet::read(&merged).expect("the merged surface reads"));
+        assert!(changes.is_empty(), "{}", rendered(&changes));
+        assert_eq!(
+            CompatibilityImpact::of(&changes),
+            CompatibilityImpact::Unchanged
+        );
+    }
+
+    /// Two documents naming one record is a probe that read a boundary twice,
+    /// which would hide a difference in the copy it discarded.
+    #[test]
+    fn a_record_declared_by_two_documents_is_refused() {
+        let duplicated = vec![
+            json!({"records": [identifier("encoding", "phoxal/v0;codec=1")]}),
+            json!({"records": [identifier("encoding", "phoxal/v0;codec=1")]}),
+        ];
+        let failure = SurfaceSet::read(&duplicated)
+            .expect_err("one record cannot be declared twice")
+            .to_string();
+        assert!(failure.contains("identifier encoding"), "{failure}");
+    }
+
     /// A record kind the checker cannot identify is refused rather than
     /// compared by a guess, because a guessed identity reports a break that did
     /// not happen or hides one that did.
     #[test]
     fn an_unknown_record_kind_is_refused() {
-        let mut documents = baseline();
-        documents.insert(
-            "phoxal-bus".to_owned(),
-            json!({"records": [{"record": "capability", "name": "drive"}]}),
-        );
-        let failure = SurfaceSet::read(&documents)
-            .expect_err("an unidentifiable record kind cannot be compared")
-            .to_string();
+        let failure = SurfaceSet::read(&[json!({
+            "records": [{"record": "capability", "name": "drive"}]
+        })])
+        .expect_err("an unidentifiable record kind cannot be compared")
+        .to_string();
         assert!(failure.contains("`capability`"), "{failure}");
     }
 
-    /// A missing crate is a probe that stopped covering a boundary, so it is an
-    /// error rather than a boundary with no records.
+    /// A side that stated nothing at all is a probe that stopped covering the
+    /// boundary, not a boundary without records.
     #[test]
-    fn a_missing_contract_crate_is_refused() {
-        let mut documents = baseline();
-        documents.remove("phoxal-bus");
-        let failure = SurfaceSet::read(&documents)
-            .expect_err("an absent crate cannot be compared")
+    fn a_side_that_stated_no_document_is_refused() {
+        let failure = SurfaceSet::read(&[])
+            .expect_err("an empty side cannot be compared")
             .to_string();
-        assert!(failure.contains("phoxal-bus"), "{failure}");
+        assert!(failure.contains("no contract surface"), "{failure}");
     }
 
     /// A record whose whole body was replaced reports enough to name the change
@@ -798,13 +780,10 @@ mod tests {
     /// The execution supervisor consumes contracts but never supplies a
     /// contract carrier or a second compatibility identity.
     #[test]
-    fn phoxal_supervisor_is_not_a_contract_carrier() {
-        assert!(CONTRACT_CRATES.iter().all(|contract_crate| {
-            contract_crate.carrier != "phoxal-supervisor"
-                && contract_crate.workspace_package != "phoxal-supervisor"
-                && contract_crate.published_package != "phoxal-supervisor"
-                && contract_crate.predecessor_package != Some("phoxal-supervisor")
-        }));
+    fn the_supervisor_is_not_a_contract_carrier() {
+        assert_eq!(CONTRACT_CRATE, "phoxal");
+        assert_ne!(CONTRACT_CRATE, "phoxal-supervisor");
+        assert_ne!(CONTRACT_CRATE_DIRECTORY, "supervisor");
     }
 
     /// The bootstrap endpoint, spelled the way the contract crate renders it.
@@ -853,22 +832,9 @@ mod tests {
         }
     }
 
-    /// One side that holds `records` on `crate_name` and nothing anywhere else.
-    fn only(crate_name: &str, records: Vec<Value>) -> BTreeMap<String, Value> {
-        CONTRACT_CRATES
-            .iter()
-            .map(|contract_crate| {
-                let declared = if contract_crate.carrier == crate_name {
-                    records.clone()
-                } else {
-                    Vec::new()
-                };
-                (
-                    contract_crate.carrier.to_owned(),
-                    json!({ "records": declared }),
-                )
-            })
-            .collect()
+    /// One side holding `records` and nothing else.
+    fn only(records: Vec<Value>) -> Vec<Value> {
+        vec![json!({ "records": records })]
     }
 
     /// A record of `kind` that the comparison names under `key`.
@@ -889,12 +855,7 @@ mod tests {
                     "response": {"fields": [], "kind": "struct"},
                 })
             }
-            RecordKind::Document => json!({
-                "body": {"fields": [], "kind": "struct"},
-                "name": "Doc",
-                "record": "document",
-                "tag": key,
-            }),
+            RecordKind::Document => document("Doc", key),
             RecordKind::Envelope => json!({
                 "body": {"fields": [], "kind": "struct"},
                 "name": key,
@@ -912,18 +873,16 @@ mod tests {
     /// produces: that entry would then silently protect nothing.
     #[test]
     fn every_frozen_record_is_recognized_when_it_breaks() {
-        for (crate_name, kind, key) in FROZEN_RECORDS {
+        for (kind, key) in FROZEN_RECORDS {
             let record = record_named(kind, key);
-            let changes = SurfaceSet::read(&only(crate_name, vec![record]))
+            let changes = SurfaceSet::read(&only(vec![record]))
                 .expect("the baseline reads")
-                .changes_to(
-                    &SurfaceSet::read(&only(crate_name, Vec::new())).expect("the side reads"),
-                );
+                .changes_to(&SurfaceSet::read(&only(Vec::new())).expect("the side reads"));
             assert!(
                 changes
                     .iter()
                     .any(RecordChange::breaks_the_frozen_bootstrap),
-                "{crate_name} {} {key} is frozen but a break in it is not reported as one: {}",
+                "{} {key} is frozen but a break in it is not reported as one: {}",
                 kind.token(),
                 rendered(&changes)
             );
@@ -936,22 +895,19 @@ mod tests {
     #[test]
     fn a_moved_transport_fact_beneath_the_bootstrap_is_a_frozen_finding() {
         let bus = |protocol: &str| {
-            only(
-                "phoxal-bus",
-                vec![
-                    identifier("bus-key-root", "phoxal/{execution}"),
-                    identifier("bus-key-composition", "phoxal/{execution}/{topic}"),
-                    identifier("encoding", "phoxal/v0;codec=1"),
-                    identifier("zenoh-wire-protocol", protocol),
-                ],
-            )
+            only(vec![
+                identifier("bus-key-root", "phoxal/{execution}"),
+                identifier("bus-key-composition", "phoxal/{execution}/{topic}"),
+                identifier("encoding", "phoxal/v0;codec=1"),
+                identifier("zenoh-wire-protocol", protocol),
+            ])
         };
         let changes = SurfaceSet::read(&bus("9"))
             .expect("the baseline reads")
             .changes_to(&SurfaceSet::read(&bus("10")).expect("the current side reads"));
         let report = rendered(&changes);
         assert!(
-            report.contains("changed  phoxal-bus identifier zenoh-wire-protocol"),
+            report.contains("changed  identifier zenoh-wire-protocol"),
             "{report}"
         );
         assert!(report.contains("[FROZEN BOOTSTRAP]"), "{report}");

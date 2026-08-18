@@ -37,7 +37,7 @@ Frozen-bootstrap drift is the deliberate exception: it is unreleasable, so both 
 ## The authored source is the second axis, and it is directional
 
 The contract surfaces are what two binaries speak to each other.
-Nothing in them can see the *authored* language - `phoxal-manifest` is deliberately not a wire surface, because no two binaries negotiate over a `robot.yaml` - so a YAML grammar break used to pass every gate in this repository while breaking every project on disk.
+Nothing in them can see the *authored* language - `phoxal::authoring` is deliberately not a wire surface, because no two binaries negotiate over a `robot.yaml` - so a YAML grammar break used to pass every gate in this repository while breaking every project on disk.
 
 The promise there is one-way.
 A newer compatible framework keeps reading every document an older compatible framework accepted, and keeps reading it to mean the same thing.
@@ -58,10 +58,10 @@ The corpus is the authored documents this repository already keeps - `fixture/ro
 It is a stated list rather than a glob, because a corpus that discovered itself would shrink silently when a document moved and the gate would go green by reading less.
 Nothing about it is generated: it is authored YAML and URDF, edited in the open like any other test data, and there is no compiled snapshot of it anywhere in the tree.
 
-Both sides are read the way the contract surfaces are: a probe under `target/xtask-compat/source-*` depends on `phoxal-manifest` (baseline at an exact `=x.y.z` registry version, workspace by path), compiles one project through `phoxal_manifest::probe`, and prints the canonical model, or the refusal, as one JSON document.
+Both sides are read the way the contract surfaces are: a probe under `target/xtask-compat/source-*` depends on `phoxal` with `default-features = false, features = ["authoring"]` (baseline at an exact `=x.y.z` registry version, workspace by path), compiles one project through `phoxal::authoring::probe`, and prints the canonical model, or the refusal, as one JSON document.
 A probe that reached below that entry would be comparing something no author can write.
 
-`probe` exists for this checker and `phoxal-manifest` documents it as source-compatible across trains, which is what lets **one** program be spelled for both sides: the two readers are asked the same question in the same words, so a difference in the answer is a difference in the reader.
+`probe` exists for this checker and `phoxal::authoring` documents it as source-compatible across trains, which is what lets **one** program be spelled for both sides: the two readers are asked the same question in the same words, so a difference in the answer is a difference in the reader.
 A program that assembled the canonical document itself out of the compiler's own types would have to be respelled whenever those types moved, and would then compile against only one of the two trains - which is exactly the failure this entry retires.
 A published train from before the entry existed cannot answer at all: the probe crate fails to resolve that one path, the leg reports `unavailable`, and `report` still passes.
 `check-release` allows that only on a train that is already declaring a break - see rule 9.
@@ -77,7 +77,7 @@ Raising it breaks every downstream build still on the previous toolchain, which 
 So both verbs also compare the workspace's `[workspace.package] rust-version` against the floor the published train went out under, read from the same sparse-index entries the baseline is resolved from.
 A raised floor requires at least a minor, in both SemVer eras: pre-1.0 the minor is the line, and from 1.0 on a raised floor is a minor by the convention the wider ecosystem already reads that way.
 A lowered or equal floor asks nothing of anybody and constrains nothing.
-All five contract crates are built from one workspace and inherit one `rust-version`, so a published train stating two floors is refused the same way a half-published train is: it is not one train.
+The framework is one library, so the floor is one crate's stated `rust-version` and there is no set of floors to reconcile.
 
 ## When a gate fails
 
@@ -102,7 +102,7 @@ The gate is satisfied by the change going away, never by the version growing to 
 Stop.
 The frozen set is the `supervisor/connect` key spelling, both bootstrap document shapes, the canonical framework-version spelling inside them, and the bootstrap-reachable transport facts: discovery, key grammar, query envelope, encoding, zenoh wire protocol.
 Those five are everything an attaching client traverses *before* it can decode the bootstrap reply, so a line that moved one of them would leave the frozen documents intact and unreachable.
-Concretely they are the `phoxal-bus` records `bus-key-root`, `bus-key-composition`, `encoding`, `zenoh-wire-protocol`, `BusMetadata` and `QueryFailure`, plus the discovery mechanics and the transport version their own pin tests hold.
+Concretely they are the records `bus-key-root`, `bus-key-composition`, `encoding`, `zenoh-wire-protocol`, `BusMetadata` and `QueryFailure`, plus the discovery mechanics and the transport version their own pin tests hold.
 A report marking a record `[FROZEN BOOTSTRAP]`, or a failing bootstrap pin test, means one of them moved. Both `report` and `check-release` fail after printing that report; no version clears the finding.
 
 A Zenoh upgrade that changes the wire protocol version lands here too.
@@ -161,13 +161,13 @@ The corpus is the record of what the published framework accepted; rewriting it 
 ### 9. The published reader has no probe entry and the source leg did not run
 
 The report says `source: unavailable` and `check-release` refuses unless the candidate is already a breaking release.
-The published train predates `phoxal_manifest::probe`, so there is no reader on that side to ask, and for exactly one train nothing holds the source language to what the published one accepted.
+The published train predates the reader's `probe` entry, so there is no reader on that side to ask, and for exactly one train nothing holds the source language to what the published one accepted.
 
 Carry the Conventional Commit breaking marker for that train, which is what the allowance is: a train that is already moving the line is allowed to move it without the leg's confirmation, and no other train is.
 Do not answer it by raising the version - the finding is a missing reader, not an under-sized candidate - and do not delete or rewrite the corpus to make the leg pass.
 
 The state cannot recur: the next train's baseline carries the entry, so the leg runs again on its own.
-If it *does* recur, the entry moved, and moving it is what rule 6 is about - restore the spelling `phoxal-manifest` documents as source-compatible across trains.
+If it *does* recur, the entry moved, and moving it is what rule 6 is about - restore the spelling `phoxal::authoring` documents as source-compatible across trains.
 
 ## What it cannot prove
 
@@ -187,15 +187,22 @@ A snapshot committed beside the code would be updated by the same change it is s
 The registry cannot be rewritten, so it is the only honest record of what shipped.
 That holds for the authored-source leg too: the corpus is the *input* both readers are asked about, and the published reader's answer is never written down.
 
-The baseline is the newest non-yanked version that **all five stable contract carriers** share - `phoxal`, `phoxal-protocol`, `phoxal-bundle`, `phoxal-bus`, `phoxal-runtime-contract` - read from the crates.io sparse index.
-A train publishes as one set; when the crates disagree the checker names the partially published train and stops rather than comparing one crate's contracts against another crate's previous release.
+The framework is one library, so the baseline is the newest non-yanked `phoxal` on the crates.io sparse index, and its `rust-version` is read from that same index entry.
+There is nothing to reconcile: the half-published state a multi-crate train could be caught in - today's endpoints against yesterday's documents - is not a state one package can be in.
 
-Carrier identity is separate from the Cargo package used to read it. For the first renamed train, the checker queries `phoxal-protocol` first and consults `phoxal-api` only when the new package has zero registry versions. Any `phoxal-protocol` history, including yanked-only history, permanently disables that predecessor fallback. Completeness and `rust-version` floors use the actual packages selected by this resolution.
-
-Both sides are read the same way: a probe project under `target/xtask-compat/` depends on the five selected packages (baseline at exact `=x.y.z` registry versions, workspace by path) and prints their surfaces under the stable carrier identities as one JSON document.
-The first baseline privately aliases `phoxal-api` to the dependency name `phoxal-protocol`; this generated probe is release evidence, not a published alias or supported compatibility path.
+Both sides are read the same way: a probe project under `target/xtask-compat/` depends on `phoxal` (baseline at an exact `=x.y.z` registry version, workspace by path with default features) and prints the surfaces it states as one JSON array.
+A profile decides which modules are public, never which contracts the crate declares, so the aggregate is the same under any of them.
 Since both sides go through one mechanism, a difference in the output is a difference in the contracts and not in how they were read.
 The probes are regenerated byte-identically on every run, so Cargo rebuilds them only when the crates underneath them changed.
+
+### The one baseline read through the retired topology
+
+Until `0.66` the framework published its process/wire surface from five library packages and its authored-source reader from a sixth.
+A baseline below `0.66.0` is therefore read from `phoxal`, `phoxal-protocol`, `phoxal-bus`, `phoxal-bundle` and `phoxal-runtime-contract` at that same exact version, and from `phoxal-manifest` for the source leg.
+The five surfaces are unioned, and record identity carries no crate name, so a record that moved from `phoxal-protocol` into `phoxal` is the same record on both sides and the merge reports no wire change - which is the evidence the `0.66.0` release has to produce.
+All five are pinned at one version and Cargo fails to resolve a version any of them does not carry, so a partial read is impossible rather than tolerated.
+
+`xtask/src/legacy.rs` is the whole of it and is deletable once a `0.66.x` `phoxal` is published: from then on every resolvable baseline is at or above the floor and nothing calls in here.
 
 ## The first comparable baseline
 
@@ -249,7 +256,7 @@ Every rule reads `cargo metadata`, the filesystem or Git and nothing else.
 That is what keeps the runner's no-framework-crate rule intact: the gate never builds the stack it judges, so it runs on a bare runner in CI as its own job.
 
 The proofs that *do* need the framework linked are not here and cannot be.
-They are ordinary tests in the crates that own them - what a linked participant binary carries and what the facade and the process-contract crate agree on in `phoxal`, the frozen Zenoh wire protocol version in `phoxal-bus`, the build-requirement union in `phoxal-manifest` - and they run under `cargo test --workspace`.
+They are ordinary tests in `phoxal`, the crate that owns them - what a linked participant binary carries, the frozen Zenoh wire protocol version its transport speaks, the build-requirement union its authored-source reader computes - and they run under `cargo test --workspace`.
 
 ## Tests
 
