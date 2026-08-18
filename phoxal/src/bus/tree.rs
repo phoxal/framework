@@ -13,9 +13,10 @@
 //! - a leaf declares its endpoints with `endpoints!`, beside the
 //!   payload types they carry.
 //!
-//! Both declarations define a `Path` in their own module, so a module that
-//! declared both would fail to compile with a duplicate `Path`. That is the
-//! intended diagnostic: a module is a branch or a leaf, never both.
+//! Both declarations define the same items in their own module - a `Path` and a
+//! `contract_records` - so a module that declared both fails to compile with a
+//! duplicate-item error naming the second invocation. That is the intended
+//! diagnostic: a module is a branch or a leaf, never both.
 //!
 //! Walking `Path` accumulates the concrete key; the leaf method returns a
 //! [`BoundEndpoint`], and the side is chosen last, at the endpoint, with
@@ -227,8 +228,8 @@ macro_rules! endpoints {
 
 /// This module's node in the tree: the key accumulated down to here.
 ///
-/// Emitted by both declarations, which is what makes a module that tried to be
-/// a branch and a leaf at once a duplicate-`Path` compile error.
+/// Emitted by both declarations, which is part of what makes a module that
+/// tried to be a branch and a leaf at once a duplicate-item compile error.
 macro_rules! path_node {
     () => {
         /// This node of the family's dynamic topic path, carrying the concrete
