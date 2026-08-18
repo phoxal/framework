@@ -1,5 +1,5 @@
-//! The Phoxal bus ABI floor: the Zenoh-native wire boundary, plus API-version,
-//! payload, and endpoint-descriptor primitives the bus client is generic over.
+//! The Phoxal bus ABI floor: the Zenoh-native wire boundary, plus the family,
+//! payload, and endpoint-semantic primitives the bus client is generic over.
 //!
 //! Samples are Zenoh-native. One sample is:
 //!
@@ -53,6 +53,7 @@ pub mod server;
 pub mod session;
 pub mod time;
 pub mod topic;
+pub mod tree;
 
 mod outbound;
 
@@ -73,11 +74,9 @@ pub use crate::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
-    ApiFamily, ClientPublishContract, ClientReceiveContract, DeliveryFamily, Endpoint,
-    EndpointDescriptor, EndpointKind, EventContract, Payload, QueryEndpointDescriptor,
-    SampleContract, SampleDeliveryContract, SetpointContract, SetpointDeliveryContract,
-    StateContract, StateDeliveryContract, StreamContract, StreamDeliveryContract,
-    WorldClockContract,
+    DeliveryFamily, Direction, Endpoint, EndpointKind, EndpointSemantics, Event, Family, In, Out,
+    Payload, Query, QueryEndpoint, Robot, RobotEndpoint, Runtime, Sample, Setpoint, State, Stream,
+    StreamDelivered, Supervisor, WorldClock,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{
@@ -122,6 +121,7 @@ pub use topic::{
     AskQuery, KeySegment, KeySegmentError, Publish, ServeQuery, Subscribe, Topic, TopicKind,
     WildcardPublish,
 };
+pub use tree::{BoundEndpoint, TopicSegment};
 
 /// The contract surface this crate owns: the envelopes that ride beside a body
 /// and the exact wire text a peer has to spell.
@@ -130,10 +130,11 @@ pub use topic::{
 /// process boundary out of the code that declares it.
 ///
 /// Endpoints are deliberately absent: this module owns the transport floor, and
-/// every concrete endpoint is declared by the protocol tree. So are
-/// [`DeliveryFamily`] and [`EndpointKind`], which are compile-time typing with
-/// no bytes of their own - they reach a surface only as the spelling on an
-/// endpoint record, which is where they actually decide something.
+/// every concrete endpoint is declared beside its own payload by the api tree.
+/// So are [`DeliveryFamily`] and [`EndpointKind`], which are compile-time
+/// typing with no bytes of their own - they reach a surface only as the
+/// spelling on an endpoint record, which is where they actually decide
+/// something.
 ///
 /// Most of what this module declares is bootstrap-reachable, so the
 /// compatibility checker classifies it as the frozen bootstrap and routes any
@@ -151,10 +152,17 @@ pub mod __compat {
     use crate::bus::query::QueryFailure;
     use crate::bus::session::{BUS_KEY_PREFIX, ZENOH_WIRE_PROTOCOL_VERSION};
 
-    /// The canonical rendering of this crate's contract surface.
+    /// The canonical rendering of this module's own contract surface.
     #[must_use]
     pub fn contract_surface() -> String {
-        ContractSurface::new([
+        let mut records = Vec::new();
+        contract_records(&mut records);
+        ContractSurface::new(records).canonical_json()
+    }
+
+    /// This module's records, for the crate aggregate.
+    pub(crate) fn contract_records(out: &mut Vec<ContractRecord>) {
+        out.extend([
             // The per-sample attachment: provenance rides here rather than in
             // the body, so it is a wire contract in its own right.
             ContractRecord::envelope("BusMetadata", BusMetadata::wire_schema()),
@@ -190,8 +198,7 @@ pub mod __compat {
                 "zenoh-wire-protocol",
                 ZENOH_WIRE_PROTOCOL_VERSION.to_string(),
             ),
-        ])
-        .canonical_json()
+        ]);
     }
 
     #[cfg(test)]

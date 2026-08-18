@@ -108,8 +108,8 @@ impl Grid {
 }
 
 struct Api {
-    localize: StateView<api::endpoint::localize::StateEndpoint>,
-    revision: StatePublisher<api::endpoint::map::RevisionEndpoint>,
+    localize: StateView<api::localize::LocalizationState>,
+    revision: StatePublisher<api::map::Revision>,
 }
 
 struct MapState {
@@ -127,10 +127,10 @@ impl Participant for SerializedMap {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         ctx.query(
-            api::topic::owner().navigation().next_frontier(),
+            api::topics().navigation().next_frontier().owner(),
             Self::next_frontier,
         )?;
-        ctx.query(api::topic::owner().map().submap(), Self::submap)?;
+        ctx.query(api::topics().map().submap().owner(), Self::submap)?;
         Ok((
             MapState {
                 grid: Grid::empty(),
@@ -138,9 +138,9 @@ impl Participant for SerializedMap {
             },
             Api {
                 localize: ctx
-                    .state_view(api::topic::client().localize().state())
+                    .state_view(api::topics().localize().state().client())
                     .await?,
-                revision: ctx.state_publisher(api::topic::owner().map().revision())?,
+                revision: ctx.state_publisher(api::topics().map().revision().owner())?,
             },
         ))
     }

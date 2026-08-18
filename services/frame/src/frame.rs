@@ -32,13 +32,13 @@ const BUFFER_MAX_ENTRIES: usize = 16_384;
 /// the frame the folded transform is buffered under.
 struct TrackedJoint {
     joint: DynamicJoint,
-    states: EventReceiver<api::endpoint::joint::StateEndpoint>,
+    states: EventReceiver<api::joint::JointState>,
 }
 
 pub(crate) struct Api {
     joints: Vec<TrackedJoint>,
-    tree: StatePublisher<api::endpoint::frame::TreeEndpoint>,
-    static_pub: StatePublisher<api::endpoint::frame::StaticTransformsEndpoint>,
+    tree: StatePublisher<api::frame::Tree>,
+    static_pub: StatePublisher<api::frame::StaticTransforms>,
 }
 
 /// The transform tree: the fixed edges, the parent and joint each frame hangs
@@ -65,7 +65,7 @@ impl Participant for Frame {
         let mut buffers = BTreeMap::new();
         for dynamic in config.dynamic_joints {
             let states = ctx
-                .event_receiver(api::topic::client().joint(&dynamic.joint_id)?.state())
+                .event_receiver(api::topics().joint(&dynamic.joint_id)?.state().client())
                 .await?;
             buffers.insert(
                 dynamic.child_frame_id.clone(),
@@ -80,9 +80,9 @@ impl Participant for Frame {
         // Frame OWNS the `frame` node (tree, static transforms, and the
         // `frame/lookup` query it serves below) -> owner builder;
         // joint states are CONSUMED via the public builder.
-        let tree = ctx.state_publisher(api::topic::owner().frame().tree())?;
-        let static_pub = ctx.state_publisher(api::topic::owner().frame().static_transforms())?;
-        ctx.query(api::topic::owner().frame().lookup(), Self::lookup)?;
+        let tree = ctx.state_publisher(api::topics().frame().tree().owner())?;
+        let static_pub = ctx.state_publisher(api::topics().frame().static_transforms().owner())?;
+        ctx.query(api::topics().frame().lookup().owner(), Self::lookup)?;
 
         Ok((
             FrameState {

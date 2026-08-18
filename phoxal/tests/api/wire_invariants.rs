@@ -85,7 +85,7 @@ fn navigation_rejects_invalid_request_operation_pose_path_and_frontier() {
         "y_m": 0.0,
         "yaw_rad": 4.0,
     }));
-    rejects_on_both_codecs::<crate::robot::navigation::Path>(json!({
+    rejects_on_both_codecs::<crate::robot::navigation::PlannedPath>(json!({
         "poses": [],
         "map_revision": null,
     }));

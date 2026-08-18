@@ -11,7 +11,9 @@ use crate::identity::TimelineId;
 use tokio::sync::Notify;
 use zenoh::key_expr::OwnedKeyExpr;
 
-use crate::bus::contract::{DeliveryFamily, EndpointDescriptor, EventContract};
+use crate::bus::contract::{
+    DeliveryFamily, Endpoint, EndpointSemantics, Event, Sample, Setpoint, State, StreamDelivered,
+};
 use crate::bus::error::{BusError, KeyProblem, Result};
 use crate::bus::handle::decode_sample;
 use crate::bus::lock::lock;
@@ -123,8 +125,8 @@ impl<B> Observed<B> {
 /// replacement timelines are kept in a separate bounded quarantine and remain
 /// invisible until their matching timeline is activated. The subscription lives
 /// until the internal view is dropped.
-pub(crate) struct Latest<E: EndpointDescriptor> {
-    state: Arc<Mutex<LatestState<E::Payload>>>,
+pub(crate) struct Latest<E: Endpoint> {
+    state: Arc<Mutex<LatestState<E>>>,
     metric: RuntimeMetricHandle,
     terminal: Arc<TerminalState>,
     _guard: Arc<SubscriptionGuard>,
@@ -238,7 +240,7 @@ impl<B> LatestState<B> {
 // requests cooperative cancellation only when the *last* clone drops. `latest()` only ever reads the
 // shared slot (`&self`), so every clone always observes the same freshest
 // sample: safe to hand to a concurrent reader.
-impl<E: EndpointDescriptor> Clone for Latest<E> {
+impl<E: Endpoint> Clone for Latest<E> {
     fn clone(&self) -> Self {
         Latest {
             state: Arc::clone(&self.state),
@@ -249,7 +251,7 @@ impl<E: EndpointDescriptor> Clone for Latest<E> {
     }
 }
 
-impl<E: EndpointDescriptor> Latest<E> {
+impl<E: Endpoint> Latest<E> {
     /// Build a keep-last view over a topic.
     ///
     /// The author-facing path is `ctx.state_view(...)` in `Participant::setup`.
@@ -271,7 +273,7 @@ impl<E: EndpointDescriptor> Latest<E> {
         admission: F,
     ) -> Result<Self>
     where
-        F: Fn(&Observed<E::Payload>) -> bool + Send + Sync + 'static,
+        F: Fn(&Observed<E>) -> bool + Send + Sync + 'static,
     {
         Self::new_inner(bus, topic, Some(Arc::new(admission))).await
     }
@@ -279,7 +281,7 @@ impl<E: EndpointDescriptor> Latest<E> {
     async fn new_inner(
         bus: &BusHandle,
         topic: &Topic<Subscribe<E>>,
-        admission: Option<Admission<E::Payload>>,
+        admission: Option<Admission<E>>,
     ) -> Result<Self> {
         let state = Arc::new(Mutex::new(LatestState {
             active_timeline: None,
@@ -335,14 +337,14 @@ impl<E: EndpointDescriptor> Latest<E> {
 
     /// The most recent sample with its provenance and observation stamp, or
     /// `None` if nothing has arrived yet.
-    pub fn observed(&self) -> Option<Arc<Observed<E::Payload>>> {
+    pub fn observed(&self) -> Option<Arc<Observed<E>>> {
         lock(&self.state).observed.clone()
     }
 
     /// The most recent decoded body, for consumers that need no provenance.
-    pub fn latest(&self) -> Option<E::Payload>
+    pub fn latest(&self) -> Option<E>
     where
-        E::Payload: Clone,
+        E: Clone,
     {
         self.observed().map(|observed| observed.body.clone())
     }
@@ -367,7 +369,7 @@ impl<E: EndpointDescriptor> Latest<E> {
 
     pub(crate) fn retention_handle(&self) -> TimelineRetention
     where
-        E::Payload: 'static,
+        E: 'static,
     {
         let retained = self.clone();
         TimelineRetention(Arc::new(move |timeline| retained.retain_timeline(timeline)))
@@ -401,8 +403,8 @@ impl<E: EndpointDescriptor> Latest<E> {
 ///
 /// The public `SetpointReceiver`, `SampleReceiver`, and `StreamReceiver` types
 /// intentionally do not expose this clone operation.
-pub(crate) struct Subscriber<E: EndpointDescriptor> {
-    ring: Arc<Ring<E::Payload>>,
+pub(crate) struct Subscriber<E: Endpoint> {
+    ring: Arc<Ring<E>>,
     terminal: Arc<TerminalState>,
     _guard: Arc<SubscriptionGuard>,
 }
@@ -410,7 +412,7 @@ pub(crate) struct Subscriber<E: EndpointDescriptor> {
 // Manual, unbounded on `B` (mirrors `Latest`'s `Clone` impl: both fields are
 // `Arc`, so cloning never starts a second decode task). The competing-consumer
 // semantics of a shared clone are documented on the struct's rustdoc above.
-impl<E: EndpointDescriptor> Clone for Subscriber<E> {
+impl<E: Endpoint> Clone for Subscriber<E> {
     fn clone(&self) -> Self {
         Subscriber {
             ring: Arc::clone(&self.ring),
@@ -420,14 +422,14 @@ impl<E: EndpointDescriptor> Clone for Subscriber<E> {
     }
 }
 
-impl<E: EndpointDescriptor> Subscriber<E> {
+impl<E: Endpoint> Subscriber<E> {
     /// Build the delivery family's bounded receive storage over a topic.
     ///
     /// `pub` only because the delivery-specific wrappers and the runner live
     /// in other crates; see [`crate::bus::handle::stamp`]'s module docs.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
-        let family = E::KIND.delivery_family();
+        let family = <E::Semantics as EndpointSemantics>::DELIVERY;
         if family == DeliveryFamily::Stream && topic.key().contains('*') {
             return Err(BusError::invalid_key(topic.key(), KeyProblem::Wildcard));
         }
@@ -503,7 +505,7 @@ impl<E: EndpointDescriptor> Subscriber<E> {
     /// **Destructive**: this pops from the ring, so the sample is delivered to
     /// exactly this caller. If this `Subscriber` was cloned, every clone
     /// competes for the same queue (see the [type docs](Self)).
-    pub async fn recv(&self) -> Result<Observed<E::Payload>> {
+    pub async fn recv(&self) -> Result<Observed<E>> {
         let (observed, _current_depth) = self.ring.recv().await?;
         Ok(observed)
     }
@@ -512,7 +514,7 @@ impl<E: EndpointDescriptor> Subscriber<E> {
     ///
     /// **Destructive**, exactly like [`recv`](Self::recv): it pops from the
     /// shared ring, so clones compete for samples - see the [type docs](Self).
-    pub fn try_recv(&self) -> Option<Observed<E::Payload>> {
+    pub fn try_recv(&self) -> Option<Observed<E>> {
         self.ring
             .try_pop()
             .map(|(observed, _current_depth)| observed)
@@ -545,7 +547,7 @@ impl<E: EndpointDescriptor> Subscriber<E> {
 
     pub(crate) fn retention_handle(&self) -> TimelineRetention
     where
-        E::Payload: 'static,
+        E: 'static,
     {
         let retained = self.clone();
         TimelineRetention(Arc::new(move |timeline| retained.retain_timeline(timeline)))
@@ -556,12 +558,22 @@ impl<E: EndpointDescriptor> Subscriber<E> {
 ///
 /// Each value carries its logical step and local observation time. The single
 /// slot is overwritten by newer state; this is a current view, not history.
-#[derive(Clone)]
-pub struct StateView<E: EndpointDescriptor> {
+pub struct StateView<E: Endpoint<Semantics = State>> {
     inner: Latest<E>,
 }
 
-impl<E: crate::bus::contract::StateDeliveryContract> StateView<E> {
+// Manual, and unbounded on `E` - the endpoint type is now the payload type, and
+// a payload that is not itself `Clone` must still yield a cloneable view. Every
+// field a view holds is an `Arc`, so a clone is a second view of the same slot.
+impl<E: Endpoint<Semantics = State>> Clone for StateView<E> {
+    fn clone(&self) -> Self {
+        StateView {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<E: Endpoint<Semantics = State>> StateView<E> {
     /// Construct the state view for a typed subscription.
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
@@ -580,20 +592,20 @@ impl<E: crate::bus::contract::StateDeliveryContract> StateView<E> {
         admission: F,
     ) -> Result<Self>
     where
-        F: Fn(&Observed<E::Payload>) -> bool + Send + Sync + 'static,
+        F: Fn(&Observed<E>) -> bool + Send + Sync + 'static,
     {
         Ok(Self {
             inner: Latest::new_with_admission(bus, topic, admission).await?,
         })
     }
 
-    pub fn observed(&self) -> Option<Arc<Observed<E::Payload>>> {
+    pub fn observed(&self) -> Option<Arc<Observed<E>>> {
         self.inner.observed()
     }
 
-    pub fn latest(&self) -> Option<E::Payload>
+    pub fn latest(&self) -> Option<E>
     where
-        E::Payload: Clone,
+        E: Clone,
     {
         self.inner.latest()
     }
@@ -617,11 +629,11 @@ impl<E: crate::bus::contract::StateDeliveryContract> StateView<E> {
 ///
 /// Setpoints carry no robot timestamp. Producer-scoped lanes retain the newest
 /// pending value, and source overflow is exposed as terminal evidence.
-pub struct SetpointReceiver<E: EndpointDescriptor> {
+pub struct SetpointReceiver<E: Endpoint<Semantics = Setpoint>> {
     inner: Subscriber<E>,
 }
 
-impl<E: crate::bus::contract::SetpointDeliveryContract> SetpointReceiver<E> {
+impl<E: Endpoint<Semantics = Setpoint>> SetpointReceiver<E> {
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Ok(Self {
@@ -629,14 +641,14 @@ impl<E: crate::bus::contract::SetpointDeliveryContract> SetpointReceiver<E> {
         })
     }
 
-    pub async fn recv(&self) -> Result<Observed<E::Payload>> {
+    pub async fn recv(&self) -> Result<Observed<E>> {
         if let Some(terminal) = self.terminal() {
             return Err(terminal_error(terminal));
         }
         self.inner.recv().await
     }
 
-    pub fn try_recv(&self) -> Option<Observed<E::Payload>> {
+    pub fn try_recv(&self) -> Option<Observed<E>> {
         if self.terminal().is_some() {
             return None;
         }
@@ -662,11 +674,11 @@ impl<E: crate::bus::contract::SetpointDeliveryContract> SetpointReceiver<E> {
 ///
 /// Each sample retains its capture stamp. Overflow evicts the oldest buffered
 /// sample, and [`Self::dropped`] exposes the cumulative count.
-pub struct SampleReceiver<E: EndpointDescriptor> {
+pub struct SampleReceiver<E: Endpoint<Semantics = Sample>> {
     inner: Subscriber<E>,
 }
 
-impl<E: crate::bus::contract::SampleDeliveryContract> SampleReceiver<E> {
+impl<E: Endpoint<Semantics = Sample>> SampleReceiver<E> {
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Ok(Self {
@@ -674,11 +686,11 @@ impl<E: crate::bus::contract::SampleDeliveryContract> SampleReceiver<E> {
         })
     }
 
-    pub async fn recv(&self) -> Result<Observed<E::Payload>> {
+    pub async fn recv(&self) -> Result<Observed<E>> {
         self.inner.recv().await
     }
 
-    pub fn try_recv(&self) -> Option<Observed<E::Payload>> {
+    pub fn try_recv(&self) -> Option<Observed<E>> {
         self.inner.try_recv()
     }
 
@@ -705,7 +717,10 @@ impl<E: crate::bus::contract::SampleDeliveryContract> SampleReceiver<E> {
 ///
 /// Chunks carry no robot timestamp. The bounded lane refuses saturation, and
 /// receive methods expose producer gaps and terminal evidence.
-pub struct StreamReceiver<E: EndpointDescriptor> {
+pub struct StreamReceiver<E: Endpoint>
+where
+    E::Semantics: StreamDelivered,
+{
     inner: Subscriber<E>,
     topic: String,
     next_positions: Mutex<HashMap<crate::bus::ProducerId, Option<u64>>>,
@@ -737,7 +752,10 @@ pub enum StreamEvent<B> {
     },
 }
 
-impl<E: crate::bus::contract::StreamDeliveryContract> StreamReceiver<E> {
+impl<E: Endpoint> StreamReceiver<E>
+where
+    E::Semantics: StreamDelivered,
+{
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Ok(Self {
@@ -748,14 +766,14 @@ impl<E: crate::bus::contract::StreamDeliveryContract> StreamReceiver<E> {
     }
 
     /// Receive the next ordered item or explicit gap evidence.
-    pub async fn recv_event(&self) -> Result<StreamEvent<E::Payload>> {
+    pub async fn recv_event(&self) -> Result<StreamEvent<E>> {
         self.ensure_open()?;
         let observed = self.inner.recv().await?;
         self.classify(observed)
     }
 
     /// Receive the next item, failing rather than hiding a detected gap.
-    pub async fn recv(&self) -> Result<Observed<E::Payload>> {
+    pub async fn recv(&self) -> Result<Observed<E>> {
         match self.recv_event().await? {
             StreamEvent::Item(observed) => Ok(observed),
             StreamEvent::Gap {
@@ -772,7 +790,7 @@ impl<E: crate::bus::contract::StreamDeliveryContract> StreamReceiver<E> {
     }
 
     /// Take the next buffered stream event without waiting.
-    pub fn try_recv_event(&self) -> Result<Option<StreamEvent<E::Payload>>> {
+    pub fn try_recv_event(&self) -> Result<Option<StreamEvent<E>>> {
         self.ensure_open()?;
         self.inner
             .try_recv()
@@ -781,7 +799,7 @@ impl<E: crate::bus::contract::StreamDeliveryContract> StreamReceiver<E> {
     }
 
     /// Take the next item, failing rather than hiding a detected gap.
-    pub fn try_recv(&self) -> Result<Option<Observed<E::Payload>>> {
+    pub fn try_recv(&self) -> Result<Option<Observed<E>>> {
         match self.try_recv_event()? {
             Some(StreamEvent::Item(observed)) => Ok(Some(observed)),
             Some(StreamEvent::Gap {
@@ -812,7 +830,7 @@ impl<E: crate::bus::contract::StreamDeliveryContract> StreamReceiver<E> {
         self.inner.retention_handle()
     }
 
-    fn classify(&self, item: Observed<E::Payload>) -> Result<StreamEvent<E::Payload>> {
+    fn classify(&self, item: Observed<E>) -> Result<StreamEvent<E>> {
         let result = classify_stream(&self.topic, &self.next_positions, item);
         if let Err(BusError::TooManyStreamSources { topic, limit }) = &result {
             self.inner
@@ -837,11 +855,11 @@ impl<E: crate::bus::contract::StreamDeliveryContract> StreamReceiver<E> {
 ///
 /// Events carry their logical step and use the bounded stream lane. Receive
 /// methods expose producer gaps and terminal evidence.
-pub struct EventReceiver<E: EventContract> {
+pub struct EventReceiver<E: Endpoint<Semantics = Event>> {
     inner: StreamReceiver<E>,
 }
 
-impl<E: EventContract> EventReceiver<E> {
+impl<E: Endpoint<Semantics = Event>> EventReceiver<E> {
     #[doc(hidden)]
     pub async fn new(bus: &BusHandle, topic: &Topic<Subscribe<E>>) -> Result<Self> {
         Ok(Self {
@@ -850,22 +868,22 @@ impl<E: EventContract> EventReceiver<E> {
     }
 
     /// Receive the next event or explicit per-producer gap evidence.
-    pub async fn recv_event(&self) -> Result<StreamEvent<E::Payload>> {
+    pub async fn recv_event(&self) -> Result<StreamEvent<E>> {
         self.inner.recv_event().await
     }
 
     /// Receive the next event, failing rather than hiding a detected gap.
-    pub async fn recv(&self) -> Result<Observed<E::Payload>> {
+    pub async fn recv(&self) -> Result<Observed<E>> {
         self.inner.recv().await
     }
 
     /// Take the next buffered event without waiting.
-    pub fn try_recv_event(&self) -> Result<Option<StreamEvent<E::Payload>>> {
+    pub fn try_recv_event(&self) -> Result<Option<StreamEvent<E>>> {
         self.inner.try_recv_event()
     }
 
     /// Take the next buffered event, failing rather than hiding a gap.
-    pub fn try_recv(&self) -> Result<Option<Observed<E::Payload>>> {
+    pub fn try_recv(&self) -> Result<Option<Observed<E>>> {
         self.inner.try_recv()
     }
 
@@ -1539,8 +1557,8 @@ async fn spawn_subscription<E, F>(
     terminal: Arc<TerminalState>,
 ) -> Result<SubscriptionGuard>
 where
-    E: EndpointDescriptor,
-    F: FnMut(Observed<E::Payload>) + Send + 'static,
+    E: Endpoint,
+    F: FnMut(Observed<E>) + Send + 'static,
 {
     let full_key = bus.full_key(topic_key);
     let key_expr = OwnedKeyExpr::new(full_key.clone())
@@ -1641,10 +1659,7 @@ mod tests {
     use serial_test::serial;
 
     use crate::bus::abi::CodecId;
-    use crate::bus::contract::{
-        ApiFamily, EndpointDescriptor, EndpointKind, StateContract, StreamContract,
-        StreamDeliveryContract,
-    };
+    use crate::bus::contract::TestFamily;
     use crate::bus::handle::publisher::{SetpointPublisher, StatePublisher};
     use crate::bus::lease::{FixedSourceLease, LeaseDecision, LeaseRejection};
     use crate::bus::liveliness::ParticipantReadyStatus;
@@ -1652,53 +1667,35 @@ mod tests {
     use crate::bus::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
     use crate::bus::session::BusOwner;
     use crate::bus::test_support::{
-        Manual, ManualEndpoint, Target, TargetEndpoint, participant_config, producer, step,
+        MANUAL_TOPIC, Manual, TARGET_TOPIC, Target, bound, participant_config, producer, step,
         timeline,
     };
     use crate::bus::time::RobotInstant;
-    use crate::bus::topic::{Publish, Subscribe};
     use crate::identity::{ParticipantId, ProducerId};
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    const NON_CLONE_TOPIC: &str = "yTEST/nonclone/state";
+
+    #[derive(phoxal_macros::DescribeWire, Debug, serde::Serialize, serde::Deserialize)]
     struct NonCloneBody {
         bytes: Vec<u8>,
     }
 
-    enum NonCloneApi {}
+    impl crate::bus::contract::sealed::Endpoint for NonCloneBody {}
 
-    impl ApiFamily for NonCloneApi {
-        const ID: &'static str = "nonclone";
+    impl Endpoint for NonCloneBody {
+        type Family = TestFamily;
+        type Semantics = State;
     }
 
-    struct NonCloneEndpoint;
-    impl EndpointDescriptor for NonCloneEndpoint {
-        type Api = NonCloneApi;
-        type Payload = NonCloneBody;
-        const NAME: &'static str = "nonclone::state::Body";
-        const FAMILY: &'static str = "nonclone";
-        const CONTRACT: &'static str = "state::Body";
-        const TOPIC: &'static str = "nonclone/state";
-        const KIND: EndpointKind = EndpointKind::State;
-    }
-
-    impl StateContract for NonCloneEndpoint {}
-
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(phoxal_macros::DescribeWire, Debug, serde::Serialize, serde::Deserialize)]
     struct OrderedChunk(u8);
 
-    struct OrderedEndpoint;
-    impl EndpointDescriptor for OrderedEndpoint {
-        type Api = NonCloneApi;
-        type Payload = OrderedChunk;
-        const NAME: &'static str = "nonclone::stream::Chunk";
-        const FAMILY: &'static str = "nonclone";
-        const CONTRACT: &'static str = "stream::Chunk";
-        const TOPIC: &'static str = "nonclone/stream/chunk";
-        const KIND: EndpointKind = EndpointKind::Stream;
-    }
+    impl crate::bus::contract::sealed::Endpoint for OrderedChunk {}
 
-    impl StreamContract for OrderedEndpoint {}
-    impl StreamDeliveryContract for OrderedEndpoint {}
+    impl Endpoint for OrderedChunk {
+        type Family = TestFamily;
+        type Semantics = crate::bus::Stream<crate::bus::Out>;
+    }
 
     fn observed(body: u8, line: Option<u64>) -> Observed<u8> {
         Observed {
@@ -2205,7 +2202,7 @@ mod tests {
         let metrics = RuntimeMetrics::default();
         let metric = metrics.register_subscriber("robot/test/stream", DEFAULT_ORDERED_CAPACITY);
         let terminal = Arc::new(TerminalState::new());
-        let receiver = StreamReceiver::<OrderedEndpoint> {
+        let receiver = StreamReceiver::<OrderedChunk> {
             inner: Subscriber {
                 ring: Arc::new(Ring::new(
                     DEFAULT_ORDERED_CAPACITY,
@@ -2410,8 +2407,8 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("nonclone"))
             .await
             .unwrap();
-        let topic = Topic::<Subscribe<NonCloneEndpoint>>::new_static(NonCloneEndpoint::TOPIC);
-        let latest = Latest::<NonCloneEndpoint>::new(&bus, &topic)
+        let topic = bound::<NonCloneBody>(NON_CLONE_TOPIC).client();
+        let latest = Latest::<NonCloneBody>::new(&bus, &topic)
             .await
             .expect("a non-Clone body still has a retained-state subscription");
         assert!(latest.observed().is_none());
@@ -2425,7 +2422,7 @@ mod tests {
             .await
             .unwrap();
         for key in ["nonclone/stream/*", "nonclone/stream/foo$*/bar"] {
-            let topic = Topic::<Subscribe<OrderedEndpoint>>::new_owned(key.to_string());
+            let topic = bound::<OrderedChunk>(key).client();
             let error = match StreamReceiver::new(&bus, &topic).await {
                 Ok(_) => panic!("one position tracker cannot mix concrete stream topics"),
                 Err(error) => error,
@@ -2533,13 +2530,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_publisher_to_latest_round_trip() {
         let (owner, bus) = BusOwner::open(participant_config("rt")).await.unwrap();
-        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
+        let pub_topic = bound::<Target>(TARGET_TOPIC).owner();
+        let sub_topic = bound::<Target>(TARGET_TOPIC).client();
 
-        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<TargetEndpoint>::new(&bus, &sub_topic)
-            .await
-            .unwrap();
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
 
         let published_at = step(1, 100);
         publisher
@@ -2583,10 +2578,10 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("state-admission"))
             .await
             .unwrap();
-        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<TargetEndpoint>::new_with_admission(&bus, &sub_topic, |observed| {
+        let pub_topic = bound::<Target>(TARGET_TOPIC).owner();
+        let sub_topic = bound::<Target>(TARGET_TOPIC).client();
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new_with_admission(&bus, &sub_topic, |observed| {
             observed.body.linear_x_mps > 0.0
         })
         .await
@@ -2634,15 +2629,11 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("timeline-barrier"))
             .await
             .unwrap();
-        let pub_topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let sub_topic = Topic::<Subscribe<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &pub_topic).unwrap();
-        let latest = Latest::<TargetEndpoint>::new(&bus, &sub_topic)
-            .await
-            .unwrap();
-        let subscriber = Subscriber::<TargetEndpoint>::new(&bus, &sub_topic)
-            .await
-            .unwrap();
+        let pub_topic = bound::<Target>(TARGET_TOPIC).owner();
+        let sub_topic = bound::<Target>(TARGET_TOPIC).client();
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+        let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+        let subscriber = Subscriber::<Target>::new(&bus, &sub_topic).await.unwrap();
 
         let old_timeline = timeline(6);
         publisher
@@ -2764,12 +2755,10 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("commands"))
             .await
             .unwrap();
-        let pub_topic = Topic::<Publish<ManualEndpoint>>::new_static(ManualEndpoint::TOPIC);
-        let sub_topic = Topic::<Subscribe<ManualEndpoint>>::new_static(ManualEndpoint::TOPIC);
-        let commands = SetpointPublisher::<ManualEndpoint>::new(bus.clone(), &pub_topic).unwrap();
-        let subscriber = Subscriber::<ManualEndpoint>::new(&bus, &sub_topic)
-            .await
-            .unwrap();
+        let pub_topic = bound::<Manual>(MANUAL_TOPIC).client();
+        let sub_topic = bound::<Manual>(MANUAL_TOPIC).owner();
+        let commands = SetpointPublisher::<Manual>::new(bus.clone(), &pub_topic).unwrap();
+        let subscriber = Subscriber::<Manual>::new(&bus, &sub_topic).await.unwrap();
         subscriber.retain_timeline(timeline(1));
 
         commands.send(Manual { linear_x_mps: 0.4 }).unwrap();

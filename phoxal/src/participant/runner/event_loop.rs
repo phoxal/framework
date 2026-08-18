@@ -8,7 +8,7 @@ use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsync
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
-use crate::runtime::api::endpoint::simulation::ClockEndpoint;
+use crate::runtime::api::simulation::Clock;
 
 use super::ShutdownController;
 use super::lifecycle::{LoopExit, Runner};
@@ -245,8 +245,8 @@ pub(crate) async fn simulation_clock_feed(
     bus: crate::bus::BusHandle,
     handle: SimulationClockHandle,
 ) -> crate::Result<()> {
-    let topic = crate::runtime::api::topic::client().simulation().clock();
-    let subscriber = match StreamReceiver::<ClockEndpoint>::new(&bus, &topic).await {
+    let topic = crate::runtime::api::topics().simulation().clock().client();
+    let subscriber = match StreamReceiver::<Clock>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),
     };

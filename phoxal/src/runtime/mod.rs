@@ -5,6 +5,4 @@
 //! here; the family names no collector.
 
 /// The `runtime` contract family.
-pub mod api {
-    pub use crate::protocol::runtime::*;
-}
+pub mod api;

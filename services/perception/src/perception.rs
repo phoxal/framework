@@ -30,11 +30,11 @@ const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_nanos(
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 
 pub(crate) struct Api {
-    cameras: Vec<SampleReceiver<api::endpoint::component::camera::FrameEndpoint>>,
-    depths: Vec<SampleReceiver<api::endpoint::component::depth::FrameEndpoint>>,
-    localization: StateView<api::endpoint::localize::StateEndpoint>,
-    detections: StatePublisher<api::endpoint::perception::DetectionsEndpoint>,
-    state: StatePublisher<api::endpoint::perception::StateEndpoint>,
+    cameras: Vec<SampleReceiver<api::component::camera::Frame>>,
+    depths: Vec<SampleReceiver<api::component::depth::Frame>>,
+    localization: StateView<api::localize::LocalizationState>,
+    detections: StatePublisher<api::perception::Detections>,
+    state: StatePublisher<api::perception::State>,
 }
 
 pub(crate) struct PerceptionState {
@@ -100,13 +100,13 @@ impl Participant for Perception {
         }
 
         let localization = ctx
-            .state_view(api::topic::client().localize().state())
+            .state_view(api::topics().localize().state().client())
             .await?;
         // Perception OWNS the `perception` node (detections + state telemetry)
         // -> owner builder; sensor frames and `localize/state` are
         // CONSUMED via the public builder.
-        let detections = ctx.state_publisher(api::topic::owner().perception().detections())?;
-        let state = ctx.state_publisher(api::topic::owner().perception().state())?;
+        let detections = ctx.state_publisher(api::topics().perception().detections().owner())?;
+        let state = ctx.state_publisher(api::topics().perception().state().owner())?;
 
         Ok((
             PerceptionState {
@@ -424,9 +424,9 @@ fn valid_camera_frame(frame: &api::component::camera::Frame) -> bool {
 /// A sample published without one cannot be aged against this step's clock, so
 /// it is dropped rather than held as if it were current; that leaves the
 /// previous slot untouched, which the freshness gate will then age out.
-fn drain_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+fn drain_latest<E: phoxal::bus::Endpoint<Semantics = phoxal::bus::Sample>>(
     subscriber: &SampleReceiver<E>,
-    slot: &mut Option<Timed<E::Payload>>,
+    slot: &mut Option<Timed<E>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
         if let Some(at) = observed.metadata.produced_exactly_at() {
@@ -439,9 +439,9 @@ fn drain_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
 /// caller can publish an explicit invalid-input health reason. The old helper
 /// above remains exact-only for depth/localization consumers that still need an
 /// exact robot instant for their existing math.
-fn drain_capture_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+fn drain_capture_latest<E: phoxal::bus::Endpoint<Semantics = phoxal::bus::Sample>>(
     subscriber: &SampleReceiver<E>,
-    slot: &mut Option<Captured<E::Payload>>,
+    slot: &mut Option<Captured<E>>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
         *slot = Some(Captured {
@@ -453,18 +453,18 @@ fn drain_capture_latest<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContr
 
 /// [`drain_latest`] across index-coupled subscribers and slots, one slot per
 /// bound sensor.
-fn drain_latest_per_source<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+fn drain_latest_per_source<E: phoxal::bus::Endpoint<Semantics = phoxal::bus::Sample>>(
     subscribers: &[SampleReceiver<E>],
-    slots: &mut [Option<Timed<E::Payload>>],
+    slots: &mut [Option<Timed<E>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {
         drain_latest(subscriber, slot);
     }
 }
 
-fn drain_capture_latest_per_source<E: phoxal::bus::EndpointDescriptor + SampleDeliveryContract>(
+fn drain_capture_latest_per_source<E: phoxal::bus::Endpoint<Semantics = phoxal::bus::Sample>>(
     subscribers: &[SampleReceiver<E>],
-    slots: &mut [Option<Captured<E::Payload>>],
+    slots: &mut [Option<Captured<E>>],
 ) {
     for (subscriber, slot) in subscribers.iter().zip(slots) {
         drain_capture_latest(subscriber, slot);

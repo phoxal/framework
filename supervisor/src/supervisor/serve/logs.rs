@@ -151,15 +151,15 @@ fn take(value: &str, remaining: &mut usize, truncated: &mut u32) -> String {
 
 pub(super) async fn run(bus: BusHandle) -> Result<()> {
     let history = Arc::new(Mutex::new(History::default()));
-    let follow = StreamPublisher::new(bus.clone(), &supervisor::topic::owner().logs().follow())?;
-    let events = StreamReceiver::new(&bus, &runtime::topic::client().logs().topic()).await?;
+    let follow = StreamPublisher::new(bus.clone(), &supervisor::topics().logs().follow().owner())?;
+    let events = StreamReceiver::new(&bus, &runtime::topics().logs().client()).await?;
     let mut tasks = JoinSet::new();
 
     let query_bus = bus.clone();
     let query_history = Arc::clone(&history);
     tasks.spawn(async move {
         let server =
-            super::declare::<supervisor::endpoint::logs::SnapshotEndpoint>(&query_bus).await?;
+            super::declare(&query_bus, &supervisor::topics().logs().snapshot().owner()).await?;
         loop {
             let incoming = server.recv().await?;
             let request: supervisor::logs::SnapshotRequest = match super::decode(&incoming).await? {

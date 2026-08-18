@@ -9,12 +9,11 @@ use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface};
 use crate::ParticipantAssetResolver;
 use crate::bundle::RuntimeBundle;
 use crate::bus::{
-    AskQuery, DEFAULT_QUERY_TIMEOUT, EventContract, EventPublisher, EventReceiver, Observed,
-    Publish, Querier, QueryEndpointDescriptor, RobotInstant, SampleContract,
-    SampleDeliveryContract, SamplePublisher, SampleReceiver, ServeQuery, SetpointContract,
-    SetpointDeliveryContract, SetpointPublisher, SetpointReceiver, StateContract,
-    StateDeliveryContract, StatePublisher, StateView, StepToken, StreamContract,
-    StreamDeliveryContract, StreamPublisher, StreamReceiver, Subscribe, TimelineId, Topic,
+    AskQuery, DEFAULT_QUERY_TIMEOUT, Endpoint, Event, EventPublisher, EventReceiver, Observed,
+    Publish, Querier, QueryEndpoint, RobotEndpoint, RobotInstant, Sample, SamplePublisher,
+    SampleReceiver, ServeQuery, Setpoint, SetpointPublisher, SetpointReceiver, State,
+    StatePublisher, StateView, StepToken, StreamDelivered, StreamPublisher, StreamReceiver,
+    Subscribe, TimelineId, Topic,
 };
 use crate::bus::{BusHandle, ParticipantId};
 use crate::model::Robot;
@@ -208,52 +207,54 @@ impl<R: Participant> SetupContext<R> {
     }
 }
 
-/// Every typed-IO builder below binds its endpoint descriptor's `Api` to
-/// `R::ContractApi`, the one contract family the role attribute fixed for this
-/// participant. A descriptor from any other family is a compile error at the
-/// builder call, not a runtime mismatch.
+/// Every typed-IO builder below is bounded on [`RobotEndpoint`]: a participant
+/// authors against the robot family, and an endpoint of the runtime or
+/// supervisor family is a compile error at the builder call, not a runtime
+/// mismatch. The second half of each bound is the endpoint's own semantic, so
+/// the builder also rejects an endpoint this operation does not apply to.
 impl<R: Participant + TypedIoSurface> SetupContext<R> {
-    pub fn state_publisher<B: StateContract<Api = R::ContractApi>>(
+    pub fn state_publisher<E: RobotEndpoint + Endpoint<Semantics = State>>(
         &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<StatePublisher<B>> {
+        topic: Topic<Publish<E>>,
+    ) -> crate::Result<StatePublisher<E>> {
         Ok(StatePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn sample_publisher<B: SampleContract<Api = R::ContractApi>>(
+    pub fn sample_publisher<E: RobotEndpoint + Endpoint<Semantics = Sample>>(
         &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<SamplePublisher<B>> {
+        topic: Topic<Publish<E>>,
+    ) -> crate::Result<SamplePublisher<E>> {
         Ok(SamplePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn setpoint_publisher<B: SetpointContract<Api = R::ContractApi>>(
+    pub fn setpoint_publisher<E: RobotEndpoint + Endpoint<Semantics = Setpoint>>(
         &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<SetpointPublisher<B>> {
+        topic: Topic<Publish<E>>,
+    ) -> crate::Result<SetpointPublisher<E>> {
         Ok(SetpointPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn event_publisher<B: EventContract<Api = R::ContractApi>>(
+    pub fn event_publisher<E: RobotEndpoint + Endpoint<Semantics = Event>>(
         &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<EventPublisher<B>> {
+        topic: Topic<Publish<E>>,
+    ) -> crate::Result<EventPublisher<E>> {
         Ok(EventPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub fn stream_publisher<B: StreamContract<Api = R::ContractApi>>(
+    pub fn stream_publisher<E: RobotEndpoint>(
         &self,
-        topic: Topic<Publish<B>>,
-    ) -> crate::Result<StreamPublisher<B>> {
+        topic: Topic<Publish<E>>,
+    ) -> crate::Result<StreamPublisher<E>>
+    where
+        E::Semantics: StreamDelivered,
+    {
         Ok(StreamPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn state_view<
-        B: StateContract<Api = R::ContractApi> + StateDeliveryContract<Api = R::ContractApi>,
-    >(
+    pub async fn state_view<E: RobotEndpoint + Endpoint<Semantics = State>>(
         &mut self,
-        topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<StateView<B>> {
+        topic: Topic<Subscribe<E>>,
+    ) -> crate::Result<StateView<E>> {
         let handle = StateView::new(&self.bus, &topic).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
@@ -266,13 +267,13 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     /// keep-last slot coalesces observations.
     #[doc(hidden)]
     pub async fn state_view_with_admission<
-        B: StateContract<Api = R::ContractApi> + StateDeliveryContract<Api = R::ContractApi>,
-        F: Fn(&Observed<B::Payload>) -> bool + Send + Sync + 'static,
+        E: RobotEndpoint + Endpoint<Semantics = State>,
+        F: Fn(&Observed<E>) -> bool + Send + Sync + 'static,
     >(
         &mut self,
-        topic: Topic<Subscribe<B>>,
+        topic: Topic<Subscribe<E>>,
         admission: F,
-    ) -> crate::Result<StateView<B>> {
+    ) -> crate::Result<StateView<E>> {
         let handle = StateView::new_with_admission(&self.bus, &topic, admission).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
@@ -281,12 +282,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn setpoint_receiver<
-        B: SetpointContract<Api = R::ContractApi> + SetpointDeliveryContract<Api = R::ContractApi>,
-    >(
+    pub async fn setpoint_receiver<E: RobotEndpoint + Endpoint<Semantics = Setpoint>>(
         &mut self,
-        topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<SetpointReceiver<B>> {
+        topic: Topic<Subscribe<E>>,
+    ) -> crate::Result<SetpointReceiver<E>> {
         let handle = SetpointReceiver::new(&self.bus, &topic).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
@@ -295,10 +294,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn event_receiver<B: EventContract<Api = R::ContractApi>>(
+    pub async fn event_receiver<E: RobotEndpoint + Endpoint<Semantics = Event>>(
         &mut self,
-        topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<EventReceiver<B>> {
+        topic: Topic<Subscribe<E>>,
+    ) -> crate::Result<EventReceiver<E>> {
         let handle = EventReceiver::new(&self.bus, &topic).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
@@ -307,12 +306,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn sample_receiver<
-        B: SampleContract<Api = R::ContractApi> + SampleDeliveryContract<Api = R::ContractApi>,
-    >(
+    pub async fn sample_receiver<E: RobotEndpoint + Endpoint<Semantics = Sample>>(
         &mut self,
-        topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<SampleReceiver<B>> {
+        topic: Topic<Subscribe<E>>,
+    ) -> crate::Result<SampleReceiver<E>> {
         let handle = SampleReceiver::new(&self.bus, &topic).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
@@ -321,12 +318,13 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn stream_receiver<
-        B: StreamContract<Api = R::ContractApi> + StreamDeliveryContract<Api = R::ContractApi>,
-    >(
+    pub async fn stream_receiver<E: RobotEndpoint>(
         &mut self,
-        topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<StreamReceiver<B>> {
+        topic: Topic<Subscribe<E>>,
+    ) -> crate::Result<StreamReceiver<E>>
+    where
+        E::Semantics: StreamDelivered,
+    {
         let handle = StreamReceiver::new(&self.bus, &topic).await?;
         let retained = handle.timeline_retention();
         self.register_timeline_retention(move |timeline| {
@@ -335,15 +333,15 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    /// Build the client handle for a descriptor-declared query.
+    /// Build the client handle for a declared query endpoint.
     ///
     /// Requests express no robot time, calls have a finite timeout, no local
     /// backlog is exposed, and incomplete or ambiguous outcomes are typed
     /// [`crate::bus::QueryError`] values.
-    pub fn querier<E: QueryEndpointDescriptor>(
+    pub fn querier<E: QueryEndpoint>(
         &self,
         topic: Topic<AskQuery<E>>,
-    ) -> crate::Result<Querier<E::Request, E::Response>> {
+    ) -> crate::Result<Querier<E>> {
         Ok(Querier::new(
             self.bus.clone(),
             &topic,
@@ -358,12 +356,12 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     /// structured failure, and duplicate bindings are rejected at setup.
     pub fn query<E, H>(&mut self, topic: Topic<ServeQuery<E>>, handler: H) -> crate::Result<()>
     where
-        E: QueryEndpointDescriptor,
+        E: QueryEndpoint,
         H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,
                 QueryContext,
-                E::Request,
+                E,
                 &'a mut R::State,
             ) -> crate::bus::QueryResult<E::Response>
             + Send
@@ -379,9 +377,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
             anyhow::bail!("duplicate query binding for '{topic}'");
         }
         self.queries
-            .push(QueryRegistration::new::<E::Request, E::Response, H>(
-                topic, handler,
-            ));
+            .push(QueryRegistration::new::<E, E::Response, H>(topic, handler));
         Ok(())
     }
 }

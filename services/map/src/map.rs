@@ -18,8 +18,8 @@ use phoxal::prelude::*;
 const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct Api {
-    localize: StateView<api::endpoint::localize::StateEndpoint>,
-    revision: StatePublisher<api::endpoint::map::RevisionEndpoint>,
+    localize: StateView<api::localize::LocalizationState>,
+    revision: StatePublisher<api::map::Revision>,
 }
 
 pub(crate) struct MapState {
@@ -171,7 +171,7 @@ impl Participant for Map {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().map().submap(), Self::submap)?;
+        ctx.query(api::topics().map().submap().owner(), Self::submap)?;
         Ok((
             MapState {
                 grid: Grid::empty(64, 64, 0.05),
@@ -181,12 +181,12 @@ impl Participant for Map {
             },
             Api {
                 localize: ctx
-                    .state_view(api::topic::client().localize().state())
+                    .state_view(api::topics().localize().state().client())
                     .await?,
                 // Map OWNS the `map` node (its revision telemetry and the
                 // `map/submap` query it serves below) -> owner builder;
                 // `localize/state` is consumed via the client builder.
-                revision: ctx.state_publisher(api::topic::owner().map().revision())?,
+                revision: ctx.state_publisher(api::topics().map().revision().owner())?,
             },
         ))
     }

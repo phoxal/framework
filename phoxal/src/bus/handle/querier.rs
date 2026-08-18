@@ -8,7 +8,7 @@ use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::Sample;
 
 use crate::bus::abi::{Codec, MessagePack};
-use crate::bus::contract::{Payload, QueryEndpointDescriptor};
+use crate::bus::contract::{Payload, QueryEndpoint};
 use crate::bus::error::Result;
 use crate::bus::handle::decode_payload;
 use crate::bus::query::{QueryError, QueryFailure};
@@ -24,47 +24,44 @@ pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`DEFAULT_QUERY_TIMEOUT`], and timeout, unavailable service, server failure,
 /// protocol failure, and duplicate responders are returned as typed
 /// [`QueryError`] values.
-pub struct Querier<Req, Resp> {
+pub struct Querier<E: QueryEndpoint> {
     bus: BusHandle,
     key: String,
-    topic: &'static str,
+    topic: String,
     timeout: Duration,
-    _p: PhantomData<fn() -> (Req, Resp)>,
+    _endpoint: PhantomData<fn() -> E>,
 }
 
-// Manual, unbounded on `Req`/`Resp` - see `Outbox`'s `Clone` impl docs for
-// why (identical reasoning: `query` takes `&self`, so a clone is just a
-// second handle to the same query key).
-impl<Req, Resp> Clone for Querier<Req, Resp> {
+// Manual - see `Outbox`'s `Clone` impl docs for why (identical reasoning:
+// `query` takes `&self`, so a clone is just a second handle to the same query
+// key).
+impl<E: QueryEndpoint> Clone for Querier<E> {
     fn clone(&self) -> Self {
         Querier {
             bus: self.bus.clone(),
             key: self.key.clone(),
-            topic: self.topic,
+            topic: self.topic.clone(),
             timeout: self.timeout,
-            _p: PhantomData,
+            _endpoint: PhantomData,
         }
     }
 }
 
-impl<Req: Payload, Resp: Payload> Querier<Req, Resp> {
+impl<E: QueryEndpoint> Querier<E> {
     /// Build a querier over a query topic.
     ///
     /// The author-facing path is `ctx.querier(...)` in `Participant::setup`.
-    /// `pub` only because the generated api tree and the runner live in other
-    /// crates; see [`crate::bus::handle::stamp`]'s module docs.
+    /// `pub` only because the runner and the host SDKs build one directly; see
+    /// [`crate::bus::handle::stamp`]'s module docs.
     #[doc(hidden)]
-    pub fn new<E>(bus: BusHandle, topic: &Topic<AskQuery<E>>, timeout: Duration) -> Result<Self>
-    where
-        E: QueryEndpointDescriptor<Request = Req, Response = Resp>,
-    {
+    pub fn new(bus: BusHandle, topic: &Topic<AskQuery<E>>, timeout: Duration) -> Result<Self> {
         let key = bus.full_key(topic.publish_key()?);
         Ok(Querier {
             bus,
             key,
-            topic: E::TOPIC,
+            topic: topic.key().to_owned(),
             timeout,
-            _p: PhantomData,
+            _endpoint: PhantomData,
         })
     }
 
@@ -73,7 +70,7 @@ impl<Req: Payload, Resp: Payload> Querier<Req, Resp> {
     /// The request body is MessagePack-encoded with mirroring provenance; a
     /// request expresses no robot time, so `produced_at` is `None`. The wait is
     /// bounded by this querier's timeout.
-    pub async fn query(&self, request: Req) -> std::result::Result<Resp, QueryError> {
+    pub async fn query(&self, request: E) -> std::result::Result<E::Response, QueryError> {
         let payload =
             MessagePack::encode(&request).map_err(|e| QueryError::Protocol(e.to_string()))?;
         let metadata = self
@@ -113,14 +110,17 @@ impl<Req: Payload, Resp: Payload> Querier<Req, Resp> {
         // error). The Phoxal-pinned finite timeout bounds the wait: deadline with
         // no reply → `Timeout`; the stream closing with no reply → `Unavailable`.
         let deadline = tokio::time::Instant::now() + self.timeout;
-        let mut outcome: Option<std::result::Result<Resp, QueryError>> = None;
+        let mut outcome: Option<std::result::Result<E::Response, QueryError>> = None;
         loop {
             match tokio::time::timeout_at(deadline, replies.recv_async()).await {
                 Ok(Ok(reply)) => {
                     if outcome.is_some() {
                         return Err(QueryError::TooManyResponders);
                     }
-                    outcome = Some(decode_reply_result::<Resp>(reply.into_result(), self.topic));
+                    outcome = Some(decode_reply_result::<E::Response>(
+                        reply.into_result(),
+                        &self.topic,
+                    ));
                 }
                 Ok(Err(_)) => break, // reply stream closed
                 Err(_elapsed) => {
@@ -161,13 +161,13 @@ mod tests {
 
     use crate::bus::query::QueryCode;
     use crate::bus::session::BusOwner;
-    use crate::bus::test_support::{GetEndpoint, GetRequest, GetResponse, participant_config};
+    use crate::bus::test_support::{GET_TOPIC, GetRequest, GetResponse, bound, participant_config};
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_query_round_trip_ok_then_error() {
         let (owner, bus) = BusOwner::open(participant_config("q")).await.unwrap();
-        let server = bus.declare_server("yTEST/asset/get").await.unwrap();
+        let server = bus.declare_server(GET_TOPIC).await.unwrap();
         let server_bus = bus.clone();
 
         let server_task = tokio::spawn(async move {
@@ -193,10 +193,9 @@ mod tests {
             }
         });
 
-        let topic = Topic::<AskQuery<GetEndpoint>>::new_static("yTEST/asset/get");
+        let topic = bound::<GetRequest>(GET_TOPIC).client();
         let querier =
-            Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
-                .unwrap();
+            Querier::<GetRequest>::new(bus.clone(), &topic, Duration::from_secs(5)).unwrap();
 
         let ok = querier
             .query(GetRequest {
@@ -227,17 +226,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_query_timeout_maps_to_deadline_exceeded() {
         let (owner, bus) = BusOwner::open(participant_config("timeout")).await.unwrap();
-        let server = bus.declare_server("yTEST/asset/get").await.unwrap();
+        let server = bus.declare_server(GET_TOPIC).await.unwrap();
 
         let server_task = tokio::spawn(async move {
             let _incoming = server.recv().await.unwrap();
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
 
-        let topic = Topic::<AskQuery<GetEndpoint>>::new_static("yTEST/asset/get");
+        let topic = bound::<GetRequest>(GET_TOPIC).client();
         let querier =
-            Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_millis(20))
-                .unwrap();
+            Querier::<GetRequest>::new(bus.clone(), &topic, Duration::from_millis(20)).unwrap();
 
         let error = querier
             .query(GetRequest {
@@ -260,7 +258,7 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("query-close-race"))
             .await
             .unwrap();
-        let server = bus.declare_server("yTEST/asset/get").await.unwrap();
+        let server = bus.declare_server(GET_TOPIC).await.unwrap();
         let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
         let server_task = tokio::spawn(async move {
             let _incoming = server.recv().await.unwrap();
@@ -268,10 +266,9 @@ mod tests {
             std::future::pending::<()>().await;
         });
 
-        let topic = Topic::<AskQuery<GetEndpoint>>::new_static("yTEST/asset/get");
+        let topic = bound::<GetRequest>(GET_TOPIC).client();
         let querier =
-            Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
-                .unwrap();
+            Querier::<GetRequest>::new(bus.clone(), &topic, Duration::from_secs(5)).unwrap();
         let query_task = tokio::spawn(async move {
             querier
                 .query(GetRequest {

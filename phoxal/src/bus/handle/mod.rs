@@ -24,18 +24,18 @@
 //! is bounded by its contract's temporal-role marker, so reaching for the wrong
 //! one is a compile error:
 //!
-//! - [`StatePublisher<B>`](publisher::StatePublisher) publishes at a step, and
+//! - [`StatePublisher<E>`](publisher::StatePublisher) publishes at a step, and
 //!   the step instant comes from a [`StepToken`](stamp::StepToken) the runner
 //!   mints for every scheduled participant, or a
 //!   [`WorldStepToken`](stamp::WorldStepToken) a
 //!   [`TimelineAuthority`](stamp::TimelineAuthority) mints for the world
 //!   authority alone.
-//! - [`SamplePublisher<B>`](publisher::SamplePublisher) publishes with
+//! - [`SamplePublisher<E>`](publisher::SamplePublisher) publishes with
 //!   a [`CaptureStamp`](crate::bus::time::CaptureStamp) the driver derived from its
 //!   device clock, and honestly represents an untranslated capture rather than
 //!   inventing one.
-//! - [`SetpointPublisher<B>`](publisher::SetpointPublisher) and
-//!   [`StreamPublisher<B>`](publisher::StreamPublisher) express no robot time
+//! - [`SetpointPublisher<E>`](publisher::SetpointPublisher) and
+//!   [`StreamPublisher<E>`](publisher::StreamPublisher) express no robot time
 //!   at all.
 //!
 //! # Receiving is bus-stamped
@@ -61,13 +61,13 @@
 //! - A body or ordered lane that cannot fit returns [`BusError::Saturated`]
 //!   (stream publishers translate that to `WouldBlock`) without stalling the
 //!   step loop.
-//! - **Receivers bind their backlog by contract.** `StateView<B>` keeps only
+//! - **Receivers bind their backlog by contract.** `StateView<E>` keeps only
 //!   the last sample, setpoints retain one actionable value, samples use a
 //!   bounded drop-oldest ring with loss evidence, and streams refuse to evict
 //!   an older chunk when their ring is saturated.
 //!
-//! Contract identity lives entirely in the Zenoh key - it is
-//! `<Endpoint as EndpointDescriptor>::TOPIC` - so a receiver's per-key subscription
+//! Contract identity lives entirely in the Zenoh key - the concrete key the
+//! api tree rendered for the endpoint - so a receiver's per-key subscription
 //! is the fast-reject, and the decode path only still validates the codec. A
 //! decode failure is counted (`decode_errors`) + logged as a health signal,
 //! never a silent accept. Timeline-aware handles separately count purged or
@@ -82,7 +82,7 @@ pub mod subscriber;
 use zenoh::sample::Sample;
 
 use crate::bus::abi::{Codec, CodecId, EncodingError, EncodingMetadata, MessagePack};
-use crate::bus::contract::{EndpointDescriptor, Payload};
+use crate::bus::contract::{Endpoint, Payload};
 use crate::bus::error::{BusError, MetadataProblem, Result};
 use crate::bus::metadata::BusMetadata;
 
@@ -92,11 +92,8 @@ use crate::bus::metadata::BusMetadata;
 /// Contract identity is not checked here: it is guaranteed by the Zenoh key
 /// itself, and this function is only ever invoked for samples received on a
 /// subscription already scoped to `E`'s family-rooted topic.
-pub(crate) fn decode_sample<E: EndpointDescriptor>(
-    sample: &Sample,
-    topic: &str,
-) -> Result<(E::Payload, BusMetadata)> {
-    decode_payload::<E::Payload>(sample, topic)
+pub(crate) fn decode_sample<E: Endpoint>(sample: &Sample, topic: &str) -> Result<(E, BusMetadata)> {
+    decode_payload::<E>(sample, topic)
 }
 
 pub(crate) fn decode_payload<B: Payload>(sample: &Sample, topic: &str) -> Result<(B, BusMetadata)> {
@@ -142,15 +139,13 @@ mod tests {
     use super::*;
     use crate::bus::abi::CodecError;
     use crate::bus::test_support::{
-        Target, TargetEndpoint, sample, sample_with, sample_with_encoding,
+        TARGET_TOPIC as TOPIC, Target, sample, sample_with, sample_with_encoding,
     };
-
-    const TOPIC: &str = "yTEST/drive/target";
 
     #[test]
     fn decode_accepts_a_matching_sample() {
         let sample = sample(CodecId::MessagePack.as_u8());
-        let (body, metadata) = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap();
+        let (body, metadata) = decode_sample::<Target>(&sample, TOPIC).unwrap();
         assert_eq!(body.linear_x_mps, 1.0);
         assert_eq!(metadata.codec, CodecId::MessagePack.as_u8());
     }
@@ -171,7 +166,7 @@ mod tests {
             payload,
         );
 
-        let error = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap_err();
+        let error = decode_sample::<Target>(&sample, TOPIC).unwrap_err();
         assert!(matches!(
             error,
             BusError::UnsupportedCodec { codec: 99, .. }
@@ -180,7 +175,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_unsupported_codec() {
-        let error = decode_sample::<TargetEndpoint>(&sample(99), TOPIC).unwrap_err();
+        let error = decode_sample::<Target>(&sample(99), TOPIC).unwrap_err();
         assert!(matches!(
             error,
             BusError::UnsupportedCodec { codec: 99, .. }
@@ -190,7 +185,7 @@ mod tests {
     #[test]
     fn decode_rejects_corrupt_payload() {
         let sample = sample_with(CodecId::MessagePack.as_u8(), vec![0xc1, 0xc1, 0xc1]);
-        let error = decode_sample::<TargetEndpoint>(&sample, TOPIC).unwrap_err();
+        let error = decode_sample::<Target>(&sample, TOPIC).unwrap_err();
         assert!(matches!(error, BusError::Codec(CodecError::Decode(_))));
     }
 }

@@ -1,11 +1,12 @@
-//! The generated contract surface: every declared endpoint, with the wire
-//! shape of every body it carries.
+//! The crate's one contract surface: every endpoint the api tree declares, plus
+//! the bus, bundle, participant-metadata and launch records the other owners
+//! state beside their own definitions.
 
 use phoxal::__compat::wire::DescribeWire;
 use serde_json::Value;
 
 fn surface() -> Value {
-    serde_json::from_str(&crate::__compat::contract_surface()).expect("the surface is JSON")
+    serde_json::from_str(&phoxal::__compat::contract_surface()).expect("the surface is JSON")
 }
 
 fn records() -> Vec<Value> {
@@ -15,82 +16,105 @@ fn records() -> Vec<Value> {
         .clone()
 }
 
+fn by_path() -> std::collections::BTreeMap<String, Value> {
+    records()
+        .into_iter()
+        .filter(|record| record["record"] == "endpoint")
+        .map(|record| {
+            (
+                record["path"]
+                    .as_str()
+                    .expect("an endpoint record names its key")
+                    .to_owned(),
+                record,
+            )
+        })
+        .collect()
+}
+
 /// The surface is one JSON document and two calls produce the same bytes,
 /// which is what lets a checker compare it with a stored baseline by string
 /// equality.
 #[test]
 fn the_surface_is_deterministic_json() {
-    let rendered = crate::__compat::contract_surface();
+    let rendered = phoxal::__compat::contract_surface();
     serde_json::from_str::<Value>(&rendered).expect("the surface is JSON");
-    assert_eq!(crate::__compat::contract_surface(), rendered);
+    assert_eq!(phoxal::__compat::contract_surface(), rendered);
     assert!(
         !rendered.contains(' '),
         "the rendering carries no whitespace"
     );
 }
 
-/// The surface and the const catalogue describe the same endpoint set: every
-/// declared endpoint appears exactly once, under its own wire key.
+/// One aggregate, every owner in it. A profile or a module reorganization that
+/// dropped an owner would leave the checker comparing a smaller surface against
+/// the published one without saying so.
 #[test]
-fn every_declared_endpoint_appears_exactly_once() {
-    let declared = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .flat_map(|family| family.contracts.iter().map(|contract| contract.topic))
-        .collect::<std::collections::BTreeSet<_>>();
-    let manifest_count = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .map(|family| family.contracts.len())
-        .sum::<usize>();
-    assert_eq!(
-        declared.len(),
-        manifest_count,
-        "two endpoints share one wire key, so a surface keyed by it would lose one"
-    );
-
-    let recorded = records()
+fn the_aggregate_holds_every_owner_of_a_process_boundary() {
+    let kinds = records()
         .iter()
         .map(|record| {
-            assert_eq!(record["record"], "endpoint", "{record}");
-            record["path"]
+            record["record"]
                 .as_str()
-                .expect("an endpoint record names its key")
-                .to_string()
+                .expect("a record names its kind")
+                .to_owned()
         })
-        .collect::<Vec<_>>();
-    let unique = recorded
-        .iter()
-        .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(recorded.len(), unique.len(), "an endpoint appears twice");
     assert_eq!(
-        unique,
-        declared
-            .iter()
-            .map(|topic| (*topic).to_string())
+        kinds,
+        ["document", "endpoint", "envelope", "identifier", "launch"]
+            .into_iter()
+            .map(str::to_owned)
             .collect::<std::collections::BTreeSet<_>>()
     );
 
-    let mut sorted = recorded.clone();
-    sorted.sort();
-    assert_eq!(recorded, sorted, "records are not in canonical order");
+    let names = records()
+        .iter()
+        .filter_map(|record| record["name"].as_str().map(str::to_owned))
+        .collect::<std::collections::BTreeSet<_>>();
+    for expected in [
+        // The bundle's manifest document and the metadata document every
+        // participant binary embeds.
+        "ManifestDocument",
+        "ParticipantMetadata",
+        // The bus envelopes and the frozen key grammar.
+        "BusMetadata",
+        "QueryFailure",
+        "bus-key-composition",
+        "encoding",
+    ] {
+        assert!(names.contains(expected), "{expected} is missing: {names:?}");
+    }
+}
+
+/// Every record renders once, in canonical order, so a diff against a baseline
+/// names the record that moved rather than the whole document.
+#[test]
+fn records_render_once_each_in_canonical_order() {
+    let paths = by_path();
+    let recorded = records()
+        .iter()
+        .filter(|record| record["record"] == "endpoint")
+        .count();
+    assert_eq!(recorded, paths.len(), "an endpoint appears twice");
+
+    let rendered = phoxal::__compat::contract_surface();
+    let mut previous = 0;
+    for path in paths.keys() {
+        let needle = format!("\"path\":\"{path}\"");
+        let at = rendered
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{path} is missing from the rendering"));
+        assert!(at > previous, "{path} is out of canonical order");
+        previous = at;
+    }
 }
 
 /// Specific known records are present, so an accidentally empty or truncated
 /// surface cannot pass this suite.
 #[test]
 fn the_surface_holds_the_records_a_reader_looks_for_first() {
-    let by_path = records()
-        .into_iter()
-        .map(|record| {
-            (
-                record["path"]
-                    .as_str()
-                    .expect("an endpoint record names its key")
-                    .to_string(),
-                record,
-            )
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let by_path = by_path();
 
     // The frozen bootstrap two binaries exchange before they know whether
     // their trains agree.
@@ -125,15 +149,7 @@ fn the_surface_holds_the_records_a_reader_looks_for_first() {
 /// in.
 #[test]
 fn an_endpoint_record_carries_the_payload_types_own_schema() {
-    let by_path = records()
-        .into_iter()
-        .map(|record| {
-            (
-                record["path"].as_str().unwrap_or_default().to_string(),
-                record,
-            )
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let by_path = by_path();
 
     let declared: Value = serde_json::from_str(
         &<crate::robot::drive::Target as DescribeWire>::wire_schema().canonical_json(),

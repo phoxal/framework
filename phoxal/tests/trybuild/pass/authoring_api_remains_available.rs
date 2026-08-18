@@ -1,5 +1,5 @@
 use phoxal::api;
 
 fn main() {
-    let _ = api::topic::client();
+    let _ = api::topics().drive().state().client();
 }

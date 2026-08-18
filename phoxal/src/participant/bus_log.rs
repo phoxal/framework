@@ -397,8 +397,8 @@ async fn drain_loop(
     bus: BusHandle,
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
-    let topic = runtime::topic::owner().logs().topic();
-    let publisher = StreamPublisher::<runtime::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
+    let topic = runtime::topics().logs().owner();
+    let publisher = StreamPublisher::<runtime::logs::Event>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let dropped = state.take_dropped();

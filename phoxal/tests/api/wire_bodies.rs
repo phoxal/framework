@@ -534,7 +534,7 @@ fn domain_bodies_round_trip_through_messagepack() {
         }],
         expires_at: instant(310),
     });
-    round_trip(&api::navigation::Path {
+    round_trip(&api::navigation::PlannedPath {
         poses: vec![api::navigation::Pose {
             x_m: 1.0,
             y_m: 2.0,

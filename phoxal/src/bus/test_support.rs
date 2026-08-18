@@ -1,15 +1,19 @@
 //! Shared test fixtures. No tests live here - every test lives with the module
 //! whose behavior it exercises.
 //!
-//! What this module owns is a stand-in endpoint surface: a hand-written
-//! [`ApiFamily`] plus plain payloads and endpoint descriptors. The bus is the
-//! ABI floor and must be testable without a concrete generated API.
-//! Several modules (`abi`, `handle`, `session`, `server`, `router`) need the
-//! same stand-in endpoints to exercise a real end-to-end path, so they are
-//! declared once rather than five times.
+//! What this module owns is a stand-in endpoint surface: plain payloads bound
+//! to the crate-private [`TestFamily`] with the same sealed endpoint typing the
+//! api tree emits. The bus is the ABI floor and must be testable without a
+//! concrete api tree above it. Several modules (`abi`, `handle`, `session`,
+//! `server`, `router`) need the same stand-in endpoints to exercise a real
+//! end-to-end path, so they are declared once rather than five times.
 //!
-//! The golden tests that bind the bus to the real generated tree are the
-//! crate's own integration tests.
+//! These hand-written endpoint bindings are the one exception to the rule that
+//! only [`crate::endpoints!`] writes them, and they are why the workspace
+//! policy gate exempts test sources from it.
+//!
+//! The golden tests that bind the bus to the real api tree are the crate's own
+//! integration tests.
 
 use crate::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 use serde::{Deserialize, Serialize};
@@ -17,92 +21,80 @@ use zenoh::key_expr::KeyExpr;
 use zenoh::sample::{Sample, SampleBuilder};
 
 use crate::bus::abi::CodecId;
-use crate::bus::contract::{
-    ApiFamily, EndpointDescriptor, EndpointKind, QueryEndpointDescriptor, SetpointContract,
-    StateContract,
-};
+use crate::bus::contract::{Endpoint, TestFamily};
 use crate::bus::handle::stamp::StepToken;
 use crate::bus::metadata::{BusMetadata, ParticipantSourceIdentity, SourceAttribution};
 use crate::bus::session::BusConfig;
 use crate::bus::time::{RobotInstant, TimeWindow};
+use crate::bus::tree::BoundEndpoint;
 
-/// The stand-in API identity used by test endpoint descriptors.
-pub(crate) enum TestApi {}
-
-impl ApiFamily for TestApi {
-    const ID: &'static str = "yTEST";
+/// Bind a literal key to a stand-in endpoint, the way a path walk would.
+///
+/// The api tree is the only other caller of this constructor; a bus unit test
+/// has no tree to walk, so it states the key it means.
+pub(crate) fn bound<E: Endpoint>(key: &str) -> BoundEndpoint<E> {
+    BoundEndpoint::new(key.to_owned())
 }
+
+/// The stand-in state key.
+pub(crate) const TARGET_TOPIC: &str = "yTEST/drive/target";
+
+/// The stand-in setpoint key.
+pub(crate) const MANUAL_TOPIC: &str = "yTEST/motion/manual";
+
+/// The stand-in query key.
+pub(crate) const GET_TOPIC: &str = "yTEST/asset/get";
 
 /// A state body: it is published at a logical step, so it carries robot time
 /// and is subject to timeline barriers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Target {
     pub(crate) linear_x_mps: f32,
     pub(crate) angular_z_radps: f32,
 }
 
-pub(crate) struct TargetEndpoint;
+impl crate::bus::contract::sealed::Endpoint for Target {}
 
-impl EndpointDescriptor for TargetEndpoint {
-    type Api = TestApi;
-    type Payload = Target;
-    const NAME: &'static str = "yTEST::drive::Target";
-    const FAMILY: &'static str = "yTEST";
-    const CONTRACT: &'static str = "drive::Target";
-    const TOPIC: &'static str = "yTEST/drive/target";
-    const KIND: EndpointKind = EndpointKind::State;
+impl Endpoint for Target {
+    type Family = TestFamily;
+    type Semantics = crate::bus::State;
 }
-
-impl StateContract for TargetEndpoint {}
 
 /// A command body, standing in for a leased control input: it expresses no
 /// robot time, so it is never quarantined at a timeline barrier.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Manual {
     pub(crate) linear_x_mps: f32,
 }
 
-pub(crate) struct ManualEndpoint;
+impl crate::bus::contract::sealed::Endpoint for Manual {}
 
-impl EndpointDescriptor for ManualEndpoint {
-    type Api = TestApi;
-    type Payload = Manual;
-    const NAME: &'static str = "yTEST::motion::Manual";
-    const FAMILY: &'static str = "yTEST";
-    const CONTRACT: &'static str = "motion::Manual";
-    const TOPIC: &'static str = "yTEST/motion/manual";
-    const KIND: EndpointKind = EndpointKind::Setpoint;
+impl Endpoint for Manual {
+    type Family = TestFamily;
+    type Semantics = crate::bus::Setpoint;
 }
 
-impl SetpointContract for ManualEndpoint {}
-
 /// The request half of a stand-in query contract.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GetRequest {
     pub(crate) path: String,
 }
 
-pub(crate) struct GetEndpoint;
-
-impl EndpointDescriptor for GetEndpoint {
-    type Api = TestApi;
-    type Payload = GetRequest;
-    const NAME: &'static str = "yTEST::asset::GetRequest";
-    const FAMILY: &'static str = "yTEST";
-    const CONTRACT: &'static str = "asset::GetRequest";
-    const TOPIC: &'static str = "yTEST/asset/get";
-    const KIND: EndpointKind = EndpointKind::Query;
-}
-
 /// The response half of a stand-in query contract.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) enum GetResponse {
     Found { bytes: Vec<u8> },
     Missing,
 }
 
-impl QueryEndpointDescriptor for GetEndpoint {
-    type Request = GetRequest;
+impl crate::bus::contract::sealed::Endpoint for GetRequest {}
+
+impl Endpoint for GetRequest {
+    type Family = TestFamily;
+    type Semantics = crate::bus::Query;
+}
+
+impl crate::bus::contract::QueryEndpoint for GetRequest {
     type Response = GetResponse;
 }
 

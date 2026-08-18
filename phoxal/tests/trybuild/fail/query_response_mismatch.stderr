@@ -1,10 +1,8 @@
 error[E0271]: expected `get` to return `Result<GetResponse, QueryFailure>`, but it returns `Result<SubmapResponse, QueryFailure>`
-  --> tests/trybuild/fail/query_response_mismatch.rs:16:62
+  --> tests/trybuild/fail/query_response_mismatch.rs:16:64
    |
-16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get)
-   |             -----                                            ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
-   |             |
-   |             required by a bound introduced by this call
+16 |         ctx.query(supervisor::topics().bundle().get().owner(), Self::get)
+   |             ----- required by a bound introduced by this call  ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
    |
    = note: expected enum `std::result::Result<GetResponse, QueryFailure>`
               found enum `std::result::Result<SubmapResponse, QueryFailure>`

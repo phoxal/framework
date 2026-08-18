@@ -14,10 +14,10 @@
 //! Three ideas hold it together:
 //!
 //! - **A typed contract bus.** Every message is a plain serde body bound to one
-//!   family-rooted contract name. Handles are endpoint-typed
-//!   ([`StatePublisher<T>`](bus::StatePublisher),
-//!   [`StateView<T>`](bus::StateView), [`SampleReceiver<T>`](bus::SampleReceiver),
-//!   [`Querier<Req, Resp>`](bus::Querier)), so the compiler - not a late check -
+//!   family-rooted contract name, and that body *is* the endpoint. Handles are
+//!   endpoint-typed ([`StatePublisher<E>`](bus::StatePublisher),
+//!   [`StateView<E>`](bus::StateView), [`SampleReceiver<E>`](bus::SampleReceiver),
+//!   [`Querier<E>`](bus::Querier)), so the compiler - not a late check -
 //!   rejects sending the wrong type on a topic. Publishing is additionally
 //!   gated by the contract's *temporal* role: the robot time a publisher can
 //!   express is fixed by what the contract is, so a participant cannot stamp an
@@ -44,8 +44,8 @@
 //! use phoxal::prelude::*;
 //!
 //! struct Api {
-//!     state:  StateView<api::endpoint::drive::StateEndpoint>, // keep-last drive state
-//!     target: SetpointPublisher<api::endpoint::drive::TargetEndpoint>, // commanded drive target
+//!     state:  StateView<api::drive::State>,       // keep-last drive state
+//!     target: SetpointPublisher<api::drive::Target>, // commanded drive target
 //! }
 //!
 //! #[phoxal::service(id = "avoid-obstacles", api = Api)]
@@ -58,8 +58,8 @@
 //!         _config: Self::Config,
 //!     ) -> Result<(Self::State, Self::Api)> {
 //!         Ok(((), Api {
-//!             state:  ctx.state_view(api::topic::client().drive().state()).await?,
-//!             target: ctx.setpoint_publisher(api::topic::client().drive().target())?,
+//!             state:  ctx.state_view(api::topics().drive().state().client()).await?,
+//!             target: ctx.setpoint_publisher(api::topics().drive().target().client())?,
 //!         }))
 //!     }
 //!
@@ -81,8 +81,9 @@
 //! What each piece does:
 //!
 //! - `use phoxal::api;` brings the `robot` contract family into scope;
-//!   `Api` struct fields name its bodies (`api::drive::Target`) directly, with
-//!   no participant-local contract attribute to keep in sync.
+//!   `Api` struct fields name its bodies (`api::drive::Target`) directly - the
+//!   body is the endpoint, so there is no second descriptor identity and no
+//!   participant-local contract attribute to keep in sync.
 //! - The role attribute records identity and sets associated types. Omitted
 //!   `Config`, `State`, and `Api` default to `()`.
 //! - Handles are ordinary fields built in `Participant::setup` from typed topic
@@ -113,12 +114,12 @@
 //!
 //! ## Where to look next
 //!
-//! - [`api`] - the `robot` contract family: family-local wire bodies, the
-//!   [`ApiFamily`](bus::ApiFamily) / endpoint descriptor traits and family-local
-//!   topic builders, all generated from one `protocol_tree!` catalogue.
-//!   A participant imports it directly with `use phoxal::api as api;`.
-//!   The runner also uses the sibling [`runtime::api`] family for
-//!   framework-owned out-of-band infrastructure contracts such as bus logs.
+//! - [`api`] - the `robot` contract family: the wire bodies and the dynamic
+//!   topic tree they are declared in, module by module. A participant imports
+//!   it directly with `use phoxal::api as api;` and walks it from
+//!   [`api::topics()`](api::topics). The runner also uses the sibling
+//!   [`runtime::api`] family for framework-owned out-of-band infrastructure
+//!   contracts such as bus logs.
 //! - [`prelude`] - everything a participant author imports with
 //!   `use phoxal::prelude::*;`: the handle types, [`SetupContext`],
 //!   [`StepContext`], and [`Result`].
@@ -138,11 +139,9 @@
 //!   participants authored on exactly this surface, useful as reference reading.
 
 // Generated macro output refers to the framework as `::phoxal::…`; make that
-// path resolve to this crate so the role/config macros, the `DescribeWire`
-// derive and the protocol tree expand the same way inside the framework as they
-// do in a downstream service crate. Unconditional, because `protocol_tree!` now
-// expands *here* and names `::phoxal::bus::…` and `::phoxal::__compat::…` in
-// every build, not only in the in-crate test units.
+// path resolve to this crate so the role/config macros and the `DescribeWire`
+// derive expand the same way inside the framework as they do in a downstream
+// service crate.
 extern crate self as phoxal;
 
 pub mod geometry;
@@ -155,13 +154,6 @@ mod sample_schedule;
 /// the runner's own machinery, reached through the crate-root facade, the
 /// [`prelude`], and [`__private`].
 pub mod participant;
-
-/// The framework-owned wire-contract catalogue.
-///
-/// Private on purpose: a contract family is reached through the semantic module
-/// that owns it - [`api`] for `robot`, [`runtime::api`], [`supervisor::api`] -
-/// so a payload type has exactly one supported path.
-mod protocol;
 
 /// The typed contract and handle vocabulary, and the transport under it.
 pub mod bus;
@@ -221,9 +213,12 @@ pub mod testing;
 /// This is the robot family and only the robot family. The `runtime` and
 /// `supervisor` families are host-tooling surfaces, reached through
 /// [`runtime::api`] and [`supervisor::api`].
-pub mod api {
-    pub use crate::protocol::robot::*;
-}
+pub mod api;
+
+/// The two declarations the api tree is built from, at the crate root so a
+/// family module reads `crate::nodes!` / `crate::endpoints!` whatever its
+/// depth. Crate-private: the api tree is framework-owned and closed.
+pub(crate) use crate::bus::tree::{endpoints, nodes};
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
 /// `Result<T>` via the [`prelude`].
@@ -276,10 +271,8 @@ pub mod prelude {
     pub use crate::bus::{
         CaptureStamp, EventPublisher, EventReceiver, ExclusiveProducerLease, FixedSourceAdmission,
         FixedSourceLease, LeaseDecision, LocalInstant, Observed, Querier, QueryError, QueryResult,
-        RobotInstant, SampleDeliveryContract, SamplePublisher, SampleReceiver,
-        SetpointDeliveryContract, SetpointPublisher, SetpointReceiver, StateDeliveryContract,
-        StatePublisher, StateView, StreamDeliveryContract, StreamReceiver, TimeWindow, Timed,
-        TimelineId,
+        RobotInstant, SamplePublisher, SampleReceiver, SetpointPublisher, SetpointReceiver,
+        StatePublisher, StateView, StreamReceiver, TimeWindow, Timed, TimelineId,
     };
     pub use crate::{
         AssetId, ManagedTaskPolicy, Participant, ParticipantAssetResolver, QueryContext,

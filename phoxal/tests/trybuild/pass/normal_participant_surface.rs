@@ -12,7 +12,7 @@ impl Participant for MyService {
         _ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let _ = api::topic::client();
+        let _ = api::topics().drive().state().client();
         Ok(((), Api))
     }
 }

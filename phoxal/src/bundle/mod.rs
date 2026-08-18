@@ -78,15 +78,21 @@ pub mod __compat {
     use crate::__compat::wire::DescribeWire;
     use crate::model::manifest::{MANIFEST_SCHEMA, ManifestDocument};
 
-    /// The canonical rendering of this crate's contract surface.
+    /// The canonical rendering of this module's own contract surface.
     #[must_use]
     pub fn contract_surface() -> String {
-        ContractSurface::new([ContractRecord::document(
+        let mut records = Vec::new();
+        contract_records(&mut records);
+        ContractSurface::new(records).canonical_json()
+    }
+
+    /// This module's records, for the crate aggregate.
+    pub(crate) fn contract_records(out: &mut Vec<ContractRecord>) {
+        out.push(ContractRecord::document(
             "ManifestDocument",
             MANIFEST_SCHEMA,
             ManifestDocument::wire_schema(),
-        )])
-        .canonical_json()
+        ));
     }
 
     #[cfg(test)]

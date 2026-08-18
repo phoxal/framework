@@ -26,10 +26,9 @@ const REMEDY: &str = "hand-implement \
 
 /// The path every generated impl reaches the model through.
 ///
-/// The model lives on the process-contract floor, below every crate that owns
+/// The model lives on the process-contract floor, below every module that owns
 /// a wire contract, so the derive names it directly rather than routing through
-/// the engine facade the authoring macros use: the protocol tree sits *below*
-/// `phoxal` and could not resolve `::phoxal`.
+/// a facade re-export that could move.
 fn model_path() -> TokenStream {
     quote!(::phoxal::__compat::wire)
 }

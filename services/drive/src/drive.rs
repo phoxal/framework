@@ -101,13 +101,12 @@ impl MotorBinding {
     /// this is the `Publish` side from the public builder.
     fn topic(
         &self,
-    ) -> Result<
-        phoxal::bus::Topic<phoxal::bus::Publish<api::endpoint::component::motor::CommandEndpoint>>,
-    > {
-        Ok(api::topic::client()
+    ) -> Result<phoxal::bus::Topic<phoxal::bus::Publish<api::component::motor::Command>>> {
+        Ok(api::topics()
             .component(&self.reference.component_id)?
             .motor(&self.reference.capability_id)?
-            .command())
+            .command()
+            .client())
     }
 
     /// `wheel_radps` as this motor's own command, turned the way the robot
@@ -135,13 +134,13 @@ trait MotorCommandSink {
     fn send(&self, command: api::component::motor::Command) -> Result<()>;
 }
 
-impl MotorCommandSink for SetpointPublisher<api::endpoint::component::motor::CommandEndpoint> {
+impl MotorCommandSink for SetpointPublisher<api::component::motor::Command> {
     fn send(&self, command: api::component::motor::Command) -> Result<()> {
         Ok(SetpointPublisher::send(self, command)?)
     }
 }
 
-struct BoundMotor<P = SetpointPublisher<api::endpoint::component::motor::CommandEndpoint>> {
+struct BoundMotor<P = SetpointPublisher<api::component::motor::Command>> {
     binding: MotorBinding,
     publisher: P,
 }
@@ -358,9 +357,9 @@ impl DriveConfig {
 }
 
 pub(crate) struct Api {
-    target: SetpointReceiver<api::endpoint::drive::TargetEndpoint>,
+    target: SetpointReceiver<api::drive::Target>,
     ready: phoxal::bus::ParticipantReadyEvents,
-    state: StatePublisher<api::endpoint::drive::StateEndpoint>,
+    state: StatePublisher<api::drive::State>,
     left_motors: Vec<BoundMotor>,
     right_motors: Vec<BoundMotor>,
 }
@@ -441,9 +440,9 @@ impl Participant for Drive {
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner builder.
         let target = ctx
-            .setpoint_receiver(api::topic::owner().drive().target())
+            .setpoint_receiver(api::topics().drive().target().owner())
             .await?;
-        let state = ctx.state_publisher(api::topic::owner().drive().state())?;
+        let state = ctx.state_publisher(api::topics().drive().state().owner())?;
 
         let mut left_motors = Vec::with_capacity(config.left.len());
         for binding in config.left {

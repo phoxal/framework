@@ -20,7 +20,7 @@ pub(crate) fn straight_line(
     goal: &api::navigation::Pose,
     map_revision: Option<u64>,
     max_extent_m: f64,
-) -> Option<api::navigation::Path> {
+) -> Option<api::navigation::PlannedPath> {
     if !start.is_usable()
         || !valid_pose(goal)
         || !valid_xy(start.x_m, start.y_m, max_extent_m)
@@ -56,13 +56,13 @@ pub(crate) fn straight_line(
         })
         .collect();
 
-    Some(api::navigation::Path {
+    Some(api::navigation::PlannedPath {
         poses,
         map_revision,
     })
 }
 
-pub(crate) fn valid_path(path: &api::navigation::Path, max_extent_m: f64) -> bool {
+pub(crate) fn valid_path(path: &api::navigation::PlannedPath, max_extent_m: f64) -> bool {
     if path.poses.is_empty() || path.poses.len() > MAX_PATH_POSES {
         return false;
     }
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn follow_path_is_bounded_by_pose_count_and_extent() {
         let extent = planning_extent(0.05).unwrap();
-        let oversized = api::navigation::Path {
+        let oversized = api::navigation::PlannedPath {
             poses: vec![
                 api::navigation::Pose {
                     x_m: 0.0,
@@ -149,7 +149,7 @@ mod tests {
         };
         assert!(!valid_path(&oversized, extent));
 
-        let too_long = api::navigation::Path {
+        let too_long = api::navigation::PlannedPath {
             poses: vec![
                 api::navigation::Pose {
                     x_m: 0.0,

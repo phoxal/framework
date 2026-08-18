@@ -1,5 +1,0 @@
-error: `Query` requires `Query<Request, Response>`
- --> tests/trybuild/fail/protocol_query_wrong_arity.rs:5:12
-  |
-5 |     topic: Query<Request>;
-  |            ^^^^^

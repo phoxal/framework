@@ -14,9 +14,9 @@ impl Participant for TypedQueries {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().bundle().get(), Self::get)
+        ctx.query(supervisor::topics().bundle().get().owner(), Self::get)
             ?;
-        ctx.query(api::topic::owner().map().submap(), Self::submap)
+        ctx.query(api::topics().map().submap().owner(), Self::submap)
             ?;
         Ok((State(0), Api))
     }

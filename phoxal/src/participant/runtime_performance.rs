@@ -16,12 +16,12 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<StreamPublisher<runtime::endpoint::telemetry::TopicEndpoint>>,
+    publisher: Option<StreamPublisher<runtime::telemetry::Rollup>>,
 }
 
 impl RuntimePerformancePublisher {
     pub(crate) fn attach(bus: BusHandle) -> Self {
-        let topic = runtime::topic::owner().telemetry().topic();
+        let topic = runtime::topics().telemetry().owner();
         let publisher = StreamPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(

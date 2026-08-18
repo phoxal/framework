@@ -8,8 +8,8 @@ use std::marker::PhantomData;
 
 use crate::bus::abi::{Codec, MessagePack};
 use crate::bus::contract::{
-    DeliveryFamily, EndpointDescriptor, EventContract, SampleContract, SetpointContract,
-    StateContract, StreamContract, WorldClockContract,
+    DeliveryFamily, Endpoint, EndpointSemantics, Event, Sample, Setpoint, State, StreamDelivered,
+    WorldClock,
 };
 use crate::bus::error::{BusError, Result};
 use crate::bus::handle::stamp::StepStamp;
@@ -46,10 +46,10 @@ impl<E> Clone for Outbox<E> {
     }
 }
 
-impl<E: EndpointDescriptor> Outbox<E> {
+impl<E: Endpoint> Outbox<E> {
     fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
         let topic_key = topic.publish_key()?;
-        let family = E::KIND.delivery_family();
+        let family = <E::Semantics as EndpointSemantics>::DELIVERY;
         let metric = bus
             .runtime_metrics()?
             .register_outbound(topic_key, outbound_capacity(family));
@@ -66,7 +66,7 @@ impl<E: EndpointDescriptor> Outbox<E> {
     /// Encode `body`, build the [`BusMetadata`](crate::bus::metadata::BusMetadata),
     /// and admit it to the family-specific outbound lane. Returns immediately;
     /// no publisher path blocks the step loop.
-    fn emit(&self, produced_at: Option<TimeWindow>, body: E::Payload) -> Result<()> {
+    fn emit(&self, produced_at: Option<TimeWindow>, body: E) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
         let metadata = self.bus.metadata(produced_at)?;
         self.bus.enqueue(
@@ -92,15 +92,15 @@ const fn outbound_capacity(family: DeliveryFamily) -> usize {
 ///
 /// The transport keeps only the newest pending state. Replacements are
 /// reported by the bus metrics.
-pub struct StatePublisher<E: StateContract>(Outbox<E>);
+pub struct StatePublisher<E: Endpoint<Semantics = State>>(Outbox<E>);
 
-impl<E: StateContract> Clone for StatePublisher<E> {
+impl<E: Endpoint<Semantics = State>> Clone for StatePublisher<E> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<E: StateContract> StatePublisher<E> {
+impl<E: Endpoint<Semantics = State>> StatePublisher<E> {
     #[doc(hidden)]
     pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
         Ok(Self(Outbox::new(bus, topic)?))
@@ -111,15 +111,15 @@ impl<E: StateContract> StatePublisher<E> {
 ///
 /// Samples retain their capture stamp. The bounded ordered lane evicts its
 /// oldest item on overflow and reports the loss through bus metrics.
-pub struct SamplePublisher<E: SampleContract>(Outbox<E>);
+pub struct SamplePublisher<E: Endpoint<Semantics = Sample>>(Outbox<E>);
 
-impl<E: SampleContract> Clone for SamplePublisher<E> {
+impl<E: Endpoint<Semantics = Sample>> Clone for SamplePublisher<E> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<E: SampleContract> SamplePublisher<E> {
+impl<E: Endpoint<Semantics = Sample>> SamplePublisher<E> {
     #[doc(hidden)]
     pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
         Ok(Self(Outbox::new(bus, topic)?))
@@ -130,15 +130,15 @@ impl<E: SampleContract> SamplePublisher<E> {
 ///
 /// Setpoints carry no robot timestamp. A newer pending value replaces the
 /// older value and the replacement is reported by bus metrics.
-pub struct SetpointPublisher<E: SetpointContract>(Outbox<E>);
+pub struct SetpointPublisher<E: Endpoint<Semantics = Setpoint>>(Outbox<E>);
 
-impl<E: SetpointContract> Clone for SetpointPublisher<E> {
+impl<E: Endpoint<Semantics = Setpoint>> Clone for SetpointPublisher<E> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<E: SetpointContract> SetpointPublisher<E> {
+impl<E: Endpoint<Semantics = Setpoint>> SetpointPublisher<E> {
     #[doc(hidden)]
     pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
         Ok(Self(Outbox::new(bus, topic)?))
@@ -149,15 +149,23 @@ impl<E: SetpointContract> SetpointPublisher<E> {
 ///
 /// Stream chunks carry no robot timestamp. Saturation is returned to the
 /// caller, and receivers expose gaps or terminal failure.
-pub struct StreamPublisher<E: StreamContract>(Outbox<E>);
+pub struct StreamPublisher<E: Endpoint>(Outbox<E>)
+where
+    E::Semantics: StreamDelivered;
 
-impl<E: StreamContract> Clone for StreamPublisher<E> {
+impl<E: Endpoint> Clone for StreamPublisher<E>
+where
+    E::Semantics: StreamDelivered,
+{
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<E: StreamContract> StreamPublisher<E> {
+impl<E: Endpoint> StreamPublisher<E>
+where
+    E::Semantics: StreamDelivered,
+{
     #[doc(hidden)]
     pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
         Ok(Self(Outbox::new(bus, topic)?))
@@ -168,30 +176,32 @@ impl<E: StreamContract> StreamPublisher<E> {
 ///
 /// A near-twin of [`StatePublisher`] - same step-stamped publish path - kept
 /// as its own type rather than folded into `StatePublisher` precisely so
-/// `StatePublisher`'s bound can stay the precise `StateContract` (see that
-/// type's docs).
+/// `StatePublisher`'s bound can stay the exact
+/// [`State`](crate::bus::State) semantic. The world clock's semantic is
+/// [`WorldClock`], a sibling rather than a subtype, which is what makes the
+/// ordinary state publisher reject it at compile time.
 ///
 /// There is no documented way for a participant to build one: publishing the
 /// world clock is the job of the external client that drives the simulated
 /// world, which mints this publisher through [`Self::mint`] on its own bus
 /// handle. The type is re-exported from neither `phoxal::bus` nor
 /// `phoxal::prelude`.
-pub struct WorldClockPublisher<B: WorldClockContract>(Outbox<B>);
+pub struct WorldClockPublisher<B: Endpoint<Semantics = WorldClock>>(Outbox<B>);
 
-impl<B: WorldClockContract> Clone for WorldClockPublisher<B> {
+impl<B: Endpoint<Semantics = WorldClock>> Clone for WorldClockPublisher<B> {
     fn clone(&self) -> Self {
         WorldClockPublisher(self.0.clone())
     }
 }
 
-impl<E: StateContract> StatePublisher<E> {
+impl<E: Endpoint<Semantics = State>> StatePublisher<E> {
     /// Publish `body` as the state this step produced.
-    pub fn publish(&self, step: &impl StepStamp, body: E::Payload) -> Result<()> {
+    pub fn publish(&self, step: &impl StepStamp, body: E) -> Result<()> {
         self.0.emit(Some(TimeWindow::exact(step.instant())), body)
     }
 }
 
-impl<B: WorldClockContract> WorldClockPublisher<B> {
+impl<B: Endpoint<Semantics = WorldClock>> WorldClockPublisher<B> {
     /// Build the world-clock publisher over a topic.
     ///
     /// Called by the external client that drives the simulated world and owns
@@ -203,28 +213,31 @@ impl<B: WorldClockContract> WorldClockPublisher<B> {
     }
 
     /// Publish `body` as the state this step produced.
-    pub fn publish(&self, step: &impl StepStamp, body: B::Payload) -> Result<()> {
+    pub fn publish(&self, step: &impl StepStamp, body: B) -> Result<()> {
         self.0.emit(Some(TimeWindow::exact(step.instant())), body)
     }
 }
 
-impl<E: SampleContract> SamplePublisher<E> {
+impl<E: Endpoint<Semantics = Sample>> SamplePublisher<E> {
     /// Publish `body` as captured at `stamp`.
-    pub fn publish(&self, stamp: CaptureStamp, body: E::Payload) -> Result<()> {
+    pub fn publish(&self, stamp: CaptureStamp, body: E) -> Result<()> {
         self.0.emit(stamp.into_window(), body)
     }
 }
 
-impl<E: SetpointContract> SetpointPublisher<E> {
+impl<E: Endpoint<Semantics = Setpoint>> SetpointPublisher<E> {
     /// Send `body` to the contract's owning service.
-    pub fn send(&self, body: E::Payload) -> Result<()> {
+    pub fn send(&self, body: E) -> Result<()> {
         self.0.emit(None, body)
     }
 }
 
-impl<E: StreamContract> StreamPublisher<E> {
+impl<E: Endpoint> StreamPublisher<E>
+where
+    E::Semantics: StreamDelivered,
+{
     /// Send one ordered stream chunk without blocking the step loop.
-    pub fn send(&self, body: E::Payload) -> Result<()> {
+    pub fn send(&self, body: E) -> Result<()> {
         self.0.emit(None, body).map_err(|error| match error {
             BusError::Saturated { topic, .. } => BusError::WouldBlock { topic },
             error => error,
@@ -236,15 +249,15 @@ impl<E: StreamContract> StreamPublisher<E> {
 ///
 /// Events use the bounded ordered stream lane. Saturation is returned as
 /// `WouldBlock`, and receivers expose producer gaps or terminal evidence.
-pub struct EventPublisher<E: EventContract>(Outbox<E>);
+pub struct EventPublisher<E: Endpoint<Semantics = Event>>(Outbox<E>);
 
-impl<E: EventContract> Clone for EventPublisher<E> {
+impl<E: Endpoint<Semantics = Event>> Clone for EventPublisher<E> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<E: EventContract> EventPublisher<E> {
+impl<E: Endpoint<Semantics = Event>> EventPublisher<E> {
     /// Build an event publisher over a generated endpoint topic.
     #[doc(hidden)]
     pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
@@ -252,7 +265,7 @@ impl<E: EventContract> EventPublisher<E> {
     }
 
     /// Publish the event produced at this logical step.
-    pub fn publish(&self, step: &impl StepStamp, body: E::Payload) -> Result<()> {
+    pub fn publish(&self, step: &impl StepStamp, body: E) -> Result<()> {
         self.0
             .emit(Some(TimeWindow::exact(step.instant())), body)
             .map_err(|error| match error {
@@ -265,89 +278,40 @@ impl<E: EventContract> EventPublisher<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::contract::{
-        ApiFamily, EndpointDescriptor, EndpointKind, SampleContract, SetpointContract,
-        SetpointDeliveryContract, StateContract, StreamContract,
-    };
+    use crate::bus::contract::TestFamily;
     use crate::bus::error::BusError;
     use crate::bus::handle::subscriber::SetpointReceiver;
     use crate::bus::runtime_metrics::RuntimeBufferKind;
     use crate::bus::session::{BusOwner, OUTBOUND_CAPACITY, OUTBOUND_MAX_BYTES};
-    use crate::bus::test_support::{Target, TargetEndpoint, participant_config, step};
+    use crate::bus::test_support::{TARGET_TOPIC, Target, bound, participant_config, step};
     use crate::bus::time::CaptureStamp;
-    use crate::bus::topic::{Subscribe, Topic};
     use serial_test::serial;
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct StreamChunk(Vec<u8>);
+    const STREAM_TOPIC: &str = "yTEST/stream/chunk";
+    const STATE_TOPIC: &str = "yTEST/stream/state";
+    const SAMPLE_TOPIC: &str = "yTEST/stream/sample";
+    const SETPOINT_TOPIC: &str = "yTEST/stream/setpoint";
 
-    enum StreamApi {}
+    /// One stand-in endpoint per delivery family, so the admission rules below
+    /// are exercised on four genuinely different lanes.
+    macro_rules! stand_in {
+        ($name:ident ( $body:ty ), $semantics:ty) => {
+            #[derive(phoxal_macros::DescribeWire, Debug, serde::Serialize, serde::Deserialize)]
+            struct $name($body);
 
-    impl ApiFamily for StreamApi {
-        const ID: &'static str = "stream-test";
+            impl crate::bus::contract::sealed::Endpoint for $name {}
+
+            impl Endpoint for $name {
+                type Family = TestFamily;
+                type Semantics = $semantics;
+            }
+        };
     }
 
-    struct StreamEndpoint;
-    impl EndpointDescriptor for StreamEndpoint {
-        type Api = StreamApi;
-        type Payload = StreamChunk;
-        const NAME: &'static str = "stream-test::Chunk";
-        const FAMILY: &'static str = "stream-test";
-        const CONTRACT: &'static str = "Chunk";
-        const TOPIC: &'static str = "stream-test/chunk";
-        const KIND: EndpointKind = EndpointKind::Stream;
-    }
-
-    impl StreamContract for StreamEndpoint {}
-
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct StateChunk(u16);
-
-    struct StateEndpoint;
-    impl EndpointDescriptor for StateEndpoint {
-        type Api = StreamApi;
-        type Payload = StateChunk;
-        const NAME: &'static str = "stream-test::State";
-        const FAMILY: &'static str = "stream-test";
-        const CONTRACT: &'static str = "State";
-        const TOPIC: &'static str = "stream-test/state";
-        const KIND: EndpointKind = EndpointKind::State;
-    }
-
-    impl StateContract for StateEndpoint {}
-
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct SampleChunk(u16);
-
-    struct SampleEndpoint;
-    impl EndpointDescriptor for SampleEndpoint {
-        type Api = StreamApi;
-        type Payload = SampleChunk;
-        const NAME: &'static str = "stream-test::Sample";
-        const FAMILY: &'static str = "stream-test";
-        const CONTRACT: &'static str = "Sample";
-        const TOPIC: &'static str = "stream-test/sample";
-        const KIND: EndpointKind = EndpointKind::Sample;
-    }
-
-    impl SampleContract for SampleEndpoint {}
-
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct SetpointChunk(u16);
-
-    struct SetpointEndpoint;
-    impl EndpointDescriptor for SetpointEndpoint {
-        type Api = StreamApi;
-        type Payload = SetpointChunk;
-        const NAME: &'static str = "stream-test::Setpoint";
-        const FAMILY: &'static str = "stream-test";
-        const CONTRACT: &'static str = "Setpoint";
-        const TOPIC: &'static str = "stream-test/setpoint";
-        const KIND: EndpointKind = EndpointKind::Setpoint;
-    }
-
-    impl SetpointContract for SetpointEndpoint {}
-    impl SetpointDeliveryContract for SetpointEndpoint {}
+    stand_in!(StreamChunk(Vec<u8>), crate::bus::Stream<crate::bus::Out>);
+    stand_in!(StateChunk(u16), State);
+    stand_in!(SampleChunk(u16), Sample);
+    stand_in!(SetpointChunk(u16), Setpoint);
 
     /// A publish after close is a real loss, and the caller has to be able to
     /// see it: silently succeeding would let a participant believe it had
@@ -356,8 +320,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn publishing_on_a_closed_bus_reports_the_loss() {
         let (owner, bus) = BusOwner::open(participant_config("closed")).await.unwrap();
-        let topic = Topic::<Publish<TargetEndpoint>>::new_static(TargetEndpoint::TOPIC);
-        let publisher = StatePublisher::<TargetEndpoint>::new(bus.clone(), &topic).unwrap();
+        let topic = bound::<Target>(TARGET_TOPIC).owner();
+        let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
         owner.close().await;
 
         let error = publisher
@@ -378,8 +342,8 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("stream-would-block"))
             .await
             .unwrap();
-        let topic = Topic::<Publish<StreamEndpoint>>::new_static(StreamEndpoint::TOPIC);
-        let publisher = StreamPublisher::<StreamEndpoint>::new(bus.clone(), &topic).unwrap();
+        let topic = bound::<StreamChunk>(STREAM_TOPIC).owner();
+        let publisher = StreamPublisher::<StreamChunk>::new(bus.clone(), &topic).unwrap();
         let error = publisher
             .send(StreamChunk(vec![0; OUTBOUND_MAX_BYTES + 1]))
             .expect_err("an oversized stream chunk must not be accepted");
@@ -393,34 +357,32 @@ mod tests {
         let (owner, bus) = BusOwner::open(participant_config("semantic-admission"))
             .await
             .unwrap();
-        let state = StatePublisher::<StateEndpoint>::new(
+        let state = StatePublisher::<StateChunk>::new(
             bus.clone(),
-            &Topic::new_static(StateEndpoint::TOPIC),
+            &bound::<StateChunk>(STATE_TOPIC).owner(),
         )
         .unwrap();
-        let setpoint = SetpointPublisher::<SetpointEndpoint>::new(
+        let setpoint = SetpointPublisher::<SetpointChunk>::new(
             bus.clone(),
-            &Topic::new_static(SetpointEndpoint::TOPIC),
+            &bound::<SetpointChunk>(SETPOINT_TOPIC).client(),
         )
         .unwrap();
-        let setpoint_receiver = SetpointReceiver::new(
-            &bus,
-            &Topic::<Subscribe<SetpointEndpoint>>::new_static(SetpointEndpoint::TOPIC),
-        )
-        .await
-        .unwrap();
-        let sample = SamplePublisher::<SampleEndpoint>::new(
+        let setpoint_receiver =
+            SetpointReceiver::new(&bus, &bound::<SetpointChunk>(SETPOINT_TOPIC).owner())
+                .await
+                .unwrap();
+        let sample = SamplePublisher::<SampleChunk>::new(
             bus.clone(),
-            &Topic::new_static(SampleEndpoint::TOPIC),
+            &bound::<SampleChunk>(SAMPLE_TOPIC).owner(),
         )
         .unwrap();
         let pause = bus
             .test_pause_outbound_drain()
             .await
             .expect("test drain can be held before admission");
-        let stream = StreamPublisher::<StreamEndpoint>::new(
+        let stream = StreamPublisher::<StreamChunk>::new(
             bus.clone(),
-            &Topic::new_static(StreamEndpoint::TOPIC),
+            &bound::<StreamChunk>(STREAM_TOPIC).owner(),
         )
         .unwrap();
 
@@ -445,7 +407,7 @@ mod tests {
             BusError::WouldBlock { .. }
         ));
 
-        let full_stream_key = bus.full_key(StreamEndpoint::TOPIC);
+        let full_stream_key = bus.full_key(STREAM_TOPIC);
         let positions: Vec<_> = bus
             .test_queued_stream_metadata(&full_stream_key)
             .into_iter()
@@ -467,23 +429,17 @@ mod tests {
                 })
                 .expect("publisher metric row")
         };
-        assert_eq!(row(StateEndpoint::TOPIC).count, 3);
-        assert_eq!(row(StateEndpoint::TOPIC).latest_overwrites, 2);
-        assert_eq!(row(StateEndpoint::TOPIC).high_water_depth, 1);
-        assert_eq!(row(SetpointEndpoint::TOPIC).count, 3);
-        assert_eq!(row(SetpointEndpoint::TOPIC).latest_overwrites, 2);
-        assert_eq!(row(SetpointEndpoint::TOPIC).high_water_depth, 1);
-        assert_eq!(
-            row(SampleEndpoint::TOPIC).count,
-            OUTBOUND_CAPACITY as u64 + 1
-        );
-        assert_eq!(row(SampleEndpoint::TOPIC).bounded_evictions, 1);
-        assert_eq!(
-            row(SampleEndpoint::TOPIC).high_water_depth,
-            OUTBOUND_CAPACITY as u64
-        );
-        assert_eq!(row(StreamEndpoint::TOPIC).count, OUTBOUND_CAPACITY as u64);
-        assert_eq!(row(StreamEndpoint::TOPIC).drops, 1);
+        assert_eq!(row(STATE_TOPIC).count, 3);
+        assert_eq!(row(STATE_TOPIC).latest_overwrites, 2);
+        assert_eq!(row(STATE_TOPIC).high_water_depth, 1);
+        assert_eq!(row(SETPOINT_TOPIC).count, 3);
+        assert_eq!(row(SETPOINT_TOPIC).latest_overwrites, 2);
+        assert_eq!(row(SETPOINT_TOPIC).high_water_depth, 1);
+        assert_eq!(row(SAMPLE_TOPIC).count, OUTBOUND_CAPACITY as u64 + 1);
+        assert_eq!(row(SAMPLE_TOPIC).bounded_evictions, 1);
+        assert_eq!(row(SAMPLE_TOPIC).high_water_depth, OUTBOUND_CAPACITY as u64);
+        assert_eq!(row(STREAM_TOPIC).count, OUTBOUND_CAPACITY as u64);
+        assert_eq!(row(STREAM_TOPIC).drops, 1);
         assert_eq!(
             bus.health()
                 .outbound_drops

@@ -1,35 +1,35 @@
-//! Typed topics: the api-local builder output.
+//! Typed topics: what a walk of the api tree hands to a handle builder.
 //!
-//! A [`Topic`] is a family-rooted topic key plus a phantom [`TopicKind`] that
-//! ties the key to its body type(s) **and to the side** the holder may take.
-//! The api tree's `topic` builders return these; the `SetupContext` handle
-//! builders consume them. The wire body never appears in the key, but the
-//! contract family does - the key is `robot/drive/state`, not `drive/state`.
-//! The family is a semantic namespace, so robot contracts, runtime plumbing,
-//! and supervisor process traffic occupy physically distinct Zenoh subtrees.
-//! Nothing in the key encodes a version: compatibility is the framework train
-//! version both peers were built from.
+//! A [`Topic`] is one owned family-rooted key plus a phantom [`TopicKind`] that
+//! ties the key to its endpoint **and to the side** the holder may take. The
+//! api tree produces them - and only the api tree, through
+//! [`BoundEndpoint::client`](crate::bus::BoundEndpoint::client) and
+//! [`BoundEndpoint::owner`](crate::bus::BoundEndpoint::owner) - and the
+//! `SetupContext` handle builders consume them. The wire body never appears in
+//! the key, but the contract family does: the key is `robot/drive/state`, not
+//! `drive/state`. The family is a semantic namespace, so robot contracts,
+//! runtime plumbing, and supervisor process traffic occupy physically distinct
+//! Zenoh subtrees. Nothing in the key encodes a version: compatibility is the
+//! framework train version both peers were built from.
 //!
 //! # Side branding
 //!
 //! The kind marker is the compile-time gate that makes taking the **wrong side**
 //! of a topic a type error. The four markers split each wire shape by side:
 //!
-//! - [`Publish<B>`] - the participant *publishes* `B` (a client sending a command,
-//!   or an owner publishing its state).
-//! - [`Subscribe<B>`] - the participant *subscribes/observes* `B` (a client
+//! - [`Publish<E>`] - the participant *publishes* `E` (a client sending a
+//!   command, or an owner publishing its state).
+//! - [`Subscribe<E>`] - the participant *subscribes/observes* `E` (a client
 //!   observing state, or an owner reading its command input).
 //! - [`AskQuery<E>`] - the **client** side of a query: it *calls* the owner.
 //! - [`ServeQuery<E>`] - the **owner** side of a query: it *serves* requests.
 //!
 //! The brand is a COMPILE-TIME marker only: the underlying key and the actual
-//! publisher/receiver/querier/server ops are unchanged. The api
-//! tree emits the builder tree twice - a public *client* builder and an
-//! explicit *owner* builder over identical keys - so the side a participant gets
-//! is decided by which builder it calls, and a wrong side fails to compile in the
-//! `SetupContext` handle builder that consumes the `Topic`.
+//! publisher/receiver/querier/server ops are unchanged. There is one path tree,
+//! walked identically for both sides, and the side is chosen at the endpoint,
+//! so an owner key and a client key are byte-identical and differ only in the
+//! brand the type carries.
 
-use std::borrow::Cow;
 use std::marker::PhantomData;
 
 /// One concrete dynamic segment in a generated topic key.
@@ -43,6 +43,11 @@ pub struct KeySegment(String);
 
 impl KeySegment {
     /// Validate and retain one concrete key segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeySegmentError`] when the value is empty, carries a `/` or a
+    /// wildcard, holds a control character, or is not a legal Zenoh key.
     pub fn new(value: impl Into<String>) -> Result<Self, KeySegmentError> {
         let value = value.into();
         if value.is_empty()
@@ -57,6 +62,7 @@ impl KeySegment {
     }
 
     /// The validated segment text.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -91,20 +97,18 @@ impl TryFrom<&str> for KeySegment {
 )]
 pub struct KeySegmentError(String);
 
-/// A pub/sub topic the participant **publishes** `B` on (client command, or
+/// A pub/sub topic the participant **publishes** `E` on (client command, or
 /// owner state).
-pub struct Publish<B>(PhantomData<fn() -> B>);
+pub struct Publish<E>(PhantomData<fn() -> E>);
 
-/// A pub/sub topic the participant **subscribes/observes** `B` on (client
+/// A pub/sub topic the participant **subscribes/observes** `E` on (client
 /// observing state, or owner reading its command input).
-pub struct Subscribe<B>(PhantomData<fn() -> B>);
+pub struct Subscribe<E>(PhantomData<fn() -> E>);
 
-/// The **client** side of a query topic carrying request `Req`/response `Resp`:
-/// the holder *calls* the owner.
+/// The **client** side of a query topic: the holder *calls* the owner.
 pub struct AskQuery<E>(PhantomData<fn() -> E>);
 
-/// The **owner** side of a query topic carrying request `Req`/response `Resp`:
-/// the holder *serves* requests.
+/// The **owner** side of a query topic: the holder *serves* requests.
 pub struct ServeQuery<E>(PhantomData<fn() -> E>);
 
 mod sealed {
@@ -114,71 +118,56 @@ mod sealed {
 /// Marker for the kind (wire shape + side) of a [`Topic`]. Sealed.
 pub trait TopicKind: sealed::Sealed {}
 
-impl<B> sealed::Sealed for Publish<B> {}
-impl<B> TopicKind for Publish<B> {}
-impl<B> sealed::Sealed for Subscribe<B> {}
-impl<B> TopicKind for Subscribe<B> {}
+impl<E> sealed::Sealed for Publish<E> {}
+impl<E> TopicKind for Publish<E> {}
+impl<E> sealed::Sealed for Subscribe<E> {}
+impl<E> TopicKind for Subscribe<E> {}
 impl<E> sealed::Sealed for AskQuery<E> {}
 impl<E> TopicKind for AskQuery<E> {}
 impl<E> sealed::Sealed for ServeQuery<E> {}
 impl<E> TopicKind for ServeQuery<E> {}
 
-/// A typed topic: a family-rooted key bound to its body type(s) via `Kind`.
+/// A typed topic: one owned family-rooted key bound to its endpoint and side
+/// via `Kind`.
+///
+/// The key is owned, not a `Cow`: a path walk renders one concrete key at
+/// handle construction, and one setup-time allocation is preferable to a
+/// permanent dual representation with a forging constructor on each half.
 pub struct Topic<Kind> {
-    key: Cow<'static, str>,
+    key: String,
     _kind: PhantomData<Kind>,
 }
 
 impl<Kind> Topic<Kind> {
-    /// Construct a topic from a static key.
+    /// Bind a rendered concrete key to its brand.
     ///
-    /// # Why this is `pub`
-    ///
-    /// The contract fragment materializer expands in `crate::protocol`, where
-    /// the contract families live, and its generated builders call this over
-    /// each contract's canonical key. Generated code in a downstream crate needs
-    /// a `pub` constructor, and Rust has no visibility between "this crate" and
-    /// "the world", so `pub(crate)` cannot express the real boundary. The one
-    /// caller this exists for is the protocol tree's generated builder tree.
-    ///
-    /// It is generic over `Kind`, so a caller that reaches for it directly can
-    /// forge either branded side of a topic. Author correctness does not come
-    /// from this being hidden: it comes from the typed handles and the api-tree
-    /// builders (`api::topic::client()` / `api::topic::owner()`), which keep the
-    /// typed `Kind` and the bus key in lockstep.
-    #[doc(hidden)]
-    pub fn new_static(key: &'static str) -> Self {
+    /// Crate-private, and the only constructor: the api tree reaches it through
+    /// [`BoundEndpoint`](crate::bus::BoundEndpoint), which is what keeps the
+    /// typed `Kind` and the bus key in lockstep, and the bus's own unit tests
+    /// reach it the same way.
+    pub(crate) fn new(key: String) -> Self {
         Topic {
-            key: Cow::Borrowed(key),
-            _kind: PhantomData,
-        }
-    }
-
-    /// Construct a topic from an owned (dynamically built) key.
-    ///
-    /// The owned-key counterpart of [`new_static`](Self::new_static), called by
-    /// the same generated builder for nodes with dynamic segments, filling the
-    /// carried variables into the canonical key. It is `pub` for exactly the
-    /// same crate-split reason, with exactly the same one intended caller.
-    #[doc(hidden)]
-    pub fn new_owned(key: String) -> Self {
-        Topic {
-            key: Cow::Owned(key),
+            key,
             _kind: PhantomData,
         }
     }
 
     /// The family-rooted topic key (e.g. `robot/drive/state`).
+    #[must_use]
     pub fn key(&self) -> &str {
         &self.key
     }
 
     /// The key reusable as the publish key. Wildcard topics (`*`) are
     /// subscribe-only and rejected here before transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WildcardPublish`] when the key holds a wildcard segment.
     pub fn publish_key(&self) -> Result<&str, WildcardPublish> {
         if self.key.split('/').any(|seg| seg == "*" || seg == "**") {
             Err(WildcardPublish {
-                key: self.key.to_string(),
+                key: self.key.clone(),
             })
         } else {
             Ok(&self.key)
@@ -223,7 +212,7 @@ mod tests {
 
     #[test]
     fn a_concrete_key_is_publishable_and_a_wildcard_one_is_not() {
-        let concrete = Topic::<Publish<()>>::new_static("robot/drive/state");
+        let concrete = Topic::<Publish<()>>::new("robot/drive/state".to_owned());
         assert_eq!(
             concrete
                 .publish_key()
@@ -232,7 +221,7 @@ mod tests {
         );
 
         for wildcard in ["robot/component/*/state", "robot/component/**"] {
-            let topic = Topic::<Subscribe<()>>::new_owned(wildcard.to_string());
+            let topic = Topic::<Subscribe<()>>::new(wildcard.to_owned());
             let rejected = topic
                 .publish_key()
                 .expect_err("a wildcard topic is subscribe-only");

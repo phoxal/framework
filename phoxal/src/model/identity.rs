@@ -274,6 +274,21 @@ structural_identifier!(
     JointId
 );
 
+/// A capability id is the dynamic segment of every capability-scoped endpoint
+/// key.
+impl crate::bus::TopicSegment for CapabilityId {
+    fn segment(&self) -> Result<crate::bus::KeySegment, crate::bus::KeySegmentError> {
+        crate::bus::KeySegment::new(self.as_str())
+    }
+}
+
+/// A joint id is the dynamic segment of the robot's per-joint endpoint keys.
+impl crate::bus::TopicSegment for JointId {
+    fn segment(&self) -> Result<crate::bus::KeySegment, crate::bus::KeySegmentError> {
+        crate::bus::KeySegment::new(self.as_str())
+    }
+}
+
 /// One capability of one component instance, written `component.capability`.
 ///
 /// The wire form is that single dotted string, not a two-field object.

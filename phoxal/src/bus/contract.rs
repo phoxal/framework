@@ -1,40 +1,54 @@
-//! The contract primitive traits: the contract-family marker and endpoint
-//! descriptors.
+//! The contract vocabulary the bus is generic over: wire families, endpoint
+//! semantics, and the endpoint trait itself.
 //!
-//! These are the two traits the bus client is generic over - the ABI floor
-//! every contract family uses: ordinary Rust payloads plus one generated
-//! descriptor per endpoint. This module owns the shared ABI traits; the
-//! protocol tree owns every concrete declaration.
+//! There is exactly one Rust identity per endpoint, and it is the payload (or,
+//! for a query, the request) type the endpoint carries. An endpoint is not a
+//! separate descriptor beside its body: it *is* the body, with a [`Family`] and
+//! an [`EndpointSemantics`] attached. Both attachments are sealed and are
+//! written only by the [`crate::endpoints!`] declaration that sits beside the
+//! payload, so a hand-written implementation cannot invent an endpoint the
+//! compatibility records do not know about.
+//!
+//! # Semantics, not markers
+//!
+//! [`EndpointSemantics`] is a closed set - [`State`], [`Sample`], [`Event`],
+//! [`Setpoint`], [`Stream<In>`](Stream), [`Stream<Out>`](Stream), [`Query`],
+//! [`WorldClock`] - and each member fixes the wire [`EndpointKind`], the
+//! transport [`DeliveryFamily`], and the two side brands a client and an owner
+//! respectively receive. A handle bounds itself on the semantics it serves
+//! (`StatePublisher<E: Endpoint<Semantics = State>>`), so taking the wrong
+//! operation on an endpoint is a compile error naming the endpoint's own
+//! semantics.
+//!
+//! [`WorldClock`] is the one semantic whose authority differs from its wire
+//! shape: it rides the same ordered stream transport as an [`Event`] and
+//! declares the same [`EndpointKind::Event`], but it is a distinct semantic so
+//! that the ordinary state publisher every participant has cannot mint a world
+//! step.
 
-/// Marker trait identifying one generated contract tree.
+use std::marker::PhantomData;
+
+use crate::bus::topic::{AskQuery, Publish, ServeQuery, Subscribe, TopicKind};
+
+/// The sealing supertraits.
 ///
-/// Implemented only by the zero-variant `enum Api {}` that `protocol_tree!`
-/// generates inside each family module. The [`ID`] is a semantic contract
-/// namespace - `"robot"`, `"runtime"`, `"supervisor"` - and is both the tree's
-/// identity and the leading segment of every key it declares. It is carried in
-/// bus metadata as informational provenance, never in the wire body.
-///
-/// A family names meaning, not a revision. Compatibility between two
-/// participants is the compatibility line of the framework trains they were
-/// built from, so no key or descriptor carries a per-API version.
-///
-/// The marker keeps one family's bodies from standing in for another's at
-/// compile time. `ParticipantSpec::ContractApi` pins a participant to exactly
-/// one of them.
-///
-/// [`ID`]: ApiFamily::ID
-pub trait ApiFamily: 'static {
-    /// The family's wire identifier, such as `"robot"`.
-    const ID: &'static str;
+/// They live in a crate-private module, so an implementation outside `phoxal`
+/// cannot name them and therefore cannot implement the public traits that
+/// require them. Inside the crate the only writer is [`crate::endpoints!`],
+/// beside the payload it declares.
+pub(crate) mod sealed {
+    pub trait Endpoint {}
+    pub trait Semantics {}
+    pub trait Family {}
+    pub trait Direction {}
 }
 
 /// A plain serde payload carried by one bus endpoint.
 ///
-/// Payloads deliberately contain no transport identity or delivery policy.
-/// Those facts belong to an [`EndpointDescriptor`], which is the type used by
-/// typed topics and handles.  The blanket implementation keeps ordinary
-/// structs and enums frictionless: an author only derives serde for a payload
-/// and never has to repeat a topic, role, or queue policy on the payload type.
+/// Payloads contain no transport identity and no delivery policy: those are
+/// [`Endpoint`]'s two associated types. The blanket implementation keeps
+/// ordinary structs and enums frictionless - an author derives serde for a
+/// payload and never repeats a topic, role, or queue policy on it.
 pub trait Payload: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static {}
 
 impl<T> Payload for T where T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
@@ -114,6 +128,7 @@ impl EndpointKind {
     }
 
     /// The transport family fixed by this endpoint kind.
+    #[must_use]
     pub const fn delivery_family(self) -> DeliveryFamily {
         match self {
             Self::State => DeliveryFamily::State,
@@ -125,209 +140,283 @@ impl EndpointKind {
     }
 }
 
-/// Endpoint-owned identity and semantic descriptor.
+/// One wire family: a semantic namespace, and the leading segment of every key
+/// declared below it.
 ///
-/// `Payload` is the only wire body.  `TOPIC`, `KIND`, and the contract identity
-/// are owned by this separate descriptor type, so reusing one payload in two
-/// endpoints cannot silently reuse the first endpoint's transport behavior.
-/// The API tree generator emits one descriptor per endpoint and implements the
-/// semantic marker appropriate to [`EndpointDescriptor::KIND`].
-pub trait EndpointDescriptor: 'static {
-    /// The contract family this endpoint belongs to.
-    type Api: ApiFamily;
-    /// The plain serde payload carried by this endpoint.
-    type Payload: Payload;
-    /// Family-qualified endpoint identity.
-    const NAME: &'static str;
-    /// Endpoint tree identity, such as `"robot"` or `"supervisor"`.
-    const FAMILY: &'static str;
-    /// Stable endpoint path within its tree.
-    const CONTRACT: &'static str;
-    /// Family-rooted concrete wire key template.
-    const TOPIC: &'static str;
-    /// Fixed semantic endpoint kind.
+/// A family names meaning, not a revision. Compatibility between two
+/// participants is the compatibility line of the framework trains they were
+/// built from, so no key or endpoint carries a per-API version.
+///
+/// The three members are the whole set, and the trait is sealed: a family is a
+/// wire namespace this framework owns, not an extension point.
+pub trait Family: sealed::Family + 'static {
+    /// The family's wire identifier, such as `"robot"`.
+    const ID: &'static str;
+}
+
+/// The robot domain a participant authors against, reached as [`crate::api`].
+pub enum Robot {}
+
+/// What a running Phoxal process says about itself, reached as
+/// [`crate::runtime::api`].
+pub enum Runtime {}
+
+/// The wire vocabulary a supervisor speaks, reached as
+/// [`crate::supervisor::api`].
+pub enum Supervisor {}
+
+impl sealed::Family for Robot {}
+impl Family for Robot {
+    const ID: &'static str = "robot";
+}
+
+impl sealed::Family for Runtime {}
+impl Family for Runtime {
+    const ID: &'static str = "runtime";
+}
+
+impl sealed::Family for Supervisor {}
+impl Family for Supervisor {
+    const ID: &'static str = "supervisor";
+}
+
+/// The stand-in family the bus's own unit tests declare endpoints in.
+///
+/// The bus is the ABI floor and has to be exercisable without the generated
+/// tree above it, so its unit tests declare their own endpoints - under their
+/// own family, so a stand-in can never be mistaken for a real one.
+#[cfg(test)]
+pub(crate) enum TestFamily {}
+
+#[cfg(test)]
+impl sealed::Family for TestFamily {}
+
+#[cfg(test)]
+impl Family for TestFamily {
+    const ID: &'static str = "yTEST";
+}
+
+/// Which way a stream flows, relative to the endpoint's owner.
+pub trait Direction: sealed::Direction + 'static {}
+
+/// Into the owner: the external client publishes, the owner consumes.
+pub enum In {}
+
+/// Out of the owner: the owner publishes, the external client consumes.
+pub enum Out {}
+
+impl sealed::Direction for In {}
+impl Direction for In {}
+impl sealed::Direction for Out {}
+impl Direction for Out {}
+
+/// The current state of the endpoint's owner, stamped at a logical step.
+pub enum State {}
+
+/// A captured device observation, carrying its own capture stamp.
+pub enum Sample {}
+
+/// A discrete, ordered, gap-observable occurrence stamped at a logical step.
+pub enum Event {}
+
+/// Newest-actionable intent sent to the endpoint's owner.
+pub enum Setpoint {}
+
+/// An ordered chunk stream flowing in direction `D`, relative to the owner.
+pub struct Stream<D: Direction>(PhantomData<fn() -> D>);
+
+/// A bounded request/reply exchange.
+pub enum Query {}
+
+/// The framework's one world-clock hand.
+///
+/// A distinct authority semantic with the wire shape of an [`Event`]: it is
+/// excluded from every ordinary publisher bound, so the only way to mint a
+/// world step is the dedicated world-clock publisher no participant reaches.
+pub enum WorldClock {}
+
+/// What one endpoint semantic fixes.
+///
+/// The wire kind, the transport lane, and the two side brands all follow from
+/// the semantic alone, so a declaration states the semantic and nothing else
+/// and the four facts cannot drift apart.
+pub trait EndpointSemantics: sealed::Semantics + 'static {
+    /// The wire kind this semantic declares.
     const KIND: EndpointKind;
+    /// The transport lane the kind selects.
+    const DELIVERY: DeliveryFamily = Self::KIND.delivery_family();
+    /// The brand an external client of the endpoint receives.
+    type Client<E: Endpoint>: TopicKind;
+    /// The brand the endpoint's owner receives - always the mirror of
+    /// [`Client`](Self::Client).
+    type Owner<E: Endpoint>: TopicKind;
 }
 
-/// Descriptor for a typed request/reply endpoint.
+/// The semantics that ride the ordered stream transport.
 ///
-/// A semantic endpoint owns both payload paths while remaining one zero-sized
-/// type in the generated tree.
-pub trait QueryEndpointDescriptor: EndpointDescriptor {
-    /// Request payload decoded from the query.
-    type Request: Payload;
-    /// Response payload encoded in the reply.
-    type Response: Payload;
+/// This is what a [`StreamReceiver`](crate::bus::StreamReceiver) accepts:
+/// ordered delivery with visible gaps and refusal-preserving admission, in
+/// either direction, plus the two step-stamped semantics that share that lane.
+pub trait StreamDelivered: EndpointSemantics {}
+
+impl sealed::Semantics for State {}
+impl EndpointSemantics for State {
+    const KIND: EndpointKind = EndpointKind::State;
+    type Client<E: Endpoint> = Subscribe<E>;
+    type Owner<E: Endpoint> = Publish<E>;
 }
 
-/// Short name for an endpoint descriptor used by typed bus APIs.
-pub trait Endpoint: EndpointDescriptor {}
+impl sealed::Semantics for Sample {}
+impl EndpointSemantics for Sample {
+    const KIND: EndpointKind = EndpointKind::Sample;
+    type Client<E: Endpoint> = Subscribe<E>;
+    type Owner<E: Endpoint> = Publish<E>;
+}
 
-impl<T: EndpointDescriptor> Endpoint for T {}
+impl sealed::Semantics for Event {}
+impl EndpointSemantics for Event {
+    const KIND: EndpointKind = EndpointKind::Event;
+    type Client<E: Endpoint> = Subscribe<E>;
+    type Owner<E: Endpoint> = Publish<E>;
+}
+impl StreamDelivered for Event {}
 
-/// Marker for an endpoint whose client side publishes to its owner.
+impl sealed::Semantics for Setpoint {}
+impl EndpointSemantics for Setpoint {
+    const KIND: EndpointKind = EndpointKind::Setpoint;
+    type Client<E: Endpoint> = Publish<E>;
+    type Owner<E: Endpoint> = Subscribe<E>;
+}
+
+impl sealed::Semantics for Stream<In> {}
+impl EndpointSemantics for Stream<In> {
+    const KIND: EndpointKind = EndpointKind::Stream;
+    type Client<E: Endpoint> = Publish<E>;
+    type Owner<E: Endpoint> = Subscribe<E>;
+}
+impl StreamDelivered for Stream<In> {}
+
+impl sealed::Semantics for Stream<Out> {}
+impl EndpointSemantics for Stream<Out> {
+    const KIND: EndpointKind = EndpointKind::Stream;
+    type Client<E: Endpoint> = Subscribe<E>;
+    type Owner<E: Endpoint> = Publish<E>;
+}
+impl StreamDelivered for Stream<Out> {}
+
+impl sealed::Semantics for Query {}
+impl EndpointSemantics for Query {
+    const KIND: EndpointKind = EndpointKind::Query;
+    type Client<E: Endpoint> = AskQuery<E>;
+    type Owner<E: Endpoint> = ServeQuery<E>;
+}
+
+impl sealed::Semantics for WorldClock {}
+impl EndpointSemantics for WorldClock {
+    // The wire kind is unchanged from the ordinary event it has always been;
+    // only the Rust-level authority differs.
+    const KIND: EndpointKind = EndpointKind::Event;
+    type Client<E: Endpoint> = Subscribe<E>;
+    type Owner<E: Endpoint> = Publish<E>;
+}
+impl StreamDelivered for WorldClock {}
+
+/// One endpoint: the payload (or request) type it carries, plus the family and
+/// semantics attached to it by its own [`crate::endpoints!`] declaration.
 ///
-/// Generated by `protocol_tree!` for `Setpoint<T>` and `Stream<T, In>`
-/// descriptors. `In` is relative to the endpoint owner: the stream flows from
-/// the external client into the owner, so the client publishes it. External
-/// clients use this bound together with the endpoint's semantic marker instead
-/// of inferring direction from a [`Publish`](crate::bus::Publish) or
-/// [`Subscribe`](crate::bus::Subscribe) topic brand alone.
+/// The trait is sealed. A payload genuinely carried by two independent
+/// endpoints needs two meaningful newtypes, not one type with two contracts.
+pub trait Endpoint:
+    Payload + crate::__compat::wire::DescribeWire + sealed::Endpoint + 'static
+{
+    /// The wire family this endpoint belongs to.
+    type Family: Family;
+    /// What the endpoint means, and therefore how it may be operated.
+    type Semantics: EndpointSemantics;
+}
+
+/// A [`Query`] endpoint: the request type, plus the response it is answered
+/// with.
+pub trait QueryEndpoint: Endpoint<Semantics = Query> {
+    /// The response payload encoded in the reply.
+    type Response: Payload + crate::__compat::wire::DescribeWire;
+}
+
+/// An endpoint of the [`Robot`] family: what participant IO accepts.
 ///
-/// This marker is intentionally unsealed because `protocol_tree!` must be able
-/// to implement it when expanded in downstream crates. Consequently Rust
-/// cannot prevent hand-written downstream implementations; the supported
-/// contract is the descriptor-derived implementation emitted by the macro.
-pub trait ClientPublishContract: EndpointDescriptor {}
+/// Blanket-implemented, so it is a name for the family bound rather than a
+/// second thing a declaration has to say. `RuntimeEndpoint` and
+/// `SupervisorEndpoint` deliberately do not exist: no bound needs them.
+pub trait RobotEndpoint: Endpoint<Family = Robot> {}
 
-/// Marker for an endpoint whose client side receives from its owner.
-///
-/// Generated by `protocol_tree!` for `State<T>`, `Sample<T>`, `Event<T>`, and
-/// `Stream<T, Out>` descriptors. `Out` is relative to the endpoint owner: the
-/// owner publishes and the external client receives. Queries retain their separate
-/// [`AskQuery`](crate::bus::AskQuery) and [`ServeQuery`](crate::bus::ServeQuery) brands
-/// and deliberately implement neither client pub/sub role.
-///
-/// Like [`ClientPublishContract`], this marker remains unsealed so downstream
-/// `protocol_tree!` expansion can implement it. Hand-written implementations
-/// are outside the generated protocol contract.
-pub trait ClientReceiveContract: EndpointDescriptor {}
-
-/// Marker for an endpoint whose temporal meaning is current state.
-///
-/// Generated by `protocol_tree!` for every ordinary `State<T>` endpoint. Deliberately
-/// NOT implemented for the runtime-owned world-clock hand - see
-/// [`WorldClockContract`] for why that exclusion is the enforcement mechanism,
-/// not an oversight.
-pub trait StateContract: EndpointDescriptor {}
-
-/// Marker for the framework's single runtime-owned world-clock hand.
-///
-/// Deliberately a SIBLING of [`StateContract`], not a subtrait of it: if the
-/// world clock also implemented `StateContract`, it would still satisfy the
-/// ordinary, unrestricted `state_publisher` builder every participant has,
-/// which would make "only the world authority mints world steps" an unenforced
-/// convention rather than a compiler rule.
-/// Excluding it from `StateContract` is what makes that builder reject it at
-/// compile time, so the only way to publish the world clock is
-/// [`WorldClockPublisher::mint`](crate::bus::handle::publisher::WorldClockPublisher::mint),
-/// which the external client driving the simulated world calls directly and no
-/// participant reaches: the `phoxal` facade neither exposes it nor names it.
-///
-/// Bounds [`WorldClockPublisher`](crate::bus::handle::publisher::WorldClockPublisher), a
-/// dedicated handle type separate from
-/// [`StatePublisher`](crate::bus::handle::publisher::StatePublisher) even though both publish
-/// at a logical step with the same [`StepStamp`](crate::bus::handle::stamp::StepStamp)
-/// path: sharing one generic handle type across both traits would force
-/// `StatePublisher`'s bound onto a common supertrait, which would blur an
-/// ordinary participant's "wrong contract for `StatePublisher`" compile error
-/// (today a precise `B: StateContract` message with the real `state` topics
-/// listed as candidates) into a less legible one naming an internal plumbing
-/// trait instead. Two small handle types keep that diagnostic exact.
-pub trait WorldClockContract: EndpointDescriptor {}
-
-/// Marker for an endpoint whose temporal meaning is an ordered stream chunk.
-pub trait StreamContract: EndpointDescriptor {}
-
-/// Marker for a state-temporal, ordered event endpoint.
-///
-/// Events use the stream transport's ordered/gap-visible behavior but are
-/// stamped like state at a logical step. Generated endpoint descriptors should
-/// implement this marker and `StreamDeliveryContract`; the payload remains a
-/// plain serde type.
-pub trait EventContract: EndpointDescriptor + StreamDeliveryContract {}
-
-/// Marker for the endpoint kind `Sample`.
-pub trait SampleContract: EndpointDescriptor {}
-
-/// Marker for the endpoint kind `Setpoint`.
-pub trait SetpointContract: EndpointDescriptor {}
-
-/// Marker for a contract whose transport retains the newest state snapshot.
-///
-/// This is deliberately independent from the temporal publisher marker above:
-/// a diagnostic or event can use state-temporal stamping while requiring an
-/// ordered transport family.
-pub trait StateDeliveryContract: EndpointDescriptor {}
-
-/// Marker for a contract whose transport preserves bounded ordered samples
-/// with explicit loss evidence.
-pub trait SampleDeliveryContract: EndpointDescriptor {}
-
-/// Marker for a contract whose transport retains only the newest actionable
-/// intent.
-pub trait SetpointDeliveryContract: EndpointDescriptor {}
-
-/// Marker for a contract whose transport preserves ordered chunks and surfaces
-/// saturation rather than evicting an older chunk.
-pub trait StreamDeliveryContract: EndpointDescriptor {}
+impl<E: Endpoint<Family = Robot>> RobotEndpoint for E {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[derive(Debug, PartialEq, serde::Deserialize, serde::Serialize)]
-    struct SharedPayload {
-        value: u8,
-    }
-
-    enum TestApi {}
-
-    impl ApiFamily for TestApi {
-        const ID: &'static str = "endpoint-test";
-    }
-
-    struct StateEndpoint;
-    struct EventEndpoint;
-
-    impl EndpointDescriptor for StateEndpoint {
-        type Api = TestApi;
-        type Payload = SharedPayload;
-
-        const NAME: &'static str = "endpoint-test::state";
-        const FAMILY: &'static str = "endpoint-test";
-        const CONTRACT: &'static str = "state";
-        const TOPIC: &'static str = "endpoint-test/state";
-        const KIND: EndpointKind = EndpointKind::State;
-    }
-
-    impl StateContract for StateEndpoint {}
-    impl StateDeliveryContract for StateEndpoint {}
-
-    impl EndpointDescriptor for EventEndpoint {
-        type Api = TestApi;
-        type Payload = SharedPayload;
-
-        const NAME: &'static str = "endpoint-test::event";
-        const FAMILY: &'static str = "endpoint-test";
-        const CONTRACT: &'static str = "event";
-        const TOPIC: &'static str = "endpoint-test/event";
-        const KIND: EndpointKind = EndpointKind::Event;
-    }
-
-    impl EventContract for EventEndpoint {}
-    impl StreamDeliveryContract for EventEndpoint {}
-
-    fn accepts_state_endpoint<E: EndpointDescriptor<Payload = SharedPayload>>() {}
-
-    fn accepts_event_handles(
-        _: Option<crate::bus::handle::publisher::EventPublisher<EventEndpoint>>,
-        _: Option<crate::bus::handle::subscriber::EventReceiver<EventEndpoint>>,
-    ) {
-    }
-
+    /// Each semantic's delivery lane follows from its wire kind, so a
+    /// declaration cannot state a kind and a lane that disagree.
     #[test]
-    fn one_plain_payload_can_be_reused_by_distinct_endpoint_descriptors() {
-        accepts_state_endpoint::<StateEndpoint>();
-        accepts_state_endpoint::<EventEndpoint>();
-        accepts_event_handles(None, None);
+    fn every_semantic_derives_its_lane_from_its_kind() {
+        for (kind, delivery) in [
+            (
+                <State as EndpointSemantics>::KIND,
+                <State as EndpointSemantics>::DELIVERY,
+            ),
+            (
+                <Sample as EndpointSemantics>::KIND,
+                <Sample as EndpointSemantics>::DELIVERY,
+            ),
+            (
+                <Event as EndpointSemantics>::KIND,
+                <Event as EndpointSemantics>::DELIVERY,
+            ),
+            (
+                <Setpoint as EndpointSemantics>::KIND,
+                <Setpoint as EndpointSemantics>::DELIVERY,
+            ),
+            (
+                <Stream<In> as EndpointSemantics>::KIND,
+                <Stream<In> as EndpointSemantics>::DELIVERY,
+            ),
+            (
+                <Stream<Out> as EndpointSemantics>::KIND,
+                <Stream<Out> as EndpointSemantics>::DELIVERY,
+            ),
+            (
+                <Query as EndpointSemantics>::KIND,
+                <Query as EndpointSemantics>::DELIVERY,
+            ),
+            (
+                <WorldClock as EndpointSemantics>::KIND,
+                <WorldClock as EndpointSemantics>::DELIVERY,
+            ),
+        ] {
+            assert_eq!(kind.delivery_family(), delivery);
+        }
+    }
 
-        assert_eq!(StateEndpoint::KIND, EndpointKind::State);
-        assert_eq!(EventEndpoint::KIND, EndpointKind::Event);
-        assert_ne!(StateEndpoint::TOPIC, EventEndpoint::TOPIC);
+    /// The world clock keeps the wire shape of the event it has always been:
+    /// its distinctness is a Rust-level authority, not a wire change.
+    #[test]
+    fn the_world_clock_keeps_the_event_wire_kind() {
         assert_eq!(
-            EndpointKind::Event.delivery_family(),
+            <WorldClock as EndpointSemantics>::KIND,
+            <Event as EndpointSemantics>::KIND
+        );
+        assert_eq!(
+            <WorldClock as EndpointSemantics>::DELIVERY,
             DeliveryFamily::Stream
         );
+    }
+
+    /// Every family is rooted at its own name, which is the leading segment of
+    /// every key below it.
+    #[test]
+    fn every_family_identifies_itself_by_name() {
+        assert_eq!(<Robot as Family>::ID, "robot");
+        assert_eq!(<Runtime as Family>::ID, "runtime");
+        assert_eq!(<Supervisor as Family>::ID, "supervisor");
     }
 }

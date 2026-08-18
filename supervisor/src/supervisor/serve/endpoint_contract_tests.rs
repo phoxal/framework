@@ -8,7 +8,10 @@
 use std::fmt::Debug;
 use std::fs;
 
-use phoxal::bus::{Codec, EndpointDescriptor, EndpointKind, MessagePack, QueryEndpointDescriptor};
+use phoxal::bus::{
+    Codec, Endpoint, EndpointKind, EndpointSemantics, MessagePack, Publish, QueryEndpoint,
+    ServeQuery, Topic,
+};
 use phoxal::identity::{ParticipantId, ProducerId};
 use phoxal::model::builder::RobotBuilder;
 use phoxal::model::manifest::ManifestDocument;
@@ -32,35 +35,42 @@ fn connect_reply_reports_the_owner_framework_train() {
     );
 }
 
+/// The concrete keys the tree renders for the supervisor's own endpoints, and
+/// the bodies each of them carries. Every key is read off the owner-side topic
+/// this process actually binds, so a path or a leaf that moved shows up here as
+/// the key it now renders.
 #[test]
-fn generated_endpoints_pin_the_supervisor_boundary() {
-    assert_query_round_trip::<supervisor::endpoint::connect::TopicEndpoint>(
+fn the_supervisor_boundary_is_pinned_to_its_rendered_keys() {
+    let api = supervisor::topics();
+
+    assert_query_round_trip(
+        &api.connect().owner(),
         "supervisor/connect",
         ConnectRequest::V0 {},
         connect_reply(),
     );
 
-    assert_endpoint::<supervisor::endpoint::info::TopicEndpoint>(
-        "supervisor/info",
-        EndpointKind::Query,
-    );
+    assert_query_endpoint(&api.info().owner(), "supervisor/info");
     let request =
         MessagePack::encode(&supervisor::info::InfoRequest {}).expect("a request encodes");
     MessagePack::decode::<supervisor::info::InfoRequest>(&request).expect("a request decodes");
 
     let state = present_state().0;
     let snapshot = supervisor::execution::SnapshotDocument::V0(state.snapshot());
-    assert_stream_round_trip::<supervisor::endpoint::snapshot::TopicEndpoint>(
+    assert_stream_round_trip(
+        &api.snapshot().owner(),
         "supervisor/snapshot",
         snapshot.clone(),
     );
-    assert_query_round_trip::<supervisor::endpoint::snapshot::CurrentEndpoint>(
+    assert_query_round_trip(
+        &api.snapshot().current().owner(),
         "supervisor/snapshot/current",
         supervisor::snapshot::CurrentRequest {},
         snapshot,
     );
 
-    assert_query_round_trip::<supervisor::endpoint::logs::SnapshotEndpoint>(
+    assert_query_round_trip(
+        &api.logs().snapshot().owner(),
         "supervisor/logs/snapshot",
         supervisor::logs::SnapshotRequest {
             participant_id: Some("brain".to_owned()),
@@ -74,12 +84,10 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
             next_before_sequence: Some(5),
         },
     );
-    assert_endpoint::<supervisor::endpoint::logs::FollowEndpoint>(
-        "supervisor/logs/follow",
-        EndpointKind::Stream,
-    );
+    assert_stream_endpoint(&api.logs().follow().owner(), "supervisor/logs/follow");
 
-    assert_query_round_trip::<supervisor::endpoint::telemetry::SnapshotEndpoint>(
+    assert_query_round_trip(
+        &api.telemetry().snapshot().owner(),
         "supervisor/telemetry/snapshot",
         supervisor::telemetry::SnapshotRequest {
             participant_id: None,
@@ -93,12 +101,13 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
             next_before_sequence: None,
         },
     );
-    assert_endpoint::<supervisor::endpoint::telemetry::FollowEndpoint>(
+    assert_stream_endpoint(
+        &api.telemetry().follow().owner(),
         "supervisor/telemetry/follow",
-        EndpointKind::Stream,
     );
 
-    assert_query_round_trip::<supervisor::endpoint::command::TopicEndpoint>(
+    assert_query_round_trip(
+        &api.command().owner(),
         "supervisor/command",
         supervisor::command::Request::V0 {
             command: Command::Reboot,
@@ -107,7 +116,8 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
             outcome: CommandOutcome::Accepted { at_revision: 23 },
         },
     );
-    assert_query_round_trip::<supervisor::endpoint::bundle::GetEndpoint>(
+    assert_query_round_trip(
+        &api.bundle().get().owner(),
         "supervisor/bundle/get",
         supervisor::bundle::GetRequest {
             path: "assets/map.bin".to_owned(),
@@ -123,7 +133,7 @@ fn generated_endpoints_pin_the_supervisor_boundary() {
 #[test]
 fn the_info_reply_is_the_manifest_document_itself() {
     fn reply_is_the_manifest_document(
-        reply: <supervisor::endpoint::info::TopicEndpoint as QueryEndpointDescriptor>::Response,
+        reply: <supervisor::info::InfoRequest as QueryEndpoint>::Response,
     ) -> ManifestDocument {
         reply
     }
@@ -135,10 +145,9 @@ fn the_info_reply_is_the_manifest_document_itself() {
             .expect("fixture robot"),
     );
     let encoded = MessagePack::encode(&manifest).expect("the manifest encodes");
-    let decoded = MessagePack::decode::<
-        <supervisor::endpoint::info::TopicEndpoint as QueryEndpointDescriptor>::Response,
-    >(&encoded)
-    .expect("the manifest decodes");
+    let decoded =
+        MessagePack::decode::<<supervisor::info::InfoRequest as QueryEndpoint>::Response>(&encoded)
+            .expect("the manifest decodes");
     let decoded = reply_is_the_manifest_document(decoded);
     assert_eq!(decoded.robot().id().as_str(), "rover");
     assert_eq!(
@@ -251,31 +260,47 @@ fn present_state() -> (ExecutionState, ParticipantId) {
     (state, participant)
 }
 
-fn assert_endpoint<E: EndpointDescriptor>(topic: &str, kind: EndpointKind) {
-    assert_eq!(E::TOPIC, topic);
-    assert_eq!(E::KIND, kind);
+/// One query endpoint's rendered key and declared kind, read off the owner-side
+/// topic the supervisor binds.
+fn assert_query_endpoint<E: QueryEndpoint>(topic: &Topic<ServeQuery<E>>, key: &str) {
+    assert_eq!(topic.key(), key);
+    assert_eq!(
+        <E::Semantics as EndpointSemantics>::KIND,
+        EndpointKind::Query
+    );
 }
 
-fn assert_stream_round_trip<E>(topic: &str, payload: E::Payload)
+/// One stream endpoint's rendered key and declared kind.
+fn assert_stream_endpoint<E: Endpoint>(topic: &Topic<Publish<E>>, key: &str) {
+    assert_eq!(topic.key(), key);
+    assert_eq!(
+        <E::Semantics as EndpointSemantics>::KIND,
+        EndpointKind::Stream
+    );
+}
+
+fn assert_stream_round_trip<E>(topic: &Topic<Publish<E>>, key: &str, payload: E)
 where
-    E: EndpointDescriptor,
-    E::Payload: Debug + PartialEq,
+    E: Endpoint + Debug + PartialEq,
 {
-    assert_endpoint::<E>(topic, EndpointKind::Stream);
+    assert_stream_endpoint(topic, key);
     let encoded = MessagePack::encode(&payload).expect("endpoint payload encodes");
-    let decoded = MessagePack::decode::<E::Payload>(&encoded).expect("endpoint payload decodes");
+    let decoded = MessagePack::decode::<E>(&encoded).expect("endpoint payload decodes");
     assert_eq!(decoded, payload);
 }
 
-fn assert_query_round_trip<E>(topic: &str, request: E::Request, response: E::Response)
-where
-    E: QueryEndpointDescriptor,
-    E::Request: Debug + PartialEq,
+fn assert_query_round_trip<E>(
+    topic: &Topic<ServeQuery<E>>,
+    key: &str,
+    request: E,
+    response: E::Response,
+) where
+    E: QueryEndpoint + Debug + PartialEq,
     E::Response: Debug + PartialEq,
 {
-    assert_endpoint::<E>(topic, EndpointKind::Query);
+    assert_query_endpoint(topic, key);
     let encoded = MessagePack::encode(&request).expect("endpoint request encodes");
-    let decoded = MessagePack::decode::<E::Request>(&encoded).expect("endpoint request decodes");
+    let decoded = MessagePack::decode::<E>(&encoded).expect("endpoint request decodes");
     assert_eq!(decoded, request);
 
     let encoded = MessagePack::encode(&response).expect("endpoint response encodes");

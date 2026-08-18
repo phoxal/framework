@@ -7,8 +7,6 @@
 //! and the one execution supervisor find and fence each other.
 
 /// The `supervisor` contract family.
-pub mod api {
-    pub use crate::protocol::supervisor::*;
-}
+pub mod api;
 
 pub mod rendezvous;

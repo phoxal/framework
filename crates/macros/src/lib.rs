@@ -2,7 +2,6 @@
 //!
 //! Three macro families make up the authoring surface:
 //!
-//! - [`protocol_tree!`] - declares the framework protocol catalogue.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@brain`] - declare a unit
@@ -16,23 +15,9 @@
 //! `extern crate self as phoxal;`.
 
 mod authoring;
-mod protocol_tree;
 mod wire_schema;
 
 use proc_macro::TokenStream;
-
-/// Declare every semantic contract family in one catalogue.
-///
-/// Each `path` names the ordinary Rust module that owns its payload types and
-/// is followed by descriptor-only endpoint declarations. The macro adds the
-/// public family modules, endpoint descriptors, topic builders, manifest, and
-/// compatibility surface without exporting helper macros or aliases.
-#[proc_macro]
-pub fn protocol_tree(input: TokenStream) -> TokenStream {
-    protocol_tree::expand_tree(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
 
 /// Attach a positive, finite frequency to the ordinary
 /// [`Participant::step`](https://docs.rs/phoxal) override.

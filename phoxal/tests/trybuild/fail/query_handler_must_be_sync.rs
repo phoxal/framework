@@ -13,7 +13,7 @@ impl Participant for AsyncQueryHandler {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().bundle().get(), Self::get)?;
+        ctx.query(supervisor::topics().bundle().get().owner(), Self::get)?;
         Ok(((), Api))
     }
 }

@@ -55,24 +55,24 @@ impl SensorBinding {
     // them), so these are the client `Subscribe` side from the public builder.
     pub(crate) fn camera_topic(
         &self,
-    ) -> phoxal::Result<
-        phoxal::bus::Topic<phoxal::bus::Subscribe<api::endpoint::component::camera::FrameEndpoint>>,
-    > {
-        Ok(api::topic::client()
+    ) -> phoxal::Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>>>
+    {
+        Ok(api::topics()
             .component(&self.capability.component_id)?
             .camera(&self.capability.capability_id)?
-            .frame())
+            .frame()
+            .client())
     }
 
     pub(crate) fn depth_topic(
         &self,
-    ) -> phoxal::Result<
-        phoxal::bus::Topic<phoxal::bus::Subscribe<api::endpoint::component::depth::FrameEndpoint>>,
-    > {
-        Ok(api::topic::client()
+    ) -> phoxal::Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::depth::Frame>>>
+    {
+        Ok(api::topics()
             .component(&self.capability.component_id)?
             .depth(&self.capability.capability_id)?
-            .frame())
+            .frame()
+            .client())
     }
 }
 

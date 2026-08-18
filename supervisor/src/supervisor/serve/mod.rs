@@ -10,8 +10,8 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use phoxal::bundle::RuntimeBundle;
 use phoxal::bus::{
-    BusHandle, Codec, EndpointDescriptor, IncomingQuery, MessagePack, QueryFailure,
-    ServerQueryable, StreamPublisher,
+    BusHandle, Codec, IncomingQuery, MessagePack, QueryEndpoint, QueryFailure, ServeQuery,
+    ServerQueryable, StreamPublisher, Topic,
 };
 use phoxal::model::manifest::ManifestDocument;
 use phoxal::supervisor::api as supervisor;
@@ -68,7 +68,7 @@ pub(crate) async fn serve(
 /// it once the two trains have agreed, which keeps this document exactly what
 /// every framework line can decode.
 async fn serve_connect(bus: BusHandle) -> Result<()> {
-    let server = declare::<supervisor::endpoint::connect::TopicEndpoint>(&bus).await?;
+    let server = declare(&bus, &supervisor::topics().connect().owner()).await?;
     loop {
         let incoming = server.recv().await?;
         let ConnectRequest::V0 {} = match decode(&incoming).await? {
@@ -92,7 +92,7 @@ fn connect_reply() -> ConnectReply {
 /// projection that could disagree with it. The supervisor holds one bundle for
 /// the life of the process, so the reply never changes.
 async fn serve_info(bus: BusHandle, manifest: ManifestDocument) -> Result<()> {
-    let server = declare::<supervisor::endpoint::info::TopicEndpoint>(&bus).await?;
+    let server = declare(&bus, &supervisor::topics().info().owner()).await?;
     loop {
         let incoming = server.recv().await?;
         let supervisor::info::InfoRequest {} = match decode(&incoming).await? {
@@ -104,7 +104,7 @@ async fn serve_info(bus: BusHandle, manifest: ManifestDocument) -> Result<()> {
 }
 
 async fn serve_snapshots(bus: BusHandle, state: ExecutionState) -> Result<()> {
-    let publisher = StreamPublisher::new(bus, &supervisor::topic::owner().snapshot().topic())?;
+    let publisher = StreamPublisher::new(bus, &supervisor::topics().snapshot().owner())?;
     let mut snapshots = state.subscribe();
     publisher.send(SnapshotDocument::V0(snapshots.borrow_and_update().clone()))?;
     loop {
@@ -117,7 +117,7 @@ async fn serve_snapshots(bus: BusHandle, state: ExecutionState) -> Result<()> {
 }
 
 async fn serve_current(bus: BusHandle, state: ExecutionState) -> Result<()> {
-    let server = declare::<supervisor::endpoint::snapshot::CurrentEndpoint>(&bus).await?;
+    let server = declare(&bus, &supervisor::topics().snapshot().current().owner()).await?;
     loop {
         let incoming = server.recv().await?;
         let _: supervisor::snapshot::CurrentRequest = match decode(&incoming).await? {
@@ -134,7 +134,7 @@ async fn serve_current(bus: BusHandle, state: ExecutionState) -> Result<()> {
 /// client asks it for a path instead of reaching into a filesystem it does not
 /// own.
 async fn serve_bundle(bus: BusHandle, root: PathBuf) -> Result<()> {
-    let server = declare::<supervisor::endpoint::bundle::GetEndpoint>(&bus).await?;
+    let server = declare(&bus, &supervisor::topics().bundle().get().owner()).await?;
     loop {
         let incoming = server.recv().await?;
         let request: supervisor::bundle::GetRequest = match decode(&incoming).await? {
@@ -190,7 +190,7 @@ fn bundle_entry(root: &Path, requested: &str) -> supervisor::bundle::GetResponse
 /// the processes the session that launched them recorded, and a client attached
 /// to an execution it did not start has nothing here to stop it with.
 async fn serve_commands(bus: BusHandle, state: ExecutionState) -> Result<()> {
-    let server = declare::<supervisor::endpoint::command::TopicEndpoint>(&bus).await?;
+    let server = declare(&bus, &supervisor::topics().command().owner()).await?;
     loop {
         let incoming = server.recv().await?;
         let request: supervisor::command::Request = match decode(&incoming).await? {
@@ -251,8 +251,15 @@ fn command(state: &ExecutionState, command: Command) -> (CommandOutcome, HostAct
     )
 }
 
-async fn declare<E: EndpointDescriptor>(bus: &BusHandle) -> Result<ServerQueryable> {
-    Ok(bus.declare_server(E::TOPIC).await?)
+/// Declare the queryable for one supervisor-owned query endpoint.
+///
+/// The owner-side topic is the only way in, so the key a server binds is the
+/// one the api tree rendered for that endpoint and nothing a caller spelled.
+async fn declare<E: QueryEndpoint>(
+    bus: &BusHandle,
+    topic: &Topic<ServeQuery<E>>,
+) -> Result<ServerQueryable> {
+    Ok(bus.declare_server(topic.key()).await?)
 }
 
 async fn decode<T: serde::de::DeserializeOwned>(incoming: &IncomingQuery) -> Result<Option<T>> {

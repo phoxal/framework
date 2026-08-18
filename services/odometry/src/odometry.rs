@@ -45,15 +45,12 @@ impl EncoderBinding {
     /// is the client `Subscribe` side from the public builder.
     fn topic(
         &self,
-    ) -> Result<
-        phoxal::bus::Topic<
-            phoxal::bus::Subscribe<api::endpoint::component::encoder::SampleEndpoint>,
-        >,
-    > {
-        Ok(api::topic::client()
+    ) -> Result<phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>>> {
+        Ok(api::topics()
             .component(&self.reference.component_id)?
             .encoder(&self.reference.capability_id)?
-            .sample())
+            .sample()
+            .client())
     }
 }
 
@@ -62,7 +59,7 @@ impl EncoderBinding {
 /// wheel's direction sign.
 struct BoundEncoder {
     binding: EncoderBinding,
-    subscriber: SampleReceiver<api::endpoint::component::encoder::SampleEndpoint>,
+    subscriber: SampleReceiver<api::component::encoder::Sample>,
 }
 
 /// Typed odometry config built from the robot model.
@@ -119,7 +116,7 @@ impl Pose {
 pub(crate) struct Api {
     left: Vec<BoundEncoder>,
     right: Vec<BoundEncoder>,
-    state: StatePublisher<api::endpoint::odometry::StateEndpoint>,
+    state: StatePublisher<api::odometry::State>,
 }
 
 pub(crate) struct OdometryState {
@@ -218,7 +215,7 @@ impl Participant for Odometry {
                 subscriber,
             });
         }
-        let state = ctx.state_publisher(api::topic::owner().odometry().state())?;
+        let state = ctx.state_publisher(api::topics().odometry().state().owner())?;
 
         Ok((
             OdometryState {

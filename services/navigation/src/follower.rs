@@ -21,7 +21,7 @@ pub(crate) struct Output {
 }
 
 pub(crate) fn pursue(
-    path: &api::navigation::Path,
+    path: &api::navigation::PlannedPath,
     localization: &api::localize::LocalizationState,
 ) -> Option<Output> {
     let final_pose = path.poses.last()?;
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn reaches_goal_with_zero_candidate() {
-        let path = api::navigation::Path {
+        let path = api::navigation::PlannedPath {
             poses: vec![api::navigation::Pose {
                 x_m: 0.1,
                 y_m: 0.0,
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn aligns_requested_goal_yaw_before_success() {
-        let path = api::navigation::Path {
+        let path = api::navigation::PlannedPath {
             poses: vec![api::navigation::Pose {
                 x_m: 0.0,
                 y_m: 0.0,
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn target_behind_selects_reverse_motion() {
-        let path = api::navigation::Path {
+        let path = api::navigation::PlannedPath {
             poses: vec![api::navigation::Pose {
                 x_m: -1.0,
                 y_m: 0.0,

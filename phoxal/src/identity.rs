@@ -177,6 +177,15 @@ topology_identifier!(
     "service id"
 );
 
+/// A component instance is the dynamic segment of every component-scoped
+/// endpoint key, so it is one of the few identities the api tree accepts as a
+/// bound segment.
+impl crate::bus::TopicSegment for ComponentInstanceId {
+    fn segment(&self) -> Result<crate::bus::KeySegment, crate::bus::KeySegmentError> {
+        crate::bus::KeySegment::new(self.as_str())
+    }
+}
+
 /// A topology identifier that is not one normalized token.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TopologyIdError {

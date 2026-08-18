@@ -7,7 +7,7 @@ error[E0369]: binary operation `<` cannot be applied to type `RobotInstant`
    |             RobotInstant
    |
 note: `RobotInstant` does not implement `PartialOrd`
-  --> $WORKSPACE/crates/bus/src/time.rs
+  --> src/bus/time.rs
    |
    | pub struct RobotInstant {
    | ^^^^^^^^^^^^^^^^^^^^^^^ `RobotInstant` is defined in another crate
@@ -21,7 +21,7 @@ error[E0369]: cannot subtract `RobotInstant` from `RobotInstant`
    |             RobotInstant
    |
 note: `RobotInstant` does not implement `Sub`
-  --> $WORKSPACE/crates/bus/src/time.rs
+  --> src/bus/time.rs
    |
    | pub struct RobotInstant {
    | ^^^^^^^^^^^^^^^^^^^^^^^ `RobotInstant` is defined in another crate
@@ -43,7 +43,7 @@ error[E0369]: binary operation `<` cannot be applied to type `WallTimestamp`
    |             WallTimestamp
    |
 note: `WallTimestamp` does not implement `PartialOrd`
-  --> $WORKSPACE/crates/bus/src/time.rs
+  --> src/bus/time.rs
    |
    | pub struct WallTimestamp {
    | ^^^^^^^^^^^^^^^^^^^^^^^^ `WallTimestamp` is defined in another crate

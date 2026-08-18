@@ -1,48 +1,30 @@
-error[E0277]: the trait bound `phoxal::api::endpoint::drive::StateEndpoint: StreamContract` is not satisfied
+error[E0277]: the trait bound `phoxal::bus::State: StreamDelivered` is not satisfied
   --> tests/trybuild/fail/state_cannot_be_received_as_stream.rs:13:42
    |
-13 |         let _state = ctx.stream_receiver(api::topic::client().drive().state());
-   |                          --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamContract` is not implemented for `phoxal::api::endpoint::drive::StateEndpoint`
+13 |         let _state = ctx.stream_receiver(api::topics().drive().state().client());
+   |                          --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamDelivered` is not implemented for `phoxal::bus::State`
    |                          |
    |                          required by a bound introduced by this call
    |
-   = help: the following other types implement trait `StreamContract`:
-             StreamEndpoint
-             phoxal_protocol::runtime::endpoint::logs::TopicEndpoint
-             phoxal_protocol::runtime::endpoint::telemetry::TopicEndpoint
-             phoxal_protocol::supervisor::endpoint::logs::FollowEndpoint
-             phoxal_protocol::supervisor::endpoint::snapshot::TopicEndpoint
-             phoxal_protocol::supervisor::endpoint::telemetry::FollowEndpoint
+help: the following other types implement trait `StreamDelivered`
+  --> src/bus/contract.rs
+   |
+   | impl StreamDelivered for Event {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `phoxal::bus::Event`
+...
+   | impl StreamDelivered for Stream<In> {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `phoxal::bus::Stream<In>`
+...
+   | impl StreamDelivered for Stream<Out> {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `phoxal::bus::Stream<Out>`
+...
+   | impl StreamDelivered for WorldClock {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `WorldClock`
 note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
   --> src/participant/context.rs
    |
-   |     pub async fn stream_receiver<
+   |     pub async fn stream_receiver<E: RobotEndpoint>(
    |                  --------------- required by a bound in this associated function
-   |         B: StreamContract<Api = R::ContractApi> + StreamDeliveryContract<Api = R::ContractApi>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::stream_receiver`
-
-error[E0277]: the trait bound `phoxal::api::endpoint::drive::StateEndpoint: StreamDeliveryContract` is not satisfied
-  --> tests/trybuild/fail/state_cannot_be_received_as_stream.rs:13:42
-   |
-13 |         let _state = ctx.stream_receiver(api::topic::client().drive().state());
-   |                          --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StreamDeliveryContract` is not implemented for `phoxal::api::endpoint::drive::StateEndpoint`
-   |                          |
-   |                          required by a bound introduced by this call
-   |
-   = help: the following other types implement trait `StreamDeliveryContract`:
-             ResultEndpoint
-             StreamEndpoint
-             phoxal::api::endpoint::joint::StateEndpoint
-             phoxal_protocol::runtime::endpoint::logs::TopicEndpoint
-             phoxal_protocol::runtime::endpoint::simulation::ClockEndpoint
-             phoxal_protocol::runtime::endpoint::telemetry::TopicEndpoint
-             phoxal_protocol::supervisor::endpoint::logs::FollowEndpoint
-             phoxal_protocol::supervisor::endpoint::snapshot::TopicEndpoint
-             phoxal_protocol::supervisor::endpoint::telemetry::FollowEndpoint
-note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
-  --> src/participant/context.rs
-   |
-   |     pub async fn stream_receiver<
-   |                  --------------- required by a bound in this associated function
-   |         B: StreamContract<Api = R::ContractApi> + StreamDeliveryContract<Api = R::ContractApi>,
-   |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::stream_receiver`
+...
+   |         E::Semantics: StreamDelivered,
+   |                       ^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::stream_receiver`

@@ -248,9 +248,9 @@ pub(super) async fn run(bus: BusHandle) -> Result<()> {
     let history = Arc::new(Mutex::new(History::default()));
     let follow = StreamPublisher::new(
         bus.clone(),
-        &supervisor::topic::owner().telemetry().follow(),
+        &supervisor::topics().telemetry().follow().owner(),
     )?;
-    let rollups = StreamReceiver::new(&bus, &runtime::topic::client().telemetry().topic()).await?;
+    let rollups = StreamReceiver::new(&bus, &runtime::topics().telemetry().client()).await?;
     let mut tasks = JoinSet::new();
 
     let ingest_history = Arc::clone(&history);
@@ -279,8 +279,11 @@ pub(super) async fn run(bus: BusHandle) -> Result<()> {
     let query_history = Arc::clone(&history);
     let query_bus = bus.clone();
     tasks.spawn(async move {
-        let server =
-            super::declare::<supervisor::endpoint::telemetry::SnapshotEndpoint>(&query_bus).await?;
+        let server = super::declare(
+            &query_bus,
+            &supervisor::topics().telemetry().snapshot().owner(),
+        )
+        .await?;
         loop {
             let incoming = server.recv().await?;
             let request: supervisor::telemetry::SnapshotRequest =

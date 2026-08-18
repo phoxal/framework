@@ -29,7 +29,7 @@ impl Participant for SerializedSmoke {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().bundle().get(), Self::query)?;
+        ctx.query(supervisor::topics().bundle().get().owner(), Self::query)?;
         Ok((SmokeState::default(), ()))
     }
 
@@ -91,7 +91,7 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
 
         let querier = Querier::new(
             bus.clone(),
-            &supervisor::topic::client().bundle().get(),
+            &supervisor::topics().bundle().get().client(),
             Duration::from_secs(2),
         )
         .expect("create smoke querier");
