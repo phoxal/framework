@@ -177,7 +177,7 @@ where
 /// A near-twin of [`StatePublisher`] - same step-stamped publish path - kept
 /// as its own type rather than folded into `StatePublisher` precisely so
 /// `StatePublisher`'s bound can stay the exact
-/// [`State`](crate::bus::State) semantic. The world clock's semantic is
+/// [`State`] semantic. The world clock's semantic is
 /// [`WorldClock`], a sibling rather than a subtype, which is what makes the
 /// ordinary state publisher reject it at compile time.
 ///

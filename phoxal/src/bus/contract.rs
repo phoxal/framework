@@ -5,7 +5,7 @@
 //! for a query, the request) type the endpoint carries. An endpoint is not a
 //! separate descriptor beside its body: it *is* the body, with a [`Family`] and
 //! an [`EndpointSemantics`] attached. Both attachments are sealed and are
-//! written only by the [`crate::endpoints!`] declaration that sits beside the
+//! written only by the `endpoints!` declaration that sits beside the
 //! payload, so a hand-written implementation cannot invent an endpoint the
 //! compatibility records do not know about.
 //!
@@ -34,8 +34,8 @@ use crate::bus::topic::{AskQuery, Publish, ServeQuery, Subscribe, TopicKind};
 ///
 /// They live in a crate-private module, so an implementation outside `phoxal`
 /// cannot name them and therefore cannot implement the public traits that
-/// require them. Inside the crate the only writer is [`crate::endpoints!`],
-/// beside the payload it declares.
+/// require them. Inside the crate the only writer is the `endpoints!`
+/// declaration, beside the payload it declares.
 pub(crate) mod sealed {
     pub trait Endpoint {}
     pub trait Semantics {}
@@ -322,7 +322,7 @@ impl EndpointSemantics for WorldClock {
 impl StreamDelivered for WorldClock {}
 
 /// One endpoint: the payload (or request) type it carries, plus the family and
-/// semantics attached to it by its own [`crate::endpoints!`] declaration.
+/// semantics attached to it by its own `endpoints!` declaration.
 ///
 /// The trait is sealed. A payload genuinely carried by two independent
 /// endpoints needs two meaningful newtypes, not one type with two contracts.

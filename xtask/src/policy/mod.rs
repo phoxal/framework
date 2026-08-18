@@ -14,7 +14,8 @@
 //! what wire version the transport actually speaks - are ordinary tests in the
 //! crates that own them, and run under `cargo test --workspace`.
 //!
-//! Each rule lives in the module that owns it: [`artifact`] owns authored
+//! Each rule lives in the module that owns it: [`api_tree`] owns how the three
+//! wire families are declared, [`artifact`] owns authored
 //! package grammar, [`framework_executable`] owns exact non-catalog framework
 //! executables, [`registry`] joins those disjoint sets for publication policy,
 //! [`dependencies`] owns what the workspace's crates may depend on,
@@ -32,6 +33,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand};
 
+mod api_tree;
 mod artifact;
 mod comment_reference;
 mod dependencies;
@@ -178,7 +180,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 12] = [
+const RULES: [Rule; 14] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -218,6 +220,14 @@ const RULES: [Rule; 12] = [
     Rule {
         name: "source-reference alias shims stay absent",
         check: retired_surface::source_reference_alias_shims_stay_absent,
+    },
+    Rule {
+        name: "endpoint bindings come only from the declaration beside their payload",
+        check: api_tree::endpoint_bindings_come_only_from_the_declaration,
+    },
+    Rule {
+        name: "family-rooted keys are rendered by the api tree, never authored",
+        check: api_tree::family_rooted_keys_are_rendered_not_authored,
     },
     Rule {
         name: "unit-test modules have an explicit owner",

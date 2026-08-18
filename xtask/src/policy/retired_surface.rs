@@ -71,7 +71,7 @@ struct Retired {
 /// The rules these replaced differed only in which words they looked for, so
 /// they are rows rather than functions: a new retirement is a line here, and
 /// the scan itself is written once.
-const RETIRED: [Retired; 31] = [
+const RETIRED: [Retired; 32] = [
     // Runtime identity is minted from the compiled participant record, launch
     // is one clap-only process contract, the bus supplies its clock directly,
     // and a managed task is either critical or finite.
@@ -241,6 +241,13 @@ const RETIRED: [Retired; 31] = [
         token: Token::Identifier("manual_drive"),
         train: "0.64.0",
         why: "manual intent is normalized on the wire and carries no kinematic envelope",
+    },
+    // The api tree is ordinary Rust modules with two local declarations in
+    // them, so there is no global procedural catalogue to bring back.
+    Retired {
+        token: Token::Identifier("protocol_tree"),
+        train: "0.66.0",
+        why: "the api tree is declared module by module, not by one global grammar",
     },
 ];
 

@@ -8,7 +8,7 @@
 //!
 //! Payload structs, enums, implementations, and tests are ordinary Rust items
 //! in the module that owns them. The declaration below owns this level of the
-//! path; each child module owns its own. Walk it from [`topics()`], bind the
+//! path; each child module owns its own. Walk it from `topics()`, bind the
 //! dynamic segments as you go, and choose the side at the endpoint:
 //!
 //! ```ignore

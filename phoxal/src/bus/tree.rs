@@ -7,10 +7,10 @@
 //! A family is a Rust module tree. Each module is either a **branch** or a
 //! **leaf**:
 //!
-//! - a branch declares its child modules with [`crate::nodes!`], each child
+//! - a branch declares its child modules with `nodes!`, each child
 //!   being a static segment (`drive;`) or a static segment followed by one
 //!   typed dynamic segment (`joint(joint: JointId);`);
-//! - a leaf declares its endpoints with [`crate::endpoints!`], beside the
+//! - a leaf declares its endpoints with `endpoints!`, beside the
 //!   payload types they carry.
 //!
 //! Both declarations define a `Path` in their own module, so a module that

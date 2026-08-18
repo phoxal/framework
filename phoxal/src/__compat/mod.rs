@@ -6,7 +6,7 @@
 //! contracts put on the wire, which compatibility CI checks against published
 //! baselines.
 //!
-//! [`contract_surface`] is the crate aggregate. Each owner still states its own
+//! `contract_surface()` is the crate aggregate. Each owner still states its own
 //! records beside its own definitions - `bus::__compat`, `bundle::__compat`,
 //! `participant::metadata::__compat`, and the three api families, whose records
 //! the `nodes!`/`endpoints!` declarations emit from the same structure that
