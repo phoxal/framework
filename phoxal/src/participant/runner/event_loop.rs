@@ -257,11 +257,15 @@ pub(crate) async fn simulation_clock_feed(
     );
     loop {
         let observed = subscriber.recv().await.map_err(|error| {
-            anyhow::anyhow!("runtime/simulation/clock subscriber terminated: {error}")
+            anyhow::anyhow!(
+                "the world-clock subscriber on {} terminated: {error}",
+                topic.key()
+            )
         })?;
         let Some(at) = observed.metadata.produced_exactly_at() else {
             return Err(anyhow::anyhow!(
-                "runtime/simulation/clock sample has no exact production instant"
+                "a world-clock sample on {} has no exact production instant",
+                topic.key()
             ));
         };
         match handle.advance(at) {

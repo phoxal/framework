@@ -99,8 +99,8 @@ jobs:
   # can see it. It never fails on the verdict: an ordinary branch is not setting
   # a version, so there is no version for it to be judged against. The release
   # PR is where the same comparison becomes a gate, one job below.
-  # The checker compiles the five contract crates and a probe against their
-  # published counterparts.
+  # The checker compiles the framework library and a probe against its
+  # published counterpart.
   compatibility-report:
     name: compatibility report
     if: >-

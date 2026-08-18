@@ -13,8 +13,7 @@ use std::fs;
 use anyhow::{Context, Result};
 use cargo_metadata::{DependencyKind, MetadataCommand};
 
-use super::artifact::ArtifactKind;
-use super::framework_executable::{SPECS, spec_for_package};
+use super::framework_executable::SPECS;
 use super::{Subject, Violation, is_library_package};
 
 /// Every edge the published library graph may carry, and no other.
@@ -33,6 +32,24 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 1] = [("phoxal", "phoxal-macros")];
 const FORBIDDEN_EDGES: [(&str, &[&str]); 2] = [
     ("phoxal-macros", &["phoxal", "phoxal-cli"]),
     ("phoxal", &["phoxal-cli"]),
+];
+
+/// The framework library packages that stopped existing when the framework
+/// became one library.
+///
+/// They are modules of `phoxal` now, and their last published versions stay on
+/// crates.io forever. So a dependency on one of them still resolves, still
+/// compiles, and silently reintroduces a second copy of the model, the bus
+/// vocabulary or the wire contracts - which is a second compatibility identity
+/// in a product that has exactly one. Nothing may depend on them again, whatever
+/// the dependency kind.
+const RETIRED_LIBRARIES: [&str; 6] = [
+    "phoxal-protocol",
+    "phoxal-bus",
+    "phoxal-bundle",
+    "phoxal-model",
+    "phoxal-manifest",
+    "phoxal-runtime-contract",
 ];
 
 /// The feature no official participant and no framework executable may enable.
@@ -80,7 +97,7 @@ pub(super) fn public_library_dependency_direction_is_exact(
     Ok(violations)
 }
 
-pub(super) fn canonical_crates_and_official_participants_keep_forbidden_edges_absent(
+pub(super) fn canonical_crates_and_the_framework_executable_keep_forbidden_edges_absent(
     subject: &Subject,
 ) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
@@ -118,35 +135,45 @@ pub(super) fn canonical_crates_and_official_participants_keep_forbidden_edges_ab
                     package.name, dependency.name, dependency.kind
                 )));
             }
-        }
-    }
-
-    // An official artifact consumes a finalized bundle; the authored-source
-    // reader stops at bundle compilation and never links into a participant.
-    // It is a feature of the one framework library now, so the edge to look for
-    // is the feature rather than a package.
-    for package in &subject.members.packages {
-        let manifest = package.manifest_path.as_std_path();
-        let relative = manifest.strip_prefix(&subject.root).unwrap_or(manifest);
-        let official = relative
-            .components()
-            .next()
-            .and_then(|value| value.as_os_str().to_str())
-            .is_some_and(|top_level| ArtifactKind::try_from(top_level).is_ok())
-            || spec_for_package(package.name.as_str()).is_some();
-        if !official {
-            continue;
-        }
-        for dependency in &package.dependencies {
-            if dependency.name.as_str() == "phoxal"
+            // A framework executable consumes a finalized bundle; the
+            // authored-source reader stops at bundle compilation and never
+            // links into a process that runs a robot. It is a feature of the
+            // one framework library now, so the edge to look for is the feature
+            // rather than a package. The official participants are held to the
+            // same thing, and to the three host profiles beside it, by
+            // `consumer_profile`.
+            if dependency.name.as_str() == super::FACADE
                 && dependency
                     .features
                     .iter()
                     .any(|feature| feature == AUTHORING_FEATURE)
             {
                 violations.push(Violation::new(format!(
-                    "{} enables phoxal/{AUTHORING_FEATURE} ({:?})",
-                    package.name, dependency.kind
+                    "{} enables {}/{AUTHORING_FEATURE} ({:?})",
+                    package.name,
+                    super::FACADE,
+                    dependency.kind
+                )));
+            }
+        }
+    }
+    Ok(violations)
+}
+
+/// The retired library packages stay retired.
+pub(super) fn retired_framework_libraries_stay_absent(subject: &Subject) -> Result<Vec<Violation>> {
+    let mut violations = Vec::new();
+    for package in &subject.members.packages {
+        for dependency in &package.dependencies {
+            if RETIRED_LIBRARIES.contains(&dependency.name.as_str()) {
+                violations.push(Violation::new(format!(
+                    "{} -> {} ({:?}); that package is a module of {} now, and depending on its \
+                     last published version would compile a second copy of contracts this train \
+                     owns exactly one of",
+                    package.name,
+                    dependency.name,
+                    dependency.kind,
+                    super::FACADE
                 )));
             }
         }

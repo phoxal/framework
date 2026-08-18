@@ -14,11 +14,13 @@
 //! what wire version the transport actually speaks - are ordinary tests in the
 //! crates that own them, and run under `cargo test --workspace`.
 //!
-//! Each rule lives in the module that owns it: [`api_tree`] owns how the three
-//! wire families are declared, [`artifact`] owns authored
+//! Each rule lives in the module that owns it: [`artifact`] owns authored
 //! package grammar, [`framework_executable`] owns exact non-catalog framework
 //! executables, [`registry`] joins those disjoint sets for publication policy,
 //! [`dependencies`] owns what the workspace's crates may depend on,
+//! [`feature_gate`] owns where a consumer profile may be named,
+//! [`consumer_profile`] owns which profile an official participant may take,
+//! [`bus_boundary`] owns what only the bus module may do,
 //! [`retired_surface`] owns what deleted surfaces may not bring back,
 //! [`test_module_ownership`] owns where a unit-test module may sit,
 //! [`comment_reference`] owns what a comment may name, and [`tracked_source`]
@@ -33,11 +35,13 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand};
 
-mod api_tree;
 mod artifact;
+mod bus_boundary;
 mod comment_reference;
+mod consumer_profile;
 mod dependencies;
 mod executable;
+mod feature_gate;
 mod framework_executable;
 mod registry;
 mod retired_surface;
@@ -180,7 +184,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 14] = [
+const RULES: [Rule; 17] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -202,12 +206,33 @@ const RULES: [Rule; 14] = [
         check: dependencies::public_library_dependency_direction_is_exact,
     },
     Rule {
-        name: "canonical crates and official participants keep forbidden edges absent",
-        check: dependencies::canonical_crates_and_official_participants_keep_forbidden_edges_absent,
+        name: "canonical crates and the framework executable keep forbidden edges absent",
+        check:
+            dependencies::canonical_crates_and_the_framework_executable_keep_forbidden_edges_absent,
+    },
+    Rule {
+        name: "retired framework libraries stay absent from the dependency graph",
+        check: dependencies::retired_framework_libraries_stay_absent,
     },
     Rule {
         name: "zenoh dependency profiles keep transport compression disabled",
         check: dependencies::zenoh_dependency_profiles_keep_transport_compression_disabled,
+    },
+    Rule {
+        name: "feature gates live only in the framework crate root",
+        check: feature_gate::feature_gates_live_only_in_the_crate_root,
+    },
+    Rule {
+        name: "official participants reach for no host profile",
+        check: consumer_profile::official_participants_reach_for_no_host_profile,
+    },
+    Rule {
+        name: "raw transport access stays inside the bus module",
+        check: bus_boundary::raw_transport_stays_inside_the_bus,
+    },
+    Rule {
+        name: "endpoints and topic keys are never authored by hand",
+        check: bus_boundary::endpoints_and_topics_are_never_authored,
     },
     Rule {
         name: "retired surfaces stay absent",
@@ -220,14 +245,6 @@ const RULES: [Rule; 14] = [
     Rule {
         name: "source-reference alias shims stay absent",
         check: retired_surface::source_reference_alias_shims_stay_absent,
-    },
-    Rule {
-        name: "endpoint bindings come only from the declaration beside their payload",
-        check: api_tree::endpoint_bindings_come_only_from_the_declaration,
-    },
-    Rule {
-        name: "family-rooted keys are rendered by the api tree, never authored",
-        check: api_tree::family_rooted_keys_are_rendered_not_authored,
     },
     Rule {
         name: "unit-test modules have an explicit owner",
