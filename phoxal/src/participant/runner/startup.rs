@@ -113,7 +113,7 @@ where
 
 /// Learn the execution identity from the routers the launch points at.
 ///
-/// A router's session id *is* the execution (`phoxal-bus`'s `probe_routers`),
+/// A router's session id *is* the execution (`bus::session::probe_routers`),
 /// which is why the identity is not in argv at all: the process that owns the
 /// run is the one that answers on the endpoint. Exactly one is expected. Zero
 /// means nothing is running there yet and there is no execution to join; more

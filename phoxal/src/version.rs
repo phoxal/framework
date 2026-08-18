@@ -19,10 +19,10 @@
 //! parse-time format discriminators owned by the document that carries them: a
 //! reader refuses a tag it does not implement before it looks at any field.
 //!
-//! The identity lives on the process-boundary floor rather than in the crate
-//! that implements a contract, because the record that declares it
-//! ([`crate::participant::metadata::ParticipantMetadata`]) sits below `phoxal-bus`,
-//! `phoxal-protocol`, and `phoxal-manifest` in the graph.
+//! The identity lives on the process-boundary floor rather than beside a
+//! contract that uses it: the record that declares it
+//! ([`crate::participant::metadata::ParticipantMetadata`]) sits below the bus,
+//! the protocol tree, and the authored-source layer.
 
 use serde::{Deserialize, Serialize};
 

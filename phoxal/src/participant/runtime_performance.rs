@@ -300,7 +300,7 @@ impl TopicRows {
 
     /// One internal snapshot as the wire row a supervisor reads.
     ///
-    /// `phoxal-bus` owns the internal accounting vocabulary and the runtime
+    /// [`crate::bus`] owns the internal accounting vocabulary and the runtime
     /// contract family owns its serialized representation; this is their only
     /// join.
     fn wire_row(snapshot: RuntimeMetricSnapshot, elapsed: Duration) -> runtime::telemetry::Topic {

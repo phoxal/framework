@@ -40,7 +40,7 @@ const TARGET_HOLD: Duration = Duration::from_millis(500);
 
 /// The commandable wheel speeds a drive target implies.
 ///
-/// The geometry itself lives on [`DifferentialDrive`] in `phoxal-model`, beside
+/// The geometry itself lives on [`DifferentialDrive`] in `phoxal::model`, beside
 /// the kinematic config it is read from. What belongs here is the part that is
 /// about *this* contract: narrowing a twist expressed in `api::drive::Target`
 /// into something a motor command can carry.

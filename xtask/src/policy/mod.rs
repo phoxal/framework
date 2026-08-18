@@ -57,16 +57,7 @@ pub(crate) const FACADE: &str = "phoxal";
 /// [`the_library_crate_list_matches_the_workspace_members`] fails when a
 /// library crate is added to the workspace without being added here, because a
 /// missing entry would silently turn that crate into a grammar violation.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 8] = [
-    "phoxal",
-    "crates/protocol",
-    "crates/bundle",
-    "crates/bus",
-    "crates/macros",
-    "crates/manifest",
-    "crates/model",
-    "crates/runtime-contract",
-];
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 2] = ["phoxal", "crates/macros"];
 
 /// Library crates that serve this workspace's own tests and reach no
 /// registry. They carry a library target, so the completeness check below

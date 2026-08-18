@@ -84,12 +84,12 @@ pub const SPECS: [Spec; 1] = [Spec {
     bin_name: "phoxal-supervisor",
     source_path: "supervisor/src/main.rs",
     forbidden_dependencies: &[
-        // The supervisor consumes finalized runtime contracts, never the
-        // participant facade or its former CLI owner.
-        "phoxal",
+        // The supervisor is built from the one framework library, never from
+        // its former CLI owner.
         "phoxal-cli",
-        // Authored YAML/URDF and their parsers stop at bundle compilation.
-        "phoxal-manifest",
+        // Authored YAML/URDF and their parsers stop at bundle compilation. The
+        // `authoring` feature that would pull them in is refused separately, by
+        // the dependency rule that covers every official participant.
         "serde_yaml",
         "urdf-rs",
     ],

@@ -262,8 +262,8 @@ const CURRENT_SERVICES: &str = "\nservices:\n  localize:\n    config:\n      rat
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(2)
-        .expect("this crate sits at crates/<name> under the workspace root")
+        .nth(1)
+        .expect("this crate sits at phoxal/ under the workspace root")
         .to_path_buf()
 }
 

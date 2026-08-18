@@ -5,7 +5,7 @@
 //! that deletes is the point: there is no router binary to stage or resolve, no
 //! spawn, no readiness probe polling a socket, and no full-graph recovery epoch
 //! driven by a child exit. [`phoxal::bus::Router::open`] returning means the
-//! endpoint is bound - `phoxal-bus` pins the Zenoh listen settings that make
+//! endpoint is bound - `phoxal::bus` pins the Zenoh listen settings that make
 //! that true - so the router is simply ready or the run failed to start.
 //!
 //! The router owns no keys and no subscriptions; participants and the
@@ -51,7 +51,7 @@ impl EmbeddedRouter {
 
 /// Open the embedded router on `endpoint`.
 ///
-/// The router's configuration is entirely framework-owned: `phoxal-bus` pins
+/// The router's configuration is entirely framework-owned: `phoxal::bus` pins
 /// the transport policy and the listen settings, so the fabric cannot be put at
 /// odds with the participants that dial it.
 ///

@@ -39,43 +39,7 @@ git_tag_name = "v{{ version }}"
 git_release_enable = false
 
 [[package]]
-name = "phoxal-protocol"
-version_group = "framework-train"
-git_tag_enable = false
-git_release_enable = false
-
-[[package]]
-name = "phoxal-bus"
-version_group = "framework-train"
-git_tag_enable = false
-git_release_enable = false
-
-[[package]]
 name = "phoxal-macros"
-version_group = "framework-train"
-git_tag_enable = false
-git_release_enable = false
-
-[[package]]
-name = "phoxal-model"
-version_group = "framework-train"
-git_tag_enable = false
-git_release_enable = false
-
-[[package]]
-name = "phoxal-manifest"
-version_group = "framework-train"
-git_tag_enable = false
-git_release_enable = false
-
-[[package]]
-name = "phoxal-bundle"
-version_group = "framework-train"
-git_tag_enable = false
-git_release_enable = false
-
-[[package]]
-name = "phoxal-runtime-contract"
 version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false

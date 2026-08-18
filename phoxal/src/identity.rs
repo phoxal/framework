@@ -3,7 +3,7 @@
 //! - [`ExecutionId`] names one supervised run. It scopes participants, bus
 //!   traffic, and authority, and it is the bus session root, so traffic from a
 //!   previous execution cannot physically be observed as current.
-//! - [`ProducerId`] names one publishing session. It is minted by `phoxal-bus`
+//! - [`ProducerId`] names one publishing session. It is minted by [`crate::bus`]
 //!   before opening the transport and pinned as the Zenoh session id.
 //! - [`TimelineId`] names one world history. A simulation reset or a replay
 //!   branch creates a new timeline within the same execution.

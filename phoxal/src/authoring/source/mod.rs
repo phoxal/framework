@@ -11,7 +11,7 @@
 //! A new version is a new DTO beside the existing one, with its own `normalize`
 //! into `normalized`, the one version-independent form the compiler consumes.
 //! That normalized form is crate-internal, so a source generation can be added
-//! without changing what this crate or `phoxal-model` exposes, and without a
+//! without changing what this module or `crate::model` exposes, and without a
 //! second copy of the compiler.
 //!
 //! Runtime code reads the canonical runtime model. These modules are for

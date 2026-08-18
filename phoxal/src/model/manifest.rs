@@ -5,10 +5,10 @@
 //! set is derived from the robot (`brain`, every service key, every component
 //! key), and every participant's own configuration is read from the same body.
 //!
-//! The document type lives here rather than in `phoxal-bundle` so that the
+//! The document type lives here rather than in `crate::bundle` so that the
 //! compiler which writes it and the reader which loads it both reach it through
-//! the crate that owns the body. `phoxal-bundle` may not depend on
-//! `phoxal-manifest`, and this is what keeps that direction honest.
+//! the module that owns the body. `crate::bundle` names no authored document,
+//! and this is what keeps that direction honest.
 
 use serde::{Deserialize, Serialize};
 

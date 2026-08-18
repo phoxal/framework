@@ -629,7 +629,7 @@ pub struct Robot {
 /// The canonical robot wire shape used by the persisted manifest.
 ///
 /// This is intentionally private to the model crate: bundle layout belongs to
-/// `phoxal-bundle`, while the model owns the exact fields and the validation
+/// `crate::bundle`, while the model owns the exact fields and the validation
 /// that turns them into a `Robot`. Keeping the wire helper here also means
 /// deserialization can never construct an invalid robot by bypassing
 /// [`Robot::new`].

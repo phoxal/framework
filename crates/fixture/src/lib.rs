@@ -2,17 +2,17 @@
 //!
 //! The fixture itself is authored YAML/URDF and nothing else. It lives at
 //! `fixture/` in the workspace root, holds no code, and is read straight off
-//! disk by the tests that only need documents - `phoxal-manifest`'s compile
+//! disk by the tests that only need documents - `phoxal::authoring`'s compile
 //! tests are its largest consumer and never link this crate at all.
 //!
 //! This crate is the other half: it takes those documents through the whole
-//! authoring pipeline, compiling them with `phoxal-manifest` and assembling
-//! the result into a finalized bundle with `phoxal-bundle`. That makes it the
-//! only place in the workspace where those two crates meet. They are siblings:
-//! each depends on `phoxal-model` and `phoxal-runtime-contract`, and neither
-//! depends on the other, so nothing else here proves that what the compiler
-//! emits is something the assembler can actually accept. The real `phoxal`
-//! CLI joins them for a living; this is the test that says it can be done.
+//! authoring pipeline, compiling them with `phoxal::authoring` and assembling
+//! the result into a finalized bundle with `phoxal::bundle`. That makes it the
+//! only place in the workspace where those two modules meet. They are
+//! siblings: both stand on `phoxal::model`, and neither names the other, so
+//! nothing else here proves that what the compiler emits is something the
+//! assembler can actually accept. The real `phoxal` CLI joins them for a
+//! living; this is the test that says it can be done.
 //!
 //! Its second job is smaller and purely mechanical: `staged_bundle` is needed
 //! by both a unit test inside `phoxal/src` and an integration test in

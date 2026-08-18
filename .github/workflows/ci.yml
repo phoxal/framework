@@ -19,9 +19,9 @@ concurrency:
   cancel-in-progress: true
 
 # The workspace builds on a bare runner by design. Runnable crates own native
-# build requirements in package.metadata.phoxal.build; phoxal-manifest's
-# `workspace_build_requirements` test keeps this bootstrap input synchronized
-# with their declared union.
+# build requirements in package.metadata.phoxal.build; phoxal's
+# `authoring_workspace_build_requirements` test keeps this bootstrap input
+# synchronized with their declared union.
 # Nothing in the workspace links a native simulator any more: the Webots
 # controller lives in phoxal/simulator-webots and carries that requirement with
 # it, so this workflow installs no simulator and the checks run on a bare
@@ -192,7 +192,7 @@ jobs:
   # Deliberately not on pull requests: the drill answers a question no branch
   # asks, and the matrix rows are already proved by `cargo test` on every one.
   # It reaches no registry: the drill states its own baselines, and the pinned
-  # tests it runs are in `phoxal-runtime-contract` and `phoxal-protocol`.
+  # tests it runs are `phoxal`'s own.
   compatibility-rehearsal:
     name: compatibility rehearsal
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

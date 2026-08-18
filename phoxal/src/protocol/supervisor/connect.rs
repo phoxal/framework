@@ -15,7 +15,7 @@
 //! A frozen document is worth nothing if the path to it moves: a client that
 //! cannot reach this key never gets to decode the one reply that would have
 //! named the disagreement. So the freeze covers everything an attaching client
-//! traverses before this reply, each owned and pinned by `phoxal-bus`:
+//! traverses before this reply, each owned and pinned by [`crate::bus`]:
 //!
 //! - **discovery** - a client-mode session on the operator's endpoint, with
 //!   multicast scouting off, reading the executions of the routers it is

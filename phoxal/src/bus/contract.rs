@@ -3,8 +3,8 @@
 //!
 //! These are the two traits the bus client is generic over - the ABI floor
 //! every contract family uses: ordinary Rust payloads plus one generated
-//! descriptor per endpoint. This crate owns the shared ABI traits; `phoxal-protocol`
-//! owns every concrete declaration.
+//! descriptor per endpoint. This module owns the shared ABI traits; the
+//! protocol tree owns every concrete declaration.
 
 /// Marker trait identifying one generated contract tree.
 ///

@@ -6,12 +6,11 @@
 //! process whose only failure mode was "the fabric went away", which the
 //! supervisor cannot survive anyway.
 //!
-//! It lives in `phoxal-bus` rather than in the CLI because the router and the
+//! It lives with the bus rather than in the CLI because the router and the
 //! participants that dial it must agree on transport policy - see
 //! `crate::bus::session::apply_phoxal_transport_policy`, which both paths share.
-//! It is behind the `router` feature so participant authors, who reach the bus
-//! through the `phoxal` facade, never see a router in their API surface: only
-//! the supervisor enables it.
+//! It is behind the `router` feature so participant authors never see a router
+//! in their API surface: only the supervisor enables it.
 
 use crate::identity::ExecutionId;
 
@@ -226,7 +225,7 @@ mod tests {
 
     #[test]
     fn router_config_carries_the_same_transport_policy_as_a_client() {
-        // The whole reason this lives in phoxal-bus: both ends of a link must
+        // The whole reason this lives with the bus: both ends of a link must
         // agree, so assert it rather than trusting the call order.
         let config = router_config(ExecutionId::mint(), &endpoints()).expect("router config");
         assert_eq!(

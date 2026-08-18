@@ -37,7 +37,7 @@ pub enum Capability {
 ///
 /// Authored structural ids are URDF names, whose grammar is wider than a
 /// canonical token, so they stay plain strings until the compiler adopts them
-/// into `phoxal-model`'s `LinkId` / `JointId`.
+/// into `crate::model`'s `LinkId` / `JointId`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StructuralTarget {

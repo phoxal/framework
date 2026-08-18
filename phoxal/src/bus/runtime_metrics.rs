@@ -23,10 +23,10 @@ use crate::bus::lock::lock;
 /// Which way samples move through the buffer a row describes.
 ///
 /// This is the internal accounting vocabulary. The runner maps it onto the
-/// wire-facing enum in `phoxal-protocol`. The structural guard at the bottom of this
-/// module fails when a variant is added here; the assertion that the mapping is
-/// total and injective lives in `crates/protocol/src/tests/runtime_metric_parity.rs`,
-/// which is the nearest crate able to name both enums.
+/// wire-facing enum in the `runtime` contract family. The structural guard at
+/// the bottom of this module fails when a variant is added here; the mapping
+/// itself lives in `crate::participant::runtime_performance`, which is the one
+/// place that names both enums.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RuntimeDirection {
     /// Samples this process publishes.
@@ -338,13 +338,14 @@ mod tests {
 
     /// Every variant here has to reach the wire.
     ///
-    /// `phoxal-protocol` declares its own serialized `RuntimeDirection` /
-    /// `RuntimeBufferKind`, and `phoxal`'s rollup maps this enum onto that one.
-    /// The duplication is deliberate wire-versus-internal layering, but it means
-    /// a variant added here and nowhere else silently never reaches an operator.
+    /// The `runtime` contract family declares its own serialized
+    /// `RuntimeDirection` / `RuntimeBufferKind`, and the runner's rollup maps
+    /// this enum onto that one. The duplication is deliberate
+    /// wire-versus-internal layering, but it means a variant added here and
+    /// nowhere else silently never reaches an operator.
     ///
-    /// This crate cannot name the wire enum - `phoxal-protocol` depends on this crate,
-    /// not the other way round - so the guard is structural: the matches below
+    /// This module does not name the wire enum - the protocol tree is layered
+    /// above it, not below - so the guard is structural: the matches below
     /// are exhaustive and the lists are exact, so adding a variant fails to
     /// compile here and fails the assertion, forcing whoever adds it to read
     /// this comment and extend the wire enum and the mapping too.

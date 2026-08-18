@@ -2,7 +2,7 @@
 //!
 //! The pure bus mechanics (encoding-string parsing, codec fast-rejects,
 //! codec round-trips, and key-root validation) are unit tested in the
-//! `phoxal-bus` crate. These integration tests pin the generated endpoint
+//! `phoxal::bus` module. These integration tests pin the generated endpoint
 //! descriptors and prove that their family-rooted topics and metadata wire
 //! format reach the participant facade unchanged.
 

@@ -84,8 +84,7 @@ mod tests {
     }
 
     fn hello_rover_fixture(kind: DocumentKind) -> serde_json::Value {
-        let root =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-rover");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hello-rover");
         let path = match kind {
             DocumentKind::Robot => root.join("robot.yaml"),
             DocumentKind::Component => root.join("components/wheel_drive/component.yaml"),

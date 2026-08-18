@@ -408,7 +408,7 @@ impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
 /// The [`StepToken`] is what a [`StatePublisher`](crate::bus::StatePublisher)
 /// requires, and the runner is the only minter on the documented surface - so
 /// a participant publishes state at the instant it actually reached, or not at
-/// all (`phoxal-bus`'s docs state exactly how strong that is).
+/// all ([`crate::bus`]'s docs state exactly how strong that is).
 ///
 /// The fields are public because there is nothing here to protect: this is a
 /// per-step `Copy` carrier the runner fills once and hands over, and the

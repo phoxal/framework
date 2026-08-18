@@ -2,14 +2,14 @@
 //! whose behavior it exercises.
 //!
 //! What this module owns is a stand-in endpoint surface: a hand-written
-//! [`ApiFamily`] plus plain payloads and endpoint descriptors. `phoxal-bus`
-//! is the ABI floor and must be testable without a concrete generated API.
+//! [`ApiFamily`] plus plain payloads and endpoint descriptors. The bus is the
+//! ABI floor and must be testable without a concrete generated API.
 //! Several modules (`abi`, `handle`, `session`, `server`, `router`) need the
 //! same stand-in endpoints to exercise a real end-to-end path, so they are
 //! declared once rather than five times.
 //!
-//! The golden tests that bind the bus to the real generated tree live in the
-//! `phoxal` crate.
+//! The golden tests that bind the bus to the real generated tree are the
+//! crate's own integration tests.
 
 use crate::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 use serde::{Deserialize, Serialize};

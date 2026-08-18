@@ -3,11 +3,11 @@
 //! Nothing in this crate can build a [`Robot`], a [`Component`], a
 //! [`Simulation`] or a [`Structure`] from raw values: they are only ever
 //! produced by normalizing authored documents, and that normalizer lives in
-//! `phoxal-manifest`, a separate crate. Rust has no visibility that means
+//! `crate::authoring`, a sibling module. Rust has no visibility that means
 //! "one other crate", so these entry points are `pub` and hidden rather than
 //! `pub(crate)`.
 //!
-//! `phoxal-manifest` is the only permitted caller outside this crate. This is
+//! `crate::authoring` is the only permitted caller outside this module. This is
 //! not runtime API: a participant receives an already-built [`Robot`] and reads
 //! it through the runtime modules. Every entry point here still runs the full
 //! validation, so calling one cannot produce a model the runtime would reject -

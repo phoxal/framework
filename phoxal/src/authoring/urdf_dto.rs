@@ -2,7 +2,7 @@
 //! structure.
 //!
 //! This is a DTO layer: `urdf_rs` types are the exact shape of the file on
-//! disk, and they stay private to this module. `phoxal-model` owns the
+//! disk, and they stay private to this module. [`crate::model`] owns the
 //! normalized runtime structure, which is what leaves here. The two carry
 //! parallel `Link`/`Joint`/`Visual`/`Collision` hierarchies on purpose - one is
 //! what an author wrote, the other is what the runtime reads - and the module

@@ -61,7 +61,7 @@ mod normalized;
 #[cfg(test)]
 mod source_generation_proof;
 
-// The authored URDF DTO stays private: `phoxal-model` owns the normalized
+// The authored URDF DTO stays private: `crate::model` owns the normalized
 // structure a caller is meant to read. Only the failure vocabulary is public,
 // because it appears inside `CompileError` and a caller has to be able to name
 // what it matched.

@@ -1,5 +1,5 @@
-//! The frozen bootstrap fact this crate declares, held against the transport
-//! it links.
+//! The frozen bootstrap fact `phoxal::bus` declares, held against the
+//! transport it links.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ fn workspace_root() -> Result<PathBuf> {
         .to_path_buf())
 }
 
-/// The Zenoh wire protocol version `phoxal-bus` freezes is the one the linked
+/// The Zenoh wire protocol version `phoxal::bus` freezes is the one the linked
 /// transport actually speaks.
 ///
 /// The bus declares the version in its own contract surface, because the
@@ -87,7 +87,7 @@ fn the_frozen_zenoh_wire_protocol_version_is_the_one_the_transport_speaks() -> R
     let surface = phoxal::bus::__compat::contract_surface();
     assert!(
         surface.contains(&declared),
-        "phoxal-bus freezes a Zenoh wire protocol version the linked transport does not speak. \
+        "phoxal::bus freezes a Zenoh wire protocol version the linked transport does not speak. \
          The transport says {spoken}. This is a bootstrap-breaking transport change: do not edit \
          the pin to match. See xtask/README.md \"When a gate fails\", rule 3.\n{surface}"
     );
