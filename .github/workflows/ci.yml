@@ -93,6 +93,8 @@ jobs:
 
       - name: Document every canonical profile
         shell: bash
+        env:
+          RUSTDOCFLAGS: -D warnings
         run: |
           set -euo pipefail
           cargo doc -p phoxal --no-deps
@@ -100,6 +102,13 @@ jobs:
             cargo doc -p phoxal --no-default-features --features "$profile" --no-deps
           done
           cargo doc -p phoxal --all-features --no-deps
+
+      # The shared `ci` job's `cargo test --workspace` unifies only the features
+      # the workspace members enable, which never includes `session` or
+      # `simulator`. The tests that live in those profiles, and the integration
+      # tests that state `required-features`, run only here.
+      - name: Test every profile together
+        run: cargo test -p phoxal --all-features
 
       # `cargo hack --each-feature` is the guard *beside* the list above, not
       # instead of it: it catches a profile combination nobody thought to name,
