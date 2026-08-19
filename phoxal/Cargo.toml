@@ -209,15 +209,19 @@ required-features = ["authoring"]
 [[example]]
 name = "runtime_control_loop"
 path = "examples/runtime_control_loop.rs"
+required-features = ["participant"]
 
 [[example]]
 name = "runtime_query_server"
 path = "examples/runtime_query_server.rs"
+required-features = ["participant"]
 
 [[example]]
 name = "runtime_serialized_queries"
 path = "examples/runtime_serialized_queries.rs"
+required-features = ["participant"]
 
 [[example]]
 name = "runtime_async_entrypoint"
 path = "examples/runtime_async_entrypoint.rs"
+required-features = ["participant"]

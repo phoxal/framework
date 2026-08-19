@@ -181,10 +181,21 @@ impl SimulatorSession {
         .await
     }
 
-    /// Open an in-process session for a world with no router, which is how the
-    /// ordering and presence proofs below run against the real transport.
-    #[cfg(test)]
-    pub(crate) async fn in_process(label: &str) -> Result<Self, SimulatorError> {
+    /// Open a session for a world with no router: an execution minted here,
+    /// reachable by nothing outside this process.
+    ///
+    /// This is the adapter's test seam. A simulator's step loop holds a
+    /// [`WorldTime`], and the only source of one is a session, so an adapter
+    /// that proves its own stepping and parking discipline against the real
+    /// transport needs a session that no supervisor is running. The framework's
+    /// own ordering and presence proofs run the same way. It is not a second
+    /// way to attach: there is no router, so nothing else can join.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulatorError`] when the label is not a valid source label or
+    /// the in-process transport cannot be opened.
+    pub async fn in_process(label: &str) -> Result<Self, SimulatorError> {
         let execution = ExecutionId::mint();
         Self::open(
             BusConfig::for_external(execution, Some(SourceLabel::new(label)?), Vec::new()),
