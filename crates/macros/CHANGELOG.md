@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.66.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.65.0...phoxal-macros-v0.66.0) - 2026-08-19
+
+### Other
+
+- *(framework)* [**breaking**] one `phoxal` library with consumer profiles, a Rust-declared api tree, and `phoxal::session` ([#466](https://github.com/phoxal/framework/pull/466))
+
 ## [0.63.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.62.1...phoxal-macros-v0.63.0) - 2026-08-16
 
 ### Added
