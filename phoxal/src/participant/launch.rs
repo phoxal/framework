@@ -346,10 +346,9 @@ mod tests {
         .connect("tcp/router-a:7447")
         .argv();
         assert!(!argv.contains(&"--simulation".to_owned()), "{argv:?}");
-        let launch = Launch::try_parse_from(
-            std::iter::once("participant-bin".to_owned()).chain(argv),
-        )
-        .expect("the encoder's argv parses");
+        let launch =
+            Launch::try_parse_from(std::iter::once("participant-bin".to_owned()).chain(argv))
+                .expect("the encoder's argv parses");
         assert!(!launch.simulation);
     }
 
