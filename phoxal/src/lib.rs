@@ -203,27 +203,62 @@ extern crate self as phoxal;
 pub mod geometry;
 mod sample_schedule;
 
-// The participant engine, whose own docs say what is public in it. This is the
-// one tree no profile hides: the role attributes expand to
-// `$crate::participant::metadata::concatcp!` *inside a participant's own
-// crate*, so that path has to be public wherever a participant is authored,
-// and the CLI and the supervisor read the same document back out of a linked
-// binary.
-//
-// What a profile does change is whether the engine is reachable at all. Only
-// `participant` publishes the runner, the role attributes and the prelude, so
-// every other profile compiles the engine - the compatibility aggregate reads
-// the launch contract out of it - and reaches none of it.
-#[cfg(feature = "participant")]
-pub mod participant;
-#[cfg(not(feature = "participant"))]
+// The participant engine. Its two public children are the process-boundary
+// contracts a *host* reads: `metadata`, the record every participant artifact
+// embeds, and `launch`, the argv a launcher writes. So the module is public
+// exactly for the profiles that launch or inspect participants, and private for
+// the profile that *is* one - a participant author reaches the engine through
+// the crate-root facade below, and the role attributes reach it through
+// `__private`, the macro ABI, which is the only path either needs.
+#[cfg(any(
+    feature = "session",
+    feature = "simulator",
+    feature = "supervisor",
+    feature = "authoring"
+))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(
+        feature = "session",
+        feature = "simulator",
+        feature = "supervisor",
+        feature = "authoring"
+    )))
+)]
 #[allow(
     dead_code,
-    reason = "the participant engine is reached through the crate-root facade \
-              only the `participant` profile publishes; a profile that does not \
-              publish it still compiles it, so all of it reads as unreachable here"
+    reason = "a host profile publishes this module for its two process contracts \
+              and reaches the participant engine below them through nothing at all: \
+              the engine's facade is the crate root, which only the `participant` \
+              profile publishes. That profile declares this module privately and \
+              without this allow, so the engine is still linted where it is alive."
 )]
 pub mod participant;
+#[cfg(all(
+    feature = "participant",
+    not(any(
+        feature = "session",
+        feature = "simulator",
+        feature = "supervisor",
+        feature = "authoring"
+    ))
+))]
+mod participant;
+#[cfg(not(any(
+    feature = "participant",
+    feature = "session",
+    feature = "simulator",
+    feature = "supervisor",
+    feature = "authoring"
+)))]
+#[allow(
+    dead_code,
+    reason = "a build that selected no consumer role at all reaches neither half \
+              of this module: no crate-root facade for the engine, and no public \
+              module for the two process contracts. Every real profile reaches one \
+              of them and lints the other."
+)]
+mod participant;
 
 // Each module below carries its own `//!` header, which is where its
 // documentation lives; a second fragment written here would be merged into it

@@ -20,9 +20,10 @@
 //! reader refuses a tag it does not implement before it looks at any field.
 //!
 //! The identity lives on the process-boundary floor rather than beside a
-//! contract that uses it: the record that declares it
-//! ([`crate::participant::metadata::ParticipantMetadata`]) sits below the bus,
-//! the protocol tree, and the authored-source layer.
+//! contract that uses it: the record that declares it - the participant
+//! metadata document, which a host profile reads through
+//! `phoxal::participant::metadata` - sits below the bus, the api tree, and the
+//! authored-source layer.
 
 use serde::{Deserialize, Serialize};
 

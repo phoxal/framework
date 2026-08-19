@@ -17,8 +17,17 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 // The two process-boundary contracts, whose own headers document them: the
-// participant-artifact metadata document, and the launch argv.
+// participant-artifact metadata document, and the launch argv. Both are read by
+// a *host* - the CLI stages a binary and launches it, the supervisor reads what
+// it staged - so a participant profile compiles them and reads neither: it
+// writes the metadata document from a role attribute's const-eval path, and it
+// decodes argv rather than encoding it.
 pub mod launch;
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "the document's strict reader and its record writer are the host half of this contract"
+)]
 pub mod metadata;
 
 pub(crate) mod api;

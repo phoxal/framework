@@ -23,18 +23,6 @@ use crate::__compat::wire::{DescribeWire, WireSchema};
 use crate::participant::metadata::{ParticipantContract, ParticipantKind, ParticipantMetadata};
 use crate::version::FrameworkVersion;
 
-/// `const_format::concatcp!`, made reachable as `$crate::participant::metadata::concatcp!`.
-///
-/// [`participant_metadata_json!`](crate::participant_metadata_json) expands
-/// inside a participant's own crate, which does not depend on `const_format`,
-/// so the macro cannot name that crate directly. Routing the call through this
-/// crate is what makes the expansion hygienic: it resolves in the participant
-/// crate no matter what is in scope there. That obligation is the only reason
-/// this is public, and it is why the item cannot be made private or removed
-/// while the macro exists.
-#[doc(hidden)]
-pub use const_format::concatcp;
-
 /// The serialize side of the embedded metadata document.
 ///
 /// The serialized form of one [`ParticipantContract`] while its artifact id is
@@ -88,6 +76,12 @@ impl DescribeWire for ParticipantMetadataRecord<'_> {
 /// Hidden from the docs: this is the ABI writer the role macros expand into,
 /// not a surface a participant author calls. It is `#[macro_export]` only
 /// because macro expansion in another crate needs it to be nameable.
+///
+/// Everything the expansion names goes through `$crate::__private`, the macro
+/// ABI - including the `concatcp!` it composes the document with. A participant
+/// crate does not depend on `const_format`, and the participant engine is not a
+/// public path in a participant's own profile, so the ABI module is the only
+/// door either can be reached through.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! participant_metadata_json {
@@ -102,7 +96,7 @@ macro_rules! participant_metadata_json {
         const __PHOXAL_FRAMEWORK: &str = $framework;
         const __PHOXAL_KIND: &str = $kind.as_str();
 
-        $crate::participant::metadata::concatcp!(
+        $crate::__private::meta::concatcp!(
             "{\"schema\":\"phoxal/participant-metadata/v0\",\"framework\":\"",
             __PHOXAL_FRAMEWORK,
             "\",\"id\":\"",

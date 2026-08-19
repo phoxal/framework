@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn the_runner_and_the_fixture_crate_are_the_trees_these_rules_do_not_read() {
         assert!(is_judged("phoxal/src/participant/query.rs"));
-        assert!(is_judged("supervisor/src/router.rs"));
+        assert!(is_judged("phoxal/src/session/connection.rs"));
         assert!(is_judged("services/drive/src/drive.rs"));
         assert!(is_judged("crates/macros/src/lib.rs"));
         assert!(!is_judged("xtask/src/rehearsal.rs"));

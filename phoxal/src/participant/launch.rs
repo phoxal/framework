@@ -96,6 +96,10 @@ impl Launch {
 ///     .connect("unixsock-stream//run/phoxal/supervisor.sock")
 ///     .argv();
 /// ```
+#[allow(
+    dead_code,
+    reason = "the encoder is the host half of this contract; a participant decodes"
+)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchCommand {
     participant_id: ParticipantId,
@@ -104,6 +108,10 @@ pub struct LaunchCommand {
     simulation: bool,
 }
 
+#[allow(
+    dead_code,
+    reason = "the encoder is the host half of this contract; a participant decodes"
+)]
 impl LaunchCommand {
     /// Begin the argv for `participant_id` reading `bundle_root`.
     ///

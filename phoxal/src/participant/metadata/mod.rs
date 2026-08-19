@@ -23,11 +23,6 @@ mod emit;
 
 pub use emit::{ParticipantContractRecord, ParticipantMetadataRecord};
 
-/// `const_format::concatcp!`, made reachable as
-/// `$crate::participant::metadata::concatcp!` for the const-eval writer.
-#[doc(hidden)]
-pub use emit::concatcp;
-
 use serde::{Deserialize, Serialize};
 
 use crate::__compat::wire::{
