@@ -31,7 +31,7 @@ publish = false
 description = "Hello-rover root brain - the example robot project's composition root."
 
 [dependencies]
-phoxal = { workspace = true, features = ["participant"] }
+phoxal = { workspace = true }
 
 [lints]
 workspace = true
