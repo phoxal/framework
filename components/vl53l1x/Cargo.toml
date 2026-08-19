@@ -15,15 +15,13 @@ name = "phoxal-component-vl53l1x"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
+phoxal = { workspace = true, features = ["participant"] }
 anyhow = { workspace = true }
 
 [dev-dependencies]
 # Tests use only the explicit caller-owned harness; shipped binaries do not
 # enable this bypass feature.
 phoxal = { workspace = true, features = ["test-harness"] }
-
-phoxal-bus = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

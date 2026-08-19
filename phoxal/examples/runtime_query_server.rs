@@ -36,7 +36,7 @@ impl Participant for FrameStore {
                 stamp: None,
             },
         );
-        ctx.query(api::topic::owner().frame().lookup(), Self::lookup)?;
+        ctx.query(api::topics().frame().lookup().owner(), Self::lookup)?;
         Ok((FrameStoreState { transforms }, Api))
     }
 }

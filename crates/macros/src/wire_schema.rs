@@ -21,17 +21,16 @@ use syn::{DeriveInput, Type};
 /// Where a hand-written implementation belongs, repeated on every rejection so
 /// the diagnostic always ends with the way forward.
 const REMEDY: &str = "hand-implement \
-     `phoxal_runtime_contract::wire_schema::DescribeWire` beside this type's \
+     `phoxal::__compat::wire::DescribeWire` beside this type's \
      custom serializer and declare the wire form it writes";
 
 /// The path every generated impl reaches the model through.
 ///
-/// The model lives on the process-contract floor, below every crate that owns
+/// The model lives on the process-contract floor, below every module that owns
 /// a wire contract, so the derive names it directly rather than routing through
-/// the engine facade the authoring macros use: `phoxal-protocol` sits *below*
-/// `phoxal` and could not resolve `::phoxal`.
+/// a facade re-export that could move.
 fn model_path() -> TokenStream {
-    quote!(::phoxal_runtime_contract::wire_schema)
+    quote!(::phoxal::__compat::wire)
 }
 
 /// Derive the serialized wire shape from a type's own declaration.
@@ -396,7 +395,7 @@ mod tests {
         // A plain `Option` decodes from an absent field; adding
         // `skip_serializing_if` also lets the writer omit it.
         assert!(
-            expansion.contains(r#"WireField :: new ("detail" , < Option < String > as :: phoxal_runtime_contract :: wire_schema :: DescribeWire > :: wire_schema () , :: phoxal_runtime_contract :: wire_schema :: FieldPresence :: new (true , false) ,)"#),
+            expansion.contains(r#"WireField :: new ("detail" , < Option < String > as :: phoxal :: __compat :: wire :: DescribeWire > :: wire_schema () , :: phoxal :: __compat :: wire :: FieldPresence :: new (true , false) ,)"#),
             "{expansion}"
         );
         assert!(
@@ -438,7 +437,7 @@ mod tests {
                 #[serde(transparent)]
                 struct Label(String);
             })
-            .contains("< String as :: phoxal_runtime_contract :: wire_schema :: DescribeWire >"),
+            .contains("< String as :: phoxal :: __compat :: wire :: DescribeWire >"),
             "a transparent struct writes exactly its one field"
         );
     }
@@ -514,7 +513,9 @@ mod tests {
             struct Reference(String);
         });
         assert!(
-            into.contains("< String as :: phoxal_runtime_contract :: wire_schema :: DescribeWire > :: wire_schema ()"),
+            into.contains(
+                "< String as :: phoxal :: __compat :: wire :: DescribeWire > :: wire_schema ()"
+            ),
             "{into}"
         );
 

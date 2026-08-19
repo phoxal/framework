@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::bus::{BusHandle, StreamPublisher};
 use crate::participant::lock;
-use phoxal_bus::{BusHandle, StreamPublisher};
-use phoxal_protocol::runtime;
+use crate::runtime::api as runtime;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Metadata};
@@ -397,8 +397,8 @@ async fn drain_loop(
     bus: BusHandle,
     mut receiver: mpsc::Receiver<LogRecord>,
 ) -> crate::Result<()> {
-    let topic = runtime::topic::owner().logs().topic();
-    let publisher = StreamPublisher::<runtime::endpoint::logs::TopicEndpoint>::new(bus, &topic)?;
+    let topic = runtime::topics().logs().owner();
+    let publisher = StreamPublisher::<runtime::logs::Event>::new(bus, &topic)?;
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let dropped = state.take_dropped();
@@ -421,7 +421,7 @@ async fn drain_loop(
 
 fn target_is_filtered(target: &str) -> bool {
     target.starts_with("zenoh")
-        || target.starts_with("phoxal_bus")
+        || target.starts_with("phoxal::bus")
         || target.starts_with("phoxal.bus")
 }
 
@@ -475,7 +475,7 @@ mod tests {
         assert!(state.allows("app"));
         assert!(!state.allows("zenoh"));
         assert!(!state.allows("zenoh_transport"));
-        assert!(!state.allows("phoxal_bus::session"));
+        assert!(!state.allows("phoxal::bus::session"));
         assert!(!state.allows("phoxal.bus"));
     }
 
@@ -532,7 +532,7 @@ mod tests {
         use tracing_subscriber::layer::SubscriberExt;
 
         assert!(
-            !target_is_filtered(phoxal_bus::LEASE_TRACE_TARGET),
+            !target_is_filtered(crate::bus::LEASE_TRACE_TARGET),
             "the decision trace must not be dropped before it reaches the bus"
         );
 
@@ -564,7 +564,7 @@ mod tests {
 
         let mut decisions = Vec::new();
         while let Ok(record) = receiver.try_recv() {
-            assert_eq!(record.target, phoxal_bus::LEASE_TRACE_TARGET);
+            assert_eq!(record.target, crate::bus::LEASE_TRACE_TARGET);
             let Some(runtime::logs::LogValue::String(decision)) = record.fields.get("decision")
             else {
                 panic!("every lease record names its decision: {record:?}");

@@ -21,7 +21,7 @@ struct Active {
     operation_id: api::navigation::NavigationOperationId,
     requester: ProducerId,
     request_id: api::navigation::RequestId,
-    path: api::navigation::Path,
+    path: api::navigation::PlannedPath,
     accepted_published: bool,
     cancel_requested: bool,
     started_at: RobotInstant,
@@ -39,13 +39,13 @@ struct CompletedOperation {
 }
 
 pub(crate) struct Api {
-    localize: StateView<api::endpoint::localize::StateEndpoint>,
-    map_revision: StateView<api::endpoint::map::RevisionEndpoint>,
+    localize: StateView<api::localize::LocalizationState>,
+    map_revision: StateView<api::map::Revision>,
     frontier_requests: tokio::sync::mpsc::Sender<FrontierIoRequest>,
-    state: StatePublisher<api::endpoint::navigation::StateEndpoint>,
-    progress: StatePublisher<api::endpoint::navigation::ProgressEndpoint>,
-    result: EventPublisher<api::endpoint::navigation::ResultEndpoint>,
-    candidate: StatePublisher<api::endpoint::navigation::CandidateEndpoint>,
+    state: StatePublisher<api::navigation::State>,
+    progress: StatePublisher<api::navigation::Progress>,
+    result: EventPublisher<api::navigation::Result>,
+    candidate: StatePublisher<api::navigation::Candidate>,
 }
 
 pub(crate) struct NavigationState {
@@ -92,7 +92,7 @@ struct CachedFrontier {
 /// runner observed at a step; responses that no longer match those authorities
 /// are rejected when the next step incorporates them.
 async fn frontier_map_worker(
-    map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
+    map_submap: Querier<api::map::SubmapRequest>,
     mut requests: tokio::sync::mpsc::Receiver<FrontierIoRequest>,
     results: tokio::sync::mpsc::Sender<FrontierIoResult>,
 ) -> Result<()> {
@@ -298,15 +298,15 @@ impl Participant for Navigation {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().navigation().start(), Self::start)?;
-        ctx.query(api::topic::owner().navigation().cancel(), Self::cancel)?;
+        ctx.query(api::topics().navigation().start().owner(), Self::start)?;
+        ctx.query(api::topics().navigation().cancel().owner(), Self::cancel)?;
         ctx.query(
-            api::topic::owner().navigation().next_frontier(),
+            api::topics().navigation().next_frontier().owner(),
             Self::next_frontier,
         )?;
         let (frontier_requests, frontier_request_rx) = tokio::sync::mpsc::channel(1);
         let (frontier_result_tx, frontier_results) = tokio::sync::mpsc::channel(1);
-        let map_submap = ctx.querier(api::topic::client().map().submap())?;
+        let map_submap = ctx.querier(api::topics().map().submap().client())?;
         ctx.spawn_managed_with(
             "navigation-frontier-map-io",
             ManagedTaskPolicy::Critical,
@@ -316,16 +316,16 @@ impl Participant for Navigation {
             NavigationState::with_frontier_results(ctx.producer(), frontier_results),
             Api {
                 localize: ctx
-                    .state_view(api::topic::client().localize().state())
+                    .state_view(api::topics().localize().state().client())
                     .await?,
                 map_revision: ctx
-                    .state_view(api::topic::client().map().revision())
+                    .state_view(api::topics().map().revision().client())
                     .await?,
                 frontier_requests,
-                state: ctx.state_publisher(api::topic::owner().navigation().state())?,
-                progress: ctx.state_publisher(api::topic::owner().navigation().progress())?,
-                result: ctx.event_publisher(api::topic::owner().navigation().result())?,
-                candidate: ctx.state_publisher(api::topic::owner().navigation().candidate())?,
+                state: ctx.state_publisher(api::topics().navigation().state().owner())?,
+                progress: ctx.state_publisher(api::topics().navigation().progress().owner())?,
+                result: ctx.event_publisher(api::topics().navigation().result().owner())?,
+                candidate: ctx.state_publisher(api::topics().navigation().candidate().owner())?,
             },
         ))
     }
@@ -724,8 +724,10 @@ impl NavigationState {
 mod tests {
     use std::time::Duration;
 
-    use phoxal::testing::{ClockSource, TestClock, TestHarness, run_test_harness_with_clock};
-    use phoxal_bus::{BusConfig, BusOwner, Querier, StatePublisher, StepToken};
+    use phoxal::bus::{Querier, StatePublisher};
+    use phoxal::testing::{
+        ClockSource, TestBus, TestClock, TestHarness, run_test_harness_with_clock, step_token,
+    };
 
     use super::*;
 
@@ -866,7 +868,7 @@ mod tests {
             operation_id,
             requester: owner,
             request_id: request_id("owned"),
-            path: api::navigation::Path {
+            path: api::navigation::PlannedPath {
                 poses: vec![api::navigation::Pose {
                     x_m: 1.0,
                     y_m: 0.0,
@@ -892,40 +894,35 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn start_cancel_queries_are_idempotent_and_lossless_over_the_real_bus() {
-        let participant = phoxal_bus::ParticipantId::new("navigation-test")
-            .expect("valid navigation participant");
-        let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-            phoxal_bus::ExecutionId::mint(),
-            participant,
-            Vec::new(),
-        ))
-        .await
-        .expect("open shared bus");
+        let session = TestBus::for_participant("navigation-test")
+            .await
+            .expect("open shared bus");
+        let bus = session.handle().clone();
         let start = Querier::new(
             bus.clone(),
-            &api::topic::client().navigation().start(),
+            &api::topics().navigation().start().client(),
             Duration::from_secs(2),
         )
         .expect("build start querier");
         let cancel = Querier::new(
             bus.clone(),
-            &api::topic::client().navigation().cancel(),
+            &api::topics().navigation().cancel().client(),
             Duration::from_secs(2),
         )
         .expect("build cancel querier");
-        let localization = StatePublisher::<api::endpoint::localize::StateEndpoint>::new(
+        let localization = StatePublisher::<api::localize::LocalizationState>::new(
             bus.clone(),
-            &api::topic::owner().localize().state(),
+            &api::topics().localize().state().owner(),
         )
         .expect("build localization publisher");
-        let map_revision = StatePublisher::<api::endpoint::map::RevisionEndpoint>::new(
+        let map_revision = StatePublisher::<api::map::Revision>::new(
             bus.clone(),
-            &api::topic::owner().map().revision(),
+            &api::topics().map().revision().owner(),
         )
         .expect("build map revision publisher");
-        let results = EventReceiver::<api::endpoint::navigation::ResultEndpoint>::new(
+        let results = EventReceiver::<api::navigation::Result>::new(
             &bus,
-            &api::topic::client().navigation().result(),
+            &api::topics().navigation().result().client(),
         )
         .await
         .expect("subscribe results");
@@ -942,7 +939,7 @@ mod tests {
         );
         let client = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let step = StepToken::mint(clock.read().instant().expect("test clock is synchronized"));
+            let step = step_token(clock.read().instant().expect("test clock is synchronized"));
             localization
                 .publish(
                     &step,
@@ -1039,7 +1036,7 @@ mod tests {
 
         let (runner_result, ()) = tokio::join!(runner, client);
         runner_result.expect("navigation runner completed cleanly");
-        owner.close().await;
+        session.close().await;
     }
 
     fn request_id(value: &str) -> api::navigation::RequestId {
@@ -1061,7 +1058,7 @@ mod tests {
     }
 
     async fn await_result(
-        results: &EventReceiver<api::endpoint::navigation::ResultEndpoint>,
+        results: &EventReceiver<api::navigation::Result>,
         operation_id: api::navigation::NavigationOperationId,
     ) -> api::navigation::Result {
         tokio::time::timeout(Duration::from_secs(2), async {

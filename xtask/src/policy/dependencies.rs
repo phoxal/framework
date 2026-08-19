@@ -4,16 +4,15 @@
 //!
 //! The two dependency facts that need the framework *linked* are not here and
 //! cannot be: the wire protocol version the transport actually speaks is proved
-//! against `phoxal-bus`'s own declared contract surface, in that crate's tests,
-//! and the build-requirement union CI installs is proved against
-//! `phoxal-manifest`'s own reader, in that crate's tests.
+//! against `phoxal::bus`'s own declared contract surface, and the
+//! build-requirement union CI installs is proved against
+//! `phoxal::authoring`'s own reader - both in `phoxal`'s tests.
 
 use std::fs;
 
 use anyhow::{Context, Result};
 use cargo_metadata::{DependencyKind, MetadataCommand};
 
-use super::artifact::ArtifactKind;
 use super::framework_executable::SPECS;
 use super::{Subject, Violation, is_library_package};
 
@@ -21,70 +20,44 @@ use super::{Subject, Violation, is_library_package};
 ///
 /// Stated as the complete list rather than as a set of bans: a graph that is
 /// only forbidden from growing particular edges says nothing about the one it
-/// grows next.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 18] = [
-    ("phoxal", "phoxal-protocol"),
-    ("phoxal", "phoxal-bus"),
-    ("phoxal", "phoxal-bundle"),
-    ("phoxal", "phoxal-macros"),
-    ("phoxal", "phoxal-model"),
-    ("phoxal", "phoxal-runtime-contract"),
-    ("phoxal-protocol", "phoxal-bus"),
-    ("phoxal-protocol", "phoxal-macros"),
-    // The supervisor's identity endpoint answers with the compiled robot
-    // itself, so the manifest document is a protocol body. The direction stays
-    // one-way: `phoxal-model` knows nothing about the wire it travels on.
-    ("phoxal-protocol", "phoxal-model"),
-    ("phoxal-protocol", "phoxal-runtime-contract"),
-    // Every crate that owns a wire or document contract derives the wire
-    // shape of its own declarations, so the derive reaches each of them.
-    // The direction stays one-way: `phoxal-macros` depends on none of them.
-    // `phoxal-bundle` is not among them: it owns the bundle layout, and the one
-    // document it reads is declared by `phoxal-model`.
-    ("phoxal-bundle", "phoxal-model"),
-    ("phoxal-bundle", "phoxal-runtime-contract"),
-    ("phoxal-bus", "phoxal-macros"),
-    ("phoxal-bus", "phoxal-runtime-contract"),
-    ("phoxal-manifest", "phoxal-model"),
-    ("phoxal-manifest", "phoxal-runtime-contract"),
-    ("phoxal-model", "phoxal-macros"),
-    // Canonical model identities originate in the process-contract layer
-    // so runtime consumers do not need the authored model crate.
-    ("phoxal-model", "phoxal-runtime-contract"),
-];
+/// grows next. The framework is one library plus the proc-macro package the
+/// Rust language forces to be separate, so the complete list is one edge.
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 1] = [("phoxal", "phoxal-macros")];
 
 /// The edges a canonical crate may never grow, whatever the dependency kind.
-const FORBIDDEN_EDGES: [(&str, &[&str]); 4] = [
-    (
-        "phoxal-model",
-        &[
-            "phoxal-manifest",
-            "phoxal",
-            "phoxal-bus",
-            "tokio",
-            "clap",
-            "zenoh",
-            "serde_yaml",
-            "urdf-rs",
-            "anyhow",
-        ],
-    ),
-    ("phoxal-manifest", &["phoxal", "phoxal-bus", "phoxal-cli"]),
-    (
-        "phoxal-bundle",
-        &[
-            "phoxal-manifest",
-            "phoxal",
-            "phoxal-cli",
-            "serde_yaml",
-            "urdf-rs",
-        ],
-    ),
-    (
-        "phoxal-runtime-contract",
-        &["phoxal", "phoxal-model", "tokio", "clap", "zenoh"],
-    ),
+///
+/// The direction stays one-way: `phoxal-macros` is expanded by `phoxal` and
+/// knows nothing about it, and neither library reaches for the CLI that
+/// consumes them.
+const FORBIDDEN_EDGES: [(&str, &[&str]); 2] = [
+    ("phoxal-macros", &["phoxal", "phoxal-cli"]),
+    ("phoxal", &["phoxal-cli"]),
 ];
+
+/// The framework library packages that stopped existing when the framework
+/// became one library.
+///
+/// They are modules of `phoxal` now, and their last published versions stay on
+/// crates.io forever. So a dependency on one of them still resolves, still
+/// compiles, and silently reintroduces a second copy of the model, the bus
+/// vocabulary or the wire contracts - which is a second compatibility identity
+/// in a product that has exactly one. Nothing may depend on them again, whatever
+/// the dependency kind.
+const RETIRED_LIBRARIES: [&str; 6] = [
+    "phoxal-protocol",
+    "phoxal-bus",
+    "phoxal-bundle",
+    "phoxal-model",
+    "phoxal-manifest",
+    "phoxal-runtime-contract",
+];
+
+/// The feature no official participant and no framework executable may enable.
+///
+/// `authoring` compiles the authored-source layer and the YAML/TOML/URDF
+/// parsers under it. Source compilation stops at bundle compilation and never
+/// links into a process that runs a robot.
+const AUTHORING_FEATURE: &str = "authoring";
 
 pub(super) fn public_library_dependency_direction_is_exact(
     subject: &Subject,
@@ -124,7 +97,7 @@ pub(super) fn public_library_dependency_direction_is_exact(
     Ok(violations)
 }
 
-pub(super) fn canonical_crates_and_official_participants_keep_forbidden_edges_absent(
+pub(super) fn canonical_crates_and_the_framework_executable_keep_forbidden_edges_absent(
     subject: &Subject,
 ) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
@@ -162,29 +135,47 @@ pub(super) fn canonical_crates_and_official_participants_keep_forbidden_edges_ab
                     package.name, dependency.name, dependency.kind
                 )));
             }
+            // A framework executable consumes a finalized bundle; the
+            // authored-source reader stops at bundle compilation and never
+            // links into a process that runs a robot. It is a feature of the
+            // one framework library now, so the edge to look for is the feature
+            // rather than a package. The official participants are held to the
+            // same thing, and to the three host profiles beside it, by
+            // `consumer_profile`.
+            if dependency.name.as_str() == super::FACADE
+                && dependency
+                    .features
+                    .iter()
+                    .any(|feature| feature == AUTHORING_FEATURE)
+            {
+                violations.push(Violation::new(format!(
+                    "{} enables {}/{AUTHORING_FEATURE} ({:?})",
+                    package.name,
+                    super::FACADE,
+                    dependency.kind
+                )));
+            }
         }
     }
+    Ok(violations)
+}
 
-    // An official artifact consumes a finalized bundle; the authored-manifest
-    // reader stops at bundle compilation and never links into a participant.
+/// The retired library packages stay retired.
+pub(super) fn retired_framework_libraries_stay_absent(subject: &Subject) -> Result<Vec<Violation>> {
+    let mut violations = Vec::new();
     for package in &subject.members.packages {
-        let manifest = package.manifest_path.as_std_path();
-        let relative = manifest.strip_prefix(&subject.root).unwrap_or(manifest);
-        let official = relative
-            .components()
-            .next()
-            .and_then(|value| value.as_os_str().to_str())
-            .is_some_and(|top_level| ArtifactKind::try_from(top_level).is_ok());
-        if official
-            && package
-                .dependencies
-                .iter()
-                .any(|dependency| dependency.name.as_str() == "phoxal-manifest")
-        {
-            violations.push(Violation::new(format!(
-                "{} -> phoxal-manifest",
-                package.name
-            )));
+        for dependency in &package.dependencies {
+            if RETIRED_LIBRARIES.contains(&dependency.name.as_str()) {
+                violations.push(Violation::new(format!(
+                    "{} -> {} ({:?}); that package is a module of {} now, and depending on its \
+                     last published version would compile a second copy of contracts this train \
+                     owns exactly one of",
+                    package.name,
+                    dependency.name,
+                    dependency.kind,
+                    super::FACADE
+                )));
+            }
         }
     }
     Ok(violations)

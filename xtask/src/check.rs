@@ -50,9 +50,9 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
     /// Run the comparison, raising the mechanical impact to `declared`.
     ///
     /// The authored source is read first, because it is the one axis that
-    /// speaks whatever the contract surfaces do: `phoxal-manifest` is not a
-    /// wire surface, so a published reader is comparable even on a train that
-    /// states no surface at all - as long as that reader carries the probe
+    /// speaks whatever the contract surfaces do: the authored-source layer is
+    /// not a wire surface, so a published reader is comparable even on a train
+    /// that states no surface at all - as long as that reader carries the probe
     /// entry the corpus is read through. One that predates it leaves the leg
     /// unavailable rather than failing the run; a workspace that dropped the
     /// entry is a defect in this repository and does fail.
@@ -81,8 +81,8 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
         };
         let Extraction::Surfaces(current) = self.surfaces.extract(&Side::Current)? else {
             bail!(
-                "the workspace crates state no contract surface, so this workspace cannot be \
-                 compared against anything"
+                "the workspace framework library states no contract surface, so this workspace \
+                 cannot be compared against anything"
             );
         };
 
@@ -116,7 +116,7 @@ impl<V: PublishedVersions, S: ContractSurfaces, A: AuthoredDocuments> Compatibil
         let baseline = self.documents.read(&Side::Baseline(train.clone()))?;
         let CorpusReading::Corpus(current) = self.documents.read(&Side::Current)? else {
             bail!(
-                "the workspace `phoxal-manifest` states no compatibility probe entry, so this \
+                "the workspace's `phoxal::authoring` states no compatibility probe entry, so this \
                  workspace's authored source cannot be read at all"
             );
         };
@@ -515,14 +515,11 @@ impl fmt::Display for InsufficientRelease {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use serde_json::{Value, json};
 
     use super::*;
     use crate::index::PublishedVersion;
     use crate::source::Reading;
-    use crate::surface::CONTRACT_CRATES;
 
     /// The floor both sides carry unless a test is about the floor.
     const FLOOR: &str = "1.88";
@@ -573,24 +570,9 @@ mod tests {
         }
     }
 
-    /// Put every record on the stable `phoxal-protocol` carrier and leave the
-    /// other contract crates
-    /// declaring nothing, which is a surface set the comparison accepts.
-    fn documents(records: &[Value]) -> BTreeMap<String, Value> {
-        CONTRACT_CRATES
-            .iter()
-            .map(|contract_crate| {
-                let declared = if contract_crate.carrier == "phoxal-protocol" {
-                    records.to_vec()
-                } else {
-                    Vec::new()
-                };
-                (
-                    contract_crate.carrier.to_owned(),
-                    json!({ "records": declared }),
-                )
-            })
-            .collect()
+    /// The one document a side states, holding the records the test is about.
+    fn documents(records: &[Value]) -> Vec<Value> {
+        vec![json!({ "records": records })]
     }
 
     fn endpoint(path: &str) -> Value {

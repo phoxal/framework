@@ -1,17 +1,17 @@
-//! Bus-ABI golden bindings against the generated contract trees.
+//! Bus-ABI golden bindings against the real api tree.
 //!
 //! The pure bus mechanics (encoding-string parsing, codec fast-rejects,
 //! codec round-trips, and key-root validation) are unit tested in the
-//! `phoxal-bus` crate. These integration tests pin the generated endpoint
-//! descriptors and prove that their family-rooted topics and metadata wire
-//! format reach the participant facade unchanged.
+//! `phoxal::bus` module. These integration tests pin the keys the tree renders
+//! and prove that their family-rooted topics and metadata wire format reach the
+//! participant facade unchanged.
 
 use phoxal::api;
 use phoxal::bus::{
-    BusMetadata, CodecId, EndpointDescriptor, ParticipantSourceIdentity, ProducerId, RobotInstant,
-    SourceAttribution, TimeWindow, TimelineId,
+    BusMetadata, CodecId, ParticipantSourceIdentity, ProducerId, RobotInstant, SourceAttribution,
+    TimeWindow, TimelineId,
 };
-use phoxal_protocol::supervisor;
+use phoxal::supervisor::api as supervisor;
 
 #[test]
 fn encoding_string_carries_only_the_codec() {
@@ -22,12 +22,9 @@ fn encoding_string_carries_only_the_codec() {
 /// different families cannot collide on transport keys.
 #[test]
 fn endpoint_topic_is_family_rooted_on_the_real_tree() {
+    assert_eq!(api::topics().drive().target().key(), "robot/drive/target");
     assert_eq!(
-        <api::endpoint::drive::TargetEndpoint as EndpointDescriptor>::TOPIC,
-        "robot/drive/target"
-    );
-    assert_eq!(
-        <supervisor::endpoint::bundle::GetEndpoint as EndpointDescriptor>::TOPIC,
+        supervisor::topics().bundle().get().key(),
         "supervisor/bundle/get"
     );
 }
@@ -41,7 +38,7 @@ fn bus_metadata_for_a_real_endpoint_round_trips() {
         stream_position: None,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
         source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
-            phoxal_bus::ParticipantId::new("tester").expect("test participant"),
+            phoxal::bus::ParticipantId::new("tester").expect("test participant"),
             ProducerId::try_from((1_u128 << 124) | 1).expect("a test producer is canonical"),
         )),
     };

@@ -8,11 +8,11 @@ published at <https://phoxal.com>.
 
 ## Repository
 
-- `phoxal/` — robot-authoring facade
-- `crates/` — framework libraries
+- `phoxal/` — the one framework library
+- `crates/` — the proc-macro package and the test fixture stager
 - `supervisor/` — framework-train execution observer
 - `services/`, `components/` — official runtime packages
-- `examples/` and `fixture/` — development examples and test inputs
+- `fixture/` — the authored test robot and components (the example robot project is [phoxal/robot-rover](https://github.com/phoxal/robot-rover))
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
 

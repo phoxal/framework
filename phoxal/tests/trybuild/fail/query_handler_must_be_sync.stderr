@@ -1,3 +1,27 @@
+error[E0603]: module `supervisor` is private
+ --> tests/trybuild/fail/query_handler_must_be_sync.rs:2:13
+  |
+2 | use phoxal::supervisor::api as supervisor;
+  |             ^^^^^^^^^^  --- module `api` is not publicly re-exported
+  |             |
+  |             private module
+  |
+note: the module `supervisor` is defined here
+ --> src/lib.rs
+  |
+  |           $visibility mod supervisor {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  | / supervisor_boundary!(
+  | |     #[allow(
+  | |         dead_code,
+  | |         unused_imports,
+... |
+  | |     mod supervisor;
+  | | );
+  | |_- in this macro invocation
+  = note: this error originates in the macro `supervisor_boundary` (in Nightly builds, run with -Z macro-backtrace for more info)
+
 warning: unused import: `phoxal::api`
  --> tests/trybuild/fail/query_handler_must_be_sync.rs:1:5
   |
@@ -5,29 +29,3 @@ warning: unused import: `phoxal::api`
   |     ^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-error[E0271]: expected `get` to return `Result<GetResponse, QueryFailure>`, but it returns `impl Future<Output = Result<GetResponse, QueryFailure>>`
-  --> tests/trybuild/fail/query_handler_must_be_sync.rs:16:62
-   |
-16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get)?;
-   |             -----                                            ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found future
-   |             |
-   |             required by a bound introduced by this call
-   |
-note: calling an async function returns a future
-  --> tests/trybuild/fail/query_handler_must_be_sync.rs:16:62
-   |
-16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get)?;
-   |                                                              ^^^^^^^^^
-note: required by a bound in `phoxal::SetupContext::<R>::query`
-  --> src/participant/context.rs
-   |
-   |     pub fn query<E, H>(&mut self, topic: Topic<ServeQuery<E>>, handler: H) -> crate::Result<()>
-   |            ----- required by a bound in this associated function
-...
-   |             ) -> crate::bus::QueryResult<E::Response>
-   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::query`
-help: consider `await`ing on the `Future`
-   |
-16 |         ctx.query(supervisor::topic::owner().bundle().get(), Self::get.await)?;
-   |                                                                       ++++++

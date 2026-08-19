@@ -1,0 +1,37 @@
+error[E0603]: module `runtime` is private
+ --> tests/trybuild/fail/participant_cannot_reach_the_host_families.rs:7:13
+  |
+7 | use phoxal::runtime::api::simulation::Clock;
+  |             ^^^^^^^       ---------- module `simulation` is not publicly re-exported
+  |             |
+  |             private module
+  |
+note: the module `runtime` is defined here
+ --> src/lib.rs
+  |
+  | mod runtime;
+  | ^^^^^^^^^^^
+
+error[E0603]: module `supervisor` is private
+ --> tests/trybuild/fail/participant_cannot_reach_the_host_families.rs:8:13
+  |
+8 | use phoxal::supervisor::api::execution::Snapshot;
+  |             ^^^^^^^^^^       --------- module `execution` is not publicly re-exported
+  |             |
+  |             private module
+  |
+note: the module `supervisor` is defined here
+ --> src/lib.rs
+  |
+  |           $visibility mod supervisor {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  | / supervisor_boundary!(
+  | |     #[allow(
+  | |         dead_code,
+  | |         unused_imports,
+... |
+  | |     mod supervisor;
+  | | );
+  | |_- in this macro invocation
+  = note: this error originates in the macro `supervisor_boundary` (in Nightly builds, run with -Z macro-backtrace for more info)

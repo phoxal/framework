@@ -9,5 +9,6 @@ note: found an item that was configured out
   |
   | #[cfg(feature = "test-harness")]
   |       ------------------------ the item is gated behind the `test-harness` feature
+  | #[cfg_attr(docsrs, doc(cfg(feature = "test-harness")))]
   | pub mod testing;
   |         ^^^^^^^

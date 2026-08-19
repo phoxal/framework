@@ -18,6 +18,9 @@
 //! package grammar, [`framework_executable`] owns exact non-catalog framework
 //! executables, [`registry`] joins those disjoint sets for publication policy,
 //! [`dependencies`] owns what the workspace's crates may depend on,
+//! [`feature_gate`] owns where a consumer profile may be named,
+//! [`consumer_profile`] owns which profile an official participant may take,
+//! [`bus_boundary`] owns what only the bus module may do,
 //! [`retired_surface`] owns what deleted surfaces may not bring back,
 //! [`test_module_ownership`] owns where a unit-test module may sit,
 //! [`comment_reference`] owns what a comment may name, and [`tracked_source`]
@@ -33,9 +36,12 @@ use anyhow::{Context, Result};
 use cargo_metadata::{Metadata, MetadataCommand};
 
 mod artifact;
+mod bus_boundary;
 mod comment_reference;
+mod consumer_profile;
 mod dependencies;
 mod executable;
+mod feature_gate;
 mod framework_executable;
 mod registry;
 mod retired_surface;
@@ -57,16 +63,7 @@ pub(crate) const FACADE: &str = "phoxal";
 /// [`the_library_crate_list_matches_the_workspace_members`] fails when a
 /// library crate is added to the workspace without being added here, because a
 /// missing entry would silently turn that crate into a grammar violation.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 8] = [
-    "phoxal",
-    "crates/protocol",
-    "crates/bundle",
-    "crates/bus",
-    "crates/macros",
-    "crates/manifest",
-    "crates/model",
-    "crates/runtime-contract",
-];
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 2] = ["phoxal", "crates/macros"];
 
 /// Library crates that serve this workspace's own tests and reach no
 /// registry. They carry a library target, so the completeness check below
@@ -187,7 +184,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 12] = [
+const RULES: [Rule; 17] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -209,12 +206,33 @@ const RULES: [Rule; 12] = [
         check: dependencies::public_library_dependency_direction_is_exact,
     },
     Rule {
-        name: "canonical crates and official participants keep forbidden edges absent",
-        check: dependencies::canonical_crates_and_official_participants_keep_forbidden_edges_absent,
+        name: "canonical crates and the framework executable keep forbidden edges absent",
+        check:
+            dependencies::canonical_crates_and_the_framework_executable_keep_forbidden_edges_absent,
+    },
+    Rule {
+        name: "retired framework libraries stay absent from the dependency graph",
+        check: dependencies::retired_framework_libraries_stay_absent,
     },
     Rule {
         name: "zenoh dependency profiles keep transport compression disabled",
         check: dependencies::zenoh_dependency_profiles_keep_transport_compression_disabled,
+    },
+    Rule {
+        name: "feature gates live only in the framework crate root",
+        check: feature_gate::feature_gates_live_only_in_the_crate_root,
+    },
+    Rule {
+        name: "official participants reach for no host profile",
+        check: consumer_profile::official_participants_reach_for_no_host_profile,
+    },
+    Rule {
+        name: "raw transport access stays inside the bus module",
+        check: bus_boundary::raw_transport_stays_inside_the_bus,
+    },
+    Rule {
+        name: "endpoints and topic keys are never authored by hand",
+        check: bus_boundary::endpoints_and_topics_are_never_authored,
     },
     Rule {
         name: "retired surfaces stay absent",
@@ -401,23 +419,25 @@ mod tests {
     fn a_library_crate_directory_names_exactly_one_package() {
         assert_eq!(library_package_name("phoxal").as_deref(), Some("phoxal"));
         assert_eq!(
-            library_package_name("crates/protocol").as_deref(),
-            Some("phoxal-protocol")
+            library_package_name("crates/macros").as_deref(),
+            Some("phoxal-macros")
         );
         // Being unpublished changes nothing about where a crate lives.
         assert_eq!(
             library_package_name("crates/fixture").as_deref(),
             Some("phoxal-fixture")
         );
+        // A hyphenated suffix maps through unchanged; no such crate exists
+        // today, and the rule has to hold for the one that might.
         assert_eq!(
-            library_package_name("crates/runtime-contract").as_deref(),
-            Some("phoxal-runtime-contract")
+            library_package_name("crates/wire-schema").as_deref(),
+            Some("phoxal-wire-schema")
         );
 
         assert_eq!(library_package_name("crates"), None);
         assert_eq!(library_package_name("crates/"), None);
-        assert_eq!(library_package_name("crates/protocol/inner"), None);
-        assert_eq!(library_package_name("phoxal-protocol"), None);
+        assert_eq!(library_package_name("crates/macros/inner"), None);
+        assert_eq!(library_package_name("phoxal-macros"), None);
         assert_eq!(library_package_name("services/drive"), None);
         assert_eq!(library_package_name("cratesfoo"), None);
     }
@@ -446,7 +466,7 @@ mod tests {
                 },
                 Finding {
                     name: "a rule that does not",
-                    violations: vec![Violation::new("phoxal-bus -> phoxal-model")],
+                    violations: vec![Violation::new("phoxal-macros -> phoxal")],
                 },
             ],
         };
@@ -457,7 +477,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("        phoxal-bus -> phoxal-model"),
+            rendered.contains("        phoxal-macros -> phoxal"),
             "{rendered}"
         );
         assert!(rendered.contains("2 rules checked, 1 failed"), "{rendered}");

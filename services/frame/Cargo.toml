@@ -15,7 +15,7 @@ name = "phoxal-service-frame"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
+phoxal = { workspace = true, features = ["participant"] }
 anyhow = { workspace = true }
 nalgebra = { workspace = true }
 

@@ -1,5 +1,7 @@
+// Two robot-family queries, because the endpoint is what fixes a handler's
+// request and response types. The host families are a different profile's
+// surface and a participant never serves one.
 use phoxal::api;
-use phoxal_protocol::supervisor;
 use phoxal::prelude::*;
 
 struct Api;
@@ -14,24 +16,22 @@ impl Participant for TypedQueries {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().bundle().get(), Self::get)
-            ?;
-        ctx.query(api::topic::owner().map().submap(), Self::submap)
-            ?;
+        ctx.query(api::topics().navigation().cancel().owner(), Self::cancel)?;
+        ctx.query(api::topics().map().submap().owner(), Self::submap)?;
         Ok((State(0), Api))
     }
 }
 
 impl TypedQueries {
-    fn get(
+    fn cancel(
         &self,
         _api: &Api,
         _query: QueryContext,
-        _request: supervisor::bundle::GetRequest,
+        _request: api::navigation::CancelRequest,
         state: &mut State,
-    ) -> QueryResult<supervisor::bundle::GetResponse> {
+    ) -> QueryResult<api::navigation::CancelResponse> {
         state.0 += 1;
-        Ok(supervisor::bundle::GetResponse::Missing)
+        Ok(api::navigation::CancelResponse::Accepted)
     }
 
     fn submap(

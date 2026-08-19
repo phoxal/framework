@@ -8,8 +8,8 @@ error[E0599]: the method `component` exists for mutable reference `&mut phoxal::
    |                              ^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<PrivilegedBrain>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
-           `PrivilegedBrain: phoxal::__private::surface::ComponentBoundSurface`
-note: the trait `phoxal::__private::surface::ComponentBoundSurface` must be implemented
+           `PrivilegedBrain: phoxal::participant::surface::ComponentBoundSurface`
+note: the trait `phoxal::participant::surface::ComponentBoundSurface` must be implemented
   --> src/participant/surface.rs
    |
    | pub trait ComponentBoundSurface: sealing::Sealed {}

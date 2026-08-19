@@ -8,11 +8,11 @@
 //! is allowed to reject a document written in a newer source language, because
 //! nobody wrote that document before the language grew.
 //!
-//! `phoxal-manifest` is deliberately not a wire surface - no two binaries
-//! negotiate over it - so nothing in the contract-surface leg can see a YAML
-//! grammar break. This leg is what sees it: the same two-probe mechanism, over a
-//! corpus of the authored documents the repository already keeps, comparing the
-//! compiled canonical model rather than a schema.
+//! The authored-source layer is deliberately not a wire surface - no two
+//! binaries negotiate over it - so nothing in the contract-surface leg can see a
+//! YAML grammar break. This leg is what sees it: the same two-probe mechanism,
+//! over a corpus of the authored documents the repository already keeps,
+//! comparing the compiled canonical model rather than a schema.
 //!
 //! Nothing is stored for the comparison to read. The baseline is the published
 //! crate, exactly as it is in the contract-surface leg, and the corpus is
@@ -27,8 +27,11 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
+use crate::legacy;
 use crate::probe::{Side, cargo_command, write_if_changed};
-use crate::surface::{CompatibilityImpact, FieldDifference};
+use crate::surface::{
+    CONTRACT_CRATE, CONTRACT_CRATE_DIRECTORY, CompatibilityImpact, FieldDifference,
+};
 
 /// One authored project the corpus reads.
 ///
@@ -50,10 +53,10 @@ struct AuthoredProject {
 ///
 /// The list is deliberate rather than discovered: a corpus that globbed the
 /// tree would quietly shrink when a document moved, and the gate would go green
-/// by reading less. Between them these three mount every component type the
-/// repository authors, with and without simulation models, plus the example a
-/// reader of the framework meets first.
-const CORPUS: [AuthoredProject; 3] = [
+/// by reading less. Between them these two mount every component type the
+/// repository authors, with and without simulation models. The example robot
+/// project lives in its own repository (`phoxal/robot-rover`), not here.
+const CORPUS: [AuthoredProject; 2] = [
     AuthoredProject {
         manifest: "fixture/robot/rgbd-imu-diff-drive/robot.yaml",
         project_root: "fixture/robot/rgbd-imu-diff-drive",
@@ -63,11 +66,6 @@ const CORPUS: [AuthoredProject; 3] = [
         manifest: "fixture/robot/rgbd-imu-diff-drive/robot.no-component-models.yaml",
         project_root: "fixture/robot/rgbd-imu-diff-drive",
         components_root: "fixture/components",
-    },
-    AuthoredProject {
-        manifest: "examples/hello-rover/robot.yaml",
-        project_root: "examples/hello-rover",
-        components_root: "examples/hello-rover/components",
     },
 ];
 
@@ -110,15 +108,13 @@ impl Reading {
 pub(crate) enum CorpusReading {
     /// What that side's reader made of every corpus project.
     Corpus(BTreeMap<&'static str, Reading>),
-    /// That crate set states no [probe entry], so the corpus cannot be read
+    /// That crate set states no probe entry, so the corpus cannot be read
     /// through it at all.
     ///
     /// Every train published before the entry point existed is in this state,
     /// which is why it is an outcome rather than a failure. It is the probe
     /// *crate* failing to build, never the authored project failing to compile:
     /// a refused document is a reading, and this is the absence of a reader.
-    ///
-    /// [probe entry]: https://docs.rs/phoxal-manifest
     NoProbeEntry,
 }
 
@@ -126,12 +122,15 @@ impl CorpusReading {
     /// Whether a failed probe build is the crate set having no probe entry to
     /// call, rather than a broken build.
     ///
-    /// The program names `phoxal_manifest::probe` directly, so a crate set that
-    /// predates the entry point fails to resolve exactly that path and nothing
-    /// else.
+    /// The program names the reader's `probe` function directly, so a crate set
+    /// that predates the entry point fails to resolve exactly that path and
+    /// nothing else. The crate the path runs through is deliberately not
+    /// matched: the reader moved packages once, and a diagnostic naming the
+    /// other one is still the same absence.
     fn is_missing_probe_entry(build_output: &str) -> bool {
-        build_output.contains("cannot find function `probe` in crate `phoxal_manifest`")
-            || build_output.contains("could not find `probe` in `phoxal_manifest`")
+        build_output.contains("cannot find function `probe` in crate")
+            || build_output.contains("cannot find function `probe` in module")
+            || build_output.contains("could not find `probe` in")
     }
 }
 
@@ -172,7 +171,7 @@ impl SourceProbe {
             )
         })?;
         write_if_changed(&directory.join("Cargo.toml"), &self.manifest(side))?;
-        write_if_changed(&directory.join("src").join("main.rs"), PROGRAM)?;
+        write_if_changed(&directory.join("src").join("main.rs"), &program(side))?;
         Ok(directory)
     }
 
@@ -193,9 +192,9 @@ impl SourceProbe {
     /// The probe manifest: its own workspace, so the enclosing one neither
     /// adopts the generated package nor resolves its dependencies.
     ///
-    /// Only `phoxal-manifest` is named. It pins its own `phoxal-model` and
-    /// `phoxal-runtime-contract` exactly, so naming them again would state the
-    /// same fact twice and let the two statements disagree.
+    /// One dependency, and only the profile that carries the reader. The
+    /// authored-source layer is a build/source surface, so the probe asks for
+    /// exactly it and compiles no participant engine to reach it.
     fn manifest(&self, side: &Side) -> String {
         const HEAD: &str = r#"# Written by `cargo xtask compatibility`. It is regenerated on every
 # run, lives under `target/`, and is not tracked.
@@ -211,29 +210,60 @@ publish = false
 serde_json = "1"
 "#;
         let reader = match side {
-            Side::Baseline(train) => {
-                format!("phoxal-manifest = \"={}\"\n", train.version)
+            Side::Baseline(train) if legacy::precedes_the_single_crate_topology(&train.version) => {
+                format!(
+                    "{} = \"={}\"\n",
+                    legacy::SOURCE_READER_PACKAGE,
+                    train.version
+                )
             }
+            Side::Baseline(train) => format!(
+                "{CONTRACT_CRATE} = {{ version = \"={}\", default-features = false, features = \
+                 [\"authoring\"] }}\n",
+                train.version
+            ),
             Side::Current => format!(
-                "phoxal-manifest = {{ path = {:?} }}\n",
-                self.workspace_root.join("crates/manifest")
+                "{CONTRACT_CRATE} = {{ path = {:?}, default-features = false, features = \
+                 [\"authoring\"] }}\n",
+                self.workspace_root.join(CONTRACT_CRATE_DIRECTORY)
             ),
         };
         format!("{HEAD}{reader}")
     }
 }
 
-/// The probe program.
+/// The Rust path one side reaches the reader's probe entry through.
 ///
-/// One source serves both sides: it names `SourceSet` and `phoxal_manifest::probe`,
-/// the entry `phoxal-manifest` keeps source-compatible across trains precisely
-/// so this program can be spelled once, and nothing below them. That is the
-/// point of the comparison - the two readers are asked the same question in the
-/// same words, so a difference in the answer is a difference in the reader.
+/// The reader moved from its own package into `phoxal::authoring`, so for the
+/// one baseline that predates the merge the path is the retired package's. Both
+/// paths name the same two items, so the two sides are still asked the same
+/// question in the same words.
+fn reader_path(side: &Side) -> &'static str {
+    match side {
+        Side::Baseline(train) if legacy::precedes_the_single_crate_topology(&train.version) => {
+            legacy::SOURCE_READER_PATH
+        }
+        Side::Baseline(_) | Side::Current => "phoxal::authoring",
+    }
+}
+
+/// The probe program, with the reader's crate path spliced in.
+///
+/// One source serves both sides: it names `SourceSet` and `probe`, the entry
+/// the authored-source layer keeps source-compatible across trains precisely so
+/// this program can be spelled once, and nothing below them. That is the point
+/// of the comparison - the two readers are asked the same question in the same
+/// words, so a difference in the answer is a difference in the reader. The one
+/// thing that varies is which crate path those two names are reached through,
+/// because the reader moved packages once (see [`reader_path`]).
 ///
 /// A crate set published before that entry existed fails to resolve exactly
 /// this path, which is how [`CorpusReading::NoProbeEntry`] is told apart from a
 /// broken build.
+fn program(side: &Side) -> String {
+    PROGRAM.replace("{reader}", reader_path(side))
+}
+
 const PROGRAM: &str = r#"//! Written by `cargo xtask compatibility`. It compiles one authored
 //! project through this reader's compatibility probe entry and prints
 //! what the reader made of it, as one JSON document.
@@ -254,7 +284,7 @@ fn main() {
     let robot_manifest = next("robot manifest");
     let components_root = next("components root");
 
-    let sources = phoxal_manifest::SourceSet {
+    let sources = {reader}::SourceSet {
         project_root,
         robot_manifest,
         component_roots: component_roots(&components_root),
@@ -262,7 +292,7 @@ fn main() {
     // The official service set is a build-tooling fact rather than an authored
     // one, and this corpus is about what a human wrote, so the probe states
     // none: every service in the reading came out of the document itself.
-    println!("{}", phoxal_manifest::probe(sources, &[]));
+    println!("{}", {reader}::probe(sources, &[]));
 }
 
 /// Every authorable component type in the tree, whether this project mounts it
@@ -759,39 +789,84 @@ mod tests {
         assert!(failure.contains("b.yaml"), "{failure}");
     }
 
+    fn probe() -> SourceProbe {
+        SourceProbe {
+            workspace_root: PathBuf::from("/workspace"),
+        }
+    }
+
     /// The baseline side pins the exact published reader: a caret requirement
     /// would let Cargo resolve a newer one and compare the workspace against
-    /// itself.
+    /// itself. Both sides ask for the authored-source profile and nothing else,
+    /// because the reader is the whole of what this leg measures.
     #[test]
     fn the_baseline_probe_pins_the_published_reader() {
-        let probe = SourceProbe {
-            workspace_root: PathBuf::from("/workspace"),
-        };
-        let baseline = probe.manifest(&Side::baseline(Version::new(0, 59, 1)));
+        let baseline = probe().manifest(&Side::baseline(Version::new(0, 66, 1)));
         assert!(
-            baseline.contains("phoxal-manifest = \"=0.59.1\""),
+            baseline.contains(
+                "phoxal = { version = \"=0.66.1\", default-features = false, \
+                               features = [\"authoring\"] }"
+            ),
             "{baseline}"
         );
         assert!(baseline.contains("[workspace]"), "{baseline}");
-        let current = probe.manifest(&Side::Current);
+        let current = probe().manifest(&Side::Current);
         assert!(
-            current.contains("phoxal-manifest = { path = \"/workspace/crates/manifest\" }"),
+            current.contains(
+                "phoxal = { path = \"/workspace/phoxal\", default-features = false, \
+                              features = [\"authoring\"] }"
+            ),
             "{current}"
         );
     }
 
+    /// The reader moved into the one library, so the one baseline that predates
+    /// the merge is read out of the package that carried it then. Without this
+    /// the merge train itself would be the single train nothing held to the
+    /// source language the published one accepted.
+    #[test]
+    fn a_baseline_below_the_topology_floor_reads_the_retired_reader_package() {
+        let side = Side::baseline(Version::new(0, 65, 0));
+        let manifest = probe().manifest(&side);
+        assert!(
+            manifest.contains("phoxal-manifest = \"=0.65.0\""),
+            "{manifest}"
+        );
+        assert!(!manifest.contains("authoring"), "{manifest}");
+        let rendered = program(&side);
+        assert!(rendered.contains("phoxal_manifest::probe("), "{rendered}");
+    }
+
     /// One program serves both sides, and it reaches the reader through the one
-    /// entry `phoxal-manifest` keeps source-compatible across trains and
-    /// nothing below it - a probe that named an internal stage would be
+    /// entry the authored-source layer keeps source-compatible across trains
+    /// and nothing below it - a probe that named an internal stage would be
     /// comparing something no author can write, and one that assembled the
     /// canonical document itself would have to be respelled on both sides
     /// whenever the compiler's own types moved.
     #[test]
     fn the_probe_program_reads_through_the_stable_probe_entry() {
-        assert!(PROGRAM.contains("phoxal_manifest::SourceSet"), "{PROGRAM}");
-        assert!(PROGRAM.contains("phoxal_manifest::probe("), "{PROGRAM}");
-        assert!(!PROGRAM.contains("normalize"), "{PROGRAM}");
-        assert!(!PROGRAM.contains("CompiledProject"), "{PROGRAM}");
+        let rendered = program(&Side::Current);
+        assert!(
+            rendered.contains("phoxal::authoring::SourceSet"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("phoxal::authoring::probe("), "{rendered}");
+        assert!(!rendered.contains("{reader}"), "{rendered}");
+        assert!(!rendered.contains("normalize"), "{rendered}");
+        assert!(!rendered.contains("CompiledProject"), "{rendered}");
+    }
+
+    /// The two sides differ in the crate path and in nothing else, which is
+    /// what keeps a difference in the answer a difference in the reader.
+    #[test]
+    fn both_sides_run_the_same_program_under_a_different_crate_path() {
+        let modern = program(&Side::Current);
+        let legacy = program(&Side::baseline(Version::new(0, 65, 0)));
+        assert_ne!(modern, legacy);
+        assert_eq!(
+            modern.replace("phoxal::authoring", "R"),
+            legacy.replace("phoxal_manifest", "R")
+        );
     }
 
     /// A published reader from before the probe entry existed fails to resolve
@@ -804,7 +879,10 @@ mod tests {
             "error[E0425]: cannot find function `probe` in crate `phoxal_manifest`"
         ));
         assert!(CorpusReading::is_missing_probe_entry(
-            "error[E0433]: failed to resolve: could not find `probe` in `phoxal_manifest`"
+            "error[E0425]: cannot find function `probe` in module `phoxal::authoring`"
+        ));
+        assert!(CorpusReading::is_missing_probe_entry(
+            "error[E0433]: failed to resolve: could not find `probe` in `authoring`"
         ));
         assert!(!CorpusReading::is_missing_probe_entry(
             "error: linking with `cc` failed: exit status: 1"

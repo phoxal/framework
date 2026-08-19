@@ -34,19 +34,18 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn setup_fails_before_modeling_or_publishing_without_hardware() {
-        let (owner, bus) = phoxal_bus::BusOwner::open(phoxal_bus::BusConfig::for_participant(
-            phoxal_bus::ExecutionId::mint(),
-            phoxal_bus::ParticipantId::new("ddsm115-test").expect("valid participant id"),
-            Vec::new(),
-        ))
-        .await
-        .expect("the in-process test bus opens");
+        let bus = phoxal::testing::TestBus::for_participant("ddsm115-test")
+            .await
+            .expect("the in-process test bus opens");
         let launch =
             phoxal::testing::TestHarness::new("ddsm115-test").expect("valid test participant");
-        let result =
-            phoxal::testing::run_test_harness::<Ddsm115, _>(&bus, launch, std::future::pending())
-                .await;
-        owner.close().await;
+        let result = phoxal::testing::run_test_harness::<Ddsm115, _>(
+            bus.handle(),
+            launch,
+            std::future::pending(),
+        )
+        .await;
+        bus.close().await;
 
         let error = result.expect_err("setup must reject an unavailable hardware backend");
         assert_eq!(error.to_string(), BACKEND_UNAVAILABLE);

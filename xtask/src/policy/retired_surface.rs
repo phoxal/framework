@@ -17,10 +17,19 @@ use super::tracked_source;
 use super::{Subject, Violation};
 
 /// This module, which spells the vocabulary it hunts for in full and would
-/// otherwise be its own only violation. Naming the exemption as a path means it
-/// stops applying the moment the module moves, and
-/// [`the_self_exemption_names_this_module`] fails when it does.
-const SELF: &str = "xtask/src/policy/retired_surface.rs";
+/// otherwise be its own only violation.
+///
+/// It is one path, not a pattern: naming the exemption as a path means it stops
+/// applying the moment this module moves, and
+/// [`the_exemptions_name_modules_that_exist`] fails when it does.
+const SPELL_THE_VOCABULARY: [&str; 1] = ["xtask/src/policy/retired_surface.rs"];
+
+/// Whether a scanned path is one of them.
+fn spells_the_vocabulary(relative: &Path) -> bool {
+    SPELL_THE_VOCABULARY
+        .iter()
+        .any(|exempt| relative == Path::new(exempt))
+}
 
 /// How a retired spelling is recognized in committed source.
 enum Token {
@@ -71,7 +80,7 @@ struct Retired {
 /// The rules these replaced differed only in which words they looked for, so
 /// they are rows rather than functions: a new retirement is a line here, and
 /// the scan itself is written once.
-const RETIRED: [Retired; 31] = [
+const RETIRED: [Retired; 32] = [
     // Runtime identity is minted from the compiled participant record, launch
     // is one clap-only process contract, the bus supplies its clock directly,
     // and a managed task is either critical or finite.
@@ -222,12 +231,20 @@ const RETIRED: [Retired; 31] = [
         why: "the simulator role is gone; a simulated world is an ordinary external client",
     },
     Retired {
-        // Literal text rather than an adjacent pair: the sibling repository the
-        // controller moved to is spelled `phoxal/simulator-webots`, and a pair
-        // rule would read that path as this attribute.
-        token: Token::Text("phoxal::simulator"),
+        // The attribute spelling, opening bracket included. The module path
+        // `phoxal::simulator` is the 0.66 external simulator host SDK and means
+        // the opposite of the retired role: a simulator owns a world from
+        // outside the graph rather than being one participant inside it. Only
+        // the attribute may not come back, so only the attribute is matched.
+        //
+        // Literal text rather than an adjacent pair for a second reason too:
+        // the sibling repository the controller moved to is spelled
+        // `phoxal/simulator-webots`, and a pair rule would read that path as
+        // this attribute.
+        token: Token::Text("#[phoxal::simulator"),
         train: "0.63.0",
-        why: "the simulator role attribute went with the role itself",
+        why: "the simulator role attribute went with the role itself; the module path \
+              `phoxal::simulator` is the external host SDK that replaced it",
     },
     // Driving intent crosses the wire normalized, so the robot's physics stay
     // in the robot. A client that re-derives a twist from geometry it was
@@ -241,6 +258,13 @@ const RETIRED: [Retired; 31] = [
         token: Token::Identifier("manual_drive"),
         train: "0.64.0",
         why: "manual intent is normalized on the wire and carries no kinematic envelope",
+    },
+    // The api tree is ordinary Rust modules with two local declarations in
+    // them, so there is no global procedural catalogue to bring back.
+    Retired {
+        token: Token::Identifier("protocol_tree"),
+        train: "0.66.0",
+        why: "the api tree is declared module by module, not by one global grammar",
     },
 ];
 
@@ -279,7 +303,7 @@ fn contains_identifier_pair(source: &str, first: &str, second: &str) -> bool {
 pub(super) fn retired_surfaces_stay_absent(subject: &Subject) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
     for relative in source_files(&subject.root)? {
-        if relative == Path::new(SELF) {
+        if spells_the_vocabulary(&relative) {
             continue;
         }
         let source = read(&subject.root, &relative)?;
@@ -308,11 +332,11 @@ pub(super) fn participant_kind_declarations_match_the_two_explicit_owners(
     let declaration = ("enum", "ParticipantKind");
     let expected = [
         PathBuf::from("crates/macros/src/authoring.rs"),
-        PathBuf::from("crates/runtime-contract/src/metadata.rs"),
+        PathBuf::from("phoxal/src/participant/metadata/mod.rs"),
     ];
     let mut owners = Vec::new();
     for relative in source_files(&subject.root)? {
-        if relative == Path::new(SELF) {
+        if spells_the_vocabulary(&relative) {
             continue;
         }
         let source = read(&subject.root, &relative)?;
@@ -351,7 +375,7 @@ pub(super) fn source_reference_alias_shims_stay_absent(
     let source_reference = "SourceRef";
     let mut violations = Vec::new();
     for relative in source_files(&subject.root)? {
-        if relative == Path::new(SELF) {
+        if spells_the_vocabulary(&relative) {
             continue;
         }
         let source = read(&subject.root, &relative)?;
@@ -517,14 +541,20 @@ mod tests {
         .is_none());
     }
 
-    /// The exemption is a path, so it stops applying the moment this module
+    /// Each exemption is a path, so it stops applying the moment that module
     /// moves - and the rules would then report themselves.
     #[test]
-    fn the_self_exemption_names_this_module() {
-        assert!(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/policy/retired_surface.rs")
-                .ends_with(SELF)
-        );
+    fn the_exemptions_name_modules_that_exist() {
+        let runner = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the runner sits in the workspace");
+        for exempt in SPELL_THE_VOCABULARY {
+            assert!(
+                runner.join(exempt).is_file(),
+                "{exempt} is exempt from the retired-surface scan but does not exist"
+            );
+            assert!(spells_the_vocabulary(Path::new(exempt)));
+        }
+        assert!(!spells_the_vocabulary(Path::new("phoxal/src/lib.rs")));
     }
 }

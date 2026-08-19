@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use phoxal_bus::{
+use crate::bus::{
     BusHandle, RobotInstant, RuntimeBufferKind, RuntimeDirection, RuntimeMetricSnapshot,
     StreamPublisher,
 };
-use phoxal_protocol::runtime;
+use crate::runtime::api as runtime;
 
 use crate::participant::duration_nanos;
 use crate::participant::scheduler::StepSchedule;
@@ -16,12 +16,12 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<StreamPublisher<runtime::endpoint::telemetry::TopicEndpoint>>,
+    publisher: Option<StreamPublisher<runtime::telemetry::Rollup>>,
 }
 
 impl RuntimePerformancePublisher {
     pub(crate) fn attach(bus: BusHandle) -> Self {
-        let topic = runtime::topic::owner().telemetry().topic();
+        let topic = runtime::topics().telemetry().owner();
         let publisher = StreamPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(
@@ -300,7 +300,7 @@ impl TopicRows {
 
     /// One internal snapshot as the wire row a supervisor reads.
     ///
-    /// `phoxal-bus` owns the internal accounting vocabulary and the runtime
+    /// [`crate::bus`] owns the internal accounting vocabulary and the runtime
     /// contract family owns its serialized representation; this is their only
     /// join.
     fn wire_row(snapshot: RuntimeMetricSnapshot, elapsed: Duration) -> runtime::telemetry::Topic {
@@ -350,7 +350,7 @@ fn mean(total: u128, count: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal_bus::{RuntimeMetricKey, RuntimeMetricSnapshot};
+    use crate::bus::{RuntimeMetricKey, RuntimeMetricSnapshot};
 
     fn row(index: usize) -> RuntimeMetricSnapshot {
         RuntimeMetricSnapshot {
@@ -461,7 +461,7 @@ mod tests {
     fn lateness_uses_fired_at_minus_target_independently_of_missed_ticks() {
         let schedule = StepSchedule::hz(100.0);
         let mut performance = RuntimePerformance::new(Some(schedule));
-        let line = phoxal_bus::TimelineId::mint();
+        let line = crate::bus::TimelineId::mint();
         let observation = performance
             .begin_step(
                 RobotInstant::new(line, 100),

@@ -13,17 +13,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::participant::api::Participant;
 use crate::participant::bus_log;
-#[cfg(feature = "test-harness")]
 use crate::participant::clock::ClockMode;
-#[cfg(feature = "test-harness")]
 use crate::participant::clock::ClockSource;
-#[cfg(feature = "test-harness")]
 use crate::participant::clock::real::RealClock;
 use crate::participant::launch::Launch;
-#[cfg(feature = "test-harness")]
-use crate::testing::TestHarness;
+use crate::participant::runner::harness::TestHarness;
 
 pub(crate) mod event_loop;
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
+pub(crate) mod harness;
 pub(crate) mod inputs;
 pub(crate) mod lifecycle;
 pub(crate) mod query;
@@ -34,10 +35,8 @@ pub(crate) mod teardown;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "test-harness")]
 use lifecycle::BusLease;
 use signal::shutdown_signal;
-#[cfg(feature = "test-harness")]
 use startup::PreparedRun;
 
 /// A sticky lifecycle stop request. The source future is polled during every
@@ -140,9 +139,12 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
 
 /// Run a participant on a caller-owned bus using explicit test-harness input.
 /// The harness never opens or closes the bus and cannot claim a Ready lease.
-#[cfg(feature = "test-harness")]
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 pub async fn run_test_harness<R, S>(
-    bus: &phoxal_bus::BusHandle,
+    bus: &crate::bus::BusHandle,
     harness: TestHarness,
     shutdown: S,
 ) -> crate::Result<()>
@@ -174,10 +176,13 @@ where
 }
 
 /// Deterministic clock-injection seam for checked participants.
-#[cfg(feature = "test-harness")]
 #[doc(hidden)]
+#[allow(
+    dead_code,
+    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
+)]
 pub async fn run_test_harness_with_clock<R, C, S>(
-    bus: &phoxal_bus::BusHandle,
+    bus: &crate::bus::BusHandle,
     harness: TestHarness,
     clock: C,
     shutdown: S,

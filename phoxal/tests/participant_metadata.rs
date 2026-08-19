@@ -108,10 +108,10 @@ fn main() -> phoxal::Result<()> {
 }
 "#,
     )?;
-    use phoxal_runtime_contract::emit::ParticipantContractRecord;
-    use phoxal_runtime_contract::emit::ParticipantMetadataRecord;
-    use phoxal_runtime_contract::metadata::ParticipantKind;
-    use phoxal_runtime_contract::version::FrameworkVersion;
+    use phoxal::participant::metadata::ParticipantContractRecord;
+    use phoxal::participant::metadata::ParticipantKind;
+    use phoxal::participant::metadata::ParticipantMetadataRecord;
+    use phoxal::version::FrameworkVersion;
 
     // Compared against the framework's own typed writer rather than a
     // hand-written JSON literal: the linked bytes and the record the
@@ -161,8 +161,8 @@ fn main() -> phoxal::Result<()> {
 "#,
     )?;
     use phoxal::__private::compatibility as compat;
-    use phoxal_runtime_contract::metadata::{ParticipantKind, ParticipantMetadata};
-    use phoxal_runtime_contract::version::FrameworkVersion;
+    use phoxal::participant::metadata::{ParticipantKind, ParticipantMetadata};
+    use phoxal::version::FrameworkVersion;
 
     let object = meta
         .as_object()

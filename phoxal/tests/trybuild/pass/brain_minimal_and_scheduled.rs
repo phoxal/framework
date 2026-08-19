@@ -23,8 +23,8 @@ struct MissionState {
 }
 
 struct MissionApi {
-    drive: StateView<api::endpoint::drive::StateEndpoint>,
-    target: SetpointPublisher<api::endpoint::drive::TargetEndpoint>,
+    drive: StateView<api::drive::State>,
+    target: SetpointPublisher<api::drive::Target>,
 }
 
 #[phoxal::brain(state = MissionState, api = MissionApi)]
@@ -39,9 +39,9 @@ impl Participant for MissionBrain {
         Ok((
             MissionState::default(),
             MissionApi {
-                drive: ctx.state_view(api::topic::client().drive().state()).await?,
+                drive: ctx.state_view(api::topics().drive().state().client()).await?,
                 target: ctx
-                    .setpoint_publisher(api::topic::client().drive().target())?,
+                    .setpoint_publisher(api::topics().drive().target().client())?,
             },
         ))
     }

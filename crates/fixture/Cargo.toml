@@ -16,15 +16,10 @@ description = "Staging for the workspace fixture robot, used by other crates' te
 publish = false
 
 [dependencies]
-# The authored documents this crate stages are compiled by the manifest crate
-# and land as the model crate's canonical types. It deliberately does not depend
-# on `phoxal`: staging test assets is not participant-engine behavior, and
-# keeping the engine out means enabling this crate cannot pull a runtime into a
-# test build.
-phoxal-manifest = { workspace = true }
-phoxal-bundle = { workspace = true }
-phoxal-model = { workspace = true }
-phoxal-runtime-contract = { workspace = true }
+# The authored documents this crate stages are compiled by `phoxal::authoring`
+# and land as `phoxal::model`'s canonical types, so it needs the framework's one
+# library with the authored-source layer enabled.
+phoxal = { workspace = true, features = ["authoring"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

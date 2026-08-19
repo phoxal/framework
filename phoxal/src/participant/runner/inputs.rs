@@ -1,11 +1,11 @@
 //! What the strict launch resolves into before `Participant::setup` runs: the
 //! opened bundle, and the participant's own configuration read out of it.
 
+use crate::bundle::RuntimeBundle;
+use crate::identity::ParticipantId;
+use crate::model::Robot;
+use crate::participant::metadata::ParticipantKind;
 use anyhow::Context;
-use phoxal_bundle::RuntimeBundle;
-use phoxal_model::Robot;
-use phoxal_runtime_contract::identity::ParticipantId;
-use phoxal_runtime_contract::metadata::ParticipantKind;
 
 /// Open the bundle the launch points at.
 ///

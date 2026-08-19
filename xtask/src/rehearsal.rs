@@ -27,7 +27,7 @@ use crate::check::CompatibilityCheck;
 use crate::index::{PublishedTrain, PublishedVersion, PublishedVersions};
 use crate::probe::{ContractSurfaces, Extraction, Side};
 use crate::source::{AuthoredDocuments, CorpusReading, Reading};
-use crate::surface::{CONTRACT_CRATES, CompatibilityImpact};
+use crate::surface::{CONTRACT_CRATE, CompatibilityImpact};
 use crate::toolchain::RustVersion;
 
 /// The pinned tests that own the Stable semantics of `FrameworkVersion`.
@@ -36,7 +36,7 @@ use crate::toolchain::RustVersion;
 /// quietly running nothing.
 const VERSION_SEMANTICS: PinnedTests = PinnedTests {
     what: "FrameworkVersion Stable semantics",
-    package: "phoxal-runtime-contract",
+    package: CONTRACT_CRATE,
     tests: &[
         "version::tests::compatibility_is_the_line_and_the_line_is_the_break",
         "version::tests::the_compatibility_line_is_the_minor_before_v1_and_the_major_after",
@@ -52,14 +52,14 @@ const VERSION_SEMANTICS: PinnedTests = PinnedTests {
 /// MessagePack round trip, and the diagnostic a foreign tag produces.
 const FROZEN_BOOTSTRAP: PinnedTests = PinnedTests {
     what: "frozen bootstrap invariants",
-    package: "phoxal-protocol",
+    package: CONTRACT_CRATE,
     tests: &[
-        "api::supervisor::connect::tests::the_bootstrap_key_is_pinned_to_its_literal",
-        "api::supervisor::connect::tests::the_composed_bootstrap_wire_key_is_pinned_to_its_literal",
-        "api::supervisor::connect::tests::the_bootstrap_documents_are_pinned_to_their_literal_json",
-        "api::supervisor::connect::tests::the_bootstrap_documents_are_pinned_to_their_declared_wire_shape",
-        "api::supervisor::connect::tests::the_bootstrap_documents_round_trip_on_the_bus_codec",
-        "api::supervisor::connect::tests::a_foreign_schema_tag_fails_by_naming_itself",
+        "supervisor::api::connect::tests::the_bootstrap_key_is_pinned_to_its_literal",
+        "supervisor::api::connect::tests::the_composed_bootstrap_wire_key_is_pinned_to_its_literal",
+        "supervisor::api::connect::tests::the_bootstrap_documents_are_pinned_to_their_literal_json",
+        "supervisor::api::connect::tests::the_bootstrap_documents_are_pinned_to_their_declared_wire_shape",
+        "supervisor::api::connect::tests::the_bootstrap_documents_round_trip_on_the_bus_codec",
+        "supervisor::api::connect::tests::a_foreign_schema_tag_fails_by_naming_itself",
     ],
 };
 
@@ -72,15 +72,15 @@ const FROZEN_BOOTSTRAP: PinnedTests = PinnedTests {
 /// codec, and the Zenoh wire protocol version underneath everything.
 const FROZEN_BOOTSTRAP_TRANSPORT: PinnedTests = PinnedTests {
     what: "frozen bootstrap transport facts",
-    package: "phoxal-bus",
+    package: CONTRACT_CRATE,
     tests: &[
-        "abi::tests::the_bootstrap_encoding_and_codec_are_pinned_to_their_literals",
-        "metadata::tests::the_bootstrap_reply_attachment_is_pinned_to_its_literal_fields",
-        "query::tests::the_bootstrap_error_leg_is_pinned_to_its_literal_fields",
-        "session::tests::the_bootstrap_discovery_session_is_pinned_to_a_scouting_free_client",
-        "session::tests::the_bootstrap_execution_text_form_is_pinned_to_the_session_id_spelling",
-        "session::tests::the_bootstrap_key_grammar_is_pinned_to_its_literal",
-        "session::tests::the_zenoh_wire_protocol_version_is_pinned_to_its_literal",
+        "bus::abi::tests::the_bootstrap_encoding_and_codec_are_pinned_to_their_literals",
+        "bus::metadata::tests::the_bootstrap_reply_attachment_is_pinned_to_its_literal_fields",
+        "bus::query::tests::the_bootstrap_error_leg_is_pinned_to_its_literal_fields",
+        "bus::session::tests::the_bootstrap_discovery_session_is_pinned_to_a_scouting_free_client",
+        "bus::session::tests::the_bootstrap_execution_text_form_is_pinned_to_the_session_id_spelling",
+        "bus::session::tests::the_bootstrap_key_grammar_is_pinned_to_its_literal",
+        "bus::session::tests::the_zenoh_wire_protocol_version_is_pinned_to_its_literal",
     ],
 };
 
@@ -419,23 +419,9 @@ fn connect() -> Value {
     })
 }
 
-/// One side's surface set: every contract crate present, the records on the
-/// crate that owns endpoints.
-fn documents(records: &[Value]) -> BTreeMap<String, Value> {
-    CONTRACT_CRATES
-        .iter()
-        .map(|contract_crate| {
-            let declared = if contract_crate.carrier == "phoxal-protocol" {
-                records.to_vec()
-            } else {
-                Vec::new()
-            };
-            (
-                contract_crate.carrier.to_owned(),
-                json!({ "records": declared }),
-            )
-        })
-        .collect()
+/// One side's surface set: the one document the framework library states.
+fn documents(records: &[Value]) -> Vec<Value> {
+    vec![json!({ "records": records })]
 }
 
 /// The Stable-line matrix.

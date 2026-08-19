@@ -212,7 +212,7 @@ pub enum ParticipantKind {
 }
 
 /// The one fixed participant identity: the mandatory root brain. Shared with
-/// `phoxal-manifest`'s authored-identity reservation by value, not by
+/// `phoxal::authoring`'s authored-identity reservation by value, not by
 /// dependency - `phoxal-macros` is below it in the crate graph.
 const BRAIN_ID: &str = "brain";
 
@@ -227,7 +227,7 @@ impl ParticipantKind {
 
     /// The framework-owned kind value this role declares. Emitted as a path,
     /// never as a token: the wire spelling belongs to
-    /// `phoxal_runtime_contract::ParticipantKind`'s serde rename.
+    /// `phoxal::participant::metadata::ParticipantKind`'s serde rename.
     fn artifact_kind(self, phoxal: &TokenStream) -> TokenStream {
         let variant = match self {
             ParticipantKind::Service => quote!(Service),
@@ -302,7 +302,7 @@ impl ParticipantKind {
 /// (`expand_participant`'s `#metadata_const_ident`, via `concatcp!`, which
 /// concatenates raw `&str` values with no escaping), and it is used as a
 /// literal Zenoh key segment (a Liveliness token's participant segment,
-/// `crates/bus/src/liveliness.rs`'s `validate_participant`; a dynamic
+/// `phoxal/src/bus/liveliness.rs`'s `validate_participant`; a dynamic
 /// `{participant_id}` topic var, e.g. `phoxal/src/participant/bus_log.rs`'s
 /// `logs(&participant_id)`). A `"`, `\`, control character, or `/` in the id
 /// would corrupt the JSON or split the key, so this rejects at compile time
@@ -553,11 +553,6 @@ pub fn expand_participant(
         impl #phoxal::__private::ParticipantSpec for #struct_name {
             const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
             const ID: &'static str = #id;
-            // The participant-authoring facade family, spliced from the
-            // framework path rather than named by the author: a participant
-            // does not get to pick a contract family, and every handle it
-            // builds is bounded on this one.
-            type ContractApi = #phoxal::api::Api;
             type Config = #config_ty;
             type State = #state_ty;
             type Api = #api_ty;
@@ -967,25 +962,6 @@ mod tests {
     /// the role attribute to the authoring facade, never named by the author.
     /// Every `SetupContext` builder is bounded on this associated type, so a
     /// participant that reached for another semantic contract tree fails to
-    /// compile.
-    #[test]
-    fn every_role_fixes_its_contract_api_to_the_authoring_facade() {
-        for kind in [
-            ParticipantKind::Service,
-            ParticipantKind::Driver,
-            ParticipantKind::Brain,
-        ] {
-            let expanded = compact_tokens(
-                expand_participant(quote! {}, quote! { struct Probe; }, kind).expect("expands"),
-            );
-            assert!(
-                expanded.contains("type ContractApi = :: phoxal :: api :: Api ;"),
-                "{} must fix ContractApi to the facade family: {expanded}",
-                kind.attr_name()
-            );
-        }
-    }
-
     #[test]
     fn expand_participant_emits_a_black_box_read_of_its_own_metadata_static() {
         // The ELF `--gc-sections` defeat (the `#[used]` comment in

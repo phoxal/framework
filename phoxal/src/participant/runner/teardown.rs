@@ -37,7 +37,7 @@ pub(crate) struct TeardownReport {
     pub(crate) shutdown_timed_out: bool,
     pub(crate) unjoined_tasks: Vec<String>,
     pub(crate) task_errors: Vec<anyhow::Error>,
-    pub(crate) bus_close: Option<phoxal_bus::BusCloseReport>,
+    pub(crate) bus_close: Option<crate::bus::BusCloseReport>,
 }
 
 impl TeardownReport {
@@ -49,7 +49,7 @@ impl TeardownReport {
             && self
                 .bus_close
                 .as_ref()
-                .is_none_or(phoxal_bus::BusCloseReport::is_clean)
+                .is_none_or(crate::bus::BusCloseReport::is_clean)
     }
 }
 
@@ -536,11 +536,11 @@ mod tests {
         let result = combine::<()>(
             Ok(()),
             TeardownReport {
-                bus_close: Some(phoxal_bus::BusCloseReport {
+                bus_close: Some(crate::bus::BusCloseReport {
                     transport_error_count: 3,
                     transport_errors: vec!["first failure".to_string()],
                     transport_errors_truncated: 2,
-                    ..phoxal_bus::BusCloseReport::default()
+                    ..crate::bus::BusCloseReport::default()
                 }),
                 ..TeardownReport::default()
             },

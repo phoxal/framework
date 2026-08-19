@@ -5,20 +5,36 @@
 //! Authoring uses a role attribute on a unit marker, an optional
 //! `#[derive(phoxal::Config)]`, and an ordinary `Participant` implementation.
 //!
-//! Nothing here is a public path. Whatever the framework publishes to
-//! participant authors goes out through the crate-root facade in `lib.rs`, and
-//! whatever macro-generated code needs goes out through `crate::__private`;
-//! modules inside the engine import from the module that owns the item.
+//! [`metadata`] is the one public path here: the compatibility record every
+//! participant artifact embeds, and its strict reader, which build-time tooling
+//! reads back out of a linked binary. Nothing else in this module is a public
+//! path. Whatever the framework publishes to participant authors goes out
+//! through the crate-root facade in `lib.rs`, and whatever macro-generated code
+//! needs goes out through `crate::__private`; modules inside the engine import
+//! from the module that owns the item.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
+
+// The two process-boundary contracts, whose own headers document them: the
+// participant-artifact metadata document, and the launch argv. Both are read by
+// a *host* - the CLI stages a binary and launches it, the supervisor reads what
+// it staged - so a participant profile compiles them and reads neither: it
+// writes the metadata document from a role attribute's const-eval path, and it
+// decodes argv rather than encoding it.
+pub mod launch;
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "the document's strict reader and its record writer are the host half of this contract"
+)]
+pub mod metadata;
 
 pub(crate) mod api;
 pub(crate) mod bus_log;
 pub(crate) mod clock;
 pub(crate) mod config;
 pub(crate) mod context;
-pub(crate) mod launch;
 pub(crate) mod managed;
 pub(crate) mod query;
 pub(crate) mod runner;
@@ -27,7 +43,10 @@ pub(crate) mod scheduler;
 pub(crate) mod spec;
 // `surface` is the one engine module a participant crate reaches by name: the
 // role attributes emit `impl $crate::__private::surface::…` into the
-// participant's own crate, so the module itself is re-exported there.
+// participant's own crate, so the module itself is re-exported there. It has to
+// stay `pub` for that re-export to be legal; `#[doc(hidden)]` keeps it out of
+// the documented surface, the same as the `__private` path it is reached by.
+#[doc(hidden)]
 pub mod surface;
 
 /// A duration as whole nanoseconds, saturating at [`u64::MAX`].

@@ -1,11 +1,11 @@
-use phoxal_protocol::supervisor;
+use phoxal::supervisor::api as supervisor;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use phoxal::prelude::*;
+use phoxal::testing::TestBus;
 use phoxal::testing::{TestHarness, run_test_harness};
-use phoxal_bus::{BusConfig, BusOwner, ExecutionId};
 use tokio::sync::Notify;
 
 static STEP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -29,7 +29,7 @@ impl Participant for SerializedSmoke {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().bundle().get(), Self::query)?;
+        ctx.query(supervisor::topics().bundle().get().owner(), Self::query)?;
         Ok((SmokeState::default(), ()))
     }
 
@@ -65,16 +65,10 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
     let launch = TestHarness::new("serialized-smoke")
         .expect("valid test participant")
         .with_query_reply_delay(Duration::from_millis(120));
-    let participant =
-        phoxal::bus::ParticipantId::new("serialized-smoke").expect("test participant id");
-    let execution = ExecutionId::mint();
-    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-        execution,
-        participant,
-        Vec::new(),
-    ))
-    .await
-    .expect("open in-process bus");
+    let session = TestBus::for_participant("serialized-smoke")
+        .await
+        .expect("open in-process bus");
+    let bus = session.handle().clone();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let runner_bus = bus.clone();
@@ -91,7 +85,7 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
 
         let querier = Querier::new(
             bus.clone(),
-            &supervisor::topic::client().bundle().get(),
+            &supervisor::topics().bundle().get().client(),
             Duration::from_secs(2),
         )
         .expect("create smoke querier");
@@ -137,5 +131,5 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
     .await
     .expect("runner and smoke client should finish");
     runner_result.expect("runner should shut down cleanly");
-    owner.close().await;
+    session.close().await;
 }

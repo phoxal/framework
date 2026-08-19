@@ -99,7 +99,7 @@ impl Participant for Video {
     ) -> Result<(Self::State, Self::Api)> {
         let sources = video_sources(ctx.robot()?)?;
 
-        ctx.query(api::topic::owner().video().open(), Self::open)?;
+        ctx.query(api::topics().video().open().owner(), Self::open)?;
 
         Ok((VideoState { sources }, Api))
     }

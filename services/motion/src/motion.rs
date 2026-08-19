@@ -46,7 +46,7 @@ const COMPONENT_ESTOP_STALE: Duration = Duration::from_secs(1);
 /// One declared emergency stop and the subscription carrying its state.
 struct BoundEmergencyStop {
     reference: CapabilityRef,
-    state: StateView<api::endpoint::component::emergency_stop::StateEndpoint>,
+    state: StateView<api::component::emergency_stop::State>,
 }
 
 /// Aggregated emergency-stop state across every declared component.
@@ -109,14 +109,14 @@ impl EmergencyStopLatch {
 }
 
 pub(crate) struct Api {
-    manual: SetpointReceiver<api::endpoint::motion::ManualEndpoint>,
-    autonomous: StateView<api::endpoint::navigation::CandidateEndpoint>,
+    manual: SetpointReceiver<api::motion::ManualCommand>,
+    autonomous: StateView<api::navigation::Candidate>,
     _navigation_ready: phoxal::bus::ParticipantReadyObserver,
     _safety_ready: phoxal::bus::ParticipantReadyObserver,
     component_estops: Vec<BoundEmergencyStop>,
-    safety_constraints: StateView<api::endpoint::safety::ConstraintsEndpoint>,
-    drive: SetpointPublisher<api::endpoint::drive::TargetEndpoint>,
-    state: StatePublisher<api::endpoint::motion::StateEndpoint>,
+    safety_constraints: StateView<api::safety::MotionConstraints>,
+    drive: SetpointPublisher<api::drive::Target>,
+    state: StatePublisher<api::motion::State>,
 }
 
 pub(crate) struct MotionState {
@@ -189,10 +189,11 @@ impl Participant for Motion {
                 reference: reference.clone(),
                 state: ctx
                     .state_view(
-                        api::topic::client()
+                        api::topics()
                             .component(&reference.component_id)?
                             .emergency_stop(&reference.capability_id)?
-                            .state(),
+                            .state()
+                            .client(),
                     )
                     .await?,
             });
@@ -223,11 +224,11 @@ impl Participant for Motion {
             },
             Api {
                 manual: ctx
-                    .setpoint_receiver(api::topic::owner().motion().manual())
+                    .setpoint_receiver(api::topics().motion().manual().owner())
                     .await?,
                 autonomous: ctx
                     .state_view_with_admission(
-                        api::topic::client().navigation().candidate(),
+                        api::topics().navigation().candidate().client(),
                         move |observed| {
                             let Ok(mut admission) = candidate_admission.lock() else {
                                 return false;
@@ -247,7 +248,7 @@ impl Participant for Motion {
                 component_estops,
                 safety_constraints: ctx
                     .state_view_with_admission(
-                        api::topic::client().safety().constraints(),
+                        api::topics().safety().constraints().client(),
                         move |observed| {
                             let Ok(mut authority) = admission_authority.lock() else {
                                 return false;
@@ -262,8 +263,8 @@ impl Participant for Motion {
                         },
                     )
                     .await?,
-                drive: ctx.setpoint_publisher(api::topic::client().drive().target())?,
-                state: ctx.state_publisher(api::topic::owner().motion().state())?,
+                drive: ctx.setpoint_publisher(api::topics().drive().target().client())?,
+                state: ctx.state_publisher(api::topics().motion().state().owner())?,
             },
         ))
     }

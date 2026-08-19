@@ -20,3 +20,16 @@ fn trybuild_ui() {
 #[cfg(feature = "test-harness")]
 #[test]
 fn trybuild_ui_with_test_harness_enabled() {}
+
+// The cases a *host* profile is the subject of. A participant cannot name the
+// runtime family at all, which `fail/participant_cannot_reach_the_world_clock`
+// pins; the guarantee below is the one that still has to hold for a consumer
+// that *can* name it - the world clock is a sibling semantic of `State`, never
+// a subtype of it, so no ordinary state publisher can mint a world step.
+#[cfg(feature = "session")]
+#[test]
+fn trybuild_host_ui() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/trybuild/host_pass/*.rs");
+    t.compile_fail("tests/trybuild/host_fail/*.rs");
+}

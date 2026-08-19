@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use phoxal::api;
-use phoxal::bus::{EndpointDescriptor, SampleDeliveryContract, StateDeliveryContract};
+use phoxal::bus::{Endpoint, Sample, State};
 use phoxal::model::FootprintEnvelope;
 use phoxal::model::component::capability::{Capability, CapabilityRole};
 use phoxal::model::identity::CapabilityRef;
@@ -51,12 +51,12 @@ const OPERATOR_PARTICIPANT_ID: &str = "operator";
 const RANGE_PARTICIPANT_ID: &str = "range-provider";
 
 /// One declared component capability and the subscription carrying its samples.
-struct BoundSampleInput<E: EndpointDescriptor> {
+struct BoundSampleInput<E: Endpoint<Semantics = Sample>> {
     reference: CapabilityRef,
     samples: SampleReceiver<E>,
 }
 
-struct BoundStateInput<E: EndpointDescriptor> {
+struct BoundStateInput<E: Endpoint<Semantics = State>> {
     reference: CapabilityRef,
     samples: StateView<E>,
 }
@@ -525,15 +525,15 @@ impl WorldInputs {
 }
 
 pub(crate) struct Api {
-    localization: StateView<api::endpoint::localize::StateEndpoint>,
-    map: StateView<api::endpoint::map::RevisionEndpoint>,
+    localization: StateView<api::localize::LocalizationState>,
+    map: StateView<api::map::Revision>,
     map_events: std::sync::Mutex<mpsc::Receiver<MapQueryEvent>>,
     map_epoch: Arc<AtomicU64>,
-    drive: StateView<api::endpoint::drive::StateEndpoint>,
-    batteries: Vec<BoundStateInput<api::endpoint::component::battery::StateEndpoint>>,
-    ranges: Vec<BoundSampleInput<api::endpoint::component::range::SampleEndpoint>>,
-    constraints: StatePublisher<api::endpoint::safety::ConstraintsEndpoint>,
-    state: StatePublisher<api::endpoint::safety::StateEndpoint>,
+    drive: StateView<api::drive::State>,
+    batteries: Vec<BoundStateInput<api::component::battery::State>>,
+    ranges: Vec<BoundSampleInput<api::component::range::Sample>>,
+    constraints: StatePublisher<api::safety::MotionConstraints>,
+    state: StatePublisher<api::safety::State>,
 }
 
 pub(crate) struct SafetyState {
@@ -571,10 +571,11 @@ impl Participant for Safety {
                 reference: reference.clone(),
                 samples: ctx
                     .sample_receiver(
-                        api::topic::client()
+                        api::topics()
                             .component(&reference.component_id)?
                             .range(&reference.capability_id)?
-                            .sample(),
+                            .sample()
+                            .client(),
                     )
                     .await?,
             });
@@ -585,15 +586,16 @@ impl Participant for Safety {
                 reference: reference.clone(),
                 samples: ctx
                     .state_view(
-                        api::topic::client()
+                        api::topics()
                             .component(&reference.component_id)?
                             .battery(&reference.capability_id)?
-                            .state(),
+                            .state()
+                            .client(),
                     )
                     .await?,
             });
         }
-        let map_query = ctx.querier(api::topic::client().map().submap())?;
+        let map_query = ctx.querier(api::topics().map().submap().client())?;
         let (map_sender, map_events) = mpsc::channel(4);
         let map_epoch = Arc::new(AtomicU64::new(0));
         let task_epoch = Arc::clone(&map_epoch);
@@ -666,18 +668,20 @@ impl Participant for Safety {
             },
             Api {
                 localization: ctx
-                    .state_view(api::topic::client().localize().state())
+                    .state_view(api::topics().localize().state().client())
                     .await?,
                 map: ctx
-                    .state_view(api::topic::client().map().revision())
+                    .state_view(api::topics().map().revision().client())
                     .await?,
                 map_events: std::sync::Mutex::new(map_events),
                 map_epoch,
-                drive: ctx.state_view(api::topic::client().drive().state()).await?,
+                drive: ctx
+                    .state_view(api::topics().drive().state().client())
+                    .await?,
                 batteries,
                 ranges,
-                constraints: ctx.state_publisher(api::topic::owner().safety().constraints())?,
-                state: ctx.state_publisher(api::topic::owner().safety().state())?,
+                constraints: ctx.state_publisher(api::topics().safety().constraints().owner())?,
+                state: ctx.state_publisher(api::topics().safety().state().owner())?,
             },
         ))
     }
@@ -824,8 +828,8 @@ impl Participant for Safety {
 /// fail closed" rule in one place. An empty drain leaves the retained sample
 /// alone - it is the freshness gate, not the arrival of a newer sample, that
 /// decides when a held value stops counting.
-fn retain_newest_stamped<E: SampleDeliveryContract>(
-    slot: &mut Option<Timed<E::Payload>>,
+fn retain_newest_stamped<E: Endpoint<Semantics = Sample>>(
+    slot: &mut Option<Timed<E>>,
     subscriber: &SampleReceiver<E>,
 ) {
     while let Some(observed) = subscriber.try_recv() {
@@ -835,11 +839,9 @@ fn retain_newest_stamped<E: SampleDeliveryContract>(
     }
 }
 
-fn retain_newest_view<E: StateDeliveryContract>(
-    slot: &mut Option<Timed<E::Payload>>,
-    view: &StateView<E>,
-) where
-    E::Payload: Clone,
+fn retain_newest_view<E>(slot: &mut Option<Timed<E>>, view: &StateView<E>)
+where
+    E: Endpoint<Semantics = State> + Clone,
 {
     if let Some(observed) = view.observed()
         && let Some(at) = observed.metadata.produced_exactly_at()

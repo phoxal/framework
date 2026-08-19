@@ -15,8 +15,7 @@ name = "phoxal-service-navigation"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
-phoxal-bus = { workspace = true }
+phoxal = { workspace = true, features = ["participant"] }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 

@@ -1,0 +1,16 @@
+error[E0308]: mismatched types
+ --> tests/trybuild/fail/state_publisher_rejects_a_subscribe_topic.rs:7:9
+  |
+5 |     let _ = phoxal::bus::StatePublisher::new(
+  |             -------------------------------- arguments to this function are incorrect
+6 |         bus,
+7 |         &phoxal::api::topics().drive().state().client(),
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `&Topic<Publish<_>>`, found `&Topic<Subscribe<State>>`
+  |
+  = note: expected reference `&Topic<phoxal::bus::Publish<_>>`
+             found reference `&Topic<phoxal::bus::Subscribe<phoxal::api::drive::State>>`
+note: associated function defined here
+ --> src/bus/handle/publisher.rs
+  |
+  |     pub fn new(bus: BusHandle, topic: &Topic<Publish<E>>) -> Result<Self> {
+  |            ^^^

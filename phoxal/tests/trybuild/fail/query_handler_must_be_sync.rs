@@ -1,5 +1,5 @@
 use phoxal::api;
-use phoxal_protocol::supervisor;
+use phoxal::supervisor::api as supervisor;
 use phoxal::prelude::*;
 
 struct Api;
@@ -13,7 +13,7 @@ impl Participant for AsyncQueryHandler {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(supervisor::topic::owner().bundle().get(), Self::get)?;
+        ctx.query(supervisor::topics().bundle().get().owner(), Self::get)?;
         Ok(((), Api))
     }
 }
