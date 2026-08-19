@@ -26,8 +26,9 @@ clap = { workspace = true }
 # train: the supervisor and the library it is the body of are one artifact split
 # across two packages.
 #
-# `default-features = false` drops the participant profile: this process is not
-# a participant, and nothing here authors on that surface.
+# No participant profile: this process is not a participant, and nothing here
+# authors on that surface. The workspace dependency carries
+# `default-features = false`, so naming `supervisor` is the whole selection.
 phoxal = { workspace = true, features = ["supervisor"] }
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

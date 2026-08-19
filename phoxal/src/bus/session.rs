@@ -98,10 +98,6 @@ pub(crate) struct BusConfig {
     connect_endpoints: Vec<String>,
 }
 
-#[allow(
-    dead_code,
-    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
-)]
 impl BusConfig {
     /// Build a participant bus configuration.
     pub fn for_participant(
@@ -118,6 +114,10 @@ impl BusConfig {
     }
 
     /// Build an external bus configuration with an optional diagnostic label.
+    #[allow(
+        dead_code,
+        reason = "an external session belongs to `session`, `simulator` and the supervisor host, each of which is one profile's module"
+    )]
     pub fn for_external(
         execution: ExecutionId,
         label: Option<SourceLabel>,
@@ -132,6 +132,7 @@ impl BusConfig {
     }
 
     /// The execution scope this session joins.
+    #[allow(dead_code, reason = "read by this module's own tests")]
     #[must_use]
     pub fn execution(&self) -> ExecutionId {
         self.execution

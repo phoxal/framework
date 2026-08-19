@@ -257,15 +257,15 @@ impl KeyLivelinessObserver {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
-)]
 impl BusOwner {
     /// Declare one exact execution-scoped infrastructure presence lease.
     ///
     /// The key must be a concrete relative key. This cannot mint participant
     /// Ready authority; that producer-qualified contract has its own method.
+    #[allow(
+        dead_code,
+        reason = "the supervisor's own presence key, declared by the one profile that compiles a supervisor"
+    )]
     pub async fn declare_liveliness_key(&self, relative_key: &str) -> Result<KeyLivelinessToken> {
         validate_relative_key(relative_key)?;
         if relative_key.starts_with(PARTICIPANT_LIVELINESS_PREFIX) {
@@ -309,6 +309,10 @@ impl BusOwner {
     /// That method mints infrastructure keys, and readiness is producer
     /// qualified; this is the one door onto another participant's Ready key, and
     /// it goes through the same key builder as a participant's own.
+    #[allow(
+        dead_code,
+        reason = "delegated presence, declared by the one profile that compiles a simulator"
+    )]
     pub async fn declare_participant_ready_as(
         &self,
         participant: &ParticipantId,
