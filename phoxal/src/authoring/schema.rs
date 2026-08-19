@@ -224,11 +224,11 @@ robot:
       component: wheel_drive
       mount_link: wheel
       driver:
-        runtime_clock_ms: 10
         connection:
           type: gpio
           chip: gpiochip0
           pins: [{ line: 1, direction: output }]
+        config: { poll_hz: 10 }
       parameters:
         motor: { kind: motor, direction_sign: -1 }
 "#,

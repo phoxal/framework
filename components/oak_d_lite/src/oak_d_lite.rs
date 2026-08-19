@@ -11,7 +11,7 @@ pub(crate) struct Api;
 /// Setup never returns state while the hardware backend is unavailable.
 pub(crate) struct OakDLiteState;
 
-#[phoxal::driver(state = OakDLiteState, api = Api)]
+#[phoxal::driver(state = OakDLiteState, api = Api, connection = usb)]
 pub(crate) struct OakDLite;
 
 fn unavailable_backend() -> anyhow::Error {

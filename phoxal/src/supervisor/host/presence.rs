@@ -180,7 +180,12 @@ mod tests {
             .service("drive", None)
             .component_type("motor", |motor| motor.motor("spin", "axle"))
             .component_with("left", "motor", |mounted| {
-                mounted.driver(serde_json::json!({ "connection": "can0" }))
+                mounted.driver(
+                    crate::model::connection::Connection::Can(
+                        crate::model::connection::Can { bus: 0, node_id: 1 },
+                    ),
+                    None,
+                )
             })
             .component("simulated_only", "motor")
             .build()

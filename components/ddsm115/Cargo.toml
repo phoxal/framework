@@ -17,11 +17,13 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true, features = ["participant"] }
 anyhow = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 # Tests use only the explicit caller-owned harness; shipped binaries do not
 # enable this bypass feature.
 phoxal = { workspace = true, features = ["test-harness"] }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

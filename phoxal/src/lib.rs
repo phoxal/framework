@@ -101,9 +101,14 @@
 //! different runtime roles:
 //!
 //! - `#[phoxal::service]` is the ordinary typed participant surface.
-//! - `#[phoxal::driver]` is launched once per `robot.components` entry, under
-//!   that entry's own id. Only a driver can call `SetupContext::component` to
-//!   read the component it is bound to.
+//! - `#[phoxal::driver]` is launched once per driven `robot.components` entry,
+//!   under that entry's own id. Only a driver can call
+//!   `SetupContext::component` to read the component it is bound to, or
+//!   `SetupContext::connection` to read how that component is wired to the
+//!   machine. The entry's `driver:` block is two slots with one owner each: a
+//!   `connection` from the framework's closed
+//!   [`model::connection`] vocabulary, and a `config`
+//!   the driver binary alone gives shape to.
 //! - `#[phoxal::brain]` is the robot project's one mandatory composition root:
 //!   the root Cargo package's binary, staged as `bin/brain`. Its identity is
 //!   fixed to `brain` and its `Config` is always `()`; it owns mission and
@@ -428,8 +433,8 @@ pub use phoxal_macros::Config;
 #[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::service;
 
-/// Link a participant state struct to its `Config`/`Api` types as a
-/// component driver.
+/// Link a participant state struct to its `Config`/`Api` types as a component
+/// driver, and optionally declare the one connection kind it accepts.
 #[cfg(feature = "participant")]
 #[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::driver;
@@ -549,6 +554,12 @@ pub mod __private {
 
     /// The authoring kind a role attribute records in `ParticipantSpec::KIND`.
     pub use crate::participant::metadata::ParticipantKind;
+
+    /// The connection vocabulary `#[phoxal::driver(connection = …)]` declares
+    /// from, and the const-eval writer that spells the declared kind into the
+    /// embedded metadata document.
+    pub use crate::model::connection::{ConnectionKind, ConnectionPayload};
+    pub use crate::participant::metadata::connection_json;
 
     /// The cadence `#[phoxal::step(hz = …)]` returns from
     /// `Participant::__step_schedule`.

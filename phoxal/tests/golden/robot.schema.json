@@ -28,7 +28,7 @@
               "type": "null"
             }
           ],
-          "description": "Hardware connection metadata. Its presence is what declares a component\ndriver for this instance, and its body is that driver's configuration.\nThe driver's participant id is the instance id this block sits under."
+          "description": "The driver block. Its presence is what declares a component driver for\nthis instance; it states how the component is wired to the machine and\ncarries that driver's own configuration. The driver's participant id is\nthe instance id this block sits under."
         },
         "mount_link": {
           "type": "string"
@@ -56,8 +56,8 @@
       ],
       "type": "object"
     },
-    "ConnectionConfig": {
-      "description": "Connection configuration for executable drivers.",
+    "Connection": {
+      "description": "The hardware connection an authored `driver.connection` block states.\n\nThe wire form is internally tagged: `{\"type\": \"can\", \"bus\": 0, \"node_id\": 1}`\nis one connection, tag and payload in one map, which is how a robot document\nhas always spelled it.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -232,7 +232,7 @@
             },
             "pins": {
               "items": {
-                "$ref": "#/$defs/GpioPinConfig"
+                "$ref": "#/$defs/GpioPin"
               },
               "type": "array"
             },
@@ -253,14 +253,12 @@
     "DriverConfig": {
       "additionalProperties": false,
       "properties": {
-        "connection": {
-          "$ref": "#/$defs/ConnectionConfig"
+        "config": {
+          "description": "The driver binary's own configuration, and the only thing deserialized\ninto the type its `#[phoxal::driver(config = …)]` declares."
         },
-        "runtime_clock_ms": {
-          "default": 100,
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
+        "connection": {
+          "$ref": "#/$defs/Connection",
+          "description": "How this component is wired to the machine."
         }
       },
       "required": [
@@ -269,14 +267,16 @@
       "type": "object"
     },
     "GpioDirection": {
+      "description": "Which way one GPIO line is driven.",
       "enum": [
         "input",
         "output"
       ],
       "type": "string"
     },
-    "GpioPinConfig": {
+    "GpioPin": {
       "additionalProperties": false,
+      "description": "One GPIO line: which line on the chip it is, which way it is driven, and\nwhether it reads and drives inverted.",
       "properties": {
         "active_low": {
           "default": false,

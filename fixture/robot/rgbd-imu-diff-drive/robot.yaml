@@ -30,6 +30,8 @@ robot:
           type: can
           bus: 0
           node_id: 1
+        config:
+          reduction: 20
       parameters:
         motor:
           kind: motor

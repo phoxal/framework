@@ -12,7 +12,7 @@ pub(crate) struct Api;
 /// Setup never returns state while the hardware backend is unavailable.
 pub(crate) struct ZedF9pState;
 
-#[phoxal::driver(state = ZedF9pState, api = Api)]
+#[phoxal::driver(state = ZedF9pState, api = Api, connection = usb)]
 pub(crate) struct ZedF9p;
 
 fn unavailable_backend() -> anyhow::Error {

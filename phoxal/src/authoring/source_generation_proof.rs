@@ -71,8 +71,11 @@ struct AltMount {
 struct AltHardware {
     can_bus: u8,
     can_node: u8,
+    /// The driver binary's own configuration, under this generation's own key.
+    /// It stays opaque here exactly as it does in the current generation: no
+    /// source language interprets it.
     #[serde(default)]
-    step_ms: Option<u64>,
+    settings: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,12 +139,13 @@ impl TestAltRobotDto {
                             mount_link: mount.link,
                             driver: mount.hardware.map(|hardware| {
                                 crate::authoring::source::robot::driver::DriverConfig {
-                                    connection:
-                                        crate::authoring::source::robot::driver::ConnectionConfig::Can {
+                                    connection: crate::model::connection::Connection::Can(
+                                        crate::model::connection::Can {
                                             bus: hardware.can_bus,
                                             node_id: hardware.can_node,
                                         },
-                                    runtime_clock_ms: hardware.step_ms.unwrap_or(100),
+                                    ),
+                                    config: hardware.settings,
                                 }
                             }),
                             roles: mount
@@ -208,7 +212,7 @@ mounts:
   - name: front_left_drive
     kind: drive_motor
     link: front_left_wheel_mount
-    hardware: { can_bus: 0, can_node: 1 }
+    hardware: { can_bus: 0, can_node: 1, settings: { reduction: 20 } }
     tuning:
       - { capability: motor, kind: motor }
       - { capability: encoder, kind: encoder }

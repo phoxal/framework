@@ -396,6 +396,37 @@ impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
             anyhow::anyhow!("this driver's id '{id}' is not a component instance of the robot")
         })
     }
+
+    /// How the bound component is wired to the machine.
+    ///
+    /// The return type is what the role attribute declared: a driver written
+    /// `#[phoxal::driver(connection = serial)]` gets a
+    /// [`Serial`](crate::model::connection::Serial) with its `port` and `baud`
+    /// already read off, with no variant to match, because the runner refused
+    /// any other authored kind before this process reached the bus. A driver
+    /// that declared no kind gets the whole
+    /// [`Connection`](crate::model::connection::Connection) and decides for
+    /// itself.
+    ///
+    /// The value is owned rather than borrowed: a connection payload is a
+    /// handful of scalars, and a driver holds it for the whole run.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no bundle is bound, when this driver's id is not a component
+    /// instance, when that instance declares no driver block, or when the
+    /// authored connection is not the declared kind.
+    pub fn connection(&self) -> crate::Result<R::Connection> {
+        use crate::model::connection::ConnectionPayload as _;
+
+        let id = &self.participant_id;
+        let component = self.component()?;
+        let driver = component
+            .instance()
+            .driver()
+            .ok_or_else(|| anyhow::anyhow!("component instance '{id}' declares no driver block"))?;
+        Ok(R::Connection::from_connection(driver.connection().clone())?)
+    }
 }
 
 /// Per-step context: the robot instant this step reached, plus the capability

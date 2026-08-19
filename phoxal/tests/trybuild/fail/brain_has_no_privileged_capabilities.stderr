@@ -12,5 +12,5 @@ error[E0599]: the method `component` exists for mutable reference `&mut phoxal::
 note: the trait `phoxal::participant::surface::ComponentBoundSurface` must be implemented
   --> src/participant/surface.rs
    |
-   | pub trait ComponentBoundSurface: sealing::Sealed {}
+   | pub trait ComponentBoundSurface: sealing::Sealed {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

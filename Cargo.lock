@@ -2448,6 +2448,8 @@ version = "0.66.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

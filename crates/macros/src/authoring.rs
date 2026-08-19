@@ -256,12 +256,19 @@ impl ParticipantKind {
         !matches!(self, ParticipantKind::Brain)
     }
 
+    /// Whether this role admits a `connection = <kind>` argument. Only a
+    /// driver does: it is the one role bound to a `robot.components` entry,
+    /// and that entry is the only thing that carries a hardware connection.
+    fn accepts_connection(self) -> bool {
+        matches!(self, ParticipantKind::Driver)
+    }
+
     /// The `(...)` keys this role accepts, for the unknown-key diagnostic.
     fn accepted_keys(self) -> &'static str {
-        if self.accepts_config() {
-            "id, config, state, or api"
-        } else {
-            "state or api"
+        match self {
+            ParticipantKind::Driver => "id, config, connection, state, or api",
+            ParticipantKind::Service => "id, config, state, or api",
+            ParticipantKind::Brain => "state or api",
         }
     }
 
@@ -274,7 +281,12 @@ impl ParticipantKind {
     /// that seal (it closes the accidental route, not a capability
     /// boundary - the sealing path is `#[doc(hidden)]`, not private, because
     /// this expansion runs in the downstream participant crate).
-    fn marker_impl(self, phoxal: &TokenStream, struct_name: &Ident) -> TokenStream {
+    fn marker_impl(
+        self,
+        phoxal: &TokenStream,
+        struct_name: &Ident,
+        connection: &TokenStream,
+    ) -> TokenStream {
         match self {
             // The brain is deliberately identical to a service here: the
             // ordinary checked typed-I/O surface and a schedulable step, with
@@ -288,10 +300,58 @@ impl ParticipantKind {
             ParticipantKind::Driver => quote! {
                 impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
                 impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
-                impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {}
+                impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {
+                    type Connection = #connection;
+                }
             },
         }
     }
+}
+
+/// The `connection = <kind>` vocabulary, as `(authored spelling, framework
+/// payload type)`.
+///
+/// The authored side is the same `snake_case` token the wire uses, so a driver
+/// is written with the word its `robot.yaml` already spells. The framework side
+/// is the payload type in `phoxal::model::connection`, which is what makes the
+/// declared type the single source of both the accepted kind and the value
+/// `ctx.connection()` yields.
+const CONNECTION_KINDS: &[(&str, &str)] = &[
+    ("can", "Can"),
+    ("i2c", "I2c"),
+    ("spi", "Spi"),
+    ("serial", "Serial"),
+    ("uart", "Uart"),
+    ("usb", "Usb"),
+    ("gpio", "Gpio"),
+];
+
+/// Resolve one authored connection spelling into its framework payload type.
+///
+/// The type is emitted as a PATH into the framework, never as the raw token the
+/// author typed: the wire spelling belongs to
+/// `phoxal::model::connection::ConnectionKind`'s serde rename, exactly as the
+/// artifact kind's does.
+fn connection_payload(kind: &Ident, phoxal: &TokenStream) -> syn::Result<TokenStream> {
+    let authored = kind.to_string();
+    let payload = CONNECTION_KINDS
+        .iter()
+        .find(|(spelling, _)| *spelling == authored)
+        .map(|(_, payload)| Ident::new(payload, kind.span()))
+        .ok_or_else(|| {
+            syn::Error::new_spanned(
+                kind,
+                format!(
+                    "unknown connection kind '{authored}' (expected one of {})",
+                    CONNECTION_KINDS
+                        .iter()
+                        .map(|(spelling, _)| *spelling)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+        })?;
+    Ok(quote!(#phoxal::model::connection::#payload))
 }
 
 /// Reject a participant id outside the grammar the rest of the framework
@@ -393,6 +453,7 @@ fn default_participant_id(pkg_name: &str) -> String {
 struct ParticipantArgs {
     id: Option<String>,
     config: Option<Type>,
+    connection: Option<Ident>,
     state: Option<Type>,
     api: Option<Type>,
 }
@@ -425,6 +486,18 @@ impl ParticipantArgs {
                 }
                 let value: Type = meta.value()?.parse()?;
                 args.config = Some(value);
+                Ok(())
+            } else if meta.path.is_ident("connection") {
+                if !kind.accepts_connection() {
+                    return Err(meta.error(format!(
+                        "{attr_name} does not accept a `connection` argument: only a component \
+                         driver is bound to a `robot.components` entry, and the hardware \
+                         connection is that entry's - a service or the brain reads robot facts \
+                         through ctx.robot()"
+                    )));
+                }
+                let value: Ident = meta.value()?.parse()?;
+                args.connection = Some(value);
                 Ok(())
             } else if meta.path.is_ident("state") {
                 let value: Type = meta.value()?.parse()?;
@@ -524,7 +597,21 @@ pub fn expand_participant(
 
     let phoxal = quote!(::phoxal);
     let artifact_kind = kind.artifact_kind(&phoxal);
-    let marker = kind.marker_impl(&phoxal, struct_name);
+    // The payload type a driver's `ComponentBoundSurface::Connection` is, and
+    // the single source of the kind both `ParticipantSpec::CONNECTION` and the
+    // embedded record read. A driver that declared none takes the whole enum,
+    // whose own `KIND` is `None`; a role that is not component-bound has no
+    // connection type at all and states `None` directly.
+    let connection_ty = match &args.connection {
+        Some(declared) => connection_payload(declared, &phoxal)?,
+        None => quote!(#phoxal::model::connection::Connection),
+    };
+    let connection_kind = if kind.accepts_connection() {
+        quote!(<#connection_ty as #phoxal::__private::ConnectionPayload>::KIND)
+    } else {
+        quote!(::core::option::Option::None)
+    };
+    let marker = kind.marker_impl(&phoxal, struct_name, &connection_ty);
     let metadata_const_ident = Ident::new(
         &format!(
             "__PHOXAL_PARTICIPANT_META_JSON_{}",
@@ -553,6 +640,8 @@ pub fn expand_participant(
         impl #phoxal::__private::ParticipantSpec for #struct_name {
             const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
             const ID: &'static str = #id;
+            const CONNECTION:
+                ::core::option::Option<#phoxal::__private::ConnectionKind> = #connection_kind;
             type Config = #config_ty;
             type State = #state_ty;
             type Api = #api_ty;
@@ -588,6 +677,7 @@ pub fn expand_participant(
                 framework = #phoxal::__private::compatibility::FRAMEWORK,
                 id = #id,
                 kind = #artifact_kind,
+                connection = #connection_kind,
                 config_schema =
                     <#config_ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON,
             );
@@ -904,10 +994,116 @@ mod tests {
         }
     }
 
-    /// The role attributes accept exactly four keys. The retired topology
-    /// declaration was one of them until it was deleted, so an authored crate
-    /// that still spells it gets a diagnostic
-    /// naming the keys that remain rather than a silently ignored argument.
+    /// The declared kind reaches the expansion as a path into the framework's
+    /// connection vocabulary, never as the raw token the author typed - the same
+    /// rule the artifact kind follows - and it is the single source of both the
+    /// associated type and the kind the record carries.
+    #[test]
+    fn a_declared_connection_becomes_the_framework_payload_type() {
+        let expanded = compact_tokens(
+            expand_participant(
+                quote! { connection = serial },
+                quote! { struct Wheel; },
+                ParticipantKind::Driver,
+            )
+            .expect("expands with a declared connection"),
+        );
+        assert!(
+            expanded.contains(
+                "ComponentBoundSurface for Wheel { type Connection = :: phoxal :: model :: \
+                 connection :: Serial ; }"
+            ),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains(
+                "const CONNECTION : :: core :: option :: Option < :: phoxal :: __private :: \
+                 ConnectionKind > = < :: phoxal :: model :: connection :: Serial as :: phoxal :: \
+                 __private :: ConnectionPayload > :: KIND"
+            ),
+            "{expanded}"
+        );
+        assert!(
+            !expanded.contains("\"serial\""),
+            "the wire spelling belongs to the framework enum's serde rename, not to this \
+             expansion: {expanded}"
+        );
+    }
+
+    /// An omitted declaration is the whole vocabulary, whose own `KIND` is
+    /// `None`, so "accepts every kind" costs no second code path.
+    #[test]
+    fn an_omitted_connection_is_the_whole_vocabulary() {
+        let expanded = compact_tokens(
+            expand_participant(quote! {}, quote! { struct Wheel; }, ParticipantKind::Driver)
+                .expect("expands without a declared connection"),
+        );
+        assert!(
+            expanded.contains(
+                "ComponentBoundSurface for Wheel { type Connection = :: phoxal :: model :: \
+                 connection :: Connection ; }"
+            ),
+            "{expanded}"
+        );
+    }
+
+    /// A role that is not bound to a `robot.components` entry has no connection
+    /// to declare and none to record.
+    #[test]
+    fn a_role_that_is_not_component_bound_records_no_connection() {
+        for kind in [ParticipantKind::Service, ParticipantKind::Brain] {
+            let expanded = compact_tokens(
+                expand_participant(quote! {}, quote! { struct Probe; }, kind).expect("expands"),
+            );
+            assert!(
+                expanded.contains(
+                    "const CONNECTION : :: core :: option :: Option < :: phoxal :: __private :: \
+                     ConnectionKind > = :: core :: option :: Option :: None"
+                ),
+                "{expanded}"
+            );
+
+            let error = expand_participant(
+                quote! { connection = serial },
+                quote! { struct Probe; },
+                kind,
+            )
+            .expect_err("a connection declaration must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not accept a `connection` argument"),
+                "{error}"
+            );
+        }
+    }
+
+    /// The vocabulary is closed, so a kind outside it is a compile error naming
+    /// the set rather than an unresolved path deep in the expansion.
+    #[test]
+    fn an_unknown_connection_kind_names_the_accepted_set() {
+        let error = expand_participant(
+            quote! { connection = rs485 },
+            quote! { struct Wheel; },
+            ParticipantKind::Driver,
+        )
+        .expect_err("`rs485` is not a connection kind");
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown connection kind 'rs485'"),
+            "{message}"
+        );
+        assert!(
+            message.contains("can, i2c, spi, serial, uart, usb, gpio"),
+            "{message}"
+        );
+    }
+
+    /// The role attributes accept a fixed key set per role, and only a driver's
+    /// includes the connection. The retired topology declaration was one of them
+    /// until it was deleted, so an authored crate that still spells it gets a
+    /// diagnostic naming the keys that remain rather than a silently ignored
+    /// argument.
     #[test]
     fn a_retired_requirement_argument_is_an_unknown_key() {
         let error = expand_participant(
@@ -921,6 +1117,19 @@ mod tests {
                 .to_string()
                 .contains("expected id, config, state, or api"),
             "{error}"
+        );
+
+        let driver = expand_participant(
+            quote! { requirement = SomeRequirement },
+            quote! { struct Probe; },
+            ParticipantKind::Driver,
+        )
+        .expect_err("`requirement` is not a role-attribute key");
+        assert!(
+            driver
+                .to_string()
+                .contains("expected id, config, connection, state, or api"),
+            "{driver}"
         );
     }
 

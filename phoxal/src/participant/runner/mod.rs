@@ -155,7 +155,7 @@ where
     bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
     let clock = RealClock::new(harness.timeline);
-    let config = inputs::deserialize_config::<R::Config>(None)?;
+    let config = inputs::deserialize_config::<R::Config>(harness.config.as_ref())?;
     startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(
@@ -194,7 +194,7 @@ where
 {
     bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
-    let config = inputs::deserialize_config::<R::Config>(None)?;
+    let config = inputs::deserialize_config::<R::Config>(harness.config.as_ref())?;
     startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(

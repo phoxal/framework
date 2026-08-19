@@ -30,7 +30,13 @@ pub trait TypedIoSurface: sealing::Sealed {}
 /// A bound `robot.components` entry, readable through
 /// [`SetupContext::component`](crate::SetupContext::component).
 #[doc(hidden)]
-pub trait ComponentBoundSurface: sealing::Sealed {}
+pub trait ComponentBoundSurface: sealing::Sealed {
+    /// What `ctx.connection()` yields for this participant: the payload struct
+    /// its role attribute declared with `connection = …`, or the whole
+    /// `Connection` enum when it declared none. The role attribute picks it, so
+    /// the accepted kind and the value a driver reads are one decision.
+    type Connection: crate::model::connection::ConnectionPayload;
+}
 
 #[cfg(test)]
 mod tests {

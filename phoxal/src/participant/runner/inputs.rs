@@ -21,10 +21,14 @@ pub(crate) fn open_bundle(root: &std::path::Path) -> crate::Result<RuntimeBundle
 ///
 /// Which entry applies is fixed by the role the binary was authored with, not
 /// by searching both maps: a driver's participant id *is* a component instance
-/// id and its config is that instance's `driver` block, while a service's (and
-/// the brain's) id keys the `services` map. A driver launched under an id the
-/// robot mounts no component for is a launch mistake, so it fails here rather
-/// than starting against an empty configuration.
+/// id and its config is the `config` half of that instance's `driver` block,
+/// while a service's (and the brain's) id keys the `services` map. The
+/// `connection` half is the framework's and never reaches a participant's
+/// `Config`; a driver reads it through `ctx.connection()`.
+///
+/// A driver launched under an id the robot mounts no component for - or under
+/// one it mounts an *undriven* component for - is a launch mistake, so it fails
+/// here rather than starting against an empty configuration.
 ///
 /// A missing config is JSON `null`, not a missing value: that is what lets a
 /// participant declaring `config = ()` or `config = Option<T>` launch with no
@@ -36,21 +40,36 @@ pub(crate) fn participant_config<C: serde::de::DeserializeOwned>(
     kind: ParticipantKind,
 ) -> crate::Result<C> {
     let config = match kind {
-        ParticipantKind::Driver => robot
-            .component(participant_id.as_str())
-            .with_context(|| {
-                format!(
-                    "driver '{participant_id}' is not a component instance of robot '{}'",
-                    robot.id()
-                )
-            })?
-            .instance()
-            .driver(),
+        ParticipantKind::Driver => driver_block(robot, participant_id)?.config(),
         ParticipantKind::Service | ParticipantKind::Brain => {
             robot.service_config(participant_id.as_str())
         }
     };
     deserialize_config(config)
+}
+
+/// The driver block a launched driver is named after.
+pub(crate) fn driver_block<'a>(
+    robot: &'a Robot,
+    participant_id: &ParticipantId,
+) -> crate::Result<&'a crate::model::robot::Driver> {
+    robot
+        .component(participant_id.as_str())
+        .with_context(|| {
+            format!(
+                "driver '{participant_id}' is not a component instance of robot '{}'",
+                robot.id()
+            )
+        })?
+        .instance()
+        .driver()
+        .with_context(|| {
+            format!(
+                "driver '{participant_id}' names a component instance of robot '{}' that declares \
+                 no driver block",
+                robot.id()
+            )
+        })
 }
 
 /// Deserialize one already-selected config block.
@@ -123,24 +142,43 @@ mod tests {
     }
 
     /// The role decides which half of the manifest a participant's config comes
-    /// from: a driver reads the driver block on the component instance it is
-    /// named after, a service reads `services.<id>.config`.
+    /// from: a driver reads the `config` half of the driver block on the
+    /// component instance it is named after, a service reads
+    /// `services.<id>.config`.
     #[test]
     fn the_role_selects_which_manifest_entry_carries_the_config() {
         let staged = staged_bundle();
         let bundle = open_bundle(staged.path()).expect("the staged bundle opens");
         let robot = bundle.robot();
 
+        // A driver reads the `config` half and only that half: the connection
+        // beside it is the framework's, and never reaches the participant's own
+        // `Config` where a driver could mistake it for authored settings.
         let driver = participant_config::<serde_json::Value>(
             robot,
             &participant("front_left_drive"),
             ParticipantKind::Driver,
         )
-        .expect("a driven component's driver block deserializes");
+        .expect("a driven component's authored driver config deserializes");
+        assert_eq!(driver, serde_json::json!({"reduction": 20}), "{driver}");
         assert_eq!(
-            driver.pointer("/connection/type"),
-            Some(&serde_json::json!("can")),
-            "{driver}"
+            driver_block(robot, &participant("front_left_drive"))
+                .expect("the fixture mounts a driven component")
+                .connection()
+                .kind(),
+            crate::model::connection::ConnectionKind::Can
+        );
+
+        // A driven instance that authors no `config` reads null, the same
+        // absent-config rule a missing service key follows.
+        assert!(
+            participant_config::<serde_json::Value>(
+                robot,
+                &participant("front_right_drive"),
+                ParticipantKind::Driver,
+            )
+            .expect("a driven component with no authored driver config reads null")
+            .is_null()
         );
 
         // The fixture authors no service config, so an official service reads
@@ -174,6 +212,25 @@ mod tests {
         .expect_err("a driver must name a component instance");
         assert!(
             format!("{error:#}").contains("is not a component instance"),
+            "{error:#}"
+        );
+    }
+
+    /// An instance the robot mounts but does not drive launches no driver, so a
+    /// driver started under its id is the same class of launch mistake: it
+    /// fails here rather than against an empty configuration.
+    #[test]
+    fn a_driver_launched_for_an_undriven_instance_fails_locally() {
+        let staged = staged_bundle();
+        let bundle = open_bundle(staged.path()).expect("the staged bundle opens");
+        let error = participant_config::<serde_json::Value>(
+            bundle.robot(),
+            &participant("imu"),
+            ParticipantKind::Driver,
+        )
+        .expect_err("an undriven component instance runs no driver");
+        assert!(
+            format!("{error:#}").contains("declares no driver block"),
             "{error:#}"
         );
     }

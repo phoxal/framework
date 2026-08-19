@@ -12,6 +12,15 @@ pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The participant id (`id = "…"`, default derived from the crate's
     /// `CARGO_PKG_NAME`; see `#[phoxal::service]`'s docs).
     const ID: &'static str;
+    /// The one connection kind this artifact accepts
+    /// (`#[phoxal::driver(connection = …)]`), or `None` when it declares none
+    /// and every kind is its own to interpret. Always `None` for a role that is
+    /// not bound to a component at all.
+    ///
+    /// The value comes from the declared payload type rather than from a second
+    /// spelling of the kind, so the type `ctx.connection()` returns and the kind
+    /// the runner enforces cannot disagree.
+    const CONNECTION: Option<crate::model::connection::ConnectionKind>;
     /// The participant's typed config (`robot.yaml` input).
     type Config: ParticipantConfig;
     /// Mutable runtime state, owned only by the serialized event loop.

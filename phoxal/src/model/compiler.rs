@@ -18,11 +18,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::component::Component;
 use crate::model::component::capability::{Capability, CapabilityRole};
+use crate::model::connection::Connection;
 use crate::model::error::ModelError;
 use crate::model::identity::{
     CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, ServiceId,
 };
-use crate::model::robot::{ComponentInstance, KinematicConfig, MotionLimits, Robot, Service};
+use crate::model::robot::{
+    ComponentInstance, Driver, KinematicConfig, MotionLimits, Robot, Service,
+};
 use crate::model::simulation::{self, Simulation};
 use crate::model::structure::Structure;
 
@@ -67,6 +70,13 @@ pub const fn service(config: Option<serde_json::Value>) -> Service {
     Service::new(config)
 }
 
+/// Build one driver block from its two owners' halves: the framework-owned
+/// connection, and the driver binary's own configuration.
+#[must_use]
+pub const fn driver(connection: Connection, config: Option<serde_json::Value>) -> Driver {
+    Driver::new(connection, config)
+}
+
 /// Build one component type's simulation from its normalized capabilities and
 /// per-link contact materials.
 #[must_use]
@@ -87,7 +97,7 @@ pub fn component_instance(
     mount_link: LinkId,
     direction_signs: BTreeMap<CapabilityId, i8>,
     roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
-    driver: Option<serde_json::Value>,
+    driver: Option<Driver>,
 ) -> ComponentInstance {
     ComponentInstance::new(component_type, mount_link, direction_signs, roles, driver)
 }

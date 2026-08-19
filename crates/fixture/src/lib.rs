@@ -173,6 +173,7 @@ pub fn manifest() -> ManifestDocument {
 #[cfg(test)]
 mod tests {
     use phoxal::bundle::RuntimeBundle;
+    use phoxal::model::connection::{Can, Connection};
 
     use super::{robot, staged_bundle, staged_bundle_without_component_models};
 
@@ -227,9 +228,8 @@ mod tests {
             drive
                 .instance()
                 .driver()
-                .and_then(|driver| driver.get("connection"))
-                .and_then(|connection| connection.get("type")),
-            Some(&serde_json::json!("can"))
+                .map(phoxal::model::robot::Driver::connection),
+            Some(&Connection::Can(Can { bus: 0, node_id: 1 }))
         );
     }
 

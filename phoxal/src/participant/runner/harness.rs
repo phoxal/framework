@@ -21,6 +21,7 @@ use crate::identity::{ParticipantId, ParticipantIdError, TimelineId};
 pub struct TestHarness {
     pub(crate) participant_id: ParticipantId,
     pub(crate) timeline: TimelineId,
+    pub(crate) config: Option<serde_json::Value>,
     pub(crate) shutdown_grace: Duration,
     pub(crate) query_reply_delay: Option<Duration>,
 }
@@ -40,6 +41,7 @@ impl TestHarness {
         Ok(Self {
             participant_id: ParticipantId::new(participant_id)?,
             timeline: TimelineId::mint(),
+            config: None,
             shutdown_grace: crate::participant::launch::SHUTDOWN_GRACE,
             query_reply_delay: None,
         })
@@ -49,6 +51,22 @@ impl TestHarness {
     #[must_use]
     pub fn with_timeline(mut self, timeline: TimelineId) -> Self {
         self.timeline = timeline;
+        self
+    }
+
+    /// Supply the configuration a launched participant would read out of the
+    /// manifest.
+    ///
+    /// A harness binds no bundle, so there is no `services.<id>.config` or
+    /// `components.<id>.driver.config` for it to read; without this a
+    /// participant declaring a required config could never be driven by its own
+    /// tests. The value goes through exactly the deserialization step the runner
+    /// performs, so a config the launch would reject is rejected here too - and
+    /// omitting it still means JSON `null`, the same absent-config rule a
+    /// missing manifest key follows.
+    #[must_use]
+    pub fn with_config(mut self, config: serde_json::Value) -> Self {
+        self.config = Some(config);
         self
     }
 
