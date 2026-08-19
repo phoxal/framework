@@ -83,15 +83,14 @@ mod tests {
         serde_yaml::from_str(text).expect("test document should be valid YAML")
     }
 
-    fn hello_rover_fixture(kind: DocumentKind) -> serde_json::Value {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hello-rover");
+    fn fixture_document(kind: DocumentKind) -> serde_json::Value {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture");
         let path = match kind {
-            DocumentKind::Robot => root.join("robot.yaml"),
-            DocumentKind::Component => root.join("components/wheel_drive/component.yaml"),
-            DocumentKind::Simulation => root.join("components/wheel_drive/simulation.yaml"),
+            DocumentKind::Robot => root.join("robot/rgbd-imu-diff-drive/robot.yaml"),
+            DocumentKind::Component => root.join("components/drive_motor/component.yaml"),
+            DocumentKind::Simulation => root.join("components/drive_motor/simulation.yaml"),
         };
-        let document =
-            std::fs::read_to_string(path).expect("hello-rover document should be readable");
+        let document = std::fs::read_to_string(path).expect("fixture document should be readable");
         yaml_value(&document)
     }
 
@@ -145,16 +144,16 @@ mod tests {
     }
 
     #[test]
-    fn schemas_validate_hello_rover_authored_documents() {
+    fn schemas_validate_the_fixture_robot_authored_documents() {
         for kind in DocumentKind::ALL {
-            assert_valid(&validator(kind), &hello_rover_fixture(kind));
+            assert_valid(&validator(kind), &fixture_document(kind));
         }
     }
 
     #[test]
     fn schemas_reject_unknown_root_properties() {
         for kind in DocumentKind::ALL {
-            let mut value = hello_rover_fixture(kind);
+            let mut value = fixture_document(kind);
             value
                 .as_object_mut()
                 .expect("authored document is an object")
@@ -181,7 +180,7 @@ mod tests {
 
         // A `behavior:` root property must also fail structurally, not merely
         // be undescribed.
-        let mut document = hello_rover_fixture(DocumentKind::Robot);
+        let mut document = fixture_document(DocumentKind::Robot);
         document
             .as_object_mut()
             .expect("authored document is an object")

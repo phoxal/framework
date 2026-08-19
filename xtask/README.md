@@ -54,7 +54,7 @@ So the gate compiles a corpus of authored projects through both readers and clas
 A source break requires the next minor pre-1.0 and a major from 1.0 on, exactly as a contract break does, and it feeds the same effective impact: the release must carry the greatest of what the surfaces show, what the author declared, and what the corpus found.
 When every project comes through untouched the report says so in one line; the corpus is listed only when something moved.
 
-The corpus is the authored documents this repository already keeps - `fixture/robot/rgbd-imu-diff-drive` in its real, simulated and model-less variants, and `examples/hello-rover`.
+The corpus is the authored documents this repository already keeps - `fixture/robot/rgbd-imu-diff-drive` in its real, simulated and model-less variants.
 It is a stated list rather than a glob, because a corpus that discovered itself would shrink silently when a document moved and the gate would go green by reading less.
 Nothing about it is generated: it is authored YAML and URDF, edited in the open like any other test data, and there is no compiled snapshot of it anywhere in the tree.
 

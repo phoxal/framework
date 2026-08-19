@@ -36,11 +36,7 @@ fn sources(project_root: &Path) -> SourceSet {
         .used_component_types()
         .into_iter()
         .map(|component_type| {
-            let root = if component_type == "wheel_drive" {
-                workspace.join("examples/hello-rover/components/wheel_drive")
-            } else {
-                workspace.join("fixture/components").join(component_type)
-            };
+            let root = workspace.join("fixture/components").join(component_type);
             (component_type.to_string(), root)
         })
         .collect::<BTreeMap<_, _>>();
@@ -59,7 +55,7 @@ fn sources(project_root: &Path) -> SourceSet {
 #[test]
 fn every_repository_robot_compiles_to_the_canonical_model() {
     let workspace = workspace_root();
-    let roots = ["fixture/robot/rgbd-imu-diff-drive", "examples/hello-rover"];
+    let roots = ["fixture/robot/rgbd-imu-diff-drive"];
 
     for relative in roots {
         let root = workspace.join(relative);

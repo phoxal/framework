@@ -66,8 +66,8 @@ Participant authoring - the role attributes, the fragment grammar, `step`, the
 `phoxal::api` facade - is a source-level contract with every robot project that
 `cargo-semver-checks` cannot see, because proc-macro grammar is invisible to
 it.
-Its gate is the example build (`examples/hello-rover` in CI) plus the trybuild
-pass fixtures: representative authored code that must keep compiling.
+Its gate is the trybuild pass fixtures and the official services and components
+in this workspace: representative authored code that must keep compiling.
 Grammar evolution follows the same rule as wire contracts: additions are
 ordinary, and a change that breaks existing authored code carries the breaking
 marker.

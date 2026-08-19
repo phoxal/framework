@@ -53,10 +53,10 @@ struct AuthoredProject {
 ///
 /// The list is deliberate rather than discovered: a corpus that globbed the
 /// tree would quietly shrink when a document moved, and the gate would go green
-/// by reading less. Between them these three mount every component type the
-/// repository authors, with and without simulation models, plus the example a
-/// reader of the framework meets first.
-const CORPUS: [AuthoredProject; 3] = [
+/// by reading less. Between them these two mount every component type the
+/// repository authors, with and without simulation models. The example robot
+/// project lives in its own repository (`phoxal/robot-rover`), not here.
+const CORPUS: [AuthoredProject; 2] = [
     AuthoredProject {
         manifest: "fixture/robot/rgbd-imu-diff-drive/robot.yaml",
         project_root: "fixture/robot/rgbd-imu-diff-drive",
@@ -66,11 +66,6 @@ const CORPUS: [AuthoredProject; 3] = [
         manifest: "fixture/robot/rgbd-imu-diff-drive/robot.no-component-models.yaml",
         project_root: "fixture/robot/rgbd-imu-diff-drive",
         components_root: "fixture/components",
-    },
-    AuthoredProject {
-        manifest: "examples/hello-rover/robot.yaml",
-        project_root: "examples/hello-rover",
-        components_root: "examples/hello-rover/components",
     },
 ];
 

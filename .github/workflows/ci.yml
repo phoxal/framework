@@ -35,28 +35,6 @@ jobs:
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
     secrets: inherit
 
-  # `examples/hello-rover` is a separate Cargo workspace pinned to a *published*
-  # framework train, so `cargo check --workspace` never reaches it and it rots
-  # silently without a job of its own. It is deliberately not a workspace
-  # member - it must prove the authoring surface as an external consumer sees
-  # it, resolved from the registry - so this job is the only thing that compiles
-  # it. `--locked` makes the committed lockfile part of the proof.
-  hello-rover-example:
-    name: examples/hello-rover
-    if: >-
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'push' &&
-       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Check
-        working-directory: examples/hello-rover
-        run: cargo check --locked
-
   # Every consumer profile, built explicitly.
   #
   # The shared `ci` job builds the workspace, and a workspace build unifies

@@ -23,11 +23,10 @@ use super::{Subject, Violation};
 
 /// The trees holding this repository's official participants.
 ///
-/// Services, component drivers, the workspace examples, and the library's own
-/// examples: everything that is authored *on* the participant surface rather
+/// Services, component drivers, and the library's own examples: everything
+/// that is authored *on* the participant surface rather
 /// than being part of the framework or one of its host processes.
-const OFFICIAL_PARTICIPANT_ROOTS: [&str; 4] =
-    ["services/", "components/", "examples/", "phoxal/examples/"];
+const OFFICIAL_PARTICIPANT_ROOTS: [&str; 3] = ["services/", "components/", "phoxal/examples/"];
 
 /// One host module, and the two ways a participant could name it.
 struct HostModule {
@@ -252,9 +251,6 @@ mod tests {
         assert!(is_official_participant_path("services/drive/src/drive.rs"));
         assert!(is_official_participant_path(
             "components/bno085/src/main.rs"
-        ));
-        assert!(is_official_participant_path(
-            "examples/hello-rover/src/main.rs"
         ));
         assert!(is_official_participant_path("phoxal/examples/minimal.rs"));
 
