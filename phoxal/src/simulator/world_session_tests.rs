@@ -105,7 +105,10 @@ async fn a_step_publishes_its_outputs_before_the_clock_that_closes_it() {
     );
 
     drop(world);
-    session.close().await;
+    session
+        .close()
+        .await
+        .expect("the simulator session closes cleanly");
 }
 
 /// The graph's setpoints reach the capability this simulator owns, decoded as
@@ -159,7 +162,10 @@ async fn typed_component_setpoints_reach_the_capability_the_simulator_owns() {
         api::component::motor::Command::Velocity(0.25)
     );
 
-    session.close().await;
+    session
+        .close()
+        .await
+        .expect("the simulator session closes cleanly");
 }
 
 /// Delegated presence is what makes a simulated robot read as exactly as
@@ -186,7 +192,10 @@ async fn delegated_presence_appears_under_the_driver_identity_and_leaves_with_th
     assert_eq!(ready.0, driver());
     assert_eq!(ready.1, ParticipantReadyStatus::Ready);
 
-    session.close().await;
+    session
+        .close()
+        .await
+        .expect("the simulator session closes cleanly");
 
     let lost = next_status(&events).await;
     assert_eq!(lost.0, driver());
@@ -217,7 +226,10 @@ async fn replacing_the_timeline_starts_a_new_world_history() {
     assert_eq!(second.instant(), RobotInstant::new(after, 20_000_000));
 
     drop(world);
-    session.close().await;
+    session
+        .close()
+        .await
+        .expect("the simulator session closes cleanly");
 }
 
 /// A world has one hand. Taking it twice is a failure, not a second one, and
@@ -235,14 +247,19 @@ async fn world_time_is_taken_exactly_once_and_close_stays_deterministic() {
     ));
 
     drop(world);
-    session.close().await;
+    session
+        .close()
+        .await
+        .expect("the simulator session closes cleanly");
 
     // The authority is a per-process singleton, so a session that opens after
     // a clean close proves the previous one released everything it held.
     let next = SimulatorSession::in_process(LABEL)
         .await
         .expect("a closed session releases the world authority");
-    next.close().await;
+    next.close()
+        .await
+        .expect("the second session closes cleanly");
 }
 
 /// The next Ready change for the observed participant.

@@ -8,8 +8,16 @@
 //!
 //! Payload structs, enums, implementations, and tests are ordinary Rust items
 //! in the module that owns them. The declaration below owns this level of the
-//! path; each child module owns its own. Walk it from `topics()`, bind the
-//! dynamic segments as you go, and choose the side at the endpoint:
+//! path; each child module owns its own. Every module in the tree is exactly
+//! one of two things: a **branch**, which declares its child nodes with
+//! `nodes!` and carries no endpoints, or a **leaf**, which declares its
+//! endpoints with `endpoints!` beside the payloads and has no children. A
+//! module cannot be both; the two declarations define the same items, so
+//! trying is a duplicate-item compile error at the second invocation. A
+//! node-level endpoint is spelled `self:` inside a leaf (`runtime/logs`,
+//! `supervisor/snapshot`), which keeps "the key is the node path" without
+//! letting a branch also carry endpoints. Walk the tree from `topics()`, bind
+//! the dynamic segments as you go, and choose the side at the endpoint:
 //!
 //! ```ignore
 //! let api = phoxal::api::topics();

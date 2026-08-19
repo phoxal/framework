@@ -44,8 +44,8 @@ use crate::bus::handle::publisher::WorldClockPublisher;
 use crate::bus::handle::stamp::TimelineAuthority;
 use crate::bus::session::{BusConfig, BusOwner};
 use crate::bus::{
-    BusError, BusHandle, Endpoint, ParticipantReadyEvents, ParticipantReadyToken, Publish,
-    RobotEndpoint, Sample, SamplePublisher, Setpoint, SetpointReceiver, SourceLabel,
+    BusCloseReport, BusError, BusHandle, Endpoint, ParticipantReadyEvents, ParticipantReadyToken,
+    Publish, RobotEndpoint, Sample, SamplePublisher, Setpoint, SetpointReceiver, SourceLabel,
     SourceLabelError, State, StatePublisher, Subscribe, Topic, WorldStepToken,
 };
 use crate::identity::{ExecutionId, ParticipantId, TimelineId};
@@ -85,6 +85,18 @@ pub enum SimulatorError {
     WorldTimeTaken,
 }
 
+/// The simulator session closed, but a close stage left evidence.
+///
+/// The session is gone either way; this is what the transport reported on the
+/// way out, so an adapter can surface it rather than exit as if the world had
+/// been put away cleanly.
+#[derive(Debug, thiserror::Error)]
+#[error("the simulator session did not close cleanly: {report}")]
+pub struct SimulatorCloseError {
+    /// The transport's own account of the close.
+    pub report: BusCloseReport,
+}
+
 /// Inputs for one simulator session against one execution.
 #[derive(Clone, Debug)]
 pub struct SimulatorConnectOptions {
@@ -110,15 +122,25 @@ impl SimulatorConnectOptions {
 ///
 /// It owns the external bus session, the presence it stands in with, and -
 /// until it is taken - the world's time.
+///
+/// Field order is the teardown order, and it is load-bearing: Rust drops fields
+/// in declaration order, so a session that is dropped without [`close`](Self::close) still
+/// revokes its delegated Ready leases first, lets go of the world's time
+/// second, and releases the transport last. [`close`](Self::close) walks the
+/// same order explicitly and returns the transport's close evidence.
 pub struct SimulatorSession {
-    owner: Option<BusOwner>,
-    bus: BusHandle,
-    execution: ExecutionId,
     /// One delegated Ready lease per component driver this process stands in
     /// for, keyed so a repeated `present` is idempotent rather than a second
-    /// lease under the same identity.
+    /// lease under the same identity. First to go: a reader must never see
+    /// the drivers present after the world that drove them is gone.
     presence: BTreeMap<ParticipantId, ParticipantReadyToken>,
+    /// The world's time, until the adapter takes it. Second to go.
     world_time: Option<WorldTime>,
+    bus: BusHandle,
+    execution: ExecutionId,
+    /// The transport. Last to go, so every lease and hand above has already
+    /// been released through it.
+    owner: Option<BusOwner>,
 }
 
 impl std::fmt::Debug for SimulatorSession {
@@ -339,16 +361,33 @@ impl SimulatorSession {
         self.world_time.take().ok_or(SimulatorError::WorldTimeTaken)
     }
 
-    /// Close deterministically: drop presence first, then the transport.
+    /// Close deterministically: revoke the delegated Ready leases, drop the
+    /// world's time, then close the transport and return its evidence.
     ///
     /// The order is the point. Dropping presence while the wheels were still
     /// turning would let a reader believe the drivers are already gone, so the
-    /// adapter parks its world, then calls this.
-    pub async fn close(mut self) {
+    /// adapter parks its world, joins the thread that held the [`WorldTime`],
+    /// then calls this. A session that is dropped instead of closed tears down
+    /// in the same order (see the type's field order), but only `close` can
+    /// wait for the transport to drain and report what it saw.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SimulatorCloseError`] carrying the transport's
+    /// [`BusCloseReport`] when any close stage left evidence: a transport
+    /// failure while draining, a worker that did not exit cleanly, or a stage
+    /// that exceeded its deadline. The session is closed either way.
+    pub async fn close(mut self) -> Result<(), SimulatorCloseError> {
         self.presence.clear();
         self.world_time = None;
-        if let Some(owner) = self.owner.take() {
-            owner.close().await;
+        let Some(owner) = self.owner.take() else {
+            return Ok(());
+        };
+        let report = owner.close().await;
+        if report.is_clean() {
+            Ok(())
+        } else {
+            Err(SimulatorCloseError { report })
         }
     }
 }

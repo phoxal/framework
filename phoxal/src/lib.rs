@@ -115,7 +115,8 @@
 //! ## Where to look next
 //!
 //! - `phoxal::api` - the `robot` contract family: the wire bodies and the
-//!   dynamic topic tree they are declared in, module by module. A participant
+//!   dynamic topic tree they are declared in, module by module (each module a
+//!   branch of child nodes or a leaf of endpoints, never both). A participant
 //!   imports it directly with `use phoxal::api;` and walks it from
 //!   `api::topics()`. The runner also uses the sibling
 //!   `runtime` family for framework-owned out-of-band infrastructure contracts
