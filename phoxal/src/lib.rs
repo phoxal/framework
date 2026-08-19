@@ -28,8 +28,8 @@
 //!   framework train version they were built from.
 //! - **Participants are authored, not wired.** A role attribute declares
 //!   identity and associated `Config`/`State`/`Api` types; a direct
-//!   [`Participant`] implementation owns lifecycle
-//!   behavior, and [`run`] turns the marker into a binary. Use `service` for ordinary robot
+//!   `Participant` implementation owns lifecycle
+//!   behavior, and `phoxal::run` turns the marker into a binary. Use `service` for ordinary robot
 //!   participants, `driver` for a participant launched once per
 //!   `robot.components` entry, and `brain` for the robot project's one
 //!   mandatory composition root.
@@ -91,20 +91,20 @@
 //! - `#[phoxal::step(hz = ...)]` adds a cadence to the trait's step override.
 //! - `ctx.query(owner_endpoint, Self::handler)` registers typed query handlers;
 //!   the endpoint fixes the handler's request and response types at compile time,
-//!   and the runner supplies trusted requester [`QueryContext`] provenance.
+//!   and the runner supplies trusted requester `QueryContext` provenance.
 //! - The runner serializes step, query, reset, and shutdown access to `State`.
 //! - `fn main() -> phoxal::Result<()> { phoxal::run::<R>() }` is the default
 //!   blocking entrypoint. For a custom Tokio main, call
-//!   [`phoxal::tokio::run::<R>().await`](tokio::run).
+//!   `phoxal::tokio::run::<R>().await`.
 //!
 //! The three authoring kinds share the same metadata path but describe
 //! different runtime roles:
 //!
-//! - [`macro@service`] is the ordinary typed participant surface.
-//! - [`macro@driver`] is launched once per `robot.components` entry, under that
-//!   entry's own id. Only a driver can call [`SetupContext::component`] to read
-//!   the component it is bound to.
-//! - [`macro@brain`] is the robot project's one mandatory composition root:
+//! - `#[phoxal::service]` is the ordinary typed participant surface.
+//! - `#[phoxal::driver]` is launched once per `robot.components` entry, under
+//!   that entry's own id. Only a driver can call `SetupContext::component` to
+//!   read the component it is bound to.
+//! - `#[phoxal::brain]` is the robot project's one mandatory composition root:
 //!   the root Cargo package's binary, staged as `bin/brain`. Its identity is
 //!   fixed to `brain` and its `Config` is always `()`; it owns mission and
 //!   intent policy as ordinary Rust code and holds no capability a service
@@ -114,24 +114,24 @@
 //!
 //! ## Where to look next
 //!
-//! - [`api`] - the `robot` contract family: the wire bodies and the dynamic
-//!   topic tree they are declared in, module by module. A participant imports
-//!   it directly with `use phoxal::api as api;` and walks it from
-//!   [`api::topics()`](api::topics). The runner also uses the sibling
-//!   [`runtime::api`] family for framework-owned out-of-band infrastructure
-//!   contracts such as bus logs.
-//! - [`prelude`] - everything a participant author imports with
-//!   `use phoxal::prelude::*;`: the handle types, [`SetupContext`],
-//!   [`StepContext`], and [`Result`].
+//! - `phoxal::api` - the `robot` contract family: the wire bodies and the
+//!   dynamic topic tree they are declared in, module by module. A participant
+//!   imports it directly with `use phoxal::api;` and walks it from
+//!   `api::topics()`. The runner also uses the sibling
+//!   `runtime` family for framework-owned out-of-band infrastructure contracts
+//!   such as bus logs, which a participant never names itself.
+//! - `phoxal::prelude` - everything a participant author imports with
+//!   `use phoxal::prelude::*;`: the handle types, `SetupContext`,
+//!   `StepContext`, and [`Result`].
 //! - [`bus`] - the typed contract vocabulary normal participants need: the
 //!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
 //!   the four non-interchangeable time types, endpoint-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
 //! - [`model`] - immutable canonical robot facts read from the bundle's
-//!   `manifest.json`; bundle assembly and host-side reading are [`bundle`],
-//!   while the authored document readers are `authoring`, a build/source
-//!   surface behind the `authoring` feature that a launched participant never
-//!   compiles.
+//!   `manifest.json`. Bundle assembly and host-side reading are
+//!   `phoxal::bundle`, and the authored document readers are
+//!   `phoxal::authoring`; both are host-role surfaces a launched participant
+//!   never reaches.
 //! - [`geometry`] and [`SampleSchedule`] - the small shared arithmetic every
 //!   official participant would otherwise reimplement.
 //! - The **official service set** ships alongside this crate in the workspace
@@ -148,15 +148,13 @@
 //! participant surface above.
 //!
 //! - **`session`** - `phoxal::session`: attach to one running execution.
-//!   [`Session`](session::Session) uniquely owns the transport and the
-//!   lifecycle; a cloneable [`SessionHandle`](session::SessionHandle) performs
-//!   typed operations. It also publishes the `runtime` and `supervisor`
-//!   contract families, the participant launch encoder, and the embedded
-//!   participant-metadata reader.
+//!   `Session` uniquely owns the transport and the lifecycle; a cloneable
+//!   `SessionHandle` performs typed operations. The profile also publishes the
+//!   `runtime` and `supervisor` contract families, the participant launch
+//!   encoder, and the embedded participant-metadata reader.
 //! - **`simulator`** - `phoxal::simulator`: stand an external world process in
-//!   for a robot's component drivers.
-//!   [`SimulatorSession`](simulator::SimulatorSession) owns typed component IO,
-//!   delegated presence, and the world clock, without handing out the raw
+//!   for a robot's component drivers. `SimulatorSession` owns typed component
+//!   IO, delegated presence, and the world clock, without handing out the raw
 //!   transport underneath.
 //! - **`authoring`** - `phoxal::authoring`: the authored-source layer
 //!   (`robot.yaml`, `component.yaml`, `simulation.yaml`, URDF), its JSON
@@ -166,8 +164,12 @@
 //! The supervisor's own implementation is `phoxal::supervisor::host`, behind
 //! the `supervisor` profile and hidden from these docs: it is the body of the
 //! framework-owned `phoxal-supervisor` executable, not an SDK. Everything a
-//! client has to agree with it about is [`supervisor::api`] and
-//! [`supervisor::rendezvous`], which the `session` profile publishes.
+//! client has to agree with it about is `phoxal::supervisor::api` and
+//! `phoxal::supervisor::rendezvous`, which the `session` profile publishes.
+//!
+//! Every path named in this section is spelled rather than linked, because the
+//! profile that publishes it is not the profile you are reading these docs in
+//! unless you enabled it. docs.rs enables all of them.
 //!
 //! Profiles are additive compilation and visibility controls, never authority
 //! boundaries: Cargo unifies features, and who may do what at runtime remains
@@ -223,39 +225,30 @@ pub mod participant;
 )]
 pub mod participant;
 
-/// The typed contract and handle vocabulary, and the transport under it.
+// Each module below carries its own `//!` header, which is where its
+// documentation lives; a second fragment written here would be merged into it
+// from this file's scope and take every intra-doc link in it with it. What
+// this file says about a module is therefore a plain comment, and it says only
+// what belongs to the profile decision.
 pub mod bus;
 
-/// The embedded Zenoh router the graph meets on.
-///
-/// Its file is `bus/router.rs`, because the router and the participants that
-/// dial it must agree on the transport policy [`bus`] pins, and because the
-/// bus module is the one place in this crate that may name Zenoh at all. It is
-/// declared *here* rather than by `bus/mod.rs` because it needs
-/// `zenoh/unstable`, which only the `supervisor` profile carries, and a
-/// profile gate may live nowhere but this file.
-///
-/// Crate-private in every profile: raw fabric ownership is not an SDK.
+// The embedded Zenoh router the graph meets on. Its file is `bus/router.rs`,
+// because the router and the participants that dial it must agree on the
+// transport policy the bus pins, and because the bus module is the one place in
+// this crate that may name Zenoh at all. It is declared *here* rather than by
+// `bus/mod.rs` because it needs `zenoh/unstable`, which only the `supervisor`
+// profile carries, and a profile gate may live nowhere but this file.
+//
+// Crate-private in every profile: raw fabric ownership is not an SDK.
 #[cfg(feature = "supervisor")]
 #[path = "bus/router.rs"]
 pub(crate) mod router;
 
-/// The canonical robot model a [`bundle::RuntimeBundle`] yields.
-///
-/// The names re-exported at [`model`]'s own root are the canonical ones;
-/// everything else is reached through the module that owns it
-/// ([`model::builder`], [`model::component`], [`model::identity`],
-/// [`model::robot`], [`model::simulation`], [`model::structure`]).
-/// [`AssetId`] is the logical identity shared by source compilation and the
-/// staged `assets/` tree. Participant asset access is the bundle-owned
-/// [`ParticipantAssetResolver`] capability below.
 pub mod model;
 
-/// The compiled runtime bundle: `manifest.json`, its assets, and its binaries.
-///
-/// A participant reads its bundle through the runner - `ctx.robot()` and
-/// `ctx.assets()` - rather than by opening one, so the reader and the writer
-/// here are the host roles' surface.
+// A participant reads its bundle through the runner - `ctx.robot()` and
+// `ctx.assets()` - rather than by opening one, so the reader and the writer are
+// the host roles' surface.
 #[cfg(any(feature = "simulator", feature = "supervisor", feature = "authoring"))]
 #[cfg_attr(
     docsrs,
@@ -273,31 +266,21 @@ pub mod bundle;
 )]
 mod bundle;
 
-/// The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
-/// URDF, their JSON Schemas, and the compiler that turns them into a
-/// [`model::Robot`].
-///
-/// Build/source tooling only. A launched participant reads the compiled
-/// `manifest.json`, never authored documents, so this module is off by default.
+// Build/source tooling only. A launched participant reads the compiled
+// `manifest.json`, never an authored document, so the YAML/TOML/URDF readers
+// under this module are off by default.
 #[cfg(feature = "authoring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "authoring")))]
 pub mod authoring;
 
-/// The identities that cross a Phoxal process boundary: execution, participant,
-/// producer, timeline, and participant-artifact ids.
 pub mod identity;
 
-/// The framework train version, and the compatibility line two binaries compare
-/// to establish that they speak the same contracts.
 pub mod version;
 
-/// What a running Phoxal process says about itself: the `runtime` contract
-/// family.
-///
-/// A participant emits its logs and telemetry here through the runner and
-/// never names the family, so it is a host-role surface: the applications that
-/// read a running execution, the simulator that publishes its world clock, and
-/// the supervisor that retains both.
+// A participant emits its logs and telemetry through the runner and never names
+// the runtime family, so the family is a host-role surface: the applications
+// that read a running execution, the simulator that publishes its world clock,
+// and the supervisor that retains both.
 #[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
 #[cfg_attr(
     docsrs,
@@ -333,19 +316,14 @@ macro_rules! supervisor_boundary {
         /// host paths and advisory locking through which a client and the one
         /// execution supervisor find and fence each other.
         $visibility mod supervisor {
-            /// The `supervisor` contract family.
             pub mod api;
 
-            /// Where a client and the one execution supervisor meet on a host:
-            /// the socket and lock paths, and the advisory fencing over them.
             pub mod rendezvous;
 
-            /// The supervisor implementation itself.
-            ///
-            /// Not an SDK and not documented: this is the body of the
-            /// framework-owned `phoxal-supervisor` executable, which is a
-            /// `main.rs` over [`run`](host::run). It is compiled only by the
-            /// exact-train `supervisor` profile.
+            // The supervisor implementation itself: the body of the
+            // framework-owned `phoxal-supervisor` executable, compiled only by
+            // the exact-train `supervisor` profile and documented nowhere,
+            // because it is not an SDK.
             #[cfg(feature = "supervisor")]
             #[cfg_attr(docsrs, doc(cfg(feature = "supervisor")))]
             #[doc(hidden)]
@@ -371,44 +349,25 @@ supervisor_boundary!(
     mod supervisor;
 );
 
-/// Application-neutral attachment to one running execution.
-///
-/// [`Session`](session::Session) uniquely owns one execution's transport and
-/// lifecycle; a cloneable [`SessionHandle`](session::SessionHandle) performs
-/// typed operations on it and cannot close it.
 #[cfg(feature = "session")]
 #[cfg_attr(docsrs, doc(cfg(feature = "session")))]
 pub mod session;
 
-/// The external simulator host SDK.
-///
-/// A simulator is not a participant: it owns a world, stands in for several
-/// component-driver identities, and follows its own lifecycle.
-/// [`SimulatorSession`](simulator::SimulatorSession) is the whole of what the
-/// framework hands it.
 #[cfg(feature = "simulator")]
 #[cfg_attr(docsrs, doc(cfg(feature = "simulator")))]
 pub mod simulator;
 
-/// The contract surface this crate owns: the participant launch contract.
-///
-/// Not public API. It exists so compatibility CI can read this crate's declared
-/// process boundary out of the crate itself. It is the same aggregate in every
-/// profile: hiding a contract family from participant rustdoc must not remove
-/// it from the train.
+// Not public API. It exists so compatibility CI can read this crate's declared
+// process boundary out of the crate itself, and it is the same aggregate in
+// every profile: hiding a contract family from participant rustdoc must not
+// remove it from the train.
 #[doc(hidden)]
 pub mod __compat;
 
-/// Explicit in-process participant testing support.
 #[cfg(feature = "test-harness")]
 #[cfg_attr(docsrs, doc(cfg(feature = "test-harness")))]
 pub mod testing;
 
-/// The `robot` contract family, the surface a participant authors against.
-///
-/// This is the robot family and only the robot family. The `runtime` and
-/// `supervisor` families are host-tooling surfaces, reached through
-/// [`runtime::api`] and [`supervisor::api`].
 #[cfg(any(feature = "participant", feature = "session", feature = "simulator"))]
 #[cfg_attr(
     docsrs,
@@ -432,7 +391,7 @@ mod api;
 pub(crate) use crate::bus::tree::{endpoints, nodes};
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
-/// `Result<T>` via the [`prelude`].
+/// `Result<T>` via `phoxal::prelude`.
 pub use anyhow::Result;
 
 /// Derive a participant config's compile-time JSON Schema from a `Config`
@@ -525,8 +484,8 @@ pub mod prelude {
 /// individually below: a glob re-export here would silently publish the whole
 /// participant engine as public API, so the list is the boundary.
 ///
-/// A participant author reaches the same concepts through the crate root, the
-/// [`prelude`], and [`bus`]. If something an author needs is only reachable
+/// A participant author reaches the same concepts through the crate root,
+/// `phoxal::prelude`, and [`bus`]. If something an author needs is only reachable
 /// from here, that is a missing facade entry, not a licence to import this
 /// module.
 #[doc(hidden)]

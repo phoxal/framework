@@ -154,15 +154,16 @@ pub trait Family: sealed::Family + 'static {
     const ID: &'static str;
 }
 
-/// The robot domain a participant authors against, reached as [`crate::api`].
+/// The robot domain a participant authors against, reached as `phoxal::api`
+/// by the profiles that publish it.
 pub enum Robot {}
 
 /// What a running Phoxal process says about itself, reached as
-/// [`crate::runtime::api`].
+/// `phoxal::runtime::api` by the profiles that publish it.
 pub enum Runtime {}
 
 /// The wire vocabulary a supervisor speaks, reached as
-/// [`crate::supervisor::api`].
+/// `phoxal::supervisor::api` by the profiles that publish it.
 pub enum Supervisor {}
 
 impl sealed::Family for Robot {}

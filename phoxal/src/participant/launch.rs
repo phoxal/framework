@@ -1,4 +1,9 @@
-//! The one process-boundary launch contract.
+//! The one process-boundary launch contract, from both ends.
+//!
+//! The crate-private `Launch` parser is the decoder every participant binary
+//! compiles; [`LaunchCommand`] is the encoder the launcher writes with. They are
+//! one contract read in two directions, and the round-trip test below is what
+//! keeps them one.
 //!
 //! A launched participant receives four facts and nothing else: who it is, the
 //! bundle it reads its robot model and its own configuration from, where the
@@ -68,6 +73,89 @@ impl Launch {
     /// Parse the process argv without consulting process environment state.
     pub(crate) fn parse() -> Result<Self> {
         Self::try_parse().map_err(anyhow::Error::from)
+    }
+}
+
+/// The argv one launched participant receives, written by whatever launches it.
+///
+/// `Launch` above is the decoder, compiled into every participant binary;
+/// this is the encoder, and the two are the same contract read from opposite
+/// ends. It exists because the launcher is not the supervisor: the CLI starts
+/// participants locally and writes the systemd units that start them on a
+/// device, so the flag spellings would otherwise live in a second repository
+/// and drift from the parser that has to accept them.
+///
+/// There is no environment half to encode. A launched participant reads four
+/// facts from argv and nothing from the environment, deliberately, so this type
+/// renders argv and stops.
+///
+/// ```ignore
+/// use phoxal::participant::launch::LaunchCommand;
+///
+/// let argv = LaunchCommand::new(participant, "/var/lib/phoxal/bundle")
+///     .connect("unixsock-stream//run/phoxal/supervisor.sock")
+///     .argv();
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LaunchCommand {
+    participant_id: ParticipantId,
+    bundle_root: PathBuf,
+    connect_endpoints: Vec<String>,
+    simulation: bool,
+}
+
+impl LaunchCommand {
+    /// Begin the argv for `participant_id` reading `bundle_root`.
+    ///
+    /// At least one [`connect`](Self::connect) endpoint has to follow: a
+    /// participant with nowhere to dial is refused by the parser, not by this
+    /// builder, because the parser is the contract.
+    #[must_use]
+    pub fn new(participant_id: ParticipantId, bundle_root: impl Into<PathBuf>) -> Self {
+        Self {
+            participant_id,
+            bundle_root: bundle_root.into(),
+            connect_endpoints: Vec::new(),
+            simulation: false,
+        }
+    }
+
+    /// Add one router endpoint. Repeating it adds a second `--connect`, which
+    /// is the only encoding of several endpoints: there is no separator to
+    /// agree on.
+    #[must_use]
+    pub fn connect(mut self, endpoint: impl Into<String>) -> Self {
+        self.connect_endpoints.push(endpoint.into());
+        self
+    }
+
+    /// Follow the world clock instead of the host clock.
+    ///
+    /// Simulation is a launch decision and never a bundle fact, which is why it
+    /// is here and not in `manifest.json`.
+    #[must_use]
+    pub const fn simulation(mut self, simulation: bool) -> Self {
+        self.simulation = simulation;
+        self
+    }
+
+    /// Render the argv, without the program name.
+    #[must_use]
+    pub fn argv(&self) -> Vec<String> {
+        let mut argv = vec![
+            "--participant-id".to_owned(),
+            self.participant_id.as_str().to_owned(),
+            "--bundle-root".to_owned(),
+            self.bundle_root.display().to_string(),
+        ];
+        for endpoint in &self.connect_endpoints {
+            argv.push("--connect".to_owned());
+            argv.push(endpoint.clone());
+        }
+        if self.simulation {
+            argv.push("--simulation".to_owned());
+        }
+        argv
     }
 }
 
@@ -203,6 +291,66 @@ mod tests {
         let mut argv = args();
         argv[6] = "";
         assert!(Launch::try_parse_from(argv).is_err());
+    }
+
+    /// The encoder writes what the decoder accepts. This is the whole reason
+    /// the encoder is here rather than in whatever repository happens to be
+    /// launching a participant this week.
+    #[test]
+    fn the_encoder_writes_exactly_what_the_decoder_accepts() {
+        let command = LaunchCommand::new(
+            ParticipantId::new("drive").expect("a valid participant id"),
+            "/var/lib/phoxal/bundle",
+        )
+        .connect("tcp/router-a:7447")
+        .connect("tcp/router-b:7447")
+        .simulation(true);
+
+        let argv = command.argv();
+        assert_eq!(
+            argv,
+            [
+                "--participant-id",
+                "drive",
+                "--bundle-root",
+                "/var/lib/phoxal/bundle",
+                "--connect",
+                "tcp/router-a:7447",
+                "--connect",
+                "tcp/router-b:7447",
+                "--simulation",
+            ]
+        );
+
+        let launch = Launch::try_parse_from(
+            std::iter::once("participant-bin".to_owned()).chain(argv.iter().cloned()),
+        )
+        .expect("the encoder's argv parses");
+        assert_eq!(launch.participant_id.as_str(), "drive");
+        assert_eq!(launch.bundle_root, PathBuf::from("/var/lib/phoxal/bundle"));
+        assert_eq!(
+            launch.connect_endpoints,
+            ["tcp/router-a:7447", "tcp/router-b:7447"]
+        );
+        assert!(launch.simulation);
+    }
+
+    /// The host clock is the default at both ends, so an encoder that says
+    /// nothing about simulation produces argv a decoder reads as real time.
+    #[test]
+    fn the_encoder_opts_into_simulation_rather_than_out_of_it() {
+        let argv = LaunchCommand::new(
+            ParticipantId::new("drive").expect("a valid participant id"),
+            "/var/lib/phoxal/bundle",
+        )
+        .connect("tcp/router-a:7447")
+        .argv();
+        assert!(!argv.contains(&"--simulation".to_owned()), "{argv:?}");
+        let launch = Launch::try_parse_from(
+            std::iter::once("participant-bin".to_owned()).chain(argv),
+        )
+        .expect("the encoder's argv parses");
+        assert!(!launch.simulation);
     }
 
     #[test]

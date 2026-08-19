@@ -179,6 +179,13 @@ name = "wire_key_composition"
 path = "tests/wire_key_composition.rs"
 required-features = ["test-harness", "session"]
 
+# The one test that runs two host profiles against each other: the supervisor
+# implementation and the attachment SDK, over a real execution.
+[[test]]
+name = "session_attaches_to_the_supervisor"
+path = "tests/session_attaches_to_the_supervisor.rs"
+required-features = ["session", "supervisor", "authoring"]
+
 [[test]]
 name = "authoring_compile"
 path = "tests/authoring_compile.rs"

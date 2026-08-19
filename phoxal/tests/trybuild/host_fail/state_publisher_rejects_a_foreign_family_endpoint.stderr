@@ -1,5 +1,5 @@
 error[E0271]: type mismatch resolving `<SnapshotDocument as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:46
+  --> tests/trybuild/host_fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:46
    |
 17 |         let _publisher = ctx.state_publisher(supervisor::topics().snapshot().owner())?;
    |                              --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `State`, found `Stream<Out>`
@@ -15,7 +15,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
    |                                                        ^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`
 
 error[E0271]: type mismatch resolving `<SnapshotDocument as Endpoint>::Family == Robot`
-  --> tests/trybuild/fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:46
+  --> tests/trybuild/host_fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:46
    |
 17 |         let _publisher = ctx.state_publisher(supervisor::topics().snapshot().owner())?;
    |                              --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Robot`, found `Supervisor`
@@ -30,7 +30,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
    |                               ^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`
 
 error[E0271]: type mismatch resolving `<SnapshotDocument as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:26
+  --> tests/trybuild/host_fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:26
    |
 17 |         let _publisher = ctx.state_publisher(supervisor::topics().snapshot().owner())?;
    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `State`, found `Stream<Out>`
@@ -44,7 +44,7 @@ note: required by a bound in `StatePublisher`
    |                                       ^^^^^^^^^^^^^^^^^ required by this bound in `StatePublisher`
 
 error[E0271]: type mismatch resolving `<SnapshotDocument as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:26
+  --> tests/trybuild/host_fail/state_publisher_rejects_a_foreign_family_endpoint.rs:17:26
    |
 17 |         let _publisher = ctx.state_publisher(supervisor::topics().snapshot().owner())?;
    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `State`, found `Stream<Out>`

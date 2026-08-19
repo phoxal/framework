@@ -1,36 +1,23 @@
-error[E0631]: type mismatch in function arguments
-  --> tests/trybuild/fail/query_request_mismatch.rs:16:64
-   |
-16 |           ctx.query(supervisor::topics().bundle().get().owner(), Self::get)
-   |               ----- required by a bound introduced by this call  ^^^^^^^^^ expected due to this
+error[E0603]: module `supervisor` is private
+ --> tests/trybuild/fail/query_request_mismatch.rs:2:13
+  |
+2 | use phoxal::supervisor::api as supervisor;
+  |             ^^^^^^^^^^  --- module `api` is not publicly re-exported
+  |             |
+  |             private module
+  |
+note: the module `supervisor` is defined here
+ --> src/lib.rs
+  |
+  |           $visibility mod supervisor {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^
 ...
-23 | /     fn get(
-24 | |         &self,
-25 | |         _api: &Api,
-26 | |         _query: QueryContext,
-27 | |         _request: api::map::SubmapRequest,
-28 | |         _state: &mut (),
-29 | |     ) -> QueryResult<supervisor::bundle::GetResponse> {
-   | |_____________________________________________________- found signature defined here
-   |
-   = note: expected function signature `for<'a> fn(&'a BadRequest, &'a Api, phoxal::QueryContext, GetRequest, &'a mut ()) -> _`
-              found function signature `fn(&BadRequest, &Api, phoxal::QueryContext, SubmapRequest, &mut ()) -> _`
-note: required by a bound in `phoxal::SetupContext::<R>::query`
-  --> src/participant/context.rs
-   |
-   |       pub fn query<E, H>(&mut self, topic: Topic<ServeQuery<E>>, handler: H) -> crate::Result<()>
-   |              ----- required by a bound in this associated function
-...
-   |           H: for<'a> Fn(
-   |  ____________^
-   | |                 &'a R,
-   | |                 &'a R::Api,
-   | |                 QueryContext,
-   | |                 E,
-   | |                 &'a mut R::State,
-   | |             ) -> crate::bus::QueryResult<E::Response>
-   | |_____________________________________________________^ required by this bound in `SetupContext::<R>::query`
-help: consider wrapping the function in a closure
-   |
-16 |         ctx.query(supervisor::topics().bundle().get().owner(), |arg0: &'a BadRequest, arg1: &'a Api, arg2: phoxal::QueryContext, arg3: GetRequest, arg4: &'a mut ()| Self::get(arg0, arg1, arg2, /* SubmapRequest */, arg4))
-   |                                                                +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++          +++++++++++++++++++++++++++++++++++++++++++++
+  | / supervisor_boundary!(
+  | |     #[allow(
+  | |         dead_code,
+  | |         unused_imports,
+... |
+  | |     mod supervisor;
+  | | );
+  | |_- in this macro invocation
+  = note: this error originates in the macro `supervisor_boundary` (in Nightly builds, run with -Z macro-backtrace for more info)

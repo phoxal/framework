@@ -16,8 +16,9 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-/// The participant-artifact metadata contract: the embedded document, its
-/// writer, and its strict reader.
+// The two process-boundary contracts, whose own headers document them: the
+// participant-artifact metadata document, and the launch argv.
+pub mod launch;
 pub mod metadata;
 
 pub(crate) mod api;
@@ -25,7 +26,6 @@ pub(crate) mod bus_log;
 pub(crate) mod clock;
 pub(crate) mod config;
 pub(crate) mod context;
-pub(crate) mod launch;
 pub(crate) mod managed;
 pub(crate) mod query;
 pub(crate) mod runner;

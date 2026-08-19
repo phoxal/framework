@@ -3,10 +3,10 @@
 //! The model is constructed by source/build tooling and decoded from the
 //! bundle's `manifest.json`. [`manifest`] owns that document: its schema tag
 //! and the envelope around the [`Robot`] body, and it lives here rather than in
-//! [`crate::bundle`] so the compiler that writes it and the reader that loads it
-//! both reach it through the module that owns the body. [`crate::bundle`] owns
+//! `phoxal::bundle` so the compiler that writes it and the reader that loads it
+//! both reach it through the module that owns the body. `phoxal::bundle` owns
 //! where the file sits and how it is read; this module owns no filesystem layout
-//! at all, and the authored project documents are `crate::authoring`.
+//! at all, and the authored project documents are `phoxal::authoring`.
 //!
 //! [`Robot`] is the whole of a compiled robot: its identity and structure, the
 //! motion it may make, the `services` it runs with their configuration, the

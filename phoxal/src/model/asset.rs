@@ -1,7 +1,7 @@
 //! Canonical logical asset identities.
 //!
 //! The filesystem layout and the participant asset reader belong
-//! to [`crate::bundle`]. The canonical model carries only the logical identity
+//! to `phoxal::bundle`. The canonical model carries only the logical identity
 //! that source compilation and the persisted manifest share.
 
 use serde::{Deserialize, Serialize};

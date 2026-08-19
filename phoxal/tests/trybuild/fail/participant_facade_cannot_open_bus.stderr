@@ -1,0 +1,29 @@
+error[E0432]: unresolved import `phoxal::bus::Router`
+ --> tests/trybuild/fail/participant_facade_cannot_open_bus.rs:5:40
+  |
+5 | use phoxal::bus::{BusConfig, BusOwner, Router};
+  |                                        ^^^^^^ no `Router` in `bus`
+
+error[E0603]: struct `BusConfig` is private
+ --> tests/trybuild/fail/participant_facade_cannot_open_bus.rs:5:19
+  |
+5 | use phoxal::bus::{BusConfig, BusOwner, Router};
+  |                   ^^^^^^^^^ private struct
+  |
+note: the struct `BusConfig` is defined here
+ --> src/bus/mod.rs
+  |
+  | pub(crate) use session::{BusConfig, BusOwner};
+  |                          ^^^^^^^^^
+
+error[E0603]: struct `BusOwner` is private
+ --> tests/trybuild/fail/participant_facade_cannot_open_bus.rs:5:30
+  |
+5 | use phoxal::bus::{BusConfig, BusOwner, Router};
+  |                              ^^^^^^^^ private struct
+  |
+note: the struct `BusOwner` is defined here
+ --> src/bus/mod.rs
+  |
+  | pub(crate) use session::{BusConfig, BusOwner};
+  |                                     ^^^^^^^^

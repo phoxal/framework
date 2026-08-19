@@ -71,8 +71,7 @@ mod test_support;
 /// They are owned by [`crate::identity`], which is where they are documented
 /// and which is the path to name them by outside the bus. They are
 /// re-exported here because they appear in this crate's own signatures
-/// ([`BusConfig::execution`](session::BusConfig::execution),
-/// [`SourceAttribution::producer`](metadata::SourceAttribution::producer),
+/// ([`SourceAttribution::producer`](metadata::SourceAttribution::producer),
 /// [`RobotInstant::timeline`](time::RobotInstant::timeline)), so a caller
 /// working against the bus should not have to reach for a second crate to name
 /// what the bus hands it.

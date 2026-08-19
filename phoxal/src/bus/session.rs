@@ -201,7 +201,7 @@ impl std::fmt::Display for BusFault {
 impl std::error::Error for BusFault {}
 
 /// The owner-shared transport terminal state. Handles may observe it, but only
-/// the unique [`BusOwner`] changes normal lifecycle state.
+/// the unique session owner changes normal lifecycle state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BusTerminal {
     Open,
@@ -264,7 +264,7 @@ pub(crate) struct BusOwner {
     liveness: Arc<AtomicBool>,
 }
 
-/// A cloneable use handle for one [`BusOwner`]. Handles share the owner's
+/// A cloneable use handle for one session owner. Handles share the owner's
 /// producer and sequence allocator but cannot close the transport or declare a
 /// participant Ready lease.
 #[derive(Clone)]

@@ -57,6 +57,102 @@ jobs:
         working-directory: examples/hello-rover
         run: cargo check --locked
 
+  # Every consumer profile, built explicitly.
+  #
+  # The shared `ci` job builds the workspace, and a workspace build unifies
+  # `phoxal`'s features across every member - so it compiles one crate with
+  # every profile at once and can say nothing about any single profile. These
+  # are the builds that can: each is what one supported consumer actually gets.
+  #
+  # Rustdoc runs per profile too, because the crate root is participant-first
+  # and a doc link into a module another profile hides is a break only that
+  # profile's build can see.
+  consumer-profiles:
+    name: consumer profiles
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build every canonical profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          # default: the participant SDK a robot project gets.
+          cargo check -p phoxal
+          for profile in session simulator supervisor authoring session,authoring; do
+            cargo check -p phoxal --no-default-features --features "$profile"
+          done
+          # Additivity: every profile compiled together must still be one crate.
+          cargo check -p phoxal --all-features
+
+      - name: Document every canonical profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo doc -p phoxal --no-deps
+          for profile in session simulator supervisor authoring session,authoring; do
+            cargo doc -p phoxal --no-default-features --features "$profile" --no-deps
+          done
+          cargo doc -p phoxal --all-features --no-deps
+
+      # `cargo hack --each-feature` is the guard *beside* the list above, not
+      # instead of it: it catches a profile combination nobody thought to name,
+      # while the explicit list is what states the supported set.
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - name: Every feature on its own
+        run: cargo hack --each-feature -p phoxal check
+
+  # The Rust-API half of the compatibility promise, over the whole surface.
+  #
+  # release-plz runs `cargo-semver-checks` itself on the release PR, but with
+  # default features only, and it exposes no way to pass a feature selection
+  # through. A profile-gated API is most of this crate's public surface, so a
+  # default-feature run would check the participant profile and silently ignore
+  # `session`, `simulator`, `supervisor` and `authoring`. This job runs the same
+  # tool over all of them.
+  #
+  # It reports rather than gates on an ordinary branch, for the same reason the
+  # compatibility report does: a branch is not setting a version, so there is no
+  # version for a break to be judged against.
+  semver-checks:
+    name: rust api surface
+    if: >-
+      github.event_name == 'pull_request' &&
+      !startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: taiki-e/install-action@cargo-semver-checks
+
+      - name: Check the whole public surface against the published train
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          report="$(cargo semver-checks --package phoxal --all-features 2>&1)" || status=$?
+          echo "$report"
+          {
+            echo "## Rust API surface (all profiles)"
+            echo
+            echo '```'
+            echo "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
   # The rules no single crate owns: the directory/naming/publish grammar every
   # official package obeys, the direction of the public library graph and the
   # edges no canonical crate may grow, the Zenoh feature profile, the deleted

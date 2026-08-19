@@ -2,12 +2,12 @@
 //!
 //! # Every minter is `pub(crate)`
 //!
-//! [`StepToken::mint`], [`TimelineAuthority::mint`] and the world-step minter
-//! [`TimelineAuthority::completed_step`] have exactly two legitimate callers,
-//! and both are in this crate: the participant runner, which releases a
-//! scheduled step, and [`crate::simulator`]'s world time, which completes a
-//! world advance. Nothing outside `phoxal` may express a robot instant it did
-//! not reach, because nothing outside `phoxal` can name a minter.
+//! `StepToken::mint`, the timeline authority and its world-step minter have
+//! exactly two legitimate callers, and both are in this crate: the participant
+//! runner, which releases a scheduled step, and `phoxal::simulator`'s world
+//! time, which completes a world advance. Nothing outside `phoxal` may express
+//! a robot instant it did not reach, because nothing outside `phoxal` can name
+//! a minter.
 //!
 //! That is a change of kind, not of degree. While the framework was six
 //! packages these constructors had to be `pub` for the runner and the
@@ -71,8 +71,9 @@ impl StepStamp for StepToken {
 ///
 /// The externally driven simulation controller has no framework
 /// `Participant::step`: it is driven by the simulator's own advance call, so no
-/// runner-minted [`StepToken`] can cover it. A [`TimelineAuthority`] mints this
-/// token once per completed world advance, for all outputs of that advance.
+/// runner-minted [`StepToken`] can cover it. The crate-private timeline
+/// authority behind `phoxal::simulator`'s world time mints this token once per
+/// completed world advance, for all outputs of that advance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorldStepToken {
     at: RobotInstant,

@@ -379,14 +379,14 @@ mod tests {
         assert_eq!(
             DIRECTIONS.len(),
             2,
-            "a new RuntimeDirection needs a wire variant in phoxal-protocol and an arm \
-             in phoxal's runtime performance rollup"
+            "a new RuntimeDirection needs a wire variant in the runtime contract \
+             family and an arm in the runtime performance rollup"
         );
         assert_eq!(
             BUFFER_KINDS.len(),
             3,
-            "a new RuntimeBufferKind needs a wire variant in phoxal-protocol and an arm \
-             in phoxal's runtime performance rollup"
+            "a new RuntimeBufferKind needs a wire variant in the runtime contract \
+             family and an arm in the runtime performance rollup"
         );
     }
 

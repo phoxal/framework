@@ -2,7 +2,7 @@
 //!
 //! This is the robot family and only the robot family. The `runtime` and
 //! `supervisor` families are host-tooling surfaces, reached through
-//! [`crate::runtime::api`] and [`crate::supervisor::api`].
+//! `phoxal::runtime::api` and `phoxal::supervisor::api`.
 //!
 //! # The tree
 //!

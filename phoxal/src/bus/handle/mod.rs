@@ -27,9 +27,8 @@
 //! - [`StatePublisher<E>`](publisher::StatePublisher) publishes at a step, and
 //!   the step instant comes from a [`StepToken`](stamp::StepToken) the runner
 //!   mints for every scheduled participant, or a
-//!   [`WorldStepToken`](stamp::WorldStepToken) a
-//!   [`TimelineAuthority`](stamp::TimelineAuthority) mints for the world
-//!   authority alone.
+//!   [`WorldStepToken`](stamp::WorldStepToken) that the crate-private timeline
+//!   authority mints for the world authority alone.
 //! - [`SamplePublisher<E>`](publisher::SamplePublisher) publishes with
 //!   a [`CaptureStamp`](crate::bus::time::CaptureStamp) the driver derived from its
 //!   device clock, and honestly represents an untranslated capture rather than

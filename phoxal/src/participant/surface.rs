@@ -1,7 +1,7 @@
 //! The sealed capability surface a role attribute grants a participant marker.
 //!
 //! Each trait here is a capability token, not behavior: implementing it is what
-//! makes a group of [`SetupContext`](crate::SetupContext) methods, or a
+//! makes a group of `SetupContext` methods, or a
 //! scheduled step, exist for one marker type. The role attribute is the only
 //! implementor, so the set of capabilities a participant has is fixed by which
 //! attribute authored it and cannot be widened from the participant's own

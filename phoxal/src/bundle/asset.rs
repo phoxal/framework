@@ -10,7 +10,7 @@ use crate::bundle::{ASSETS_DIR, BundleError, BundlePath, BundleRoot, open_bundle
 ///
 /// There is no declared asset set to consult: an [`AssetId`] is already a
 /// validated relative forward-slash path with no `.` or `..` segment, and
-/// [`BundlePath`] validates the joined path again, so a read cannot name
+/// The bundle path type validates the joined path again, so a read cannot name
 /// anything outside `assets/`. That pair of checks is the whole fence.
 #[derive(Clone, Debug)]
 pub struct ParticipantAssets {
@@ -30,8 +30,8 @@ impl ParticipantAssets {
     ///
     /// # Errors
     ///
-    /// Returns [`BundleError::MissingFile`] when the bundle carries no such
-    /// asset, and [`BundleError::ReadFile`] when it cannot be read.
+    /// Returns a bundle error when the bundle carries no such asset, or when
+    /// it carries one that cannot be read.
     pub fn read(&self, id: &AssetId) -> Result<Vec<u8>, BundleError> {
         let path = Self::path(id)?;
         let mut file = open_bundle_file(&self.root, &path)?;

@@ -1,5 +1,5 @@
 error[E0271]: type mismatch resolving `<Clock as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_the_world_clock.rs:18:46
+  --> tests/trybuild/host_fail/state_publisher_rejects_the_world_clock.rs:18:46
    |
 18 |         let _publisher = ctx.state_publisher(runtime::topics().simulation().clock().owner())?;
    |                              --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `State`, found `WorldClock`
@@ -13,7 +13,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
    |                                                        ^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`
 
 error[E0271]: type mismatch resolving `<Clock as Endpoint>::Family == Robot`
-  --> tests/trybuild/fail/state_publisher_rejects_the_world_clock.rs:18:46
+  --> tests/trybuild/host_fail/state_publisher_rejects_the_world_clock.rs:18:46
    |
 18 |         let _publisher = ctx.state_publisher(runtime::topics().simulation().clock().owner())?;
    |                              --------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Robot`, found `Runtime`
@@ -28,7 +28,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
    |                               ^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`
 
 error[E0271]: type mismatch resolving `<Clock as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_the_world_clock.rs:18:26
+  --> tests/trybuild/host_fail/state_publisher_rejects_the_world_clock.rs:18:26
    |
 18 |         let _publisher = ctx.state_publisher(runtime::topics().simulation().clock().owner())?;
    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `State`, found `WorldClock`
@@ -40,7 +40,7 @@ note: required by a bound in `StatePublisher`
    |                                       ^^^^^^^^^^^^^^^^^ required by this bound in `StatePublisher`
 
 error[E0271]: type mismatch resolving `<Clock as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_the_world_clock.rs:18:26
+  --> tests/trybuild/host_fail/state_publisher_rejects_the_world_clock.rs:18:26
    |
 18 |         let _publisher = ctx.state_publisher(runtime::topics().simulation().clock().owner())?;
    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `State`, found `WorldClock`
@@ -52,7 +52,7 @@ note: required by a bound in `StatePublisher`
    |                                       ^^^^^^^^^^^^^^^^^ required by this bound in `StatePublisher`
 
 error[E0271]: type mismatch resolving `<Clock as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_the_world_clock.rs:26:9
+  --> tests/trybuild/host_fail/state_publisher_rejects_the_world_clock.rs:26:9
    |
 24 |     let _ = phoxal::bus::StatePublisher::new(
    |             -------------------------------- required by a bound introduced by this call
@@ -70,7 +70,7 @@ note: required by a bound in `StatePublisher::<E>::new`
    |            --- required by a bound in this associated function
 
 error[E0271]: type mismatch resolving `<Clock as Endpoint>::Semantics == State`
-  --> tests/trybuild/fail/state_publisher_rejects_the_world_clock.rs:24:13
+  --> tests/trybuild/host_fail/state_publisher_rejects_the_world_clock.rs:24:13
    |
 24 |       let _ = phoxal::bus::StatePublisher::new(
    |  _____________^

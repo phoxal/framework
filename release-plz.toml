@@ -22,6 +22,13 @@ pr_name = "chore(release): release v{{ version }}"
 # No per-package override is needed: release-plz only runs the check on packages
 # that contain a library, and every executable published to the `phoxal`
 # registry is bin-only, so each is skipped on its own.
+#
+# It runs with default features, and release-plz exposes no way to pass a
+# feature selection through to cargo-semver-checks. Since `0.66` most of this
+# crate's public surface is profile-gated, so a default-feature run sees the
+# participant profile and nothing else. CI's `rust api surface` job runs
+# `cargo semver-checks --package phoxal --all-features` for the rest; this stays
+# on because it is the half that can force the release PR's own bump.
 semver_check = true
 
 # --- crates.io libraries ----------------------------------------------------
