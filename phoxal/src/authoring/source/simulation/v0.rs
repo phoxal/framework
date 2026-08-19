@@ -10,7 +10,7 @@ use crate::model::identity::is_valid_token;
 use serde::{Deserialize, Serialize};
 
 // The simulator's closed vocabularies are canonical, so this layer describes
-// the one definition rather than keeping a second copy of it. `phoxal_model`
+// the one definition rather than keeping a second copy of it. `crate::model`
 // stays their only path.
 use crate::model::component::capability::CapabilityKind;
 use crate::model::simulation::{ActuatorType, CameraProjection};

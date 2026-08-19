@@ -210,20 +210,10 @@ mod sample_schedule;
 // the profile that *is* one - a participant author reaches the engine through
 // the crate-root facade below, and the role attributes reach it through
 // `__private`, the macro ABI, which is the only path either needs.
-#[cfg(any(
-    feature = "session",
-    feature = "simulator",
-    feature = "supervisor",
-    feature = "authoring"
-))]
+#[cfg(any(feature = "session", feature = "supervisor", feature = "authoring"))]
 #[cfg_attr(
     docsrs,
-    doc(cfg(any(
-        feature = "session",
-        feature = "simulator",
-        feature = "supervisor",
-        feature = "authoring"
-    )))
+    doc(cfg(any(feature = "session", feature = "supervisor", feature = "authoring")))
 )]
 #[allow(
     dead_code,
@@ -236,27 +226,23 @@ mod sample_schedule;
 pub mod participant;
 #[cfg(all(
     feature = "participant",
-    not(any(
-        feature = "session",
-        feature = "simulator",
-        feature = "supervisor",
-        feature = "authoring"
-    ))
+    not(any(feature = "session", feature = "supervisor", feature = "authoring"))
 ))]
 mod participant;
 #[cfg(not(any(
     feature = "participant",
     feature = "session",
-    feature = "simulator",
     feature = "supervisor",
     feature = "authoring"
 )))]
 #[allow(
     dead_code,
-    reason = "a build that selected no consumer role at all reaches neither half \
-              of this module: no crate-root facade for the engine, and no public \
-              module for the two process contracts. Every real profile reaches one \
-              of them and lints the other."
+    reason = "a build that selected no consumer role, or only the simulator role, \
+              reaches neither half of this module: no crate-root facade for the \
+              engine, and no public module for the two process contracts (a \
+              simulator stands in for drivers but never launches or inspects a \
+              participant binary). Every other profile reaches one half and lints \
+              the other."
 )]
 mod participant;
 
