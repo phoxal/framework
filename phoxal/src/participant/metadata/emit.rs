@@ -20,6 +20,7 @@
 use serde::Serialize;
 
 use crate::__compat::wire::{DescribeWire, WireSchema};
+use crate::model::connection::ConnectionKind;
 use crate::participant::metadata::{ParticipantContract, ParticipantKind, ParticipantMetadata};
 use crate::version::FrameworkVersion;
 
@@ -33,6 +34,7 @@ pub struct ParticipantContractRecord<'a> {
     pub framework: FrameworkVersion,
     pub id: &'a str,
     pub kind: ParticipantKind,
+    pub connection: Option<ConnectionKind>,
     pub config_schema: serde_json::Value,
 }
 
@@ -66,11 +68,35 @@ impl DescribeWire for ParticipantMetadataRecord<'_> {
     }
 }
 
+/// The JSON fragment a declared connection kind contributes to the embedded
+/// document: the kind's own quoted token, or `null` when none was declared.
+///
+/// `concatcp!` splices `&str` constants, so the record's one nullable field has
+/// to arrive already spelled as JSON. The quoting lives here rather than in the
+/// macro body because a const-eval `match` is the only way to produce it, and
+/// `the_connection_fragment_is_the_quoted_wire_token` checks it against
+/// [`ConnectionKind::as_str`] so the two spellings cannot drift.
+#[doc(hidden)]
+#[must_use]
+pub const fn connection_json(connection: Option<ConnectionKind>) -> &'static str {
+    match connection {
+        None => "null",
+        Some(ConnectionKind::Can) => "\"can\"",
+        Some(ConnectionKind::I2c) => "\"i2c\"",
+        Some(ConnectionKind::Spi) => "\"spi\"",
+        Some(ConnectionKind::Serial) => "\"serial\"",
+        Some(ConnectionKind::Uart) => "\"uart\"",
+        Some(ConnectionKind::Usb) => "\"usb\"",
+        Some(ConnectionKind::Gpio) => "\"gpio\"",
+    }
+}
+
 /// Const-evaluates the embedded metadata document.
 ///
 /// `framework` is the canonical spelling of the framework train version,
 /// spliced from the facade constant that owns it. `id` is the participant
-/// identity literal and `config_schema` is a `&'static str` holding
+/// identity literal, `connection` is the declared connection kind as an
+/// `Option<ConnectionKind>`, and `config_schema` is a `&'static str` holding
 /// already-composed JSON.
 ///
 /// Hidden from the docs: this is the ABI writer the role macros expand into,
@@ -89,12 +115,14 @@ macro_rules! participant_metadata_json {
         framework = $framework:expr,
         id = $id:expr,
         kind = $kind:expr,
+        connection = $connection:expr,
         config_schema = $config_schema:expr $(,)?
     ) => {{
         // `concatcp!` takes constants, not method calls, so each value resolves
         // to its canonical spelling one step earlier.
         const __PHOXAL_FRAMEWORK: &str = $framework;
         const __PHOXAL_KIND: &str = $kind.as_str();
+        const __PHOXAL_CONNECTION: &str = $crate::__private::connection_json($connection);
 
         $crate::__private::meta::concatcp!(
             "{\"schema\":\"phoxal/participant-metadata/v0\",\"framework\":\"",
@@ -103,7 +131,9 @@ macro_rules! participant_metadata_json {
             $id,
             "\",\"kind\":\"",
             __PHOXAL_KIND,
-            "\",\"config_schema\":",
+            "\",\"connection\":",
+            __PHOXAL_CONNECTION,
+            ",\"config_schema\":",
             $config_schema,
             "}"
         )
@@ -121,6 +151,16 @@ mod tests {
         framework = FrameworkVersion::CURRENT_SPELLING,
         id = "drive",
         kind = ParticipantKind::Service,
+        connection = None,
+        config_schema = CONFIG_SCHEMA,
+    );
+
+    /// The other half of the one nullable field: a driver that declared a kind.
+    const EMBEDDED_DECLARED: &str = participant_metadata_json!(
+        framework = FrameworkVersion::CURRENT_SPELLING,
+        id = "ddsm115",
+        kind = ParticipantKind::Driver,
+        connection = Some(ConnectionKind::Serial),
         config_schema = CONFIG_SCHEMA,
     );
 
@@ -130,6 +170,19 @@ mod tests {
                 framework: FrameworkVersion::CURRENT,
                 id: "drive",
                 kind: ParticipantKind::Service,
+                connection: None,
+                config_schema: serde_json::json!({"type": "null"}),
+            },
+        }
+    }
+
+    fn typed_declared_record() -> ParticipantMetadataRecord<'static> {
+        ParticipantMetadataRecord::V0 {
+            contract: ParticipantContractRecord {
+                framework: FrameworkVersion::CURRENT,
+                id: "ddsm115",
+                kind: ParticipantKind::Driver,
+                connection: Some(ConnectionKind::Serial),
                 config_schema: serde_json::json!({"type": "null"}),
             },
         }
@@ -137,10 +190,29 @@ mod tests {
 
     #[test]
     fn the_const_writer_emits_exactly_what_the_typed_record_serializes() {
-        let const_written: serde_json::Value =
-            serde_json::from_str(EMBEDDED).expect("the const writer emits a JSON document");
-        let typed = serde_json::to_value(typed_record()).expect("the typed record serializes");
-        assert_eq!(const_written, typed);
+        for (const_written, typed) in [
+            (EMBEDDED, typed_record()),
+            (EMBEDDED_DECLARED, typed_declared_record()),
+        ] {
+            let const_written: serde_json::Value = serde_json::from_str(const_written)
+                .expect("the const writer emits a JSON document");
+            let typed = serde_json::to_value(typed).expect("the typed record serializes");
+            assert_eq!(const_written, typed);
+        }
+    }
+
+    /// The const writer has to spell the kind as a JSON string itself, so the
+    /// fragment it splices is checked against the kind's one wire token rather
+    /// than trusted.
+    #[test]
+    fn the_connection_fragment_is_the_quoted_wire_token() {
+        assert_eq!(connection_json(None), "null");
+        for kind in ConnectionKind::ALL {
+            assert_eq!(
+                connection_json(Some(kind)),
+                format!("\"{}\"", kind.as_str())
+            );
+        }
     }
 
     /// The bytes that actually land in the linker section are checked against
@@ -148,12 +220,14 @@ mod tests {
     /// the same declaration the typed one is.
     #[test]
     fn the_const_written_bytes_have_the_declared_document_shape() {
-        let const_written: serde_json::Value =
-            serde_json::from_str(EMBEDDED).expect("the const writer emits a JSON document");
-        assert_eq!(
-            ParticipantMetadataRecord::wire_schema().conforms(&const_written),
-            Ok(())
-        );
+        for embedded in [EMBEDDED, EMBEDDED_DECLARED] {
+            let const_written: serde_json::Value =
+                serde_json::from_str(embedded).expect("the const writer emits a JSON document");
+            assert_eq!(
+                ParticipantMetadataRecord::wire_schema().conforms(&const_written),
+                Ok(())
+            );
+        }
     }
 
     #[test]
@@ -165,17 +239,24 @@ mod tests {
         assert_eq!(contract.framework, FrameworkVersion::CURRENT);
         assert_eq!(contract.id.as_str(), "drive");
         assert_eq!(contract.kind, ParticipantKind::Service);
+        assert_eq!(contract.connection, None);
         assert_eq!(contract.config_schema, serde_json::json!({"type": "null"}));
+
+        let declared = ParticipantMetadata::from_bytes(EMBEDDED_DECLARED.as_bytes())
+            .expect("the writer's own output must satisfy the parser");
+        assert_eq!(declared.contract().connection, Some(ConnectionKind::Serial));
     }
 
     /// The embedded section is read as a whole document, so the const writer
     /// has to emit one - not a fragment a reader would have to repair.
     #[test]
     fn the_const_written_document_is_self_contained() {
-        assert!(
-            EMBEDDED.starts_with('{') && EMBEDDED.ends_with('}'),
-            "{EMBEDDED}"
-        );
-        assert_eq!(EMBEDDED.len(), EMBEDDED.trim().len());
+        for embedded in [EMBEDDED, EMBEDDED_DECLARED] {
+            assert!(
+                embedded.starts_with('{') && embedded.ends_with('}'),
+                "{embedded}"
+            );
+            assert_eq!(embedded.len(), embedded.trim().len());
+        }
     }
 }

@@ -61,19 +61,6 @@ impl Manifest {
         }
     }
 
-    pub(super) fn validate_driver_structure(&self, errors: &mut Vec<ValidationError>) {
-        for (component_id, component) in &self.robot.components {
-            let Some(driver) = &component.driver else {
-                continue;
-            };
-            if driver.runtime_clock_ms == 0 {
-                errors.push(ValidationError::InvalidRuntimeClock {
-                    instance: component_id.clone(),
-                });
-            }
-        }
-    }
-
     pub(super) fn validate_role_hints(&self, errors: &mut Vec<ValidationError>) {
         for (component_id, component) in &self.robot.components {
             for (capability_id, roles) in &component.roles {

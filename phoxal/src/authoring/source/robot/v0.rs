@@ -20,10 +20,11 @@ use serde::{Deserialize, Serialize};
 use crate::model::CapabilityRole;
 use crate::model::robot::{KinematicConfig, MotionLimits};
 
-// The hardware connection block is shared across robot document generations
-// rather than owned by this one, so it is named here at its established
-// authored path and defined once beside the document family.
-pub use super::driver::{ConnectionConfig, DriverConfig, GpioDirection, GpioPinConfig};
+// The driver block is shared across robot document generations rather than
+// owned by this one, so it is named here at its established authored path and
+// defined once beside the document family. Its connection vocabulary is the
+// canonical model's, not a document type at all.
+pub use super::driver::DriverConfig;
 
 /// Exact top-level `robot.yaml` v0 document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -92,9 +93,10 @@ pub struct UserService {
 pub struct Component {
     pub component: String,
     pub mount_link: String,
-    /// Hardware connection metadata. Its presence is what declares a component
-    /// driver for this instance, and its body is that driver's configuration.
-    /// The driver's participant id is the instance id this block sits under.
+    /// The driver block. Its presence is what declares a component driver for
+    /// this instance; it states how the component is wired to the machine and
+    /// carries that driver's own configuration. The driver's participant id is
+    /// the instance id this block sits under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<DriverConfig>,
     /// What each capability on this instance is declared to be for.
@@ -214,9 +216,6 @@ pub enum ValidationError {
         capability: String,
         role: CapabilityRole,
     },
-    InvalidRuntimeClock {
-        instance: String,
-    },
     InvalidKinematicField {
         field: String,
         message: String,
@@ -248,7 +247,6 @@ impl Manifest {
         self.validate_basics(&mut errors);
         self.validate_reserved_identities(&mut errors);
         self.validate_component_structure(&mut errors);
-        self.validate_driver_structure(&mut errors);
         self.validate_role_hints(&mut errors);
         self.validate_kinematics(&mut errors);
         self.validate_numerics(&mut errors);
@@ -389,10 +387,6 @@ impl fmt::Display for ValidationError {
             } => write!(
                 formatter,
                 "robot.components.{instance}.roles.{capability} repeats role '{role}'"
-            ),
-            Self::InvalidRuntimeClock { instance } => write!(
-                formatter,
-                "robot.components.{instance}.driver.runtime_clock_ms must be > 0"
             ),
             Self::InvalidKinematicField { field, message } => {
                 write!(formatter, "robot.kinematic.{field} {message}")
@@ -802,18 +796,27 @@ robot:
         Ok(())
     }
 
-    /// The hardware connection block belongs to the document family rather than
-    /// to this generation, and is re-exported here. An authored path that named
-    /// it before must keep naming the same type, not a second copy of it.
+    /// The driver block belongs to the document family rather than to this
+    /// generation, and is re-exported here. An authored path that named it
+    /// before must keep naming the same type, not a second copy of it - and its
+    /// connection is the canonical model's vocabulary, which is what lets a
+    /// driver read it as a typed value at runtime.
     #[test]
     fn the_driver_block_keeps_its_established_authored_path() {
         assert_eq!(
             std::any::TypeId::of::<super::DriverConfig>(),
             std::any::TypeId::of::<crate::authoring::source::robot::driver::DriverConfig>()
         );
+        let block = super::DriverConfig {
+            connection: crate::model::connection::Connection::Can(crate::model::connection::Can {
+                bus: 0,
+                node_id: 1,
+            }),
+            config: None,
+        };
         assert_eq!(
-            std::any::TypeId::of::<super::ConnectionConfig>(),
-            std::any::TypeId::of::<crate::authoring::source::robot::driver::ConnectionConfig>()
+            block.connection.kind(),
+            crate::model::connection::ConnectionKind::Can
         );
     }
 

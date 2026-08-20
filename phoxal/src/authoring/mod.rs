@@ -194,16 +194,6 @@ pub enum CompileError {
         #[source]
         source: AssetError,
     },
-
-    /// An authored driver block is not representable as the JSON configuration
-    /// the manifest hands to a driver process. This is a defect in this crate,
-    /// not in the document: the block is serde-serializable by construction.
-    #[error("failed to normalize the driver block of component instance '{instance}': {source}")]
-    DriverConfig {
-        instance: String,
-        #[source]
-        source: serde_json::Error,
-    },
 }
 
 /// Why a runtime asset tree is not compilable.
@@ -440,16 +430,14 @@ impl ResolvedSources {
             }
             // The driver block is kept in every mode. Whether a hardware driver
             // is started is a launch decision the CLI makes; the bundle always
-            // says how the component would be driven.
+            // says how the component would be driven. Both halves carry over as
+            // they were authored: the connection is already the canonical
+            // vocabulary, and the driver's own config was never this crate's to
+            // interpret.
             let driver = authored
                 .driver
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()
-                .map_err(|source| CompileError::DriverConfig {
-                    instance: id.clone(),
-                    source,
-                })?;
+                .clone()
+                .map(|driver| crate::model::compiler::driver(driver.connection, driver.config));
             components.insert(
                 self.identity(ComponentInstanceId::new(id))?,
                 crate::model::compiler::component_instance(

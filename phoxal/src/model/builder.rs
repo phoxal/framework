@@ -95,12 +95,13 @@ use crate::model::component::capability::{
     EncoderType, Gnss, GnssCoordinateSystem, Gyroscope, Imu, Led, Lidar, LidarOutput, Magnetometer,
     Microphone, Mmwave, Motor, MotorCommand, Range, Speaker, StructuralTarget,
 };
+use crate::model::connection::Connection;
 use crate::model::error::ModelError;
 use crate::model::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId, RobotId,
     ServiceId,
 };
-use crate::model::robot::{KinematicConfig, MotionLimits, Robot};
+use crate::model::robot::{Driver, KinematicConfig, MotionLimits, Robot};
 use crate::model::simulation;
 use crate::model::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, Geometry, JointKind, Structure};
 
@@ -676,9 +677,9 @@ struct InstanceSpec {
     component_type: String,
     mount_link: Option<String>,
     direction_signs: BTreeMap<String, i8>,
-    /// The hardware connection block, present exactly when a component driver
-    /// runs for this instance.
-    driver: Option<serde_json::Value>,
+    /// The driver block, present exactly when a component driver runs for this
+    /// instance.
+    driver: Option<Driver>,
 }
 
 /// Composes a canonical [`Robot`] from stated facts.
@@ -1435,31 +1436,39 @@ impl ComponentBuilder {
         self
     }
 
-    /// Give this instance the hardware connection block that makes it a driven
-    /// component.
+    /// Give this instance the driver block that makes it a driven component.
     ///
     /// Its presence is what says a component driver runs for this instance,
-    /// under the instance's own id, and the block is that driver's
-    /// configuration. An instance without one is modelled and observed but
-    /// launches no process.
+    /// under the instance's own id. `connection` is how the component is wired
+    /// to the machine, and `config` is the driver binary's own configuration -
+    /// one slot per owner. An instance without a driver block is modelled and
+    /// observed but launches no process.
     ///
     /// ```
     /// use phoxal::model::builder::RobotBuilder;
+    /// use phoxal::model::connection::{Connection, Serial};
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .component_type("drive_motor", |motor| motor.motor("spin", "axle"))
     ///     .component_with("left_drive", "drive_motor", |mounted| {
-    ///         mounted.driver(serde_json::json!({ "connection": "/dev/ttyUSB0" }))
+    ///         mounted.driver(
+    ///             Connection::Serial(Serial { port: "/dev/ttyUSB0".to_owned(), baud: 115_200 }),
+    ///             Some(serde_json::json!({ "id": 1 })),
+    ///         )
     ///     })
     ///     .build()?;
     ///
     /// let left = robot.component("left_drive").expect("the mounted instance");
-    /// assert!(left.instance().driver().is_some());
+    /// let driver = left.instance().driver().expect("the driven instance");
+    /// assert_eq!(driver.connection(), &Connection::Serial(Serial {
+    ///     port: "/dev/ttyUSB0".to_owned(),
+    ///     baud: 115_200,
+    /// }));
     /// # Ok::<(), phoxal::model::ModelError>(())
     /// ```
     #[must_use]
-    pub fn driver(mut self, driver: serde_json::Value) -> Self {
-        self.spec.driver = Some(driver);
+    pub fn driver(mut self, connection: Connection, config: Option<Value>) -> Self {
+        self.spec.driver = Some(compiler::driver(connection, config));
         self
     }
 }

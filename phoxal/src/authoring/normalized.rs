@@ -49,7 +49,8 @@ pub(crate) struct Robot {
 pub(crate) struct ComponentInstance {
     pub component_type: String,
     pub mount_link: String,
-    /// Present exactly when this instance declares a hardware driver.
+    /// Present exactly when this instance declares a component driver: how it
+    /// is wired to the machine, and the driver binary's own configuration.
     pub driver: Option<DriverConfig>,
     /// What each capability on this instance is declared to be for. The
     /// authored order is gone: a role set is a set, and the document grammar is

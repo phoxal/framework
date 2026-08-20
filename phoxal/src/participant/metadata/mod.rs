@@ -21,14 +21,16 @@
 
 mod emit;
 
-pub use emit::{ParticipantContractRecord, ParticipantMetadataRecord};
+pub use emit::{ParticipantContractRecord, ParticipantMetadataRecord, connection_json};
 
 use serde::{Deserialize, Serialize};
 
 use crate::__compat::wire::{
-    DescribeWire, EnumRepresentation, VariantBody, WireField, WireSchema, WireVariant,
+    DescribeWire, EnumRepresentation, FieldPresence, VariantBody, WireField, WireSchema,
+    WireVariant,
 };
 use crate::identity::ParticipantArtifactId;
+use crate::model::connection::ConnectionKind;
 use crate::version::FrameworkVersion;
 
 /// The format tag of the embedded participant-metadata document.
@@ -57,6 +59,11 @@ pub struct ParticipantContract {
     pub id: ParticipantArtifactId,
     /// The role kind declared by the artifact's role macro.
     pub kind: ParticipantKind,
+    /// The one connection kind the artifact accepts
+    /// (`#[phoxal::driver(connection = …)]`), or `null` when it declares none.
+    /// Build tooling compares this against the `driver.connection` an instance
+    /// authors, which is why a binary carries it at all.
+    pub connection: Option<ConnectionKind>,
     /// The exact JSON Schema emitted for the artifact's config type.
     pub config_schema: serde_json::Value,
 }
@@ -69,12 +76,22 @@ pub struct ParticipantContract {
 // two against each other rather than trusting either.
 impl DescribeWire for ParticipantContract {
     // Invariant: this states what the derived `Serialize` above writes - one
-    // map of the four declared field names.
+    // map of the five declared field names. `connection` is written on every
+    // record, `null` included, and is declared `Defaulted` rather than
+    // `Required` because that is what serde does with an `Option` field that
+    // carries no `#[serde(default)]`: an absent key decodes as `None`. The
+    // declaration states the decoder's real behaviour; it is not a licence to
+    // omit the key.
     fn wire_schema() -> WireSchema {
         WireSchema::structure([
             WireField::required("framework", FrameworkVersion::wire_schema()),
             WireField::required("id", ParticipantArtifactId::wire_schema()),
             WireField::required("kind", ParticipantKind::wire_schema()),
+            WireField::new(
+                "connection",
+                Option::<ConnectionKind>::wire_schema(),
+                FieldPresence::Defaulted,
+            ),
             WireField::required("config_schema", serde_json::Value::wire_schema()),
         ])
     }
@@ -230,6 +247,7 @@ pub mod __compat {
             );
             assert!(rendered.contains(r#""record":"document""#), "{rendered}");
             assert!(rendered.contains("config_schema"), "{rendered}");
+            assert!(rendered.contains("connection"), "{rendered}");
         }
     }
 }
@@ -246,26 +264,40 @@ mod tests {
     #[test]
     fn a_v0_record_parses_into_the_canonical_artifact_contract() {
         let ParticipantMetadata::V0 { contract } = ParticipantMetadata::from_bytes(&record(
-            r#""id":"drive","kind":"service","config_schema":{"type":"null"}"#,
+            r#""id":"drive","kind":"service","connection":null,"config_schema":{"type":"null"}"#,
         ))
         .expect("the exact document a role macro embeds must parse");
 
         assert_eq!(contract.framework, FrameworkVersion::new(0, 57, 2));
         assert_eq!(contract.id.as_str(), "drive");
         assert_eq!(contract.kind, ParticipantKind::Service);
+        assert_eq!(contract.connection, None);
         assert_eq!(contract.config_schema, serde_json::json!({"type": "null"}));
     }
 
     #[test]
     fn the_root_brain_kind_is_distinct_from_a_service() {
         let metadata = ParticipantMetadata::from_bytes(&record(
-            r#""id":"brain","kind":"brain","config_schema":{"type":"null"}"#,
+            r#""id":"brain","kind":"brain","connection":null,"config_schema":{"type":"null"}"#,
         ))
         .expect("the exact document `#[phoxal::brain]` embeds must parse");
         let contract = metadata.contract();
         assert_eq!(contract.id.as_str(), "brain");
         assert_eq!(contract.kind, ParticipantKind::Brain);
         assert_ne!(contract.kind, ParticipantKind::Service);
+    }
+
+    /// A driver that declared a connection carries the kind as its own token,
+    /// which is what build tooling compares against `driver.connection.type`.
+    #[test]
+    fn a_declared_connection_parses_as_the_typed_kind() {
+        let ParticipantMetadata::V0 { contract } = ParticipantMetadata::from_bytes(&record(
+            r#""id":"ddsm115","kind":"driver","connection":"serial","config_schema":{"type":"null"}"#,
+        ))
+        .expect("the exact document a declared driver embeds must parse");
+
+        assert_eq!(contract.kind, ParticipantKind::Driver);
+        assert_eq!(contract.connection, Some(ConnectionKind::Serial));
     }
 
     #[test]
@@ -280,7 +312,7 @@ mod tests {
     /// grammar it does not implement before it reads a field.
     #[test]
     fn an_unknown_schema_tag_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","framework":"0.57.2","id":"drive","kind":"service","config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","framework":"0.57.2","id":"drive","kind":"service","connection":null,"config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
     }
 
@@ -290,7 +322,7 @@ mod tests {
     fn a_non_canonical_framework_version_is_rejected() {
         for framework in ["\"v0.57.2\"", "\"0.57\"", "\"0.57.2-rc.1\"", "null"] {
             let bytes = format!(
-                r#"{{"schema":"phoxal/participant-metadata/v0","framework":{framework},"id":"drive","kind":"service","config_schema":null}}"#
+                r#"{{"schema":"phoxal/participant-metadata/v0","framework":{framework},"id":"drive","kind":"service","connection":null,"config_schema":null}}"#
             )
             .into_bytes();
             assert!(
@@ -304,7 +336,7 @@ mod tests {
     fn an_unknown_field_is_rejected() {
         assert!(
             ParticipantMetadata::from_bytes(&record(
-                r#""id":"drive","kind":"service","config_schema":null,"extra":true"#,
+                r#""id":"drive","kind":"service","connection":null,"config_schema":null,"extra":true"#,
             ))
             .is_err()
         );
@@ -312,7 +344,7 @@ mod tests {
 
     #[test]
     fn a_record_missing_its_framework_version_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","connection":null,"config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
     }
 
@@ -321,16 +353,19 @@ mod tests {
     /// about the flattened contract it merges under the tag.
     #[test]
     fn the_declared_document_shape_is_the_shape_the_writer_emits() {
-        let emitted = crate::participant::metadata::ParticipantMetadataRecord::V0 {
-            contract: crate::participant::metadata::ParticipantContractRecord {
-                framework: FrameworkVersion::CURRENT,
-                id: "drive",
-                kind: ParticipantKind::Service,
-                config_schema: serde_json::json!({"type": "null"}),
-            },
-        };
-        let json = serde_json::to_value(&emitted).expect("the writer's record serializes");
-        assert_eq!(ParticipantMetadata::wire_schema().conforms(&json), Ok(()));
+        for connection in [None, Some(ConnectionKind::Serial)] {
+            let emitted = crate::participant::metadata::ParticipantMetadataRecord::V0 {
+                contract: crate::participant::metadata::ParticipantContractRecord {
+                    framework: FrameworkVersion::CURRENT,
+                    id: "drive",
+                    kind: ParticipantKind::Service,
+                    connection,
+                    config_schema: serde_json::json!({"type": "null"}),
+                },
+            };
+            let json = serde_json::to_value(&emitted).expect("the writer's record serializes");
+            assert_eq!(ParticipantMetadata::wire_schema().conforms(&json), Ok(()));
+        }
 
         // The reader's declaration and the writer's are one shape, because the
         // two types are one document in two evaluation modes.

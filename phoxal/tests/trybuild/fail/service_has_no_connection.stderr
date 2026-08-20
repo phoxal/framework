@@ -1,0 +1,22 @@
+error: #[phoxal::service] does not accept a `connection` argument: only a component driver is bound to a `robot.components` entry, and the hardware connection is that entry's - a service or the brain reads robot facts through ctx.robot()
+ --> tests/trybuild/fail/service_has_no_connection.rs:6:41
+  |
+6 | #[phoxal::service(id = "wired-service", connection = serial)]
+  |                                         ^^^^^^^^^^
+
+error[E0599]: the method `connection` exists for mutable reference `&mut phoxal::SetupContext<ReadingService>`, but its trait bounds were not satisfied
+  --> tests/trybuild/fail/service_has_no_connection.rs:18:31
+   |
+10 | struct ReadingService;
+   | --------------------- doesn't satisfy `_: ComponentBoundSurface`
+...
+18 |         let _connection = ctx.connection()?;
+   |                               ^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<ReadingService>` due to unsatisfied trait bounds
+   |
+   = note: the following trait bounds were not satisfied:
+           `ReadingService: phoxal::participant::surface::ComponentBoundSurface`
+note: the trait `phoxal::participant::surface::ComponentBoundSurface` must be implemented
+  --> src/participant/surface.rs
+   |
+   | pub trait ComponentBoundSurface: sealing::Sealed {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

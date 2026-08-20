@@ -62,10 +62,15 @@ pub fn derive_describe_wire(input: TokenStream) -> TokenStream {
 /// participant - they cannot all default to the one package name - and
 /// remains available any time the package name isn't the id you want.
 ///
-/// For user runtimes, `Config` is the user-authored `robot.yaml` surface. A
-/// framework runtime may use this same slot for a CLI-synthesized launch
-/// payload (for example a cross-robot staging product); ordinary framework
-/// knobs belong in the robot model received through `ctx.robot()`.
+/// For user runtimes, `Config` is the user-authored `robot.yaml` surface -
+/// `services.<id>.config` for a service, and the `config` half of a driven
+/// instance's `driver:` block for a [`driver`]. A framework runtime may use this
+/// same slot for a CLI-synthesized launch payload (for example a cross-robot
+/// staging product); ordinary framework knobs belong in the robot model
+/// received through `ctx.robot()`.
+///
+/// A service is not bound to a component, so it declares no `connection` and
+/// reads none.
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     authoring::expand_participant(
@@ -77,7 +82,57 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// The driver-shaped counterpart to [`service`].
+/// The driver-shaped counterpart to [`service`]: one process per driven
+/// `robot.components` entry, launched under that entry's own id.
+///
+/// A driven instance's `driver:` block is two slots with one owner each:
+///
+/// ```yaml
+/// driver:
+///   connection: { type: serial, port: /dev/ttyUSB0, baud: 115200 }
+///   config:     { id: 1 }
+/// ```
+///
+/// `connection` is the framework's closed vocabulary and is read through
+/// `ctx.connection()`; `config` is this binary's own, and is the only thing
+/// deserialized into `config = …`.
+///
+/// `connection = <kind>` optionally declares the one kind this driver accepts,
+/// spelled as the authored token (`can`, `i2c`, `spi`, `serial`, `uart`, `usb`,
+/// `gpio`). Declaring it makes `ctx.connection()` return that kind's payload
+/// struct directly, and the runner refuses any other authored kind before the
+/// process reaches the bus. Omitting it means every kind is accepted and
+/// `ctx.connection()` returns the whole `Connection` enum.
+///
+/// ```ignore
+/// use phoxal::model::connection::Serial;
+/// use phoxal::prelude::*;
+///
+/// #[derive(serde::Deserialize, phoxal::Config)]
+/// struct WheelConfig {
+///     /// This motor's address on the bus the port opens.
+///     id: u8,
+/// }
+///
+/// struct WheelState {
+///     serial: Serial,
+///     id: u8,
+/// }
+///
+/// #[phoxal::driver(config = WheelConfig, connection = serial, state = WheelState)]
+/// struct Wheel;
+///
+/// impl Participant for Wheel {
+///     async fn setup(
+///         &self,
+///         ctx: &mut SetupContext<Self>,
+///         config: Self::Config,
+///     ) -> Result<(Self::State, Self::Api)> {
+///         let serial = ctx.connection()?;
+///         Ok((WheelState { serial, id: config.id }, ()))
+///     }
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn driver(attr: TokenStream, item: TokenStream) -> TokenStream {
     authoring::expand_participant(attr.into(), item.into(), authoring::ParticipantKind::Driver)

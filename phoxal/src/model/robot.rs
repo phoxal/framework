@@ -8,6 +8,7 @@ use crate::model::component::Component;
 use crate::model::component::capability::{
     Capability, CapabilityKind, CapabilityRole, Encoder, Motor, StructuralKind, StructuralTarget,
 };
+use crate::model::connection::Connection;
 use crate::model::error::{
     IdentifierKind, JointOwner, KinematicScalarField, ModelError, MotionLimitField,
 };
@@ -44,6 +45,44 @@ impl Service {
     }
 }
 
+/// The hardware driver one mounted component instance is driven by.
+///
+/// Two slots, one owner each. `connection` is the framework's: it is a closed
+/// vocabulary the compiler validates, an editor completes, and the runner hands
+/// to the driver as a typed value. `config` is the driver binary's, and stays an
+/// opaque JSON value for the same reason a [`Service`]'s does - its shape
+/// belongs to the binary, which validates it against the schema it embeds.
+///
+/// Its presence on an instance is what declares that a component driver runs
+/// for that instance, under the instance's own id.
+#[derive(
+    phoxal_macros::DescribeWire, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+pub struct Driver {
+    connection: Connection,
+    config: Option<serde_json::Value>,
+}
+
+impl Driver {
+    pub(crate) const fn new(connection: Connection, config: Option<serde_json::Value>) -> Self {
+        Self { connection, config }
+    }
+
+    /// How this component is physically wired to the machine.
+    #[must_use]
+    pub const fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
+    /// The driver-owned configuration this driver is launched with, and the
+    /// only thing deserialized into its declared `Config` type.
+    #[must_use]
+    pub const fn config(&self) -> Option<&serde_json::Value> {
+        self.config.as_ref()
+    }
+}
+
 /// One mounted component instance in the canonical robot.
 ///
 /// The instance is keyed by its own id in [`Robot::components`], so it carries
@@ -54,10 +93,9 @@ pub struct ComponentInstance {
     #[serde(rename = "type")]
     component_type: ComponentTypeId,
     mount_link: LinkId,
-    /// The hardware connection block, present exactly when this instance is
-    /// driven by a component driver. It is the driver participant's own
-    /// configuration, opaque here for the same reason a service config is.
-    driver: Option<serde_json::Value>,
+    /// The driver block, present exactly when this instance is driven by a
+    /// component driver.
+    driver: Option<Driver>,
     direction_signs: BTreeMap<CapabilityId, i8>,
     /// Authored purpose(s) for each capability. An absent key means that the
     /// capability was not selected for any role and creates no obligation.
@@ -73,7 +111,7 @@ impl<'de> serde::Deserialize<'de> for ComponentInstance {
             #[serde(rename = "type")]
             component_type: ComponentTypeId,
             mount_link: LinkId,
-            driver: Option<serde_json::Value>,
+            driver: Option<Driver>,
             direction_signs: BTreeMap<CapabilityId, i8>,
             #[serde(default)]
             roles: BTreeMap<CapabilityId, Vec<CapabilityRole>>,
@@ -748,7 +786,7 @@ impl ComponentInstance {
         mount_link: LinkId,
         direction_signs: BTreeMap<CapabilityId, i8>,
         roles: BTreeMap<CapabilityId, BTreeSet<CapabilityRole>>,
-        driver: Option<serde_json::Value>,
+        driver: Option<Driver>,
     ) -> Self {
         Self {
             component_type,
@@ -770,11 +808,10 @@ impl ComponentInstance {
         &self.mount_link
     }
 
-    /// The hardware connection block, present exactly when a component driver
-    /// runs for this instance. It is that driver's own configuration, and the
-    /// driver's participant id is this instance's id.
+    /// The driver block, present exactly when a component driver runs for this
+    /// instance. The driver's participant id is this instance's id.
     #[must_use]
-    pub const fn driver(&self) -> Option<&serde_json::Value> {
+    pub const fn driver(&self) -> Option<&Driver> {
         self.driver.as_ref()
     }
 

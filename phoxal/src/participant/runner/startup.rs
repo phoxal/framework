@@ -22,7 +22,7 @@ use crate::participant::scheduler::AnyStepScheduler;
 use anyhow::Context as _;
 
 use super::ShutdownController;
-use super::inputs::{open_bundle, participant_config};
+use super::inputs::{driver_block, open_bundle, participant_config};
 use super::lifecycle::{self, BusLease};
 
 /// All validated inputs that the lifecycle needs after the bus exists.
@@ -59,6 +59,7 @@ where
     // `Deserialize` refuses has no producer or wire side effects to clean up.
     let bundle = open_bundle(&launch.bundle_root)?;
     let config = participant_config::<R::Config>(bundle.robot(), &launch.participant_id, R::KIND)?;
+    validate_declared_connection::<R>(bundle.robot(), &launch.participant_id)?;
 
     // One line, not a per-attempt one: a participant racing a router that has
     // not opened its listener yet can take several seconds to connect. Without
@@ -183,6 +184,35 @@ pub(crate) fn clock_for_mode(clock_mode: ClockMode, execution: ExecutionId) -> O
     }
 }
 
+/// Refuse an authored connection this driver does not accept, while the process
+/// is still local.
+///
+/// `phoxal validate` is what an author actually meets this rule through:
+/// it reads the same declaration out of the built binary's embedded metadata
+/// and compares it against the document, so a mismatch is a build-time failure
+/// with the document in hand. This is the defence in depth behind it - the
+/// binary refusing to drive hardware it was not written for - and it belongs
+/// ahead of `BusOwner::open` so it can never become a transport-visible startup
+/// failure.
+///
+/// A role that declares no kind, and every role that is not a driver, states
+/// `CONNECTION = None` and has nothing to check.
+fn validate_declared_connection<R: Participant>(
+    robot: &crate::model::Robot,
+    participant_id: &ParticipantId,
+) -> crate::Result<()> {
+    let Some(expected) = R::CONNECTION else {
+        return Ok(());
+    };
+    let authored = driver_block(robot, participant_id)?.connection().kind();
+    anyhow::ensure!(
+        authored == expected,
+        "driver '{participant_id}' accepts a {expected} connection, but the component instance \
+         it is launched for authors a {authored} connection"
+    );
+    Ok(())
+}
+
 /// Validate scheduler selection and the initial clock discipline before any
 /// supervised transport is opened. The lifecycle repeats construction after
 /// the bus connects so it retains the live scheduler handle.
@@ -214,6 +244,73 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::participant::context::SetupContext;
+    use phoxal_fixture::staged_bundle;
+
+    /// The fixture's drive motors are authored with a CAN connection, so a
+    /// driver declaring `can` matches them and one declaring `serial` does not.
+    #[phoxal::driver(id = "front_left_drive", connection = can)]
+    struct CanDriver;
+
+    impl Participant for CanDriver {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
+        }
+    }
+
+    #[phoxal::driver(id = "front_left_drive", connection = serial)]
+    struct SerialDriver;
+
+    impl Participant for SerialDriver {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
+        }
+    }
+
+    #[phoxal::driver(id = "front_left_drive")]
+    struct AnyDriver;
+
+    impl Participant for AnyDriver {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
+        }
+    }
+
+    /// The declared kind is enforced while the process is still local, so a
+    /// binary wired to hardware it was not written for never reaches the bus -
+    /// and a driver that declared nothing is not held to a kind it never named.
+    #[test]
+    fn a_declared_connection_kind_is_enforced_before_the_bus_opens() {
+        let staged = staged_bundle();
+        let bundle = open_bundle(staged.path()).expect("the staged bundle opens");
+        let robot = bundle.robot();
+        let id = ParticipantId::new("front_left_drive").expect("a test participant id");
+
+        validate_declared_connection::<CanDriver>(robot, &id)
+            .expect("the authored kind is the declared one");
+        validate_declared_connection::<AnyDriver>(robot, &id)
+            .expect("a driver that declared no kind accepts the authored one");
+
+        let error = validate_declared_connection::<SerialDriver>(robot, &id)
+            .expect_err("an authored kind the driver does not accept must be refused");
+        let message = format!("{error:#}");
+        for expected in ["front_left_drive", "serial", "can"] {
+            assert!(message.contains(expected), "{message}");
+        }
+    }
 
     /// The real timeline is a pure function of the execution, so two processes
     /// in one run date their instants on the same world history with nothing

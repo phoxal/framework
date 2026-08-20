@@ -1,74 +1,37 @@
-//! The hardware connection block a robot document attaches to a component
-//! instance.
+//! The `driver:` block a robot document attaches to a component instance.
 //!
-//! This vocabulary sits beside the versioned document bodies rather than inside
-//! one of them: it is the shape the compiler hands to build tooling on a
-//! compiled component instance's driver block, so it belongs to the document
-//! family rather than to one generation of its grammar. A generation that spells the
-//! block differently converts into these types in its own normalizer, and the
+//! This DTO sits beside the versioned document bodies rather than inside one of
+//! them: it is the shape the compiler hands to build tooling on a compiled
+//! component instance's driver block, so it belongs to the document family
+//! rather than to one generation of its grammar. A generation that spells the
+//! block differently converts into this type in its own normalizer, and the
 //! compiler below the normalization boundary keeps seeing exactly one driver
 //! shape.
 //!
-//! `robot.yaml` v0 re-exports these types, so an authored v0 document keeps
-//! naming them at their established path.
+//! `robot.yaml` v0 re-exports this type, so an authored v0 document keeps
+//! naming it at its established path.
+//!
+//! The block is two slots with one owner each, and the DTO holds nothing of its
+//! own: `connection` is the framework's closed vocabulary, defined once in
+//! [`crate::model::connection`] because a driver reads it as a typed value at
+//! runtime, and `config` is the driver binary's own configuration, opaque here
+//! for the same reason a service config is.
 //!
 //! [`DriverConfig`] deliberately carries no doc comment: `schemars` renders one
-//! into the published editor schema, and this move is a refactor that must
-//! leave that schema byte-identical.
+//! into the published editor schema, and the block's own documentation belongs
+//! on the two fields a person authors.
 
 use serde::{Deserialize, Serialize};
+
+use crate::model::connection::Connection;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DriverConfig {
-    pub connection: ConnectionConfig,
-    #[serde(default = "default_runtime_clock_ms")]
-    pub runtime_clock_ms: u64,
-}
-
-/// Connection configuration for executable drivers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ConnectionConfig {
-    /// CAN bus connection.
-    Can { bus: u8, node_id: u8 },
-    /// I2C connection.
-    I2c { bus: u8, address: u16 },
-    /// SPI connection.
-    Spi { bus: u8, chip_select: u8 },
-    /// Serial port connection (RS-232/RS-485).
-    Serial { port: String, baud: u32 },
-    /// UART connection (distinct from Serial for hardware-specific drivers).
-    Uart { port: String, baud_rate: u32 },
-    /// USB connection.
-    Usb {
-        vendor_id: Option<u16>,
-        product_id: Option<u16>,
-    },
-    /// GPIO pins.
-    Gpio {
-        chip: String,
-        pins: Vec<GpioPinConfig>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GpioPinConfig {
-    pub line: u16,
-    pub direction: GpioDirection,
-    #[serde(default)]
-    pub active_low: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum GpioDirection {
-    Input,
-    Output,
-}
-
-const fn default_runtime_clock_ms() -> u64 {
-    100
+    /// How this component is wired to the machine.
+    pub connection: Connection,
+    /// The driver binary's own configuration, and the only thing deserialized
+    /// into the type its `#[phoxal::driver(config = …)]` declares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
 }

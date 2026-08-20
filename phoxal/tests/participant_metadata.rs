@@ -123,10 +123,100 @@ fn main() -> phoxal::Result<()> {
                 framework: FrameworkVersion::CURRENT,
                 id: "brain",
                 kind: ParticipantKind::Brain,
+                connection: None,
                 config_schema: serde_json::json!({"type": "null"}),
             },
         })?,
         "unexpected root brain metadata in the linked section"
+    );
+    Ok(())
+}
+
+/// A driver that declared `connection = …` carries the kind in its embedded
+/// record, alongside the schema of the config it declares. That pair is what
+/// build tooling compares against one authored `driver:` block - one half per
+/// owner - so it is proven on a real linked binary rather than on macro tokens.
+#[test]
+fn a_declared_driver_binary_embeds_its_connection_kind_and_config_schema() -> Result<()> {
+    let meta = linked_participant_metadata(
+        "phoxal-component-declared-probe",
+        r#"use phoxal::prelude::*;
+
+#[derive(serde::Deserialize, phoxal::Config)]
+struct ProbeConfig {
+    // The probe never runs; the field exists so the emitted schema has one.
+    #[allow(dead_code)]
+    id: u8,
+}
+
+#[phoxal::driver(id = "declared-probe", config = ProbeConfig, connection = serial)]
+struct DeclaredProbe;
+
+impl Participant for DeclaredProbe {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        Ok(((), ()))
+    }
+}
+
+fn main() -> phoxal::Result<()> {
+    phoxal::run::<DeclaredProbe>()
+}
+"#,
+    )?;
+    use phoxal::model::connection::ConnectionKind;
+    use phoxal::participant::metadata::{ParticipantKind, ParticipantMetadata};
+
+    let bytes = serde_json::to_vec(&meta)?;
+    let metadata = ParticipantMetadata::from_bytes(&bytes)
+        .context("the linked record must parse as the tagged v0 document")?;
+    let contract = metadata.contract();
+    assert_eq!(contract.kind, ParticipantKind::Driver);
+    assert_eq!(contract.connection, Some(ConnectionKind::Serial));
+    assert_eq!(
+        contract.config_schema.pointer("/properties/id/type"),
+        Some(&Value::from("integer")),
+        "unexpected config schema in the linked section: {meta:?}"
+    );
+    Ok(())
+}
+
+/// A driver that declared no connection carries `null`: the same document with
+/// the other value. "Accepts every kind" is a decision the driver made, not a
+/// key that happens to be missing.
+#[test]
+fn an_undeclared_driver_binary_embeds_a_null_connection() -> Result<()> {
+    let meta = linked_participant_metadata(
+        "phoxal-component-undeclared-probe",
+        r#"use phoxal::prelude::*;
+
+#[phoxal::driver(id = "undeclared-probe")]
+struct UndeclaredProbe;
+
+impl Participant for UndeclaredProbe {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        Ok(((), ()))
+    }
+}
+
+fn main() -> phoxal::Result<()> {
+    phoxal::run::<UndeclaredProbe>()
+}
+"#,
+    )?;
+    assert_eq!(
+        meta.as_object()
+            .context("the embedded record must be a JSON object")?
+            .get("connection"),
+        Some(&Value::Null),
+        "unexpected connection in the linked section: {meta:?}"
     );
     Ok(())
 }
@@ -229,6 +319,9 @@ path = "src/main.rs"
 
 [dependencies]
 phoxal = {{ path = {phoxal_path:?} }}
+# A probe that declares a config derives `Deserialize` for it, exactly as a real
+# participant crate does; `phoxal` re-exports no derive of its own.
+serde = {{ version = "1", features = ["derive"] }}
 "#,
             phoxal_path = phoxal_path.display().to_string(),
         ),
