@@ -39,8 +39,9 @@ pub(crate) struct Robot {
     pub motion_limits: MotionLimits,
     /// Mounted component instances, keyed by authored instance id.
     pub instances: BTreeMap<String, ComponentInstance>,
-    /// Declared user services, keyed by service id, each with its user-owned
-    /// configuration.
+    /// The authored service entries, keyed by service id, each with its own
+    /// configuration. This is the authored half alone; the official set the
+    /// compiler merges in is not here.
     pub services: BTreeMap<String, Option<serde_json::Value>>,
 }
 

@@ -37,17 +37,21 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extends: Vec<PathBuf>,
     pub robot: RobotSection,
-    /// The user services this robot runs, keyed by service identity, each with
-    /// its user-owned configuration. The Cargo workspace is the candidate set
-    /// (a declared service must have a matching workspace crate); this map
-    /// selects which discovered services belong to the robot and are built,
-    /// staged, and launched. An undeclared workspace service crate is legal
-    /// and simply not part of the robot.
+    /// The services this robot declares, keyed by service identity.
+    ///
+    /// The map is run selection for user services and configuration for
+    /// official ones. A user service runs exactly when it is declared here;
+    /// the Cargo workspace is the candidate set (a declared user service must
+    /// have a matching workspace crate), and this map selects which discovered
+    /// services belong to the robot and are built, staged, and launched. An
+    /// undeclared workspace service crate is legal and simply not part of the
+    /// robot. An official service always runs, so an entry for one declares
+    /// nothing - it only supplies that service's configuration.
     ///
     /// [`RESERVED_BRAIN_ID`] is not an available key: the mandatory root brain
     /// is the root Cargo package's binary, never an authored service.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub services: BTreeMap<String, UserService>,
+    pub services: BTreeMap<String, Service>,
 }
 
 /// The participant identity of the one mandatory root brain.
@@ -78,11 +82,15 @@ pub struct RobotSection {
     pub components: BTreeMap<String, Component>,
 }
 
-/// One declared user service: presence in `services` is the declaration;
-/// `config` is its user-owned configuration.
+/// One declared service entry.
+///
+/// For a user service, presence in `services` is what makes it run. An
+/// official service always runs, so its entry declares nothing and only
+/// supplies its configuration. `config` is the service's own configuration,
+/// validated against the schema its binary embeds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct UserService {
+pub struct Service {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
 }

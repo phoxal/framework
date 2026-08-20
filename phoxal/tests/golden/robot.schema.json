@@ -782,9 +782,9 @@
       ],
       "type": "object"
     },
-    "UserService": {
+    "Service": {
       "additionalProperties": false,
-      "description": "One declared user service: presence in `services` is the declaration;\n`config` is its user-owned configuration.",
+      "description": "One declared service entry.\n\nFor a user service, presence in `services` is what makes it run. An\nofficial service always runs, so its entry declares nothing and only\nsupplies its configuration. `config` is the service's own configuration,\nvalidated against the schema its binary embeds.",
       "properties": {
         "config": true
       },
@@ -814,9 +814,9 @@
         },
         "services": {
           "additionalProperties": {
-            "$ref": "#/$defs/UserService"
+            "$ref": "#/$defs/Service"
           },
-          "description": "The user services this robot runs, keyed by service identity, each with\nits user-owned configuration. The Cargo workspace is the candidate set\n(a declared service must have a matching workspace crate); this map\nselects which discovered services belong to the robot and are built,\nstaged, and launched. An undeclared workspace service crate is legal\nand simply not part of the robot.\n\n[`RESERVED_BRAIN_ID`] is not an available key: the mandatory root brain\nis the root Cargo package's binary, never an authored service.",
+          "description": "The services this robot declares, keyed by service identity.\n\nThe map is run selection for user services and configuration for\nofficial ones. A user service runs exactly when it is declared here;\nthe Cargo workspace is the candidate set (a declared user service must\nhave a matching workspace crate), and this map selects which discovered\nservices belong to the robot and are built, staged, and launched. An\nundeclared workspace service crate is legal and simply not part of the\nrobot. An official service always runs, so an entry for one declares\nnothing - it only supplies that service's configuration.\n\n[`RESERVED_BRAIN_ID`] is not an available key: the mandatory root brain\nis the root Cargo package's binary, never an authored service.",
           "type": "object"
         }
       },
