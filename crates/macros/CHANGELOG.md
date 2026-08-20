@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.66.0...phoxal-macros-v0.67.0) - 2026-08-20
+
+### Added
+
+- *(framework)* [**breaking**] split the driver block into a typed connection and a driver-owned config ([#468](https://github.com/phoxal/framework/pull/468))
+
 ## [0.66.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.65.0...phoxal-macros-v0.66.0) - 2026-08-19
 
 ### Other

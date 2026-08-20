@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.66.0"
+version = "0.67.0"
 edition = "2024"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
@@ -138,8 +138,8 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # `default-features = false`: `phoxal` carries one consumer profile per
 # supported role, and a member that inherits a default profile never says which
 # role it is. Every member below names its own.
-phoxal = { path = "phoxal", version = "=0.66.0", default-features = false }
-phoxal-macros = { path = "crates/macros", version = "=0.66.0" }
+phoxal = { path = "phoxal", version = "=0.67.0", default-features = false }
+phoxal-macros = { path = "crates/macros", version = "=0.67.0" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.
