@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.1](https://github.com/phoxal/framework/compare/v0.67.0...v0.67.1) - 2026-08-21
+
+### Fixed
+
+- silence Zenoh's late query replies instead of logging them as errors ([#471](https://github.com/phoxal/framework/pull/471))
+
 ## [0.67.0](https://github.com/phoxal/framework/compare/v0.66.0...v0.67.0) - 2026-08-20
 
 ### Added
