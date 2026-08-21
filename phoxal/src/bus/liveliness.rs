@@ -491,13 +491,25 @@ impl BusHandle {
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
 
-        let replies = session
+        // The framework's own channel rather than Zenoh's default FIFO handler,
+        // for the reason spelled out on `Querier::query`: this query cannot be
+        // cancelled, and both the early return below and a caller that drops
+        // this future leave Zenoh delivering into a receiver that is already
+        // gone - which the default handler reports as an ERROR on the
+        // operator's terminal. A reply nobody is waiting for is a non-event.
+        let (replies_tx, mut replies) = tokio::sync::mpsc::unbounded_channel();
+        session
             .liveliness()
             .get(key)
+            .callback(move |reply| {
+                // Deliberately dropped: the only send failure here is "the
+                // receiver below has already returned".
+                let _ = replies_tx.send(reply);
+            })
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
         let mut initial = LivelinessStatus::Lost;
-        while let Ok(reply) = replies.recv_async().await {
+        while let Some(reply) = replies.recv().await {
             match reply.result() {
                 Ok(_) => initial = LivelinessStatus::Alive,
                 // An error reply is a failed query, not an answer of "absent".
