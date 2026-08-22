@@ -3,7 +3,7 @@ target/
 .env
 *.lock~
 .rerun/
-.claude/worktrees
 .aider*
+/.codex/worktrees/
 
 .DS_Store
