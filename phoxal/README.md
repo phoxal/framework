@@ -29,9 +29,9 @@ boundaries: Cargo unifies features, and who may do what at runtime remains
 process ownership and the constructible API. docs.rs builds every profile, so
 each host item there carries the feature it needs.
 
-Use the API documentation on <https://docs.rs/phoxal> and the public Phoxal
-documentation at <https://phoxal.com>. The source is intentionally the
-authoritative place for implementation details and compile-time contracts.
+Use <https://docs.rs/phoxal> as the authority for the published Rust API.
+Visit <https://phoxal.com> for the project vision and public introduction.
+This repository's source and documentation are the authority for implementation, architecture, and compile-time contract details.
 
 ## License
 
