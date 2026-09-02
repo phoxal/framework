@@ -37,7 +37,6 @@
 
 mod connection;
 mod error;
-mod selection;
 
 pub use connection::{ConnectOptions, ConnectedExecution, Session, SessionHandle};
 pub use error::{CloseError, CompatibilityRefusal, ConnectError, DisconnectReason, SessionError};

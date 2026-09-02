@@ -15,8 +15,8 @@ fn one_manifest_serves_runtime_and_simulation_consumers() -> anyhow::Result<()> 
         .component("front_left_drive")
         .ok_or_else(|| anyhow::anyhow!("the fixture mounts a driven component"))?;
     assert_eq!(drive.instance().component_type().as_str(), "drive_motor");
-    // The driver block is kept in every mode: simulation is a launch decision,
-    // never a bundle fact.
+    // The driver block is kept in every mode: physical and simulated execution
+    // consume the same bundle declaration.
     assert!(drive.instance().driver().is_some());
     assert!(
         drive

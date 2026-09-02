@@ -5,10 +5,11 @@
 //! is the whole of what the two binaries negotiate. Every other endpoint below
 //! assumes that comparison already agreed, so none of them carries a version.
 
-use std::path::{Component, Path, PathBuf};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use crate::bundle::RuntimeBundle;
+use crate::bundle::{BundlePath, RuntimeBundle};
 use crate::bus::{
     BusHandle, Codec, IncomingQuery, MessagePack, QueryEndpoint, QueryFailure, ServeQuery,
     ServerQueryable, StreamPublisher, Topic,
@@ -27,6 +28,10 @@ use super::state::ExecutionState;
 mod logs;
 mod telemetry;
 
+/// One reply stays small enough that a malformed or very large asset cannot
+/// turn a supervisor query into an unbounded allocation.
+const MAX_BUNDLE_CHUNK_BYTES: usize = 64 * 1024;
+
 pub(crate) async fn serve(
     bus: BusHandle,
     state: ExecutionState,
@@ -38,6 +43,8 @@ pub(crate) async fn serve(
     tasks.spawn(serve_info(bus.clone(), bundle.manifest().clone()));
     tasks.spawn(serve_snapshots(bus.clone(), state.clone()));
     tasks.spawn(serve_current(bus.clone(), state.clone()));
+    tasks.spawn(serve_time_domains(bus.clone(), state.clone()));
+    tasks.spawn(serve_current_time_domain(bus.clone(), state.clone()));
     tasks.spawn(serve_bundle(bus.clone(), bundle.root().to_path_buf()));
     tasks.spawn(serve_commands(bus.clone(), state.clone()));
     tasks.spawn(logs::run(bus.clone()));
@@ -99,7 +106,14 @@ async fn serve_info(bus: BusHandle, manifest: ManifestDocument) -> Result<()> {
             Some(request) => request,
             None => continue,
         };
-        reply(&incoming, &bus, &manifest).await?;
+        reply(
+            &incoming,
+            &bus,
+            &supervisor::info::InfoResponse {
+                manifest: manifest.clone(),
+            },
+        )
+        .await?;
     }
 }
 
@@ -128,6 +142,43 @@ async fn serve_current(bus: BusHandle, state: ExecutionState) -> Result<()> {
     }
 }
 
+/// Publish every complete scheduling-authority replacement in order.
+async fn serve_time_domains(bus: BusHandle, state: ExecutionState) -> Result<()> {
+    let publisher = StreamPublisher::new(bus, &supervisor::topics().time_domain().owner())?;
+    let mut domains = state
+        .take_time_domain_updates()
+        .context("the supervisor time-domain authority is already being served")?;
+    while let Some(domain) = domains.recv().await {
+        publisher.send(supervisor::time_domain::TimeDomainStream { domain })?;
+    }
+    bail!("the supervisor time-domain authority closed")
+}
+
+/// Answer the current domain after a client subscribed to its replacement
+/// stream, closing the ordinary subscribe/query race.
+async fn serve_current_time_domain(bus: BusHandle, state: ExecutionState) -> Result<()> {
+    let server = declare(
+        &bus,
+        &supervisor::topics().time_domain().current().owner(),
+    )
+    .await?;
+    loop {
+        let incoming = server.recv().await?;
+        let _: supervisor::time_domain::CurrentRequest = match decode(&incoming).await? {
+            Some(request) => request,
+            None => continue,
+        };
+        reply(
+            &incoming,
+            &bus,
+            &supervisor::time_domain::CurrentResponse {
+                domain: state.time_domain(),
+            },
+        )
+        .await?;
+    }
+}
+
 /// Read access to the bundle this supervisor is running.
 ///
 /// The supervisor is the only process that knows where the bundle lives, so a
@@ -141,47 +192,167 @@ async fn serve_bundle(bus: BusHandle, root: PathBuf) -> Result<()> {
             Some(request) => request,
             None => continue,
         };
-        reply(&incoming, &bus, &bundle_entry(&root, &request.path)).await?;
+        let entry_root = root.clone();
+        let response = tokio::task::spawn_blocking(move || bundle_entry(&entry_root, &request))
+            .await
+            .context("the supervisor bundle reader worker stopped")?;
+        reply(&incoming, &bus, &response).await?;
     }
 }
 
 /// Resolve one requested path against the bundle root.
 ///
-/// An empty path, an absolute path, and any component that is not a plain name
-/// are refused outright: they are requests this endpoint never answers, which
-/// is a different answer than an entry the bundle does not have.
-///
-/// Passing that spelling check is not enough to be inside the bundle, because
-/// a symlink under the root can point anywhere on the host. Both sides are
-/// therefore canonicalized and compared: what leaves this process is a file
-/// whose real location is under the bundle's real root, and a path that
-/// resolves outside it is refused rather than reported missing, because the
-/// entry exists and the supervisor is declining to serve it.
-fn bundle_entry(root: &Path, requested: &str) -> supervisor::bundle::GetResponse {
-    let path = Path::new(requested);
-    let refusable = requested.is_empty()
-        || path.is_absolute()
-        || !path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)));
-    if refusable {
-        return supervisor::bundle::GetResponse::InvalidPath;
-    }
-    let Ok(canonical_root) = root.canonicalize() else {
-        return supervisor::bundle::GetResponse::Missing;
+/// The path has already passed the wire `BundlePath` parser, but a normalized
+/// spelling can still escape through a symlink. Both sides are canonicalized,
+/// and only regular files under the canonical root are eligible. The static
+/// model and staged executables have dedicated contracts, so only immutable
+/// assets are exposed through this reader.
+fn bundle_entry(
+    root: &Path,
+    request: &supervisor::bundle::GetRequest,
+) -> supervisor::bundle::GetResponse {
+    let canonical_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(_) => return supervisor::bundle::GetResponse::Refused,
     };
-    let Ok(resolved) = canonical_root.join(path).canonicalize() else {
-        return supervisor::bundle::GetResponse::Missing;
+    let candidate = canonical_root.join(request.path.as_str().split('/').collect::<PathBuf>());
+    let resolved = match candidate.canonicalize() {
+        Ok(path) => path,
+        Err(error) => {
+            return classify_bundle_candidate_error(&canonical_root, request, &error);
+        }
     };
     if !resolved.starts_with(&canonical_root) {
         return supervisor::bundle::GetResponse::InvalidPath;
     }
     if !resolved.is_file() {
-        return supervisor::bundle::GetResponse::Missing;
+        return supervisor::bundle::GetResponse::InvalidPath;
     }
-    std::fs::read(&resolved).map_or(supervisor::bundle::GetResponse::Missing, |bytes| {
-        supervisor::bundle::GetResponse::Found { bytes }
-    })
+    if !is_served_bundle_asset(&request.path) {
+        return supervisor::bundle::GetResponse::Refused;
+    }
+    read_chunk(&resolved, request.offset)
+}
+
+/// Classify failure to resolve the requested entry without treating an existing
+/// dangling path as if the bundle did not contain it.
+fn classify_bundle_candidate_error(
+    root: &Path,
+    request: &supervisor::bundle::GetRequest,
+    error: &std::io::Error,
+) -> supervisor::bundle::GetResponse {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => match requested_path_status(root, request) {
+            Ok(RequestedPathStatus::Invalid) => supervisor::bundle::GetResponse::InvalidPath,
+            Ok(RequestedPathStatus::Missing) => supervisor::bundle::GetResponse::Missing,
+            Err(_) => supervisor::bundle::GetResponse::Refused,
+        },
+        std::io::ErrorKind::NotADirectory => supervisor::bundle::GetResponse::InvalidPath,
+        _ if is_symlink_loop(error) => supervisor::bundle::GetResponse::InvalidPath,
+        _ => supervisor::bundle::GetResponse::Refused,
+    }
+}
+
+/// How a requested path failed to resolve below an otherwise canonical root.
+enum RequestedPathStatus {
+    /// A normal component is absent from the bundle.
+    Missing,
+    /// An existing link cannot produce an admissible path under the bundle root.
+    Invalid,
+}
+
+/// Inspect every existing component to distinguish absence from a broken or
+/// escaping symlink before a later component produces `NotFound`.
+fn requested_path_status(
+    root: &Path,
+    request: &supervisor::bundle::GetRequest,
+) -> std::io::Result<RequestedPathStatus> {
+    let mut candidate = root.to_path_buf();
+    for segment in request.path.as_str().split('/') {
+        candidate.push(segment);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => match candidate.canonicalize() {
+                Ok(resolved) if resolved.starts_with(root) => {}
+                Ok(_) => return Ok(RequestedPathStatus::Invalid),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound
+                            | std::io::ErrorKind::NotADirectory
+                    ) || is_symlink_loop(&error) =>
+                {
+                    return Ok(RequestedPathStatus::Invalid);
+                }
+                Err(error) => return Err(error),
+            },
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RequestedPathStatus::Missing);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(RequestedPathStatus::Invalid)
+}
+
+/// `ErrorKind::FilesystemLoop` is still unstable, so Unix loop evidence stays
+/// at the portable OS-error boundary until that standard-library variant is
+/// available.
+fn is_symlink_loop(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+/// Preserve the distinction between an absent entry, an invalid resolved path,
+/// and a bundle entry the supervisor could not serve.
+fn classify_bundle_path_error(error: &std::io::Error) -> supervisor::bundle::GetResponse {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => supervisor::bundle::GetResponse::Missing,
+        std::io::ErrorKind::NotADirectory => supervisor::bundle::GetResponse::InvalidPath,
+        _ => supervisor::bundle::GetResponse::Refused,
+    }
+}
+
+fn is_served_bundle_asset(path: &BundlePath) -> bool {
+    path.as_str().starts_with("assets/")
+}
+
+fn read_chunk(path: &Path, offset: u64) -> supervisor::bundle::GetResponse {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => return classify_bundle_path_error(&error),
+    };
+    let length = match file.metadata().map(|metadata| metadata.len()) {
+        Ok(length) => length,
+        Err(_) => return supervisor::bundle::GetResponse::Refused,
+    };
+    if offset >= length {
+        return supervisor::bundle::GetResponse::Chunk {
+            bytes: Vec::new(),
+            eof: true,
+        };
+    }
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return supervisor::bundle::GetResponse::Refused;
+    }
+    let remaining = usize::try_from(length.saturating_sub(offset)).unwrap_or(usize::MAX);
+    let mut bytes = vec![0; remaining.min(MAX_BUNDLE_CHUNK_BYTES)];
+    let read = match file.read(&mut bytes) {
+        Ok(read) => read,
+        Err(_) => return supervisor::bundle::GetResponse::Refused,
+    };
+    bytes.truncate(read);
+    supervisor::bundle::GetResponse::Chunk {
+        eof: read == 0 || offset.saturating_add(read as u64) >= length,
+        bytes,
+    }
 }
 
 /// The two host actions, and nothing about the robot graph.

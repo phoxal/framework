@@ -7,7 +7,7 @@
 use phoxal::identity::ComponentInstanceId;
 use phoxal::model::identity::{CapabilityId, JointId};
 
-use crate::{robot as api, runtime, supervisor};
+use crate::{robot as api, runtime, simulation, supervisor};
 
 fn component(value: &str) -> ComponentInstanceId {
     ComponentInstanceId::new(value).expect("a canonical component instance")
@@ -244,8 +244,8 @@ fn a_self_node_is_the_endpoint_and_named_leaves_sit_beside_it() {
         "runtime/telemetry"
     );
     assert_eq!(
-        runtime::topics().simulation().clock().key(),
-        "runtime/simulation/clock"
+        simulation::topics().clock().client().key(),
+        "simulation/clock"
     );
 
     assert_eq!(

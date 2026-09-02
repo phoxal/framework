@@ -1,23 +1,30 @@
 use super::ShutdownController;
 use super::event_loop::advance_step_deadline;
 use super::lifecycle::{
-    BusLease, ClockDisciplineLost, LoopExit, ParticipantFault, Runner, RunnerClock, RunnerTasks,
-    StartOutcome, close_session_with_result, runner_clock,
+    BusLease, ClockDisciplineLost, LoopExit, ParticipantFault, ReadyDomainFence, Runner,
+    RunnerClock, RunnerTasks, StartOutcome, close_session_with_result, fence_ready_domain,
+    runner_clock, runner_clock_for_domain, scheduler_for_domain,
 };
-use crate::bus::{BusConfig, BusFault, BusOwner, ParticipantReadyEvents, ParticipantReadyStatus};
-use crate::bus::{RobotInstant, TimelineId};
+use super::startup::DomainSubscription;
+use crate::bus::{
+    BusConfig, BusFault, BusOwner, ParticipantReadyEvents, ParticipantReadyStatus, RobotInstant,
+    StreamPublisher, StreamReceiver, TimelineId,
+};
 use crate::identity::ParticipantId;
 use crate::participant::api::Participant;
 use crate::participant::bus_log;
 use crate::participant::clock::real::RealClock;
-use crate::participant::clock::{ClockMode, TimeUnsynchronized};
-use crate::participant::context::SetupContext;
+use crate::participant::clock::{ClockMode, ClockSource, TimeUnsynchronized};
+use crate::participant::context::{SetupContext, SetupSource};
 use crate::participant::managed::{
     ManagedTaskExit, ManagedTaskFailure, ManagedTaskPolicy, ManagedTasks,
 };
 use crate::participant::scheduler::AnyStepScheduler;
+use crate::participant::scheduler::simulation::SimulationClockHandle;
+use crate::supervisor::api;
+use crate::supervisor::api::time_domain::{TimeDomain, TimeDomainStream, TimeMode};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -30,6 +37,67 @@ fn at(timeline: u64, ticks: u64) -> RobotInstant {
 
 fn test_timeline() -> TimelineId {
     TimelineId::from_raw(1).expect("test timeline must be nonzero")
+}
+
+/// A replacement buffered by the already-subscribed stream while Ready is
+/// being acquired revokes that lease and requires startup to reconfigure first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ready_domain_fence_reconfigures_a_buffered_replacement() {
+    let participant = ParticipantId::new("ready-domain-fence").expect("valid participant id");
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        crate::identity::ExecutionId::mint(),
+        participant,
+        Vec::new(),
+    ))
+    .await
+    .expect("the in-process bus opens");
+    let updates =
+        StreamReceiver::<TimeDomainStream>::new(&bus, &api::topics().time_domain().client())
+            .await
+            .expect("the Ready fence subscribes");
+    let publisher = StreamPublisher::new(bus.clone(), &api::topics().time_domain().owner())
+        .expect("the supervisor stream publisher attaches");
+    let initial = TimeDomain {
+        revision: 10,
+        timeline: test_timeline(),
+        mode: TimeMode::Monotonic,
+    };
+    let replacement = TimeDomain {
+        revision: 11,
+        timeline: TimelineId::from_raw(2).expect("a replacement timeline"),
+        mode: TimeMode::Simulated,
+    };
+    publisher
+        .send(TimeDomainStream {
+            domain: replacement,
+        })
+        .expect("the replacement is admitted");
+    let mut domain = Some(DomainSubscription {
+        current: initial,
+        updates,
+    });
+    let transitions = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match fence_ready_domain(&mut domain)
+                .expect("the fence reconciles the buffered replacement")
+            {
+                ReadyDomainFence::Stable => tokio::task::yield_now().await,
+                ReadyDomainFence::Reconfigure(transitions) => break transitions,
+            }
+        }
+    })
+    .await
+    .expect("the replacement reaches the Ready-fence subscription");
+    assert_eq!(transitions, vec![(initial, replacement)]);
+    let ReadyDomainFence::Stable =
+        fence_ready_domain(&mut domain).expect("the drained fence remains healthy")
+    else {
+        panic!("the drained fence must be stable");
+    };
+
+    drop(domain);
+    drop(publisher);
+    let _ = owner.close().await;
 }
 
 #[tokio::test]
@@ -219,9 +287,20 @@ async fn ready_declaration_race_prefers_a_task_failure() {
 }
 
 static HANGING_SETUP_STARTED: OnceLock<Notify> = OnceLock::new();
+static DOMAIN_SETUP_STARTED: OnceLock<Notify> = OnceLock::new();
+static DOMAIN_SETUP_RELEASE: OnceLock<Notify> = OnceLock::new();
+static DOMAIN_SETUP_RESETS: AtomicUsize = AtomicUsize::new(0);
 
 fn hanging_setup_started() -> &'static Notify {
     HANGING_SETUP_STARTED.get_or_init(Notify::new)
+}
+
+fn domain_setup_started() -> &'static Notify {
+    DOMAIN_SETUP_STARTED.get_or_init(Notify::new)
+}
+
+fn domain_setup_release() -> &'static Notify {
+    DOMAIN_SETUP_RELEASE.get_or_init(Notify::new)
 }
 
 /// A stop received while setup is still awaiting must cancel setup-owned tasks
@@ -272,7 +351,8 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
                 session: BusLease::Owned(owner),
                 participant_id,
                 shutdown_grace: Duration::from_millis(100),
-                bundle: None,
+                source: SetupSource::Harness,
+                domain: None,
                 config: (),
                 clock: RunnerClock::Delegated(clock),
                 scheduler,
@@ -308,6 +388,148 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
     close_session_with_result(Ok::<(), anyhow::Error>(()), session, deadline)
         .await
         .expect("bus close after cancelled setup");
+    bus_logs.shutdown();
+}
+
+/// A domain replacement delivered while setup is pending is reconciled and
+/// reset before the participant can acquire Ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_domain_change_during_setup_resets_before_ready() {
+    #[phoxal::service(id = "domain-transition-startup", state = ())]
+    struct DomainTransitionStartup;
+
+    impl Participant for DomainTransitionStartup {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            domain_setup_started().notify_one();
+            domain_setup_release().notified().await;
+            Ok(((), ()))
+        }
+
+        fn reset(
+            &self,
+            _ctx: crate::participant::context::ResetContext,
+            _api: &Self::Api,
+            _state: &mut Self::State,
+        ) -> crate::Result<()> {
+            DOMAIN_SETUP_RESETS.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    DOMAIN_SETUP_RESETS.store(0, Ordering::Release);
+    let participant_id =
+        ParticipantId::new("domain-transition-startup").expect("a valid participant id");
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        crate::identity::ExecutionId::mint(),
+        participant_id.clone(),
+        Vec::new(),
+    ))
+    .await
+    .expect("the in-process bus opens");
+    let updates =
+        StreamReceiver::<TimeDomainStream>::new(&bus, &api::topics().time_domain().client())
+            .await
+            .expect("the runner subscribes before setup");
+    let delivery =
+        StreamReceiver::<TimeDomainStream>::new(&bus, &api::topics().time_domain().client())
+            .await
+            .expect("the delivery observer subscribes");
+    let publisher = StreamPublisher::new(bus.clone(), &api::topics().time_domain().owner())
+        .expect("the supervisor stream publisher attaches");
+    let initial = TimeDomain {
+        revision: 0,
+        timeline: test_timeline(),
+        mode: TimeMode::Monotonic,
+    };
+    let replacement = TimeDomain {
+        revision: 1,
+        timeline: TimelineId::from_raw(2).expect("a replacement timeline"),
+        mode: TimeMode::Simulated,
+    };
+    let second_replacement = TimeDomain {
+        revision: 2,
+        timeline: TimelineId::from_raw(3).expect("a second replacement timeline"),
+        mode: TimeMode::Monotonic,
+    };
+    let simulation_clock = SimulationClockHandle::source();
+    let initial_clock = RealClock::new(initial.timeline);
+    let scheduler = scheduler_for_domain(
+        ClockMode::Real,
+        None,
+        initial_clock.read().instant(),
+        &simulation_clock,
+    )
+    .expect("the initial monotonic scheduler builds");
+    let clock = runner_clock_for_domain::<RealClock>(&scheduler, initial)
+        .expect("the initial runner clock builds");
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
+    let setup_started = domain_setup_started().notified();
+    let start_task = tokio::spawn(async move {
+        let mut shutdown = ShutdownController::new(std::future::pending());
+        Runner::<DomainTransitionStartup, RealClock>::start(
+            super::lifecycle::StartInputs {
+                bus,
+                session: BusLease::Owned(owner),
+                participant_id,
+                shutdown_grace: Duration::from_millis(100),
+                source: SetupSource::Harness,
+                domain: Some(DomainSubscription {
+                    current: initial,
+                    updates,
+                }),
+                config: (),
+                clock,
+                scheduler,
+                schedule: None,
+                clock_mode: ClockMode::Real,
+                tasks: RunnerTasks {
+                    simulation_clock: Some(simulation_clock),
+                    bus_log: bus_log_task,
+                    query_reply_delay: None,
+                },
+            },
+            &mut shutdown,
+        )
+        .await
+    });
+    setup_started.await;
+    publisher
+        .send(TimeDomainStream {
+            domain: replacement,
+        })
+        .expect("the replacement is admitted");
+    publisher
+        .send(TimeDomainStream {
+            domain: second_replacement,
+        })
+        .expect("the second replacement is admitted");
+    for expected in [replacement, second_replacement] {
+        let delivered = tokio::time::timeout(Duration::from_secs(2), delivery.recv())
+            .await
+            .expect("the replacement reaches subscribers")
+            .expect("the replacement decodes");
+        assert_eq!(delivered.body.domain, expected);
+    }
+    domain_setup_release().notify_one();
+
+    let outcome = start_task.await.expect("the startup task returns");
+    let StartOutcome::Ready(runner) = outcome else {
+        panic!("a healthy startup must reach Ready after its reset");
+    };
+    assert_eq!(
+        DOMAIN_SETUP_RESETS.load(Ordering::Acquire),
+        2,
+        "every queued replacement reset must complete before Ready"
+    );
+    let mut shutdown = ShutdownController::new(std::future::ready(()));
+    runner
+        .run(&mut shutdown)
+        .await
+        .expect("the runner shuts down cleanly");
     bus_logs.shutdown();
 }
 
@@ -376,7 +598,8 @@ async fn assert_owner_worker_failure_reaches_lifecycle(
             session: BusLease::Owned(owner),
             participant_id,
             shutdown_grace: Duration::from_secs(1),
-            bundle: None,
+            source: SetupSource::Harness,
+            domain: None,
             config: (),
             clock: RunnerClock::Delegated(RealClock::new(test_timeline())),
             scheduler,

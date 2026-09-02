@@ -67,7 +67,7 @@ async fn a_step_publishes_its_outputs_before_the_clock_that_closes_it() {
     .expect("the encoder subscriber attaches");
     let clocks = StreamReceiver::<Clock>::new(
         &session.bus,
-        &crate::runtime::api::topics().simulation().clock().client(),
+        &crate::simulation::api::topics().clock().client(),
     )
     .await
     .expect("the clock subscriber attaches");

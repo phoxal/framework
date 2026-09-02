@@ -49,7 +49,7 @@ use crate::bus::{
     SourceLabelError, State, StatePublisher, Subscribe, Topic, WorldStepToken,
 };
 use crate::identity::{ExecutionId, ParticipantId, TimelineId};
-use crate::runtime::api::simulation::Clock;
+use crate::simulation::api::Clock;
 
 /// A failure while attaching a simulator to one execution, or while operating
 /// the session it opened.
@@ -417,7 +417,7 @@ impl WorldTime {
         let authority = TimelineAuthority::mint(TimelineId::mint())?;
         let clock = WorldClockPublisher::mint(
             bus.clone(),
-            &crate::runtime::api::topics().simulation().clock().owner(),
+            &crate::simulation::api::topics().clock().owner(),
         )?;
         Ok(Self { authority, clock })
     }

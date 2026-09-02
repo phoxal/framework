@@ -4,7 +4,7 @@
 // refuses the runtime family) and the handle itself, where the semantic is the
 // only bound in play.
 use phoxal::prelude::*;
-use phoxal::runtime::api as runtime;
+use phoxal::simulation;
 
 #[phoxal::service(id = "world-clock-minter")]
 struct WorldClockMinter;
@@ -15,7 +15,7 @@ impl Participant for WorldClockMinter {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let _publisher = ctx.state_publisher(runtime::topics().simulation().clock().owner())?;
+        let _publisher = ctx.state_publisher(simulation::api::topics().clock().owner())?;
         Ok(((), ()))
     }
 }
@@ -23,7 +23,7 @@ impl Participant for WorldClockMinter {
 fn state_publisher_over_the_clock(bus: phoxal::bus::BusHandle) {
     let _ = phoxal::bus::StatePublisher::new(
         bus,
-        &runtime::topics().simulation().clock().owner(),
+        &simulation::api::topics().clock().owner(),
     );
 }
 

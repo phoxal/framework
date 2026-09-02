@@ -8,10 +8,11 @@ use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsync
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
-use crate::runtime::api::simulation::Clock;
+use crate::simulation::api::Clock;
+use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
 
 use super::ShutdownController;
-use super::lifecycle::{LoopExit, Runner};
+use super::lifecycle::{LoopExit, Runner, runner_clock_for_domain, scheduler_for_domain};
 use super::query::QuerySurface;
 
 /// How often the runner wakes for work that is not a step: publishing the
@@ -25,7 +26,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
     {
         let period = self.schedule.map(|schedule| schedule.period());
         let mut step_index: u64 = 0;
-        let mut active_timeline: Option<TimelineId> = None;
+        let mut active_timeline = self.domain.map(|domain| domain.timeline);
         let mut simulation_time_rx = self.scheduler.simulation_time_receiver();
         // The simulation clock feed starts before `Participant::setup`. If setup
         // takes long enough for the authority's first world step to arrive, a
@@ -34,7 +35,9 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // world history without invoking reset: there was no prior participant
         // execution, but its ingress barrier and first cadence still matter.
         let initial_time = self.scheduler.now();
-        if let Some(initial_time) = initial_time.filter(|_| simulation_time_rx.is_some()) {
+        if let Some(domain) = self.domain {
+            retain_timeline(&self.timeline_retentions, domain.timeline);
+        } else if let Some(initial_time) = initial_time.filter(|_| simulation_time_rx.is_some()) {
             active_timeline = Some(initial_time.timeline());
             retain_timeline(&self.timeline_retentions, initial_time.timeline());
         }
@@ -77,7 +80,90 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     );
                     return LoopExit::ManagedTaskFaulted(exit);
                 }
+                domain = time_domain_change(&mut self.domain_updates) => {
+                    let domain = match domain {
+                        Ok(domain) => domain,
+                        Err(error) => return LoopExit::StepFailed(error),
+                    };
+                    let Some(previous) = self.domain else {
+                        continue;
+                    };
+                    if domain.revision <= previous.revision {
+                        continue;
+                    }
+                    let clock_mode = match domain.mode {
+                        TimeMode::Monotonic => ClockMode::Real,
+                        TimeMode::Simulated => ClockMode::Simulation,
+                    };
+                    let Some(simulation_clock) = &self.simulation_clock else {
+                        return LoopExit::StepFailed(anyhow::anyhow!(
+                            "a time-domain participant lost its simulation clock ingress"
+                        ));
+                    };
+                    match clock_mode {
+                        ClockMode::Real => simulation_clock.disable(),
+                        ClockMode::Simulation => simulation_clock.replace_timeline(domain.timeline),
+                    }
+                    let now = match clock_mode {
+                        ClockMode::Real => {
+                            let clock = crate::participant::clock::real::RealClock::new(domain.timeline);
+                            let reading = clock.read();
+                            let Some(now) = reading.instant() else {
+                                let ClockReading::Unsynchronized(reason) = reading else { unreachable!() };
+                                return LoopExit::ClockDisciplineLost(reason);
+                            };
+                            self.clock = super::lifecycle::RunnerClock::SupervisorReal(clock);
+                            Some(now)
+                        }
+                        ClockMode::Simulation => None,
+                    };
+                    let (scheduler, now) = match scheduler_after_domain_change(
+                        clock_mode,
+                        self.schedule,
+                        now,
+                        simulation_clock,
+                    ) {
+                        Ok(scheduler) => scheduler,
+                        Err(error) => return LoopExit::StepFailed(error),
+                    };
+                    if clock_mode == ClockMode::Simulation {
+                        self.clock = match runner_clock_for_domain::<C>(&scheduler, domain) {
+                            Ok(clock) => clock,
+                            Err(error) => return LoopExit::ClockDisciplineLost(error.reason),
+                        };
+                    }
+                    self.scheduler = scheduler;
+                    self.clock_mode = clock_mode;
+                    self.domain = Some(domain);
+                    retain_timeline(&self.timeline_retentions, domain.timeline);
+                    let reset = ResetContext {
+                        previous_timeline: previous.timeline,
+                        new_timeline: domain.timeline,
+                    };
+                    if let Err(error) = self.participant.reset(reset, &self.api, &mut self.state) {
+                        return LoopExit::ResetFailed(error);
+                    }
+                    active_timeline = Some(domain.timeline);
+                    simulation_time_rx = self.scheduler.simulation_time_receiver();
+                    next_step_target = now.and_then(|at| {
+                        period.map(|period| advance_step_deadline(at, period, 0))
+                    });
+                    step_index = 0;
+                    last_step_at = now;
+                    self.runtime_performance.reset(self.schedule);
+                }
                 fired_at = simulation_time_change(&mut simulation_time_rx) => {
+                    if let Some(domain) = self.domain {
+                        if domain.mode != TimeMode::Simulated || fired_at.timeline() != domain.timeline {
+                            continue;
+                        }
+                        active_timeline = Some(domain.timeline);
+                        if next_step_target.is_none() {
+                            next_step_target = period.map(|period| advance_step_deadline(fired_at, period, 0));
+                        }
+                        last_step_at.get_or_insert(fired_at);
+                        continue;
+                    }
                     if active_timeline == Some(fired_at.timeline()) {
                         continue;
                     }
@@ -239,13 +325,37 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
     }
 }
 
-/// Subscribe the authoritative `runtime/simulation/clock` hand and drive the live
+/// Rebuild cadence after a supervisor domain replacement and retain a
+/// simulated instant that arrived before the new watch receiver subscribed.
+///
+/// Tokio watch receivers consider the value present at subscription already
+/// seen. Reading the scheduler immediately closes that edge: a first clock
+/// accepted after the timeline fence but before scheduler construction still
+/// seeds the next step target instead of waiting forever for a second clock.
+fn scheduler_after_domain_change(
+    clock_mode: ClockMode,
+    schedule: Option<crate::participant::scheduler::StepSchedule>,
+    now: Option<RobotInstant>,
+    simulation_clock: &SimulationClockHandle,
+) -> crate::Result<(
+    crate::participant::scheduler::AnyStepScheduler,
+    Option<RobotInstant>,
+)> {
+    let scheduler = scheduler_for_domain(clock_mode, schedule, now, simulation_clock)?;
+    let now = match clock_mode {
+        ClockMode::Real => now,
+        ClockMode::Simulation => scheduler.now(),
+    };
+    Ok((scheduler, now))
+}
+
+/// Subscribe the authoritative `simulation/clock` hand and drive the live
 /// scheduler from exact production instants for the task's lifetime.
 pub(crate) async fn simulation_clock_feed(
     bus: crate::bus::BusHandle,
     handle: SimulationClockHandle,
 ) -> crate::Result<()> {
-    let topic = crate::runtime::api::topics().simulation().clock().client();
+    let topic = crate::simulation::api::topics().clock().client();
     let subscriber = match StreamReceiver::<Clock>::new(&bus, &topic).await {
         Ok(subscriber) => subscriber,
         Err(error) => return Err(error.into()),
@@ -253,7 +363,7 @@ pub(crate) async fn simulation_clock_feed(
     tracing::info!(
         target: "phoxal.runtime",
         topic = topic.key(),
-        "subscribed the live runtime/simulation/clock hand; driving the simulation scheduler from it"
+        "subscribed the live simulation/clock hand; driving the simulation scheduler from it"
     );
     loop {
         let observed = subscriber.recv().await.map_err(|error| {
@@ -270,7 +380,7 @@ pub(crate) async fn simulation_clock_feed(
         };
         match handle.advance(at) {
             SimulationClockAdvance::Advanced | SimulationClockAdvance::DuplicateOrBackward => {}
-            SimulationClockAdvance::RetiredTimeline => {
+            SimulationClockAdvance::RetiredTimeline | SimulationClockAdvance::InactiveTimeline => {
                 tracing::warn!(
                     target: "phoxal.runtime",
                     timeline = %at.timeline(),
@@ -315,6 +425,17 @@ async fn simulation_time_change(
     }
 }
 
+/// Await the next ordered supervisor domain replacement, or never resolve for
+/// a driver and the explicit harness, which have no execution-time authority.
+async fn time_domain_change(
+    updates: &mut Option<StreamReceiver<crate::supervisor::api::time_domain::TimeDomainStream>>,
+) -> crate::Result<TimeDomain> {
+    let Some(updates) = updates else {
+        return std::future::pending().await;
+    };
+    Ok(updates.recv().await?.body.domain)
+}
+
 /// The instant the step after the one due at `target` is due at: one period on,
 /// plus one for each period a released tick collapsed.
 pub(crate) fn advance_step_deadline(
@@ -328,5 +449,43 @@ pub(crate) fn advance_step_deadline(
 pub(crate) fn retain_timeline(retentions: &[TimelineRetention], timeline: TimelineId) {
     for retention in retentions {
         retention(timeline);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::participant::scheduler::{StepSchedule, StepScheduler};
+
+    /// A clock can arrive after the new timeline is enabled but before the
+    /// replacement scheduler subscribes. That already-current value must seed
+    /// cadence even though its watch notification is not pending.
+    #[test]
+    fn a_first_clock_before_scheduler_subscription_seeds_the_transition() {
+        let timeline = TimelineId::from_raw(7).expect("a nonzero test timeline");
+        let first = RobotInstant::new(timeline, 11);
+        let simulation_clock = SimulationClockHandle::source();
+        simulation_clock.replace_timeline(timeline);
+        assert_eq!(
+            simulation_clock.advance(first),
+            SimulationClockAdvance::Advanced
+        );
+
+        let schedule = StepSchedule::hz(10.0);
+        let (scheduler, now) = scheduler_after_domain_change(
+            ClockMode::Simulation,
+            Some(schedule),
+            None,
+            &simulation_clock,
+        )
+        .expect("the replacement scheduler builds");
+
+        assert_eq!(now, Some(first));
+        assert_eq!(scheduler.now(), Some(first));
+        assert_eq!(
+            now.map(|at| advance_step_deadline(at, schedule.period(), 0)),
+            Some(first.saturating_add(schedule.period())),
+            "the first accepted clock must arm the replacement cadence",
+        );
     }
 }

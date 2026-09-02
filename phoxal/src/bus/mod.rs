@@ -80,8 +80,8 @@ pub use crate::identity::{ExecutionId, ParticipantId, ProducerId, TimelineId};
 pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, MessagePack};
 pub use contract::{
     DeliveryFamily, Direction, Endpoint, EndpointKind, EndpointSemantics, Event, Family, In, Out,
-    Payload, Query, QueryEndpoint, Robot, RobotEndpoint, Runtime, Sample, Setpoint, State, Stream,
-    StreamDelivered, Supervisor, WorldClock,
+    Payload, Query, QueryEndpoint, Robot, RobotEndpoint, Runtime, Sample, Setpoint, Simulation,
+    State, Stream, StreamDelivered, Supervisor, WorldClock,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{

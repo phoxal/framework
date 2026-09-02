@@ -7,7 +7,7 @@ use tokio::sync::watch;
 
 use super::{SchedulerTick, StepScheduler};
 use crate::bus::RetiredTimelines;
-use crate::bus::RobotInstant;
+use crate::bus::{RobotInstant, TimelineId};
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::{duration_nanos, lock};
 
@@ -17,7 +17,7 @@ use crate::participant::{duration_nanos, lock};
 /// # The live seam
 ///
 /// The simulation controller is the authoritative owner of the
-/// `runtime/simulation/clock` hand. In simulation mode the participant runner
+/// `simulation/clock` hand. In simulation mode the participant runner
 /// subscribes that topic and forwards each observed [`RobotInstant`] into this
 /// scheduler through [`SimulationClockHandle::advance`]. Tests drive the same
 /// handle directly, so live and deterministic test paths share the scheduler
@@ -35,7 +35,7 @@ pub(crate) struct SimulationScheduler {
     /// participant has no `Participant::step` schedule.
     period: Option<Duration>,
     /// Keeps the watch channel open even when the runner has not wired an
-    /// external `runtime/simulation/clock` feed yet. Without this, dropping the
+    /// external `simulation/clock` feed yet. Without this, dropping the
     /// returned handle would close the channel and make waits resolve
     /// immediately instead of waiting for logical time.
     _tx_keepalive: watch::Sender<Option<RobotInstant>>,
@@ -45,6 +45,8 @@ pub(crate) struct SimulationScheduler {
 struct SimulationClockState {
     current: Option<RobotInstant>,
     retired_timelines: RetiredTimelines,
+    enabled: bool,
+    expected_timeline: Option<TimelineId>,
 }
 
 /// Result of applying one clock sample to a simulation scheduler.
@@ -53,12 +55,13 @@ pub(crate) enum SimulationClockAdvance {
     Advanced,
     DuplicateOrBackward,
     RetiredTimeline,
+    InactiveTimeline,
 }
 
 /// A cloneable handle that advances the logical time a
 /// [`SimulationScheduler`] observes.
 ///
-/// This is the seam a live `runtime/simulation/clock` bus subscription attaches to
+/// This is the seam a live `simulation/clock` bus subscription attaches to
 /// (see [`SimulationScheduler`] docs): a subscriber task calls
 /// [`advance`](Self::advance) once per received sample. Tests use the same
 /// method to drive the scheduler deterministically, with no bus and no real
@@ -70,6 +73,53 @@ pub(crate) struct SimulationClockHandle {
 }
 
 impl SimulationClockHandle {
+    /// Start one reusable world-clock ingress source.
+    pub(crate) fn source() -> Self {
+        let (tx, _) = watch::channel(None);
+        Self {
+            tx,
+            state: Arc::new(Mutex::new(SimulationClockState {
+                current: None,
+                retired_timelines: RetiredTimelines::default(),
+                enabled: true,
+                expected_timeline: None,
+            })),
+        }
+    }
+
+    /// Build a scheduler that follows this source.
+    pub(crate) fn scheduler(&self, period: Option<Duration>) -> SimulationScheduler {
+        SimulationScheduler {
+            period,
+            _tx_keepalive: self.tx.clone(),
+            rx: self.tx.subscribe(),
+        }
+    }
+
+    /// Fence every previous simulated history before a new supervisor domain
+    /// becomes eligible for work. The next accepted clock must name `timeline`.
+    pub(crate) fn replace_timeline(&self, timeline: TimelineId) {
+        let mut state = lock(&self.state);
+        if let Some(previous) = state.current.take() {
+            state.retired_timelines.retire(previous.timeline());
+        }
+        state.retired_timelines.activate(timeline);
+        state.enabled = true;
+        state.expected_timeline = Some(timeline);
+        self.tx.send_replace(None);
+    }
+
+    /// Stop accepting world progress while the execution is monotonic.
+    pub(crate) fn disable(&self) {
+        let mut state = lock(&self.state);
+        if let Some(previous) = state.current.take() {
+            state.retired_timelines.retire(previous.timeline());
+        }
+        state.enabled = false;
+        state.expected_timeline = None;
+        self.tx.send_replace(None);
+    }
+
     /// Advance the observed robot time to `at`. A no-op if `at` is a duplicate
     /// or backwards within the active timeline. Any different timeline replaces
     /// the active world history, since timelines are opaque identities with no
@@ -77,6 +127,13 @@ impl SimulationClockHandle {
     /// clock from a dead controller cannot reactivate old state.
     pub(crate) fn advance(&self, at: RobotInstant) -> SimulationClockAdvance {
         let mut state = lock(&self.state);
+        if !state.enabled
+            || state
+                .expected_timeline
+                .is_some_and(|expected| expected != at.timeline())
+        {
+            return SimulationClockAdvance::InactiveTimeline;
+        }
         match state.current {
             Some(current) if current.timeline() == at.timeline() => {
                 if at.ticks() <= current.ticks() {
@@ -110,19 +167,8 @@ impl SimulationScheduler {
         // No seed: there is no world history until the authority publishes one,
         // and an invented instant zero of an invented timeline would be a world
         // nobody authored.
-        let (tx, rx) = watch::channel(None);
-        let scheduler = SimulationScheduler {
-            period,
-            _tx_keepalive: tx.clone(),
-            rx,
-        };
-        let handle = SimulationClockHandle {
-            tx,
-            state: Arc::new(Mutex::new(SimulationClockState {
-                current: None,
-                retired_timelines: RetiredTimelines::default(),
-            })),
-        };
+        let handle = SimulationClockHandle::source();
+        let scheduler = handle.scheduler(period);
         (scheduler, handle)
     }
 
@@ -226,7 +272,7 @@ mod tests {
         for step in 1..=5u64 {
             let target = lt(step * 10);
             // Drive robot time forward from a concurrent task, exactly like
-            // the live `runtime/simulation/clock` subscriber does.
+            // the live `simulation/clock` subscriber does.
             let handle = handle.clone();
             let advancer = tokio::spawn(async move { handle.advance(target) });
             let tick = scheduler.wait_until(target).await;

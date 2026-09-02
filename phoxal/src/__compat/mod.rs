@@ -8,7 +8,7 @@
 //!
 //! `contract_surface()` is the crate aggregate. Each owner still states its own
 //! records beside its own definitions - `bus::__compat`, `bundle::__compat`,
-//! `participant::metadata::__compat`, and the three api families, whose records
+//! `participant::metadata::__compat`, and the four api families, whose records
 //! the `nodes!`/`endpoints!` declarations emit from the same structure that
 //! renders their concrete keys - and this module only collects them and renders
 //! the one canonical document.
@@ -30,7 +30,7 @@ use crate::participant::launch::Launch;
 /// The canonical rendering of this crate's whole contract surface.
 ///
 /// Every process/wire fact the framework owns, in one deterministic document:
-/// the three api families' endpoints, the bus envelopes and key constants, the
+/// the four api families' endpoints, the bus envelopes and key constants, the
 /// bundle manifest document, the participant metadata document, and the launch
 /// argv contract.
 #[must_use]
@@ -45,6 +45,7 @@ fn contract_records() -> Vec<ContractRecord> {
     crate::api::contract_records(&mut records);
     crate::runtime::api::contract_records(&mut records);
     crate::supervisor::api::contract_records(&mut records);
+    crate::simulation::api::contract_records(&mut records);
     crate::bus::__compat::contract_records(&mut records);
     crate::bundle::__compat::contract_records(&mut records);
     crate::participant::metadata::__compat::contract_records(&mut records);
@@ -92,9 +93,7 @@ mod tests {
     fn the_launch_record_is_the_supervisor_owned_argv_contract() {
         let expected = ContractRecord::launch([
             LaunchArgument::new("participant-id", true, false, LaunchValueShape::Text),
-            LaunchArgument::new("bundle-root", true, false, LaunchValueShape::Text),
-            LaunchArgument::new("connect", true, true, LaunchValueShape::Text),
-            LaunchArgument::new("simulation", false, false, LaunchValueShape::Flag),
+            LaunchArgument::new("connect", true, false, LaunchValueShape::Text),
         ]);
         assert_eq!(ContractRecord::launch(launch_arguments()), expected);
 
@@ -125,16 +124,15 @@ mod tests {
         }
     }
 
-    /// `--simulation` is the launch contract's only bare switch: it is a
-    /// launcher decision with no value to carry. Everything else names a fact
-    /// and therefore consumes an argv token.
+    /// The launch ABI carries only identity and rendezvous text values. A time
+    /// domain is supervisor authority, not a launcher switch.
     #[test]
-    fn simulation_is_the_only_bare_switch() {
+    fn the_launch_abi_has_no_bare_switches() {
         let flags = launch_arguments()
             .into_iter()
             .filter(|argument| argument.value == LaunchValueShape::Flag)
             .map(|argument| argument.name)
             .collect::<Vec<_>>();
-        assert_eq!(flags, ["simulation"]);
+        assert!(flags.is_empty());
     }
 }

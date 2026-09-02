@@ -16,13 +16,13 @@
 //! derive, and every participant reads its own configuration out of the same
 //! document. A binary is found in `bin/` by the id it was launched under.
 //!
-//! [`RuntimeBundle::open`] parses the manifest and does nothing else - the
-//! supervisor and every participant use the same reader, and a process the
-//! manifest never mentions opens the bundle exactly like one it does.
-//! [`ParticipantAssets::read`] reads a file below `assets/` by its
-//! [`AssetId`](crate::model::AssetId); that id is already a validated relative
-//! path and [`BundlePath`] validates the join again, so a read cannot leave
-//! `assets/`.
+//! [`RuntimeBundle::open`] parses the manifest and does nothing else. The
+//! supervisor owns that local reader, while launched participants receive the
+//! manifest through `supervisor/info` and lazily materialize assets from its
+//! bounded reader. [`ParticipantAssets::read`] reads the cached file below
+//! `assets/` by its [`AssetId`](crate::model::AssetId); that id is already a
+//! validated relative path and [`BundlePath`] validates the join again, so a
+//! read cannot leave `assets/`.
 //!
 //! [`BundleWriter::write`] takes the manifest, the assets, and a map from
 //! bundle-relative destination to the executable to copy there. It assembles the

@@ -147,7 +147,7 @@ impl EndpointKind {
 /// participants is the compatibility line of the framework trains they were
 /// built from, so no key or endpoint carries a per-API version.
 ///
-/// The three members are the whole set, and the trait is sealed: a family is a
+/// The four members are the whole set, and the trait is sealed: a family is a
 /// wire namespace this framework owns, not an extension point.
 pub trait Family: sealed::Family + 'static {
     /// The family's wire identifier, such as `"robot"`.
@@ -166,6 +166,10 @@ pub enum Runtime {}
 /// `phoxal::supervisor::api` by the profiles that publish it.
 pub enum Supervisor {}
 
+/// World-progress contracts, reached as `phoxal::simulation::api` by host
+/// profiles. This is distinct from `phoxal::simulator`, the Rust host SDK.
+pub enum Simulation {}
+
 impl sealed::Family for Robot {}
 impl Family for Robot {
     const ID: &'static str = "robot";
@@ -179,6 +183,11 @@ impl Family for Runtime {
 impl sealed::Family for Supervisor {}
 impl Family for Supervisor {
     const ID: &'static str = "supervisor";
+}
+
+impl sealed::Family for Simulation {}
+impl Family for Simulation {
+    const ID: &'static str = "simulation";
 }
 
 /// The stand-in family the bus's own unit tests declare endpoints in.

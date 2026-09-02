@@ -78,16 +78,16 @@ pub enum TimeUnsynchronized {
 
 /// Which clock a launched participant runs on.
 ///
-/// The launch contract's `--simulation` flag is the whole of this decision:
-/// simulation is a launcher
-/// choice, never a bundle fact, and there is no third mode. A real participant
-/// that declares no `#[phoxal::step]` simply never steps; it does not become a
-/// different kind of participant.
+/// The supervisor's current time domain is the whole of this decision.
+/// Services and the brain follow that authority, while drivers stay real-time
+/// because their host-local cadence is independent of the world lifecycle.
+/// A real participant that declares no `#[phoxal::step]` simply never steps;
+/// it does not become a different kind of participant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClockMode {
     /// Host boot clock, on the execution's timeline.
     Real,
-    /// The world clock published on `runtime/simulation/clock`.
+    /// The world clock admitted on the supervisor-selected timeline.
     Simulation,
 }
 

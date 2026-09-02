@@ -18,6 +18,7 @@ crate::nodes! {
     logs;
     snapshot;
     telemetry;
+    time_domain;
 }
 
 /// The supervisor's execution projection.

@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface};
 use crate::bundle::ParticipantAssets as ParticipantAssetResolver;
-use crate::bundle::RuntimeBundle;
 use crate::bus::{
     AskQuery, DEFAULT_QUERY_TIMEOUT, Endpoint, Event, EventPublisher, EventReceiver, Observed,
     Publish, Querier, QueryEndpoint, RobotEndpoint, RobotInstant, Sample, SamplePublisher,
@@ -22,6 +21,19 @@ use crate::participant::managed::{ManagedTaskOutput, ManagedTaskPolicy, ManagedT
 use crate::participant::query::QueryRegistration;
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
+
+/// The one source of setup's model and assets.
+///
+/// A harness deliberately has neither source because its tests can drive pure
+/// participant IO without a model fixture. Production always receives the
+/// model and its matching asset resolver together from the supervisor.
+pub(crate) enum SetupSource {
+    Harness,
+    Supervisor {
+        robot: Box<Robot>,
+        assets: ParticipantAssetResolver,
+    },
+}
 
 /// Trusted requester provenance for one admitted query.
 ///
@@ -50,10 +62,7 @@ impl QueryContext {
 /// The sole IO-construction point, handed to `Participant::setup`.
 pub struct SetupContext<R: Participant> {
     bus: BusHandle,
-    /// The bundle this participant was launched against, if it was launched
-    /// with one. Model and assets travel together because they are two views of
-    /// the same load: there is no launch that binds one without the other.
-    bundle: Option<RuntimeBundle>,
+    source: SetupSource,
     /// The identity this process was launched under. It is what a driver's
     /// component binding is looked up by: a driver's participant id *is* its
     /// component instance id.
@@ -103,14 +112,10 @@ impl<R: Participant> SetupContext<R> {
             .await?)
     }
 
-    pub(crate) fn new(
-        bus: BusHandle,
-        bundle: Option<RuntimeBundle>,
-        participant_id: ParticipantId,
-    ) -> Self {
+    pub(crate) fn new(bus: BusHandle, source: SetupSource, participant_id: ParticipantId) -> Self {
         SetupContext {
             bus,
-            bundle,
+            source,
             participant_id,
             managed_tasks: ManagedTasks::default(),
             timeline_retentions: Vec::new(),
@@ -188,22 +193,24 @@ impl<R: Participant> SetupContext<R> {
         std::mem::take(&mut self.queries)
     }
 
-    /// The immutable canonical model read from the bundle's `manifest.json`.
+    /// The immutable canonical model established during bootstrap.
     pub fn robot(&self) -> crate::Result<&Robot> {
-        Ok(self.bundle()?.robot())
+        match &self.source {
+            SetupSource::Supervisor { robot, .. } => Ok(robot),
+            SetupSource::Harness => {
+                anyhow::bail!("the explicit test harness has no supervisor model")
+            }
+        }
     }
 
-    /// The assets under the bundle's `assets/` directory.
+    /// The execution assets available to setup.
     pub fn assets(&self) -> crate::Result<&ParticipantAssetResolver> {
-        Ok(self.bundle()?.assets())
-    }
-
-    fn bundle(&self) -> crate::Result<&RuntimeBundle> {
-        self.bundle.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "no bundle is bound (this participant was launched without a bundle root)"
-            )
-        })
+        match &self.source {
+            SetupSource::Supervisor { assets, .. } => Ok(assets),
+            SetupSource::Harness => {
+                anyhow::bail!("the explicit test harness has no supervisor asset resolver")
+            }
+        }
     }
 }
 

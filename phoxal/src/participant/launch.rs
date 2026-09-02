@@ -5,16 +5,11 @@
 //! one contract read in two directions, and the round-trip test below is what
 //! keeps them one.
 //!
-//! A launched participant receives four facts and nothing else: who it is, the
-//! bundle it reads its robot model and its own configuration from, where the
-//! router is, and whether this run follows the simulated world clock instead of
-//! the host clock.  Clap is the
-//! sole parser.  There is deliberately no environment fallback, JSON launch
-//! envelope, or launch-time copy of a fact the participant can learn for
-//! itself: the execution identity comes from the router it connects to, and
-//! robot time zero is host boot, so neither is an argument.
+//! A launched participant receives exactly two facts: who it is and where the
+//! supervisor rendezvous is. Clap is the sole parser. There is deliberately no
+//! environment fallback, JSON launch envelope, or launch-time copy of a fact
+//! the participant learns from the supervisor after attachment.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::Result;
@@ -32,10 +27,9 @@ pub(crate) const SHUTDOWN_GRACE: Duration = Duration::from_millis(2000);
 
 /// The strict process-boundary contract for one launched participant.
 ///
-/// Robot identity, participant configuration, component binding, and scheduler
-/// policy are read from `manifest.json` under `--bundle-root`; the participant
-/// bus owner mints its own producer identity once the execution is known. No
-/// field has an environment fallback.
+/// The participant learns its model, configuration, and time domain from the
+/// supervisor after opening the rendezvous. The bus owner mints its producer
+/// identity once the execution is known. No field has an environment fallback.
 #[derive(Clone, Debug, Parser)]
 #[command(
     name = "phoxal-participant",
@@ -49,24 +43,14 @@ pub(crate) struct Launch {
     #[arg(long, value_name = "ID", value_parser = parse_participant_id)]
     pub(crate) participant_id: ParticipantId,
 
-    /// The installed bundle containing manifest.json, assets/, and bin/.
-    #[arg(long, value_name = "DIR")]
-    pub(crate) bundle_root: PathBuf,
-
-    /// A router endpoint. Repeat --connect once for each endpoint.
+    /// The one rendezvous endpoint for the execution supervisor.
     #[arg(
         long = "connect",
         value_name = "ENDPOINT",
         required = true,
         value_parser = parse_connect_endpoint
     )]
-    pub(crate) connect_endpoints: Vec<String>,
-
-    /// Follow the world clock on `runtime/simulation/clock` instead of the host
-    /// clock. Simulation is a launch decision, never a bundle fact, so nothing
-    /// in the manifest can turn it on.
-    #[arg(long = "simulation")]
-    pub(crate) simulation: bool,
+    pub(crate) connect: String,
 }
 
 impl Launch {
@@ -85,16 +69,18 @@ impl Launch {
 /// device, so the flag spellings would otherwise live in a second repository
 /// and drift from the parser that has to accept them.
 ///
-/// There is no environment half to encode. A launched participant reads four
+/// There is no environment half to encode. A launched participant reads two
 /// facts from argv and nothing from the environment, deliberately, so this type
 /// renders argv and stops.
 ///
 /// ```ignore
 /// use phoxal::participant::launch::LaunchCommand;
 ///
-/// let argv = LaunchCommand::new(participant, "/var/lib/phoxal/bundle")
-///     .connect("unixsock-stream//run/phoxal/supervisor.sock")
-///     .argv();
+/// let argv = LaunchCommand::for_rendezvous(
+///     participant,
+///     "unixsock-stream//run/phoxal/supervisor.sock",
+/// )
+/// .argv();
 /// ```
 #[allow(
     dead_code,
@@ -103,9 +89,7 @@ impl Launch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchCommand {
     participant_id: ParticipantId,
-    bundle_root: PathBuf,
-    connect_endpoints: Vec<String>,
-    simulation: bool,
+    connect: String,
 }
 
 #[allow(
@@ -113,57 +97,29 @@ pub struct LaunchCommand {
     reason = "the encoder is the host half of this contract; a participant decodes"
 )]
 impl LaunchCommand {
-    /// Begin the argv for `participant_id` reading `bundle_root`.
+    /// Build the argv for `participant_id` joining one supervisor rendezvous.
     ///
-    /// At least one [`connect`](Self::connect) endpoint has to follow: a
-    /// participant with nowhere to dial is refused by the parser, not by this
-    /// builder, because the parser is the contract.
+    /// The explicit name is part of the breaking contract: older releases used
+    /// a two-argument `new` for `(participant_id, bundle_root)`. Reusing that
+    /// shape for `(participant_id, connect)` would let a stale launcher compile
+    /// while silently rendering the endpoint as `--bundle-root`.
     #[must_use]
-    pub fn new(participant_id: ParticipantId, bundle_root: impl Into<PathBuf>) -> Self {
+    pub fn for_rendezvous(participant_id: ParticipantId, connect: impl Into<String>) -> Self {
         Self {
             participant_id,
-            bundle_root: bundle_root.into(),
-            connect_endpoints: Vec::new(),
-            simulation: false,
+            connect: connect.into(),
         }
-    }
-
-    /// Add one router endpoint. Repeating it adds a second `--connect`, which
-    /// is the only encoding of several endpoints: there is no separator to
-    /// agree on.
-    #[must_use]
-    pub fn connect(mut self, endpoint: impl Into<String>) -> Self {
-        self.connect_endpoints.push(endpoint.into());
-        self
-    }
-
-    /// Follow the world clock instead of the host clock.
-    ///
-    /// Simulation is a launch decision and never a bundle fact, which is why it
-    /// is here and not in `manifest.json`.
-    #[must_use]
-    pub const fn simulation(mut self, simulation: bool) -> Self {
-        self.simulation = simulation;
-        self
     }
 
     /// Render the argv, without the program name.
     #[must_use]
     pub fn argv(&self) -> Vec<String> {
-        let mut argv = vec![
+        vec![
             "--participant-id".to_owned(),
             self.participant_id.as_str().to_owned(),
-            "--bundle-root".to_owned(),
-            self.bundle_root.display().to_string(),
-        ];
-        for endpoint in &self.connect_endpoints {
-            argv.push("--connect".to_owned());
-            argv.push(endpoint.clone());
-        }
-        if self.simulation {
-            argv.push("--simulation".to_owned());
-        }
-        argv
+            "--connect".to_owned(),
+            self.connect.clone(),
+        ]
     }
 }
 
@@ -193,35 +149,24 @@ mod tests {
             "participant-bin",
             "--participant-id",
             "drive",
-            "--bundle-root",
-            "/var/lib/phoxal/bundle",
             "--connect",
             "tcp/router-a:7447",
         ]
     }
 
     #[test]
-    fn accepts_only_the_four_launch_facts() {
+    fn accepts_exactly_identity_and_one_rendezvous_endpoint() {
         let launch = Launch::try_parse_from(args()).expect("valid launch argv");
         assert_eq!(launch.participant_id.as_str(), "drive");
-        assert_eq!(launch.bundle_root, PathBuf::from("/var/lib/phoxal/bundle"));
-        assert_eq!(launch.connect_endpoints, ["tcp/router-a:7447"]);
-        assert!(
-            !launch.simulation,
-            "the host clock is the default; simulation is opted into"
-        );
+        assert_eq!(launch.connect, "tcp/router-a:7447");
     }
 
     #[test]
-    fn accepts_multiple_connect_endpoints_without_a_comma_encoding() {
+    fn refuses_repeated_connect_endpoints() {
         let mut argv = args();
-        argv.extend(["--connect", "tcp/router-b:7447", "--simulation"]);
-        let launch = Launch::try_parse_from(argv).expect("valid repeated endpoints");
-        assert_eq!(
-            launch.connect_endpoints,
-            ["tcp/router-a:7447", "tcp/router-b:7447"]
-        );
-        assert!(launch.simulation);
+        argv.extend(["--connect", "tcp/router-b:7447"]);
+        let error = Launch::try_parse_from(argv).expect_err("one endpoint is the ABI");
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -247,6 +192,8 @@ mod tests {
             vec!["--execution-id", "10000000000000000000000000000001"],
             vec!["--execution-origin", "7:42:9"],
             vec!["--shutdown-grace-ms", "500"],
+            vec!["--bundle-root", "/var/lib/phoxal/bundle"],
+            vec!["--simulation"],
         ] {
             let mut argv = args();
             argv.extend(retired.iter().copied());
@@ -260,17 +207,14 @@ mod tests {
     /// spellings. A renamed long option or parser alias would create a second
     /// launch contract even if the Rust field remained unchanged.
     #[test]
-    fn the_long_flag_set_is_exactly_the_four_launch_facts() {
+    fn the_long_flag_set_is_exactly_the_two_launch_facts() {
         let command = Launch::command();
         let mut longs = command
             .get_arguments()
             .filter_map(clap::Arg::get_long)
             .collect::<Vec<_>>();
         longs.sort_unstable();
-        assert_eq!(
-            longs,
-            ["bundle-root", "connect", "participant-id", "simulation"]
-        );
+        assert_eq!(longs, ["connect", "participant-id"]);
         for argument in command.get_arguments() {
             assert!(
                 argument
@@ -297,7 +241,7 @@ mod tests {
     #[test]
     fn empty_connect_endpoint_is_rejected() {
         let mut argv = args();
-        argv[6] = "";
+        argv[4] = "";
         assert!(Launch::try_parse_from(argv).is_err());
     }
 
@@ -306,13 +250,10 @@ mod tests {
     /// launching a participant this week.
     #[test]
     fn the_encoder_writes_exactly_what_the_decoder_accepts() {
-        let command = LaunchCommand::new(
+        let command = LaunchCommand::for_rendezvous(
             ParticipantId::new("drive").expect("a valid participant id"),
-            "/var/lib/phoxal/bundle",
-        )
-        .connect("tcp/router-a:7447")
-        .connect("tcp/router-b:7447")
-        .simulation(true);
+            "tcp/router-a:7447",
+        );
 
         let argv = command.argv();
         assert_eq!(
@@ -320,13 +261,8 @@ mod tests {
             [
                 "--participant-id",
                 "drive",
-                "--bundle-root",
-                "/var/lib/phoxal/bundle",
                 "--connect",
                 "tcp/router-a:7447",
-                "--connect",
-                "tcp/router-b:7447",
-                "--simulation",
             ]
         );
 
@@ -335,29 +271,7 @@ mod tests {
         )
         .expect("the encoder's argv parses");
         assert_eq!(launch.participant_id.as_str(), "drive");
-        assert_eq!(launch.bundle_root, PathBuf::from("/var/lib/phoxal/bundle"));
-        assert_eq!(
-            launch.connect_endpoints,
-            ["tcp/router-a:7447", "tcp/router-b:7447"]
-        );
-        assert!(launch.simulation);
-    }
-
-    /// The host clock is the default at both ends, so an encoder that says
-    /// nothing about simulation produces argv a decoder reads as real time.
-    #[test]
-    fn the_encoder_opts_into_simulation_rather_than_out_of_it() {
-        let argv = LaunchCommand::new(
-            ParticipantId::new("drive").expect("a valid participant id"),
-            "/var/lib/phoxal/bundle",
-        )
-        .connect("tcp/router-a:7447")
-        .argv();
-        assert!(!argv.contains(&"--simulation".to_owned()), "{argv:?}");
-        let launch =
-            Launch::try_parse_from(std::iter::once("participant-bin".to_owned()).chain(argv))
-                .expect("the encoder's argv parses");
-        assert!(!launch.simulation);
+        assert_eq!(launch.connect, "tcp/router-a:7447");
     }
 
     #[test]

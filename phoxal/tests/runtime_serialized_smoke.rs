@@ -52,8 +52,9 @@ impl SerializedSmoke {
         _request: supervisor::bundle::GetRequest,
         state: &mut SmokeState,
     ) -> QueryResult<supervisor::bundle::GetResponse> {
-        Ok(supervisor::bundle::GetResponse::Found {
+        Ok(supervisor::bundle::GetResponse::Chunk {
             bytes: (state.steps as u64).to_le_bytes().to_vec(),
+            eof: true,
         })
     }
 }
@@ -98,7 +99,8 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
             async move {
                 querier
                     .query(supervisor::bundle::GetRequest {
-                        path: "smoke".to_string(),
+                        path: phoxal::bundle::BundlePath::new("smoke").expect("valid smoke path"),
+                        offset: 0,
                     })
                     .await
             }
@@ -113,7 +115,7 @@ async fn a_pending_query_reply_does_not_hold_serialized_steps() {
             .await
             .expect("query task should not panic")
             .expect("the serialized query should answer");
-        let supervisor::bundle::GetResponse::Found { bytes } = response else {
+        let supervisor::bundle::GetResponse::Chunk { bytes, eof: true } = response else {
             panic!("smoke query returned the wrong response variant");
         };
         let observed_steps =

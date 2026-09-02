@@ -20,8 +20,8 @@ use super::{Subject, Violation};
 /// otherwise be its own only violation.
 ///
 /// It is one path, not a pattern: naming the exemption as a path means it stops
-/// applying the moment this module moves, and
-/// [`the_exemptions_name_modules_that_exist`] fails when it does.
+/// applying the moment this module moves, and the
+/// `the_exemptions_name_modules_that_exist` test fails when it does.
 const SPELL_THE_VOCABULARY: [&str; 1] = ["xtask/src/policy/retired_surface.rs"];
 
 /// Whether a scanned path is one of them.
