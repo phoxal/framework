@@ -2774,8 +2774,14 @@ else:
             combined.contains("PHOXAL_NATIVE_GEOMETRY_OK"),
             "supervisor did not prove emitted geometry:\n{combined}"
         );
+        for line in combined.lines().filter(|line| line.contains("WARNING:")) {
+            assert!(
+                is_software_renderer_warning(line, &combined),
+                "Webots reported an unexpected warning:\n{combined}"
+            );
+            eprintln!("native geometry proof used software rendering: {line}");
+        }
         for rejected in [
-            "WARNING:",
             "ERROR:",
             "Invalid URL",
             "Invalid data",
@@ -2786,6 +2792,37 @@ else:
                 !combined.contains(rejected),
                 "Webots reported asset failure '{rejected}':\n{combined}"
             );
+        }
+    }
+
+    // Headless Linux uses Mesa software rendering. Its exact performance
+    // notice is not an asset-loader diagnostic or visual-quality acceptance.
+    fn is_software_renderer_warning(line: &str, output: &str) -> bool {
+        let mut message = line.trim();
+        while let Some(rest) = message.strip_prefix("WARNING:") {
+            message = rest.trim_start();
+        }
+        message == "System below the minimal requirements."
+            && output.contains("GPU vendor is 'Mesa'")
+            && output.contains("slow 3D software rendering system")
+    }
+
+    #[test]
+    fn native_geometry_proof_rejects_asset_warnings_despite_software_rendering() {
+        let software = "GPU vendor is 'Mesa'; slow 3D software rendering system";
+        for line in [
+            "WARNING: System below the minimal requirements.",
+            "WARNING: WARNING: System below the minimal requirements.",
+        ] {
+            assert!(is_software_renderer_warning(line, software));
+            assert!(!is_software_renderer_warning(line, "hardware renderer"));
+        }
+        for line in [
+            "WARNING: Invalid URL",
+            "WARNING: invalid IndexedFaceSet",
+            "WARNING: System below the minimal requirements. Invalid URL",
+        ] {
+            assert!(!is_software_renderer_warning(line, software));
         }
     }
 
