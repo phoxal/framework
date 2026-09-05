@@ -92,12 +92,13 @@ schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 serde_yaml = { workspace = true, optional = true }
 # The supervisor asks its own host to reboot or power off.
 system_shutdown = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "io-util", "net"] }
 # `rt`: the supervisor's one shutdown token, cancelled from the signal handler
 # and awaited by everything it owns.
 tokio-util = { workspace = true, features = ["rt"], optional = true }

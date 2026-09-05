@@ -2,10 +2,9 @@
 //!
 //! The handles are grouped by what they own:
 //!
-//! - [`stamp`] - the step tokens that let a publisher express robot time, and
-//!   the timeline authority that mints world steps.
-//! - [`publisher`] - the endpoint-kind publisher handles, plus the framework's
-//!   own world-clock publisher.
+//! - [`stamp`] - sealed participant and Live transition stamps that let a
+//!   publisher express robot time.
+//! - [`publisher`] - the endpoint-kind publisher handles.
 //! - [`subscriber`] - the receiving side: [`Observed`](subscriber::Observed),
 //!   [`StateView`](subscriber::StateView), and the delivery-specific
 //!   [`SetpointReceiver`](subscriber::SetpointReceiver),
@@ -25,10 +24,9 @@
 //! one is a compile error:
 //!
 //! - [`StatePublisher<E>`](publisher::StatePublisher) publishes at a step, and
-//!   the step instant comes from a [`StepToken`](stamp::StepToken) the runner
-//!   mints for every scheduled participant, or a
-//!   [`WorldStepToken`](stamp::WorldStepToken) that the crate-private timeline
-//!   authority mints for the world authority alone.
+//!   the step instant comes from a sealed [`StepStamp`](stamp::StepStamp): a
+//!   [`StepToken`](stamp::StepToken) minted by the participant runner or the
+//!   Live transition stamp issued by the simulator SDK.
 //! - [`SamplePublisher<E>`](publisher::SamplePublisher) publishes with
 //!   a [`CaptureStamp`](crate::bus::time::CaptureStamp) the driver derived from its
 //!   device clock, and honestly represents an untranslated capture rather than
@@ -83,7 +81,7 @@ use zenoh::sample::Sample;
 use crate::bus::abi::{Codec, CodecId, EncodingError, EncodingMetadata, MessagePack};
 use crate::bus::contract::{Endpoint, Payload};
 use crate::bus::error::{BusError, MetadataProblem, Result};
-use crate::bus::metadata::BusMetadata;
+use crate::bus::metadata::{BusMetadata, DeliveryMetadata};
 
 /// Decode one Zenoh sample into the payload of endpoint `E`, validating the codec before
 /// touching the payload.
@@ -91,11 +89,48 @@ use crate::bus::metadata::BusMetadata;
 /// Contract identity is not checked here: it is guaranteed by the Zenoh key
 /// itself, and this function is only ever invoked for samples received on a
 /// subscription already scoped to `E`'s family-rooted topic.
-pub(crate) fn decode_sample<E: Endpoint>(sample: &Sample, topic: &str) -> Result<(E, BusMetadata)> {
-    decode_payload::<E>(sample, topic)
+pub(crate) fn decode_sample<E: Endpoint>(
+    sample: &Sample,
+    topic: &str,
+) -> Result<(E, DeliveryMetadata)> {
+    decode_payload::<E, DeliveryMetadata>(sample, topic)
 }
 
-pub(crate) fn decode_payload<B: Payload>(sample: &Sample, topic: &str) -> Result<(B, BusMetadata)> {
+/// Decode a query reply, which deliberately retains the frozen
+/// [`BusMetadata`] attachment rather than the delivery-only envelope.
+pub(crate) fn decode_query_payload<B: Payload>(
+    sample: &Sample,
+    topic: &str,
+) -> Result<(B, BusMetadata)> {
+    decode_payload::<B, BusMetadata>(sample, topic)
+}
+
+trait WireMetadata: Sized {
+    fn decode(bytes: &[u8]) -> std::result::Result<Self, rmp_serde::decode::Error>;
+    fn bus(&self) -> &BusMetadata;
+}
+
+impl WireMetadata for BusMetadata {
+    fn decode(bytes: &[u8]) -> std::result::Result<Self, rmp_serde::decode::Error> {
+        Self::decode(bytes)
+    }
+
+    fn bus(&self) -> &BusMetadata {
+        self
+    }
+}
+
+impl WireMetadata for DeliveryMetadata {
+    fn decode(bytes: &[u8]) -> std::result::Result<Self, rmp_serde::decode::Error> {
+        Self::decode(bytes)
+    }
+
+    fn bus(&self) -> &BusMetadata {
+        &self.bus
+    }
+}
+
+fn decode_payload<B: Payload, M: WireMetadata>(sample: &Sample, topic: &str) -> Result<(B, M)> {
     let malformed = |problem: MetadataProblem| BusError::metadata(topic, problem);
 
     let encoding: EncodingMetadata = sample
@@ -113,18 +148,18 @@ pub(crate) fn decode_payload<B: Payload>(sample: &Sample, topic: &str) -> Result
     let attachment = sample
         .attachment()
         .ok_or_else(|| malformed(MetadataProblem::MissingAttachment))?;
-    let metadata =
-        BusMetadata::decode(attachment.to_bytes().as_ref()).map_err(|e| malformed(e.into()))?;
+    let metadata = M::decode(attachment.to_bytes().as_ref()).map_err(|e| malformed(e.into()))?;
+    let bus = metadata.bus();
 
-    if metadata.codec != encoding.codec {
+    if bus.codec != encoding.codec {
         return Err(malformed(MetadataProblem::CodecMismatch {
             encoding: encoding.codec,
-            attachment: metadata.codec,
+            attachment: bus.codec,
         }));
     }
-    if metadata.codec_id() != Some(CodecId::MessagePack) {
+    if bus.codec_id() != Some(CodecId::MessagePack) {
         return Err(BusError::UnsupportedCodec {
-            codec: metadata.codec,
+            codec: bus.codec,
             topic: topic.to_string(),
         });
     }

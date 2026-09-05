@@ -19,6 +19,7 @@ use crate::participant::context::SetupSource;
 use crate::participant::launch::{Launch, SHUTDOWN_GRACE};
 use crate::participant::metadata::ParticipantKind;
 use crate::participant::scheduler::AnyStepScheduler;
+use crate::supervisor::api::simulation::{SimulationAttachmentPhase, SimulationAttachmentState};
 use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
 use anyhow::Context as _;
 
@@ -33,6 +34,47 @@ pub(crate) struct DomainSubscription {
     pub(crate) current: TimeDomain,
     pub(crate) updates:
         crate::bus::StreamReceiver<crate::supervisor::api::time_domain::TimeDomainStream>,
+}
+
+/// The supervisor's initial attachment plus its already-subscribed ordered
+/// replacement stream.
+pub(crate) struct AttachmentSubscription {
+    pub(crate) current: Option<SimulationAttachmentState>,
+    pub(crate) updates: crate::bus::StreamReceiver<
+        crate::supervisor::api::simulation::attachment::SimulationAttachmentStream,
+    >,
+}
+
+impl AttachmentSubscription {
+    pub(crate) fn reconcile(&mut self, bus: &BusHandle) -> crate::Result<()> {
+        while let Some(update) = self.updates.try_recv()? {
+            let replacement = update.body.attachment;
+            match (replacement, self.current) {
+                (Some(replacement), Some(installed))
+                    if replacement.revision > installed.revision =>
+                {
+                    self.current = Some(replacement);
+                }
+                (Some(replacement), None) => self.current = Some(replacement),
+                // The initial empty stream snapshot carries no revision and
+                // cannot overwrite a newer current-query attachment.
+                (None, _) | (Some(_), Some(_)) => {}
+            }
+        }
+        install_attachment_revision(bus, self.current);
+        Ok(())
+    }
+}
+
+pub(crate) fn install_attachment_revision(
+    bus: &BusHandle,
+    attachment: Option<SimulationAttachmentState>,
+) {
+    let binding = attachment.and_then(|state| {
+        (state.phase == SimulationAttachmentPhase::Active)
+            .then_some((state.controller, state.revision))
+    });
+    bus.set_active_simulation_binding(binding);
 }
 
 impl DomainSubscription {
@@ -78,6 +120,7 @@ pub(crate) struct PreparedRun<R: Participant, C: ClockSource> {
     pub(crate) shutdown_grace: Duration,
     pub(crate) source: SetupSource,
     pub(crate) domain: Option<DomainSubscription>,
+    pub(crate) attachment: Option<AttachmentSubscription>,
     pub(crate) config: R::Config,
     pub(crate) clock_mode: ClockMode,
     pub(crate) clock: Option<C>,
@@ -175,6 +218,10 @@ where
                 current: bootstrap.time_domain,
                 updates: bootstrap.time_domains,
             }),
+            attachment: Some(AttachmentSubscription {
+                current: bootstrap.attachment,
+                updates: bootstrap.attachments,
+            }),
             config,
             clock_mode,
             clock,
@@ -198,7 +245,7 @@ fn clock_mode_for<R: Participant>(domain: TimeDomain) -> ClockMode {
 }
 
 /// Build the host clock for one supervisor-minted monotonic timeline. A
-/// simulated service or brain reads its instants from the live world clock.
+/// simulated service or brain reads its instants from logical-time ingress.
 pub(crate) fn clock_for_mode(clock_mode: ClockMode, timeline: TimelineId) -> Option<RealClock> {
     match clock_mode {
         ClockMode::Real => Some(RealClock::new(timeline)),
@@ -345,8 +392,8 @@ mod tests {
         );
     }
 
-    /// Only the real clock mode carries a host clock; the simulated mode reads
-    /// the world clock the controller publishes.
+    /// Only the real clock mode carries a host clock; simulated mode reads its
+    /// separate logical-time ingress.
     #[test]
     fn only_the_real_clock_mode_builds_a_host_clock() {
         let timeline = TimelineId::from_raw(9).expect("a test timeline");

@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use crate::model::asset::AssetId;
 use crate::model::component::capability::StructuralKind;
 use crate::model::error::{LinkRole, PoseOwner, StructureError};
+use crate::model::geometry::Geometry;
 use crate::model::identity::{JointId, LinkId};
 
 const MIN_AXIS_NORM_SQUARED: f64 = 1.0e-16;
@@ -57,7 +58,7 @@ pub struct Joint {
 }
 
 /// A normalized rigid transform.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pose {
     xyz: [f64; 3],
@@ -111,31 +112,6 @@ pub struct Material {
     name: String,
     color: Option<[f64; 4]>,
     texture: Option<AssetId>,
-}
-
-/// Complete canonical geometry vocabulary.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Geometry {
-    Box {
-        size: [f64; 3],
-    },
-    Cylinder {
-        radius: f64,
-        length: f64,
-    },
-    Capsule {
-        radius: f64,
-        length: f64,
-    },
-    Sphere {
-        radius: f64,
-    },
-    Mesh {
-        #[serde(rename = "filename")]
-        asset: AssetId,
-        scale: Option<[f64; 3]>,
-    },
 }
 
 /// Canonical joint limits.
@@ -380,6 +356,9 @@ impl Structure {
 
     fn from_summary(summary: Summary) -> Result<Self, StructureError> {
         let document = serde_json::to_value(&summary)?;
+        for material in &summary.materials {
+            material.validate()?;
+        }
         let links = summary
             .links
             .into_iter()
@@ -447,6 +426,9 @@ impl Link {
                 .origin
                 .validate(PoseOwner::LinkVisual(self.name.clone()))?;
             visual.geometry.validate(&self.name)?;
+            if let Some(material) = &visual.material {
+                material.validate()?;
+            }
         }
         for collision in &self.collisions {
             collision
@@ -545,6 +527,14 @@ impl Joint {
 }
 
 impl Pose {
+    #[allow(
+        dead_code,
+        reason = "the authoring profile constructs validated canonical poses; runtime profiles only read them"
+    )]
+    pub(crate) const fn from_validated_parts(xyz: [f64; 3], rpy: [f64; 3]) -> Self {
+        Self { xyz, rpy }
+    }
+
     #[must_use]
     pub const fn xyz(self) -> [f64; 3] {
         self.xyz
@@ -679,30 +669,25 @@ impl Material {
     pub fn texture(&self) -> Option<&AssetId> {
         self.texture.as_ref()
     }
+
+    fn validate(&self) -> Result<(), StructureError> {
+        if self.color.is_none_or(|color| {
+            color
+                .iter()
+                .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        }) {
+            Ok(())
+        } else {
+            Err(StructureError::MaterialColor {
+                name: self.name.clone(),
+            })
+        }
+    }
 }
 
 impl Geometry {
-    #[must_use]
-    pub fn asset_id(&self) -> Option<&AssetId> {
-        match self {
-            Self::Mesh { asset, .. } => Some(asset),
-            _ => None,
-        }
-    }
-
     fn validate(&self, link: &LinkId) -> Result<(), StructureError> {
-        let dimensions: &[f64] = match self {
-            Self::Box { size } => size,
-            Self::Cylinder { radius, length } | Self::Capsule { radius, length } => {
-                &[*radius, *length]
-            }
-            Self::Sphere { radius } => &[*radius],
-            Self::Mesh { scale, .. } => scale.as_ref().map_or(&[], |values| values.as_slice()),
-        };
-        if dimensions
-            .iter()
-            .all(|value| value.is_finite() && *value > 0.0)
-        {
+        if self.has_valid_dimensions() {
             Ok(())
         } else {
             Err(StructureError::Geometry { link: link.clone() })
@@ -1007,6 +992,36 @@ mod tests {
             error.to_string(),
             "joint 'base_joint' references unknown child link 'base_link'"
         );
+    }
+
+    #[test]
+    fn material_colors_are_finite_normalized_rgba() {
+        let mut catalog = tree();
+        catalog["materials"] = json!([{
+            "name": "too-bright",
+            "color": [1.1, 0.0, 0.0, 1.0],
+            "texture": null
+        }]);
+        assert!(matches!(
+            Structure::from_compiler_value(catalog),
+            Err(StructureError::MaterialColor { name }) if name == "too-bright"
+        ));
+
+        let mut visual = tree();
+        visual["links"][1]["visuals"] = json!([{
+            "name": null,
+            "origin": { "xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0] },
+            "geometry": { "kind": "box", "size": [1.0, 1.0, 1.0] },
+            "material": {
+                "name": "negative",
+                "color": [-0.1, 0.0, 0.0, 1.0],
+                "texture": null
+            }
+        }]);
+        assert!(matches!(
+            Structure::from_compiler_value(visual),
+            Err(StructureError::MaterialColor { name }) if name == "negative"
+        ));
     }
 
     /// Every structural fact the canonical model carries must be statable

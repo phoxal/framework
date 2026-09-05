@@ -3,9 +3,9 @@
 // supervisor family is the control plane an attached application speaks.
 // Those families are published by other profiles, so a participant cannot name
 // either, let alone publish on one.
-use phoxal::simulation::api::Clock;
+use phoxal::simulation::api::StepEvent;
 use phoxal::supervisor::api::execution::Snapshot;
 
 fn main() {
-    let _ = std::mem::size_of::<(Clock, Snapshot)>();
+    let _ = std::mem::size_of::<(StepEvent, Snapshot)>();
 }

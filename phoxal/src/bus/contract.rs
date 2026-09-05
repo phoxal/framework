@@ -12,19 +12,13 @@
 //! # Semantics, not markers
 //!
 //! [`EndpointSemantics`] is a closed set - [`State`], [`Sample`], [`Event`],
-//! [`Setpoint`], [`Stream<In>`](Stream), [`Stream<Out>`](Stream), [`Query`],
-//! [`WorldClock`] - and each member fixes the wire [`EndpointKind`], the
-//! transport [`DeliveryFamily`], and the two side brands a client and an owner
-//! respectively receive. A handle bounds itself on the semantics it serves
+//! [`Setpoint`], [`Stream<In>`](Stream), [`Stream<Out>`](Stream), and [`Query`].
+//! Each member fixes the wire [`EndpointKind`], the transport
+//! [`DeliveryFamily`], and the two side brands a client and an owner respectively
+//! receive. A handle bounds itself on the semantics it serves
 //! (`StatePublisher<E: Endpoint<Semantics = State>>`), so taking the wrong
 //! operation on an endpoint is a compile error naming the endpoint's own
 //! semantics.
-//!
-//! [`WorldClock`] is the one semantic whose authority differs from its wire
-//! shape: it rides the same ordered stream transport as an [`Event`] and
-//! declares the same [`EndpointKind::Event`], but it is a distinct semantic so
-//! that the ordinary state publisher every participant has cannot mint a world
-//! step.
 
 use std::marker::PhantomData;
 
@@ -147,7 +141,7 @@ impl EndpointKind {
 /// participants is the compatibility line of the framework trains they were
 /// built from, so no key or endpoint carries a per-API version.
 ///
-/// The four members are the whole set, and the trait is sealed: a family is a
+/// The members are the whole set, and the trait is sealed: a family is a
 /// wire namespace this framework owns, not an extension point.
 pub trait Family: sealed::Family + 'static {
     /// The family's wire identifier, such as `"robot"`.
@@ -170,6 +164,9 @@ pub enum Supervisor {}
 /// profiles. This is distinct from `phoxal::simulator`, the Rust host SDK.
 pub enum Simulation {}
 
+/// Backend-neutral local world-session control and observation.
+pub enum World {}
+
 impl sealed::Family for Robot {}
 impl Family for Robot {
     const ID: &'static str = "robot";
@@ -188,6 +185,11 @@ impl Family for Supervisor {
 impl sealed::Family for Simulation {}
 impl Family for Simulation {
     const ID: &'static str = "simulation";
+}
+
+impl sealed::Family for World {}
+impl Family for World {
+    const ID: &'static str = "world";
 }
 
 /// The stand-in family the bus's own unit tests declare endpoints in.
@@ -237,13 +239,6 @@ pub struct Stream<D: Direction>(PhantomData<fn() -> D>);
 
 /// A bounded request/reply exchange.
 pub enum Query {}
-
-/// The framework's one world-clock hand.
-///
-/// A distinct authority semantic with the wire shape of an [`Event`]: it is
-/// excluded from every ordinary publisher bound, so the only way to mint a
-/// world step is the dedicated world-clock publisher no participant reaches.
-pub enum WorldClock {}
 
 /// What one endpoint semantic fixes.
 ///
@@ -321,16 +316,6 @@ impl EndpointSemantics for Query {
     type Owner<E: Endpoint> = ServeQuery<E>;
 }
 
-impl sealed::Semantics for WorldClock {}
-impl EndpointSemantics for WorldClock {
-    // The wire kind is unchanged from the ordinary event it has always been;
-    // only the Rust-level authority differs.
-    const KIND: EndpointKind = EndpointKind::Event;
-    type Client<E: Endpoint> = Subscribe<E>;
-    type Owner<E: Endpoint> = Publish<E>;
-}
-impl StreamDelivered for WorldClock {}
-
 /// One endpoint: the payload (or request) type it carries, plus the family and
 /// semantics attached to it by its own `endpoints!` declaration.
 ///
@@ -398,27 +383,9 @@ mod tests {
                 <Query as EndpointSemantics>::KIND,
                 <Query as EndpointSemantics>::DELIVERY,
             ),
-            (
-                <WorldClock as EndpointSemantics>::KIND,
-                <WorldClock as EndpointSemantics>::DELIVERY,
-            ),
         ] {
             assert_eq!(kind.delivery_family(), delivery);
         }
-    }
-
-    /// The world clock keeps the wire shape of the event it has always been:
-    /// its distinctness is a Rust-level authority, not a wire change.
-    #[test]
-    fn the_world_clock_keeps_the_event_wire_kind() {
-        assert_eq!(
-            <WorldClock as EndpointSemantics>::KIND,
-            <Event as EndpointSemantics>::KIND
-        );
-        assert_eq!(
-            <WorldClock as EndpointSemantics>::DELIVERY,
-            DeliveryFamily::Stream
-        );
     }
 
     /// Every family is rooted at its own name, which is the leading segment of
@@ -428,5 +395,6 @@ mod tests {
         assert_eq!(<Robot as Family>::ID, "robot");
         assert_eq!(<Runtime as Family>::ID, "runtime");
         assert_eq!(<Supervisor as Family>::ID, "supervisor");
+        assert_eq!(<World as Family>::ID, "world");
     }
 }

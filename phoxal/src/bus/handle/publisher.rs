@@ -9,7 +9,6 @@ use std::marker::PhantomData;
 use crate::bus::abi::{Codec, MessagePack};
 use crate::bus::contract::{
     DeliveryFamily, Endpoint, EndpointSemantics, Event, Sample, Setpoint, State, StreamDelivered,
-    WorldClock,
 };
 use crate::bus::error::{BusError, Result};
 use crate::bus::handle::stamp::StepStamp;
@@ -63,12 +62,13 @@ impl<E: Endpoint> Outbox<E> {
         })
     }
 
-    /// Encode `body`, build the [`BusMetadata`](crate::bus::metadata::BusMetadata),
-    /// and admit it to the family-specific outbound lane. Returns immediately;
-    /// no publisher path blocks the step loop.
+    /// Encode `body`, build the
+    /// [`DeliveryMetadata`](crate::bus::metadata::DeliveryMetadata), and admit
+    /// it to the family-specific outbound lane. Returns immediately; no
+    /// publisher path blocks the step loop.
     fn emit(&self, produced_at: Option<TimeWindow>, body: E) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
-        let metadata = self.bus.metadata(produced_at)?;
+        let metadata = self.bus.delivery_metadata(self.family, produced_at)?;
         self.bus.enqueue(
             self.key.clone(),
             MessagePack::ID.encoding_string(),
@@ -77,6 +77,41 @@ impl<E: Endpoint> Outbox<E> {
             self.family,
             self.metric.clone(),
         )
+    }
+
+    /// Emit only while `controller` and `revision` are the exact Active
+    /// simulation binding, stamping that requested revision rather than
+    /// whichever revision might replace it concurrently.
+    #[allow(
+        dead_code,
+        reason = "only the simulator consumer profile publishes the controller SDK"
+    )]
+    fn emit_active_simulation(
+        &self,
+        controller: crate::identity::ProducerId,
+        revision: u64,
+        produced_at: Option<TimeWindow>,
+        body: E,
+    ) -> Result<bool> {
+        let payload = MessagePack::encode(&body)?;
+        let Some(metadata) = self.bus.active_simulation_delivery_metadata(
+            controller,
+            revision,
+            self.family,
+            produced_at,
+        )?
+        else {
+            return Ok(false);
+        };
+        self.bus.enqueue(
+            self.key.clone(),
+            MessagePack::ID.encoding_string(),
+            payload,
+            metadata,
+            self.family,
+            self.metric.clone(),
+        )?;
+        Ok(true)
     }
 }
 
@@ -172,52 +207,29 @@ where
     }
 }
 
-/// Publishes the framework's own world-clock contract at a logical step.
-///
-/// A near-twin of [`StatePublisher`] - same step-stamped publish path - kept
-/// as its own type rather than folded into `StatePublisher` precisely so
-/// `StatePublisher`'s bound can stay the exact
-/// [`State`] semantic. The world clock's semantic is
-/// [`WorldClock`], a sibling rather than a subtype, which is what makes the
-/// ordinary state publisher reject it at compile time.
-///
-/// Crate-private, like the authority that stamps it: publishing the world
-/// clock is world ownership, and the only holder is [`crate::simulator`]'s
-/// world time, which the external world adapter drives.
-#[allow(
-    dead_code,
-    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
-)]
-pub(crate) struct WorldClockPublisher<B: Endpoint<Semantics = WorldClock>>(Outbox<B>);
-
-impl<B: Endpoint<Semantics = WorldClock>> Clone for WorldClockPublisher<B> {
-    fn clone(&self) -> Self {
-        WorldClockPublisher(self.0.clone())
-    }
-}
-
 impl<E: Endpoint<Semantics = State>> StatePublisher<E> {
     /// Publish `body` as the state this step produced.
     pub fn publish(&self, step: &impl StepStamp, body: E) -> Result<()> {
         self.0.emit(Some(TimeWindow::exact(step.instant())), body)
     }
-}
 
-#[allow(
-    dead_code,
-    reason = "compiled in every profile because a domain module never asks which profile it is in; its only consumer is a module one profile declares"
-)]
-impl<B: Endpoint<Semantics = WorldClock>> WorldClockPublisher<B> {
-    /// Build the world-clock publisher over a topic.
-    ///
-    /// [`crate::simulator`]'s world time is its only caller.
-    pub(crate) fn mint(bus: BusHandle, topic: &Topic<Publish<B>>) -> Result<Self> {
-        Ok(WorldClockPublisher(Outbox::new(bus, topic)?))
-    }
-
-    /// Publish `body` as the state this step produced.
-    pub fn publish(&self, step: &impl StepStamp, body: B) -> Result<()> {
-        self.0.emit(Some(TimeWindow::exact(step.instant())), body)
+    #[allow(
+        dead_code,
+        reason = "only the simulator consumer profile publishes the controller SDK"
+    )]
+    pub(crate) fn publish_active_simulation(
+        &self,
+        controller: crate::identity::ProducerId,
+        revision: u64,
+        step: &impl StepStamp,
+        body: E,
+    ) -> Result<bool> {
+        self.0.emit_active_simulation(
+            controller,
+            revision,
+            Some(TimeWindow::exact(step.instant())),
+            body,
+        )
     }
 }
 
@@ -225,6 +237,21 @@ impl<E: Endpoint<Semantics = Sample>> SamplePublisher<E> {
     /// Publish `body` as captured at `stamp`.
     pub fn publish(&self, stamp: CaptureStamp, body: E) -> Result<()> {
         self.0.emit(stamp.into_window(), body)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "only the simulator consumer profile publishes the controller SDK"
+    )]
+    pub(crate) fn publish_active_simulation(
+        &self,
+        controller: crate::identity::ProducerId,
+        revision: u64,
+        stamp: CaptureStamp,
+        body: E,
+    ) -> Result<bool> {
+        self.0
+            .emit_active_simulation(controller, revision, stamp.into_window(), body)
     }
 }
 
@@ -276,6 +303,30 @@ impl<E: Endpoint<Semantics = Event>> EventPublisher<E> {
                 error => error,
             })
     }
+
+    #[allow(
+        dead_code,
+        reason = "only the simulator consumer profile publishes the controller SDK"
+    )]
+    pub(crate) fn publish_active_simulation(
+        &self,
+        controller: crate::identity::ProducerId,
+        revision: u64,
+        step: &impl StepStamp,
+        body: E,
+    ) -> Result<bool> {
+        self.0
+            .emit_active_simulation(
+                controller,
+                revision,
+                Some(TimeWindow::exact(step.instant())),
+                body,
+            )
+            .map_err(|error| match error {
+                BusError::Saturated { topic, .. } => BusError::WouldBlock { topic },
+                error => error,
+            })
+    }
 }
 
 #[cfg(test)]
@@ -291,12 +342,14 @@ mod tests {
     use serial_test::serial;
 
     const STREAM_TOPIC: &str = "yTEST/stream/chunk";
+    const EVENT_TOPIC: &str = "yTEST/stream/event";
     const STATE_TOPIC: &str = "yTEST/stream/state";
     const SAMPLE_TOPIC: &str = "yTEST/stream/sample";
     const SETPOINT_TOPIC: &str = "yTEST/stream/setpoint";
 
-    /// One stand-in endpoint per delivery family, so the admission rules below
-    /// are exercised on four genuinely different lanes.
+    /// One stand-in endpoint per semantic publication kind, so the admission
+    /// rules below exercise all four scheduler lanes and both ordered-lossless
+    /// handles.
     macro_rules! stand_in {
         ($name:ident ( $body:ty ), $semantics:ty) => {
             #[derive(phoxal_macros::DescribeWire, Debug, serde::Serialize, serde::Deserialize)]
@@ -312,6 +365,7 @@ mod tests {
     }
 
     stand_in!(StreamChunk(Vec<u8>), crate::bus::Stream<crate::bus::Out>);
+    stand_in!(EventChunk(u16), Event);
     stand_in!(StateChunk(u16), State);
     stand_in!(SampleChunk(u16), Sample);
     stand_in!(SetpointChunk(u16), Setpoint);
@@ -388,6 +442,11 @@ mod tests {
             &bound::<StreamChunk>(STREAM_TOPIC).owner(),
         )
         .unwrap();
+        let event = EventPublisher::<EventChunk>::new(
+            bus.clone(),
+            &bound::<EventChunk>(EVENT_TOPIC).owner(),
+        )
+        .unwrap();
 
         for value in 0..3 {
             state
@@ -402,9 +461,16 @@ mod tests {
                 .publish(CaptureStamp::Untranslated, SampleChunk(value as u16))
                 .unwrap();
         }
-        for value in 0..OUTBOUND_CAPACITY {
+        for value in 0..OUTBOUND_CAPACITY - 1 {
             stream.send(StreamChunk(vec![value as u8])).unwrap();
         }
+        event
+            .publish(&step(1, 10), EventChunk(10))
+            .expect("the final ordered slot admits an event without waiting for the drain");
+        assert!(matches!(
+            event.publish(&step(1, 11), EventChunk(11)).unwrap_err(),
+            BusError::WouldBlock { .. }
+        ));
         assert!(matches!(
             stream.send(StreamChunk(vec![0xff])).unwrap_err(),
             BusError::WouldBlock { .. }
@@ -416,12 +482,16 @@ mod tests {
             .into_iter()
             .map(|metadata| {
                 metadata
+                    .bus
                     .stream_position
                     .expect("an accepted stream has a position")
                     .sequence
             })
             .collect();
-        assert_eq!(positions, (0..OUTBOUND_CAPACITY as u64).collect::<Vec<_>>());
+        assert_eq!(
+            positions,
+            (0..OUTBOUND_CAPACITY as u64 - 1).collect::<Vec<_>>()
+        );
 
         let rows = bus.take_runtime_metrics().unwrap();
         let row = |topic: &str| {
@@ -441,14 +511,16 @@ mod tests {
         assert_eq!(row(SAMPLE_TOPIC).count, OUTBOUND_CAPACITY as u64 + 1);
         assert_eq!(row(SAMPLE_TOPIC).bounded_evictions, 1);
         assert_eq!(row(SAMPLE_TOPIC).high_water_depth, OUTBOUND_CAPACITY as u64);
-        assert_eq!(row(STREAM_TOPIC).count, OUTBOUND_CAPACITY as u64);
+        assert_eq!(row(STREAM_TOPIC).count, OUTBOUND_CAPACITY as u64 - 1);
         assert_eq!(row(STREAM_TOPIC).drops, 1);
+        assert_eq!(row(EVENT_TOPIC).count, 1);
+        assert_eq!(row(EVENT_TOPIC).drops, 1);
         assert_eq!(
             bus.health()
                 .outbound_drops
                 .load(std::sync::atomic::Ordering::Relaxed),
-            2,
-            "one sample eviction and one refused stream are both live evidence"
+            3,
+            "one sample eviction plus refused Event and Stream values are live evidence"
         );
 
         drop(pause);

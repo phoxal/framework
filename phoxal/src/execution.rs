@@ -9,6 +9,7 @@ use crate::bus::{BusError, BusHandle, DEFAULT_QUERY_TIMEOUT, Querier, QueryError
 use crate::identity::ExecutionId;
 use crate::supervisor::api;
 use crate::supervisor::api::connect::{ConnectReply, ConnectRequest};
+use crate::supervisor::api::simulation::SimulationAttachmentState;
 use crate::supervisor::api::time_domain::TimeDomain;
 use crate::version::FrameworkVersion;
 
@@ -31,6 +32,8 @@ pub(crate) struct ExecutionBootstrap {
     pub(crate) info: api::info::InfoResponse,
     pub(crate) time_domain: TimeDomain,
     pub(crate) time_domains: StreamReceiver<api::time_domain::TimeDomainStream>,
+    pub(crate) attachment: Option<SimulationAttachmentState>,
+    pub(crate) attachments: StreamReceiver<api::simulation::attachment::SimulationAttachmentStream>,
 }
 
 /// A failure while attaching to a supervisor before role-specific startup.
@@ -129,13 +132,47 @@ pub(crate) async fn attach_execution(
     let mut time_domain = current.domain;
     reconcile_time_domain(&mut time_domain, &time_domains)?;
 
+    let attachments =
+        StreamReceiver::new(bus, &api::topics().simulation().attachment().client()).await?;
+    let current_attachment = Querier::new(
+        bus.clone(),
+        &api::topics().simulation().attachment().current().client(),
+        DEFAULT_QUERY_TIMEOUT,
+    )?
+    .query(api::simulation::attachment::CurrentRequest {})
+    .await?;
+    let mut attachment = current_attachment.attachment;
+    reconcile_attachment(&mut attachment, &attachments)?;
+
     Ok(ExecutionBootstrap {
         execution: bus.execution(),
         framework,
         info,
         time_domain,
         time_domains,
+        attachment,
+        attachments,
     })
+}
+
+fn reconcile_attachment(
+    current: &mut Option<SimulationAttachmentState>,
+    updates: &StreamReceiver<api::simulation::attachment::SimulationAttachmentStream>,
+) -> Result<(), BootstrapError> {
+    while let Some(update) = updates.try_recv()? {
+        let replacement = update.body.attachment;
+        match (replacement, *current) {
+            (Some(replacement), Some(installed)) if replacement.revision > installed.revision => {
+                *current = Some(replacement);
+            }
+            (Some(replacement), None) => *current = Some(replacement),
+            // The stream's initial `None` may still be buffered after a newer
+            // current query returned an attachment. It carries no revision and
+            // must never erase that source-bound state.
+            (None, _) | (Some(_), Some(_)) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Install every already-buffered replacement that is newer than `current`.
@@ -260,6 +297,22 @@ mod tests {
             .declare_server(api::topics().time_domain().current().owner().key())
             .await
             .expect("the time-domain server attaches");
+        let attachment_current = bus
+            .declare_server(
+                api::topics()
+                    .simulation()
+                    .attachment()
+                    .current()
+                    .owner()
+                    .key(),
+            )
+            .await
+            .expect("the attachment current server attaches");
+        let _attachment_publisher = StreamPublisher::new(
+            bus.clone(),
+            &api::topics().simulation().attachment().owner(),
+        )
+        .expect("the attachment publisher attaches");
         let publisher = StreamPublisher::new(bus.clone(), &api::topics().time_domain().owner())
             .expect("the time-domain publisher attaches");
         let delivery =
@@ -320,6 +373,18 @@ mod tests {
                 .reply(
                     &server_bus,
                     MessagePack::encode(&api::time_domain::CurrentResponse { domain: initial })?,
+                )
+                .await?;
+
+            let incoming = attachment_current.recv().await?;
+            let _: api::simulation::attachment::CurrentRequest =
+                MessagePack::decode(&incoming.request_bytes()?)?;
+            incoming
+                .reply(
+                    &server_bus,
+                    MessagePack::encode(&api::simulation::attachment::CurrentResponse {
+                        attachment: None,
+                    })?,
                 )
                 .await?;
             Ok::<(), anyhow::Error>(())

@@ -5,8 +5,9 @@
 //!
 //! - a key, `phoxal/<execution-id>/<topic>`, where the topic is the
 //!   family-rooted contract name;
-//! - an encoding string naming the codec, plus a [`BusMetadata`] attachment
-//!   carrying codec and provenance only - no schema, family, or api identity;
+//! - an encoding string naming the codec, plus a [`DeliveryMetadata`]
+//!   attachment carrying codec, provenance, and optional Live attachment
+//!   correlation - no schema, family, or api identity;
 //! - a plain MessagePack body payload.
 //!
 //! There is no Phoxal frame independent of Zenoh and no version tag anywhere:
@@ -37,11 +38,10 @@
 //! Code *inside* the framework always imports from the owning module, never
 //! through this facade.
 //!
-//! Three things this module owns are absent from that surface on purpose, and
-//! are named only by the modules that own them: `BusOwner` and `BusConfig`
-//! (opening a session), `TimelineAuthority` and `WorldClockPublisher` (owning
-//! a world), and the embedded `Router`. No consumer profile receives raw
-//! transport, world, or fabric ownership - `phoxal::session`,
+//! Two things this module owns are absent from that surface on purpose, and are
+//! named only by the modules that own them: `BusOwner` and `BusConfig` (opening
+//! a session), and the embedded `Router`. No consumer profile receives raw
+//! transport or fabric ownership - `phoxal::session`,
 //! `phoxal::simulator` and `phoxal::supervisor::host` each own one on their
 //! consumer's behalf.
 
@@ -81,14 +81,14 @@ pub use abi::{Codec, CodecError, CodecId, EncodingError, EncodingMetadata, Messa
 pub use contract::{
     DeliveryFamily, Direction, Endpoint, EndpointKind, EndpointSemantics, Event, Family, In, Out,
     Payload, Query, QueryEndpoint, Robot, RobotEndpoint, Runtime, Sample, Setpoint, Simulation,
-    State, Stream, StreamDelivered, Supervisor, WorldClock,
+    State, Stream, StreamDelivered, Supervisor, World,
 };
 pub use error::{BusError, KeyProblem, MetadataProblem, OutboundBound, Result, SessionIdRole};
 pub use handle::publisher::{
     EventPublisher, SamplePublisher, SetpointPublisher, StatePublisher, StreamPublisher,
 };
 pub use handle::querier::{DEFAULT_QUERY_TIMEOUT, Querier};
-pub use handle::stamp::{StepStamp, StepToken, WorldStepToken};
+pub use handle::stamp::{StepStamp, StepToken};
 pub use handle::subscriber::{
     EventReceiver, MAX_SETPOINT_SOURCES, MAX_STREAM_SOURCES, Observed, ReceiveTerminal,
     SampleReceiver, SetpointReceiver, StateView, StreamEvent, StreamReceiver, TimelineRetention,
@@ -103,8 +103,8 @@ pub use liveliness::{
     ParticipantReadyToken,
 };
 pub use metadata::{
-    BusMetadata, ParticipantSourceIdentity, SourceAttribution, SourceLabel, SourceLabelError,
-    StreamPosition,
+    BusMetadata, DeliveryMetadata, ParticipantSourceIdentity, SourceAttribution, SourceLabel,
+    SourceLabelError, StreamPosition,
 };
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
 pub use runtime_metrics::{
@@ -154,7 +154,7 @@ pub mod __compat {
 
     use crate::bus::abi::CodecId;
     use crate::bus::liveliness::PARTICIPANT_LIVELINESS_PREFIX;
-    use crate::bus::metadata::BusMetadata;
+    use crate::bus::metadata::{BusMetadata, DeliveryMetadata};
     use crate::bus::query::QueryFailure;
     use crate::bus::session::{BUS_KEY_PREFIX, ZENOH_WIRE_PROTOCOL_VERSION};
 
@@ -169,9 +169,13 @@ pub mod __compat {
     /// This module's records, for the crate aggregate.
     pub(crate) fn contract_records(out: &mut Vec<ContractRecord>) {
         out.extend([
-            // The per-sample attachment: provenance rides here rather than in
-            // the body, so it is a wire contract in its own right.
+            // The query attachment and common delivery base. This exact record
+            // is frozen because attachment-bootstrap requests and replies use
+            // it before compatibility is known.
             ContractRecord::envelope("BusMetadata", BusMetadata::wire_schema()),
+            // Ordinary pub/sub samples add delivery-only attachment state in a
+            // separate envelope, leaving the frozen query envelope unchanged.
+            ContractRecord::envelope("DeliveryMetadata", DeliveryMetadata::wire_schema()),
             // A handler error rides Zenoh's native error reply leg with this
             // body, which no endpoint declaration mentions.
             ContractRecord::envelope("QueryFailure", QueryFailure::wire_schema()),
@@ -221,6 +225,7 @@ pub mod __compat {
             assert_eq!(contract_surface(), rendered);
             for expected in [
                 r#""name":"BusMetadata""#,
+                r#""name":"DeliveryMetadata""#,
                 r#""name":"QueryFailure""#,
                 r#""value":"phoxal/{execution}""#,
                 r#""value":"phoxal/{execution}/{topic}""#,
@@ -247,7 +252,8 @@ pub mod __compat {
 
             use crate::bus::abi::CodecId;
             use crate::bus::metadata::{
-                BusMetadata, ParticipantSourceIdentity, SourceAttribution, StreamPosition,
+                BusMetadata, DeliveryMetadata, ParticipantSourceIdentity, SourceAttribution,
+                StreamPosition,
             };
             use crate::bus::query::{QueryCode, QueryFailure};
             use crate::bus::test_support::producer;
@@ -265,6 +271,10 @@ pub mod __compat {
             };
             let json = serde_json::to_value(&metadata).expect("the attachment serializes");
             assert_eq!(BusMetadata::wire_schema().conforms(&json), Ok(()));
+
+            let delivery = DeliveryMetadata::new(metadata, Some(2));
+            let json = serde_json::to_value(&delivery).expect("delivery metadata serializes");
+            assert_eq!(DeliveryMetadata::wire_schema().conforms(&json), Ok(()));
 
             let failure = QueryFailure::new(QueryCode::NotFound, "no such entity");
             let json = serde_json::to_value(&failure).expect("a query failure serializes");

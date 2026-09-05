@@ -19,9 +19,10 @@ pr_name = "chore(release): release v{{ version }}"
 # patch because nobody wrote `!`. It is the Rust-API half of the promise; the
 # wire half is `cargo xtask compatibility check-release`.
 #
-# No per-package override is needed: release-plz only runs the check on packages
-# that contain a library, and every executable published to the `phoxal`
-# registry is bin-only, so each is skipped on its own.
+# Registry executables are normally bin-only and skipped on their own. The
+# Webots host also exposes an adapter-internal library to its same-train native
+# controllers. That library has no crates.io baseline, so its package carries
+# one narrow `semver_check = false` override below.
 #
 # It runs with default features, and release-plz exposes no way to pass a
 # feature selection through to cargo-semver-checks. Since `0.66` most of this
@@ -67,6 +68,31 @@ git_release_enable = false
 
 [[package]]
 name = "phoxal-supervisor"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-simulator-webots-host"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+semver_check = false
+
+[[package]]
+name = "phoxal-simulator-webots-world-controller"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-simulator-webots-robot-controller"
 version_group = "framework-train"
 publish = false
 changelog_update = false

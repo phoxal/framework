@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-/// The dynamic variables the four families declare, spelled exactly as their
+/// The dynamic variables the five families declare, spelled exactly as their
 /// `nodes!` declarations bind them.
 const DECLARED_VARIABLES: [&str; 3] = ["capability", "instance", "joint"];
 
@@ -38,7 +38,7 @@ fn template(record: &Value) -> &str {
 /// One endpoint, one key. Two endpoints sharing a template would be two
 /// contracts a receiver's per-key subscription could not tell apart.
 #[test]
-fn every_endpoint_template_is_unique_across_the_four_families() {
+fn every_endpoint_template_is_unique_across_the_five_families() {
     let declared = endpoint_records();
     let unique = declared.iter().map(template).collect::<BTreeSet<_>>();
     assert_eq!(
@@ -57,7 +57,7 @@ fn every_template_is_rooted_at_its_own_family() {
             .as_str()
             .expect("an endpoint record names its family");
         assert!(
-            ["robot", "runtime", "simulation", "supervisor"].contains(&family),
+            ["robot", "runtime", "simulation", "supervisor", "world"].contains(&family),
             "{family} is not a declared family"
         );
         let path = template(&record);
@@ -101,8 +101,7 @@ fn every_placeholder_is_a_declared_variable_bound_exactly_once() {
 }
 
 /// The kind and the delivery lane on a record are the ones the endpoint's
-/// semantic fixes, including the world clock, whose distinct authority keeps
-/// the ordinary event wire kind.
+/// semantic fixes, including passive world progress as an ordinary event.
 #[test]
 fn a_records_kind_and_lane_are_the_ones_its_semantic_fixes() {
     let by_path = endpoint_records()
@@ -125,12 +124,15 @@ fn a_records_kind_and_lane_are_the_ones_its_semantic_fixes() {
             "stream",
         ),
         ("runtime/logs", "stream", "stream"),
-        // The world clock: a distinct Rust authority, the same wire kind it has
-        // always had.
-        ("simulation/clock", "event", "stream"),
+        ("simulation/step", "event", "stream"),
         ("supervisor/connect", "query", "query"),
+        ("supervisor/simulation/attachment", "stream", "stream"),
+        ("supervisor/simulation/attach", "query", "query"),
         ("supervisor/snapshot", "stream", "stream"),
         ("supervisor/snapshot/current", "query", "query"),
+        ("world/session/state", "stream", "stream"),
+        ("world/session/state/current", "query", "query"),
+        ("world/session/control", "query", "query"),
     ] {
         let record = &by_path[path];
         assert_eq!(record["kind"], kind, "{path}");

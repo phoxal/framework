@@ -8,8 +8,8 @@
 
 use phoxal::api;
 use phoxal::bus::{
-    BusMetadata, CodecId, ParticipantSourceIdentity, ProducerId, RobotInstant, SourceAttribution,
-    TimeWindow, TimelineId,
+    BusMetadata, CodecId, DeliveryMetadata, ParticipantSourceIdentity, ProducerId, RobotInstant,
+    SourceAttribution, TimeWindow, TimelineId,
 };
 use phoxal::supervisor::api as supervisor;
 
@@ -53,4 +53,10 @@ fn bus_metadata_for_a_real_endpoint_round_trips() {
     let decoded = BusMetadata::decode(&timeless.encode().unwrap()).unwrap();
     assert_eq!(decoded, timeless);
     assert_eq!(decoded.produced_exactly_at(), None);
+
+    let delivery = DeliveryMetadata::new(timeless, Some(3));
+    assert_eq!(
+        DeliveryMetadata::decode(&delivery.encode().unwrap()).unwrap(),
+        delivery
+    );
 }

@@ -1,0 +1,277 @@
+{
+  "$defs": {
+    "Asset": {
+      "additionalProperties": false,
+      "properties": {
+        "collision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Geometry"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "geometry": {
+          "$ref": "#/$defs/Geometry"
+        }
+      },
+      "required": [
+        "geometry"
+      ],
+      "type": "object"
+    },
+    "EntityDeclaration": {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "instances": {
+          "items": {
+            "$ref": "#/$defs/EntityInstance"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "asset",
+        "instances"
+      ],
+      "type": "object"
+    },
+    "EntityInstance": {
+      "additionalProperties": false,
+      "properties": {
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        }
+      },
+      "required": [
+        "pose"
+      ],
+      "type": "object"
+    },
+    "Geometry": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "box",
+              "type": "string"
+            },
+            "size": {
+              "items": {
+                "format": "double",
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "cylinder",
+              "type": "string"
+            },
+            "length": {
+              "format": "double",
+              "type": "number"
+            },
+            "radius": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "radius",
+            "length"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "capsule",
+              "type": "string"
+            },
+            "length": {
+              "format": "double",
+              "type": "number"
+            },
+            "radius": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "radius",
+            "length"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "sphere",
+              "type": "string"
+            },
+            "radius": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "radius"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "mesh",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "scale": {
+              "items": {
+                "format": "double",
+                "type": "number"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Pose": {
+      "additionalProperties": false,
+      "properties": {
+        "rpy": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "xyz": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "xyz",
+        "rpy"
+      ],
+      "type": "object"
+    },
+    "World": {
+      "additionalProperties": false,
+      "properties": {
+        "entities": {
+          "additionalProperties": {
+            "$ref": "#/$defs/EntityDeclaration"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "gravity_mps2": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "spawn_points": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Pose"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "time_step_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "time_step_ms",
+        "gravity_mps2"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Editor schema for an authored Phoxal world.yaml document.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "assets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Asset"
+          },
+          "type": "object"
+        },
+        "schema": {
+          "const": "phoxal/world/v0",
+          "type": "string"
+        },
+        "world": {
+          "$ref": "#/$defs/World"
+        }
+      },
+      "required": [
+        "schema",
+        "assets",
+        "world"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Phoxal world manifest (phoxal/world/v0)"
+}

@@ -160,8 +160,8 @@
 //!   encoder, and the embedded participant-metadata reader.
 //! - **`simulator`** - `phoxal::simulator`: stand an external world process in
 //!   for a robot's component drivers. `SimulatorSession` owns typed component
-//!   IO, delegated presence, and the world clock, without handing out the raw
-//!   transport underneath.
+//!   IO, delegated presence, and passive step progress without handing out the
+//!   raw transport underneath.
 //! - **`authoring`** - `phoxal::authoring`: the authored-source layer
 //!   (`robot.yaml`, `component.yaml`, `simulation.yaml`, URDF), its JSON
 //!   schemas, and the compiler that turns them into a [`model::Robot`]. A
@@ -339,9 +339,24 @@ pub mod simulation;
 #[allow(
     dead_code,
     unused_imports,
-    reason = "a participant runner consumes the simulation clock internally but does not expose its host contract family to authored code"
+    reason = "the compatibility aggregate reads simulation progress while the participant profile keeps the host contract family private"
 )]
 mod simulation;
+
+/// Backend-neutral world-session documents and local client/server wire.
+#[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
+)]
+pub mod world;
+#[cfg(not(any(feature = "session", feature = "simulator", feature = "supervisor")))]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "every profile compiles the complete compatibility surface"
+)]
+mod world;
 
 /// Declare the `supervisor` boundary at the visibility this profile gives it.
 ///

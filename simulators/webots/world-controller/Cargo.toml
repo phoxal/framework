@@ -1,0 +1,26 @@
+[package]
+name = "phoxal-simulator-webots-world-controller"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "Phoxal Webots shared-world controller."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-simulator-webots-world-controller"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+phoxal-simulator-webots-host = { path = "../host", version = "=0.67.1", registry = "phoxal" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+webots-rs = { workspace = true }
+
+[lints]
+workspace = true

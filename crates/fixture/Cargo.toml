@@ -20,7 +20,6 @@ publish = false
 # and land as `phoxal::model`'s canonical types, so it needs the framework's one
 # library with the authored-source layer enabled.
 phoxal = { workspace = true, features = ["authoring"] }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

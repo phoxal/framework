@@ -86,6 +86,39 @@ pub(crate) struct Simulation {
     pub links: BTreeMap<LinkId, Option<String>>,
 }
 
+/// World facts after source defaults and spellings have been resolved.
+#[derive(Debug, Clone)]
+pub(crate) struct World {
+    pub id: String,
+    pub time_step_ms: u64,
+    pub gravity_mps2: [f64; 3],
+    pub assets: BTreeMap<String, WorldAsset>,
+    pub spawn_points: BTreeMap<String, crate::model::structure::Pose>,
+    pub entities: BTreeMap<String, WorldEntity>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WorldAsset {
+    pub geometry: WorldGeometry,
+    pub collision: WorldGeometry,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WorldEntity {
+    pub asset: String,
+    pub instances: Vec<crate::model::structure::Pose>,
+}
+
+/// Primitives are already canonical; only mesh source paths need compilation.
+#[derive(Debug, Clone)]
+pub(crate) enum WorldGeometry {
+    Primitive(crate::model::geometry::Geometry),
+    Mesh {
+        path: PathBuf,
+        scale: Option<[f64; 3]>,
+    },
+}
+
 impl Robot {
     /// Every component type this robot mounts at least one instance of.
     pub(crate) fn used_component_types(&self) -> BTreeSet<&str> {

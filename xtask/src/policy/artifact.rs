@@ -686,31 +686,42 @@ mod tests {
         let workspace_dir = tempfile::tempdir().context("failed to create temp workspace dir")?;
         let root = workspace_dir.path();
 
+        let specs = super::super::framework_executable::SPECS;
+        let mut members = vec!["components/test".to_owned()];
+        for spec in specs {
+            let manifest = root.join(spec.manifest_path());
+            let directory = manifest
+                .parent()
+                .context("executable manifest has no parent")?;
+            members.push(directory.strip_prefix(root)?.display().to_string());
+            fs::create_dir_all(directory.join("src"))?;
+            fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
+            let library = if let Some((name, source)) = spec.library() {
+                let source = root.join(source);
+                fs::write(&source, "//! internal adapter library\n")?;
+                format!(
+                    "\n[lib]\nname = \"{name}\"\npath = \"{}\"\n",
+                    source.strip_prefix(directory)?.display()
+                )
+            } else {
+                String::new()
+            };
+            fs::write(
+                manifest,
+                format!(
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n{library}",
+                    spec.package_name(),
+                    spec.package_name(),
+                ),
+            )?;
+        }
+
         fs::write(
             root.join("Cargo.toml"),
-            r#"[workspace]
-resolver = "3"
-members = ["components/test", "supervisor"]
-"#,
-        )?;
-
-        let supervisor_dir = root.join("supervisor");
-        fs::create_dir_all(supervisor_dir.join("src"))?;
-        fs::write(supervisor_dir.join("src/main.rs"), "fn main() {}\n")?;
-        fs::write(
-            supervisor_dir.join("Cargo.toml"),
-            r#"[package]
-name = "phoxal-supervisor"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-only"
-publish = ["phoxal"]
-autobins = false
-
-[[bin]]
-name = "phoxal-supervisor"
-path = "src/main.rs"
-"#,
+            format!(
+                "[workspace]\nresolver = \"3\"\nmembers = {}\n",
+                serde_json::to_string(&members)?
+            ),
         )?;
 
         let package_dir = root.join("components/test");

@@ -8,7 +8,7 @@
 //!
 //! `contract_surface()` is the crate aggregate. Each owner still states its own
 //! records beside its own definitions - `bus::__compat`, `bundle::__compat`,
-//! `participant::metadata::__compat`, and the four api families, whose records
+//! `participant::metadata::__compat`, and the five api families, whose records
 //! the `nodes!`/`endpoints!` declarations emit from the same structure that
 //! renders their concrete keys - and this module only collects them and renders
 //! the one canonical document.
@@ -30,7 +30,7 @@ use crate::participant::launch::Launch;
 /// The canonical rendering of this crate's whole contract surface.
 ///
 /// Every process/wire fact the framework owns, in one deterministic document:
-/// the four api families' endpoints, the bus envelopes and key constants, the
+/// the five api families' endpoints, the bus envelopes and key constants, the
 /// bundle manifest document, the participant metadata document, and the launch
 /// argv contract.
 #[must_use]
@@ -46,6 +46,7 @@ fn contract_records() -> Vec<ContractRecord> {
     crate::runtime::api::contract_records(&mut records);
     crate::supervisor::api::contract_records(&mut records);
     crate::simulation::api::contract_records(&mut records);
+    crate::world::api::__compat::contract_records(&mut records);
     crate::bus::__compat::contract_records(&mut records);
     crate::bundle::__compat::contract_records(&mut records);
     crate::participant::metadata::__compat::contract_records(&mut records);

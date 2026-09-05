@@ -8,12 +8,12 @@
 use std::fmt::Debug;
 use std::fs;
 
-use crate::bus::{
-    Codec, Endpoint, EndpointKind, EndpointSemantics, MessagePack, Publish, QueryEndpoint,
-    ServeQuery, Topic,
-};
-use crate::identity::{ParticipantId, ProducerId};
 use crate::bundle::BundlePath;
+use crate::bus::{
+    BusConfig, BusOwner, Codec, DEFAULT_QUERY_TIMEOUT, Endpoint, EndpointKind, EndpointSemantics,
+    MessagePack, Publish, Querier, QueryEndpoint, QueryError, ServeQuery, SourceLabel, Topic,
+};
+use crate::identity::{ExecutionId, ParticipantId, ProducerId};
 use crate::model::builder::RobotBuilder;
 use crate::model::manifest::ManifestDocument;
 use crate::runtime::api as runtime;
@@ -23,8 +23,8 @@ use crate::supervisor::api::connect::{ConnectReply, ConnectRequest};
 use crate::version::FrameworkVersion;
 
 use super::{
-    MAX_BUNDLE_CHUNK_BYTES, HostAction, bundle_entry, classify_bundle_path_error, command,
-    connect_reply,
+    HostAction, MAX_BUNDLE_CHUNK_BYTES, bundle_entry, classify_bundle_path_error, command,
+    connect_reply, finish_clean_simulation_removal, serve_simulation_end,
 };
 use crate::supervisor::host::presence::Presence;
 use crate::supervisor::host::state::ExecutionState;
@@ -371,6 +371,164 @@ fn host_actions_are_accepted_at_the_current_revision() {
         );
         assert_eq!(action, expected);
     }
+}
+
+/// Intentional supervisor shutdown keeps the bus alive until the native host
+/// acknowledges cleanup and the delegated controller has withdrawn. Neither
+/// signal alone is enough to report a clean member removal.
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_shutdown_waits_for_host_acknowledgement_and_controller_withdrawal() {
+    let execution = ExecutionId::mint();
+    let (owner, bus) = BusOwner::open(BusConfig::for_external(
+        execution,
+        Some(SourceLabel::new("removal-test").expect("bounded label")),
+        Vec::new(),
+    ))
+    .await
+    .expect("test bus opens");
+    let host = bus.producer();
+    let controller =
+        ProducerId::try_from((1_u128 << 124) | 33).expect("a canonical controller producer");
+    let robot = RobotBuilder::new("rover")
+        .component_type("motor", |motor| motor.motor("spin", "axle"))
+        .component_with("left", "motor", |mounted| {
+            mounted.driver(
+                crate::model::connection::Connection::Can(crate::model::connection::Can {
+                    bus: 0,
+                    node_id: 1,
+                }),
+                None,
+            )
+        })
+        .build()
+        .expect("fixture robot");
+    let state = ExecutionState::new(Presence::for_robot(&robot)).expect("fresh execution state");
+    let brain = ParticipantId::new("brain").expect("brain id");
+    let driver = ParticipantId::new("left").expect("driver id");
+    state.record_presence(
+        &brain,
+        ProducerId::try_from((1_u128 << 124) | 32).expect("brain producer"),
+        true,
+    );
+    state.record_presence(&driver, controller, true);
+    let request = supervisor::simulation::attach::AttachRequest::validated(
+        crate::model::world::WorldInstanceId::mint(),
+        controller,
+        crate::model::world::WorldProgress::at(4, 12).expect("valid progress"),
+        12,
+    )
+    .expect("validated attachment request");
+    let (preparing, _) = state
+        .prepare_attachment(host, request)
+        .expect("attachment prepares");
+    state
+        .activate_attachment(host, preparing.revision)
+        .expect("attachment activates");
+
+    let cleanup_bus = bus.clone();
+    let cleanup_state = state.clone();
+    let mut cleanup =
+        tokio::spawn(
+            async move { finish_clean_simulation_removal(&cleanup_bus, &cleanup_state).await },
+        );
+    let removing = loop {
+        if let Some(attachment) = state.attachment()
+            && attachment.phase == supervisor::simulation::SimulationAttachmentPhase::Removing
+        {
+            break attachment;
+        }
+        tokio::task::yield_now().await;
+    };
+    let acknowledgement = owner
+        .declare_liveliness_key(&supervisor::simulation::removal_liveliness_key(
+            removing.revision,
+            host,
+        ))
+        .await
+        .expect("host cleanup acknowledgement");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut cleanup)
+            .await
+            .is_err(),
+        "host acknowledgement alone cannot hide a live controller"
+    );
+
+    state.record_presence(&driver, controller, false);
+    tokio::time::timeout(std::time::Duration::from_secs(2), cleanup)
+        .await
+        .expect("clean removal completes within the test bound")
+        .expect("cleanup task joins")
+        .expect("both cleanup facts are accepted");
+    drop(acknowledgement);
+    owner.close().await;
+}
+
+/// A host-reported terminal outcome replies on the locked end contract before
+/// it requests the same orderly supervisor shutdown used by a robot stop.
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typed_simulation_end_requests_supervisor_shutdown_after_replying() {
+    let execution = ExecutionId::mint();
+    let (owner, bus) = BusOwner::open(BusConfig::for_external(
+        execution,
+        Some(SourceLabel::new("end-test").expect("bounded label")),
+        Vec::new(),
+    ))
+    .await
+    .expect("test bus opens");
+    let host = bus.producer();
+    let controller = ProducerId::try_from((1_u128 << 124) | 43).expect("controller producer");
+    let (state, _) = present_state();
+    let request = supervisor::simulation::attach::AttachRequest::validated(
+        crate::model::world::WorldInstanceId::mint(),
+        controller,
+        crate::model::world::WorldProgress::at(2, 12).expect("valid progress"),
+        12,
+    )
+    .expect("validated attachment request");
+    let (preparing, _) = state
+        .prepare_attachment(host, request)
+        .expect("attachment prepares");
+    state
+        .activate_attachment(host, preparing.revision)
+        .expect("attachment activates");
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let server_bus = bus.clone();
+    let server_state = state.clone();
+    let server_shutdown = shutdown.clone();
+    let server = tokio::spawn(async move {
+        serve_simulation_end(server_bus, server_state, server_shutdown).await
+    });
+    let end = Querier::new(
+        bus.clone(),
+        &supervisor::topics().simulation().end().client(),
+        DEFAULT_QUERY_TIMEOUT,
+    )
+    .expect("end querier");
+    let response = loop {
+        match end
+            .query(supervisor::simulation::end::EndRequest {
+                reason: supervisor::simulation::SimulationEndReason::WorldStopped,
+            })
+            .await
+        {
+            Ok(response) => break response,
+            Err(QueryError::Unavailable) => tokio::task::yield_now().await,
+            Err(error) => panic!("end query failed: {error}"),
+        }
+    };
+    assert_eq!(
+        response.attachment.phase,
+        supervisor::simulation::SimulationAttachmentPhase::Removing
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), shutdown.cancelled())
+        .await
+        .expect("end response requests supervisor shutdown");
+    server.abort();
+    let _ = server.await;
+    owner.close().await;
 }
 
 /// One expected runtime, present under a known producer.

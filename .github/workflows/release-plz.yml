@@ -62,6 +62,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+
       - name: Identify train publication
         id: train
         shell: bash
@@ -290,6 +291,27 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
+      - name: Cache Webots download
+        id: cache-webots-publish
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/webots.tar.bz2
+          key: webots-R2025a-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Download Webots
+        if: steps.cache-webots-publish.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            "https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a-x86-64.tar.bz2" \
+            --output "$RUNNER_TEMP/webots.tar.bz2"
+
+      - name: Install Webots
+        run: |
+          set -euo pipefail
+          tar -xjf "$RUNNER_TEMP/webots.tar.bz2" -C "$RUNNER_TEMP"
+          echo "WEBOTS_HOME=$RUNNER_TEMP/webots" >> "$GITHUB_ENV"
+
       # The checked-out source must actually BE this train. This is what stops
       # a resume publishing someone else's version: an old release commit
       # predating the registry model selects no packages at all, and any commit
@@ -318,21 +340,6 @@ jobs:
           [[ "$wrong" == "0" ]] || exit 1
           echo "all ${found} package(s) are ${TRAIN}"
 
-      - name: Package every executable
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t packages < <(
-            cargo metadata --no-deps --format-version 1 \
-              | jq -r '.packages[] | select(.publish == ["phoxal"]) | .name' \
-              | sort
-          )
-          [[ ${#packages[@]} -gt 0 ]] || { echo "no executable packages found" >&2; exit 1; }
-          echo "packaging ${#packages[@]} executables at ${TRAIN}"
-          for package in "${packages[@]}"; do
-            cargo package -p "$package"
-          done
-
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -352,48 +359,6 @@ jobs:
           # checkout needs real history.
           fetch-depth: 0
 
-      # Immutability is the registry's whole contract, so drop anything already
-      # published rather than asking margo to overwrite it. A partly-published
-      # train then resumes cleanly instead of failing.
-      - name: Drop already-published versions
-        shell: bash
-        run: |
-          set -euo pipefail
-          skipped=0
-          # margo stores an artifact as crates/<prefix>/<prefix>/<name>/<version>.crate,
-          # so the published file is named for the VERSION, not the package. Glob
-          # the prefix directories rather than reimplementing Cargo's prefix rule.
-          while read -r package version; do
-            local_crate="target/package/${package}-${version}.crate"
-            [[ -f "$local_crate" ]] || { echo "::error::expected $local_crate"; exit 1; }
-            published=""
-            for candidate in registry/crates/*/*/"$package"/"$version".crate; do
-              [[ -f "$candidate" ]] && { published="$candidate"; break; }
-            done
-            [[ -n "$published" ]] || continue
-
-            # Same version already in the registry. Resume only if it is the
-            # same artifact: identical content means an earlier run of THIS
-            # train got that far. Different content means the version would
-            # have to change to describe this build, and versions are
-            # immutable - so stop rather than publish a contradiction.
-            if [[ "$(sha256sum < "$local_crate")" == "$(sha256sum < "$published")" ]]; then
-              echo "  already published, skipping: ${package} ${version}"
-              rm "$local_crate"
-              skipped=$((skipped + 1))
-            else
-              echo "::error::${package} ${version} is already published with different content."
-              echo "::error::Published versions are immutable; cut a new patch train instead."
-              exit 1
-            fi
-          done < <(
-            cargo metadata --no-deps --format-version 1 \
-              | jq -r '.packages[] | select(.publish == ["phoxal"]) | "\(.name) \(.version)"'
-          )
-          remaining=$(find target/package -maxdepth 1 -name '*.crate' | wc -l | tr -d ' ')
-          echo "publishing $remaining package(s), skipped $skipped already-published"
-          echo "REMAINING=$remaining" >> "$GITHUB_ENV"
-
       # margo is called directly rather than through `integer32llc/margo-actions`.
       # The action looked like the obvious choice, but at its only pinnable ref
       # its input is `registry-dir`, not the `registry` its README documents -
@@ -402,7 +367,6 @@ jobs:
       # internally, while this registry was created by 0.1.7. Two behaviours we
       # do not control, in exchange for a download and a loop.
       - name: Install margo
-        if: env.REMAINING != '0'
         shell: bash
         run: |
           set -euo pipefail
@@ -413,46 +377,127 @@ jobs:
           "$RUNNER_TEMP/margo" --help >/dev/null 2>&1 || true
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
-      - name: Add the packages to the registry
-        if: env.REMAINING != '0'
+      # The controllers depend on the host from this same immutable train.
+      # Stage independent artifacts in a local registry commit first so Cargo
+      # can normalize the controller manifests without publishing a partial
+      # train. The final push remains one atomic append.
+      - name: Package and stage every executable in dependency order
         shell: bash
         run: |
           set -euo pipefail
+          cargo metadata --locked --no-deps --format-version 1 \
+            | python3 .github/scripts/registry_package_order.py \
+            > "$RUNNER_TEMP/registry-package-order.tsv"
+
+          base="$(git -C registry rev-parse HEAD)"
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          git -C registry config user.name "phoxal-release-bot"
+          git -C registry config user.email "release-bot@phoxal.com"
           added=0
-          for crate in target/package/*.crate; do
-            margo add --registry registry "$crate"
+          skipped=0
+
+          stage_package() {
+            local package="$1"
+            local local_crate="target/package/${package}-${TRAIN}.crate"
+            [[ -f "$local_crate" ]] || { echo "::error::expected $local_crate"; exit 1; }
+            local published=""
+            for candidate in registry/crates/*/*/"$package"/"$TRAIN".crate; do
+              [[ -f "$candidate" ]] && { published="$candidate"; break; }
+            done
+            if [[ -n "$published" ]]; then
+              if [[ "$(sha256sum < "$local_crate")" == "$(sha256sum < "$published")" ]]; then
+                echo "  already published, skipping: ${package} ${TRAIN}"
+                skipped=$((skipped + 1))
+                return
+              fi
+              echo "::error::${package} ${TRAIN} is already published with different content."
+              echo "::error::Published versions are immutable; cut a new patch train instead."
+              exit 1
+            fi
+            margo add --registry registry "$local_crate"
             added=$((added + 1))
-          done
-          echo "added $added package(s) to the registry"
-          [[ "$added" == "$REMAINING" ]] || {
-            echo "::error::added $added but expected $REMAINING"
-            exit 1
           }
 
-      - name: Commit the registry
-        if: env.REMAINING != '0'
-        working-directory: registry
+          local_index="file://$(cd registry && pwd)"
+          while read -r package dependent; do
+            if [[ "$dependent" == "1" ]]; then
+              cargo package --locked -p "$package" --no-verify \
+                --config 'source.phoxal.registry="sparse+https://phoxal.github.io/registry/"' \
+                --config 'source.phoxal.replace-with="local-phoxal"' \
+                --config "source.local-phoxal.registry=\"${local_index}\""
+            else
+              cargo package --locked -p "$package"
+            fi
+            stage_package "$package"
+            # Cargo reads committed index state for the next dependency level.
+            git -C registry add -A
+            if ! git -C registry diff --cached --quiet; then
+              if [[ "$(git -C registry rev-parse HEAD)" == "$base" ]]; then
+                git -C registry commit -m "publish framework train v${TRAIN}"
+              else
+                git -C registry commit --amend --no-edit
+              fi
+            fi
+          done < "$RUNNER_TEMP/registry-package-order.tsv"
+
+          if [[ "$(git -C registry rev-parse HEAD)" == "$base" ]]; then
+            echo "REGISTRY_CHANGED=false" >> "$GITHUB_ENV"
+            echo "all ${skipped} package(s) were already published identically"
+          else
+            echo "REGISTRY_CHANGED=true" >> "$GITHUB_ENV"
+            echo "staged $added package(s), skipped $skipped already-published"
+          fi
+
+      # `--no-verify` is necessary while Cargo first normalizes each controller
+      # because its host dependency is not public yet. Verify the exact staged
+      # archives afterwards against a disposable local download endpoint.
+      - name: Verify every staged dependent package
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "phoxal-release-bot"
-          git config user.email "release-bot@phoxal.com"
-          echo "BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          git add -A
-          git commit -m "publish framework train v${TRAIN}"
+          resolver="$RUNNER_TEMP/phoxal-registry-resolver"
+          registry_path="$(cd registry && pwd)"
+          git clone "file://${registry_path}" "$resolver"
+          local_download="file://${resolver}/crates/{lowerprefix}/{crate}/{version}.crate"
+          jq --arg dl "$local_download" '.dl = $dl' "$resolver/config.json" \
+            > "$resolver/config.json.next"
+          mv "$resolver/config.json.next" "$resolver/config.json"
+          git -C "$resolver" config user.name "phoxal-release-verifier"
+          git -C "$resolver" config user.email "release-verifier@phoxal.com"
+          git -C "$resolver" add config.json
+          git -C "$resolver" commit -m "use local artifacts for package verification"
+          resolver_index="file://${resolver}"
+
+          while read -r package dependent; do
+            [[ "$dependent" == "1" ]] || continue
+            artifact=""
+            for candidate in registry/crates/*/*/"$package"/"$TRAIN".crate; do
+              [[ -f "$candidate" ]] && { artifact="$candidate"; break; }
+            done
+            [[ -n "$artifact" ]] || { echo "::error::missing staged $package $TRAIN"; exit 1; }
+            expected="$(sha256sum < "$artifact")"
+            cargo package --locked -p "$package" \
+              --config 'source.phoxal.registry="sparse+https://phoxal.github.io/registry/"' \
+              --config 'source.phoxal.replace-with="local-phoxal"' \
+              --config "source.local-phoxal.registry=\"${resolver_index}\""
+            observed="$(sha256sum < "target/package/${package}-${TRAIN}.crate")"
+            [[ "$observed" == "$expected" ]] || {
+              echo "::error::verified $package archive differs from the staged artifact"
+              exit 1
+            }
+          done < "$RUNNER_TEMP/registry-package-order.tsv"
 
       # Everything below runs BEFORE the push. The registry's immutability
       # workflow only triggers afterwards, and a malformed append would already
       # be permanent by then - so the same validator runs here, on the commit
       # that is about to be pushed, while it can still be thrown away.
       - name: Verify the append is valid before pushing
-        if: env.REMAINING != '0'
+        if: env.REGISTRY_CHANGED == 'true'
         working-directory: registry
         shell: bash
         run: python3 .github/scripts/check_append_only.py "$BASE" HEAD
 
       - name: Verify every packaged version is in the index
-        if: env.REMAINING != '0'
         shell: bash
         run: |
           set -euo pipefail
@@ -488,7 +533,7 @@ jobs:
           echo "every packaged version has a matching index record"
 
       - name: Deploy the registry
-        if: env.REMAINING != '0'
+        if: env.REGISTRY_CHANGED == 'true'
         working-directory: registry
         shell: bash
         run: git push origin main

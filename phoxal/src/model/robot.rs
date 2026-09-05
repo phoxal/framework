@@ -1226,6 +1226,14 @@ impl Robot {
         let Some(simulation) = component.simulation() else {
             return Ok(());
         };
+        for (link, _) in simulation.links() {
+            if component.structure().link(link.as_str()).is_none() {
+                return Err(ModelError::SimulationWithoutLink {
+                    component_type: component_type.clone(),
+                    link: link.clone(),
+                });
+            }
+        }
         for (capability_id, simulated) in simulation.capabilities() {
             let capability = component
                 .capability(capability_id.as_str())

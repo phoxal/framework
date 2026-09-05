@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::strict_yaml::StrictYamlError;
-use super::{component, robot, simulation};
+use super::{component, robot, simulation, world};
 
 /// Which authored document a value or a failure belongs to.
 ///
@@ -27,11 +27,13 @@ pub enum DocumentKind {
     Component,
     /// A component-local `simulation.yaml` document.
     Simulation,
+    /// An explicit `world.yaml` document.
+    World,
 }
 
 impl DocumentKind {
     /// Every authored document kind, in stable order.
-    pub const ALL: [Self; 3] = [Self::Robot, Self::Component, Self::Simulation];
+    pub const ALL: [Self; 4] = [Self::Robot, Self::Component, Self::Simulation, Self::World];
 
     /// The file name a document of this kind always has inside its directory.
     #[must_use]
@@ -40,6 +42,7 @@ impl DocumentKind {
             Self::Robot => "robot.yaml",
             Self::Component => "component.yaml",
             Self::Simulation => "simulation.yaml",
+            Self::World => "world.yaml",
         }
     }
 }
@@ -50,6 +53,7 @@ impl fmt::Display for DocumentKind {
             Self::Robot => "robot",
             Self::Component => "component",
             Self::Simulation => "simulation",
+            Self::World => "world",
         })
     }
 }
@@ -63,6 +67,7 @@ pub enum Violations {
     Robot(Vec<robot::v0::ValidationError>),
     Component(Vec<component::v0::ValidationError>),
     Simulation(Vec<simulation::v0::ValidationError>),
+    World(Vec<world::v0::ValidationError>),
 }
 
 impl Violations {
@@ -73,6 +78,7 @@ impl Violations {
             Self::Robot(_) => DocumentKind::Robot,
             Self::Component(_) => DocumentKind::Component,
             Self::Simulation(_) => DocumentKind::Simulation,
+            Self::World(_) => DocumentKind::World,
         }
     }
 
@@ -104,6 +110,15 @@ impl Violations {
             _ => None,
         }
     }
+
+    /// The broken `world.yaml` rules, when these are a world document's.
+    #[must_use]
+    pub fn world(&self) -> Option<&[world::v0::ValidationError]> {
+        match self {
+            Self::World(errors) => Some(errors),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Violations {
@@ -124,6 +139,7 @@ impl fmt::Display for Violations {
             Self::Robot(errors) => join(errors, formatter),
             Self::Component(errors) => join(errors, formatter),
             Self::Simulation(errors) => join(errors, formatter),
+            Self::World(errors) => join(errors, formatter),
         }
     }
 }

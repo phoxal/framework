@@ -38,11 +38,13 @@ pub mod builder;
 pub mod component;
 pub mod connection;
 pub mod footprint;
+pub mod geometry;
 pub mod identity;
 pub mod manifest;
 pub mod robot;
 pub mod simulation;
 pub mod structure;
+pub mod world;
 
 #[doc(hidden)]
 pub mod compiler;

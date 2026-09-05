@@ -1,0 +1,26 @@
+schema: phoxal/world/v0
+
+assets:
+  floor:
+    geometry:
+      kind: box
+      size: [20.0, 20.0, 0.1]
+
+world:
+  id: two-member
+  time_step_ms: 12
+  gravity_mps2: [0.0, 0.0, -9.81]
+  spawn_points:
+    west-bay:
+      xyz: [-2.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    east-bay:
+      xyz: [2.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 3.141592653589793]
+  entities:
+    floor:
+      asset: floor
+      instances:
+        - pose:
+            xyz: [0.0, 0.0, -0.05]
+            rpy: [0.0, 0.0, 0.0]

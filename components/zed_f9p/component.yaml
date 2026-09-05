@@ -3,6 +3,7 @@ capabilities:
   gnss:
     kind: gnss
     publish_rate_hz: 10.0
+    coordinate_system: wgs84
     target:
       kind: link
       id: sensor_link

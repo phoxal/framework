@@ -31,6 +31,7 @@ mod strict_yaml;
 pub mod component;
 pub mod robot;
 pub mod simulation;
+pub mod world;
 
 pub use document::{ComposeError, DocumentKind, Origin, SourceError, Violations};
 pub use strict_yaml::{ReservedMarker, StrictYamlError};

@@ -23,7 +23,7 @@ use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
 use super::ShutdownController;
 use super::event_loop::retain_timeline;
 use super::query::QuerySurface;
-use super::startup::{DomainSubscription, PreparedRun};
+use super::startup::{AttachmentSubscription, DomainSubscription, PreparedRun};
 use super::teardown::{
     ShutdownDeadline, Teardown, TeardownReport, abandon_setup, abandon_startup, combine,
 };
@@ -173,6 +173,13 @@ pub(crate) fn runner_clock<C: ClockSource>(
                 reason: TimeUnsynchronized::ClockFault,
             }),
         },
+        #[cfg(test)]
+        AnyStepScheduler::TestMonotonic(_) => match clock {
+            Some(clock) => Ok(RunnerClock::Delegated(clock)),
+            None => Err(ClockDisciplineLost {
+                reason: TimeUnsynchronized::ClockFault,
+            }),
+        },
     }
 }
 
@@ -185,6 +192,10 @@ pub(crate) fn runner_clock_for_domain<C: ClockSource>(
             Ok(RunnerClock::Simulation(simulation.simulation_clock()))
         }
         AnyStepScheduler::Real(_) | AnyStepScheduler::Disabled => Ok(RunnerClock::SupervisorReal(
+            crate::participant::clock::real::RealClock::new(domain.timeline),
+        )),
+        #[cfg(test)]
+        AnyStepScheduler::TestMonotonic(_) => Ok(RunnerClock::SupervisorReal(
             crate::participant::clock::real::RealClock::new(domain.timeline),
         )),
     }
@@ -234,7 +245,7 @@ fn reconfigure_start_domain<C: ClockSource>(
     clock: &mut RunnerClock<C>,
 ) -> crate::Result<()> {
     let simulation_clock = simulation_clock.ok_or_else(|| {
-        anyhow::anyhow!("a time-domain participant lost its simulation clock ingress")
+        anyhow::anyhow!("a time-domain participant lost its logical-time ingress")
     })?;
     let mode = clock_mode_for_domain(current);
     match mode {
@@ -356,6 +367,7 @@ pub(crate) struct StartInputs<R: Participant, C: ClockSource> {
     pub(crate) shutdown_grace: Duration,
     pub(crate) source: SetupSource,
     pub(crate) domain: Option<DomainSubscription>,
+    pub(crate) attachment: Option<AttachmentSubscription>,
     pub(crate) config: R::Config,
     pub(crate) clock: RunnerClock<C>,
     pub(crate) scheduler: AnyStepScheduler,
@@ -426,12 +438,14 @@ where
         shutdown_grace,
         source,
         domain,
+        attachment,
         config,
         clock_mode,
         clock,
         query_reply_delay,
     } = prepared;
     let mut domain = domain;
+    let mut attachment = attachment;
     let mut clock_mode = clock_mode;
     if let Some(domain) = &mut domain {
         if let Err(error) = domain.reconcile() {
@@ -443,6 +457,16 @@ where
             .await;
         }
         clock_mode = clock_mode_for_domain(domain.current);
+    }
+    if let Some(attachment) = &mut attachment
+        && let Err(error) = attachment.reconcile(&bus)
+    {
+        return close_session_with_result(
+            Err(error),
+            session,
+            ShutdownDeadline::from_now(shutdown_grace),
+        )
+        .await;
     }
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
     let schedule = R::__step_schedule();
@@ -535,6 +559,7 @@ where
             shutdown_grace,
             source,
             domain,
+            attachment,
             config,
             clock: effective_clock,
             scheduler,
@@ -612,6 +637,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             shutdown_grace,
             source,
             mut domain,
+            attachment,
             config,
             mut clock,
             mut scheduler,
@@ -629,10 +655,10 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             ManagedTaskPolicy::Finite,
             tasks.bus_log.run(),
         );
-        if let Some(handle) = tasks.simulation_clock.clone() {
+        if let Some(attachment) = attachment {
             ctx.spawn_managed(
-                "simulation-clock-ingest",
-                simulation_clock_feed(bus.clone(), handle),
+                "simulation-attachment-ingest",
+                attachment_revision_feed(bus.clone(), attachment),
             );
         }
         let participant = R::__new();
@@ -1123,9 +1149,25 @@ pub(crate) async fn close_session_with_result<T>(
     combine(primary, close_session(session, deadline).await)
 }
 
-/// Subscribe and feed the authoritative simulation clock. This task is
-/// registered before setup and is cancelled through the ordinary teardown
-/// sequence, so logical time cannot advance behind the runner's back.
-async fn simulation_clock_feed(bus: BusHandle, handle: SimulationClockHandle) -> crate::Result<()> {
-    super::event_loop::simulation_clock_feed(bus, handle).await
+/// Keep setpoint metadata aligned with the newest supervisor attachment phase.
+/// Preparing and Removing clear the revision before any subsequent command is
+/// admitted, so retained or delayed pre-activation intent cannot become live.
+async fn attachment_revision_feed(
+    bus: BusHandle,
+    mut attachment: AttachmentSubscription,
+) -> crate::Result<()> {
+    loop {
+        let replacement = attachment.updates.recv().await?.body.attachment;
+        match (replacement, attachment.current) {
+            (Some(replacement), Some(installed)) if replacement.revision > installed.revision => {
+                attachment.current = Some(replacement);
+                super::startup::install_attachment_revision(&bus, attachment.current);
+            }
+            (Some(replacement), None) => {
+                attachment.current = Some(replacement);
+                super::startup::install_attachment_revision(&bus, attachment.current);
+            }
+            (None, _) | (Some(_), Some(_)) => {}
+        }
+    }
 }

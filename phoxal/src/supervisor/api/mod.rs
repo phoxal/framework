@@ -17,6 +17,7 @@ crate::nodes! {
     info;
     logs;
     snapshot;
+    simulation;
     telemetry;
     time_domain;
 }

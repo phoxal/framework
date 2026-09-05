@@ -127,7 +127,7 @@ impl ParticipantAssets {
     ///
     /// # Errors
     ///
-    /// Returns [`BundleError`] when the asset is missing, cannot be read from a
+    /// Returns `BundleError` when the asset is missing, cannot be read from a
     /// local bundle, or cannot be fetched and completely materialized from the
     /// supervisor.
     pub async fn materialize(&self, id: &AssetId) -> Result<PathBuf, BundleError> {
@@ -144,7 +144,7 @@ impl ParticipantAssets {
     ///
     /// # Errors
     ///
-    /// Returns [`BundleError`] when the asset cannot be materialized or its
+    /// Returns `BundleError` when the asset cannot be materialized or its
     /// local file cannot be opened.
     pub async fn open(&self, id: &AssetId) -> Result<File, BundleError> {
         let (_, file) = match &self.source {
@@ -158,7 +158,7 @@ impl ParticipantAssets {
     ///
     /// # Errors
     ///
-    /// Returns [`BundleError`] when the asset is missing, cannot be
+    /// Returns `BundleError` when the asset is missing, cannot be
     /// materialized, or its local file cannot be read.
     pub async fn read(&self, id: &AssetId) -> Result<Vec<u8>, BundleError> {
         let (path, mut file) = match &self.source {

@@ -1,13 +1,14 @@
-//! The `simulation` contract family: progress published by an attached world.
+//! The `simulation` contract family: passive progress from an attached world.
 //!
-//! The simulator host owns production of this clock after the supervisor has
-//! attached it to an execution. The supervisor owns the current time domain;
-//! this family says only which completed world step has become observable.
+//! The per-robot simulator controller publishes one [`StepEvent`] after it has
+//! admitted the outputs for a completed native transition. The event records
+//! producer-local order only. It never advances participant scheduling or
+//! claims that another subscriber has observed the corresponding outputs.
 
 crate::nodes! {
     family Simulation;
 
-    clock;
+    step;
 }
 
-pub use clock::Clock;
+pub use step::StepEvent;

@@ -347,10 +347,11 @@ impl fmt::Display for PolicyReport {
 
 /// A hand-maintained list that silently skips validation when it goes stale is
 /// worse than no list, so the workspace itself is the authority: every
-/// workspace member carrying a library target must be listed as either
-/// published or internal, and every listed directory must still hold one. Both
-/// lists obey the naming rule, so being unpublished buys a crate no leniency
-/// about where it lives.
+/// workspace member carrying a reusable library target must be listed as either
+/// published or internal, and every listed directory must still hold one. The
+/// one exact host-side adapter library is owned by the framework executable
+/// policy because it exists only to share implementation with its two native
+/// controller packages.
 fn the_library_crate_list_matches_the_workspace_members(
     subject: &Subject,
 ) -> Result<Vec<Violation>> {
@@ -361,6 +362,11 @@ fn the_library_crate_list_matches_the_workspace_members(
             .targets
             .iter()
             .any(|target| target.kind.iter().any(executable::is_library_target_kind))
+        {
+            continue;
+        }
+        if framework_executable::spec_for_package(package.name.as_str())
+            .is_some_and(|spec| spec.library().is_some())
         {
             continue;
         }

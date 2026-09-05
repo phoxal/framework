@@ -152,6 +152,26 @@ impl Presence {
             .map(|(participant, row)| row.project(participant))
             .collect()
     }
+
+    /// Whether one controller has exclusively replaced every declared driver
+    /// while every service and the brain retain their own Ready producer.
+    pub(crate) fn admits_live_controller(&self, controller: ProducerId) -> bool {
+        self.rows.values().all(|row| match row.kind {
+            ParticipantKind::Driver => row.producers.as_slice() == [controller],
+            ParticipantKind::Brain | ParticipantKind::Service => {
+                !row.producers.is_empty()
+                    && row.producers.iter().all(|producer| *producer != controller)
+            }
+        })
+    }
+
+    /// Whether any expected runtime still retains a Ready lease from this
+    /// concrete producer.
+    pub(crate) fn contains_producer(&self, producer: ProducerId) -> bool {
+        self.rows
+            .values()
+            .any(|row| row.producers.contains(&producer))
+    }
 }
 
 /// The one mandatory runtime every robot has: its composition root, staged as
@@ -181,9 +201,10 @@ mod tests {
             .component_type("motor", |motor| motor.motor("spin", "axle"))
             .component_with("left", "motor", |mounted| {
                 mounted.driver(
-                    crate::model::connection::Connection::Can(
-                        crate::model::connection::Can { bus: 0, node_id: 1 },
-                    ),
+                    crate::model::connection::Connection::Can(crate::model::connection::Can {
+                        bus: 0,
+                        node_id: 1,
+                    }),
                     None,
                 )
             })
@@ -272,6 +293,21 @@ mod tests {
         let row = row(&presence);
         assert_eq!(row.producer, Some(producer(2)));
         assert_eq!(row.state, ProcessState::Present);
+    }
+
+    #[test]
+    fn live_admission_requires_one_controller_for_drivers_and_ready_non_drivers() {
+        let mut presence = presence();
+        let controller = producer(9);
+        presence.record(&participant("brain"), producer(1), true);
+        presence.record(&participant("drive"), producer(2), true);
+        assert!(!presence.admits_live_controller(controller));
+
+        presence.record(&participant("left"), controller, true);
+        assert!(presence.admits_live_controller(controller));
+
+        presence.record(&participant("left"), producer(8), true);
+        assert!(!presence.admits_live_controller(controller));
     }
 
     /// A participant the manifest never mentions is free to run; it simply has

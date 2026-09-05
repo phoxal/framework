@@ -27,15 +27,6 @@ pub enum BusError {
         problem: KeyProblem,
     },
 
-    /// A second timeline authority was requested in one process.
-    ///
-    /// Exactly one participant may own a timeline's coordinate, so the second
-    /// request is refused rather than silently sharing authority.
-    #[error(
-        "a second timeline authority was requested; exactly one participant may own a timeline"
-    )]
-    DuplicateTimelineAuthority,
-
     /// This session's producer ran out of sequence numbers. The allocator fails
     /// closed rather than wrapping to zero, which every receiver would read as
     /// a replay from the same producer.
@@ -216,17 +207,17 @@ pub enum MetadataProblem {
     /// The encoding string is not a Phoxal encoding string.
     #[error("malformed encoding string: {0}")]
     MalformedEncoding(#[from] EncodingError),
-    /// The sample carried no [`BusMetadata`](crate::bus::metadata::BusMetadata)
-    /// attachment.
-    #[error("missing a BusMetadata attachment")]
+    /// The sample carried no bus metadata attachment.
+    #[error("missing a bus metadata attachment")]
     MissingAttachment,
-    /// The attachment bytes are not a `BusMetadata`.
-    #[error("malformed BusMetadata: {0}")]
+    /// The attachment bytes are not the metadata envelope required on this
+    /// transport leg.
+    #[error("malformed bus metadata: {0}")]
     MalformedAttachment(#[from] rmp_serde::decode::Error),
     /// The encoding string and the attachment name different codecs, so the
     /// sample does not agree with itself about how to read its own body.
     #[error(
-        "encoding/BusMetadata codec mismatch: encoding codec={encoding}, metadata codec={attachment}"
+        "encoding/metadata codec mismatch: encoding codec={encoding}, metadata codec={attachment}"
     )]
     CodecMismatch {
         /// The codec the encoding string named.
@@ -235,7 +226,7 @@ pub enum MetadataProblem {
         attachment: u8,
     },
     /// The outbound attachment could not be encoded.
-    #[error("failed to encode BusMetadata: {0}")]
+    #[error("failed to encode bus metadata: {0}")]
     Encode(#[from] rmp_serde::encode::Error),
 }
 
@@ -243,7 +234,7 @@ pub enum MetadataProblem {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutboundBound {
     /// The ordered lane already holds its maximum number of values.
-    Sample,
+    Count,
     /// The queue already holds its maximum number of bytes.
     Byte,
 }
@@ -251,7 +242,7 @@ pub enum OutboundBound {
 impl std::fmt::Display for OutboundBound {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OutboundBound::Sample => formatter.write_str("sample"),
+            OutboundBound::Count => formatter.write_str("count"),
             OutboundBound::Byte => formatter.write_str("byte"),
         }
     }

@@ -27,7 +27,8 @@ use crate::identity::TimelineId;
 pub enum TimeMode {
     /// Services and the brain schedule from the host-local monotonic clock.
     Monotonic,
-    /// Services and the brain advance only from `simulation/clock`.
+    /// Services and the brain advance from an external logical-time source.
+    /// Live does not select this dormant mode.
     Simulated,
 }
 

@@ -80,7 +80,7 @@ struct Retired {
 /// The rules these replaced differed only in which words they looked for, so
 /// they are rows rather than functions: a new retirement is a line here, and
 /// the scan itself is written once.
-const RETIRED: [Retired; 32] = [
+const RETIRED: [Retired; 30] = [
     // Runtime identity is minted from the compiled participant record, launch
     // is one clap-only process contract, the bus supplies its clock directly,
     // and a managed task is either critical or finite.
@@ -214,16 +214,6 @@ const RETIRED: [Retired; 32] = [
         token: Token::Identifier("ExecutionOrigin"),
         train: "0.63.0",
         why: "robot time zero is host boot, so a launcher states no time origin",
-    },
-    Retired {
-        token: Token::Identifier("ParticipantClock"),
-        train: "0.63.0",
-        why: "simulation is a launch decision, not a per-participant clock declaration",
-    },
-    Retired {
-        token: Token::Identifier("WorldAuthoritySurface"),
-        train: "0.63.0",
-        why: "the world clock is published by an external bus client, not a privileged role",
     },
     Retired {
         token: Token::Identifier("Simulator"),

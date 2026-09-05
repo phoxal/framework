@@ -151,6 +151,13 @@ pub enum ModelError {
         declared: CapabilityKind,
     },
 
+    /// A simulated link has no counterpart in the component type's structure.
+    #[error("simulation link '{component_type}.{link}' has no component structural link")]
+    SimulationWithoutLink {
+        component_type: ComponentTypeId,
+        link: LinkId,
+    },
+
     /// A joint uses a kind the runtime cannot drive.
     #[error("{owner} joint '{joint}' uses unsupported runtime kind '{kind:?}'")]
     UnsupportedJointKind {
@@ -265,6 +272,10 @@ pub enum StructureError {
     #[error("link '{link}' geometry dimensions must be finite and positive")]
     Geometry { link: LinkId },
 
+    /// A render material color is not a finite normalized RGBA value.
+    #[error("material '{name}' color must contain finite values in [0, 1]")]
+    MaterialColor { name: String },
+
     /// A joint axis has a non-finite component.
     #[error("joint '{joint}' axis must be finite")]
     AxisNotFinite { joint: JointId },
@@ -311,6 +322,10 @@ pub enum StructureError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentifierKind {
     RobotId,
+    WorldId,
+    WorldAsset,
+    WorldSpawn,
+    WorldEntityDeclaration,
     RobotLink,
     RobotJoint,
     ComponentType,
@@ -323,6 +338,10 @@ impl fmt::Display for IdentifierKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::RobotId => "robot id",
+            Self::WorldId => "world id",
+            Self::WorldAsset => "world asset name",
+            Self::WorldSpawn => "world spawn name",
+            Self::WorldEntityDeclaration => "world entity declaration name",
             Self::RobotLink => "robot link",
             Self::RobotJoint => "robot joint",
             Self::ComponentType => "component type",

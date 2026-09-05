@@ -97,13 +97,14 @@ use crate::model::component::capability::{
 };
 use crate::model::connection::Connection;
 use crate::model::error::ModelError;
+use crate::model::geometry::Geometry;
 use crate::model::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId, RobotId,
     ServiceId,
 };
 use crate::model::robot::{Driver, KinematicConfig, MotionLimits, Robot};
 use crate::model::simulation;
-use crate::model::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, Geometry, JointKind, Structure};
+use crate::model::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, JointKind, Structure};
 
 /// The root link of every component structure this module generates.
 pub const COMPONENT_ROOT_LINK: &str = "mount";
@@ -477,7 +478,7 @@ impl Default for Inertia {
 /// ```
 /// use phoxal::model::AssetId;
 /// use phoxal::model::builder::{Link, Material, RobotBuilder, Visual};
-/// use phoxal::model::structure::Geometry;
+/// use phoxal::model::geometry::Geometry;
 ///
 /// let robot = RobotBuilder::new("rover")
 ///     .link(Link {
@@ -825,7 +826,7 @@ impl RobotBuilder {
     /// use phoxal::model::builder::{
     ///     Collision, Inertia, Inertial, Link, Material, RobotBuilder, Visual,
     /// };
-    /// use phoxal::model::structure::Geometry;
+    /// use phoxal::model::geometry::Geometry;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .link(Link {
@@ -1096,7 +1097,7 @@ impl ComponentTypeBuilder {
     ///
     /// ```
     /// use phoxal::model::builder::{Link, RobotBuilder, Visual};
-    /// use phoxal::model::structure::Geometry;
+    /// use phoxal::model::geometry::Geometry;
     ///
     /// let robot = RobotBuilder::new("rover")
     ///     .component_type("rgbd", |camera| {
@@ -1821,10 +1822,11 @@ mod tests {
         Capability, CapabilityKind, Motor, MotorCommand, StructuralTarget,
     };
     use crate::model::error::{IdentifierKind, ModelError, StructureError};
+    use crate::model::geometry::Geometry;
     use crate::model::identity::{CapabilityRef, JointId, LinkId};
     use crate::model::robot::{DriveKinematics, KinematicConfig, MotionLimits};
     use crate::model::simulation;
-    use crate::model::structure::{Geometry, JointKind};
+    use crate::model::structure::JointKind;
 
     fn reference(value: &str) -> CapabilityRef {
         value.parse().expect("a well formed capability reference")
@@ -2407,6 +2409,30 @@ mod tests {
         assert!(matches!(
             rejected,
             Err(ModelError::SimulationWithoutCapability { .. })
+        ));
+    }
+
+    #[test]
+    fn a_simulation_cannot_name_a_link_the_component_does_not_define() {
+        let rejected = RobotBuilder::new("rover")
+            .component_type("drive_motor", |motor| {
+                motor
+                    .motor("spin", "axle")
+                    .simulated(
+                        "spin",
+                        simulation::Capability::Motor(simulation::Motor::default()),
+                    )
+                    .contact_material("ghost", "rubber")
+            })
+            .component("left_drive", "drive_motor")
+            .build();
+
+        assert!(matches!(
+            rejected,
+            Err(ModelError::SimulationWithoutLink {
+                component_type,
+                link,
+            }) if component_type.as_str() == "drive_motor" && link.as_str() == "ghost"
         ));
     }
 

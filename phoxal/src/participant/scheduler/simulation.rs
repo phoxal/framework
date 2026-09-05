@@ -1,4 +1,4 @@
-//! Logical-time step scheduling, driven by the world authority.
+//! Dormant logical-time step scheduling for a future controlled source.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -11,17 +11,8 @@ use crate::bus::{RobotInstant, TimelineId};
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::{duration_nanos, lock};
 
-/// Simulation scheduler: releases ticks from **robot** time advanced by the
-/// world authority, never a real sleep.
-///
-/// # The live seam
-///
-/// The simulation controller is the authoritative owner of the
-/// `simulation/clock` hand. In simulation mode the participant runner
-/// subscribes that topic and forwards each observed [`RobotInstant`] into this
-/// scheduler through [`SimulationClockHandle::advance`]. Tests drive the same
-/// handle directly, so live and deterministic test paths share the scheduler
-/// boundary.
+/// Simulation scheduler: releases ticks from externally advanced **robot**
+/// time, never a real sleep.
 ///
 /// # Determinism
 ///
@@ -35,7 +26,7 @@ pub(crate) struct SimulationScheduler {
     /// participant has no `Participant::step` schedule.
     period: Option<Duration>,
     /// Keeps the watch channel open even when the runner has not wired an
-    /// external `simulation/clock` feed yet. Without this, dropping the
+    /// external logical-time source yet. Without this, dropping the
     /// returned handle would close the channel and make waits resolve
     /// immediately instead of waiting for logical time.
     _tx_keepalive: watch::Sender<Option<RobotInstant>>,
@@ -51,6 +42,10 @@ struct SimulationClockState {
 
 /// Result of applying one clock sample to a simulation scheduler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "retained as the dormant simulated-time scheduler ingress for the Lockstep follow-up"
+)]
 pub(crate) enum SimulationClockAdvance {
     Advanced,
     DuplicateOrBackward,
@@ -61,11 +56,8 @@ pub(crate) enum SimulationClockAdvance {
 /// A cloneable handle that advances the logical time a
 /// [`SimulationScheduler`] observes.
 ///
-/// This is the seam a live `simulation/clock` bus subscription attaches to
-/// (see [`SimulationScheduler`] docs): a subscriber task calls
-/// [`advance`](Self::advance) once per received sample. Tests use the same
-/// method to drive the scheduler deterministically, with no bus and no real
-/// sleeping.
+/// This is the dormant ingress a future controlled-time attachment can drive.
+/// Tests use the same method directly, with no bus and no real sleeping.
 #[derive(Clone)]
 pub(crate) struct SimulationClockHandle {
     tx: watch::Sender<Option<RobotInstant>>,
@@ -73,7 +65,7 @@ pub(crate) struct SimulationClockHandle {
 }
 
 impl SimulationClockHandle {
-    /// Start one reusable world-clock ingress source.
+    /// Start one reusable logical-time ingress source.
     pub(crate) fn source() -> Self {
         let (tx, _) = watch::channel(None);
         Self {
@@ -125,6 +117,10 @@ impl SimulationClockHandle {
     /// the active world history, since timelines are opaque identities with no
     /// generation order; recently retired timelines are ignored so an in-flight
     /// clock from a dead controller cannot reactivate old state.
+    #[allow(
+        dead_code,
+        reason = "tests and the future Lockstep attachment drive this dormant simulated-time seam directly"
+    )]
     pub(crate) fn advance(&self, at: RobotInstant) -> SimulationClockAdvance {
         let mut state = lock(&self.state);
         if !state.enabled
@@ -272,7 +268,7 @@ mod tests {
         for step in 1..=5u64 {
             let target = lt(step * 10);
             // Drive robot time forward from a concurrent task, exactly like
-            // the live `simulation/clock` subscriber does.
+            // a future controlled logical-time source does.
             let handle = handle.clone();
             let advancer = tokio::spawn(async move { handle.advance(target) });
             let tick = scheduler.wait_until(target).await;

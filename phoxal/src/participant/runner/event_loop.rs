@@ -6,9 +6,8 @@ use crate::bus::{LocalInstant, RobotInstant, StepToken, StreamReceiver, Timeline
 use crate::participant::api::Participant;
 use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsynchronized};
 use crate::participant::context::{ResetContext, StepContext, TimelineRetention};
-use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
+use crate::participant::scheduler::simulation::SimulationClockHandle;
 use crate::participant::scheduler::{SchedulerTick, StepScheduler};
-use crate::simulation::api::Clock;
 use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
 
 use super::ShutdownController;
@@ -28,8 +27,8 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         let mut step_index: u64 = 0;
         let mut active_timeline = self.domain.map(|domain| domain.timeline);
         let mut simulation_time_rx = self.scheduler.simulation_time_receiver();
-        // The simulation clock feed starts before `Participant::setup`. If setup
-        // takes long enough for the authority's first world step to arrive, a
+        // The dormant logical-time feed starts before `Participant::setup`. If setup
+        // takes long enough for the source's first step to arrive, a
         // newly-cloned watch receiver sees that value as its initial state and
         // has no change notification to deliver. Establish that already-current
         // world history without invoking reset: there was no prior participant
@@ -97,7 +96,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     };
                     let Some(simulation_clock) = &self.simulation_clock else {
                         return LoopExit::StepFailed(anyhow::anyhow!(
-                            "a time-domain participant lost its simulation clock ingress"
+                            "a time-domain participant lost its logical-time ingress"
                         ));
                     };
                     match clock_mode {
@@ -201,7 +200,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     // sooner, in its own step arm.
                     //
                     // Simulation is excluded on purpose: there, "unsynchronized"
-                    // means the world authority has not published a first step yet,
+                    // means the logical-time source has not published a first step yet,
                     // which is a world that has not started rather than a clock
                     // that was lost.
                     let faulted = LocalInstant::clock_faulted()
@@ -258,7 +257,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     let now = match self.clock.read() {
                         ClockReading::Synchronized(now) if now.timeline() == target.timeline() => now,
                         ClockReading::Synchronized(_) => {
-                            // The clock feed can replace the world history after the
+                            // Logical-time ingress can replace the world history after the
                             // scheduler resolves but before this read. Let the
                             // higher-priority simulation-time arm install the
                             // ingress barrier and run Participant::reset before any step on
@@ -349,49 +348,6 @@ fn scheduler_after_domain_change(
     Ok((scheduler, now))
 }
 
-/// Subscribe the authoritative `simulation/clock` hand and drive the live
-/// scheduler from exact production instants for the task's lifetime.
-pub(crate) async fn simulation_clock_feed(
-    bus: crate::bus::BusHandle,
-    handle: SimulationClockHandle,
-) -> crate::Result<()> {
-    let topic = crate::simulation::api::topics().clock().client();
-    let subscriber = match StreamReceiver::<Clock>::new(&bus, &topic).await {
-        Ok(subscriber) => subscriber,
-        Err(error) => return Err(error.into()),
-    };
-    tracing::info!(
-        target: "phoxal.runtime",
-        topic = topic.key(),
-        "subscribed the live simulation/clock hand; driving the simulation scheduler from it"
-    );
-    loop {
-        let observed = subscriber.recv().await.map_err(|error| {
-            anyhow::anyhow!(
-                "the world-clock subscriber on {} terminated: {error}",
-                topic.key()
-            )
-        })?;
-        let Some(at) = observed.metadata.produced_exactly_at() else {
-            return Err(anyhow::anyhow!(
-                "a world-clock sample on {} has no exact production instant",
-                topic.key()
-            ));
-        };
-        match handle.advance(at) {
-            SimulationClockAdvance::Advanced | SimulationClockAdvance::DuplicateOrBackward => {}
-            SimulationClockAdvance::RetiredTimeline | SimulationClockAdvance::InactiveTimeline => {
-                tracing::warn!(
-                    target: "phoxal.runtime",
-                    timeline = %at.timeline(),
-                    ticks = at.ticks(),
-                    "ignoring late simulation clock from a retired world history"
-                );
-            }
-        }
-    }
-}
-
 /// Resolve on the next request when a query surface exists, and never when it
 /// does not.
 async fn next_query<R: Participant>(
@@ -455,6 +411,7 @@ pub(crate) fn retain_timeline(retentions: &[TimelineRetention], timeline: Timeli
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::participant::scheduler::simulation::SimulationClockAdvance;
     use crate::participant::scheduler::{StepSchedule, StepScheduler};
 
     /// A clock can arrive after the new timeline is enabled but before the

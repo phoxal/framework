@@ -12,8 +12,13 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::bus::{LocalInstant, RobotInstant};
 use crate::identity::{ParticipantId, ProducerId, TimelineId};
 use crate::supervisor::api::execution::Snapshot;
+use crate::supervisor::api::simulation::attach::AttachRequest;
+use crate::supervisor::api::simulation::{
+    SimulationAttachmentPhase, SimulationAttachmentState, SimulationEndReason,
+};
 use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
 use tokio::sync::{mpsc, watch};
 
@@ -31,12 +36,19 @@ struct Inner {
     time_domain: watch::Sender<TimeDomain>,
     time_domain_updates: mpsc::Sender<TimeDomain>,
     time_domain_receiver: Mutex<Option<mpsc::Receiver<TimeDomain>>>,
+    attachment_updates: mpsc::Sender<Option<SimulationAttachmentState>>,
+    attachment_receiver: Mutex<Option<mpsc::Receiver<Option<SimulationAttachmentState>>>>,
+    attachment_current: watch::Sender<Option<SimulationAttachmentState>>,
 }
 
 struct Data {
     revision: u64,
     presence: Presence,
+    stopping: bool,
     time_domain: TimeDomain,
+    attachment_revision: u64,
+    attachment: Option<SimulationAttachmentState>,
+    attachment_failure: Option<SimulationEndReason>,
 }
 
 impl Data {
@@ -56,11 +68,15 @@ impl ExecutionState {
         let data = Data {
             revision: 0,
             presence,
+            stopping: false,
             time_domain: TimeDomain {
                 revision: 0,
                 timeline: TimelineId::mint(),
                 mode: TimeMode::Monotonic,
             },
+            attachment_revision: 0,
+            attachment: None,
+            attachment_failure: None,
         };
         let (published, _) = watch::channel(data.project());
         let (time_domain, _) = watch::channel(data.time_domain);
@@ -75,6 +91,8 @@ impl ExecutionState {
                 mpsc::error::TrySendError::Full(_) => TimeDomainReplacementError::StreamFull,
                 mpsc::error::TrySendError::Closed(_) => TimeDomainReplacementError::StreamClosed,
             })?;
+        let (attachment_updates, attachment_receiver) = mpsc::channel(32);
+        let (attachment_current, _) = watch::channel(None);
         Ok(Self {
             inner: Arc::new(Inner {
                 data: Mutex::new(data),
@@ -82,6 +100,9 @@ impl ExecutionState {
                 time_domain,
                 time_domain_updates,
                 time_domain_receiver: Mutex::new(Some(receiver)),
+                attachment_updates,
+                attachment_receiver: Mutex::new(Some(attachment_receiver)),
+                attachment_current,
             }),
         })
     }
@@ -100,6 +121,235 @@ impl ExecutionState {
     /// The supervisor's current execution time authority.
     pub(crate) fn time_domain(&self) -> TimeDomain {
         *self.inner.time_domain.borrow()
+    }
+
+    /// The current source-bound Live attachment, if any.
+    pub(crate) fn attachment(&self) -> Option<SimulationAttachmentState> {
+        self.lock().attachment
+    }
+
+    /// Observe current attachment phase for internal liveness enforcement.
+    pub(crate) fn subscribe_attachment(
+        &self,
+    ) -> watch::Receiver<Option<SimulationAttachmentState>> {
+        self.inner.attachment_current.subscribe()
+    }
+
+    /// Take the one ordered stream of complete attachment replacements.
+    pub(crate) fn take_attachment_updates(
+        &self,
+    ) -> Result<mpsc::Receiver<Option<SimulationAttachmentState>>, AttachmentStateError> {
+        self.inner
+            .attachment_receiver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or(AttachmentStateError::StreamAlreadyTaken)
+    }
+
+    /// Bind a proposed world and controller in Preparing without changing the
+    /// execution time domain.
+    pub(crate) fn prepare_attachment(
+        &self,
+        host: ProducerId,
+        request: AttachRequest,
+    ) -> Result<(SimulationAttachmentState, TimeDomain), AttachmentStateError> {
+        let mut data = self.lock();
+        if data.stopping {
+            return Err(AttachmentStateError::Stopping);
+        }
+        if let Some(current) = data.attachment {
+            if current.host == host
+                && current.world == request.world()
+                && current.controller == request.controller()
+                && current.attached_at.world == request.progress()
+                && current.phase != SimulationAttachmentPhase::Removing
+            {
+                if current.phase == SimulationAttachmentPhase::Active
+                    && !data.presence.admits_live_controller(current.controller)
+                {
+                    return Err(AttachmentStateError::ControllerNotReady {
+                        controller: current.controller,
+                    });
+                }
+                return Ok((current, data.time_domain));
+            }
+            return Err(AttachmentStateError::AlreadyAttached {
+                world: current.world,
+                host: current.host,
+                controller: current.controller,
+            });
+        }
+        if data.time_domain.mode != TimeMode::Monotonic {
+            return Err(AttachmentStateError::NonMonotonic);
+        }
+        if !data.presence.admits_live_controller(request.controller()) {
+            return Err(AttachmentStateError::ControllerNotReady {
+                controller: request.controller(),
+            });
+        }
+        let Some(now) = LocalInstant::try_now() else {
+            return Err(AttachmentStateError::ClockUnavailable);
+        };
+        let permit = reserve_attachment(&self.inner.attachment_updates)?;
+        let revision = data
+            .attachment_revision
+            .checked_add(1)
+            .ok_or(AttachmentStateError::RevisionExhausted)?;
+        let attachment = SimulationAttachmentState {
+            revision,
+            world: request.world(),
+            host,
+            controller: request.controller(),
+            phase: SimulationAttachmentPhase::Preparing,
+            attached_at: crate::model::world::LiveAttachmentBoundary {
+                world: request.progress(),
+                execution: RobotInstant::new(data.time_domain.timeline, now.boot_ns()),
+            },
+        };
+        data.attachment_revision = revision;
+        data.attachment = Some(attachment);
+        self.inner.attachment_current.send_replace(Some(attachment));
+        permit.send(Some(attachment));
+        Ok((attachment, data.time_domain))
+    }
+
+    /// Commit one Preparing transaction after its bound controller has
+    /// acknowledged the revision.
+    pub(crate) fn activate_attachment(
+        &self,
+        host: ProducerId,
+        preparing_revision: u64,
+    ) -> Result<(SimulationAttachmentState, TimeDomain), AttachmentStateError> {
+        let mut data = self.lock();
+        let current = data.attachment.ok_or(AttachmentStateError::NotAttached)?;
+        if current.host != host {
+            return Err(AttachmentStateError::WrongHost {
+                expected: current.host,
+                observed: host,
+            });
+        }
+        if current.phase == SimulationAttachmentPhase::Active {
+            return Ok((current, data.time_domain));
+        }
+        if current.phase != SimulationAttachmentPhase::Preparing
+            || current.revision != preparing_revision
+        {
+            return Err(AttachmentStateError::NotPreparing);
+        }
+        if !data.presence.admits_live_controller(current.controller) {
+            return Err(AttachmentStateError::ControllerNotReady {
+                controller: current.controller,
+            });
+        }
+        let permit = reserve_attachment(&self.inner.attachment_updates)?;
+        let revision = data
+            .attachment_revision
+            .checked_add(1)
+            .ok_or(AttachmentStateError::RevisionExhausted)?;
+        let active = SimulationAttachmentState {
+            revision,
+            phase: SimulationAttachmentPhase::Active,
+            ..current
+        };
+        data.attachment_revision = revision;
+        data.attachment = Some(active);
+        self.inner.attachment_current.send_replace(Some(active));
+        permit.send(Some(active));
+        Ok((active, data.time_domain))
+    }
+
+    /// Enter Removing from the bound host. The execution retains the terminal
+    /// state until its ordinary supervisor shutdown completes.
+    pub(crate) fn remove_attachment(
+        &self,
+        host: ProducerId,
+    ) -> Result<SimulationAttachmentState, AttachmentStateError> {
+        let mut data = self.lock();
+        let current = data.attachment.ok_or(AttachmentStateError::NotAttached)?;
+        if current.host != host {
+            return Err(AttachmentStateError::WrongHost {
+                expected: current.host,
+                observed: host,
+            });
+        }
+        if current.phase == SimulationAttachmentPhase::Removing {
+            return Ok(current);
+        }
+        transition_to_removing(&mut data, &self.inner, current)
+    }
+
+    /// Abort exactly one still-Preparing transaction. A delayed waiter cannot
+    /// use this to remove a later revision.
+    pub(crate) fn abort_preparing_attachment(
+        &self,
+        host: ProducerId,
+        preparing_revision: u64,
+    ) -> Result<SimulationAttachmentState, AttachmentStateError> {
+        let mut data = self.lock();
+        let current = data.attachment.ok_or(AttachmentStateError::NotAttached)?;
+        if current.host != host {
+            return Err(AttachmentStateError::WrongHost {
+                expected: current.host,
+                observed: host,
+            });
+        }
+        if current.phase != SimulationAttachmentPhase::Preparing
+            || current.revision != preparing_revision
+        {
+            return Err(AttachmentStateError::NotPreparing);
+        }
+        transition_to_removing(&mut data, &self.inner, current)
+    }
+
+    /// Converge an exact Active revision to Removing after a typed liveness
+    /// failure. This is supervisor-owned rather than host-attributed.
+    pub(crate) fn fail_active_attachment(
+        &self,
+        active_revision: u64,
+        reason: SimulationEndReason,
+    ) -> Result<SimulationAttachmentState, AttachmentStateError> {
+        let mut data = self.lock();
+        let current = data.attachment.ok_or(AttachmentStateError::NotAttached)?;
+        if current.phase != SimulationAttachmentPhase::Active
+            || current.revision != active_revision
+        {
+            return Err(AttachmentStateError::NotActiveRevision);
+        }
+        data.stopping = true;
+        data.attachment_failure = Some(reason);
+        transition_to_removing(&mut data, &self.inner, current)
+    }
+
+    pub(crate) fn attachment_failure(&self) -> Option<SimulationEndReason> {
+        self.lock().attachment_failure
+    }
+
+    /// Refuse new attachment work and publish Removing before an intentional
+    /// supervisor shutdown tears down the transport.
+    pub(crate) fn begin_shutdown_attachment(
+        &self,
+    ) -> Result<Option<SimulationAttachmentState>, AttachmentStateError> {
+        let mut data = self.lock();
+        data.stopping = true;
+        let Some(current) = data.attachment else {
+            return Ok(None);
+        };
+        if current.phase == SimulationAttachmentPhase::Removing {
+            return Ok(Some(current));
+        }
+        transition_to_removing(&mut data, &self.inner, current).map(Some)
+    }
+
+    /// Whether the delegated controller still owns any expected Ready row.
+    pub(crate) fn producer_is_present(&self, producer: ProducerId) -> bool {
+        self.lock().presence.contains_producer(producer)
+    }
+
+    /// Whether this producer still exclusively owns every delegated driver
+    /// while all non-driver runtime roles remain Ready.
+    pub(crate) fn controller_is_exclusive(&self, controller: ProducerId) -> bool {
+        self.lock().presence.admits_live_controller(controller)
     }
 
     /// Take the one ordered stream of time-domain replacements.
@@ -189,6 +439,80 @@ impl ExecutionState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+fn reserve_attachment(
+    sender: &mpsc::Sender<Option<SimulationAttachmentState>>,
+) -> Result<mpsc::Permit<'_, Option<SimulationAttachmentState>>, AttachmentStateError> {
+    sender.try_reserve().map_err(|error| match error {
+        mpsc::error::TrySendError::Full(()) => AttachmentStateError::StreamFull,
+        mpsc::error::TrySendError::Closed(()) => AttachmentStateError::StreamClosed,
+    })
+}
+
+fn transition_to_removing(
+    data: &mut Data,
+    inner: &Inner,
+    current: SimulationAttachmentState,
+) -> Result<SimulationAttachmentState, AttachmentStateError> {
+    let permit = reserve_attachment(&inner.attachment_updates)?;
+    let revision = data
+        .attachment_revision
+        .checked_add(1)
+        .ok_or(AttachmentStateError::RevisionExhausted)?;
+    let removing = SimulationAttachmentState {
+        revision,
+        phase: SimulationAttachmentPhase::Removing,
+        ..current
+    };
+    data.attachment_revision = revision;
+    data.attachment = Some(removing);
+    inner.attachment_current.send_replace(Some(removing));
+    permit.send(Some(removing));
+    Ok(removing)
+}
+
+/// An attachment transition could not be admitted without losing serialized
+/// state or violating source ownership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum AttachmentStateError {
+    #[error("the execution attachment stream is already being served")]
+    StreamAlreadyTaken,
+    #[error("the execution attachment stream is saturated")]
+    StreamFull,
+    #[error("the execution attachment stream is unavailable")]
+    StreamClosed,
+    #[error("the execution attachment revision is exhausted")]
+    RevisionExhausted,
+    #[error("Live attachment requires the unchanged monotonic execution time domain")]
+    NonMonotonic,
+    #[error(
+        "controller {controller} does not exclusively hold every delegated driver Ready lease while all non-drivers are Ready"
+    )]
+    ControllerNotReady { controller: ProducerId },
+    #[error("the host monotonic clock is unavailable")]
+    ClockUnavailable,
+    #[error("this execution has no simulation attachment")]
+    NotAttached,
+    #[error("the execution is stopping and refuses new simulation attachment work")]
+    Stopping,
+    #[error("the simulation attachment is not in the expected Preparing revision")]
+    NotPreparing,
+    #[error("the simulation attachment is not in the expected Active revision")]
+    NotActiveRevision,
+    #[error(
+        "execution is already attached to world {world} by host {host} and controller {controller}"
+    )]
+    AlreadyAttached {
+        world: crate::model::world::WorldInstanceId,
+        host: ProducerId,
+        controller: ProducerId,
+    },
+    #[error("attachment is bound to host {expected}, not request source {observed}")]
+    WrongHost {
+        expected: ProducerId,
+        observed: ProducerId,
+    },
 }
 
 /// A time-domain transition could not be published exactly once.
@@ -322,6 +646,228 @@ mod tests {
         );
         assert_ne!(initial.timeline, simulated.timeline);
         assert_ne!(simulated.timeline, monotonic.timeline);
+    }
+
+    #[tokio::test]
+    async fn live_attachment_is_source_bound_ordered_and_preserves_the_domain() {
+        let state = state();
+        let before = state.time_domain();
+        let mut updates = state
+            .take_attachment_updates()
+            .expect("the attachment stream is available once");
+        let host = producer(21);
+        let controller = producer(22);
+        state.record_presence(
+            &ParticipantId::new("brain").expect("valid brain id"),
+            producer(19),
+            true,
+        );
+        state.record_presence(
+            &ParticipantId::new("drive").expect("valid service id"),
+            producer(20),
+            true,
+        );
+        let request = AttachRequest::validated(
+            crate::model::world::WorldInstanceId::mint(),
+            controller,
+            crate::model::world::WorldProgress::at(4, 12).expect("valid progress"),
+            12,
+        )
+        .expect("the host validated its progress boundary");
+
+        let (preparing, preparing_domain) = state
+            .prepare_attachment(host, request)
+            .expect("a monotonic execution accepts preparation");
+        assert_eq!(preparing.phase, SimulationAttachmentPhase::Preparing);
+        assert_eq!(preparing.revision, 1);
+        assert_eq!(preparing.host, host);
+        assert_eq!(preparing.controller, controller);
+        assert_eq!(preparing.attached_at.world, request.progress());
+        assert_eq!(preparing_domain, before);
+        assert_eq!(updates.recv().await, Some(Some(preparing)));
+
+        assert_eq!(
+            state
+                .activate_attachment(producer(23), preparing.revision)
+                .expect_err("another producer cannot commit the attachment"),
+            AttachmentStateError::WrongHost {
+                expected: host,
+                observed: producer(23),
+            }
+        );
+        let brain = ParticipantId::new("brain").expect("valid brain id");
+        state.record_presence(&brain, producer(19), false);
+        assert_eq!(
+            state
+                .activate_attachment(host, preparing.revision)
+                .expect_err("controller exclusivity is rechecked at commit"),
+            AttachmentStateError::ControllerNotReady { controller }
+        );
+        state.record_presence(&brain, producer(19), true);
+        let (active, active_domain) = state
+            .activate_attachment(host, preparing.revision)
+            .expect("the source-bound host commits preparation");
+        assert_eq!(active.phase, SimulationAttachmentPhase::Active);
+        assert_eq!(active.revision, 2);
+        assert_eq!(active_domain, before);
+        assert_eq!(state.time_domain(), before);
+        assert_eq!(updates.recv().await, Some(Some(active)));
+
+        let (retry, retry_domain) = state
+            .prepare_attachment(host, request)
+            .expect("an identical lost-reply retry is idempotent");
+        assert_eq!(retry, active);
+        assert_eq!(retry_domain, before);
+        assert!(updates.try_recv().is_err(), "a retry publishes no phase");
+
+        assert_eq!(
+            state
+                .remove_attachment(producer(24))
+                .expect_err("another producer cannot remove the attachment"),
+            AttachmentStateError::WrongHost {
+                expected: host,
+                observed: producer(24),
+            }
+        );
+        let removing = state
+            .remove_attachment(host)
+            .expect("the bound host enters Removing");
+        assert_eq!(removing.phase, SimulationAttachmentPhase::Removing);
+        assert_eq!(removing.revision, 3);
+        assert_eq!(updates.recv().await, Some(Some(removing)));
+        assert_eq!(state.time_domain(), before);
+    }
+
+    #[test]
+    fn aborting_preparing_prevents_a_delayed_active_commit() {
+        let state = state();
+        let host = producer(41);
+        let controller = producer(42);
+        state.record_presence(
+            &ParticipantId::new("brain").expect("valid brain id"),
+            producer(39),
+            true,
+        );
+        state.record_presence(
+            &ParticipantId::new("drive").expect("valid service id"),
+            producer(40),
+            true,
+        );
+        let request = AttachRequest::validated(
+            crate::model::world::WorldInstanceId::mint(),
+            controller,
+            crate::model::world::WorldProgress::at(1, 12).expect("valid progress"),
+            12,
+        )
+        .expect("valid attachment request");
+        let (preparing, _) = state
+            .prepare_attachment(host, request)
+            .expect("preparation starts");
+
+        let removing = state
+            .abort_preparing_attachment(host, preparing.revision)
+            .expect("the exact Preparing revision rolls back");
+        assert_eq!(removing.phase, SimulationAttachmentPhase::Removing);
+        assert_eq!(
+            state
+                .activate_attachment(host, preparing.revision)
+                .expect_err("a delayed acknowledgement cannot commit after rollback"),
+            AttachmentStateError::NotPreparing
+        );
+    }
+
+    #[test]
+    fn active_authority_loss_records_a_typed_reason_before_removing() {
+        let state = state();
+        let host = producer(51);
+        let controller = producer(52);
+        state.record_presence(
+            &ParticipantId::new("brain").expect("valid brain id"),
+            producer(49),
+            true,
+        );
+        state.record_presence(
+            &ParticipantId::new("drive").expect("valid service id"),
+            producer(50),
+            true,
+        );
+        let request = AttachRequest::validated(
+            crate::model::world::WorldInstanceId::mint(),
+            controller,
+            crate::model::world::WorldProgress::at(1, 12).expect("valid progress"),
+            12,
+        )
+        .expect("valid attachment request");
+        let (preparing, _) = state
+            .prepare_attachment(host, request)
+            .expect("preparation starts");
+        let (active, _) = state
+            .activate_attachment(host, preparing.revision)
+            .expect("preparation commits");
+
+        let removing = state
+            .fail_active_attachment(active.revision, SimulationEndReason::HostLost)
+            .expect("the exact Active revision converges to Removing");
+        assert_eq!(removing.phase, SimulationAttachmentPhase::Removing);
+        assert_eq!(state.attachment_failure(), Some(SimulationEndReason::HostLost));
+        assert_eq!(
+            state
+                .fail_active_attachment(active.revision, SimulationEndReason::ControllerLost)
+                .expect_err("a stale liveness callback cannot rewrite terminal evidence"),
+            AttachmentStateError::NotActiveRevision
+        );
+        assert_eq!(state.attachment_failure(), Some(SimulationEndReason::HostLost));
+    }
+
+    #[tokio::test]
+    async fn shutdown_publishes_removing_once_and_refuses_new_attachment_work() {
+        let state = state();
+        let mut updates = state
+            .take_attachment_updates()
+            .expect("the attachment stream is available once");
+        let host = producer(31);
+        let controller = producer(32);
+        state.record_presence(
+            &ParticipantId::new("brain").expect("valid brain id"),
+            producer(29),
+            true,
+        );
+        state.record_presence(
+            &ParticipantId::new("drive").expect("valid service id"),
+            producer(30),
+            true,
+        );
+        let request = AttachRequest::validated(
+            crate::model::world::WorldInstanceId::mint(),
+            controller,
+            crate::model::world::WorldProgress::at(3, 12).expect("valid progress"),
+            12,
+        )
+        .expect("the host validated its progress boundary");
+        let (preparing, _) = state
+            .prepare_attachment(host, request)
+            .expect("preparation starts before shutdown");
+        assert_eq!(updates.recv().await, Some(Some(preparing)));
+
+        let removing = state
+            .begin_shutdown_attachment()
+            .expect("shutdown publishes terminal attachment evidence")
+            .expect("the attachment exists");
+        assert_eq!(removing.phase, SimulationAttachmentPhase::Removing);
+        assert!(removing.revision > preparing.revision);
+        assert_eq!(updates.recv().await, Some(Some(removing)));
+        assert_eq!(
+            state.begin_shutdown_attachment().unwrap(),
+            Some(removing),
+            "repeated shutdown does not mint another revision"
+        );
+        assert!(updates.try_recv().is_err());
+        assert_eq!(
+            state
+                .prepare_attachment(host, request)
+                .expect_err("a stopping execution refuses attachment work"),
+            AttachmentStateError::Stopping
+        );
     }
 
     #[test]

@@ -544,6 +544,8 @@ async fn initialize(bus: &BusHandle) -> Result<Initialized, ConnectError> {
         info: execution_info,
         time_domain: _,
         time_domains: _,
+        attachment: _,
+        attachments: _,
     } = bootstrap;
 
     let info = Querier::new(

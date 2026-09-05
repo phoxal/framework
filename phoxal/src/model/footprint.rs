@@ -14,9 +14,10 @@ use std::collections::BTreeMap;
 
 use crate::model::ModelError;
 use crate::model::component::Component;
+use crate::model::geometry::Geometry;
 use crate::model::identity::ComponentInstanceId;
 use crate::model::robot::ComponentInstance;
-use crate::model::structure::{Collision, Geometry, Joint, JointKind, Structure};
+use crate::model::structure::{Collision, Joint, JointKind, Structure};
 
 const AXIS_INVARIANCE_TOLERANCE: f64 = 1.0e-9;
 

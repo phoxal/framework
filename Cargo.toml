@@ -36,6 +36,9 @@ members = [
     "services/perception",
     "services/safety",
     "services/video",
+    "simulators/webots/host",
+    "simulators/webots/world-controller",
+    "simulators/webots/robot-controller",
     "xtask",
 ]
 # Keep the workspace's command runner out of plain root cargo builds: `xtask`
@@ -66,6 +69,9 @@ default-members = [
     "services/perception",
     "services/safety",
     "services/video",
+    "simulators/webots/host",
+    "simulators/webots/world-controller",
+    "simulators/webots/robot-controller",
 ]
 
 [workspace.dependencies]
@@ -82,6 +88,7 @@ gilrs = "0.11.2"
 getrandom = "0.3.4"
 heck = "0.5.0"
 json5 = "0.4.1"
+image = { version = "0.25.8", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2.180"
 nalgebra = { version = "0.34.2", features = ["serde-serialize"] }
 proc-macro2 = "1.0"
@@ -105,6 +112,7 @@ syn = { version = "2.0", features = ["full", "extra-traits"] }
 # workspace's `rust-version`.
 sysinfo = { version = "0.36", default-features = false, features = ["disk", "system"] }
 tempfile = "3.27.0"
+tobj = { version = "4.0.4", default-features = false, features = ["use_f64"] }
 thiserror = "2.0.18"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "process"] }
 tokio-util = { version = "0.7", default-features = false }
@@ -113,6 +121,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trybuild = "1"
 urdf-rs = "0.9.0"
+webots-proto = "0.2.0"
+webots-rs = "0.2"
 # Default features minus transport_compression: Phoxal never enables zenoh
 # compression at runtime, so the feature only pulls lz4_flex into shipped
 # binaries. Re-enable defaults if a Phoxal transport ever compresses.
