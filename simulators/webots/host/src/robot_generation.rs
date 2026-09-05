@@ -1543,7 +1543,7 @@ mod tests {
         assert!(source.contains("PositionSensor {"));
         assert!(source.contains("name \"left.encoder\""));
         assert!(!source.contains("EXTERNPROTO"));
-        let _: webots_proto::Proto = source.parse().expect("R2025a Robot source parses");
+        let _: webots_proto_ast::Proto = source.parse().expect("R2025a Robot source parses");
     }
 
     #[test]
@@ -1599,7 +1599,7 @@ mod tests {
             .1;
         assert!(bounding.contains("Pose {"));
         assert!(!bounding.contains("Transform {"));
-        let _: webots_proto::Proto = source.parse().expect("native Robot source parses");
+        let _: webots_proto_ast::Proto = source.parse().expect("native Robot source parses");
     }
 
     #[test]
@@ -1643,7 +1643,7 @@ mod tests {
         assert!(source.contains("baseColor 0.20000000000000001"), "{source}");
         assert!(!source.contains("baseColor 0.6 0.6 0.6"), "{source}");
         assert!(source.contains("transparency 0.75"), "{source}");
-        let _: webots_proto::Proto = source.parse().expect("painted Robot source parses");
+        let _: webots_proto_ast::Proto = source.parse().expect("painted Robot source parses");
     }
 
     #[test]

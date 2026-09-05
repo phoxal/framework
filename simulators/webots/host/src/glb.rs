@@ -140,7 +140,7 @@ impl DecodedMesh {
                     primitive.indices.len().is_multiple_of(3),
                     "collision primitive is not a triangle list"
                 );
-                for triangle in primitive.indices.chunks_exact(3) {
+                for triangle in primitive.indices.as_chunks::<3>().0 {
                     let a = primitive.positions[triangle[0] as usize];
                     let b = primitive.positions[triangle[1] as usize];
                     let c = primitive.positions[triangle[2] as usize];
@@ -520,7 +520,7 @@ fn render_indices(
     backface_offset: Option<u32>,
 ) -> Result<()> {
     writeln!(out, "{:indent$}{field} [", "")?;
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         writeln!(
             out,
             "{:width$}{} {} {} -1",
@@ -532,7 +532,7 @@ fn render_indices(
         )?;
     }
     if let Some(offset) = backface_offset {
-        for triangle in indices.chunks_exact(3) {
+        for triangle in indices.as_chunks::<3>().0 {
             let first = triangle[0]
                 .checked_add(offset)
                 .context("double-sided GLB index overflowed")?;
@@ -1716,7 +1716,7 @@ fn transform_primitive(
         .transpose()?;
     let mut indices = primitive.indices.clone();
     if determinant.is_sign_negative() {
-        for triangle in indices.chunks_exact_mut(3) {
+        for triangle in indices.as_chunks_mut::<3>().0 {
             triangle.swap(1, 2);
         }
     }
@@ -1973,7 +1973,7 @@ fn decode_base64(value: &str) -> Result<Vec<u8>> {
         "base64 length is not divisible by four"
     );
     let mut output = Vec::with_capacity(value.len() / 4 * 3);
-    for (chunk_index, chunk) in value.as_bytes().chunks_exact(4).enumerate() {
+    for (chunk_index, chunk) in value.as_bytes().as_chunks::<4>().0.iter().enumerate() {
         let last = chunk_index + 1 == value.len() / 4;
         let a = base64_value(chunk[0])?;
         let b = base64_value(chunk[1])?;
@@ -2399,7 +2399,7 @@ mod tests {
             source.contains("0 1"),
             "glTF V is flipped into Webots UV space"
         );
-        let _: webots_proto::Proto = source.parse().expect("textured source parses");
+        let _: webots_proto_ast::Proto = source.parse().expect("textured source parses");
 
         let staged = tempfile::tempdir().expect("texture staging root");
         crate::generation::stage_decoded_images(staged.path(), "fixture.glb", &decoded)
@@ -2615,7 +2615,7 @@ mod tests {
             assert!(source.contains("IndexedFaceSet"));
             assert!(!source.contains("CadShape"));
             assert!(!source.contains("url [\""));
-            let _: webots_proto::Proto = source
+            let _: webots_proto_ast::Proto = source
                 .parse()
                 .unwrap_or_else(|error| panic!("{name} native geometry parses: {error}"));
         }
@@ -2629,9 +2629,16 @@ mod tests {
             .arg("--version")
             .output()
             .expect("Webots version runs");
+        let version = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains("R2025a"),
-            "native renderer proof requires Webots R2025a"
+            output.status.success() && version.contains("R2025a"),
+            "native renderer proof requires runnable Webots R2025a; {} returned {}:\n{version}",
+            webots.display(),
+            output.status
         );
 
         let bundle = crate::generation::tests::compile_mesh_world(
@@ -2656,7 +2663,7 @@ mod tests {
             .replace(crate::WORLD_CONTROLLER_PACKAGE, "renderer_probe");
         assert!(!world.contains("CadShape"));
         assert!(!world.contains("url [\""));
-        let _: webots_proto::Proto = world.parse().expect("probe world parses");
+        let _: webots_proto_ast::Proto = world.parse().expect("probe world parses");
 
         let worlds = root.join("worlds");
         let controller = root.join("controllers/renderer_probe");

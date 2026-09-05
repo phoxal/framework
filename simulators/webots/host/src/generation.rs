@@ -134,7 +134,7 @@ pub fn stage_project(
     stage_controller(&controllers.robot, root, ROBOT_CONTROLLER_PACKAGE)?;
 
     let source = render_world_with_decoded(bundle, host_connect, &decoded_assets)?;
-    let _: webots_proto::Proto = source
+    let _: webots_proto_ast::Proto = source
         .parse()
         .context("generated Webots world did not parse as R2025a VRML")?;
     let world = worlds.join("world.wbt");
@@ -663,7 +663,7 @@ pub(crate) mod tests {
         assert!(source.contains("scale 0.5 0.75 1.25"));
         assert!(!source.contains("CadShape"));
         assert!(!source.contains("url [\"../assets/"));
-        let _: webots_proto::Proto = source.parse().expect("native world parses");
+        let _: webots_proto_ast::Proto = source.parse().expect("native world parses");
     }
 
     #[test]
@@ -678,6 +678,6 @@ pub(crate) mod tests {
         assert!(source.matches("IndexedFaceSet").count() >= 4);
         assert!(!source.contains("CadShape"));
         assert!(!source.contains("url [\"../assets/"));
-        let _: webots_proto::Proto = source.parse().expect("native world parses");
+        let _: webots_proto_ast::Proto = source.parse().expect("native world parses");
     }
 }

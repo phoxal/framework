@@ -316,6 +316,11 @@ async fn serve_live(
     public_slot: &mut Option<WorldSessionServer>,
     registration_slot: &mut Option<RegistrationGuard>,
 ) -> Result<()> {
+    // The CLI rolls back a transaction-owned host with SIGTERM. Install its
+    // handler before publishing readiness so rollback uses the same cleanup
+    // path and retained evidence as an explicit world stop.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("failed to observe world-host termination")?;
     let deadline = tokio::time::Instant::now() + BOOTSTRAP_TIMEOUT;
     loop {
         if let Some(status) = webots.exited()? {
@@ -377,6 +382,9 @@ async fn serve_live(
         tokio::select! {
             signal = tokio::signal::ctrl_c() => {
                 signal.context("failed to wait for the stop signal")?;
+                runtime.mark_stopping().map_err(anyhow::Error::msg)?;
+            }
+            _ = terminate.recv() => {
                 runtime.mark_stopping().map_err(anyhow::Error::msg)?;
             }
             _ = interval.tick() => {}

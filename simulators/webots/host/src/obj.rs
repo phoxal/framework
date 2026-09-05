@@ -119,11 +119,7 @@ pub(crate) fn decode(asset: &AssetId, assets: &BTreeMap<AssetId, Vec<u8>>) -> Re
             mesh.positions.iter().all(|v| v.is_finite()),
             "OBJ positions must be finite"
         );
-        let positions: Vec<_> = mesh
-            .positions
-            .chunks_exact(3)
-            .map(|v| [v[0], v[1], v[2]])
-            .collect();
+        let positions = mesh.positions.as_chunks::<3>().0.to_vec();
         ensure!(
             !mesh.indices.is_empty()
                 && mesh.indices.len().is_multiple_of(3)
@@ -137,11 +133,7 @@ pub(crate) fn decode(asset: &AssetId, assets: &BTreeMap<AssetId, Vec<u8>>) -> Re
                 mesh.normals.len() == positions.len() * 3,
                 "OBJ normals must cover every vertex"
             );
-            let normals: Vec<_> = mesh
-                .normals
-                .chunks_exact(3)
-                .map(|v| [v[0], v[1], v[2]])
-                .collect();
+            let normals = mesh.normals.as_chunks::<3>().0.to_vec();
             ensure!(
                 normals.iter().all(|v| {
                     let length = v.iter().map(|x| x * x).sum::<f64>();

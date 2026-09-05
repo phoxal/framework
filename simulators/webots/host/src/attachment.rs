@@ -591,7 +591,7 @@ impl WebotsAttachments {
                 .context("failed to render the admitted native Robot")?;
                 crate::protocol::validate_robot_import(&definition, &source)
                     .context("generated Robot exceeds the native import budget")?;
-                let _: webots_proto::Proto = source
+                let _: webots_proto_ast::Proto = source
                     .parse()
                     .context("generated native Robot did not parse as R2025a VRML")?;
                 cancellation.check()?;
