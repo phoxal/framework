@@ -143,10 +143,9 @@ jobs:
           done
           cargo doc -p phoxal --all-features --no-deps
 
-      # The shared `ci` job's `cargo test --workspace` unifies only the features
-      # the workspace members enable, which never includes `session` or
-      # `simulator`. The tests that live in those profiles, and the integration
-      # tests that state `required-features`, run only here.
+      # The shared workspace test unifies the features its members enable.
+      # Test all profiles explicitly as well, including integration tests with
+      # `required-features`, independently of the current member composition.
       - name: Test every profile together
         run: cargo test -p phoxal --all-features
 
