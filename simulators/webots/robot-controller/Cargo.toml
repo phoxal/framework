@@ -18,7 +18,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 phoxal = { workspace = true, features = ["session", "simulator"] }
-phoxal-simulator-webots-shared = { path = "../shared", version = "=0.67.1", registry = "phoxal" }
+phoxal-simulator-webots-shared = { path = "../shared", version = "=0.68.0", registry = "phoxal" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
