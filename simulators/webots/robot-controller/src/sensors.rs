@@ -87,17 +87,17 @@ impl SensorSet {
         for binding in bindings {
             let declared = session
                 .robot()
-                .capability(&binding.reference)
-                .with_context(|| format!("plan capability {} is absent", binding.reference))?;
-            let component = || api::topics().component(&binding.reference.component_id);
-            let id = &binding.reference.capability_id;
-            let Some(sampling) = binding.sampling else {
+                .capability(binding.reference())
+                .with_context(|| format!("plan capability {} is absent", binding.reference()))?;
+            let component = || api::topics().component(&binding.reference().component_id);
+            let id = &binding.reference().capability_id;
+            let Some(sampling) = binding.sampling() else {
                 continue;
             };
             let schedule = schedule(binding, source_start_ns)?;
             let device = match declared {
                 DeclaredCapability::Accelerometer(config) => {
-                    let native = webots.accelerometer(&binding.native_device)?;
+                    let native = webots.accelerometer(binding.native_device())?;
                     native.enable(sampling.native_period_ms)?;
                     SensorDevice::Accelerometer(VectorSensor {
                         device: native,
@@ -111,7 +111,7 @@ impl SensorSet {
                     })
                 }
                 DeclaredCapability::Gyroscope(config) => {
-                    let native = webots.gyro(&binding.native_device)?;
+                    let native = webots.gyro(binding.native_device())?;
                     native.enable(sampling.native_period_ms)?;
                     SensorDevice::Gyroscope(VectorSensor {
                         device: native,
@@ -124,10 +124,10 @@ impl SensorSet {
                     })
                 }
                 DeclaredCapability::Imu(config) => {
-                    let inertial = webots.inertial_unit(&binding.native_device)?;
+                    let inertial = webots.inertial_unit(binding.native_device())?;
                     let accelerometer =
-                        webots.accelerometer(format!("{}__accel", binding.native_device))?;
-                    let gyroscope = webots.gyro(format!("{}__gyro", binding.native_device))?;
+                        webots.accelerometer(format!("{}__accel", binding.native_device()))?;
+                    let gyroscope = webots.gyro(format!("{}__gyro", binding.native_device()))?;
                     inertial.enable(sampling.native_period_ms)?;
                     accelerometer.enable(sampling.native_period_ms)?;
                     gyroscope.enable(sampling.native_period_ms)?;
@@ -142,7 +142,7 @@ impl SensorSet {
                     })
                 }
                 DeclaredCapability::Camera(config) => {
-                    let native = webots.camera(&binding.native_device)?;
+                    let native = webots.camera(binding.native_device())?;
                     native.enable(sampling.native_period_ms)?;
                     SensorDevice::Camera(CameraSensor {
                         device: native,
@@ -155,7 +155,7 @@ impl SensorSet {
                     })
                 }
                 DeclaredCapability::Depth(config) => {
-                    let native = webots.range_finder(&binding.native_device)?;
+                    let native = webots.range_finder(binding.native_device())?;
                     native.enable(sampling.native_period_ms)?;
                     SensorDevice::Depth(DepthSensor {
                         device: native,
@@ -168,15 +168,18 @@ impl SensorSet {
                 }
                 DeclaredCapability::Gnss(config) => {
                     if config.coordinate_system != GnssCoordinateSystem::Wgs84 {
-                        bail!("GNSS binding {} is not explicitly wgs84", binding.reference);
+                        bail!(
+                            "GNSS binding {} is not explicitly wgs84",
+                            binding.reference()
+                        );
                     }
-                    let native = webots.gps(&binding.native_device)?;
+                    let native = webots.gps(binding.native_device())?;
                     if native.get_coordinate_system()?
                         != webots_rs::device::gps::GpsCoordinateSystem::Wgs84
                     {
                         bail!(
                             "GNSS binding {} resolved a non-WGS84 native GPS",
-                            binding.reference
+                            binding.reference()
                         );
                     }
                     native.enable(sampling.native_period_ms)?;
@@ -188,7 +191,7 @@ impl SensorSet {
                     })
                 }
                 DeclaredCapability::Range(config) => {
-                    let native = webots.distance_sensor(&binding.native_device)?;
+                    let native = webots.distance_sensor(binding.native_device())?;
                     native.enable(sampling.native_period_ms)?;
                     SensorDevice::Range(RangeSensor {
                         device: native,
@@ -202,7 +205,7 @@ impl SensorSet {
                 DeclaredCapability::Motor(_) | DeclaredCapability::Encoder(_) => continue,
                 other => bail!(
                     "plan admitted unsupported sampled capability {} ({})",
-                    binding.reference,
+                    binding.reference(),
                     other.kind()
                 ),
             };
@@ -367,12 +370,14 @@ pub(super) fn schedule(
     binding: &CapabilityBinding,
     source_start_ns: u64,
 ) -> Result<SampleSchedule> {
-    let sampling = binding.sampling.context("sampled binding has no cadence")?;
+    let sampling = binding
+        .sampling()
+        .context("sampled binding has no cadence")?;
     let source_period_ns = u64::try_from(sampling.native_period_ms)?
         .checked_mul(1_000_000)
         .context("native sampling period overflows nanoseconds")?;
     let mut schedule = SampleSchedule::from_source_period_ns(
-        &binding.reference.to_string(),
+        &binding.reference().to_string(),
         source_period_ns,
         sampling.publish_rate_hz,
     )?;
@@ -458,23 +463,21 @@ mod tests {
     fn every_sample_waits_for_a_native_observation_after_late_attachment() {
         use phoxal::model::identity::{CapabilityId, CapabilityRef, ComponentInstanceId};
         use phoxal_simulator_webots_shared::plan::{PlannedTarget, SamplingPlan};
-        let binding = CapabilityBinding {
+        let binding = CapabilityBinding::Encoder {
             reference: CapabilityRef {
                 component_id: ComponentInstanceId::new("wheel").expect("component"),
                 capability_id: CapabilityId::new("encoder").expect("capability"),
             },
-            kind: "encoder".to_owned(),
             native_device: "wheel.encoder".to_owned(),
             target: PlannedTarget::Joint {
                 id: "axle".to_owned(),
             },
-            actuation: None,
-            sampling: Some(SamplingPlan {
+            sampling: SamplingPlan {
                 publish_rate_hz: 50.0,
                 native_sampling_rate_hz: 50.0,
                 native_period_ms: 24,
                 publish_period_ns: 20_000_000,
-            }),
+            },
         };
         for start in [0, 12_000_000_000] {
             let mut schedule = schedule(&binding, start).expect("native schedule");

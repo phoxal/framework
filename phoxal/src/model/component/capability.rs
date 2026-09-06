@@ -222,7 +222,10 @@ pub enum GnssCoordinateSystem {
 /// A component declares the kind and a simulation models it; the two must
 /// agree, which is why the kind is one shared type rather than two parallel
 /// vocabularies compared as strings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum CapabilityKind {
     Motor,
     Encoder,

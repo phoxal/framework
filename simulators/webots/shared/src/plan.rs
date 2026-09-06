@@ -14,7 +14,6 @@ use phoxal::model::component::capability::{
     StructuralTarget,
 };
 use phoxal::model::identity::{CapabilityRef, ComponentInstanceId};
-use phoxal::model::robot::KinematicConfig;
 use phoxal::model::simulation::{
     ActuatorType, Capability as SimulatedCapability, FullSimulationError, FullSimulationPlan,
 };
@@ -44,15 +43,127 @@ pub struct DriverSubstitution {
 }
 
 /// One typed capability bound to one unique native device.
+///
+/// The variants make native I/O obligations explicit. A motor cannot carry a
+/// sampling cadence, and a sampled device cannot accidentally acquire a motor
+/// command contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CapabilityBinding {
-    pub reference: CapabilityRef,
-    pub kind: String,
-    pub native_device: String,
-    pub target: PlannedTarget,
-    pub sampling: Option<SamplingPlan>,
-    pub actuation: Option<ActuationPlan>,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CapabilityBinding {
+    Motor {
+        reference: CapabilityRef,
+        native_device: String,
+        target: PlannedTarget,
+        command: MotorCommand,
+    },
+    Encoder {
+        reference: CapabilityRef,
+        native_device: String,
+        target: PlannedTarget,
+        sampling: SamplingPlan,
+    },
+    Sampled {
+        reference: CapabilityRef,
+        native_device: String,
+        target: PlannedTarget,
+        capability: SampledCapabilityKind,
+        sampling: SamplingPlan,
+    },
+}
+
+impl CapabilityBinding {
+    #[must_use]
+    pub fn reference(&self) -> &CapabilityRef {
+        match self {
+            Self::Motor { reference, .. }
+            | Self::Encoder { reference, .. }
+            | Self::Sampled { reference, .. } => reference,
+        }
+    }
+
+    #[must_use]
+    pub fn native_device(&self) -> &str {
+        match self {
+            Self::Motor { native_device, .. }
+            | Self::Encoder { native_device, .. }
+            | Self::Sampled { native_device, .. } => native_device,
+        }
+    }
+
+    #[must_use]
+    pub fn target(&self) -> &PlannedTarget {
+        match self {
+            Self::Motor { target, .. }
+            | Self::Encoder { target, .. }
+            | Self::Sampled { target, .. } => target,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> CapabilityKind {
+        match self {
+            Self::Motor { .. } => CapabilityKind::Motor,
+            Self::Encoder { .. } => CapabilityKind::Encoder,
+            Self::Sampled { capability, .. } => capability.capability_kind(),
+        }
+    }
+
+    #[must_use]
+    pub fn sampling(&self) -> Option<&SamplingPlan> {
+        match self {
+            Self::Encoder { sampling, .. } | Self::Sampled { sampling, .. } => Some(sampling),
+            Self::Motor { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn motor_command(&self) -> Option<MotorCommand> {
+        match self {
+            Self::Motor { command, .. } => Some(*command),
+            Self::Encoder { .. } | Self::Sampled { .. } => None,
+        }
+    }
+}
+
+/// Capability kinds supported by Webots' sampled native device path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampledCapabilityKind {
+    Accelerometer,
+    Gyroscope,
+    Imu,
+    Gnss,
+    Camera,
+    Depth,
+    Range,
+}
+
+impl SampledCapabilityKind {
+    #[must_use]
+    pub const fn capability_kind(self) -> CapabilityKind {
+        match self {
+            Self::Accelerometer => CapabilityKind::Accelerometer,
+            Self::Gyroscope => CapabilityKind::Gyroscope,
+            Self::Imu => CapabilityKind::Imu,
+            Self::Gnss => CapabilityKind::Gnss,
+            Self::Camera => CapabilityKind::Camera,
+            Self::Depth => CapabilityKind::Depth,
+            Self::Range => CapabilityKind::Range,
+        }
+    }
+
+    fn from_capability_kind(kind: CapabilityKind) -> Option<Self> {
+        Some(match kind {
+            CapabilityKind::Accelerometer => Self::Accelerometer,
+            CapabilityKind::Gyroscope => Self::Gyroscope,
+            CapabilityKind::Imu => Self::Imu,
+            CapabilityKind::Gnss => Self::Gnss,
+            CapabilityKind::Camera => Self::Camera,
+            CapabilityKind::Depth => Self::Depth,
+            CapabilityKind::Range => Self::Range,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -70,37 +181,6 @@ pub struct SamplingPlan {
     pub native_sampling_rate_hz: f64,
     pub native_period_ms: i32,
     pub publish_period_ns: u64,
-}
-
-/// Fail-closed policy for a typed actuator setpoint lane.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ActuationPlan {
-    Motor {
-        command: MotorCommand,
-        source: String,
-        missing: MissingActuation,
-        stale: StaleActuation,
-        source_loss: SourceLossActuation,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MissingActuation {
-    Stop,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StaleActuation {
-    RejectAndStop,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceLossActuation {
-    Stop,
 }
 
 /// One simulated link fact preserved for native generation.
@@ -142,6 +222,8 @@ pub enum PlanError {
     },
     #[error("capability '{capability}' has invalid cadence: {detail}")]
     InvalidCadence { capability: String, detail: String },
+    #[error(transparent)]
+    DriveAuthority(#[from] phoxal::simulator::DriveAuthorityError),
     #[error("native Webots device name '{device}' is claimed by both {first} and {second}")]
     DuplicateDevice {
         device: String,
@@ -213,7 +295,7 @@ impl RobotSimulationPlan {
                 let binding =
                     bind_capability(reference.clone(), capability, simulated, basic_time_step_ms)?;
                 if matches!(capability, DeclaredCapability::Motor(_)) {
-                    validate_drive_authority(robot, &reference)?;
+                    phoxal::simulator::DriveCommandAuthority::validate_motor(robot, &reference)?;
                 }
                 match capability.target() {
                     StructuralTarget::Joint { id } => {
@@ -376,57 +458,6 @@ fn has_movable_parent(structure: &phoxal::model::structure::Structure, link: &st
         .is_some_and(|joint| joint.kind() != phoxal::model::structure::JointKind::Fixed)
 }
 
-fn validate_drive_authority(robot: &Robot, reference: &CapabilityRef) -> Result<(), PlanError> {
-    let count = match robot.motion().kinematic() {
-        KinematicConfig::Differential {
-            left_actuators,
-            right_actuators,
-            ..
-        } => left_actuators
-            .iter()
-            .chain(right_actuators)
-            .filter(|candidate| *candidate == reference)
-            .count(),
-        KinematicConfig::Mecanum {
-            front_left_actuator,
-            front_right_actuator,
-            rear_left_actuator,
-            rear_right_actuator,
-            ..
-        } => [
-            front_left_actuator,
-            front_right_actuator,
-            rear_left_actuator,
-            rear_right_actuator,
-        ]
-        .into_iter()
-        .filter(|candidate| *candidate == reference)
-        .count(),
-        KinematicConfig::Ackermann {
-            steering_actuator,
-            drive_actuator,
-            ..
-        } => [steering_actuator, drive_actuator]
-            .into_iter()
-            .filter(|candidate| *candidate == reference)
-            .count(),
-        KinematicConfig::Omnidirectional { actuators, .. } => actuators
-            .iter()
-            .filter(|candidate| *candidate == reference)
-            .count(),
-    };
-    if count != 1 {
-        return Err(PlanError::UnsupportedCapability {
-            capability: reference.to_string(),
-            kind: CapabilityKind::Motor.to_string(),
-            detail: format!(
-                "the v0 drive authority is valid only when this motor occurs exactly once in the compiled kinematic actuator topology; found {count} occurrences"
-            ),
-        });
-    }
-    Ok(())
-}
-
 fn bind_capability(
     reference: CapabilityRef,
     declared: &DeclaredCapability,
@@ -485,7 +516,7 @@ fn bind_capability(
     let sampling = sampling_rates(declared, simulated)
         .map(|(publish, native)| sampling_plan(&reference, basic_time_step_ms, publish, native))
         .transpose()?;
-    let actuation = match (declared, simulated) {
+    let motor_command = match (declared, simulated) {
         (DeclaredCapability::Motor(config), SimulatedCapability::Motor(native)) => {
             let expected = match config.command {
                 MotorCommand::Position => ActuatorType::Position,
@@ -499,50 +530,50 @@ fn bind_capability(
                     simulated: native.actuator_type,
                 });
             }
-            Some(ActuationPlan::Motor {
-                command: config.command,
-                source: "drive".to_owned(),
-                missing: MissingActuation::Stop,
-                stale: StaleActuation::RejectAndStop,
-                source_loss: SourceLossActuation::Stop,
-            })
+            Some(config.command)
         }
         _ => None,
     };
-    if matches!(
-        kind,
-        CapabilityKind::EmergencyStop | CapabilityKind::Led | CapabilityKind::Speaker
-    ) {
-        return Err(PlanError::UnsupportedCapability {
-            capability: reference.to_string(),
-            kind: kind.to_string(),
-            detail: match kind {
-                CapabilityKind::EmergencyStop => {
-                    "no native Webots device can originate a trustworthy emergency-stop state"
-                }
-                CapabilityKind::Led | CapabilityKind::Speaker => {
-                    "the compiled contract defines no unique command authority"
-                }
-                _ => "unsupported capability",
-            }
-            .to_owned(),
-        });
+    let capability_name = reference.to_string();
+    let kind_name = kind.to_string();
+    let incomplete = || PlanError::UnsupportedCapability {
+        capability: capability_name.clone(),
+        kind: kind_name.clone(),
+        detail: "the compiled native I/O contract is incomplete for this capability".to_owned(),
+    };
+    match (kind, motor_command, sampling) {
+        (CapabilityKind::Motor, Some(command), None) => Ok(CapabilityBinding::Motor {
+            reference,
+            native_device,
+            target,
+            command,
+        }),
+        (CapabilityKind::Encoder, None, Some(sampling)) => Ok(CapabilityBinding::Encoder {
+            reference,
+            native_device,
+            target,
+            sampling,
+        }),
+        (kind, None, Some(sampling)) => {
+            let capability =
+                SampledCapabilityKind::from_capability_kind(kind).ok_or_else(incomplete)?;
+            Ok(CapabilityBinding::Sampled {
+                reference,
+                native_device,
+                target,
+                capability,
+                sampling,
+            })
+        }
+        _ => Err(incomplete()),
     }
-    Ok(CapabilityBinding {
-        reference,
-        kind: kind.to_string(),
-        native_device,
-        target,
-        sampling,
-        actuation,
-    })
 }
 
 fn native_device_names(binding: &CapabilityBinding) -> Vec<String> {
-    let mut devices = vec![binding.native_device.clone()];
-    if binding.kind == CapabilityKind::Imu.as_str() {
-        devices.push(format!("{}__accel", binding.native_device));
-        devices.push(format!("{}__gyro", binding.native_device));
+    let mut devices = vec![binding.native_device().to_owned()];
+    if binding.kind() == CapabilityKind::Imu {
+        devices.push(format!("{}__accel", binding.native_device()));
+        devices.push(format!("{}__gyro", binding.native_device()));
     }
     devices
 }
@@ -672,7 +703,7 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(
             first.capabilities[0]
-                .sampling
+                .sampling()
                 .expect("sampled")
                 .native_period_ms,
             24

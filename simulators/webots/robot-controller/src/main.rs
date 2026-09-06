@@ -13,16 +13,19 @@ use phoxal::SampleSchedule;
 use phoxal::api;
 use phoxal::bus::{FixedSourceLease, LeaseDecision, LeaseRejection, ParticipantReadyEvents};
 use phoxal::identity::ParticipantId;
-use phoxal::model::component::capability::{Capability as DeclaredCapability, MotorCommand};
+use phoxal::model::component::capability::{
+    Capability as DeclaredCapability, CapabilityKind, MotorCommand,
+};
 use phoxal::model::world::{WorldProgress, WorldProgressError};
 use phoxal::simulation::api::step::StepEvent;
 use phoxal::simulator::{
-    ActiveBoundaryStamp, LiveSamplePublisher, LiveSetpointReceiver, LiveTransitionStamp,
+    ActiveBoundaryStamp, DriveCommandAuthority, LiveSamplePublisher, LiveSetpointReceiver,
+    LiveTransitionStamp,
 };
 use phoxal::simulator::{SimulatorConnectOptions, SimulatorError, SimulatorSession};
 use phoxal::supervisor::api::simulation::SimulationAttachmentPhase;
 use phoxal_simulator_webots_shared::plan::{
-    ActuationPlan, CapabilityBinding as PlannedBinding, RobotSimulationPlan,
+    CapabilityBinding as PlannedBinding, RobotSimulationPlan,
 };
 use phoxal_simulator_webots_shared::protocol::{
     ActuationDecision, ActuationEvidence, ActuationSelection, AppliedActuation, ControllerEvent,
@@ -37,12 +40,6 @@ mod sensors;
 use sensors::SensorSet;
 
 const PARKED_POLL: Duration = Duration::from_millis(10);
-/// Host-monotonic silence bound for the canonical `drive` command authority.
-///
-/// A held command may be reused only while its source remains Ready and this interval has not
-/// elapsed. Expiry is checked immediately before every native transition, including the first
-/// transition after a pause.
-const DRIVE_COMMAND_SILENCE: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -572,20 +569,24 @@ impl DeviceSet {
     ) -> Result<Self> {
         let mut motors = Vec::new();
         let mut encoders = Vec::new();
+        let drive_authority = DriveCommandAuthority::standard()?;
         for binding in &plan.capabilities {
-            if !matches!(binding.kind.as_str(), "motor" | "encoder") {
+            if !matches!(
+                binding.kind(),
+                CapabilityKind::Motor | CapabilityKind::Encoder
+            ) {
                 continue;
             }
             let declared = session
                 .robot()
-                .capability(&binding.reference)
-                .with_context(|| format!("plan capability {} is absent", binding.reference))?;
-            let component = || api::topics().component(&binding.reference.component_id);
-            let id = &binding.reference.capability_id;
-            match (declared, binding.kind.as_str()) {
-                (DeclaredCapability::Motor(config), "motor") => {
-                    let source = ensure_motor_plan(binding, config.command)?;
-                    let native = webots.motor(&binding.native_device)?;
+                .capability(binding.reference())
+                .with_context(|| format!("plan capability {} is absent", binding.reference()))?;
+            let component = || api::topics().component(&binding.reference().component_id);
+            let id = &binding.reference().capability_id;
+            match (declared, binding.kind()) {
+                (DeclaredCapability::Motor(config), CapabilityKind::Motor) => {
+                    ensure_motor_plan(binding, config.command)?;
+                    let native = webots.motor(binding.native_device())?;
                     let position_velocity = config.max_velocity_radps.map_or_else(
                         || native.get_max_velocity(),
                         |velocity| Ok(velocity / config.gear_ratio.abs()),
@@ -593,10 +594,10 @@ impl DeviceSet {
                     ensure!(
                         position_velocity.is_finite() && position_velocity > 0.0,
                         "motor {} has no positive finite position velocity",
-                        binding.reference
+                        binding.reference()
                     );
                     motors.push(MotorDevice {
-                        capability: binding.reference.clone(),
+                        capability: binding.reference().clone(),
                         native,
                         command: config.command,
                         gear_ratio: config.gear_ratio,
@@ -604,20 +605,17 @@ impl DeviceSet {
                         receiver: session
                             .setpoint_receiver(component()?.motor(id)?.command().owner())
                             .await?,
-                        authority: FixedSourceLease::new(
-                            "component/motor/command",
-                            source.clone(),
-                            DRIVE_COMMAND_SILENCE,
-                            Duration::MAX,
-                        ),
-                        ready: session.participant_ready_events(&source).await?,
+                        authority: drive_authority.lease(),
+                        ready: session
+                            .participant_ready_events(drive_authority.source())
+                            .await?,
                     });
                 }
-                (DeclaredCapability::Encoder(config), "encoder") => {
+                (DeclaredCapability::Encoder(config), CapabilityKind::Encoder) => {
                     let sampling = binding
-                        .sampling
+                        .sampling()
                         .context("encoder plan has no sampling policy")?;
-                    let native = webots.position_sensor(&binding.native_device)?;
+                    let native = webots.position_sensor(binding.native_device())?;
                     native.enable(sampling.native_period_ms)?;
                     encoders.push(EncoderDevice {
                         native,
@@ -630,7 +628,7 @@ impl DeviceSet {
                 }
                 _ => bail!(
                     "plan binding {} does not match its compiled capability kind",
-                    binding.reference
+                    binding.reference()
                 ),
             }
         }
@@ -943,20 +941,15 @@ fn dispatch_motor(
     })
 }
 
-fn ensure_motor_plan(binding: &PlannedBinding, command: MotorCommand) -> Result<ParticipantId> {
-    let Some(ActuationPlan::Motor {
-        command: planned,
-        source,
-        ..
-    }) = &binding.actuation
-    else {
-        bail!("motor binding has no fail-closed actuation plan");
-    };
+fn ensure_motor_plan(binding: &PlannedBinding, command: MotorCommand) -> Result<()> {
+    let planned = binding
+        .motor_command()
+        .context("motor binding has no command contract")?;
     ensure!(
-        *planned == command,
+        planned == command,
         "motor binding command mode does not match its plan"
     );
-    ParticipantId::new(source.clone()).map_err(Into::into)
+    Ok(())
 }
 
 fn observed_progress(seconds: f64, step_ns: u64) -> Result<WorldProgress> {
@@ -1062,16 +1055,12 @@ mod tests {
 
     #[test]
     fn paused_drive_intent_expires_by_host_time_and_a_later_command_stays_fresh() {
-        let participant = ParticipantId::new("drive").expect("participant");
+        let authority = DriveCommandAuthority::standard().expect("drive authority");
+        let participant = authority.source().clone();
         let producer = ProducerId::try_from(0x1000_0000_0000_0000_0000_0000_0000_0001)
             .expect("canonical producer");
         let source = ParticipantSourceIdentity::new(participant.clone(), producer);
-        let mut lease = FixedSourceLease::new(
-            "component/motor/command",
-            participant,
-            DRIVE_COMMAND_SILENCE,
-            Duration::MAX,
-        );
+        let mut lease = authority.lease();
         lease.update_ready(&source, ParticipantReadyStatus::Ready);
         let paused_at = LocalInstant::from_boot_ns(1_000_000_000);
         assert_eq!(
@@ -1085,7 +1074,7 @@ mod tests {
         );
         assert!(
             lease
-                .live_host(paused_at.saturating_add(DRIVE_COMMAND_SILENCE))
+                .live_host(paused_at.saturating_add(DriveCommandAuthority::silence()))
                 .is_none(),
             "a command that aged through the full pause bound must expire"
         );

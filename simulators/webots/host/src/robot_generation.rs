@@ -8,7 +8,7 @@ use nalgebra::{Isometry3, Matrix3, Translation3, UnitQuaternion, Vector3};
 use phoxal::identity::ExecutionId;
 use phoxal::model::AssetId;
 use phoxal::model::Robot;
-use phoxal::model::component::capability::Capability as DeclaredCapability;
+use phoxal::model::component::capability::{Capability as DeclaredCapability, CapabilityKind};
 use phoxal::model::geometry::Geometry;
 use phoxal::model::identity::ComponentInstanceId;
 use phoxal::model::simulation::{CameraProjection, Capability as SimulatedCapability};
@@ -50,9 +50,9 @@ pub fn render_robot(
     );
     for binding in &plan.capabilities {
         ensure!(
-            robot.capability(&binding.reference).is_some(),
+            robot.capability(binding.reference()).is_some(),
             "binding {} names a missing capability",
-            binding.reference
+            binding.reference()
         );
     }
     let definition = robot_definition(execution);
@@ -135,29 +135,12 @@ fn render_link_body(
             generation::quoted(material)
         )?;
     }
+    let assembly =
+        resolve_fixed_assembly(robot, structure, namespace, link, &Isometry3::identity())?;
     writeln!(out, "{:indent$}children [", "")?;
-    render_fixed_children(
-        out,
-        robot,
-        plan,
-        assets,
-        execution,
-        structure,
-        namespace,
-        link,
-        &Isometry3::identity(),
-        indent + 2,
-    )?;
+    render_fixed_assembly(out, robot, plan, assets, execution, &assembly, indent + 2)?;
     writeln!(out, "{:indent$}]", "")?;
-    let mut collisions = collect_fixed_collisions(structure, link, &Isometry3::identity())?;
-    if namespace.is_none() {
-        collisions.extend(collect_mounted_collisions(
-            robot,
-            structure,
-            link,
-            &Isometry3::identity(),
-        )?);
-    }
+    let collisions = collect_assembly_collisions(&assembly);
     if !collisions.is_empty() {
         writeln!(out, "{:indent$}boundingObject Group {{", "")?;
         writeln!(out, "{:width$}children [", "", width = indent + 2)?;
@@ -176,15 +159,7 @@ fn render_link_body(
         writeln!(out, "{:width$}]", "", width = indent + 2)?;
         writeln!(out, "{:indent$}}}", "")?;
     }
-    let mut mass = collect_fixed_mass(structure, link, &Isometry3::identity())?;
-    if namespace.is_none() {
-        mass.extend(collect_mounted_mass(
-            robot,
-            structure,
-            link,
-            &Isometry3::identity(),
-        )?);
-    }
+    let mass = collect_assembly_mass(&assembly);
     if let Some(inertial) = mass.finalize() {
         let center = inertial.center;
         let matrix = inertial.inertia;
@@ -219,145 +194,6 @@ fn render_link_body(
             width = indent + 2
         )?;
         writeln!(out, "{:indent$}}}", "")?;
-    }
-    Ok(())
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "fixed-subtree recursion carries context plus the composed transform"
-)]
-fn render_fixed_children(
-    out: &mut String,
-    robot: &Robot,
-    plan: &RobotSimulationPlan,
-    assets: &BTreeMap<AssetId, Vec<u8>>,
-    execution: ExecutionId,
-    structure: &Structure,
-    namespace: Option<&ComponentInstanceId>,
-    link: &Link,
-    transform: &Isometry3<f64>,
-    indent: usize,
-) -> Result<()> {
-    let mut devices = String::new();
-    render_link_devices(
-        &mut devices,
-        robot,
-        plan,
-        execution,
-        namespace,
-        link,
-        indent + 2,
-    )?;
-    if !devices.is_empty() {
-        render_pose_wrapper(out, transform, indent, |out| {
-            out.push_str(&devices);
-            Ok(())
-        })?;
-    }
-    for visual in link.visuals() {
-        let origin = transform * pose_to_isometry(visual.origin());
-        render_shape_at(
-            out,
-            &origin,
-            visual.geometry(),
-            visual.material(),
-            assets,
-            execution,
-            indent,
-            true,
-        )?;
-    }
-    if namespace.is_none() {
-        let mut mounted = String::new();
-        render_mounted_components(
-            &mut mounted,
-            robot,
-            plan,
-            assets,
-            execution,
-            link,
-            indent + 2,
-        )?;
-        if !mounted.is_empty() {
-            render_pose_wrapper(out, transform, indent, |out| {
-                out.push_str(&mounted);
-                Ok(())
-            })?;
-        }
-    }
-    for joint in structure.child_joints(link.name().as_str()) {
-        if joint.kind() == JointKind::Fixed {
-            let child = structure
-                .link(joint.child().as_str())
-                .with_context(|| format!("joint {} has no child link", joint.name()))?;
-            let child_transform = transform * pose_to_isometry(joint.origin());
-            render_fixed_children(
-                out,
-                robot,
-                plan,
-                assets,
-                execution,
-                structure,
-                namespace,
-                child,
-                &child_transform,
-                indent,
-            )?;
-        } else {
-            let mut rendered = String::new();
-            render_joint(
-                &mut rendered,
-                robot,
-                plan,
-                assets,
-                execution,
-                structure,
-                namespace,
-                joint,
-                indent + 2,
-            )?;
-            render_pose_wrapper(out, transform, indent, |out| {
-                out.push_str(&rendered);
-                Ok(())
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn render_mounted_components(
-    out: &mut String,
-    robot: &Robot,
-    plan: &RobotSimulationPlan,
-    assets: &BTreeMap<AssetId, Vec<u8>>,
-    execution: ExecutionId,
-    mount: &Link,
-    indent: usize,
-) -> Result<()> {
-    for component in robot
-        .components()
-        .filter(|component| component.instance().mount_link() == mount.name())
-    {
-        let structure = component.component_type().structure();
-        let root = structure
-            .link(structure.root_link().as_str())
-            .with_context(|| format!("component {} has no root link", component.id()))?;
-        // The component root is the rigid mount frame, not another physical Solid. Inline its
-        // fixed assembly into the mounting link so movable joints connect directly between two
-        // Physics-bearing Solids and fixed sensor mass/collision contributes to the mount.
-        render_fixed_children(
-            out,
-            robot,
-            plan,
-            assets,
-            execution,
-            structure,
-            Some(component.id()),
-            root,
-            &Isometry3::identity(),
-            indent,
-        )?;
     }
     Ok(())
 }
@@ -404,51 +240,59 @@ struct StagedCollision<'a> {
     geometry: &'a Geometry,
 }
 
-fn collect_fixed_collisions<'a>(
+/// One fixed rigid assembly, resolved once for its rendering-adjacent physics
+/// facts. The same transform tree feeds collision and inertial lowering.
+struct ResolvedAssemblyLink<'a> {
     structure: &'a Structure,
+    namespace: Option<&'a ComponentInstanceId>,
     link: &'a Link,
-    transform: &Isometry3<f64>,
-) -> Result<Vec<StagedCollision<'a>>> {
-    let mut collisions = link
-        .collisions()
-        .map(|collision| StagedCollision {
-            origin: transform * pose_to_isometry(collision.origin()),
-            geometry: collision.geometry(),
-        })
-        .collect::<Vec<_>>();
-    for joint in structure
-        .child_joints(link.name().as_str())
-        .filter(|joint| joint.kind() == JointKind::Fixed)
-    {
-        let child = structure
-            .link(joint.child().as_str())
-            .with_context(|| format!("joint {} has no child link", joint.name()))?;
-        let child_transform = transform * pose_to_isometry(joint.origin());
-        collisions.extend(collect_fixed_collisions(
-            structure,
-            child,
-            &child_transform,
-        )?);
-    }
-    Ok(collisions)
+    transform: Isometry3<f64>,
 }
 
-fn collect_mounted_collisions<'a>(
+fn resolve_fixed_assembly<'a>(
     robot: &'a Robot,
     structure: &'a Structure,
+    namespace: Option<&'a ComponentInstanceId>,
+    root: &'a Link,
+    transform: &Isometry3<f64>,
+) -> Result<Vec<ResolvedAssemblyLink<'a>>> {
+    let mut resolved = Vec::new();
+    resolve_fixed_assembly_at(&mut resolved, robot, structure, namespace, root, transform)?;
+    Ok(resolved)
+}
+
+fn resolve_fixed_assembly_at<'a>(
+    resolved: &mut Vec<ResolvedAssemblyLink<'a>>,
+    robot: &'a Robot,
+    structure: &'a Structure,
+    namespace: Option<&'a ComponentInstanceId>,
     link: &'a Link,
     transform: &Isometry3<f64>,
-) -> Result<Vec<StagedCollision<'a>>> {
-    let mut collisions = Vec::new();
-    for component in robot
-        .components()
-        .filter(|component| component.instance().mount_link() == link.name())
-    {
-        let mounted = component.component_type().structure();
-        let root = mounted
-            .link(mounted.root_link().as_str())
-            .with_context(|| format!("component {} has no root link", component.id()))?;
-        collisions.extend(collect_fixed_collisions(mounted, root, transform)?);
+) -> Result<()> {
+    resolved.push(ResolvedAssemblyLink {
+        structure,
+        namespace,
+        link,
+        transform: *transform,
+    });
+    if namespace.is_none() {
+        for component in robot
+            .components()
+            .filter(|component| component.instance().mount_link() == link.name())
+        {
+            let mounted = component.component_type().structure();
+            let root = mounted
+                .link(mounted.root_link().as_str())
+                .with_context(|| format!("component {} has no root link", component.id()))?;
+            resolve_fixed_assembly_at(
+                resolved,
+                robot,
+                mounted,
+                Some(component.id()),
+                root,
+                transform,
+            )?;
+        }
     }
     for joint in structure
         .child_joints(link.name().as_str())
@@ -458,14 +302,99 @@ fn collect_mounted_collisions<'a>(
             .link(joint.child().as_str())
             .with_context(|| format!("joint {} has no child link", joint.name()))?;
         let child_transform = transform * pose_to_isometry(joint.origin());
-        collisions.extend(collect_mounted_collisions(
+        resolve_fixed_assembly_at(
+            resolved,
             robot,
             structure,
+            namespace,
             child,
             &child_transform,
-        )?);
+        )?;
     }
-    Ok(collisions)
+    Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "lowering needs the complete native context"
+)]
+fn render_fixed_assembly(
+    out: &mut String,
+    robot: &Robot,
+    plan: &RobotSimulationPlan,
+    assets: &BTreeMap<AssetId, Vec<u8>>,
+    execution: ExecutionId,
+    assembly: &[ResolvedAssemblyLink<'_>],
+    indent: usize,
+) -> Result<()> {
+    for resolved in assembly {
+        let mut devices = String::new();
+        render_link_devices(
+            &mut devices,
+            robot,
+            plan,
+            execution,
+            resolved.namespace,
+            resolved.link,
+            indent + 2,
+        )?;
+        if !devices.is_empty() {
+            render_pose_wrapper(out, &resolved.transform, indent, |out| {
+                out.push_str(&devices);
+                Ok(())
+            })?;
+        }
+        for visual in resolved.link.visuals() {
+            let origin = resolved.transform * pose_to_isometry(visual.origin());
+            render_shape_at(
+                out,
+                &origin,
+                visual.geometry(),
+                visual.material(),
+                assets,
+                execution,
+                indent,
+                true,
+            )?;
+        }
+        for joint in resolved
+            .structure
+            .child_joints(resolved.link.name().as_str())
+            .filter(|joint| joint.kind() != JointKind::Fixed)
+        {
+            let mut rendered = String::new();
+            render_joint(
+                &mut rendered,
+                robot,
+                plan,
+                assets,
+                execution,
+                resolved.structure,
+                resolved.namespace,
+                joint,
+                indent + 2,
+            )?;
+            render_pose_wrapper(out, &resolved.transform, indent, |out| {
+                out.push_str(&rendered);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_assembly_collisions<'a>(
+    assembly: &'a [ResolvedAssemblyLink<'a>],
+) -> Vec<StagedCollision<'a>> {
+    assembly
+        .iter()
+        .flat_map(|resolved| {
+            resolved.link.collisions().map(|collision| StagedCollision {
+                origin: resolved.transform * pose_to_isometry(collision.origin()),
+                geometry: collision.geometry(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -499,6 +428,7 @@ impl MassProperties {
         self.inertia_about_root += rotated + parallel_axis(mass, &center);
     }
 
+    #[cfg(test)]
     fn extend(&mut self, other: Self) {
         self.mass += other.mass;
         self.weighted_center += other.weighted_center;
@@ -518,59 +448,12 @@ impl MassProperties {
     }
 }
 
-fn collect_fixed_mass(
-    structure: &Structure,
-    link: &Link,
-    transform: &Isometry3<f64>,
-) -> Result<MassProperties> {
+fn collect_assembly_mass(assembly: &[ResolvedAssemblyLink<'_>]) -> MassProperties {
     let mut mass = MassProperties::default();
-    mass.add_link(link, transform);
-    for joint in structure
-        .child_joints(link.name().as_str())
-        .filter(|joint| joint.kind() == JointKind::Fixed)
-    {
-        let child = structure
-            .link(joint.child().as_str())
-            .with_context(|| format!("joint {} has no child link", joint.name()))?;
-        let child_transform = transform * pose_to_isometry(joint.origin());
-        mass.extend(collect_fixed_mass(structure, child, &child_transform)?);
+    for resolved in assembly {
+        mass.add_link(resolved.link, &resolved.transform);
     }
-    Ok(mass)
-}
-
-fn collect_mounted_mass(
-    robot: &Robot,
-    structure: &Structure,
-    link: &Link,
-    transform: &Isometry3<f64>,
-) -> Result<MassProperties> {
-    let mut mass = MassProperties::default();
-    for component in robot
-        .components()
-        .filter(|component| component.instance().mount_link() == link.name())
-    {
-        let mounted = component.component_type().structure();
-        let root = mounted
-            .link(mounted.root_link().as_str())
-            .with_context(|| format!("component {} has no root link", component.id()))?;
-        mass.extend(collect_fixed_mass(mounted, root, transform)?);
-    }
-    for joint in structure
-        .child_joints(link.name().as_str())
-        .filter(|joint| joint.kind() == JointKind::Fixed)
-    {
-        let child = structure
-            .link(joint.child().as_str())
-            .with_context(|| format!("joint {} has no child link", joint.name()))?;
-        let child_transform = transform * pose_to_isometry(joint.origin());
-        mass.extend(collect_mounted_mass(
-            robot,
-            structure,
-            child,
-            &child_transform,
-        )?);
-    }
-    Ok(mass)
+    mass
 }
 
 fn parallel_axis(mass: f64, displacement: &Vector3<f64>) -> Matrix3<f64> {
@@ -620,16 +503,18 @@ fn render_link_devices(
     for binding in plan
         .capabilities
         .iter()
-        .filter(|binding| matches!(&binding.target, PlannedTarget::Link { id } if id == &target))
+        .filter(|binding| matches!(binding.target(), PlannedTarget::Link { id } if id == &target))
     {
         let declared = robot
-            .capability(&binding.reference)
-            .with_context(|| format!("planned capability {} disappeared", binding.reference))?;
+            .capability(binding.reference())
+            .with_context(|| format!("planned capability {} disappeared", binding.reference()))?;
         let simulated = robot
-            .component(binding.reference.component_id.as_str())
+            .component(binding.reference().component_id.as_str())
             .and_then(|component| component.simulation())
-            .and_then(|simulation| simulation.capability(binding.reference.capability_id.as_str()))
-            .with_context(|| format!("planned simulation {} disappeared", binding.reference))?;
+            .and_then(|simulation| {
+                simulation.capability(binding.reference().capability_id.as_str())
+            })
+            .with_context(|| format!("planned simulation {} disappeared", binding.reference()))?;
         render_link_device(out, binding, declared, simulated, execution, indent)?;
     }
     Ok(())
@@ -643,7 +528,7 @@ fn render_link_device(
     execution: ExecutionId,
     indent: usize,
 ) -> Result<()> {
-    let name = generation::quoted(&binding.native_device);
+    let name = generation::quoted(binding.native_device());
     match (declared, simulated) {
         (DeclaredCapability::Accelerometer(_), SimulatedCapability::Accelerometer(config)) => {
             writeln!(out, "{:indent$}Accelerometer {{", "")?;
@@ -814,7 +699,7 @@ fn render_link_device(
         }
         _ => bail!(
             "planned link device {} does not match its compiled capability",
-            binding.reference
+            binding.reference()
         ),
     }
     Ok(())
@@ -999,28 +884,29 @@ fn render_joint(
                 .capabilities
                 .iter()
                 .filter(|binding| {
-                    matches!(&binding.target, PlannedTarget::Joint { id } if id == &structural_name(namespace, joint.name().as_str()))
+                    matches!(binding.target(), PlannedTarget::Joint { id } if id == &structural_name(namespace, joint.name().as_str()))
                 })
                 .collect::<Vec<_>>();
             if !devices.is_empty() {
                 writeln!(out, "{:width$}device [", "", width = indent + 2)?;
                 for binding in devices {
-                    match binding.kind.as_str() {
-                        "motor" => {
+                    match binding.kind() {
+                        CapabilityKind::Motor => {
                             let declared =
-                                robot.capability(&binding.reference).with_context(|| {
-                                    format!("planned motor {} disappeared", binding.reference)
+                                robot.capability(binding.reference()).with_context(|| {
+                                    format!("planned motor {} disappeared", binding.reference())
                                 })?;
                             let simulated = robot
-                                .component(binding.reference.component_id.as_str())
+                                .component(binding.reference().component_id.as_str())
                                 .and_then(|component| component.simulation())
                                 .and_then(|simulation| {
-                                    simulation.capability(binding.reference.capability_id.as_str())
+                                    simulation
+                                        .capability(binding.reference().capability_id.as_str())
                                 })
                                 .with_context(|| {
                                     format!(
                                         "planned motor simulation {} disappeared",
-                                        binding.reference
+                                        binding.reference()
                                     )
                                 })?;
                             let (
@@ -1028,14 +914,14 @@ fn render_joint(
                                 SimulatedCapability::Motor(simulated),
                             ) = (declared, simulated)
                             else {
-                                bail!("planned motor {} changed kind", binding.reference);
+                                bail!("planned motor {} changed kind", binding.reference());
                             };
                             writeln!(out, "{:width$}{motor} {{", "", width = indent + 4)?;
                             writeln!(
                                 out,
                                 "{:width$}name \"{}\"",
                                 "",
-                                generation::quoted(&binding.native_device),
+                                generation::quoted(binding.native_device()),
                                 width = indent + 6
                             )?;
                             if let Some(velocity) = declared.max_velocity_radps {
@@ -1078,28 +964,29 @@ fn render_joint(
                             }
                             writeln!(out, "{:width$}}}", "", width = indent + 4)?;
                         }
-                        "encoder" => {
+                        CapabilityKind::Encoder => {
                             let simulated = robot
-                                .component(binding.reference.component_id.as_str())
+                                .component(binding.reference().component_id.as_str())
                                 .and_then(|component| component.simulation())
                                 .and_then(|simulation| {
-                                    simulation.capability(binding.reference.capability_id.as_str())
+                                    simulation
+                                        .capability(binding.reference().capability_id.as_str())
                                 })
                                 .with_context(|| {
                                     format!(
                                         "planned encoder simulation {} disappeared",
-                                        binding.reference
+                                        binding.reference()
                                     )
                                 })?;
                             let SimulatedCapability::Encoder(simulated) = simulated else {
-                                bail!("planned encoder {} changed kind", binding.reference);
+                                bail!("planned encoder {} changed kind", binding.reference());
                             };
                             writeln!(out, "{:width$}PositionSensor {{", "", width = indent + 4)?;
                             writeln!(
                                 out,
                                 "{:width$}name \"{}\"",
                                 "",
-                                generation::quoted(&binding.native_device),
+                                generation::quoted(binding.native_device()),
                                 width = indent + 6
                             )?;
                             render_resolution(out, simulated.resolution, indent + 6)?;
@@ -1685,14 +1572,14 @@ mod tests {
             "the fixture must exercise a fixed descendant mount"
         );
 
-        let collisions =
-            collect_mounted_collisions(&robot, structure, root, &Isometry3::identity())
-                .expect("mounted collisions");
+        let assembly =
+            resolve_fixed_assembly(&robot, structure, None, root, &Isometry3::identity())
+                .expect("resolved assembly");
+        let collisions = collect_assembly_collisions(&assembly);
         assert!(collisions.iter().any(|collision| {
             matches!(collision.geometry, Geometry::Box { size } if *size == [0.2, 0.3, 0.4])
         }));
-        let mass = collect_mounted_mass(&robot, structure, root, &Isometry3::identity())
-            .expect("mounted mass")
+        let mass = collect_assembly_mass(&assembly)
             .finalize()
             .expect("positive mounted mass");
         assert!(mass.mass >= 2.0);

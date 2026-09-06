@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::bus::session::{BusConfig, BusOwner};
 use crate::bus::{
@@ -79,6 +80,87 @@ pub enum SimulatorError {
 }
 
 const ATTACHMENT_TRANSITION_CAPACITY: usize = 32;
+const DRIVE_COMMAND_SILENCE: Duration = Duration::from_millis(150);
+
+/// Framework-owned transport and immutable facts common to every Live role.
+///
+/// Role-specific sessions retain separate authority after this point. The
+/// controller owns device I/O, while the host owns attachment management.
+struct LiveBootstrap {
+    owner: BusOwner,
+    bus: BusHandle,
+    bootstrap: crate::execution::ExecutionBootstrap,
+    robot: crate::model::Robot,
+    assets: crate::bundle::ParticipantAssets,
+}
+
+async fn open_live_bootstrap(
+    connect: String,
+    label: String,
+) -> Result<LiveBootstrap, SimulatorError> {
+    let execution = crate::execution::resolve_execution(&connect)
+        .await
+        .map_err(simulator_bootstrap_error)?;
+    let label = SourceLabel::new(label)?;
+    let (owner, bus) = BusOwner::open(BusConfig::for_external(
+        execution,
+        Some(label),
+        vec![connect],
+    ))
+    .await?;
+    let result = async {
+        let bootstrap = crate::execution::attach_execution(&bus)
+            .await
+            .map_err(|error| SimulatorError::Bootstrap {
+                detail: error.to_string(),
+            })?;
+        if bootstrap.time_domain.mode != TimeMode::Monotonic {
+            return Err(SimulatorError::NonMonotonicTimeDomain);
+        }
+        let robot = bootstrap.info.manifest.clone().into_robot();
+        let assets =
+            crate::bundle::ParticipantAssets::from_supervisor(bus.clone()).map_err(|error| {
+                SimulatorError::Bootstrap {
+                    detail: error.to_string(),
+                }
+            })?;
+        Ok((bootstrap, robot, assets))
+    }
+    .await;
+    match result {
+        Ok((bootstrap, robot, assets)) => Ok(LiveBootstrap {
+            owner,
+            bus,
+            bootstrap,
+            robot,
+            assets,
+        }),
+        Err(error) => {
+            let _ = owner.close().await;
+            Err(error)
+        }
+    }
+}
+
+fn simulator_bootstrap_error(error: crate::execution::BootstrapError) -> SimulatorError {
+    match error {
+        crate::execution::BootstrapError::NoExecution { endpoint } => {
+            SimulatorError::NoExecution { connect: endpoint }
+        }
+        crate::execution::BootstrapError::MultipleExecutions {
+            endpoint,
+            count,
+            executions,
+        } => SimulatorError::MultipleExecutions {
+            connect: endpoint,
+            count,
+            executions,
+        },
+        error => SimulatorError::Bootstrap {
+            detail: error.to_string(),
+        },
+    }
+}
 
 /// The simulator session closed, but a close stage left evidence.
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +228,114 @@ pub struct ActiveBoundaryStamp {
     world: WorldInstanceId,
     revision: u64,
     attached_at: LiveAttachmentBoundary,
+}
+
+/// The one currently supported authority for locomotion motor commands.
+///
+/// The framework owns this source and expiry contract. Native adapters only
+/// consume the resulting lease immediately before their transitions.
+#[derive(Clone, Debug)]
+pub struct DriveCommandAuthority {
+    source: ParticipantId,
+}
+
+/// A motor is not present exactly once in the compiled drive topology.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error(
+    "motor '{capability}' must occur exactly once in the compiled kinematic actuator topology for the built-in drive authority; found {count} occurrences"
+)]
+pub struct DriveAuthorityError {
+    pub capability: crate::model::identity::CapabilityRef,
+    pub count: usize,
+}
+
+impl DriveCommandAuthority {
+    /// Construct the fixed authority represented by the built-in drive service.
+    pub fn standard() -> Result<Self, crate::identity::ParticipantIdError> {
+        Ok(Self {
+            source: ParticipantId::new("drive")?,
+        })
+    }
+
+    /// The service that exclusively supplies locomotion setpoints.
+    #[must_use]
+    pub fn source(&self) -> &ParticipantId {
+        &self.source
+    }
+
+    /// Maximum host-monotonic age of a reusable drive command.
+    #[must_use]
+    pub const fn silence() -> Duration {
+        DRIVE_COMMAND_SILENCE
+    }
+
+    /// Create the fail-closed lease that guards one motor command lane.
+    #[must_use]
+    pub fn lease<B>(&self) -> FixedSourceLease<B> {
+        FixedSourceLease::new(
+            "component/motor/command",
+            self.source.clone(),
+            DRIVE_COMMAND_SILENCE,
+            Duration::MAX,
+        )
+    }
+
+    /// Verify that this framework-owned authority can control `capability`.
+    ///
+    /// The built-in drive service has one command source for each motor in the
+    /// robot's compiled locomotion topology. Native adapters call this while
+    /// planning, before they create a device or mutate a simulator world.
+    pub fn validate_motor(
+        robot: &crate::model::Robot,
+        capability: &crate::model::identity::CapabilityRef,
+    ) -> Result<(), DriveAuthorityError> {
+        let count = match robot.motion().kinematic() {
+            crate::model::robot::KinematicConfig::Differential {
+                left_actuators,
+                right_actuators,
+                ..
+            } => left_actuators
+                .iter()
+                .chain(right_actuators)
+                .filter(|candidate| *candidate == capability)
+                .count(),
+            crate::model::robot::KinematicConfig::Mecanum {
+                front_left_actuator,
+                front_right_actuator,
+                rear_left_actuator,
+                rear_right_actuator,
+                ..
+            } => [
+                front_left_actuator,
+                front_right_actuator,
+                rear_left_actuator,
+                rear_right_actuator,
+            ]
+            .into_iter()
+            .filter(|candidate| *candidate == capability)
+            .count(),
+            crate::model::robot::KinematicConfig::Ackermann {
+                steering_actuator,
+                drive_actuator,
+                ..
+            } => [steering_actuator, drive_actuator]
+                .into_iter()
+                .filter(|candidate| *candidate == capability)
+                .count(),
+            crate::model::robot::KinematicConfig::Omnidirectional { actuators, .. } => actuators
+                .iter()
+                .filter(|candidate| *candidate == capability)
+                .count(),
+        };
+        if count == 1 {
+            Ok(())
+        } else {
+            Err(DriveAuthorityError {
+                capability: capability.clone(),
+                count,
+            })
+        }
+    }
 }
 
 /// A simulator sample publisher that can emit only under the exact current
@@ -518,54 +708,14 @@ impl SimulatorSession {
     /// Join the sole execution at `connect` and complete the frozen supervisor
     /// bootstrap before exposing any controller capability.
     pub async fn connect(options: SimulatorConnectOptions) -> Result<Self, SimulatorError> {
-        let executions = Self::probe(&options.connect).await?;
-        let execution = match executions.as_slice() {
-            [only] => *only,
-            [] => {
-                return Err(SimulatorError::NoExecution {
-                    connect: options.connect,
-                });
-            }
-            many => {
-                let mut executions = many.to_vec();
-                executions.sort_by_key(ToString::to_string);
-                return Err(SimulatorError::MultipleExecutions {
-                    connect: options.connect,
-                    count: executions.len(),
-                    executions,
-                });
-            }
-        };
-        let label = SourceLabel::new(options.label)?;
-        let (owner, bus) = BusOwner::open(BusConfig::for_external(
-            execution,
-            Some(label),
-            vec![options.connect],
-        ))
-        .await?;
-        let bootstrap = match crate::execution::attach_execution(&bus).await {
-            Ok(bootstrap) => bootstrap,
-            Err(error) => {
-                let _ = owner.close().await;
-                return Err(SimulatorError::Bootstrap {
-                    detail: error.to_string(),
-                });
-            }
-        };
-        if bootstrap.time_domain.mode != TimeMode::Monotonic {
-            let _ = owner.close().await;
-            return Err(SimulatorError::NonMonotonicTimeDomain);
-        }
-        let robot = bootstrap.info.manifest.into_robot();
-        let assets = match crate::bundle::ParticipantAssets::from_supervisor(bus.clone()) {
-            Ok(assets) => assets,
-            Err(error) => {
-                let _ = owner.close().await;
-                return Err(SimulatorError::Bootstrap {
-                    detail: error.to_string(),
-                });
-            }
-        };
+        let LiveBootstrap {
+            owner,
+            bus,
+            bootstrap,
+            robot,
+            assets,
+        } = open_live_bootstrap(options.connect, options.label).await?;
+        let execution = bootstrap.execution;
         let step = match EventPublisher::new(
             bus.clone(),
             &crate::simulation::api::topics().step().owner(),
@@ -903,54 +1053,14 @@ impl SimulationHostSession {
     /// Join the sole execution at `connect` as the world host and complete the
     /// frozen supervisor bootstrap before exposing attachment authority.
     pub async fn connect(options: SimulationHostConnectOptions) -> Result<Self, SimulatorError> {
-        let executions = SimulatorSession::probe(&options.connect).await?;
-        let execution = match executions.as_slice() {
-            [only] => *only,
-            [] => {
-                return Err(SimulatorError::NoExecution {
-                    connect: options.connect,
-                });
-            }
-            many => {
-                let mut executions = many.to_vec();
-                executions.sort_by_key(ToString::to_string);
-                return Err(SimulatorError::MultipleExecutions {
-                    connect: options.connect,
-                    count: executions.len(),
-                    executions,
-                });
-            }
-        };
-        let label = SourceLabel::new(options.label)?;
-        let (owner, bus) = BusOwner::open(BusConfig::for_external(
-            execution,
-            Some(label),
-            vec![options.connect],
-        ))
-        .await?;
-        let bootstrap = match crate::execution::attach_execution(&bus).await {
-            Ok(bootstrap) => bootstrap,
-            Err(error) => {
-                let _ = owner.close().await;
-                return Err(SimulatorError::Bootstrap {
-                    detail: error.to_string(),
-                });
-            }
-        };
-        if bootstrap.time_domain.mode != TimeMode::Monotonic {
-            let _ = owner.close().await;
-            return Err(SimulatorError::NonMonotonicTimeDomain);
-        }
-        let robot = bootstrap.info.manifest.into_robot();
-        let assets = match crate::bundle::ParticipantAssets::from_supervisor(bus.clone()) {
-            Ok(assets) => assets,
-            Err(error) => {
-                let _ = owner.close().await;
-                return Err(SimulatorError::Bootstrap {
-                    detail: error.to_string(),
-                });
-            }
-        };
+        let LiveBootstrap {
+            owner,
+            bus,
+            bootstrap,
+            robot,
+            assets,
+        } = open_live_bootstrap(options.connect, options.label).await?;
+        let execution = bootstrap.execution;
         let attach = match Querier::new(
             bus.clone(),
             &crate::supervisor::api::topics()
