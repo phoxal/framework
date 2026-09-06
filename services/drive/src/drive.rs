@@ -26,7 +26,7 @@ use phoxal::api;
 use phoxal::model::Robot;
 use phoxal::model::component::capability::MotorCommand;
 use phoxal::model::identity::CapabilityRef;
-use phoxal::model::robot::{BodyTwist, DifferentialDrive, KinematicConfig, MotionLimits};
+use phoxal::model::kinematics::{BodyTwist, DifferentialDrive, KinematicConfig, MotionLimits};
 use phoxal::prelude::*;
 
 /// How long `drive` tolerates silence from the accepted target producer. This

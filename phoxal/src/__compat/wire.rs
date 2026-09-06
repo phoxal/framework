@@ -54,6 +54,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU32, NonZeroU64};
+use std::path::PathBuf;
 
 /// One serialized wire shape.
 ///
@@ -577,6 +578,12 @@ primitive_wire_schema! {
     () => WireSchema::Unit,
     NonZeroU32 => WireSchema::U32,
     NonZeroU64 => WireSchema::U64,
+}
+
+impl DescribeWire for PathBuf {
+    fn wire_schema() -> WireSchema {
+        WireSchema::opaque("PathBuf", WireSchema::String)
+    }
 }
 
 impl<T: DescribeWire + ?Sized> DescribeWire for &T {

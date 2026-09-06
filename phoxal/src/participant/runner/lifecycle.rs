@@ -7,22 +7,23 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::bundle::RuntimeBundle;
 use crate::bus::{BusFault, BusHandle, BusOwner, ParticipantReadyToken};
 use crate::identity::ParticipantId;
 use crate::participant::api::Participant;
 use crate::participant::bus_log::{self, BusLogTask};
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsynchronized};
-use crate::participant::context::{SetupContext, TimelineRetention};
+use crate::participant::context::{SetupContext, SetupSource, TimelineRetention};
 use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::SimulationClockHandle;
 use crate::participant::scheduler::{AnyStepScheduler, StepSchedule};
+use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
 
 use super::ShutdownController;
+use super::event_loop::retain_timeline;
 use super::query::QuerySurface;
-use super::startup::PreparedRun;
+use super::startup::{AttachmentSubscription, DomainSubscription, PreparedRun};
 use super::teardown::{
     ShutdownDeadline, Teardown, TeardownReport, abandon_setup, abandon_startup, combine,
 };
@@ -132,6 +133,7 @@ impl std::error::Error for ParticipantFault {
 /// The runner's effective timestamp clock, chosen once the scheduler is built.
 pub(crate) enum RunnerClock<C: ClockSource> {
     Delegated(C),
+    SupervisorReal(crate::participant::clock::real::RealClock),
     Simulation(SimulationClock),
 }
 
@@ -139,17 +141,18 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
     fn read(&self) -> ClockReading {
         match self {
             Self::Delegated(clock) => clock.read(),
+            Self::SupervisorReal(clock) => clock.read(),
             Self::Simulation(clock) => clock.read(),
         }
     }
 }
 
-/// Select the runner's timestamp clock from the scheduler shape and the
-/// launch-validated clock.
+/// Select the runner's timestamp clock from the scheduler shape and preflight
+/// clock.
 ///
 /// A disabled scheduler does not mean a disabled clock: a stepless real
-/// participant still dates the state it serves, so it keeps the host clock the
-/// launch built. Only a simulated participant reads its instants from somewhere
+/// participant still dates the state it serves, so it keeps the host clock
+/// preflight supplied. Only a simulated participant reads its instants from somewhere
 /// else, and the scheduler it runs on is that source.
 pub(crate) fn runner_clock<C: ClockSource>(
     scheduler: &AnyStepScheduler,
@@ -159,8 +162,8 @@ pub(crate) fn runner_clock<C: ClockSource>(
         AnyStepScheduler::Simulation(simulation) => {
             Ok(RunnerClock::Simulation(simulation.simulation_clock()))
         }
-        // Both remaining shapes are real launches - one with a cadence, one
-        // without - and a real launch always carries a host clock. Reaching the
+        // Both remaining shapes are real runs - one with a cadence, one
+        // without - and a real run always carries a host clock. Reaching the
         // `None` arm means the caller assembled a real run without one, which
         // reads as a clock this process cannot read; the participant fails
         // rather than dating its state on an invented instant.
@@ -170,6 +173,180 @@ pub(crate) fn runner_clock<C: ClockSource>(
                 reason: TimeUnsynchronized::ClockFault,
             }),
         },
+        #[cfg(test)]
+        AnyStepScheduler::TestMonotonic(_) => match clock {
+            Some(clock) => Ok(RunnerClock::Delegated(clock)),
+            None => Err(ClockDisciplineLost {
+                reason: TimeUnsynchronized::ClockFault,
+            }),
+        },
+    }
+}
+
+pub(crate) fn runner_clock_for_domain<C: ClockSource>(
+    scheduler: &AnyStepScheduler,
+    domain: TimeDomain,
+) -> Result<RunnerClock<C>, ClockDisciplineLost> {
+    match scheduler {
+        AnyStepScheduler::Simulation(simulation) => {
+            Ok(RunnerClock::Simulation(simulation.simulation_clock()))
+        }
+        AnyStepScheduler::Real(_) | AnyStepScheduler::Disabled => Ok(RunnerClock::SupervisorReal(
+            crate::participant::clock::real::RealClock::new(domain.timeline),
+        )),
+        #[cfg(test)]
+        AnyStepScheduler::TestMonotonic(_) => Ok(RunnerClock::SupervisorReal(
+            crate::participant::clock::real::RealClock::new(domain.timeline),
+        )),
+    }
+}
+
+pub(crate) fn scheduler_for_domain(
+    mode: ClockMode,
+    schedule: Option<StepSchedule>,
+    now: Option<crate::bus::RobotInstant>,
+    simulation_clock: &SimulationClockHandle,
+) -> crate::Result<AnyStepScheduler> {
+    AnyStepScheduler::validate_clock_mode(mode, schedule, now)?;
+    let period = schedule.map(|schedule| schedule.period());
+    match mode {
+        ClockMode::Real if schedule.is_none() => Ok(AnyStepScheduler::Disabled),
+        ClockMode::Real => {
+            let now = now.ok_or_else(|| {
+                anyhow::anyhow!("a monotonic domain cannot anchor cadence without a host clock")
+            })?;
+            let scheduler = crate::participant::scheduler::real::RealScheduler::new(period, now)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("the host boot clock could not be read to anchor cadence")
+                })?;
+            Ok(AnyStepScheduler::Real(scheduler))
+        }
+        ClockMode::Simulation => Ok(AnyStepScheduler::Simulation(
+            simulation_clock.scheduler(period),
+        )),
+    }
+}
+
+fn clock_mode_for_domain(domain: TimeDomain) -> ClockMode {
+    match domain.mode {
+        TimeMode::Monotonic => ClockMode::Real,
+        TimeMode::Simulated => ClockMode::Simulation,
+    }
+}
+
+/// Rebuild the runner's clock and scheduler for one newer time domain before
+/// the participant becomes Ready.
+fn reconfigure_start_domain<C: ClockSource>(
+    current: TimeDomain,
+    schedule: Option<StepSchedule>,
+    simulation_clock: Option<&SimulationClockHandle>,
+    clock_mode: &mut ClockMode,
+    scheduler: &mut AnyStepScheduler,
+    clock: &mut RunnerClock<C>,
+) -> crate::Result<()> {
+    let simulation_clock = simulation_clock.ok_or_else(|| {
+        anyhow::anyhow!("a time-domain participant lost its logical-time ingress")
+    })?;
+    let mode = clock_mode_for_domain(current);
+    match mode {
+        ClockMode::Real => simulation_clock.disable(),
+        ClockMode::Simulation => simulation_clock.replace_timeline(current.timeline),
+    }
+    let now = match mode {
+        ClockMode::Real => {
+            let clock = crate::participant::clock::real::RealClock::new(current.timeline);
+            match clock.read() {
+                ClockReading::Synchronized(instant) => Some(instant),
+                ClockReading::Unsynchronized(reason) => {
+                    return Err(ClockDisciplineLost { reason }.into());
+                }
+            }
+        }
+        ClockMode::Simulation => None,
+    };
+    *scheduler = scheduler_for_domain(mode, schedule, now, simulation_clock)?;
+    *clock = runner_clock_for_domain::<C>(scheduler, current)?;
+    *clock_mode = mode;
+    Ok(())
+}
+
+/// Drain every already-buffered replacement at a lifecycle boundary.
+fn reconcile_start_domain(
+    domain: &mut Option<DomainSubscription>,
+) -> crate::Result<Vec<(TimeDomain, TimeDomain)>> {
+    let Some(domain) = domain else {
+        return Ok(Vec::new());
+    };
+    domain.reconcile()
+}
+
+/// Whether a just-acquired Ready lease still represents the newest known time
+/// domain.
+pub(super) enum ReadyDomainFence {
+    /// No replacement arrived while readiness was acquired.
+    Stable,
+    /// A replacement arrived, so the lease must be revoked and startup retried.
+    Reconfigure(Vec<(TimeDomain, TimeDomain)>),
+}
+
+/// Fence a Ready lease against stream updates that raced its declaration.
+pub(super) fn fence_ready_domain(
+    domain: &mut Option<DomainSubscription>,
+) -> crate::Result<ReadyDomainFence> {
+    let transitions = reconcile_start_domain(domain)?;
+    if transitions.is_empty() {
+        Ok(ReadyDomainFence::Stable)
+    } else {
+        Ok(ReadyDomainFence::Reconfigure(transitions))
+    }
+}
+
+/// Await one replacement while Ready is being declared.
+async fn next_start_domain(
+    domain: &mut Option<DomainSubscription>,
+) -> crate::Result<(TimeDomain, TimeDomain)> {
+    let Some(domain) = domain else {
+        return std::future::pending().await;
+    };
+    domain.next_replacement().await
+}
+
+/// Mutable runtime state used to apply one scheduling-history replacement.
+struct StartDomainTransition<'a, R: Participant, C: ClockSource> {
+    schedule: Option<StepSchedule>,
+    simulation_clock: Option<&'a SimulationClockHandle>,
+    clock_mode: &'a mut ClockMode,
+    scheduler: &'a mut AnyStepScheduler,
+    clock: &'a mut RunnerClock<C>,
+    participant: &'a R,
+    api: &'a R::Api,
+    state: &'a mut R::State,
+    timeline_retentions: &'a [TimelineRetention],
+}
+
+impl<R: Participant, C: ClockSource> StartDomainTransition<'_, R, C> {
+    /// Apply a scheduling-history replacement and notify the participant before
+    /// it can declare Ready under that newer authority.
+    fn apply(&mut self, previous: TimeDomain, current: TimeDomain) -> crate::Result<()> {
+        reconfigure_start_domain(
+            current,
+            self.schedule,
+            self.simulation_clock,
+            self.clock_mode,
+            self.scheduler,
+            self.clock,
+        )?;
+        retain_timeline(self.timeline_retentions, current.timeline);
+        self.participant
+            .reset(
+                crate::participant::context::ResetContext {
+                    previous_timeline: previous.timeline,
+                    new_timeline: current.timeline,
+                },
+                self.api,
+                self.state,
+            )
+            .map_err(|error| ParticipantFault::Reset(error).into())
     }
 }
 
@@ -181,14 +358,16 @@ pub(crate) struct RunnerTasks {
 }
 
 /// Inputs for the single startup transition. Grouping the ownership boundary
-/// here keeps the scheduler, clock, selected runtime record, and task set
+/// here keeps the supervisor-attached model, scheduler, clock, and task set
 /// explicit without threading a long parameter list through `Runner::start`.
 pub(crate) struct StartInputs<R: Participant, C: ClockSource> {
     pub(crate) bus: BusHandle,
     pub(crate) session: BusLease,
     pub(crate) participant_id: ParticipantId,
     pub(crate) shutdown_grace: Duration,
-    pub(crate) bundle: Option<RuntimeBundle>,
+    pub(crate) source: SetupSource,
+    pub(crate) domain: Option<DomainSubscription>,
+    pub(crate) attachment: Option<AttachmentSubscription>,
     pub(crate) config: R::Config,
     pub(crate) clock: RunnerClock<C>,
     pub(crate) scheduler: AnyStepScheduler,
@@ -257,19 +436,50 @@ where
         session,
         participant_id,
         shutdown_grace,
-        bundle,
+        source,
+        domain,
+        attachment,
         config,
         clock_mode,
         clock,
         query_reply_delay,
     } = prepared;
+    let mut domain = domain;
+    let mut attachment = attachment;
+    let mut clock_mode = clock_mode;
+    if let Some(domain) = &mut domain {
+        if let Err(error) = domain.reconcile() {
+            return close_session_with_result(
+                Err(error),
+                session,
+                ShutdownDeadline::from_now(shutdown_grace),
+            )
+            .await;
+        }
+        clock_mode = clock_mode_for_domain(domain.current);
+    }
+    if let Some(attachment) = &mut attachment
+        && let Err(error) = attachment.reconcile(&bus)
+    {
+        return close_session_with_result(
+            Err(error),
+            session,
+            ShutdownDeadline::from_now(shutdown_grace),
+        )
+        .await;
+    }
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
     let schedule = R::__step_schedule();
     let now = if clock_mode == ClockMode::Real {
-        let reading = clock
-            .as_ref()
-            .map(ClockSource::read)
-            .unwrap_or(ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault));
+        let reading = match &domain {
+            Some(domain) => {
+                crate::participant::clock::real::RealClock::new(domain.current.timeline).read()
+            }
+            None => clock
+                .as_ref()
+                .map(ClockSource::read)
+                .unwrap_or(ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault)),
+        };
         match reading {
             ClockReading::Synchronized(_) => reading.instant(),
             ClockReading::Unsynchronized(reason) => {
@@ -286,8 +496,32 @@ where
     } else {
         None
     };
-    let (scheduler, clock_handle) =
-        match AnyStepScheduler::for_clock_mode(clock_mode, schedule, now) {
+    let dynamic_simulation_clock = domain.as_ref().map(|_| SimulationClockHandle::source());
+    if let (Some(simulation_clock), Some(domain)) = (&dynamic_simulation_clock, &domain) {
+        match domain.current.mode {
+            crate::supervisor::api::time_domain::TimeMode::Monotonic => simulation_clock.disable(),
+            crate::supervisor::api::time_domain::TimeMode::Simulated => {
+                simulation_clock.replace_timeline(domain.current.timeline);
+            }
+        }
+    }
+    let (scheduler, clock_handle) = match &dynamic_simulation_clock {
+        Some(simulation_clock) => {
+            match scheduler_for_domain(clock_mode, schedule, now, simulation_clock) {
+                Ok(scheduler) => (scheduler, Some(simulation_clock.clone())),
+                Err(error) => {
+                    let result = close_session_with_result(
+                        Err(error),
+                        session,
+                        ShutdownDeadline::from_now(shutdown_grace),
+                    )
+                    .await;
+                    bus_logs.shutdown();
+                    return result;
+                }
+            }
+        }
+        None => match AnyStepScheduler::for_clock_mode(clock_mode, schedule, now) {
             Ok(value) => value,
             Err(error) => {
                 let result = close_session_with_result(
@@ -299,8 +533,12 @@ where
                 bus_logs.shutdown();
                 return result;
             }
-        };
-    let effective_clock = match runner_clock(&scheduler, clock) {
+        },
+    };
+    let effective_clock = match match domain.as_ref() {
+        Some(domain) => runner_clock_for_domain::<C>(&scheduler, domain.current),
+        None => runner_clock(&scheduler, clock),
+    } {
         Ok(clock) => clock,
         Err(error) => {
             let result = close_session_with_result(
@@ -319,7 +557,9 @@ where
             session,
             participant_id,
             shutdown_grace,
-            bundle,
+            source,
+            domain,
+            attachment,
             config,
             clock: effective_clock,
             scheduler,
@@ -357,11 +597,19 @@ pub(crate) struct Runner<R: Participant, C: ClockSource> {
     pub(crate) scheduler: AnyStepScheduler,
     pub(crate) schedule: Option<StepSchedule>,
     pub(crate) clock_mode: ClockMode,
+    pub(crate) domain: Option<TimeDomain>,
+    pub(crate) domain_updates:
+        Option<crate::bus::StreamReceiver<crate::supervisor::api::time_domain::TimeDomainStream>>,
+    pub(crate) simulation_clock: Option<SimulationClockHandle>,
     pub(crate) timeline_retentions: Vec<TimelineRetention>,
     pub(crate) queries: Option<QuerySurface<R>>,
     pub(crate) runtime_performance_publisher: RuntimePerformancePublisher,
     pub(crate) runtime_performance: RuntimePerformance,
     pub(crate) managed_tasks: ManagedTasks,
+    /// Retains supervisor-materialized asset paths through participant
+    /// shutdown. Participant state may keep only the native path returned from
+    /// setup, so the cache owner must outlive `SetupContext`.
+    _asset_cache: Option<crate::bundle::ParticipantAssets>,
     /// The participant's Ready lease. It is revoked before any shutdown work
     /// starts, so observers never see Ready while resources unwind.
     pub(crate) ready: Option<ParticipantReadyToken>,
@@ -369,8 +617,8 @@ pub(crate) struct Runner<R: Participant, C: ClockSource> {
 }
 
 impl<R: Participant, C: ClockSource> Runner<R, C> {
-    /// Resolve the selected runtime record, run `Participant::setup`, and
-    /// declare everything the participant announced before returning Ready.
+    /// Use the supervisor-attached execution inputs, run `Participant::setup`,
+    /// and declare everything the participant announced before returning Ready.
     ///
     /// Every failure after `setup` succeeds still runs full teardown, so a
     /// server or Ready declaration failure cannot bypass the participant's
@@ -387,27 +635,30 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             session,
             participant_id,
             shutdown_grace,
-            bundle,
+            source,
+            mut domain,
+            attachment,
             config,
-            clock,
-            scheduler,
+            mut clock,
+            mut scheduler,
             schedule,
-            clock_mode,
+            mut clock_mode,
             tasks,
         } = inputs;
-        // The bundle (or explicit test harness) was already opened and this
-        // participant's config deserialized before entering this
-        // transport-owned startup path.
-        let mut ctx = SetupContext::<R>::new(bus.clone(), bundle, participant_id.clone());
+        let asset_cache = match &source {
+            SetupSource::Harness => None,
+            SetupSource::Supervisor { assets, .. } => Some(assets.clone()),
+        };
+        let mut ctx = SetupContext::<R>::new(bus.clone(), source, participant_id.clone());
         ctx.spawn_managed_with(
             "bus-log-drain",
             ManagedTaskPolicy::Finite,
             tasks.bus_log.run(),
         );
-        if let Some(handle) = tasks.simulation_clock {
+        if let Some(attachment) = attachment {
             ctx.spawn_managed(
-                "simulation-clock-ingest",
-                simulation_clock_feed(bus.clone(), handle),
+                "simulation-attachment-ingest",
+                attachment_revision_feed(bus.clone(), attachment),
             );
         }
         let participant = R::__new();
@@ -495,6 +746,58 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             }
         };
 
+        // A reset can arrive while setup or query declaration is running.
+        // Reconcile it before Ready, rebuild the scheduler for the newer
+        // authority, and notify the participant exactly once about the history
+        // it did not run in.
+        let transition = match reconcile_start_domain(&mut domain) {
+            Ok(transition) => transition,
+            Err(error) => {
+                if let Some(queries) = queries.take() {
+                    queries.close();
+                }
+                return startup_teardown(
+                    managed_tasks,
+                    &participant,
+                    &api,
+                    &mut state,
+                    shutdown_grace,
+                    Err(error),
+                    session,
+                )
+                .await;
+            }
+        };
+        for (previous, current) in transition {
+            let result = StartDomainTransition {
+                schedule,
+                simulation_clock: tasks.simulation_clock.as_ref(),
+                clock_mode: &mut clock_mode,
+                scheduler: &mut scheduler,
+                clock: &mut clock,
+                participant: &participant,
+                api: &api,
+                state: &mut state,
+                timeline_retentions: &timeline_retentions,
+            }
+            .apply(previous, current);
+            if let Err(error) = result {
+                if let Some(queries) = queries.take() {
+                    queries.close();
+                }
+                return startup_teardown(
+                    managed_tasks,
+                    &participant,
+                    &api,
+                    &mut state,
+                    shutdown_grace,
+                    Err(error),
+                    session,
+                )
+                .await;
+            }
+        }
+
         // Setup and query declaration may have started tasks whose failure is
         // already ready to observe. Drain those completions before acquiring
         // the Ready lease so a failed critical task can never pass through a
@@ -567,53 +870,10 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                 }
                 None
             }
-            BusLease::Owned(owner) => Some(tokio::select! {
-                biased;
-                _ = shutdown.wait() => {
-                    if let Some(queries) = queries.take() {
-                        queries.close();
-                    }
-                    return startup_teardown(
-                        managed_tasks,
-                        &participant,
-                        &api,
-                        &mut state,
-                        shutdown_grace,
-                        Ok(()),
-                        session,
-                    ).await;
-                }
-                fault = bus.wait_for_fatal() => {
-                    if let Some(queries) = queries.take() {
-                        queries.close();
-                    }
-                    return startup_teardown(
-                        managed_tasks,
-                        &participant,
-                        &api,
-                        &mut state,
-                        shutdown_grace,
-                        Err(ParticipantFault::Bus(fault).into()),
-                        session,
-                    ).await;
-                }
-                exit = managed_tasks.next_unexpected_exit() => {
-                    if let Some(queries) = queries.take() {
-                        queries.close();
-                    }
-                    return startup_teardown(
-                        managed_tasks,
-                        &participant,
-                        &api,
-                        &mut state,
-                        shutdown_grace,
-                        Err(exit.into()),
-                        session,
-                    ).await;
-                }
-                result = owner.declare_participant_ready() => match result {
-                    Ok(token) => token,
-                    Err(error) => {
+            BusLease::Owned(owner) => Some(loop {
+                let token = tokio::select! {
+                    biased;
+                    _ = shutdown.wait() => {
                         if let Some(queries) = queries.take() {
                             queries.close();
                         }
@@ -623,11 +883,160 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                             &api,
                             &mut state,
                             shutdown_grace,
-                            Err(error.into()),
+                            Ok(()),
                             session,
                         ).await;
                     }
-                },
+                    fault = bus.wait_for_fatal() => {
+                        if let Some(queries) = queries.take() {
+                            queries.close();
+                        }
+                        return startup_teardown(
+                            managed_tasks,
+                            &participant,
+                            &api,
+                            &mut state,
+                            shutdown_grace,
+                            Err(ParticipantFault::Bus(fault).into()),
+                            session,
+                        ).await;
+                    }
+                    exit = managed_tasks.next_unexpected_exit() => {
+                        if let Some(queries) = queries.take() {
+                            queries.close();
+                        }
+                        return startup_teardown(
+                            managed_tasks,
+                            &participant,
+                            &api,
+                            &mut state,
+                            shutdown_grace,
+                            Err(exit.into()),
+                            session,
+                        ).await;
+                    }
+                    transition = next_start_domain(&mut domain) => {
+                        let (previous, current) = match transition {
+                            Ok(transition) => transition,
+                            Err(error) => {
+                                if let Some(queries) = queries.take() {
+                                    queries.close();
+                                }
+                                return startup_teardown(
+                                    managed_tasks,
+                                    &participant,
+                                    &api,
+                                    &mut state,
+                                    shutdown_grace,
+                                    Err(error),
+                                    session,
+                                ).await;
+                            }
+                        };
+                        let result = StartDomainTransition {
+                            schedule,
+                            simulation_clock: tasks.simulation_clock.as_ref(),
+                            clock_mode: &mut clock_mode,
+                            scheduler: &mut scheduler,
+                            clock: &mut clock,
+                            participant: &participant,
+                            api: &api,
+                            state: &mut state,
+                            timeline_retentions: &timeline_retentions,
+                        }
+                        .apply(previous, current);
+                        if let Err(error) = result {
+                            if let Some(queries) = queries.take() {
+                                queries.close();
+                            }
+                            return startup_teardown(
+                                managed_tasks,
+                                &participant,
+                                &api,
+                                &mut state,
+                                shutdown_grace,
+                                Err(error),
+                                session,
+                            ).await;
+                        }
+                        continue;
+                    }
+                    result = owner.declare_participant_ready() => match result {
+                        Ok(token) => token,
+                        Err(error) => {
+                            if let Some(queries) = queries.take() {
+                                queries.close();
+                            }
+                            return startup_teardown(
+                                managed_tasks,
+                                &participant,
+                                &api,
+                                &mut state,
+                                shutdown_grace,
+                                Err(error.into()),
+                                session,
+                            ).await;
+                        }
+                    },
+                };
+                // A stream update can race readiness after the select has
+                // chosen the declaration. Revoke this lease and process every
+                // buffered replacement before trying again, so the returned
+                // runner never starts under an observed stale domain.
+                let fence = match fence_ready_domain(&mut domain) {
+                    Ok(fence) => fence,
+                    Err(error) => {
+                        drop(token);
+                        if let Some(queries) = queries.take() {
+                            queries.close();
+                        }
+                        return startup_teardown(
+                            managed_tasks,
+                            &participant,
+                            &api,
+                            &mut state,
+                            shutdown_grace,
+                            Err(error),
+                            session,
+                        )
+                        .await;
+                    }
+                };
+                match fence {
+                    ReadyDomainFence::Stable => break token,
+                    ReadyDomainFence::Reconfigure(transitions) => {
+                        drop(token);
+                        for (previous, current) in transitions {
+                            let result = StartDomainTransition {
+                                schedule,
+                                simulation_clock: tasks.simulation_clock.as_ref(),
+                                clock_mode: &mut clock_mode,
+                                scheduler: &mut scheduler,
+                                clock: &mut clock,
+                                participant: &participant,
+                                api: &api,
+                                state: &mut state,
+                                timeline_retentions: &timeline_retentions,
+                            }
+                            .apply(previous, current);
+                            if let Err(error) = result {
+                                if let Some(queries) = queries.take() {
+                                    queries.close();
+                                }
+                                return startup_teardown(
+                                    managed_tasks,
+                                    &participant,
+                                    &api,
+                                    &mut state,
+                                    shutdown_grace,
+                                    Err(error),
+                                    session,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                }
             }),
         };
 
@@ -647,6 +1056,9 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             scheduler,
             schedule,
             clock_mode,
+            domain: domain.as_ref().map(|domain| domain.current),
+            domain_updates: domain.map(|domain| domain.updates),
+            simulation_clock: tasks.simulation_clock,
             timeline_retentions,
             queries,
             // Portable runtime evidence is measured at runner-owned step and
@@ -655,6 +1067,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             runtime_performance_publisher: RuntimePerformancePublisher::attach(bus),
             runtime_performance: RuntimePerformance::new(schedule),
             managed_tasks,
+            _asset_cache: asset_cache,
             ready,
             shutdown_grace,
         })
@@ -736,9 +1149,25 @@ pub(crate) async fn close_session_with_result<T>(
     combine(primary, close_session(session, deadline).await)
 }
 
-/// Subscribe and feed the authoritative simulation clock. This task is
-/// registered before setup and is cancelled through the ordinary teardown
-/// sequence, so logical time cannot advance behind the runner's back.
-async fn simulation_clock_feed(bus: BusHandle, handle: SimulationClockHandle) -> crate::Result<()> {
-    super::event_loop::simulation_clock_feed(bus, handle).await
+/// Keep setpoint metadata aligned with the newest supervisor attachment phase.
+/// Preparing and Removing clear the revision before any subsequent command is
+/// admitted, so retained or delayed pre-activation intent cannot become live.
+async fn attachment_revision_feed(
+    bus: BusHandle,
+    mut attachment: AttachmentSubscription,
+) -> crate::Result<()> {
+    loop {
+        let replacement = attachment.updates.recv().await?.body.attachment;
+        match (replacement, attachment.current) {
+            (Some(replacement), Some(installed)) if replacement.revision > installed.revision => {
+                attachment.current = Some(replacement);
+                super::startup::install_attachment_revision(&bus, attachment.current);
+            }
+            (Some(replacement), None) => {
+                attachment.current = Some(replacement);
+                super::startup::install_attachment_revision(&bus, attachment.current);
+            }
+            (None, _) | (Some(_), Some(_)) => {}
+        }
+    }
 }

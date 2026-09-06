@@ -21,11 +21,9 @@ fn trybuild_ui() {
 #[test]
 fn trybuild_ui_with_test_harness_enabled() {}
 
-// The cases a *host* profile is the subject of. A participant cannot name the
-// runtime family at all, which `fail/participant_cannot_reach_the_world_clock`
-// pins; the guarantee below is the one that still has to hold for a consumer
-// that *can* name it - the world clock is a sibling semantic of `State`, never
-// a subtype of it, so no ordinary state publisher can mint a world step.
+// The cases where a *host* profile is the subject. A participant cannot name
+// host families at all; these cases pin type separation for consumers that can
+// name those families.
 #[cfg(feature = "session")]
 #[test]
 fn trybuild_host_ui() {

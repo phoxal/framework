@@ -18,14 +18,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# The workspace builds on a bare runner by design. Runnable crates own native
-# build requirements in package.metadata.phoxal.build; phoxal's
-# `authoring_workspace_build_requirements` test keeps this bootstrap input
-# synchronized with their declared union.
-# Nothing in the workspace links a native simulator any more: the Webots
-# controller lives in phoxal/simulator-webots and carries that requirement with
-# it, so this workflow installs no simulator and the checks run on a bare
-# runner.
+# Runnable crates own apt build requirements in package.metadata.phoxal.build;
+# phoxal's `authoring_workspace_build_requirements` test keeps that bootstrap
+# input synchronized with their declared union.
+# The two Webots controller packages link libController even during
+# `cargo check`, so the shared workflow installs the one supported native SDK
+# before its clippy and test jobs.
 jobs:
   ci:
     if: >-
@@ -33,7 +31,71 @@ jobs:
       (github.event_name == 'push' &&
        !startsWith(github.event.head_commit.message, 'chore(release): release v'))
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
+    with:
+      webots-version: R2025a
     secrets: inherit
+
+  # The ordinary tests prove deterministic source generation. This launches the
+  # supported native runtime and refuses asset-loader warnings, so IndexedFaceSet
+  # output cannot regress to a representation R2025a only appears to parse.
+  webots-native-renderer:
+    name: Webots native renderer
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install native runtime prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            ffmpeg \
+            libavcodec-extra \
+            libegl1 \
+            libglu1-mesa \
+            libxkbcommon-x11-0 \
+            libxcb-keysyms1 \
+            libxcb-image0 \
+            libxcb-icccm4 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-cursor0 \
+            libxcb-xinerama0 \
+            libxcomposite1 \
+            libxtst6 \
+            libnss3 \
+            xvfb
+
+      - name: Cache Webots download
+        id: cache-webots-native-renderer
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/webots.tar.bz2
+          key: webots-R2025a-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Download Webots
+        if: steps.cache-webots-native-renderer.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a-x86-64.tar.bz2" \
+            --output "$RUNNER_TEMP/webots.tar.bz2"
+
+      - name: Install Webots
+        run: |
+          tar -xjf "$RUNNER_TEMP/webots.tar.bz2" -C "$RUNNER_TEMP"
+          echo "WEBOTS_HOME=$RUNNER_TEMP/webots" >> "$GITHUB_ENV"
+
+      - name: Prove decoded GLB geometry in R2025a
+        run: >-
+          xvfb-run --auto-servernum
+          cargo test -p phoxal-simulator-webots-host --bin phoxal-simulator-webots-host
+          installed_webots_loads_native_decoded_geometry_without_asset_warnings
+          -- --ignored --nocapture
 
   # Every consumer profile, built explicitly.
   #
@@ -81,10 +143,9 @@ jobs:
           done
           cargo doc -p phoxal --all-features --no-deps
 
-      # The shared `ci` job's `cargo test --workspace` unifies only the features
-      # the workspace members enable, which never includes `session` or
-      # `simulator`. The tests that live in those profiles, and the integration
-      # tests that state `required-features`, run only here.
+      # The shared workspace test unifies the features its members enable.
+      # Test all profiles explicitly as well, including integration tests with
+      # `required-features`, independently of the current member composition.
       - name: Test every profile together
         run: cargo test -p phoxal --all-features
 
@@ -128,8 +189,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          status=0
-          report="$(cargo semver-checks --package phoxal --all-features 2>&1)" || status=$?
+          report="$(cargo semver-checks --package phoxal --all-features 2>&1)" || true
           echo "$report"
           {
             echo "## Rust API surface (all profiles)"
@@ -159,6 +219,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Test registry dependency ordering
+        run: python3 -m unittest discover -s .github/scripts -p 'test_registry_package_order.py'
 
       - name: Check the workspace policy
         shell: bash

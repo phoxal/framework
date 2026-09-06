@@ -431,12 +431,12 @@ impl ExecutionId {
     /// leading digit to the odd half of the alphabet; leaving a nonzero draw
     /// alone keeps the full nonzero leading-digit range that the transport's
     /// own session ids cover.
-    pub fn mint() -> Self {
+    pub(crate) fn mint() -> Self {
         ExecutionId(mint_canonical_value())
     }
 
-    /// Parse a rendered execution identity (as it appears in the launch
-    /// contract, the key root, and the router session id).
+    /// Parse a rendered execution identity as discovered from a router, read
+    /// from a key root, or restored from an attachment record.
     ///
     /// Only the canonical form is accepted: exactly [`ExecutionId::LEN`]
     /// lowercase hexadecimal characters, the first of which is not `0`.

@@ -323,9 +323,6 @@ macro_rules! endpoint {
     ( $leaf:tt, Setpoint, $body:tt ) => {
         crate::bus::tree::endpoint_declare!($leaf, crate::bus::Setpoint, $body);
     };
-    ( $leaf:tt, WorldClock, $body:tt ) => {
-        crate::bus::tree::endpoint_declare!($leaf, crate::bus::WorldClock, $body);
-    };
     ( $leaf:tt, Stream, $body:tt, In ) => {
         crate::bus::tree::endpoint_declare!($leaf, crate::bus::Stream<crate::bus::In>, $body);
     };

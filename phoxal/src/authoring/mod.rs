@@ -54,6 +54,7 @@ use source::SourceError;
 pub mod build_requirements;
 pub mod schema;
 pub mod source;
+pub mod world;
 
 mod normalized;
 

@@ -1,0 +1,43 @@
+[package]
+name = "phoxal-simulator-webots-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "Phoxal Webots world-session host and native generation."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-simulator-webots-host"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+image = { workspace = true }
+libc = { workspace = true }
+nalgebra = { workspace = true }
+phoxal = { workspace = true, features = ["session", "simulator"] }
+phoxal-simulator-webots-shared = { path = "../shared", version = "=0.67.1", registry = "phoxal" }
+rmp-serde = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sysinfo = { workspace = true }
+tempfile = { workspace = true }
+tobj = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+webots-proto-ast = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -27,11 +27,12 @@ use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::qos::CongestionControl;
 
 use crate::bus::abi::truncate_utf8;
-use crate::bus::contract::DeliveryFamily;
+use crate::bus::contract::{DeliveryFamily, Endpoint, EndpointKind, EndpointSemantics, Family};
 use crate::bus::error::{BusError, KeyProblem, OutboundBound, Result, SessionIdRole};
 use crate::bus::lock::lock;
 use crate::bus::metadata::{
-    BusMetadata, MAX_SOURCE_LABEL_BYTES, SourceAttribution, SourceLabel, StreamPosition,
+    BusMetadata, DeliveryMetadata, MAX_SOURCE_LABEL_BYTES, SourceAttribution, SourceLabel,
+    StreamPosition,
 };
 use crate::bus::outbound::{Outbound, OutboundScheduler};
 use crate::bus::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
@@ -65,14 +66,14 @@ pub(crate) const BUS_KEY_PREFIX: &str = "phoxal";
 /// cannot go stale behind a Zenoh upgrade.
 pub(crate) const ZENOH_WIRE_PROTOCOL_VERSION: u8 = 9;
 
-/// Capacity (in samples) of each ordered outbound lane. Coalesced state and
+/// Capacity (in values) of each ordered outbound lane. Coalesced state and
 /// setpoint lanes retain one pending slot per concrete topic instead.
 pub(crate) const OUTBOUND_CAPACITY: usize = 1024;
 
-/// Byte bound of the outbound queue. The queue is bounded in samples AND bytes,
-/// because either alone lets a conforming publisher exhaust the other. A publish
-/// A sample/stream admission that would exceed it is refused or, for samples,
-/// evicts older sample values until the newest item fits; no caller blocks.
+/// Byte bound of the outbound queue. The queue is bounded in count and bytes,
+/// because either alone lets a conforming publisher exhaust the other. A
+/// sample, event, or stream admission that would exceed it is refused or, for
+/// samples, evicts older values until the newest item fits; no caller blocks.
 pub(crate) const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Connection inputs for opening a bus session.
@@ -240,8 +241,15 @@ struct BusIdentity {
     attribution: SourceAttribution,
     producer: ProducerId,
     seq: AtomicU64,
+    active_simulation_binding: std::sync::Mutex<Option<ActiveSimulationBinding>>,
     health: BusHealth,
     runtime_metrics: Arc<RuntimeMetrics>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActiveSimulationBinding {
+    controller: ProducerId,
+    revision: u64,
 }
 
 #[derive(Default)]
@@ -497,6 +505,7 @@ impl BusOwner {
                 attribution: config.attribution(producer),
                 producer,
                 seq: AtomicU64::new(0),
+                active_simulation_binding: std::sync::Mutex::new(None),
                 health: BusHealth::default(),
                 runtime_metrics: Arc::new(RuntimeMetrics::default()),
             }),
@@ -590,6 +599,21 @@ impl BusOwner {
 }
 
 impl BusHandle {
+    /// Whether the execution's directly connected router still exists on this session.
+    /// This reads local transport state, without a query or reconnect attempt.
+    #[allow(
+        dead_code,
+        reason = "the simulator profile observes its execution router"
+    )]
+    pub(crate) async fn execution_router_connected(&self) -> Result<bool> {
+        let session = self.session()?;
+        Ok(session
+            .info()
+            .routers_zid()
+            .await
+            .any(|id| execution_from_zid(id).is_ok_and(|execution| execution == self.execution())))
+    }
+
     fn live_inner(&self) -> Result<Arc<BusInner>> {
         let liveness = self.liveness.upgrade().ok_or(BusError::Closed)?;
         if !liveness.load(Ordering::Acquire) {
@@ -647,6 +671,37 @@ impl BusHandle {
     /// Build the provenance for one outbound sample: this producer, its next
     /// sequence, and the production instant the caller's temporal role permits.
     pub(crate) fn metadata(&self, produced_at: Option<TimeWindow>) -> Result<BusMetadata> {
+        self.metadata_for(produced_at)
+    }
+
+    /// Build outbound metadata for a delivery lane. Participant setpoints and
+    /// outputs from the bound external simulation controller inherit the
+    /// supervisor-managed Active revision.
+    pub(crate) fn delivery_metadata(
+        &self,
+        family: DeliveryFamily,
+        produced_at: Option<TimeWindow>,
+    ) -> Result<DeliveryMetadata> {
+        let binding = *lock(&self.identity.active_simulation_binding);
+        let attachment_revision = binding.and_then(|binding| {
+            let is_setpoint = family == DeliveryFamily::Setpoint;
+            let is_controller_output = matches!(
+                self.identity.attribution,
+                SourceAttribution::External { .. }
+            ) && self.identity.producer == binding.controller
+                && matches!(
+                    family,
+                    DeliveryFamily::State | DeliveryFamily::Sample | DeliveryFamily::Stream
+                );
+            (is_setpoint || is_controller_output).then_some(binding.revision)
+        });
+        Ok(DeliveryMetadata::new(
+            self.metadata_for(produced_at)?,
+            attachment_revision,
+        ))
+    }
+
+    fn metadata_for(&self, produced_at: Option<TimeWindow>) -> Result<BusMetadata> {
         self.live_inner()?;
         Ok(BusMetadata {
             codec: crate::bus::abi::CodecId::MessagePack.as_u8(),
@@ -654,6 +709,82 @@ impl BusHandle {
             stream_position: None,
             produced_at,
             source: self.identity.attribution.clone(),
+        })
+    }
+
+    /// Install the exact controller and revision from current supervisor
+    /// attachment state. `None` makes all external simulator output
+    /// inadmissible immediately.
+    pub(crate) fn set_active_simulation_binding(&self, binding: Option<(ProducerId, u64)>) {
+        *lock(&self.identity.active_simulation_binding) =
+            binding.map(|(controller, revision)| ActiveSimulationBinding {
+                controller,
+                revision,
+            });
+    }
+
+    /// Build delivery metadata only if the caller still owns the exact Active
+    /// controller binding. The binding check and revision selection share one
+    /// lock, so a phase replacement can only make the resulting old revision
+    /// rejectable, never relabel an old transition as a new one.
+    #[allow(
+        dead_code,
+        reason = "only the simulator consumer profile publishes the controller SDK"
+    )]
+    pub(crate) fn active_simulation_delivery_metadata(
+        &self,
+        controller: ProducerId,
+        revision: u64,
+        family: DeliveryFamily,
+        produced_at: Option<TimeWindow>,
+    ) -> Result<Option<DeliveryMetadata>> {
+        let binding = lock(&self.identity.active_simulation_binding);
+        let exact = *binding
+            == Some(ActiveSimulationBinding {
+                controller,
+                revision,
+            })
+            && self.identity.producer == controller
+            && matches!(
+                &self.identity.attribution,
+                SourceAttribution::External { .. }
+            )
+            && matches!(
+                family,
+                DeliveryFamily::State | DeliveryFamily::Sample | DeliveryFamily::Stream
+            );
+        if !exact {
+            return Ok(None);
+        }
+        let metadata = DeliveryMetadata::new(self.metadata_for(produced_at)?, Some(revision));
+        drop(binding);
+        Ok(Some(metadata))
+    }
+
+    /// Admit external simulator delivery only from the exact controller and
+    /// Active revision currently installed by the supervisor feed.
+    pub(crate) fn admits_inbound_delivery<E: Endpoint>(&self, metadata: &DeliveryMetadata) -> bool {
+        let external_producer = match &metadata.source {
+            SourceAttribution::External { producer, .. } => *producer,
+            SourceAttribution::Participant(_) => return true,
+        };
+        let family = <E::Family as Family>::ID;
+        let kind = <E::Semantics as EndpointSemantics>::KIND;
+        let requires_active_binding = (family == "robot"
+            && matches!(
+                kind,
+                EndpointKind::State
+                    | EndpointKind::Sample
+                    | EndpointKind::Event
+                    | EndpointKind::Stream
+            ))
+            || (family == "simulation" && kind == EndpointKind::Event);
+        if !requires_active_binding {
+            return true;
+        }
+        lock(&self.identity.active_simulation_binding).is_some_and(|binding| {
+            external_producer == binding.controller
+                && metadata.attachment_revision == Some(binding.revision)
         })
     }
 
@@ -754,7 +885,7 @@ impl BusHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_queued_stream_metadata(&self, key: &str) -> Vec<BusMetadata> {
+    pub(crate) fn test_queued_stream_metadata(&self, key: &str) -> Vec<DeliveryMetadata> {
         self.owner
             .upgrade()
             .map(|inner| {
@@ -762,7 +893,28 @@ impl BusHandle {
                     .stream_attachments(key)
                     .into_iter()
                     .map(|attachment| {
-                        BusMetadata::decode(&attachment).expect("queued metadata must decode")
+                        DeliveryMetadata::decode(&attachment)
+                            .expect("queued delivery metadata must decode")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_queued_delivery_metadata(
+        &self,
+    ) -> Vec<(String, DeliveryFamily, DeliveryMetadata)> {
+        self.owner
+            .upgrade()
+            .map(|inner| {
+                lock(&inner.outbound)
+                    .delivery_attachments()
+                    .into_iter()
+                    .map(|(key, family, attachment)| {
+                        let metadata = DeliveryMetadata::decode(&attachment)
+                            .expect("queued delivery metadata must decode");
+                        (key, family, metadata)
                     })
                     .collect()
             })
@@ -863,7 +1015,7 @@ impl BusHandle {
         key: String,
         encoding: String,
         payload: Vec<u8>,
-        mut metadata: BusMetadata,
+        mut metadata: DeliveryMetadata,
         family: DeliveryFamily,
         metric: RuntimeMetricHandle,
     ) -> Result<()> {
@@ -877,7 +1029,7 @@ impl BusHandle {
         }
         let mut scheduler = lock(&inner.outbound);
         if family == DeliveryFamily::Stream {
-            metadata.stream_position = Some(StreamPosition {
+            metadata.bus.stream_position = Some(StreamPosition {
                 sequence: scheduler.next_stream_position(&key),
             });
         }
@@ -1403,9 +1555,9 @@ fn signal_fatal(inner: &BusInner, fault: BusFault) {
 /// ([`crate::bus::outbound::OutboundScheduler::admit`]), and a receiver treats a
 /// missing position as fatal by design. A transport-level drop therefore
 /// manufactures exactly the gap the whole family is built to make impossible,
-/// and it lands on every subscriber simultaneously - one dropped world-clock
-/// chunk faulted twelve supervised participants at once, eight seconds after
-/// the graph reached Ready. [`CongestionControl::Block`] turns that loss into
+/// and it lands on every subscriber simultaneously. A single dropped stream
+/// chunk can therefore fault every subscriber long after startup.
+/// [`CongestionControl::Block`] turns that loss into
 /// backpressure on the drain loop instead, where the outbox's own bounded
 /// refusal reports it to the publisher as a bounded, attributable failure.
 const fn congestion_control_for(family: DeliveryFamily) -> CongestionControl {
@@ -1586,6 +1738,46 @@ mod tests {
     use crate::bus::handle::publisher::StatePublisher;
     use crate::bus::handle::subscriber::{Latest, Subscriber};
     use crate::bus::test_support::{TARGET_TOPIC, Target, bound, participant_config, step};
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execution_router_loss_is_visible_without_a_liveliness_delete() {
+        let directory = tempfile::tempdir().unwrap();
+        let endpoint = format!(
+            "unixsock-stream/{}",
+            directory.path().join("router.sock").display()
+        );
+        let execution = ExecutionId::mint();
+        let mut config = zenoh::Config::default();
+        apply_phoxal_transport_policy(&mut config).unwrap();
+        config.insert_json5("mode", "\"router\"").unwrap();
+        config
+            .insert_json5(
+                "id",
+                &serde_json::to_string(&execution.to_string()).unwrap(),
+            )
+            .unwrap();
+        config
+            .insert_json5(
+                "listen/endpoints",
+                &serde_json::to_string(&[&endpoint]).unwrap(),
+            )
+            .unwrap();
+        let router = zenoh::open(config).await.unwrap();
+        let (owner, bus) = BusOwner::open(BusConfig::for_external(execution, None, vec![endpoint]))
+            .await
+            .unwrap();
+        assert!(bus.execution_router_connected().await.unwrap());
+        router.close().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while bus.execution_router_connected().await.unwrap() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("loss is local transport state, not a remote token update");
+        let _ = owner.close().await;
+    }
 
     fn test_producer(value: u128) -> ProducerId {
         ProducerId::try_from((1_u128 << 124) | value).expect("canonical test producer")
@@ -1831,6 +2023,83 @@ mod tests {
             Err(BusError::InvalidKey { .. })
         ));
         owner.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn simulator_ingress_requires_the_exact_active_controller_and_revision() {
+        fn delivery(producer: ProducerId, revision: Option<u64>) -> DeliveryMetadata {
+            DeliveryMetadata::new(
+                BusMetadata {
+                    codec: crate::bus::CodecId::MessagePack.as_u8(),
+                    sequence: 0,
+                    stream_position: None,
+                    produced_at: None,
+                    source: SourceAttribution::External {
+                        producer,
+                        label: None,
+                    },
+                },
+                revision,
+            )
+        }
+
+        let controller = test_producer(71);
+        let other = test_producer(72);
+        let (owner, bus) = BusOwner::open(BusConfig::for_external(
+            ExecutionId::mint(),
+            None,
+            Vec::new(),
+        ))
+        .await
+        .expect("test bus opens");
+
+        assert!(
+            !bus.admits_inbound_delivery::<crate::simulation::api::StepEvent>(&delivery(
+                controller,
+                Some(9),
+            )),
+            "Preparing and Removing admit no external simulation output"
+        );
+        bus.set_active_simulation_binding(Some((controller, 9)));
+        assert!(
+            bus.admits_inbound_delivery::<crate::simulation::api::StepEvent>(&delivery(
+                controller,
+                Some(9),
+            ))
+        );
+        assert!(
+            bus.admits_inbound_delivery::<crate::api::component::speaker::Chunk>(&delivery(
+                controller,
+                Some(9),
+            )),
+            "Robot stream delivery uses the same exact admission"
+        );
+        assert!(
+            !bus.admits_inbound_delivery::<crate::simulation::api::StepEvent>(&delivery(
+                other,
+                Some(9),
+            ))
+        );
+        assert!(
+            !bus.admits_inbound_delivery::<crate::simulation::api::StepEvent>(&delivery(
+                controller,
+                Some(8),
+            ))
+        );
+        assert!(
+            !bus.admits_inbound_delivery::<crate::simulation::api::StepEvent>(&delivery(
+                controller, None,
+            ))
+        );
+        bus.set_active_simulation_binding(None);
+        assert!(
+            !bus.admits_inbound_delivery::<crate::simulation::api::StepEvent>(&delivery(
+                controller,
+                Some(9),
+            ))
+        );
+
+        let _ = owner.close().await;
     }
 
     #[serial]

@@ -42,6 +42,16 @@ pub enum BundleError {
         #[source]
         source: std::io::Error,
     },
+    #[error("supervisor bundle reader failed: {detail}")]
+    Remote { detail: String },
+    #[error("asset I/O worker ended before it completed: {detail}")]
+    AssetWorker { detail: String },
+    #[error("failed to materialize cached asset {path}: {source}", path = path.display())]
+    Cache {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error(transparent)]
     Path(#[from] BundlePathError),
 }

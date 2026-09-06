@@ -163,6 +163,30 @@ token_identifier!(
     IdentifierKind::Capability
 );
 
+token_identifier!(
+    /// The stable authored identity of one compiled world.
+    WorldId,
+    IdentifierKind::WorldId
+);
+
+token_identifier!(
+    /// The name of one reusable asset declaration in an authored world.
+    WorldAssetName,
+    IdentifierKind::WorldAsset
+);
+
+token_identifier!(
+    /// The name of one spawn point in an authored world.
+    SpawnId,
+    IdentifierKind::WorldSpawn
+);
+
+token_identifier!(
+    /// The name of one entity declaration expanded into a compiled world.
+    EntityDeclarationId,
+    IdentifierKind::WorldEntityDeclaration
+);
+
 /// Declare a structural identifier newtype.
 ///
 /// Structural names come from authored URDF, whose grammar is wider than

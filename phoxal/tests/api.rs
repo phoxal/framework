@@ -1,11 +1,13 @@
-//! Black-box coverage of the three contract families and the dynamic tree that
+//! Black-box coverage of the five contract families and the dynamic tree that
 //! declares them.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use phoxal::api as robot;
 use phoxal::runtime::api as runtime;
+use phoxal::simulation::api as simulation;
 use phoxal::supervisor::api as supervisor;
+use phoxal::world::api as world;
 
 #[path = "api/behavior.rs"]
 mod behavior;

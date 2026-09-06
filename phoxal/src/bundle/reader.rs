@@ -1,4 +1,4 @@
-//! The one bundle reader, used by the supervisor and by every participant.
+//! The supervisor's local bundle reader.
 
 use std::path::Path;
 
@@ -10,11 +10,10 @@ use crate::bundle::{BundleError, BundleRoot, ParticipantAssets, read_manifest_do
 
 /// An opened bundle: its manifest, and access to its assets.
 ///
-/// Opening one parses `manifest.json` and does nothing else. A participant not
-/// named in the manifest opens the bundle exactly as one that is - the manifest
-/// is the robot model plus, for those that have one, their own configuration -
-/// so there is no selection step and no way for a launched process to be refused
-/// by the bundle it was pointed at.
+/// Opening one parses `manifest.json` and does nothing else. It is only for a
+/// process that owns a local bundle root, such as the supervisor or explicit
+/// in-process harness. Launched participants receive their model and assets
+/// through the supervisor instead of opening this directory themselves.
 #[derive(Clone, Debug)]
 pub struct RuntimeBundle {
     root: BundleRoot,
@@ -69,9 +68,9 @@ impl RuntimeBundle {
     ///
     /// # Errors
     ///
-    /// Returns the same failures as [`ParticipantAssets::read`].
+    /// Returns the same failures as local [`ParticipantAssets::read`].
     pub fn asset(&self, id: &AssetId) -> Result<Vec<u8>, BundleError> {
-        self.assets.read(id)
+        self.assets.read_local(id)
     }
 
     /// The asset reader, for a consumer that keeps it beyond this value.

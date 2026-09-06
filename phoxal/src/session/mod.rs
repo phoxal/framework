@@ -37,7 +37,9 @@
 
 mod connection;
 mod error;
-mod selection;
 
+pub use crate::world::{
+    WorldDiagnosticsSubscription, WorldSessionClient, WorldSessionWireError, WorldStateSubscription,
+};
 pub use connection::{ConnectOptions, ConnectedExecution, Session, SessionHandle};
 pub use error::{CloseError, CompatibilityRefusal, ConnectError, DisconnectReason, SessionError};

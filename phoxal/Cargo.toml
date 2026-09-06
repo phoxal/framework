@@ -92,11 +92,13 @@ schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 serde_yaml = { workspace = true, optional = true }
 # The supervisor asks its own host to reboot or power off.
 system_shutdown = { workspace = true, optional = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "io-util", "net"] }
 # `rt`: the supervisor's one shutdown token, cancelled from the signal handler
 # and awaited by everything it owns.
 tokio-util = { workspace = true, features = ["rt"], optional = true }
@@ -142,9 +144,6 @@ jsonschema = { workspace = true }
 # other place in either repository that parses this section.
 object = "0.36"
 serial_test = { workspace = true }
-# `tests/participant_metadata.rs` builds a throwaway participant crate against
-# this one and throws it away again.
-tempfile = { workspace = true }
 trybuild = { workspace = true }
 # `test-util` (paused/mocked virtual time) is additive to the `[dependencies]`
 # `tokio` features above and only applies to test/bench/example builds, never

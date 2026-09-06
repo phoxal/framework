@@ -1,17 +1,24 @@
-//! `BusMetadata` - the per-sample attachment.
+//! Metadata carried beside bus bodies.
 //!
 //! The wire body is the plain MessagePack payload; provenance rides here, in
 //! the Zenoh attachment. Identity is not carried in the envelope at all - it
 //! lives in the Zenoh key itself, the concrete key the api tree rendered for
 //! the endpoint, so a receiver's per-key subscription is the whole fast-reject.
 //!
-//! Provenance is a [`SourceAttribution`] plus a per-producer sequence, and the
-//! production instant is an explicit `Option<`[`TimeWindow`]`>` - a sample that
-//! expresses no robot time carries `None`, never a sentinel. Stream contracts
-//! additionally carry an optional position scoped to that producer and
-//! concrete topic. Participant and producer identity are one source pair;
-//! external sources carry the producer with an optional bounded diagnostic
-//! label. No admissibility decision reads the diagnostic label.
+//! [`BusMetadata`] is the frozen query/bootstrap envelope and the common base
+//! embedded in [`DeliveryMetadata`]. Provenance is a [`SourceAttribution`] plus
+//! a per-producer sequence, and the production instant is an explicit
+//! `Option<`[`TimeWindow`]`>` - a body that expresses no robot time carries
+//! `None`, never a sentinel. Stream contracts additionally carry an optional
+//! position scoped to that producer and concrete topic. Participant and
+//! producer identity are one source pair; external sources carry the producer
+//! with an optional bounded diagnostic label. No admissibility decision reads
+//! the diagnostic label.
+//!
+//! Pub/sub samples use the distinct [`DeliveryMetadata`] attachment. Its
+//! optional attachment revision is deliberately outside the frozen envelope,
+//! so Live delivery admission can evolve without changing the metadata an
+//! attaching client must decode before compatibility has been established.
 //!
 //! Receiver-side observation time is deliberately absent: it is process-local
 //! and receiver-specific, so it belongs on
@@ -196,6 +203,68 @@ pub struct BusMetadata {
     pub source: SourceAttribution,
 }
 
+/// Metadata encoded on ordinary pub/sub delivery attachments.
+///
+/// The nested [`BusMetadata`] is the common provenance and timing base. The
+/// Live attachment revision belongs only to delivery and therefore never rides
+/// a query request, query reply, or frozen supervisor bootstrap reply.
+#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryMetadata {
+    /// The common codec, sequence, timing, and source metadata.
+    pub bus: BusMetadata,
+    /// The active supervisor attachment revision under which this delivery was
+    /// admitted, when the delivery requires attachment-bound admission.
+    ///
+    /// This is a standard delivery-envelope fact rather than a payload field.
+    /// Live v0 stamps setpoint deliveries while Active so a controller can
+    /// reject missing, retained, or delayed commands from another revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_revision: Option<u64>,
+}
+
+impl DeliveryMetadata {
+    /// Construct delivery metadata from the frozen base and optional Live
+    /// attachment correlation.
+    #[must_use]
+    pub fn new(bus: BusMetadata, attachment_revision: Option<u64>) -> Self {
+        Self {
+            bus,
+            attachment_revision,
+        }
+    }
+
+    /// Encode to ordinary pub/sub attachment bytes.
+    pub fn encode(&self) -> std::result::Result<Vec<u8>, rmp_serde::encode::Error> {
+        let encoded = rmp_serde::to_vec_named(self)?;
+        debug_assert!(encoded.len() <= MAX_METADATA_BYTES);
+        Ok(encoded)
+    }
+
+    /// Decode from ordinary pub/sub attachment bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, rmp_serde::decode::Error> {
+        if bytes.len() > MAX_METADATA_BYTES {
+            return Err(rmp_serde::decode::Error::Syntax(format!(
+                "DeliveryMetadata exceeds the {MAX_METADATA_BYTES}-byte limit"
+            )));
+        }
+        rmp_serde::from_slice(bytes)
+    }
+}
+
+impl std::ops::Deref for DeliveryMetadata {
+    type Target = BusMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.bus
+    }
+}
+
+impl std::ops::DerefMut for DeliveryMetadata {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.bus
+    }
+}
+
 impl BusMetadata {
     /// Encode to the MessagePack attachment bytes.
     ///
@@ -347,6 +416,28 @@ mod tests {
         assert_eq!(decoded, original);
         assert_eq!(decoded.sequence, 7);
         assert_eq!(decoded.stream_position.unwrap().sequence, 41);
+    }
+
+    #[test]
+    fn a_delivery_attachment_revision_is_optional_and_round_trips_when_present() {
+        let original = DeliveryMetadata::new(metadata(None), Some(9));
+        let encoded = original.encode().expect("delivery metadata encodes");
+        let decoded = DeliveryMetadata::decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+        assert_eq!(decoded.attachment_revision, Some(9));
+        assert_eq!(decoded.sequence, 7);
+    }
+
+    #[test]
+    fn delivery_metadata_keeps_live_correlation_outside_the_frozen_base() {
+        let delivery = DeliveryMetadata::new(metadata(None), Some(9));
+        let json = serde_json::to_value(&delivery).expect("delivery metadata serializes");
+        let fields = json.as_object().expect("delivery metadata is a map");
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["attachment_revision", "bus"]
+        );
+        assert!(fields["bus"].get("attachment_revision").is_none());
     }
 
     #[test]

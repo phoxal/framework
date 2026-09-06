@@ -23,9 +23,8 @@ use crate::model::error::ModelError;
 use crate::model::identity::{
     CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, ServiceId,
 };
-use crate::model::robot::{
-    ComponentInstance, Driver, KinematicConfig, MotionLimits, Robot, Service,
-};
+use crate::model::kinematics::{KinematicConfig, MotionLimits};
+use crate::model::robot::{ComponentInstance, Driver, Robot, Service};
 use crate::model::simulation::{self, Simulation};
 use crate::model::structure::Structure;
 

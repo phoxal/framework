@@ -17,7 +17,7 @@ use crate::bus::contract::{
 use crate::bus::error::{BusError, KeyProblem, Result};
 use crate::bus::handle::decode_sample;
 use crate::bus::lock::lock;
-use crate::bus::metadata::BusMetadata;
+use crate::bus::metadata::DeliveryMetadata;
 use crate::bus::runtime_metrics::RuntimeMetricHandle;
 use crate::bus::session::{BusFault, BusHandle};
 use crate::bus::time::{LocalInstant, RetiredTimelines, TimeWindow};
@@ -91,13 +91,14 @@ impl TerminalState {
 /// over and **before** decode, so ring residence and decode cost are inside
 /// every consumer's measured age. It is process-local and receiver-specific -
 /// two receivers of the same sample legitimately observe it at different
-/// instants - which is exactly why it lives here and never in [`BusMetadata`].
+/// instants - which is exactly why it lives here and never in
+/// [`DeliveryMetadata`].
 #[derive(Clone, Debug)]
 pub struct Observed<B> {
     /// The decoded wire body.
     pub body: B,
     /// The sample's bus metadata.
-    pub metadata: BusMetadata,
+    pub metadata: DeliveryMetadata,
     /// When this receiver observed the sample, on the host's suspend-aware
     /// monotonic boot clock.
     pub observed_at: LocalInstant,
@@ -1620,11 +1621,28 @@ where
                 continue;
             };
             match decode_sample::<E>(&sample, &topic_owned) {
-                Ok((body, metadata)) => on_sample(Observed {
-                    body,
-                    metadata,
-                    observed_at,
-                }),
+                Ok((body, metadata)) => {
+                    if !health_bus.admits_inbound_delivery::<E>(&metadata) {
+                        metric.record_drop();
+                        health_bus
+                            .health()
+                            .inbound_drops
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!(
+                            target: "phoxal.bus",
+                            topic = %topic_owned,
+                            producer = %metadata.source.producer(),
+                            revision = ?metadata.attachment_revision,
+                            "dropped external simulator delivery outside the exact Active binding"
+                        );
+                        continue;
+                    }
+                    on_sample(Observed {
+                        body,
+                        metadata,
+                        observed_at,
+                    });
+                }
                 Err(err) => {
                     metric.record_decode_error();
                     health_bus
@@ -1663,7 +1681,7 @@ mod tests {
     use crate::bus::handle::publisher::{SetpointPublisher, StatePublisher};
     use crate::bus::lease::{FixedSourceLease, LeaseDecision, LeaseRejection};
     use crate::bus::liveliness::ParticipantReadyStatus;
-    use crate::bus::metadata::{ParticipantSourceIdentity, SourceAttribution};
+    use crate::bus::metadata::{BusMetadata, ParticipantSourceIdentity, SourceAttribution};
     use crate::bus::runtime_metrics::{RuntimeDirection, RuntimeMetrics};
     use crate::bus::session::BusOwner;
     use crate::bus::test_support::{
@@ -1700,17 +1718,20 @@ mod tests {
     fn observed(body: u8, line: Option<u64>) -> Observed<u8> {
         Observed {
             body,
-            metadata: BusMetadata {
-                codec: CodecId::MessagePack.as_u8(),
-                sequence: u64::from(body),
-                stream_position: None,
-                produced_at: line
-                    .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
-                source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
-                    crate::identity::ParticipantId::new("test").expect("test participant"),
-                    producer(1),
-                )),
-            },
+            metadata: DeliveryMetadata::new(
+                BusMetadata {
+                    codec: CodecId::MessagePack.as_u8(),
+                    sequence: u64::from(body),
+                    stream_position: None,
+                    produced_at: line
+                        .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
+                    source: SourceAttribution::Participant(ParticipantSourceIdentity::new(
+                        crate::identity::ParticipantId::new("test").expect("test participant"),
+                        producer(1),
+                    )),
+                },
+                None,
+            ),
             observed_at: LocalInstant::try_now().expect("test host clock"),
         }
     }

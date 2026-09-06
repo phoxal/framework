@@ -18,8 +18,8 @@
 //! # Paths
 //!
 //! Concepts live in the module that owns them: [`asset`], [`builder`],
-//! [`component`], [`connection`], [`identity`], [`manifest`], [`robot`],
-//! [`simulation`], [`structure`].
+//! [`component`], [`connection`], [`identity`], [`kinematics`], [`manifest`],
+//! [`robot`], [`simulation`], [`structure`].
 //!
 //! This module's root is a deliberate facade over the handful of names a consumer
 //! meets first, so that loading, reading or composing a robot does not require
@@ -38,11 +38,14 @@ pub mod builder;
 pub mod component;
 pub mod connection;
 pub mod footprint;
+pub mod geometry;
 pub mod identity;
+pub mod kinematics;
 pub mod manifest;
 pub mod robot;
 pub mod simulation;
 pub mod structure;
+pub mod world;
 
 #[doc(hidden)]
 pub mod compiler;

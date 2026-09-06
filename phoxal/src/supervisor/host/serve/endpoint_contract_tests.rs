@@ -8,11 +8,12 @@
 use std::fmt::Debug;
 use std::fs;
 
+use crate::bundle::BundlePath;
 use crate::bus::{
-    Codec, Endpoint, EndpointKind, EndpointSemantics, MessagePack, Publish, QueryEndpoint,
-    ServeQuery, Topic,
+    BusConfig, BusOwner, Codec, DEFAULT_QUERY_TIMEOUT, Endpoint, EndpointKind, EndpointSemantics,
+    MessagePack, Publish, Querier, QueryEndpoint, QueryError, ServeQuery, SourceLabel, Topic,
 };
-use crate::identity::{ParticipantId, ProducerId};
+use crate::identity::{ExecutionId, ParticipantId, ProducerId};
 use crate::model::builder::RobotBuilder;
 use crate::model::manifest::ManifestDocument;
 use crate::runtime::api as runtime;
@@ -21,7 +22,10 @@ use crate::supervisor::api::command::{Command, CommandOutcome};
 use crate::supervisor::api::connect::{ConnectReply, ConnectRequest};
 use crate::version::FrameworkVersion;
 
-use super::{HostAction, bundle_entry, command, connect_reply};
+use super::{
+    HostAction, MAX_BUNDLE_CHUNK_BYTES, bundle_entry, classify_bundle_path_error, command,
+    connect_reply, finish_clean_simulation_removal, serve_simulation_end,
+};
 use crate::supervisor::host::presence::Presence;
 use crate::supervisor::host::state::ExecutionState;
 
@@ -67,6 +71,19 @@ fn the_supervisor_boundary_is_pinned_to_its_rendered_keys() {
         "supervisor/snapshot/current",
         supervisor::snapshot::CurrentRequest {},
         snapshot,
+    );
+
+    let domain = state.time_domain();
+    assert_stream_round_trip(
+        &api.time_domain().owner(),
+        "supervisor/time_domain",
+        supervisor::time_domain::TimeDomainStream { domain },
+    );
+    assert_query_round_trip(
+        &api.time_domain().current().owner(),
+        "supervisor/time_domain/current",
+        supervisor::time_domain::CurrentRequest {},
+        supervisor::time_domain::CurrentResponse { domain },
     );
 
     assert_query_round_trip(
@@ -120,73 +137,132 @@ fn the_supervisor_boundary_is_pinned_to_its_rendered_keys() {
         &api.bundle().get().owner(),
         "supervisor/bundle/get",
         supervisor::bundle::GetRequest {
-            path: "assets/map.bin".to_owned(),
+            path: bundle_path("assets/map.bin"),
+            offset: 0,
         },
-        supervisor::bundle::GetResponse::Found {
+        supervisor::bundle::GetResponse::Chunk {
             bytes: vec![1, 2, 3],
+            eof: true,
         },
     );
 }
 
-/// The identity endpoint answers with the bundle's own manifest document, so a
-/// client decodes the same document every participant of this execution reads.
+/// The identity endpoint wraps the immutable manifest and nothing dynamic, so
+/// every participant decodes the same static document.
 #[test]
-fn the_info_reply_is_the_manifest_document_itself() {
-    fn reply_is_the_manifest_document(
-        reply: <supervisor::info::InfoRequest as QueryEndpoint>::Response,
-    ) -> ManifestDocument {
-        reply
-    }
-
+fn the_info_reply_contains_the_manifest_document() {
     let manifest = ManifestDocument::new(
         RobotBuilder::new("rover")
             .service("drive", None)
             .build()
             .expect("fixture robot"),
     );
-    let encoded = MessagePack::encode(&manifest).expect("the manifest encodes");
+    let reply = supervisor::info::InfoResponse { manifest };
+    let encoded = MessagePack::encode(&reply).expect("the execution info encodes");
     let decoded =
         MessagePack::decode::<<supervisor::info::InfoRequest as QueryEndpoint>::Response>(&encoded)
             .expect("the manifest decodes");
-    let decoded = reply_is_the_manifest_document(decoded);
-    assert_eq!(decoded.robot().id().as_str(), "rover");
+    assert_eq!(decoded.manifest.robot().id().as_str(), "rover");
     assert_eq!(
         MessagePack::encode(&decoded).expect("the decoded manifest encodes"),
         encoded,
-        "the reply is the document, not a projection of it"
+        "the reply preserves the static execution document"
     );
 }
 
 #[test]
-fn bundle_entry_serves_only_plain_relative_files() {
+fn bundle_entry_serves_bounded_asset_ranges() {
     let root = tempfile::tempdir().expect("temporary bundle root");
     fs::write(root.path().join("manifest.json"), b"manifest").expect("manifest fixture");
     fs::create_dir(root.path().join("assets")).expect("asset directory");
     fs::write(root.path().join("assets/map.bin"), b"map").expect("asset fixture");
 
     assert_eq!(
-        bundle_entry(root.path(), "manifest.json"),
-        supervisor::bundle::GetResponse::Found {
-            bytes: b"manifest".to_vec(),
-        }
+        bundle_entry(root.path(), &request("manifest.json", 0)),
+        supervisor::bundle::GetResponse::Refused
     );
     assert_eq!(
-        bundle_entry(root.path(), "assets/map.bin"),
-        supervisor::bundle::GetResponse::Found {
+        bundle_entry(root.path(), &request("assets/map.bin", 0)),
+        supervisor::bundle::GetResponse::Chunk {
             bytes: b"map".to_vec(),
+            eof: true,
         }
     );
     assert_eq!(
-        bundle_entry(root.path(), "assets/missing.bin"),
+        bundle_entry(root.path(), &request("assets/missing.bin", 0)),
         supervisor::bundle::GetResponse::Missing
     );
-    for refused in ["", "../outside", "/etc/passwd", "assets/../manifest.json"] {
-        assert_eq!(
-            bundle_entry(root.path(), refused),
-            supervisor::bundle::GetResponse::InvalidPath,
-            "{refused:?}"
-        );
-    }
+    assert_eq!(
+        bundle_entry(root.path(), &request("assets/map.bin", 3)),
+        supervisor::bundle::GetResponse::Chunk {
+            bytes: Vec::new(),
+            eof: true,
+        }
+    );
+}
+
+/// The supervisor, rather than each caller, sets the largest reply. A caller
+/// advances its requested offset by the bytes it received and therefore never
+/// needs the size as a protocol field.
+#[test]
+fn bundle_entry_splits_a_large_asset_at_the_fixed_supervisor_bound() {
+    let root = tempfile::tempdir().expect("temporary bundle root");
+    fs::create_dir(root.path().join("assets")).expect("asset directory");
+    let bytes = vec![9_u8; MAX_BUNDLE_CHUNK_BYTES + 1];
+    fs::write(root.path().join("assets/large.bin"), bytes).expect("large asset fixture");
+
+    let first = bundle_entry(root.path(), &request("assets/large.bin", 0));
+    assert!(matches!(
+        first,
+        supervisor::bundle::GetResponse::Chunk {
+            ref bytes,
+            eof: false,
+        } if bytes.len() == MAX_BUNDLE_CHUNK_BYTES
+    ));
+    assert_eq!(
+        bundle_entry(
+            root.path(),
+            &request("assets/large.bin", MAX_BUNDLE_CHUNK_BYTES as u64)
+        ),
+        supervisor::bundle::GetResponse::Chunk {
+            bytes: vec![9],
+            eof: true,
+        }
+    );
+}
+
+/// A decoded request can name an existing directory or fail to resolve through
+/// an existing non-directory. Neither is a missing asset, and an unreadable
+/// entry must not be reported as absent.
+#[test]
+fn bundle_entry_classifies_invalid_and_unservable_paths_without_hiding_them_as_missing() {
+    let root = tempfile::tempdir().expect("temporary bundle root");
+    fs::create_dir(root.path().join("assets")).expect("asset directory");
+    fs::create_dir(root.path().join("assets/maps")).expect("nested asset directory");
+    fs::write(root.path().join("assets/map.bin"), b"map").expect("asset fixture");
+
+    assert_eq!(
+        bundle_entry(root.path(), &request("assets/maps", 0)),
+        supervisor::bundle::GetResponse::InvalidPath
+    );
+    assert_eq!(
+        bundle_entry(root.path(), &request("assets/map.bin/child", 0)),
+        supervisor::bundle::GetResponse::InvalidPath
+    );
+    assert_eq!(
+        classify_bundle_path_error(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        supervisor::bundle::GetResponse::Refused
+    );
+    assert_eq!(
+        classify_bundle_path_error(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+        supervisor::bundle::GetResponse::Missing
+    );
+
+    let unavailable_root = root.path().join("unavailable");
+    assert_eq!(
+        bundle_entry(&unavailable_root, &request("assets/map.bin", 0)),
+        supervisor::bundle::GetResponse::Refused
+    );
 }
 
 /// A path can spell nothing but plain names and still leave the bundle, if
@@ -209,21 +285,71 @@ fn bundle_entry_refuses_an_entry_that_resolves_outside_the_bundle() {
         root.path().join("elsewhere"),
     )
     .expect("a symlinked directory out of the bundle");
+    fs::create_dir(root.path().join("assets")).expect("asset directory");
+    std::os::unix::fs::symlink(
+        root.path().join("assets/missing.bin"),
+        root.path().join("assets/dangling.bin"),
+    )
+    .expect("a dangling asset symlink");
+    std::os::unix::fs::symlink(
+        root.path().join("assets/missing-directory"),
+        root.path().join("assets/dangling-directory"),
+    )
+    .expect("a dangling asset directory symlink");
+    std::os::unix::fs::symlink(
+        outside.path().join("elsewhere"),
+        root.path().join("assets/outside-directory"),
+    )
+    .expect("an outside asset directory symlink");
+    std::os::unix::fs::symlink(
+        root.path().join("assets/loop-b"),
+        root.path().join("assets/loop-a"),
+    )
+    .expect("the first symlink loop entry");
+    std::os::unix::fs::symlink(
+        root.path().join("assets/loop-a"),
+        root.path().join("assets/loop-b"),
+    )
+    .expect("the second symlink loop entry");
 
     for refused in ["escape", "elsewhere/secret"] {
         assert_eq!(
-            bundle_entry(root.path(), refused),
+            bundle_entry(root.path(), &request(refused, 0)),
             supervisor::bundle::GetResponse::InvalidPath,
             "{refused:?}"
         );
     }
     // The bundle's own entries are unaffected by the check.
     assert_eq!(
-        bundle_entry(root.path(), "manifest.json"),
-        supervisor::bundle::GetResponse::Found {
-            bytes: b"manifest".to_vec(),
-        }
+        bundle_entry(root.path(), &request("manifest.json", 0)),
+        supervisor::bundle::GetResponse::Refused
     );
+    assert_eq!(
+        bundle_entry(root.path(), &request("assets/dangling.bin", 0)),
+        supervisor::bundle::GetResponse::InvalidPath
+    );
+    for invalid in [
+        "assets/dangling-directory/child.bin",
+        "assets/outside-directory/missing.bin",
+        "assets/loop-a",
+    ] {
+        assert_eq!(
+            bundle_entry(root.path(), &request(invalid, 0)),
+            supervisor::bundle::GetResponse::InvalidPath,
+            "{invalid:?}"
+        );
+    }
+}
+
+fn bundle_path(path: &str) -> BundlePath {
+    BundlePath::new(path).expect("a canonical test bundle path")
+}
+
+fn request(path: &str, offset: u64) -> supervisor::bundle::GetRequest {
+    supervisor::bundle::GetRequest {
+        path: bundle_path(path),
+        offset,
+    }
 }
 
 /// Both host actions are accepted as asked, and the acceptance names the
@@ -247,10 +373,169 @@ fn host_actions_are_accepted_at_the_current_revision() {
     }
 }
 
+/// Intentional supervisor shutdown keeps the bus alive until the native host
+/// acknowledges cleanup and the delegated controller has withdrawn. Neither
+/// signal alone is enough to report a clean member removal.
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_shutdown_waits_for_host_acknowledgement_and_controller_withdrawal() {
+    let execution = ExecutionId::mint();
+    let (owner, bus) = BusOwner::open(BusConfig::for_external(
+        execution,
+        Some(SourceLabel::new("removal-test").expect("bounded label")),
+        Vec::new(),
+    ))
+    .await
+    .expect("test bus opens");
+    let host = bus.producer();
+    let controller =
+        ProducerId::try_from((1_u128 << 124) | 33).expect("a canonical controller producer");
+    let robot = RobotBuilder::new("rover")
+        .component_type("motor", |motor| motor.motor("spin", "axle"))
+        .component_with("left", "motor", |mounted| {
+            mounted.driver(
+                crate::model::connection::Connection::Can(crate::model::connection::Can {
+                    bus: 0,
+                    node_id: 1,
+                }),
+                None,
+            )
+        })
+        .build()
+        .expect("fixture robot");
+    let state = ExecutionState::new(Presence::for_robot(&robot)).expect("fresh execution state");
+    let brain = ParticipantId::new("brain").expect("brain id");
+    let driver = ParticipantId::new("left").expect("driver id");
+    state.record_presence(
+        &brain,
+        ProducerId::try_from((1_u128 << 124) | 32).expect("brain producer"),
+        true,
+    );
+    state.record_presence(&driver, controller, true);
+    let request = supervisor::simulation::attach::AttachRequest::validated(
+        crate::model::world::WorldInstanceId::mint(),
+        controller,
+        crate::model::world::WorldProgress::at(4, 12).expect("valid progress"),
+        12,
+    )
+    .expect("validated attachment request");
+    let (preparing, _) = state
+        .prepare_attachment(host, request)
+        .expect("attachment prepares");
+    state
+        .activate_attachment(host, preparing.revision)
+        .expect("attachment activates");
+
+    let cleanup_bus = bus.clone();
+    let cleanup_state = state.clone();
+    let mut cleanup =
+        tokio::spawn(
+            async move { finish_clean_simulation_removal(&cleanup_bus, &cleanup_state).await },
+        );
+    let removing = loop {
+        if let Some(attachment) = state.attachment()
+            && attachment.phase == supervisor::simulation::SimulationAttachmentPhase::Removing
+        {
+            break attachment;
+        }
+        tokio::task::yield_now().await;
+    };
+    let acknowledgement = owner
+        .declare_liveliness_key(&supervisor::simulation::removal_liveliness_key(
+            removing.revision,
+            host,
+        ))
+        .await
+        .expect("host cleanup acknowledgement");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut cleanup)
+            .await
+            .is_err(),
+        "host acknowledgement alone cannot hide a live controller"
+    );
+
+    state.record_presence(&driver, controller, false);
+    tokio::time::timeout(std::time::Duration::from_secs(2), cleanup)
+        .await
+        .expect("clean removal completes within the test bound")
+        .expect("cleanup task joins")
+        .expect("both cleanup facts are accepted");
+    drop(acknowledgement);
+    owner.close().await;
+}
+
+/// A host-reported terminal outcome replies on the locked end contract before
+/// it requests the same orderly supervisor shutdown used by a robot stop.
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typed_simulation_end_requests_supervisor_shutdown_after_replying() {
+    let execution = ExecutionId::mint();
+    let (owner, bus) = BusOwner::open(BusConfig::for_external(
+        execution,
+        Some(SourceLabel::new("end-test").expect("bounded label")),
+        Vec::new(),
+    ))
+    .await
+    .expect("test bus opens");
+    let host = bus.producer();
+    let controller = ProducerId::try_from((1_u128 << 124) | 43).expect("controller producer");
+    let (state, _) = present_state();
+    let request = supervisor::simulation::attach::AttachRequest::validated(
+        crate::model::world::WorldInstanceId::mint(),
+        controller,
+        crate::model::world::WorldProgress::at(2, 12).expect("valid progress"),
+        12,
+    )
+    .expect("validated attachment request");
+    let (preparing, _) = state
+        .prepare_attachment(host, request)
+        .expect("attachment prepares");
+    state
+        .activate_attachment(host, preparing.revision)
+        .expect("attachment activates");
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let server_bus = bus.clone();
+    let server_state = state.clone();
+    let server_shutdown = shutdown.clone();
+    let server = tokio::spawn(async move {
+        serve_simulation_end(server_bus, server_state, server_shutdown).await
+    });
+    let end = Querier::new(
+        bus.clone(),
+        &supervisor::topics().simulation().end().client(),
+        DEFAULT_QUERY_TIMEOUT,
+    )
+    .expect("end querier");
+    let response = loop {
+        match end
+            .query(supervisor::simulation::end::EndRequest {
+                reason: supervisor::simulation::SimulationEndReason::WorldStopped,
+            })
+            .await
+        {
+            Ok(response) => break response,
+            Err(QueryError::Unavailable) => tokio::task::yield_now().await,
+            Err(error) => panic!("end query failed: {error}"),
+        }
+    };
+    assert_eq!(
+        response.attachment.phase,
+        supervisor::simulation::SimulationAttachmentPhase::Removing
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), shutdown.cancelled())
+        .await
+        .expect("end response requests supervisor shutdown");
+    server.abort();
+    let _ = server.await;
+    owner.close().await;
+}
+
 /// One expected runtime, present under a known producer.
 fn present_state() -> (ExecutionState, ParticipantId) {
     let robot = RobotBuilder::new("rover").build().expect("fixture robot");
-    let state = ExecutionState::new(Presence::for_robot(&robot));
+    let state = ExecutionState::new(Presence::for_robot(&robot))
+        .expect("a fresh execution state accepts its initial time domain");
     let participant = ParticipantId::new("brain").expect("fixture participant");
     state.record_presence(
         &participant,

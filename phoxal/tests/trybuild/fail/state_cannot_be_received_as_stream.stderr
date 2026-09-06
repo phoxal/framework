@@ -17,9 +17,6 @@ help: the following other types implement trait `StreamDelivered`
 ...
    | impl StreamDelivered for Stream<Out> {}
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `phoxal::bus::Stream<Out>`
-...
-   | impl StreamDelivered for WorldClock {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `WorldClock`
 note: required by a bound in `phoxal::SetupContext::<R>::stream_receiver`
   --> src/participant/context.rs
    |

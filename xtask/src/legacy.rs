@@ -8,7 +8,7 @@
 //! compared against the last train that predates it, and on that train the
 //! records this workspace states from one crate were stated from six.
 //!
-//! So a baseline below [`TOPOLOGY_FLOOR`] is read from the packages that
+//! So a baseline below [`topology_floor`] is read from the packages that
 //! actually carried it, at the same version, and their records are unioned.
 //! Record identity carries no crate name, so a record that moved from
 //! `phoxal-protocol` into `phoxal` is the same record on both sides and the

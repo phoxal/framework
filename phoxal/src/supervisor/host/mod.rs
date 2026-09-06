@@ -84,7 +84,7 @@ pub async fn run(requested_root: &Path) -> Result<()> {
         "phoxal-supervisor starting"
     );
 
-    let state = ExecutionState::new(Presence::for_robot(runtime.robot()));
+    let state = ExecutionState::new(Presence::for_robot(runtime.robot()))?;
 
     let shutdown = CancellationToken::new();
     // Installed before the router is opened, so a signal arriving mid-startup

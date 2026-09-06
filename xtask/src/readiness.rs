@@ -214,6 +214,17 @@ impl V1Readiness {
                     .any(|suffix| path.ends_with(suffix))
             })
             .filter(|path| !SEARCH_EXEMPT.contains(path))
+            // `git ls-files` intentionally includes a tracked path deleted in
+            // this working tree. Skip only that known absence. Every other
+            // metadata outcome stays in the search so the later read reports a
+            // permission, file-type, or dangling-link failure instead of
+            // silently shrinking the policy surface.
+            .filter(|path| {
+                !matches!(
+                    std::fs::symlink_metadata(self.workspace_root.join(path)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                )
+            })
             .map(str::to_owned)
             .collect())
     }
@@ -383,6 +394,64 @@ mod tests {
                 "{exempt} is exempted from the search but does not exist"
             );
         }
+    }
+
+    /// A deletion left in the worktree remains in `git ls-files`, but the
+    /// readiness search must not attempt to open that absent source.
+    #[test]
+    fn the_search_skips_a_tracked_file_deleted_from_the_worktree() {
+        let root = tempfile::tempdir().expect("a temporary Git worktree");
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["config", "user.email", "tests@phoxal.dev"]);
+        git(root.path(), &["config", "user.name", "Phoxal tests"]);
+        let deleted = root.path().join("retired.rs");
+        std::fs::write(&deleted, "// a tracked source\n").expect("the source is written");
+        git(root.path(), &["add", "retired.rs"]);
+        git(root.path(), &["commit", "--quiet", "-m", "track source"]);
+        std::fs::remove_file(&deleted).expect("the source is deleted only from the worktree");
+
+        let files = V1Readiness::new(root.path().to_path_buf(), false)
+            .searched_files()
+            .expect("the search ignores the deleted tracked source");
+        assert!(
+            !files.contains(&"retired.rs".to_owned()),
+            "a tracked worktree deletion must not be returned: {files:?}"
+        );
+    }
+
+    /// A tracked source that is present but unreadable must reach the read
+    /// boundary. Treating every `is_file() == false` result as a deletion would
+    /// let a dangling link silently disappear from the readiness policy.
+    #[cfg(unix)]
+    #[test]
+    fn the_search_retains_a_tracked_dangling_source_link() {
+        let root = tempfile::tempdir().expect("a temporary Git worktree");
+        git(root.path(), &["init", "--quiet"]);
+        std::os::unix::fs::symlink("missing.rs", root.path().join("claimed.rs"))
+            .expect("the dangling source link is created");
+        git(root.path(), &["add", "claimed.rs"]);
+
+        let files = V1Readiness::new(root.path().to_path_buf(), false)
+            .searched_files()
+            .expect("listing tracked paths does not read their contents");
+        assert!(
+            files.contains(&"claimed.rs".to_owned()),
+            "a present tracked path must reach the later read boundary: {files:?}"
+        );
+    }
+
+    fn git(root: &Path, arguments: &[&str]) {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(root)
+            .output()
+            .expect("Git is available for the readiness regression");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// Every forbidden phrase is written in lower case, because the search

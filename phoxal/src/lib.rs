@@ -160,8 +160,8 @@
 //!   encoder, and the embedded participant-metadata reader.
 //! - **`simulator`** - `phoxal::simulator`: stand an external world process in
 //!   for a robot's component drivers. `SimulatorSession` owns typed component
-//!   IO, delegated presence, and the world clock, without handing out the raw
-//!   transport underneath.
+//!   IO, delegated presence, and passive step progress without handing out the
+//!   raw transport underneath.
 //! - **`authoring`** - `phoxal::authoring`: the authored-source layer
 //!   (`robot.yaml`, `component.yaml`, `simulation.yaml`, URDF), its JSON
 //!   schemas, and the compiler that turns them into a [`model::Robot`]. A
@@ -216,6 +216,7 @@ mod sample_schedule;
 // the profile that *is* one - a participant author reaches the engine through
 // the crate-root facade below, and the role attributes reach it through
 // `__private`, the macro ABI, which is the only path either needs.
+mod execution;
 #[cfg(any(feature = "session", feature = "supervisor", feature = "authoring"))]
 #[cfg_attr(
     docsrs,
@@ -292,6 +293,7 @@ pub mod bundle;
               profile that does publish it is where these lints have something to say."
 )]
 mod bundle;
+pub mod drive;
 
 // Build/source tooling only. A launched participant reads the compiled
 // `manifest.json`, never an authored document, so the YAML/TOML/URDF readers
@@ -305,9 +307,8 @@ pub mod identity;
 pub mod version;
 
 // A participant emits its logs and telemetry through the runner and never names
-// the runtime family, so the family is a host-role surface: the applications
-// that read a running execution, the simulator that publishes its world clock,
-// and the supervisor that retains both.
+// the runtime family, so the family is a host-role surface: applications that
+// read a running execution and the supervisor that retains its live evidence.
 #[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
 #[cfg_attr(
     docsrs,
@@ -324,6 +325,39 @@ pub mod runtime;
               profile that does publish it is where these lints have something to say."
 )]
 mod runtime;
+
+// Simulation progress is a fourth semantic wire family. A participant runner
+// consumes it internally, but participant-authored code never receives this
+// module as a public surface. World hosts, sessions, and the supervisor
+// publish or inspect it through the one canonical path below.
+#[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
+)]
+pub mod simulation;
+#[cfg(not(any(feature = "session", feature = "simulator", feature = "supervisor")))]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "the compatibility aggregate reads simulation progress while the participant profile keeps the host contract family private"
+)]
+mod simulation;
+
+/// Backend-neutral world-session documents and local client/server wire.
+#[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
+)]
+pub mod world;
+#[cfg(not(any(feature = "session", feature = "simulator", feature = "supervisor")))]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "every profile compiles the complete compatibility surface"
+)]
+mod world;
 
 /// Declare the `supervisor` boundary at the visibility this profile gives it.
 ///

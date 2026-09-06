@@ -22,8 +22,8 @@ use cargo_metadata::Target;
 use super::executable::PHOXAL_PROVIDER;
 use super::executable::{validate_executable_targets, validate_registry_publish};
 use super::{
-    FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS, LIBRARY_CRATE_ROOT, Subject, Violation,
-    library_package_name,
+    ADAPTER_LIBRARY_CRATE_DIRS, FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS,
+    LIBRARY_CRATE_ROOT, Subject, Violation, library_package_name,
 };
 
 /// The Cargo `package.name` prefix backing [`PHOXAL_PROVIDER`]: the package
@@ -322,6 +322,7 @@ impl ManifestClassification {
         };
         let directory = directory.join("/");
         if LIBRARY_CRATE_DIRS.contains(&directory.as_str())
+            || ADAPTER_LIBRARY_CRATE_DIRS.contains(&directory.as_str())
             || INTERNAL_CRATE_DIRS.contains(&directory.as_str())
         {
             return Ok(Self::Excluded);
@@ -686,31 +687,32 @@ mod tests {
         let workspace_dir = tempfile::tempdir().context("failed to create temp workspace dir")?;
         let root = workspace_dir.path();
 
+        let specs = super::super::framework_executable::SPECS;
+        let mut members = vec!["components/test".to_owned()];
+        for spec in specs {
+            let manifest = root.join(spec.manifest_path());
+            let directory = manifest
+                .parent()
+                .context("executable manifest has no parent")?;
+            members.push(directory.strip_prefix(root)?.display().to_string());
+            fs::create_dir_all(directory.join("src"))?;
+            fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
+            fs::write(
+                manifest,
+                format!(
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
+                    spec.package_name(),
+                    spec.package_name(),
+                ),
+            )?;
+        }
+
         fs::write(
             root.join("Cargo.toml"),
-            r#"[workspace]
-resolver = "3"
-members = ["components/test", "supervisor"]
-"#,
-        )?;
-
-        let supervisor_dir = root.join("supervisor");
-        fs::create_dir_all(supervisor_dir.join("src"))?;
-        fs::write(supervisor_dir.join("src/main.rs"), "fn main() {}\n")?;
-        fs::write(
-            supervisor_dir.join("Cargo.toml"),
-            r#"[package]
-name = "phoxal-supervisor"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-only"
-publish = ["phoxal"]
-autobins = false
-
-[[bin]]
-name = "phoxal-supervisor"
-path = "src/main.rs"
-"#,
+            format!(
+                "[workspace]\nresolver = \"3\"\nmembers = {}\n",
+                serde_json::to_string(&members)?
+            ),
         )?;
 
         let package_dir = root.join("components/test");

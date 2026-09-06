@@ -94,6 +94,46 @@ impl ConnectError {
     }
 }
 
+impl From<crate::execution::BootstrapError> for ConnectError {
+    fn from(error: crate::execution::BootstrapError) -> Self {
+        match error {
+            crate::execution::BootstrapError::NoExecution { endpoint } => {
+                Self::NoExecution { endpoint }
+            }
+            crate::execution::BootstrapError::MultipleExecutions {
+                endpoint,
+                count,
+                executions,
+            } => Self::MultipleExecutions {
+                endpoint,
+                count,
+                executions,
+            },
+            crate::execution::BootstrapError::IncompatibleFramework {
+                remote,
+                local,
+                refusal,
+            } => Self::IncompatibleFramework {
+                remote,
+                local,
+                refusal: match refusal {
+                    crate::execution::CompatibilityRefusal::RemoteNewer => {
+                        CompatibilityRefusal::RemoteNewer
+                    }
+                    crate::execution::CompatibilityRefusal::LocalNewer => {
+                        CompatibilityRefusal::LocalNewer
+                    }
+                },
+            },
+            crate::execution::BootstrapError::UnreadableBootstrap { detail } => {
+                Self::UnreadableBootstrap { detail }
+            }
+            crate::execution::BootstrapError::Bus(error) => Self::Bus(error),
+            crate::execution::BootstrapError::Query(error) => Self::Query(error),
+        }
+    }
+}
+
 /// The terminal fact that ended an established session.
 ///
 /// The first observed reason is latched for the session's lifetime. A later
@@ -165,7 +205,8 @@ mod tests {
     use super::*;
 
     fn refusal(remote: FrameworkVersion, local: FrameworkVersion) -> ConnectError {
-        crate::session::connection::ensure_compatible_framework(remote, local)
+        crate::execution::ensure_compatible_framework(remote, local)
+            .map_err(ConnectError::from)
             .expect_err("different lines are incompatible")
     }
 

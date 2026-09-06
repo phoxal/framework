@@ -6,7 +6,7 @@
 //! it", and every produced instant is read from it. [`StepScheduler`]
 //! answers a different question: "when should the next participant step fire".
 //! Real mode answers that from the host monotonic clock, never from a bus
-//! message; a simulation clock instead releases ticks only when the world
+//! message; a simulated-time source instead releases ticks only when external
 //! authority advances robot time. Without this split, simulated time could
 //! label samples but could never drive the loop - the runner would still
 //! free-run on the host clock underneath a "simulated" label.
@@ -35,6 +35,12 @@ pub(crate) mod simulation;
 
 use real::RealScheduler;
 use simulation::{SimulationClockHandle, SimulationScheduler};
+
+#[cfg(test)]
+pub(crate) struct TestMonotonicScheduler {
+    scheduler: SimulationScheduler,
+    started: watch::Sender<bool>,
+}
 
 /// The cadence of a `#[phoxal::step(hz = …)]` loop, as the role macros emit it
 /// from the attribute.
@@ -117,6 +123,12 @@ pub(crate) enum AnyStepScheduler {
     /// Logical-time scheduling, driven by a
     /// [`SimulationClockHandle`](simulation::SimulationClockHandle).
     Simulation(SimulationScheduler),
+    /// Deterministically driven monotonic cadence for the runner's own unit
+    /// tests. It reuses the checked logical-time arithmetic, but deliberately
+    /// exposes no simulation-time receiver: advancing this scheduler models
+    /// host time passing and can never trigger timeline replacement.
+    #[cfg(test)]
+    TestMonotonic(TestMonotonicScheduler),
     /// No cadence to release: a real participant that declares no
     /// `#[phoxal::step]`.
     ///
@@ -127,8 +139,35 @@ pub(crate) enum AnyStepScheduler {
 }
 
 impl AnyStepScheduler {
+    /// Build a deterministically driven monotonic scheduler for a runner test.
+    ///
+    /// Unlike [`Self::Simulation`], this test-only shape has an initial host
+    /// instant and does not expose a world-time receiver to the event loop.
+    /// The returned handle advances cadence only, while the test advances its
+    /// injected [`ClockSource`](crate::participant::clock::ClockSource)
+    /// independently to the same host instant.
+    #[cfg(test)]
+    pub(crate) fn test_monotonic(
+        schedule: StepSchedule,
+        now: RobotInstant,
+    ) -> (Self, SimulationClockHandle, watch::Receiver<bool>) {
+        let handle = SimulationClockHandle::source();
+        assert_eq!(
+            handle.advance(now),
+            simulation::SimulationClockAdvance::Advanced,
+            "a fresh deterministic monotonic scheduler accepts its initial instant"
+        );
+        let scheduler = handle.scheduler(Some(schedule.period()));
+        let (started, observed) = watch::channel(false);
+        (
+            Self::TestMonotonic(TestMonotonicScheduler { scheduler, started }),
+            handle,
+            observed,
+        )
+    }
+
     /// Validate scheduler facts without allocating a live scheduler or a
-    /// simulation clock channel.
+    /// simulated-time channel.
     ///
     /// Startup uses this pure check before transport exists. The lifecycle
     /// calls [`Self::for_clock_mode`] only after the bus connection succeeds,
@@ -166,7 +205,7 @@ impl AnyStepScheduler {
     /// clock and nothing external feeds it. Simulation mode returns
     /// [`Some`] handle, which is the attachment point anything producing a
     /// [`RobotInstant`] drives the scheduler through - the runner's live
-    /// `runtime/simulation/clock` subscription, a test, a REPL.
+    /// future controlled attachment, a test, or a REPL.
     pub(crate) fn for_clock_mode(
         clock_mode: ClockMode,
         schedule: Option<StepSchedule>,
@@ -213,6 +252,8 @@ impl AnyStepScheduler {
         match self {
             AnyStepScheduler::Real(_) | AnyStepScheduler::Disabled => None,
             AnyStepScheduler::Simulation(scheduler) => Some(scheduler.time_receiver()),
+            #[cfg(test)]
+            AnyStepScheduler::TestMonotonic(_) => None,
         }
     }
 
@@ -236,6 +277,10 @@ impl StepScheduler for AnyStepScheduler {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.wait_until(target).await,
             AnyStepScheduler::Simulation(scheduler) => scheduler.wait_until(target).await,
+            #[cfg(test)]
+            AnyStepScheduler::TestMonotonic(scheduler) => {
+                scheduler.scheduler.wait_until(target).await
+            }
             AnyStepScheduler::Disabled => std::future::pending().await,
         }
     }
@@ -244,6 +289,11 @@ impl StepScheduler for AnyStepScheduler {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.now(),
             AnyStepScheduler::Simulation(scheduler) => scheduler.now(),
+            #[cfg(test)]
+            AnyStepScheduler::TestMonotonic(scheduler) => {
+                scheduler.started.send_replace(true);
+                scheduler.scheduler.now()
+            }
             AnyStepScheduler::Disabled => None,
         }
     }
@@ -277,7 +327,7 @@ mod tests {
         assert!(matches!(real, AnyStepScheduler::Real(_)));
         assert!(
             real_handle.is_none(),
-            "real mode has no simulation clock handle to drive"
+            "real mode has no simulated-time handle to drive"
         );
 
         let (simulation, simulation_handle) =
@@ -337,11 +387,9 @@ mod tests {
 
     /// The exact scheduler + handle `for_clock_mode` selects for
     /// [`ClockMode::Simulation`], driven purely by robot time - no real
-    /// sleeping, no live bus/Webots feed. This is the deterministic proof that
-    /// simulation mode schedules ticks from robot time; the full live path (the
-    /// clock feed wiring and the wire-key match with the simulation
-    /// controller's publisher) needs a bus and belongs to the local end-to-end
-    /// run.
+    /// sleeping, no Live bus/Webots feed. This is the deterministic proof that
+    /// the dormant mode schedules ticks from robot time; a future controlled
+    /// attachment owns its external ingress contract.
     #[tokio::test]
     async fn the_simulation_scheduler_the_runner_selects_schedules_deterministically() {
         let schedule = StepSchedule::hz(10.0); // 100ms period

@@ -15,6 +15,7 @@ use super::framework_executable::{SPECS, Spec, spec_for_manifest, spec_for_packa
 use super::{
     artifact::{OfficialArtifact, discover_package},
     executable::PHOXAL_PROVIDER,
+    is_adapter_library_package,
 };
 
 /// The two disjoint executable sets declared by the workspace.
@@ -71,6 +72,9 @@ impl Workspace {
                 official_artifacts.push(artifact);
                 continue;
             }
+            if is_adapter_library_package(package.name.as_str()) {
+                continue;
+            }
             if publishes_to_phoxal(package) {
                 bail!(
                     "{} publishes to the {PHOXAL_PROVIDER} registry from {}, but it is neither an \
@@ -122,6 +126,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use super::*;
 
@@ -164,18 +169,51 @@ autolib = false
     }
 
     #[test]
-    fn exact_supervisor_is_discovered_outside_the_artifact_catalogue() -> Result<()> {
-        let workspace = discover_single_package(
-            "supervisor",
-            "phoxal-supervisor",
-            "[\"phoxal\"]",
-            "[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n",
+    fn exact_framework_executables_are_discovered_outside_the_artifact_catalogue() -> Result<()> {
+        let workspace_dir = tempfile::tempdir().context("create executable policy workspace")?;
+        let root = workspace_dir.path();
+        let members = SPECS
+            .iter()
+            .map(|spec| {
+                Path::new(spec.manifest_path())
+                    .parent()
+                    .expect("spec manifest has a parent")
+                    .display()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        fs::write(
+            root.join("Cargo.toml"),
+            format!(
+                "[workspace]\nresolver = \"3\"\nmembers = {}\n",
+                serde_json::to_string(&members)?
+            ),
         )?;
+        for spec in SPECS {
+            let manifest = root.join(spec.manifest_path());
+            let directory = manifest.parent().context("spec manifest has no parent")?;
+            fs::create_dir_all(directory.join("src"))?;
+            fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
+            fs::write(
+                manifest,
+                format!(
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
+                    spec.package_name(),
+                    spec.package_name()
+                ),
+            )?;
+        }
+        let workspace =
+            Workspace::discover(MetadataCommand::new().manifest_path(root.join("Cargo.toml")))?;
         assert!(workspace.official_artifacts().is_empty());
-        let [supervisor] = workspace.framework_executables() else {
-            bail!("the exact supervisor must be the sole framework executable");
-        };
-        assert_eq!(*supervisor, SPECS[0]);
+        assert_eq!(
+            workspace
+                .framework_executables()
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            SPECS.into_iter().collect::<BTreeSet<_>>()
+        );
         Ok(())
     }
 

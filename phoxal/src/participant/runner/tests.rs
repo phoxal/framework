@@ -1,23 +1,31 @@
 use super::ShutdownController;
 use super::event_loop::advance_step_deadline;
 use super::lifecycle::{
-    BusLease, ClockDisciplineLost, LoopExit, ParticipantFault, Runner, RunnerClock, RunnerTasks,
-    StartOutcome, close_session_with_result, runner_clock,
+    BusLease, ClockDisciplineLost, LoopExit, ParticipantFault, ReadyDomainFence, Runner,
+    RunnerClock, RunnerTasks, StartOutcome, close_session_with_result, fence_ready_domain,
+    runner_clock, runner_clock_for_domain, scheduler_for_domain,
 };
-use crate::bus::{BusConfig, BusFault, BusOwner, ParticipantReadyEvents, ParticipantReadyStatus};
-use crate::bus::{RobotInstant, TimelineId};
+use super::startup::DomainSubscription;
+use crate::bus::{
+    BusConfig, BusFault, BusOwner, EventPublisher, ParticipantReadyEvents, ParticipantReadyStatus,
+    RobotInstant, StatePublisher, StepToken, StreamPublisher, StreamReceiver, TimelineId,
+};
 use crate::identity::ParticipantId;
 use crate::participant::api::Participant;
 use crate::participant::bus_log;
 use crate::participant::clock::real::RealClock;
-use crate::participant::clock::{ClockMode, TimeUnsynchronized};
-use crate::participant::context::SetupContext;
+use crate::participant::clock::test::TestClock;
+use crate::participant::clock::{ClockMode, ClockReading, ClockSource, TimeUnsynchronized};
+use crate::participant::context::{SetupContext, SetupSource, StepContext};
 use crate::participant::managed::{
     ManagedTaskExit, ManagedTaskFailure, ManagedTaskPolicy, ManagedTasks,
 };
 use crate::participant::scheduler::AnyStepScheduler;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
+use crate::supervisor::api;
+use crate::supervisor::api::time_domain::{TimeDomain, TimeDomainStream, TimeMode};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -30,6 +38,67 @@ fn at(timeline: u64, ticks: u64) -> RobotInstant {
 
 fn test_timeline() -> TimelineId {
     TimelineId::from_raw(1).expect("test timeline must be nonzero")
+}
+
+/// A replacement buffered by the already-subscribed stream while Ready is
+/// being acquired revokes that lease and requires startup to reconfigure first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ready_domain_fence_reconfigures_a_buffered_replacement() {
+    let participant = ParticipantId::new("ready-domain-fence").expect("valid participant id");
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        crate::identity::ExecutionId::mint(),
+        participant,
+        Vec::new(),
+    ))
+    .await
+    .expect("the in-process bus opens");
+    let updates =
+        StreamReceiver::<TimeDomainStream>::new(&bus, &api::topics().time_domain().client())
+            .await
+            .expect("the Ready fence subscribes");
+    let publisher = StreamPublisher::new(bus.clone(), &api::topics().time_domain().owner())
+        .expect("the supervisor stream publisher attaches");
+    let initial = TimeDomain {
+        revision: 10,
+        timeline: test_timeline(),
+        mode: TimeMode::Monotonic,
+    };
+    let replacement = TimeDomain {
+        revision: 11,
+        timeline: TimelineId::from_raw(2).expect("a replacement timeline"),
+        mode: TimeMode::Simulated,
+    };
+    publisher
+        .send(TimeDomainStream {
+            domain: replacement,
+        })
+        .expect("the replacement is admitted");
+    let mut domain = Some(DomainSubscription {
+        current: initial,
+        updates,
+    });
+    let transitions = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match fence_ready_domain(&mut domain)
+                .expect("the fence reconciles the buffered replacement")
+            {
+                ReadyDomainFence::Stable => tokio::task::yield_now().await,
+                ReadyDomainFence::Reconfigure(transitions) => break transitions,
+            }
+        }
+    })
+    .await
+    .expect("the replacement reaches the Ready-fence subscription");
+    assert_eq!(transitions, vec![(initial, replacement)]);
+    let ReadyDomainFence::Stable =
+        fence_ready_domain(&mut domain).expect("the drained fence remains healthy")
+    else {
+        panic!("the drained fence must be stable");
+    };
+
+    drop(domain);
+    drop(publisher);
+    let _ = owner.close().await;
 }
 
 #[tokio::test]
@@ -219,9 +288,432 @@ async fn ready_declaration_race_prefers_a_task_failure() {
 }
 
 static HANGING_SETUP_STARTED: OnceLock<Notify> = OnceLock::new();
+static DOMAIN_SETUP_STARTED: OnceLock<Notify> = OnceLock::new();
+static DOMAIN_SETUP_RELEASE: OnceLock<Notify> = OnceLock::new();
+static DOMAIN_SETUP_RESETS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SlowServiceObservation {
+    instant: RobotInstant,
+    step_index: u64,
+    missed_ticks: u32,
+}
+
+struct SlowServiceState {
+    observations: tokio::sync::mpsc::Sender<SlowServiceObservation>,
+    first_step_release: Option<std::sync::mpsc::Receiver<()>>,
+}
+
+static SLOW_SERVICE_FIXTURE: OnceLock<Mutex<Option<SlowServiceState>>> = OnceLock::new();
+static SLOW_SERVICE_RESETS: AtomicUsize = AtomicUsize::new(0);
+
+fn slow_service_fixture() -> &'static Mutex<Option<SlowServiceState>> {
+    SLOW_SERVICE_FIXTURE.get_or_init(|| Mutex::new(None))
+}
+
+#[phoxal::service(id = "slow-live-service", state = SlowServiceState)]
+struct SlowLiveService;
+
+impl Participant for SlowLiveService {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> crate::Result<(Self::State, Self::Api)> {
+        let state = slow_service_fixture()
+            .lock()
+            .expect("the slow-service fixture lock is healthy")
+            .take()
+            .expect("the test installed one slow-service fixture");
+        Ok((state, ()))
+    }
+
+    #[phoxal::step(hz = 100)]
+    fn step(
+        &self,
+        _api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> crate::Result<()> {
+        state
+            .observations
+            .try_send(SlowServiceObservation {
+                instant: step.now(),
+                step_index: step.step_index,
+                missed_ticks: step.missed_ticks,
+            })
+            .expect("the test still observes service steps");
+        if let Some(release) = state.first_step_release.take() {
+            release
+                .recv()
+                .expect("the test releases the deliberately slow first invocation");
+        }
+        Ok(())
+    }
+
+    fn reset(
+        &self,
+        _ctx: crate::participant::context::ResetContext,
+        _api: &Self::Api,
+        _state: &mut Self::State,
+    ) -> crate::Result<()> {
+        SLOW_SERVICE_RESETS.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct WorldProbeSnapshot {
+    completed_transitions: u64,
+    output_count: u64,
+    step_event_count: u64,
+}
+
+enum WorldProbeCommand {
+    SetRunning {
+        running: bool,
+        reply: tokio::sync::oneshot::Sender<WorldProbeSnapshot>,
+    },
+    Transition {
+        reply: tokio::sync::oneshot::Sender<crate::Result<Option<RobotInstant>>>,
+    },
+    Snapshot {
+        reply: tokio::sync::oneshot::Sender<WorldProbeSnapshot>,
+    },
+    Stop,
+}
+
+fn read_test_clock(clock: &TestClock) -> RobotInstant {
+    let ClockReading::Synchronized(instant) = clock.read() else {
+        panic!("the deterministic monotonic clock stays synchronized");
+    };
+    instant
+}
+
+fn advance_test_monotonic_time(
+    clock: &TestClock,
+    cadence: &SimulationClockHandle,
+    delta: Duration,
+) -> RobotInstant {
+    clock.advance(delta);
+    let instant = read_test_clock(clock);
+    assert_eq!(
+        cadence.advance(instant),
+        SimulationClockAdvance::Advanced,
+        "each host-monotonic advance releases at most one collapsed service invocation"
+    );
+    instant
+}
+
+fn spawn_world_probe(
+    bus: &crate::bus::BusHandle,
+    clock: TestClock,
+) -> (
+    tokio::sync::mpsc::Sender<WorldProbeCommand>,
+    tokio::task::JoinHandle<()>,
+) {
+    let state = StatePublisher::new(bus.clone(), &crate::api::topics().drive().state().owner())
+        .expect("the world probe binds one typed simulator output");
+    let step = EventPublisher::new(
+        bus.clone(),
+        &crate::simulation::api::topics().step().owner(),
+    )
+    .expect("the world probe binds passive StepEvent progress");
+    let (commands, mut received) = tokio::sync::mpsc::channel(8);
+    let task = tokio::spawn(async move {
+        let mut running = true;
+        let mut snapshot = WorldProbeSnapshot::default();
+        while let Some(command) = received.recv().await {
+            match command {
+                WorldProbeCommand::SetRunning {
+                    running: requested,
+                    reply,
+                } => {
+                    running = requested;
+                    let _ = reply.send(snapshot);
+                }
+                WorldProbeCommand::Transition { reply } => {
+                    if !running {
+                        let _ = reply.send(Ok(None));
+                        continue;
+                    }
+                    let instant = read_test_clock(&clock);
+                    let token = StepToken::mint(instant);
+                    let next = snapshot.completed_transitions.saturating_add(1);
+                    let result = state
+                        .publish(
+                            &token,
+                            crate::api::drive::State::Stopped {
+                                target: crate::api::drive::Target::stopped(),
+                                reason: crate::api::drive::StopReason::Fault,
+                            },
+                        )
+                        .and_then(|()| {
+                            step.publish(&token, crate::simulation::api::StepEvent { index: next })
+                        })
+                        .map(|()| {
+                            snapshot.completed_transitions = next;
+                            snapshot.output_count = snapshot.output_count.saturating_add(1);
+                            snapshot.step_event_count = snapshot.step_event_count.saturating_add(1);
+                            Some(instant)
+                        })
+                        .map_err(anyhow::Error::from);
+                    let _ = reply.send(result);
+                }
+                WorldProbeCommand::Snapshot { reply } => {
+                    let _ = reply.send(snapshot);
+                }
+                WorldProbeCommand::Stop => break,
+            }
+        }
+    });
+    (commands, task)
+}
+
+async fn set_world_probe_running(
+    commands: &tokio::sync::mpsc::Sender<WorldProbeCommand>,
+    running: bool,
+) -> WorldProbeSnapshot {
+    let (reply, result) = tokio::sync::oneshot::channel();
+    commands
+        .send(WorldProbeCommand::SetRunning { running, reply })
+        .await
+        .expect("the independent world probe is running");
+    result.await.expect("the world probe acknowledges motion")
+}
+
+async fn advance_world_probe(
+    commands: &tokio::sync::mpsc::Sender<WorldProbeCommand>,
+) -> crate::Result<Option<RobotInstant>> {
+    let (reply, result) = tokio::sync::oneshot::channel();
+    commands
+        .send(WorldProbeCommand::Transition { reply })
+        .await
+        .expect("the independent world probe is running");
+    result
+        .await
+        .expect("the world probe answers one transition request")
+}
+
+async fn world_probe_snapshot(
+    commands: &tokio::sync::mpsc::Sender<WorldProbeCommand>,
+) -> WorldProbeSnapshot {
+    let (reply, result) = tokio::sync::oneshot::channel();
+    commands
+        .send(WorldProbeCommand::Snapshot { reply })
+        .await
+        .expect("the independent world probe is running");
+    result.await.expect("the world probe returns its snapshot")
+}
+
+/// Live world progress and monotonic service cadence are independent tasks.
+///
+/// The service's first synchronous invocation is held open while the world
+/// admits three typed outputs and three passive StepEvents on the same bus.
+/// Host time continues to advance, so releasing the service produces one
+/// collapsed invocation with ordinary `missed_ticks`, never a catch-up storm.
+/// Pausing then suppresses only world production: two on-cadence service
+/// invocations still run on the original timeline, with no reset, and resume
+/// admits the next output and StepEvent immediately.
+#[serial_test::serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_monotonic_service_and_live_pause_are_independent() {
+    SLOW_SERVICE_RESETS.store(0, Ordering::Release);
+    let (observed, mut observations) = tokio::sync::mpsc::channel(8);
+    let (release_first, first_step_release) = std::sync::mpsc::channel();
+    *slow_service_fixture()
+        .lock()
+        .expect("the slow-service fixture lock is healthy") = Some(SlowServiceState {
+        observations: observed,
+        first_step_release: Some(first_step_release),
+    });
+
+    let participant_id =
+        ParticipantId::new("slow-live-service").expect("the participant id is valid");
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        crate::identity::ExecutionId::mint(),
+        participant_id.clone(),
+        Vec::new(),
+    ))
+    .await
+    .expect("the shared in-process bus opens");
+    let clock = TestClock::new();
+    let timeline = clock.timeline();
+    let schedule = SlowLiveService::__step_schedule().expect("the test service has a cadence");
+    let (scheduler, cadence, mut runner_started) =
+        AnyStepScheduler::test_monotonic(schedule, RobotInstant::new(timeline, 0));
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
+    let mut startup_shutdown = ShutdownController::new(std::future::pending());
+    let outcome = Runner::<SlowLiveService, TestClock>::start(
+        super::lifecycle::StartInputs {
+            bus: bus.clone(),
+            session: BusLease::Borrowed,
+            participant_id,
+            shutdown_grace: Duration::from_secs(1),
+            source: SetupSource::Harness,
+            domain: None,
+            attachment: None,
+            config: (),
+            clock: RunnerClock::Delegated(clock.clone()),
+            scheduler,
+            schedule: Some(schedule),
+            clock_mode: ClockMode::Real,
+            tasks: RunnerTasks {
+                simulation_clock: None,
+                bus_log: bus_log_task,
+                query_reply_delay: None,
+            },
+        },
+        &mut startup_shutdown,
+    )
+    .await;
+    let StartOutcome::Ready(runner) = outcome else {
+        panic!("the deterministic monotonic service reaches Ready");
+    };
+    let (world, world_task) = spawn_world_probe(&bus, clock.clone());
+    let (shutdown, shutdown_requested) = tokio::sync::oneshot::channel();
+    let runner_task = tokio::spawn(async move {
+        let mut shutdown = ShutdownController::new(async move {
+            let _ = shutdown_requested.await;
+        });
+        runner.run(&mut shutdown).await
+    });
+
+    if !*runner_started.borrow_and_update() {
+        runner_started
+            .changed()
+            .await
+            .expect("the deterministic monotonic scheduler remains live");
+    }
+
+    advance_test_monotonic_time(&clock, &cadence, Duration::from_millis(10));
+    let first = tokio::time::timeout(Duration::from_secs(2), observations.recv())
+        .await
+        .expect("the first service invocation starts")
+        .expect("the service observation channel stays open");
+    assert_eq!(
+        first,
+        SlowServiceObservation {
+            instant: RobotInstant::new(timeline, 10_000_000),
+            step_index: 0,
+            missed_ticks: 0,
+        }
+    );
+
+    let mut world_instants = Vec::new();
+    for _ in 0..3 {
+        let instant = advance_test_monotonic_time(&clock, &cadence, Duration::from_millis(12));
+        assert_eq!(
+            advance_world_probe(&world)
+                .await
+                .expect("world output admission stays non-blocking"),
+            Some(instant),
+            "world progress completes while the service invocation is still held"
+        );
+        world_instants.push(instant);
+    }
+    assert_eq!(
+        world_probe_snapshot(&world).await,
+        WorldProbeSnapshot {
+            completed_transitions: 3,
+            output_count: 3,
+            step_event_count: 3,
+        }
+    );
+
+    release_first
+        .send(())
+        .expect("the first service invocation is still blocked");
+    let collapsed = tokio::time::timeout(Duration::from_secs(2), observations.recv())
+        .await
+        .expect("the service catches up once")
+        .expect("the service observation channel stays open");
+    assert_eq!(collapsed.instant, RobotInstant::new(timeline, 46_000_000));
+    assert_eq!(collapsed.step_index, 1);
+    assert_eq!(
+        collapsed.missed_ticks, 2,
+        "the 20 ms target observes 26 ms of overrun as two collapsed periods"
+    );
+    assert!(
+        world_instants
+            .iter()
+            .all(|instant| instant.timeline() == timeline)
+    );
+
+    let paused_at = set_world_probe_running(&world, false).await;
+    assert_eq!(paused_at.completed_transitions, 3);
+    advance_test_monotonic_time(&clock, &cadence, Duration::from_millis(4));
+    let at_fifty = tokio::time::timeout(Duration::from_secs(2), observations.recv())
+        .await
+        .expect("service cadence reaches 50 ms while the world is paused")
+        .expect("the service observation channel stays open");
+    advance_test_monotonic_time(&clock, &cadence, Duration::from_millis(10));
+    let at_sixty = tokio::time::timeout(Duration::from_secs(2), observations.recv())
+        .await
+        .expect("service cadence reaches 60 ms while the world is paused")
+        .expect("the service observation channel stays open");
+    for observation in [at_fifty, at_sixty] {
+        assert_eq!(observation.instant.timeline(), timeline);
+        assert_eq!(observation.missed_ticks, 0);
+    }
+    assert_eq!(
+        advance_world_probe(&world)
+            .await
+            .expect("a paused transition request is handled"),
+        None,
+        "pause suppresses both the simulator output and StepEvent"
+    );
+    assert_eq!(world_probe_snapshot(&world).await, paused_at);
+
+    set_world_probe_running(&world, true).await;
+    let resumed_at = advance_test_monotonic_time(&clock, &cadence, Duration::from_millis(2));
+    assert_eq!(
+        advance_world_probe(&world)
+            .await
+            .expect("the first resumed publication is admitted"),
+        Some(resumed_at)
+    );
+    assert_eq!(resumed_at.timeline(), timeline);
+    assert_eq!(
+        world_probe_snapshot(&world).await,
+        WorldProbeSnapshot {
+            completed_transitions: 4,
+            output_count: 4,
+            step_event_count: 4,
+        }
+    );
+    assert_eq!(
+        SLOW_SERVICE_RESETS.load(Ordering::Acquire),
+        0,
+        "Live pause and resume never replace the monotonic timeline"
+    );
+
+    world
+        .send(WorldProbeCommand::Stop)
+        .await
+        .expect("the world probe is still running");
+    world_task.await.expect("the world probe stops cleanly");
+    shutdown
+        .send(())
+        .expect("the participant runner still awaits shutdown");
+    runner_task
+        .await
+        .expect("the runner task joins")
+        .expect("the participant shuts down cleanly");
+    let _ = owner.close().await;
+    bus_logs.shutdown();
+}
 
 fn hanging_setup_started() -> &'static Notify {
     HANGING_SETUP_STARTED.get_or_init(Notify::new)
+}
+
+fn domain_setup_started() -> &'static Notify {
+    DOMAIN_SETUP_STARTED.get_or_init(Notify::new)
+}
+
+fn domain_setup_release() -> &'static Notify {
+    DOMAIN_SETUP_RELEASE.get_or_init(Notify::new)
 }
 
 /// A stop received while setup is still awaiting must cancel setup-owned tasks
@@ -272,7 +764,9 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
                 session: BusLease::Owned(owner),
                 participant_id,
                 shutdown_grace: Duration::from_millis(100),
-                bundle: None,
+                source: SetupSource::Harness,
+                domain: None,
+                attachment: None,
                 config: (),
                 clock: RunnerClock::Delegated(clock),
                 scheduler,
@@ -308,6 +802,149 @@ async fn shutdown_during_hanging_setup_never_reaches_ready() {
     close_session_with_result(Ok::<(), anyhow::Error>(()), session, deadline)
         .await
         .expect("bus close after cancelled setup");
+    bus_logs.shutdown();
+}
+
+/// A domain replacement delivered while setup is pending is reconciled and
+/// reset before the participant can acquire Ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_domain_change_during_setup_resets_before_ready() {
+    #[phoxal::service(id = "domain-transition-startup", state = ())]
+    struct DomainTransitionStartup;
+
+    impl Participant for DomainTransitionStartup {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            domain_setup_started().notify_one();
+            domain_setup_release().notified().await;
+            Ok(((), ()))
+        }
+
+        fn reset(
+            &self,
+            _ctx: crate::participant::context::ResetContext,
+            _api: &Self::Api,
+            _state: &mut Self::State,
+        ) -> crate::Result<()> {
+            DOMAIN_SETUP_RESETS.fetch_add(1, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    DOMAIN_SETUP_RESETS.store(0, Ordering::Release);
+    let participant_id =
+        ParticipantId::new("domain-transition-startup").expect("a valid participant id");
+    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+        crate::identity::ExecutionId::mint(),
+        participant_id.clone(),
+        Vec::new(),
+    ))
+    .await
+    .expect("the in-process bus opens");
+    let updates =
+        StreamReceiver::<TimeDomainStream>::new(&bus, &api::topics().time_domain().client())
+            .await
+            .expect("the runner subscribes before setup");
+    let delivery =
+        StreamReceiver::<TimeDomainStream>::new(&bus, &api::topics().time_domain().client())
+            .await
+            .expect("the delivery observer subscribes");
+    let publisher = StreamPublisher::new(bus.clone(), &api::topics().time_domain().owner())
+        .expect("the supervisor stream publisher attaches");
+    let initial = TimeDomain {
+        revision: 0,
+        timeline: test_timeline(),
+        mode: TimeMode::Monotonic,
+    };
+    let replacement = TimeDomain {
+        revision: 1,
+        timeline: TimelineId::from_raw(2).expect("a replacement timeline"),
+        mode: TimeMode::Simulated,
+    };
+    let second_replacement = TimeDomain {
+        revision: 2,
+        timeline: TimelineId::from_raw(3).expect("a second replacement timeline"),
+        mode: TimeMode::Monotonic,
+    };
+    let simulation_clock = SimulationClockHandle::source();
+    let initial_clock = RealClock::new(initial.timeline);
+    let scheduler = scheduler_for_domain(
+        ClockMode::Real,
+        None,
+        initial_clock.read().instant(),
+        &simulation_clock,
+    )
+    .expect("the initial monotonic scheduler builds");
+    let clock = runner_clock_for_domain::<RealClock>(&scheduler, initial)
+        .expect("the initial runner clock builds");
+    let (bus_logs, bus_log_task) = bus_log::attach(bus.clone());
+    let setup_started = domain_setup_started().notified();
+    let start_task = tokio::spawn(async move {
+        let mut shutdown = ShutdownController::new(std::future::pending());
+        Runner::<DomainTransitionStartup, RealClock>::start(
+            super::lifecycle::StartInputs {
+                bus,
+                session: BusLease::Owned(owner),
+                participant_id,
+                shutdown_grace: Duration::from_millis(100),
+                source: SetupSource::Harness,
+                domain: Some(DomainSubscription {
+                    current: initial,
+                    updates,
+                }),
+                attachment: None,
+                config: (),
+                clock,
+                scheduler,
+                schedule: None,
+                clock_mode: ClockMode::Real,
+                tasks: RunnerTasks {
+                    simulation_clock: Some(simulation_clock),
+                    bus_log: bus_log_task,
+                    query_reply_delay: None,
+                },
+            },
+            &mut shutdown,
+        )
+        .await
+    });
+    setup_started.await;
+    publisher
+        .send(TimeDomainStream {
+            domain: replacement,
+        })
+        .expect("the replacement is admitted");
+    publisher
+        .send(TimeDomainStream {
+            domain: second_replacement,
+        })
+        .expect("the second replacement is admitted");
+    for expected in [replacement, second_replacement] {
+        let delivered = tokio::time::timeout(Duration::from_secs(2), delivery.recv())
+            .await
+            .expect("the replacement reaches subscribers")
+            .expect("the replacement decodes");
+        assert_eq!(delivered.body.domain, expected);
+    }
+    domain_setup_release().notify_one();
+
+    let outcome = start_task.await.expect("the startup task returns");
+    let StartOutcome::Ready(runner) = outcome else {
+        panic!("a healthy startup must reach Ready after its reset");
+    };
+    assert_eq!(
+        DOMAIN_SETUP_RESETS.load(Ordering::Acquire),
+        2,
+        "every queued replacement reset must complete before Ready"
+    );
+    let mut shutdown = ShutdownController::new(std::future::ready(()));
+    runner
+        .run(&mut shutdown)
+        .await
+        .expect("the runner shuts down cleanly");
     bus_logs.shutdown();
 }
 
@@ -376,7 +1013,9 @@ async fn assert_owner_worker_failure_reaches_lifecycle(
             session: BusLease::Owned(owner),
             participant_id,
             shutdown_grace: Duration::from_secs(1),
-            bundle: None,
+            source: SetupSource::Harness,
+            domain: None,
+            attachment: None,
             config: (),
             clock: RunnerClock::Delegated(RealClock::new(test_timeline())),
             scheduler,

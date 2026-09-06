@@ -9,11 +9,12 @@ This repository and its source are the authority for current framework implement
 
 ## Repository
 
-- `phoxal/` — the one framework library
-- `crates/` — the proc-macro package and the test fixture stager
-- `supervisor/` — framework-train execution observer
-- `services/`, `components/` — official runtime packages
-- `fixture/` — the authored test robot and components (the example robot project is [phoxal/robot-rover](https://github.com/phoxal/robot-rover))
+- `phoxal/` - the one framework library
+- `crates/` - the proc-macro package and the test fixture stager
+- `supervisor/` - framework-train execution observer
+- `services/`, `components/` - official runtime packages
+- `simulators/` - exact-train simulator adapter packages kept outside the universal framework library
+- `fixture/` - the authored test robot, world, and components (the example robot project is [phoxal/robot-rover](https://github.com/phoxal/robot-rover))
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
 

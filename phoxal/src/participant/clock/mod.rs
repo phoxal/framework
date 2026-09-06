@@ -13,9 +13,8 @@
 //!   cadence depend on a published clock would put the control loop behind a
 //!   transport that is explicitly allowed to drop samples under saturation, and
 //!   one-way published ticks cannot bound offset across hosts anyway.
-//! - **Simulation and replay.** Exact discrete steps advanced by the world
-//!   authority (the simulation controller). No interpolation. Pause means no
-//!   new step; reset means a new timeline.
+//! - **Simulation and replay.** Exact discrete steps advanced by an external
+//!   logical-time source. No interpolation. Reset means a new timeline.
 //!
 //! # Losing clock discipline
 //!
@@ -28,7 +27,7 @@
 //! Instead the clock reports [`ClockReading::Unsynchronized`] and the runner
 //! fails the participant immediately. Teardown runs, so `Participant::shutdown`
 //! parks the hardware; time-sensitive publication stops because the process
-//! stops; leases and actuator permits stop being renewed, so the receiver-side
+//! stops; leases and actuator command authority stop being renewed, so the receiver-side
 //! deadlines and the driver-local watchdogs stop the machine on their own
 //! clocks. The reason travels in the failure, and the supervisor's ordinary
 //! restart and start-limit policy decides what happens next - a transient fault
@@ -68,26 +67,26 @@ pub enum TimeUnsynchronized {
     /// The host clock could not be read, or read backwards.
     #[error("the host boot clock read failed or regressed")]
     ClockFault,
-    /// A simulated participant's world authority has not published a first step
+    /// A simulated participant's logical-time source has not published a first step
     /// yet, so there is no world history to date anything on. This is a world
     /// that has not started rather than a clock that was lost, which is why the
     /// runner's recurring beat deliberately does not fault on it.
-    #[error("the simulated world authority has published no step yet")]
+    #[error("the simulated logical-time source has published no step yet")]
     NoWorldHistory,
 }
 
 /// Which clock a launched participant runs on.
 ///
-/// The launch contract's `--simulation` flag is the whole of this decision:
-/// simulation is a launcher
-/// choice, never a bundle fact, and there is no third mode. A real participant
-/// that declares no `#[phoxal::step]` simply never steps; it does not become a
-/// different kind of participant.
+/// The supervisor's current time domain is the whole of this decision.
+/// Services and the brain follow that authority, while drivers stay real-time
+/// because their host-local cadence is independent of the world lifecycle.
+/// A real participant that declares no `#[phoxal::step]` simply never steps;
+/// it does not become a different kind of participant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClockMode {
     /// Host boot clock, on the execution's timeline.
     Real,
-    /// The world clock published on `runtime/simulation/clock`.
+    /// Logical time admitted on the supervisor-selected timeline.
     Simulation,
 }
 

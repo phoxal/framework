@@ -31,7 +31,7 @@ use anyhow::{Result, bail};
 use phoxal::api;
 use phoxal::model::component::capability::Capability;
 use phoxal::model::identity::CapabilityRef;
-use phoxal::model::robot::MotionLimits;
+use phoxal::model::kinematics::MotionLimits;
 use phoxal::prelude::*;
 
 use crate::arbitration::{

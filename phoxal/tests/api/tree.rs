@@ -7,7 +7,7 @@
 use phoxal::identity::ComponentInstanceId;
 use phoxal::model::identity::{CapabilityId, JointId};
 
-use crate::{robot as api, runtime, supervisor};
+use crate::{robot as api, runtime, simulation, supervisor, world};
 
 fn component(value: &str) -> ComponentInstanceId {
     ComponentInstanceId::new(value).expect("a canonical component instance")
@@ -244,8 +244,8 @@ fn a_self_node_is_the_endpoint_and_named_leaves_sit_beside_it() {
         "runtime/telemetry"
     );
     assert_eq!(
-        runtime::topics().simulation().clock().key(),
-        "runtime/simulation/clock"
+        simulation::topics().step().client().key(),
+        "simulation/step"
     );
 
     assert_eq!(
@@ -287,6 +287,54 @@ fn a_self_node_is_the_endpoint_and_named_leaves_sit_beside_it() {
     assert_eq!(
         supervisor::topics().telemetry().follow().key(),
         "supervisor/telemetry/follow"
+    );
+    assert_eq!(
+        supervisor::topics()
+            .simulation()
+            .attachment()
+            .client()
+            .key(),
+        "supervisor/simulation/attachment"
+    );
+    assert_eq!(
+        supervisor::topics()
+            .simulation()
+            .attachment()
+            .current()
+            .key(),
+        "supervisor/simulation/attachment/current"
+    );
+    assert_eq!(
+        supervisor::topics().simulation().attach().client().key(),
+        "supervisor/simulation/attach"
+    );
+    assert_eq!(
+        supervisor::topics().simulation().end().client().key(),
+        "supervisor/simulation/end"
+    );
+    assert_eq!(
+        world::topics().session().state().client().key(),
+        "world/session/state"
+    );
+    assert_eq!(
+        world::topics().session().state().current().key(),
+        "world/session/state/current"
+    );
+    assert_eq!(
+        world::topics().session().diagnostics().client().key(),
+        "world/session/diagnostics"
+    );
+    assert_eq!(
+        world::topics().session().diagnostics().current().key(),
+        "world/session/diagnostics/current"
+    );
+    assert_eq!(
+        world::topics().session().control().client().key(),
+        "world/session/control"
+    );
+    assert_eq!(
+        world::topics().session().connect().client().key(),
+        "world/session/connect"
     );
 }
 

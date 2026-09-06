@@ -110,6 +110,23 @@ impl OutboundScheduler {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn delivery_attachments(&self) -> Vec<(String, DeliveryFamily, Vec<u8>)> {
+        self.state
+            .values()
+            .chain(self.setpoint.values())
+            .chain(self.sample.iter())
+            .chain(self.stream.iter())
+            .map(|outbound| {
+                (
+                    outbound.key.clone(),
+                    outbound.family,
+                    outbound.attachment.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Return the next position without mutating it. The caller commits this
     /// only after the corresponding stream item has been admitted.
     pub(crate) fn next_stream_position(&self, key: &str) -> u64 {
@@ -147,7 +164,7 @@ impl OutboundScheduler {
                 // Query traffic does not use this scheduler. Keeping this
                 // branch defensive makes an accidental future call fail as a
                 // bounded admission rather than silently choosing a lane.
-                Err(OutboundBound::Sample)
+                Err(OutboundBound::Count)
             }
         }
     }
@@ -212,7 +229,7 @@ impl OutboundScheduler {
             }
             if evict_count == self.sample.len() {
                 let bound = if !count_fits {
-                    OutboundBound::Sample
+                    OutboundBound::Count
                 } else {
                     OutboundBound::Byte
                 };
@@ -242,7 +259,7 @@ impl OutboundScheduler {
         outbound: Outbound,
     ) -> std::result::Result<Admission, OutboundBound> {
         if self.stream.len() >= self.lane_capacity {
-            return Err(OutboundBound::Sample);
+            return Err(OutboundBound::Count);
         }
         let Some(next_bytes) = self.queued_bytes.checked_add(outbound.bytes) else {
             return Err(OutboundBound::Byte);
@@ -411,7 +428,7 @@ mod tests {
 
         let before = scheduler.next_stream_position("stream");
         let result = scheduler.admit(outbound(&metrics, DeliveryFamily::Stream, "stream", 3));
-        assert!(matches!(result, Err(OutboundBound::Sample)));
+        assert!(matches!(result, Err(OutboundBound::Count)));
         assert_eq!(scheduler.next_stream_position("stream"), before);
         assert_eq!(body(&scheduler.pop_next().unwrap()), 1);
         assert_eq!(body(&scheduler.pop_next().unwrap()), 2);

@@ -1,0 +1,11 @@
+error[E0451]: fields `world`, `controller` and `progress` of struct `AttachRequest` are private
+ --> tests/trybuild/host_fail/attach_request_fields_are_private.rs:7:9
+  |
+6 |     let _ = AttachRequest {
+  |             ------------- in this type
+7 |         world: WorldInstanceId::mint(),
+  |         ^^^^^ private field
+8 |         controller: ProducerId::parse("10000000000000000000000000000001").unwrap(),
+  |         ^^^^^^^^^^ private field
+9 |         progress: WorldProgress::at(1, 12).unwrap(),
+  |         ^^^^^^^^ private field

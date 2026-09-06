@@ -10,11 +10,11 @@ use super::artifact::ArtifactKind;
 use super::executable::{PHOXAL_PROVIDER, validate_executable_targets, validate_registry_publish};
 use super::{Subject, Violation};
 
-/// One permitted framework-owned root executable.
+/// One permitted framework-owned executable package.
 ///
 /// This is an explicit tuple rather than an extensible kind grammar: the
-/// supervisor is framework infrastructure, never a service, component,
-/// catalogue entry, or bundle participant.
+/// These are framework infrastructure, never services, components, catalogue
+/// entries, or bundle participants.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Spec {
     package_name: &'static str,
@@ -78,22 +78,45 @@ impl Spec {
 }
 
 /// The exact framework-owned executables published with the framework train.
-pub const SPECS: [Spec; 1] = [Spec {
-    package_name: "phoxal-supervisor",
-    manifest_path: "supervisor/Cargo.toml",
-    bin_name: "phoxal-supervisor",
-    source_path: "supervisor/src/main.rs",
-    forbidden_dependencies: &[
-        // The supervisor is built from the one framework library, never from
-        // its former CLI owner.
-        "phoxal-cli",
-        // Authored YAML/URDF and their parsers stop at bundle compilation. The
-        // `authoring` feature that would pull them in is refused separately, by
-        // the dependency rule that covers every official participant.
-        "serde_yaml",
-        "urdf-rs",
-    ],
-}];
+pub const SPECS: [Spec; 4] = [
+    Spec {
+        package_name: "phoxal-supervisor",
+        manifest_path: "supervisor/Cargo.toml",
+        bin_name: "phoxal-supervisor",
+        source_path: "supervisor/src/main.rs",
+        forbidden_dependencies: &[
+            // The supervisor is built from the one framework library, never from
+            // its former CLI owner.
+            "phoxal-cli",
+            // Authored YAML/URDF and their parsers stop at bundle compilation. The
+            // `authoring` feature that would pull them in is refused separately, by
+            // the dependency rule that covers every official participant.
+            "serde_yaml",
+            "urdf-rs",
+        ],
+    },
+    Spec {
+        package_name: "phoxal-simulator-webots-host",
+        manifest_path: "simulators/webots/host/Cargo.toml",
+        bin_name: "phoxal-simulator-webots-host",
+        source_path: "simulators/webots/host/src/main.rs",
+        forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
+    },
+    Spec {
+        package_name: "phoxal-simulator-webots-world-controller",
+        manifest_path: "simulators/webots/world-controller/Cargo.toml",
+        bin_name: "phoxal-simulator-webots-world-controller",
+        source_path: "simulators/webots/world-controller/src/main.rs",
+        forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
+    },
+    Spec {
+        package_name: "phoxal-simulator-webots-robot-controller",
+        manifest_path: "simulators/webots/robot-controller/Cargo.toml",
+        bin_name: "phoxal-simulator-webots-robot-controller",
+        source_path: "simulators/webots/robot-controller/src/main.rs",
+        forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
+    },
+];
 
 pub(crate) fn spec_for_manifest(root: &Path, manifest_path: &Path) -> Option<Spec> {
     let relative = manifest_path.strip_prefix(root).ok()?;
@@ -110,7 +133,7 @@ pub(crate) fn spec_for_package(package_name: &str) -> Option<Spec> {
         .find(|spec| spec.package_name == package_name)
 }
 
-/// The framework-owned supervisor's place in the workspace: an ordinary
+/// The framework-owned executable set's place in the workspace. The supervisor is an ordinary
 /// default member that plain root cargo commands build, publishing to the
 /// `phoxal` registry, carrying none of the authoring or parser dependencies its
 /// spec forbids, and standing outside the artifact catalogue rather than inside
@@ -185,18 +208,26 @@ pub(super) fn the_supervisor_is_a_default_member_and_non_catalog_executable(
             return Ok(violations);
         }
     };
-    match workspace.framework_executables() {
-        [only] if *only == SPECS[0] => {}
-        found => violations.push(Violation::new(format!(
-            "the workspace must declare exactly the one framework-owned executable; found {:?}",
+    let found = workspace
+        .framework_executables()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let expected = SPECS.into_iter().collect::<BTreeSet<_>>();
+    if found != expected {
+        violations.push(Violation::new(format!(
+            "the workspace framework-owned executable set is not exact; found {:?}",
             found
                 .iter()
                 .map(|spec| spec.package_name())
                 .collect::<Vec<_>>()
-        ))),
+        )));
     }
     for artifact in workspace.official_artifacts() {
-        if artifact.package_name() == SPECS[0].package_name() {
+        if SPECS
+            .iter()
+            .any(|spec| artifact.package_name() == spec.package_name())
+        {
             violations.push(Violation::new(format!(
                 "{} entered the artifact catalogue; it is framework infrastructure and never a \
                  catalogue entry",
@@ -294,15 +325,22 @@ pub(super) fn every_registry_executable_participates_in_the_release_train(
 
     let workflow = fs::read_to_string(subject.root.join(".github/workflows/release-plz.yml"))
         .context("failed to read the release workflow")?;
-    if workflow.matches("select(.publish == [\"phoxal\"])").count() < 4 {
+    let order_script = ".github/scripts/registry_package_order.py";
+    if !workflow.contains(&format!("python3 {order_script}"))
+        || !subject.root.join(order_script).is_file()
+        || workflow
+            .matches("done < \"$RUNNER_TEMP/registry-package-order.tsv\"")
+            .count()
+            != 2
+    {
         violations.push(Violation::new(
             "registry packaging and verification must remain metadata-driven in \
              .github/workflows/release-plz.yml",
         ));
     }
-    if workflow.contains("cargo package -p phoxal-supervisor") {
+    if registry_packages.iter().any(|name| workflow.contains(name)) {
         violations.push(Violation::new(
-            "the supervisor must use the neutral executable batch in \
+            "registry executables must use the metadata-derived dependency batch in \
              .github/workflows/release-plz.yml",
         ));
     }

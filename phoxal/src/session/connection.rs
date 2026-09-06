@@ -10,21 +10,18 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::bus::session::{BusConfig, BusOwner};
 use crate::bus::{
     AskQuery, BusFault, BusHandle, DEFAULT_QUERY_TIMEOUT, Endpoint, Event, EventReceiver,
-    KeyLivelinessObserver, LivelinessStatus, Publish, Querier, QueryEndpoint, QueryError, Sample,
+    KeyLivelinessObserver, LivelinessStatus, Publish, Querier, QueryEndpoint, Sample,
     SampleReceiver, Setpoint, SetpointPublisher, SourceLabel, State, StateView, Stream,
     StreamDelivered, StreamPublisher, StreamReceiver, Subscribe, Topic,
 };
 use crate::identity::{ExecutionId, RobotId};
 use crate::supervisor::api;
 use crate::supervisor::api::command::{Command, CommandOutcome};
-use crate::supervisor::api::connect::{ConnectReply, ConnectRequest, PRESENCE_KEY};
+use crate::supervisor::api::connect::PRESENCE_KEY;
 use crate::supervisor::api::execution::{Snapshot, SnapshotDocument};
 use crate::version::FrameworkVersion;
 
-use crate::session::error::{
-    CloseError, CompatibilityRefusal, ConnectError, DisconnectReason, SessionError,
-};
-use crate::session::selection::exactly_one_execution;
+use crate::session::error::{CloseError, ConnectError, DisconnectReason, SessionError};
 
 /// Inputs for one direct session against one execution.
 #[derive(Clone, Debug)]
@@ -48,11 +45,9 @@ impl ConnectOptions {
 
 /// Immutable facts established while connecting.
 ///
-/// The clock is deliberately absent. A bundle records no time domain: real
-/// robot time zero is the host boot and the timeline id is the execution id,
-/// while simulation is a launch decision carried per runtime as `--simulation`.
-/// The supervisor is handed a bundle root and nothing else, so it does not know
-/// how the runtimes around it were started and has no answer to advertise.
+/// The clock is deliberately absent. The supervisor owns a dynamic time-domain
+/// endpoint for participant lifecycle, while a session only establishes the
+/// immutable execution identity, model, and compatible framework train.
 #[derive(Clone, Debug)]
 pub struct ConnectedExecution {
     pub execution: ExecutionId,
@@ -310,9 +305,9 @@ impl SessionHandle {
     ///
     /// Returns [`SessionError`] when the session is terminal or the query
     /// fails.
-    pub async fn manifest(&self) -> Result<api::info::InfoReply, SessionError> {
+    pub async fn manifest(&self) -> Result<crate::model::manifest::ManifestDocument, SessionError> {
         self.ensure_connected()?;
-        Ok(self.info.query(api::info::InfoRequest {}).await?)
+        Ok(self.info.query(api::info::InfoRequest {}).await?.manifest)
     }
 
     /// One page of the supervisor's retained log view, newest first.
@@ -422,8 +417,9 @@ impl Session {
     /// execution, when the peers were built from different compatibility lines,
     /// or when the transport or the initial exchange fails.
     pub async fn connect(options: &ConnectOptions) -> Result<Self, ConnectError> {
-        let executions = BusOwner::probe_routers(&options.endpoint).await?;
-        let execution = exactly_one_execution(&options.endpoint, &executions)?;
+        let execution = crate::execution::resolve_execution(&options.endpoint)
+            .await
+            .map_err(ConnectError::from)?;
         let label = SourceLabel::new(options.label.clone())?;
         let (owner, bus) = BusOwner::open(BusConfig::for_external(
             execution,
@@ -432,7 +428,7 @@ impl Session {
         ))
         .await?;
 
-        let initialized = match initialize(&bus, execution).await {
+        let initialized = match initialize(&bus).await {
             Ok(initialized) => initialized,
             Err(error) => {
                 let _ = owner.close().await;
@@ -538,9 +534,19 @@ struct Initialized {
     telemetry: Querier<api::telemetry::SnapshotRequest>,
 }
 
-async fn initialize(bus: &BusHandle, execution: ExecutionId) -> Result<Initialized, ConnectError> {
-    let framework = remote_framework(bus).await?;
-    ensure_compatible_framework(framework, FrameworkVersion::CURRENT)?;
+async fn initialize(bus: &BusHandle) -> Result<Initialized, ConnectError> {
+    let bootstrap = crate::execution::attach_execution(bus)
+        .await
+        .map_err(ConnectError::from)?;
+    let crate::execution::ExecutionBootstrap {
+        execution,
+        framework,
+        info: execution_info,
+        time_domain: _,
+        time_domains: _,
+        attachment: _,
+        attachments: _,
+    } = bootstrap;
 
     let info = Querier::new(
         bus.clone(),
@@ -550,12 +556,7 @@ async fn initialize(bus: &BusHandle, execution: ExecutionId) -> Result<Initializ
     // The identity is one fact for the life of the execution, so it is asked
     // once here and carried on `ConnectedExecution`. Every screen that shows
     // the robot reads it from there rather than repeating this query.
-    let robot = info
-        .query(api::info::InfoRequest {})
-        .await?
-        .into_robot()
-        .id()
-        .clone();
+    let robot = execution_info.manifest.into_robot().id().clone();
 
     let stream = StreamReceiver::new(bus, &api::topics().snapshot().client()).await?;
     let current = Querier::new(
@@ -613,45 +614,6 @@ async fn initialize(bus: &BusHandle, execution: ExecutionId) -> Result<Initializ
             DEFAULT_QUERY_TIMEOUT,
         )?,
     })
-}
-
-async fn remote_framework(bus: &BusHandle) -> Result<FrameworkVersion, ConnectError> {
-    let reply = Querier::new(
-        bus.clone(),
-        &api::topics().connect().client(),
-        DEFAULT_QUERY_TIMEOUT,
-    )?
-    .query(ConnectRequest::V0 {})
-    .await
-    .map_err(|error| match error {
-        QueryError::Decode(detail) => ConnectError::UnreadableBootstrap { detail },
-        other => ConnectError::Query(other),
-    })?;
-    let ConnectReply::V0 { framework } = reply;
-    Ok(framework)
-}
-
-pub(crate) fn ensure_compatible_framework(
-    remote: FrameworkVersion,
-    local: FrameworkVersion,
-) -> Result<(), ConnectError> {
-    if remote.is_compatible_with(local) {
-        return Ok(());
-    }
-    let refusal = if version_key(remote) > version_key(local) {
-        CompatibilityRefusal::RemoteNewer
-    } else {
-        CompatibilityRefusal::LocalNewer
-    };
-    Err(ConnectError::IncompatibleFramework {
-        remote,
-        local,
-        refusal,
-    })
-}
-
-const fn version_key(version: FrameworkVersion) -> (u16, u16, u16) {
-    (version.major(), version.minor(), version.patch())
 }
 
 async fn run_lifecycle(
@@ -847,8 +809,8 @@ mod tests {
                 FrameworkVersion::new(1, 9, 9),
             ),
         ] {
-            assert!(ensure_compatible_framework(older, newer).is_ok());
-            assert!(ensure_compatible_framework(newer, older).is_ok());
+            assert!(crate::execution::ensure_compatible_framework(older, newer).is_ok());
+            assert!(crate::execution::ensure_compatible_framework(newer, older).is_ok());
         }
     }
 

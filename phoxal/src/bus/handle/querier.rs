@@ -10,7 +10,7 @@ use zenoh::sample::Sample;
 use crate::bus::abi::{Codec, MessagePack};
 use crate::bus::contract::{Payload, QueryEndpoint};
 use crate::bus::error::Result;
-use crate::bus::handle::decode_payload;
+use crate::bus::handle::decode_query_payload;
 use crate::bus::query::{QueryError, QueryFailure};
 use crate::bus::session::BusHandle;
 use crate::bus::topic::{AskQuery, Topic};
@@ -188,7 +188,7 @@ fn decode_reply_result<Resp: Payload>(
     topic: &str,
 ) -> std::result::Result<Resp, QueryError> {
     match result {
-        Ok(sample) => decode_payload::<Resp>(&sample, topic)
+        Ok(sample) => decode_query_payload::<Resp>(&sample, topic)
             .map(|(body, _)| body)
             .map_err(|e| QueryError::Decode(e.to_string())),
         Err(reply_error) => {

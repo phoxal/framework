@@ -391,7 +391,7 @@ mod tests {
         for authored in [
             "const KEY: &str = \"robot/drive/state\";",
             "    let asset = (\"robot/meshes/base.stl\", \"robot/drive/state\");",
-            "        \"runtime/simulation/clock\"",
+            "        \"runtime/private/diagnostic\"",
             "pub const PRESENCE_KEY: &str = \"supervisor/presence\";",
         ] {
             assert!(authored_topic_root(authored).is_some(), "{authored}");

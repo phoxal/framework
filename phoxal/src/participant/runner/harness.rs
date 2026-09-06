@@ -29,9 +29,9 @@ pub struct TestHarness {
 impl TestHarness {
     /// Construct an explicit test-harness input for a participant id.
     ///
-    /// A launched participant derives its real timeline from the execution the
-    /// router reports; a harness has no router, so it mints one here and lets a
-    /// test name it explicitly when two harnesses have to share a world history.
+    /// A production participant receives its timeline from the supervisor's
+    /// time domain; a harness has no supervisor, so it mints one here and lets
+    /// a test name it explicitly when two harnesses share a world history.
     ///
     /// # Errors
     ///
@@ -54,16 +54,13 @@ impl TestHarness {
         self
     }
 
-    /// Supply the configuration a launched participant would read out of the
-    /// manifest.
+    /// Supply explicit configuration for this harness participant.
     ///
-    /// A harness binds no bundle, so there is no `services.<id>.config` or
-    /// `components.<id>.driver.config` for it to read; without this a
-    /// participant declaring a required config could never be driven by its own
-    /// tests. The value goes through exactly the deserialization step the runner
-    /// performs, so a config the launch would reject is rejected here too - and
-    /// omitting it still means JSON `null`, the same absent-config rule a
-    /// missing manifest key follows.
+    /// A harness has no supervisor-attached robot model, so it cannot select a
+    /// service or driver configuration from one. Without this value, a
+    /// participant declaring required config could not be driven by its own
+    /// tests. The value goes through the runner's deserialization step, so an
+    /// invalid config is rejected here too. Omitting it still means JSON `null`.
     #[must_use]
     pub fn with_config(mut self, config: serde_json::Value) -> Self {
         self.config = Some(config);

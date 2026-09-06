@@ -136,6 +136,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::QueryRegistration;
+    use crate::bundle::BundlePath;
     use crate::bus::{Codec, MessagePack, QueryCode, QueryFailure};
     use crate::prelude::*;
     use crate::supervisor::api as supervisor;
@@ -169,11 +170,12 @@ mod tests {
             request: supervisor::bundle::GetRequest,
             state: &mut QueryState,
         ) -> QueryResult<supervisor::bundle::GetResponse> {
-            state.calls.push(request.path.clone());
+            state.calls.push(request.path.as_str().to_owned());
             state.requesters.push(query.producer());
-            if request.path == "ok" {
-                Ok(supervisor::bundle::GetResponse::Found {
+            if request.path.as_str() == "ok" {
+                Ok(supervisor::bundle::GetResponse::Chunk {
                     bytes: vec![1, 2, 3],
+                    eof: true,
                 })
             } else {
                 Err(QueryFailure::not_found("no such asset"))
@@ -194,7 +196,8 @@ mod tests {
             crate::bus::ProducerId::try_from((1_u128 << 124) | 2).expect("canonical test producer");
 
         let first = MessagePack::encode(&supervisor::bundle::GetRequest {
-            path: "ok".to_string(),
+            path: BundlePath::new("ok").unwrap(),
+            offset: 0,
         })
         .unwrap();
         let reply = registration
@@ -210,11 +213,12 @@ mod tests {
             MessagePack::decode(&reply.payload).unwrap();
         assert!(matches!(
             response,
-            supervisor::bundle::GetResponse::Found { .. }
+            supervisor::bundle::GetResponse::Chunk { .. }
         ));
 
         let second = MessagePack::encode(&supervisor::bundle::GetRequest {
-            path: "missing".to_string(),
+            path: BundlePath::new("missing").unwrap(),
+            offset: 0,
         })
         .unwrap();
         let failure = registration

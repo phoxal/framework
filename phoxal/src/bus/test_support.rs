@@ -23,7 +23,9 @@ use zenoh::sample::{Sample, SampleBuilder};
 use crate::bus::abi::CodecId;
 use crate::bus::contract::{Endpoint, TestFamily};
 use crate::bus::handle::stamp::StepToken;
-use crate::bus::metadata::{BusMetadata, ParticipantSourceIdentity, SourceAttribution};
+use crate::bus::metadata::{
+    BusMetadata, DeliveryMetadata, ParticipantSourceIdentity, SourceAttribution,
+};
 use crate::bus::session::BusConfig;
 use crate::bus::time::{RobotInstant, TimeWindow};
 use crate::bus::tree::BoundEndpoint;
@@ -156,9 +158,10 @@ pub(crate) fn sample_with_encoding(codec: u8, encoding: String, payload: Vec<u8>
     meta.codec = codec;
     let key: KeyExpr<'static> =
         KeyExpr::try_from("phoxal/dead/yTEST/drive/target").expect("a legal test key");
+    let delivery = DeliveryMetadata::new(meta, None);
     SampleBuilder::put(key, payload)
         .encoding(encoding)
-        .attachment(meta.encode().expect("test metadata encodes"))
+        .attachment(delivery.encode().expect("test delivery metadata encodes"))
         .into()
 }
 

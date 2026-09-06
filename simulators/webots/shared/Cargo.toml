@@ -1,0 +1,20 @@
+[package]
+name = "phoxal-simulator-webots-shared"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "Phoxal Webots typed controller plan and private wire contract."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+phoxal = { workspace = true, features = ["session"] }
+rmp-serde = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

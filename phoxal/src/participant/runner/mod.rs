@@ -1,10 +1,10 @@
 //! The participant runner entrypoints and lifecycle orchestration.
 //!
-//! The implementation is split by ownership boundary: [`startup`] performs
-//! all local launch validation before opening the bus, [`lifecycle`] owns
-//! setup/Ready/teardown resources, and [`event_loop`] owns the serialized
+//! The implementation is split by ownership boundary: [`startup`] opens the
+//! bus and attaches the supervisor-established execution inputs, [`lifecycle`]
+//! owns setup/Ready/teardown resources, and [`event_loop`] owns the serialized
 //! scheduler loop. Query ingress/reply transport, process signals, teardown,
-//! and bundle inputs each stay in their focused modules.
+//! and explicit fixture inputs each stay in their focused modules.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -16,6 +16,7 @@ use crate::participant::bus_log;
 use crate::participant::clock::ClockMode;
 use crate::participant::clock::ClockSource;
 use crate::participant::clock::real::RealClock;
+use crate::participant::context::SetupSource;
 use crate::participant::launch::Launch;
 use crate::participant::runner::harness::TestHarness;
 
@@ -164,7 +165,9 @@ where
             session: BusLease::Borrowed,
             participant_id: harness.participant_id,
             shutdown_grace: harness.shutdown_grace,
-            bundle: None,
+            source: SetupSource::Harness,
+            domain: None,
+            attachment: None,
             config,
             clock_mode: ClockMode::Real,
             clock: Some(clock),
@@ -203,7 +206,9 @@ where
             session: BusLease::Borrowed,
             participant_id: harness.participant_id,
             shutdown_grace: harness.shutdown_grace,
-            bundle: None,
+            source: SetupSource::Harness,
+            domain: None,
+            attachment: None,
             config,
             clock_mode: ClockMode::Real,
             clock: Some(clock),

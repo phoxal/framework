@@ -1,29 +1,112 @@
 //! Local launch validation and the supervised bus-open boundary.
 //!
-//! Everything that can be decided without transport is kept ahead of
-//! `BusOwner::open`: opening the bundle, reading this participant's own config
-//! out of it, and validating scheduler inputs. The one thing that cannot is the
-//! execution identity: it is the router's, so it is learned from the endpoints
-//! the launch names rather than handed over in argv. The live scheduler is
-//! intentionally built by the
-//! lifecycle after the potentially slow bus connection succeeds.
+//! Attachment starts from one rendezvous endpoint. The framework resolves the
+//! execution, opens its caller-owned bus session, completes the supervisor
+//! bootstrap, and only then validates the participant's role and configuration.
+//! The live scheduler is intentionally built by the lifecycle after the
+//! potentially slow connection succeeds.
 
 use std::future::Future;
 use std::time::Duration;
 
-use crate::bundle::RuntimeBundle;
 use crate::bus::{BusConfig, BusHandle, BusOwner};
-use crate::identity::{ExecutionId, ParticipantId, TimelineId};
+use crate::execution::{attach_execution, resolve_execution};
+use crate::identity::{ParticipantId, TimelineId};
 use crate::participant::api::Participant;
 use crate::participant::clock::real::RealClock;
 use crate::participant::clock::{ClockMode, ClockReading, ClockSource};
+use crate::participant::context::SetupSource;
 use crate::participant::launch::{Launch, SHUTDOWN_GRACE};
+use crate::participant::metadata::ParticipantKind;
 use crate::participant::scheduler::AnyStepScheduler;
+use crate::supervisor::api::simulation::{SimulationAttachmentPhase, SimulationAttachmentState};
+use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
 use anyhow::Context as _;
 
 use super::ShutdownController;
-use super::inputs::{driver_block, open_bundle, participant_config};
+use super::inputs::{driver_block, participant_config};
 use super::lifecycle::{self, BusLease};
+
+/// The supervisor's initial scheduling authority plus its already-subscribed
+/// replacement stream. Only services and the brain retain this; drivers are
+/// deliberately independent of execution time mode.
+pub(crate) struct DomainSubscription {
+    pub(crate) current: TimeDomain,
+    pub(crate) updates:
+        crate::bus::StreamReceiver<crate::supervisor::api::time_domain::TimeDomainStream>,
+}
+
+/// The supervisor's initial attachment plus its already-subscribed ordered
+/// replacement stream.
+pub(crate) struct AttachmentSubscription {
+    pub(crate) current: Option<SimulationAttachmentState>,
+    pub(crate) updates: crate::bus::StreamReceiver<
+        crate::supervisor::api::simulation::attachment::SimulationAttachmentStream,
+    >,
+}
+
+impl AttachmentSubscription {
+    pub(crate) fn reconcile(&mut self, bus: &BusHandle) -> crate::Result<()> {
+        while let Some(update) = self.updates.try_recv()? {
+            let replacement = update.body.attachment;
+            match (replacement, self.current) {
+                (Some(replacement), Some(installed))
+                    if replacement.revision > installed.revision =>
+                {
+                    self.current = Some(replacement);
+                }
+                (Some(replacement), None) => self.current = Some(replacement),
+                // The initial empty stream snapshot carries no revision and
+                // cannot overwrite a newer current-query attachment.
+                (None, _) | (Some(_), Some(_)) => {}
+            }
+        }
+        install_attachment_revision(bus, self.current);
+        Ok(())
+    }
+}
+
+pub(crate) fn install_attachment_revision(
+    bus: &BusHandle,
+    attachment: Option<SimulationAttachmentState>,
+) {
+    let binding = attachment.and_then(|state| {
+        (state.phase == SimulationAttachmentPhase::Active)
+            .then_some((state.controller, state.revision))
+    });
+    bus.set_active_simulation_binding(binding);
+}
+
+impl DomainSubscription {
+    /// Reconcile each replacement buffered before the next lifecycle boundary.
+    ///
+    /// Later arrivals remain in the ordered stream for the runner's serialized
+    /// event loop, so this establishes an initial domain without creating a
+    /// receive gap.
+    pub(crate) fn reconcile(&mut self) -> crate::Result<Vec<(TimeDomain, TimeDomain)>> {
+        let mut replacements = Vec::new();
+        while let Some(update) = self.updates.try_recv()? {
+            if update.body.domain.revision > self.current.revision {
+                let previous = self.current;
+                self.current = update.body.domain;
+                replacements.push((previous, self.current));
+            }
+        }
+        Ok(replacements)
+    }
+
+    /// Wait for the next strictly newer scheduling authority.
+    pub(crate) async fn next_replacement(&mut self) -> crate::Result<(TimeDomain, TimeDomain)> {
+        loop {
+            let update = self.updates.recv().await?.body.domain;
+            if update.revision > self.current.revision {
+                let previous = self.current;
+                self.current = update;
+                return Ok((previous, update));
+            }
+        }
+    }
+}
 
 /// All validated inputs that the lifecycle needs after the bus exists.
 ///
@@ -35,7 +118,9 @@ pub(crate) struct PreparedRun<R: Participant, C: ClockSource> {
     pub(crate) session: BusLease,
     pub(crate) participant_id: ParticipantId,
     pub(crate) shutdown_grace: Duration,
-    pub(crate) bundle: Option<RuntimeBundle>,
+    pub(crate) source: SetupSource,
+    pub(crate) domain: Option<DomainSubscription>,
+    pub(crate) attachment: Option<AttachmentSubscription>,
     pub(crate) config: R::Config,
     pub(crate) clock_mode: ClockMode,
     pub(crate) clock: Option<C>,
@@ -49,47 +134,71 @@ where
     S: Future<Output = ()>,
 {
     let mut shutdown = ShutdownController::new(shutdown);
-    let clock_mode = if launch.simulation {
-        ClockMode::Simulation
-    } else {
-        ClockMode::Real
-    };
-    // The bundle and this participant's own config are resolved while the
-    // process is still local, so a malformed manifest or a config a custom
-    // `Deserialize` refuses has no producer or wire side effects to clean up.
-    let bundle = open_bundle(&launch.bundle_root)?;
-    let config = participant_config::<R::Config>(bundle.robot(), &launch.participant_id, R::KIND)?;
-    validate_declared_connection::<R>(bundle.robot(), &launch.participant_id)?;
-
     // One line, not a per-attempt one: a participant racing a router that has
     // not opened its listener yet can take several seconds to connect. Without
     // this, that gap looks like a silent hang rather than expected startup.
     tracing::info!(
         target: "phoxal.runtime",
-        endpoints = ?launch.connect_endpoints,
+        endpoint = %launch.connect,
         "connecting to the bus"
     );
     let execution = tokio::select! {
         biased;
         _ = shutdown.wait() => return Ok(()),
-        result = learn_execution(&launch.connect_endpoints) => result?,
+        result = resolve_execution(&launch.connect) => result?,
     };
     tracing::info!(
         target: "phoxal.runtime",
         execution = %execution,
         "learned the execution identity from the router"
     );
-    let clock = clock_for_mode(clock_mode, execution);
-    validate_clock_inputs::<R, _>(clock_mode, clock.as_ref())?;
-
     let (owner, bus) = tokio::select! {
         biased;
         _ = shutdown.wait() => return Ok(()),
         result = BusOwner::open(BusConfig::for_participant(
             execution,
             launch.participant_id.clone(),
-            launch.connect_endpoints.clone(),
+            vec![launch.connect.clone()],
         )) => result?,
+    };
+
+    let bootstrap = match tokio::select! {
+        biased;
+        _ = shutdown.wait() => {
+            let _ = owner.close().await;
+            return Ok(());
+        }
+        result = attach_execution(&bus) => result,
+    } {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => {
+            let _ = owner.close().await;
+            return Err(error.into());
+        }
+    };
+    let preflight = async {
+        let robot = bootstrap.info.manifest.into_robot();
+        let config = participant_config::<R>(&robot, &launch.participant_id)?;
+        validate_declared_connection::<R>(&robot, &launch.participant_id)?;
+        let assets = crate::bundle::ParticipantAssets::from_supervisor(bus.clone())?;
+        let clock_mode = clock_mode_for::<R>(bootstrap.time_domain);
+        let clock = clock_for_mode(clock_mode, bootstrap.time_domain.timeline);
+        validate_clock_inputs::<R, _>(clock_mode, clock.as_ref())?;
+        Ok::<_, anyhow::Error>((robot, config, assets, clock_mode, clock))
+    };
+    let (robot, config, assets, clock_mode, clock) = match tokio::select! {
+        biased;
+        _ = shutdown.wait() => {
+            let _ = owner.close().await;
+            return Ok(());
+        }
+        result = preflight => result,
+    } {
+        Ok(preflight) => preflight,
+        Err(error) => {
+            let _ = owner.close().await;
+            return Err(error);
+        }
     };
 
     // Do not construct the live scheduler until this connection boundary has
@@ -101,7 +210,18 @@ where
             session: BusLease::Owned(owner),
             participant_id: launch.participant_id,
             shutdown_grace: SHUTDOWN_GRACE,
-            bundle: Some(bundle),
+            source: SetupSource::Supervisor {
+                robot: Box::new(robot),
+                assets,
+            },
+            domain: (R::KIND != ParticipantKind::Driver).then_some(DomainSubscription {
+                current: bootstrap.time_domain,
+                updates: bootstrap.time_domains,
+            }),
+            attachment: Some(AttachmentSubscription {
+                current: bootstrap.attachment,
+                updates: bootstrap.attachments,
+            }),
             config,
             clock_mode,
             clock,
@@ -112,88 +232,36 @@ where
     .await
 }
 
-/// Learn the execution identity from the routers the launch points at.
+/// Select the initial participant cadence from supervisor authority.
 ///
-/// A router's session id *is* the execution (`bus::session::probe_routers`),
-/// which is why the identity is not in argv at all: the process that owns the
-/// run is the one that answers on the endpoint. Exactly one is expected. Zero
-/// means nothing is running there yet and there is no execution to join; more
-/// than one means the endpoints named two different runs, and picking either
-/// would silently attach the participant to a graph its peers are not on.
-async fn learn_execution(endpoints: &[String]) -> crate::Result<ExecutionId> {
-    let mut observed: Vec<ExecutionId> = Vec::new();
-    for endpoint in endpoints {
-        let reported = BusOwner::probe_routers(endpoint)
-            .await
-            .with_context(|| format!("failed to reach a Phoxal router on '{endpoint}'"))?;
-        for execution in reported {
-            if !observed.contains(&execution) {
-                observed.push(execution);
-            }
-        }
-    }
-    match observed.as_slice() {
-        [execution] => Ok(*execution),
-        [] => anyhow::bail!(
-            "no Phoxal router answered on {}; the execution identity is the router's, so there \
-             is nothing for this participant to join",
-            rendered(endpoints)
-        ),
-        many => anyhow::bail!(
-            "the endpoints {} report {} different executions ({}); a participant joins exactly one",
-            rendered(endpoints),
-            many.len(),
-            many.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+/// Drivers are deliberately outside this decision: their host-local cadence is
+/// independent of a world attaching, pausing, or resetting.
+fn clock_mode_for<R: Participant>(domain: TimeDomain) -> ClockMode {
+    if R::KIND == ParticipantKind::Driver || domain.mode == TimeMode::Monotonic {
+        ClockMode::Real
+    } else {
+        ClockMode::Simulation
     }
 }
 
-fn rendered(endpoints: &[String]) -> String {
-    endpoints
-        .iter()
-        .map(|endpoint| format!("'{endpoint}'"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// The real timeline of one execution.
-///
-/// The real-clock timeline id *is* the execution, so every process in one run
-/// dates its instants on the
-/// same world history without publishing anything. The two identities are
-/// different widths - an execution is 128 bits, a timeline is 64 - so this
-/// derives the timeline deterministically from the execution's high half rather
-/// than minting an unrelated one. An execution id's most significant nibble is
-/// never zero (`ExecutionId::try_from`), so that half is never zero either and
-/// always names a timeline; the fallback exists only because `from_raw` is
-/// total, and mints rather than panics.
-fn real_timeline(execution: ExecutionId) -> TimelineId {
-    let high = (u128::from(execution) >> 64) as u64;
-    TimelineId::from_raw(high).unwrap_or_else(TimelineId::mint)
-}
-
-/// Build the host clock for a real launch. A simulation participant reads its
-/// instants from the live world clock instead, so it gets none.
-pub(crate) fn clock_for_mode(clock_mode: ClockMode, execution: ExecutionId) -> Option<RealClock> {
+/// Build the host clock for one supervisor-minted monotonic timeline. A
+/// simulated service or brain reads its instants from logical-time ingress.
+pub(crate) fn clock_for_mode(clock_mode: ClockMode, timeline: TimelineId) -> Option<RealClock> {
     match clock_mode {
-        ClockMode::Real => Some(RealClock::new(real_timeline(execution))),
+        ClockMode::Real => Some(RealClock::new(timeline)),
         ClockMode::Simulation => None,
     }
 }
 
-/// Refuse an authored connection this driver does not accept, while the process
-/// is still local.
+/// Refuse an authored connection this driver does not accept after supervisor
+/// attachment but before the participant becomes Ready.
 ///
 /// `phoxal validate` is what an author actually meets this rule through:
 /// it reads the same declaration out of the built binary's embedded metadata
 /// and compares it against the document, so a mismatch is a build-time failure
 /// with the document in hand. This is the defence in depth behind it - the
-/// binary refusing to drive hardware it was not written for - and it belongs
-/// ahead of `BusOwner::open` so it can never become a transport-visible startup
-/// failure.
+/// binary refusing to drive hardware it was not written for - and it completes
+/// before setup, query declaration, or Ready acquisition.
 ///
 /// A role that declares no kind, and every role that is not a driver, states
 /// `CONNECTION = None` and has nothing to check.
@@ -213,9 +281,8 @@ fn validate_declared_connection<R: Participant>(
     Ok(())
 }
 
-/// Validate scheduler selection and the initial clock discipline before any
-/// supervised transport is opened. The lifecycle repeats construction after
-/// the bus connects so it retains the live scheduler handle.
+/// Validate scheduler selection and initial clock discipline after supervisor
+/// attachment and before the lifecycle constructs its retained scheduler.
 pub(crate) fn validate_clock_inputs<R, C>(
     clock_mode: ClockMode,
     clock: Option<&C>,
@@ -245,6 +312,7 @@ where
 mod tests {
     use super::*;
 
+    use super::super::inputs::open_bundle;
     use crate::participant::context::SetupContext;
     use phoxal_fixture::staged_bundle;
 
@@ -289,11 +357,11 @@ mod tests {
         }
     }
 
-    /// The declared kind is enforced while the process is still local, so a
-    /// binary wired to hardware it was not written for never reaches the bus -
-    /// and a driver that declared nothing is not held to a kind it never named.
+    /// The declared kind is enforced before the participant becomes Ready, so
+    /// a binary wired to hardware it was not written for cannot serve it and a
+    /// driver that declared nothing is not held to a kind it never named.
     #[test]
-    fn a_declared_connection_kind_is_enforced_before_the_bus_opens() {
+    fn a_declared_connection_kind_is_enforced_before_ready() {
         let staged = staged_bundle();
         let bundle = open_bundle(staged.path()).expect("the staged bundle opens");
         let robot = bundle.robot();
@@ -312,22 +380,24 @@ mod tests {
         }
     }
 
-    /// The real timeline is a pure function of the execution, so two processes
-    /// in one run date their instants on the same world history with nothing
-    /// exchanged, and two runs never share one.
+    /// The supervisor mints the monotonic timeline before participants attach,
+    /// so every real scheduler uses that same opaque authority value.
     #[test]
-    fn the_real_timeline_is_derived_from_the_execution_and_nothing_else() {
-        let execution = ExecutionId::mint();
-        assert_eq!(real_timeline(execution), real_timeline(execution));
-        assert_ne!(real_timeline(execution), real_timeline(ExecutionId::mint()));
+    fn the_real_scheduler_uses_the_supervisor_timeline() {
+        let timeline = TimelineId::from_raw(7).expect("a test timeline");
+        let clock = clock_for_mode(ClockMode::Real, timeline).expect("a real clock");
+        assert_eq!(
+            clock.read().instant().expect("host clock reads").timeline(),
+            timeline
+        );
     }
 
-    /// Only a real launch carries a host clock; a simulated one reads the world
-    /// clock the controller publishes.
+    /// Only the real clock mode carries a host clock; simulated mode reads its
+    /// separate logical-time ingress.
     #[test]
-    fn only_a_real_launch_builds_a_host_clock() {
-        let execution = ExecutionId::mint();
-        assert!(clock_for_mode(ClockMode::Real, execution).is_some());
-        assert!(clock_for_mode(ClockMode::Simulation, execution).is_none());
+    fn only_the_real_clock_mode_builds_a_host_clock() {
+        let timeline = TimelineId::from_raw(9).expect("a test timeline");
+        assert!(clock_for_mode(ClockMode::Real, timeline).is_some());
+        assert!(clock_for_mode(ClockMode::Simulation, timeline).is_none());
     }
 }

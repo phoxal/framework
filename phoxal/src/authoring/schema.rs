@@ -19,6 +19,7 @@ impl DocumentKind {
             Self::Robot => "robot.schema.json",
             Self::Component => "component.schema.json",
             Self::Simulation => "simulation.schema.json",
+            Self::World => "world.schema.json",
         }
     }
 
@@ -38,6 +39,8 @@ impl DocumentKind {
             Self::Simulation => SchemaGenerator::new(SchemaSettings::draft2020_12())
                 .into_root_schema_for::<crate::authoring::source::simulation::Manifest>(
             ),
+            Self::World => SchemaGenerator::new(SchemaSettings::draft2020_12())
+                .into_root_schema_for::<crate::authoring::source::world::Manifest>(),
         };
         let (title, description) = self.schema_metadata();
         schema.insert("title".into(), title.into());
@@ -58,6 +61,10 @@ impl DocumentKind {
             Self::Simulation => (
                 "Phoxal simulation manifest (phoxal/simulation/v0)",
                 "Editor schema for an authored Phoxal simulation.yaml document.",
+            ),
+            Self::World => (
+                "Phoxal world manifest (phoxal/world/v0)",
+                "Editor schema for an authored Phoxal world.yaml document.",
             ),
         }
     }
@@ -89,6 +96,7 @@ mod tests {
             DocumentKind::Robot => root.join("robot/rgbd-imu-diff-drive/robot.yaml"),
             DocumentKind::Component => root.join("components/drive_motor/component.yaml"),
             DocumentKind::Simulation => root.join("components/drive_motor/simulation.yaml"),
+            DocumentKind::World => root.join("worlds/warehouse/world.yaml"),
         };
         let document = std::fs::read_to_string(path).expect("fixture document should be readable");
         yaml_value(&document)
@@ -109,7 +117,7 @@ mod tests {
     fn schemas_are_self_validating_and_name_their_documents() {
         assert_eq!(
             DocumentKind::ALL.len(),
-            3,
+            4,
             "update the stable schema-generation inventory for every document kind"
         );
         for kind in DocumentKind::ALL {
@@ -125,6 +133,10 @@ mod tests {
                 DocumentKind::Simulation => (
                     "Phoxal simulation manifest (phoxal/simulation/v0)",
                     "simulation.schema.json",
+                ),
+                DocumentKind::World => (
+                    "Phoxal world manifest (phoxal/world/v0)",
+                    "world.schema.json",
                 ),
             };
             let generated = kind.generate();
