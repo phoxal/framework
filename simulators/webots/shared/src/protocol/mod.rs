@@ -37,4 +37,4 @@ pub use records::{
 use records::{EVENT_QUEUE_CAPACITY, IO_TIMEOUT, MAX_ROBOT_SOURCE_BYTES};
 
 #[cfg(test)]
-mod tests;
+mod protocol_boundary_tests;

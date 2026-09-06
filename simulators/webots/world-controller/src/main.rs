@@ -56,4 +56,4 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+mod controller_runtime_tests;

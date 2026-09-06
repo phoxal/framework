@@ -52,4 +52,4 @@ use transition::{admit_step_event, ensure_live_publication, validate_next_progre
 const ATTACHMENT_TRANSITION_CAPACITY: usize = 32;
 
 #[cfg(test)]
-mod tests;
+mod live_contract_tests;

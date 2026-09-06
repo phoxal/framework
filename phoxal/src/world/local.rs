@@ -86,4 +86,4 @@ use framing::{
 use subscription::{WireSubscription, validate_state_against};
 
 #[cfg(test)]
-mod tests;
+mod local_session_contract_tests;

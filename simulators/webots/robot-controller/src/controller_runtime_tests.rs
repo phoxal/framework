@@ -154,7 +154,7 @@ fn lossless_publication_refusal_is_a_controller_local_protocol_fault() {
         || {
             Err(anyhow::Error::new(SimulatorError::Bus(
                 BusError::WouldBlock {
-                    topic: "robot/joint/elbow/state".to_owned(),
+                    topic: api::topics().drive().state().owner().key().to_owned(),
                 },
             )))
         },
@@ -172,7 +172,11 @@ fn lossless_publication_refusal_is_a_controller_local_protocol_fault() {
         || Ok(()),
         || {
             Err(SimulatorError::Bus(BusError::WouldBlock {
-                topic: "simulation/step".to_owned(),
+                topic: phoxal::simulation::api::topics()
+                    .step()
+                    .owner()
+                    .key()
+                    .to_owned(),
             }))
         },
     )

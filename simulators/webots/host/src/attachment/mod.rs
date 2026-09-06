@@ -89,4 +89,4 @@ impl WebotsAttachments {
 }
 
 #[cfg(test)]
-mod tests;
+mod attachment_transaction_tests;

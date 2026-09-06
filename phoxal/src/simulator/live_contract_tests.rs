@@ -156,9 +156,9 @@ async fn one_live_transition_admits_outputs_then_step_with_one_exact_instant() {
     let (owner, bus) = BusOwner::open(BusConfig::for_external(execution, None, Vec::new()))
         .await
         .expect("test simulator bus opens");
+    let state_topic = crate::api::topics().drive().state().owner();
     let state = LiveStatePublisher {
-        inner: StatePublisher::new(bus.clone(), &crate::api::topics().drive().state().owner())
-            .expect("state publisher"),
+        inner: StatePublisher::new(bus.clone(), &state_topic).expect("state publisher"),
         bus: bus.clone(),
     };
     let component =
@@ -175,11 +175,8 @@ async fn one_live_transition_admits_outputs_then_step_with_one_exact_instant() {
         inner: SamplePublisher::new(bus.clone(), &sample_topic).expect("sample publisher"),
         bus: bus.clone(),
     };
-    let step = EventPublisher::new(
-        bus.clone(),
-        &crate::simulation::api::topics().step().owner(),
-    )
-    .expect("step publisher");
+    let step_topic = crate::simulation::api::topics().step().owner();
+    let step = EventPublisher::new(bus.clone(), &step_topic).expect("step publisher");
     let pause = bus
         .test_pause_outbound_drain()
         .await
@@ -242,13 +239,9 @@ async fn one_live_transition_admits_outputs_then_step_with_one_exact_instant() {
             DeliveryFamily::Stream,
         ]
     );
-    assert!(queued[0].0.ends_with("robot/drive/state"));
-    assert!(
-        queued[1]
-            .0
-            .ends_with("robot/component/accelerometer/accelerometer/linear/sample")
-    );
-    assert!(queued[2].0.ends_with("simulation/step"));
+    assert!(queued[0].0.ends_with(state_topic.key()));
+    assert!(queued[1].0.ends_with(sample_topic.key()));
+    assert!(queued[2].0.ends_with(step_topic.key()));
     assert_eq!(
         queued
             .iter()
