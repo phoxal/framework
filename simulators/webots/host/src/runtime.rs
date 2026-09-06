@@ -3,7 +3,8 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use phoxal::identity::ExecutionId;
@@ -15,6 +16,7 @@ use phoxal::world::WorldSessionHandler;
 use phoxal::world::api::session::connect::WorldSessionBootstrap;
 use phoxal::world::api::session::control::WorldControl;
 use phoxal::world::api::session::diagnostics::{ObservedWorldPacing, WorldSessionDiagnostics};
+use phoxal::world::api::session::document::WorldCheckpoint;
 use phoxal::world::api::session::state::WorldSessionState;
 use phoxal::world::api::session::{WorldLifecycle, WorldMotion};
 use tokio::sync::broadcast;
@@ -43,6 +45,7 @@ pub struct WorldRuntime {
     attachment: Arc<dyn AttachmentOperation>,
     operation: Arc<tokio::sync::Mutex<()>>,
     evidence: Arc<EvidenceSession>,
+    checkpoints: Arc<CheckpointWriter>,
     process: ProcessIdentity,
 }
 
@@ -73,6 +76,49 @@ struct WorldProjection {
     state: WorldSessionState,
     diagnostics: DiagnosticsState,
     last_progress_checkpoint: Option<Instant>,
+}
+
+/// Single ordered owner for durable checkpoint writes.
+struct CheckpointWriter {
+    sender: mpsc::SyncSender<(WorldCheckpoint, mpsc::Sender<Result<(), String>>)>,
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+impl CheckpointWriter {
+    fn new(evidence: Arc<EvidenceSession>) -> Self {
+        let (sender, receiver) =
+            mpsc::sync_channel::<(WorldCheckpoint, mpsc::Sender<Result<(), String>>)>(64);
+        let failure = Arc::new(Mutex::new(None));
+        let worker_failure = Arc::clone(&failure);
+        thread::Builder::new()
+            .name("phoxal-world-checkpoint".to_owned())
+            .spawn(move || {
+                while let Ok((checkpoint, acknowledgement)) = receiver.recv() {
+                    let result = evidence
+                        .write_checkpoint(&checkpoint)
+                        .map_err(|error| format!("failed to persist world checkpoint: {error:#}"));
+                    if let Err(error) = &result {
+                        *lock(&worker_failure) = Some(error.clone());
+                    }
+                    let _ = acknowledgement.send(result);
+                }
+            })
+            .expect("checkpoint writer thread starts");
+        Self { sender, failure }
+    }
+
+    fn write(&self, checkpoint: WorldCheckpoint) -> Result<(), String> {
+        if let Some(error) = lock(&self.failure).clone() {
+            return Err(error);
+        }
+        let (acknowledgement, complete) = mpsc::channel();
+        self.sender
+            .send((checkpoint, acknowledgement))
+            .map_err(|_| "world checkpoint writer stopped".to_owned())?;
+        complete
+            .recv()
+            .map_err(|_| "world checkpoint writer stopped before acknowledgement".to_owned())?
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +181,7 @@ impl WorldRuntime {
             native,
             attachment,
             operation: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: Arc::new(CheckpointWriter::new(Arc::clone(&evidence))),
             evidence,
             process,
         };
@@ -433,13 +480,11 @@ impl WorldRuntime {
     }
 
     fn persist_checkpoint(&self, state: &WorldSessionState) -> Result<(), String> {
-        self.evidence
-            .write_checkpoint(&world_checkpoint(
-                self.process,
-                self.evidence.native_process(),
-                state.clone(),
-            ))
-            .map_err(|error| format!("failed to persist world checkpoint: {error:#}"))
+        self.checkpoints.write(world_checkpoint(
+            self.process,
+            self.evidence.native_process(),
+            state.clone(),
+        ))
     }
 
     /// Refresh ownership evidence after the separately grouped native process starts.

@@ -41,7 +41,7 @@ pub(crate) enum PlanError {
     #[error("capability '{capability}' has invalid cadence: {detail}")]
     InvalidCadence { capability: String, detail: String },
     #[error(transparent)]
-    DriveAuthority(#[from] phoxal::api::drive::DriveAuthorityError),
+    DriveAuthority(#[from] phoxal::drive::authority::DriveAuthorityError),
     #[error("native Webots device name '{device}' is claimed by both {first} and {second}")]
     DuplicateDevice {
         device: String,
@@ -116,7 +116,7 @@ where
             let binding =
                 bind_capability(reference.clone(), capability, simulated, basic_time_step_ms)?;
             if matches!(capability, DeclaredCapability::Motor(_)) {
-                phoxal::api::drive::DriveCommandAuthority::validate_motor(robot, &reference)?;
+                phoxal::drive::authority::DriveCommandAuthority::validate_motor(robot, &reference)?;
             }
             validate_target(&reference, capability, declared.structure())?;
             for device in native_device_names(&binding) {

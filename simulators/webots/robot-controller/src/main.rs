@@ -11,8 +11,8 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use phoxal::SampleSchedule;
 use phoxal::api;
-use phoxal::api::drive::DriveCommandAuthority;
 use phoxal::bus::{FixedSourceLease, LeaseDecision, LeaseRejection, ParticipantReadyEvents};
+use phoxal::drive::authority::DriveCommandAuthority;
 use phoxal::identity::ParticipantId;
 use phoxal::model::component::capability::{
     Capability as DeclaredCapability, CapabilityKind, MotorCommand,
@@ -1060,7 +1060,7 @@ mod tests {
         let producer = ProducerId::try_from(0x1000_0000_0000_0000_0000_0000_0000_0001)
             .expect("canonical producer");
         let source = ParticipantSourceIdentity::new(participant.clone(), producer);
-        let mut lease = authority.lease();
+        let mut lease = authority.motor_lease();
         lease.update_ready(&source, ParticipantReadyStatus::Ready);
         let paused_at = LocalInstant::from_boot_ns(1_000_000_000);
         assert_eq!(

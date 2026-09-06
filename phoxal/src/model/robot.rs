@@ -217,6 +217,49 @@ pub enum KinematicConfig {
 }
 
 impl KinematicConfig {
+    /// Number of times an actuator occurs in this compiled drive topology.
+    #[must_use]
+    pub fn actuator_occurrences(&self, capability: &CapabilityRef) -> usize {
+        match self {
+            Self::Differential {
+                left_actuators,
+                right_actuators,
+                ..
+            } => left_actuators
+                .iter()
+                .chain(right_actuators)
+                .filter(|candidate| *candidate == capability)
+                .count(),
+            Self::Mecanum {
+                front_left_actuator,
+                front_right_actuator,
+                rear_left_actuator,
+                rear_right_actuator,
+                ..
+            } => [
+                front_left_actuator,
+                front_right_actuator,
+                rear_left_actuator,
+                rear_right_actuator,
+            ]
+            .into_iter()
+            .filter(|candidate| *candidate == capability)
+            .count(),
+            Self::Ackermann {
+                steering_actuator,
+                drive_actuator,
+                ..
+            } => [steering_actuator, drive_actuator]
+                .into_iter()
+                .filter(|candidate| *candidate == capability)
+                .count(),
+            Self::Omnidirectional { actuators, .. } => actuators
+                .iter()
+                .filter(|candidate| *candidate == capability)
+                .count(),
+        }
+    }
+
     /// The drive geometry this config describes, with its scalars validated.
     ///
     /// This is the one place the authored kinematic fields are turned into

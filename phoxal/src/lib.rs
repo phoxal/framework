@@ -293,6 +293,7 @@ pub mod bundle;
               profile that does publish it is where these lints have something to say."
 )]
 mod bundle;
+pub mod drive;
 
 // Build/source tooling only. A launched participant reads the compiled
 // `manifest.json`, never an authored document, so the YAML/TOML/URDF readers

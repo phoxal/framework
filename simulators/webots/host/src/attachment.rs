@@ -1157,18 +1157,22 @@ async fn cleanup_robot_assets(project_root: &Path, execution: ExecutionId) -> Re
             .join("robots")
             .join(execution.to_string()),
     ];
+    let mut failures = Vec::new();
     for root in roots {
         match tokio::fs::remove_dir_all(&root).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("failed to remove staged Robot assets for {execution}")
-                });
-            }
+            Err(error) => failures.push(format!("{}: {error}", root.display())),
         }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "failed to remove staged Robot assets for {execution}: {}",
+            failures.join("; ")
+        )
+    }
 }
 
 async fn rollback_import(
