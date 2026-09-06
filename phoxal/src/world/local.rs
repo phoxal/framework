@@ -24,15 +24,16 @@ use crate::world::api::session::connect::{
     WorldSessionBootstrap, WorldSessionConnectRequest, WorldSessionConnectResponse,
 };
 use crate::world::api::session::control::{
-    WorldSessionControlRequest, WorldSessionControlResponse,
+    WorldSessionControlEnvelope, WorldSessionControlRequest, WorldSessionControlResponse,
 };
 use crate::world::api::session::diagnostics::{
     WorldSessionDiagnostics, WorldSessionDiagnosticsCurrentRequest,
     WorldSessionDiagnosticsCurrentResponse, WorldSessionDiagnosticsStream,
+    WorldSessionDiagnosticsSubscriptionRequest,
 };
 use crate::world::api::session::state::{
     WorldSessionState, WorldSessionStateCurrentRequest, WorldSessionStateCurrentResponse,
-    WorldSessionStateStream,
+    WorldSessionStateStream, WorldSessionStateSubscriptionRequest,
 };
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -111,6 +112,22 @@ impl WorldSessionServer {
         handler: Arc<H>,
     ) -> Result<Self, WorldSessionWireError> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        Self::from_listener(listener, handler).await
+    }
+
+    #[cfg(test)]
+    async fn bind_at<H: WorldSessionHandler>(
+        address: SocketAddr,
+        handler: Arc<H>,
+    ) -> Result<Self, WorldSessionWireError> {
+        let listener = TcpListener::bind(address).await?;
+        Self::from_listener(listener, handler).await
+    }
+
+    async fn from_listener<H: WorldSessionHandler>(
+        listener: TcpListener,
+        handler: Arc<H>,
+    ) -> Result<Self, WorldSessionWireError> {
         let address = listener.local_addr()?;
         let endpoint = format!("tcp://{address}");
         let (shutdown, stop) = oneshot::channel();
@@ -195,7 +212,9 @@ impl WorldSessionClient {
         let response: WorldSessionStateCurrentResponse = request(
             self.endpoint,
             STATE_CURRENT_PATH,
-            &WorldSessionStateCurrentRequest {},
+            &WorldSessionStateCurrentRequest {
+                instance: self.bootstrap.instance,
+            },
         )
         .await?;
         validate_state_against(&self.bootstrap, &response.state)?;
@@ -205,8 +224,14 @@ impl WorldSessionClient {
     pub async fn state_subscription(
         &self,
     ) -> Result<WorldStateSubscription, WorldSessionWireError> {
-        let updates =
-            open_subscription::<WorldSessionStateStream>(self.endpoint, STATE_PATH).await?;
+        let updates = open_subscription::<_, WorldSessionStateStream>(
+            self.endpoint,
+            STATE_PATH,
+            &WorldSessionStateSubscriptionRequest {
+                instance: self.bootstrap.instance,
+            },
+        )
+        .await?;
         let current = self.current_state().await?;
         WorldStateSubscription::reconcile(self.bootstrap.clone(), current, updates)
     }
@@ -217,7 +242,9 @@ impl WorldSessionClient {
         let response: WorldSessionDiagnosticsCurrentResponse = request(
             self.endpoint,
             DIAGNOSTICS_CURRENT_PATH,
-            &WorldSessionDiagnosticsCurrentRequest {},
+            &WorldSessionDiagnosticsCurrentRequest {
+                instance: self.bootstrap.instance,
+            },
         )
         .await?;
         response.diagnostics.validate()?;
@@ -227,9 +254,14 @@ impl WorldSessionClient {
     pub async fn diagnostics_subscription(
         &self,
     ) -> Result<WorldDiagnosticsSubscription, WorldSessionWireError> {
-        let updates =
-            open_subscription::<WorldSessionDiagnosticsStream>(self.endpoint, DIAGNOSTICS_PATH)
-                .await?;
+        let updates = open_subscription::<_, WorldSessionDiagnosticsStream>(
+            self.endpoint,
+            DIAGNOSTICS_PATH,
+            &WorldSessionDiagnosticsSubscriptionRequest {
+                instance: self.bootstrap.instance,
+            },
+        )
+        .await?;
         let current = self.current_diagnostics().await?;
         WorldDiagnosticsSubscription::reconcile(current, updates)
     }
@@ -238,8 +270,15 @@ impl WorldSessionClient {
         &self,
         operation: WorldSessionControlRequest,
     ) -> Result<WorldSessionState, WorldSessionWireError> {
-        let response: WorldSessionControlResponse =
-            request(self.endpoint, CONTROL_PATH, &operation).await?;
+        let response: WorldSessionControlResponse = request(
+            self.endpoint,
+            CONTROL_PATH,
+            &WorldSessionControlEnvelope {
+                instance: self.bootstrap.instance,
+                operation,
+            },
+        )
+        .await?;
         validate_state_against(&self.bootstrap, &response.state)?;
         Ok(response.state)
     }
@@ -255,6 +294,7 @@ impl WorldSessionClient {
             CONNECT_PATH,
             &WorldSessionConnectRequest::Attach {
                 framework: FrameworkVersion::CURRENT,
+                instance: self.bootstrap.instance,
                 execution,
                 supervisor_endpoint: supervisor_endpoint.into(),
                 spawn,
@@ -586,9 +626,18 @@ async fn serve_connection<H: WorldSessionHandler>(
     )
     .await?;
     match request.path.as_str() {
-        STATE_PATH => serve_state_stream(&mut stream, handler).await,
+        STATE_PATH => {
+            let request = decode_body::<WorldSessionStateSubscriptionRequest>(&request.body)?;
+            if let Err(error) = validate_instance(handler.as_ref(), request.instance) {
+                return send_error(&mut stream, error.to_string()).await;
+            }
+            serve_state_stream(&mut stream, handler).await
+        }
         STATE_CURRENT_PATH => {
-            decode_body::<WorldSessionStateCurrentRequest>(&request.body)?;
+            let request = decode_body::<WorldSessionStateCurrentRequest>(&request.body)?;
+            if let Err(error) = validate_instance(handler.as_ref(), request.instance) {
+                return send_error(&mut stream, error.to_string()).await;
+            }
             send_value(
                 &mut stream,
                 &WorldSessionStateCurrentResponse {
@@ -597,9 +646,18 @@ async fn serve_connection<H: WorldSessionHandler>(
             )
             .await
         }
-        DIAGNOSTICS_PATH => serve_diagnostics_stream(&mut stream, handler).await,
+        DIAGNOSTICS_PATH => {
+            let request = decode_body::<WorldSessionDiagnosticsSubscriptionRequest>(&request.body)?;
+            if let Err(error) = validate_instance(handler.as_ref(), request.instance) {
+                return send_error(&mut stream, error.to_string()).await;
+            }
+            serve_diagnostics_stream(&mut stream, handler).await
+        }
         DIAGNOSTICS_CURRENT_PATH => {
-            decode_body::<WorldSessionDiagnosticsCurrentRequest>(&request.body)?;
+            let request = decode_body::<WorldSessionDiagnosticsCurrentRequest>(&request.body)?;
+            if let Err(error) = validate_instance(handler.as_ref(), request.instance) {
+                return send_error(&mut stream, error.to_string()).await;
+            }
             send_value(
                 &mut stream,
                 &WorldSessionDiagnosticsCurrentResponse {
@@ -609,8 +667,13 @@ async fn serve_connection<H: WorldSessionHandler>(
             .await
         }
         CONTROL_PATH => {
-            let control = decode_body(&request.body)?;
-            match tokio::time::timeout(HOST_OPERATION_TIMEOUT, handler.control(control)).await {
+            let control = decode_body::<WorldSessionControlEnvelope>(&request.body)?;
+            if let Err(error) = validate_instance(handler.as_ref(), control.instance) {
+                return send_error(&mut stream, error.to_string()).await;
+            }
+            match tokio::time::timeout(HOST_OPERATION_TIMEOUT, handler.control(control.operation))
+                .await
+            {
                 Ok(Ok(state)) => {
                     send_value(&mut stream, &WorldSessionControlResponse { state }).await
                 }
@@ -646,6 +709,7 @@ async fn serve_connect<H: WorldSessionHandler>(
         }
         WorldSessionConnectRequest::Attach {
             framework,
+            instance,
             execution,
             supervisor_endpoint,
             spawn,
@@ -659,6 +723,9 @@ async fn serve_connect<H: WorldSessionHandler>(
                     ),
                 )
                 .await;
+            }
+            if let Err(error) = validate_instance(handler.as_ref(), instance) {
+                return send_error(stream, error.to_string()).await;
             }
             match tokio::time::timeout(
                 HOST_OPERATION_TIMEOUT,
@@ -676,64 +743,65 @@ async fn serve_connect<H: WorldSessionHandler>(
     }
 }
 
+fn validate_instance<H: WorldSessionHandler>(
+    handler: &H,
+    requested: crate::model::world::WorldInstanceId,
+) -> Result<(), WorldSessionWireError> {
+    let actual = handler.bootstrap().instance;
+    if requested == actual {
+        Ok(())
+    } else {
+        Err(WorldSessionWireError::Protocol(format!(
+            "world-session request targets instance {requested}, but this endpoint serves {actual}"
+        )))
+    }
+}
+
 async fn serve_state_stream<H: WorldSessionHandler>(
     stream: &mut TcpStream,
     handler: Arc<H>,
 ) -> Result<(), WorldSessionWireError> {
+    let (mut peer, mut output) = stream.split();
     let mut updates = handler.subscribe_state();
     let current = handler.state();
     let mut revision = current.revision;
-    send_value(stream, &WorldSessionStateStream { state: current }).await?;
+    send_value(&mut output, &WorldSessionStateStream { state: current }).await?;
     loop {
         match updates.try_recv() {
             Ok(state) if state.revision > revision => {
                 revision = state.revision;
-                send_value(stream, &WorldSessionStateStream { state }).await?;
+                send_value(&mut output, &WorldSessionStateStream { state }).await?;
             }
             Ok(_) => continue,
             Err(broadcast::error::TryRecvError::Empty) => break,
             Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                send_gap(stream, "state", skipped).await?;
+                send_gap(&mut output, "state", skipped).await?;
                 return Ok(());
             }
             Err(broadcast::error::TryRecvError::Closed) => return Ok(()),
         }
     }
-    loop {
-        match updates.recv().await {
-            Ok(state) if state.revision > revision => {
-                revision = state.revision;
-                send_value(stream, &WorldSessionStateStream { state }).await?;
-            }
-            Ok(state) => {
-                send_error(
-                    stream,
-                    format!(
-                        "world state revision {} did not increase beyond {revision}",
-                        state.revision
-                    ),
-                )
-                .await?;
-                return Ok(());
-            }
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                send_gap(stream, "state", skipped).await?;
-                return Ok(());
-            }
-            Err(broadcast::error::RecvError::Closed) => return Ok(()),
-        }
-    }
+    serve_subscription(
+        &mut peer,
+        &mut output,
+        updates,
+        revision,
+        "state",
+        |state| WorldSessionStateStream { state },
+    )
+    .await
 }
 
 async fn serve_diagnostics_stream<H: WorldSessionHandler>(
     stream: &mut TcpStream,
     handler: Arc<H>,
 ) -> Result<(), WorldSessionWireError> {
+    let (mut peer, mut output) = stream.split();
     let mut updates = handler.subscribe_diagnostics();
     let current = handler.diagnostics();
     let mut revision = current.revision;
     send_value(
-        stream,
+        &mut output,
         &WorldSessionDiagnosticsStream {
             diagnostics: current,
         },
@@ -743,40 +811,89 @@ async fn serve_diagnostics_stream<H: WorldSessionHandler>(
         match updates.try_recv() {
             Ok(diagnostics) if diagnostics.revision > revision => {
                 revision = diagnostics.revision;
-                send_value(stream, &WorldSessionDiagnosticsStream { diagnostics }).await?;
+                send_value(&mut output, &WorldSessionDiagnosticsStream { diagnostics }).await?;
             }
             Ok(_) => continue,
             Err(broadcast::error::TryRecvError::Empty) => break,
             Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                send_gap(stream, "diagnostics", skipped).await?;
+                send_gap(&mut output, "diagnostics", skipped).await?;
                 return Ok(());
             }
             Err(broadcast::error::TryRecvError::Closed) => return Ok(()),
         }
     }
+    serve_subscription(
+        &mut peer,
+        &mut output,
+        updates,
+        revision,
+        "diagnostics",
+        |diagnostics| WorldSessionDiagnosticsStream { diagnostics },
+    )
+    .await
+}
+
+async fn serve_subscription<T, U>(
+    peer: &mut tokio::net::tcp::ReadHalf<'_>,
+    output: &mut tokio::net::tcp::WriteHalf<'_>,
+    mut updates: broadcast::Receiver<T>,
+    mut revision: u64,
+    stream_name: &'static str,
+    wrap: impl Fn(T) -> U,
+) -> Result<(), WorldSessionWireError>
+where
+    T: Clone + Revisioned,
+    U: Serialize,
+{
+    let mut peer_byte = [0_u8; 1];
     loop {
-        match updates.recv().await {
-            Ok(diagnostics) if diagnostics.revision > revision => {
-                revision = diagnostics.revision;
-                send_value(stream, &WorldSessionDiagnosticsStream { diagnostics }).await?;
-            }
-            Ok(diagnostics) => {
-                send_error(
-                    stream,
-                    format!(
-                        "world diagnostics revision {} did not increase beyond {revision}",
-                        diagnostics.revision
-                    ),
-                )
-                .await?;
-                return Ok(());
-            }
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                send_gap(stream, "diagnostics", skipped).await?;
-                return Ok(());
-            }
-            Err(broadcast::error::RecvError::Closed) => return Ok(()),
+        tokio::select! {
+            update = updates.recv() => match update {
+                Ok(update) if update.revision() > revision => {
+                    revision = update.revision();
+                    send_value(output, &wrap(update)).await?;
+                }
+                Ok(update) => {
+                    send_error(
+                        output,
+                        format!(
+                            "world {stream_name} revision {} did not increase beyond {revision}",
+                            update.revision()
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    send_gap(output, stream_name, skipped).await?;
+                    return Ok(());
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            },
+            result = peer.read(&mut peer_byte) => match result {
+                Ok(0) => return Ok(()),
+                Ok(_) => return Err(WorldSessionWireError::Protocol(
+                    "world-session subscription client sent unexpected data".to_owned(),
+                )),
+                Err(error) => return Err(error.into()),
+            },
         }
+    }
+}
+
+trait Revisioned {
+    fn revision(&self) -> u64;
+}
+
+impl Revisioned for WorldSessionState {
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+impl Revisioned for WorldSessionDiagnostics {
+    fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -830,9 +947,10 @@ async fn request<Req: Serialize, Resp: DeserializeOwned>(
     decode_reply(reply)
 }
 
-async fn open_subscription<T: DeserializeOwned + Send + 'static>(
+async fn open_subscription<Req: Serialize, T: DeserializeOwned + Send + 'static>(
     endpoint: SocketAddr,
     path: &str,
+    request: &Req,
 ) -> Result<WireSubscription<T>, WorldSessionWireError> {
     let mut stream = with_timeout("connect", CONNECT_TIMEOUT, async move {
         Ok(TcpStream::connect(endpoint).await?)
@@ -845,7 +963,7 @@ async fn open_subscription<T: DeserializeOwned + Send + 'static>(
             &mut stream,
             &WireRequest {
                 path: path.to_owned(),
-                body: Vec::new(),
+                body: rmp_serde::to_vec_named(request)?,
             },
         ),
     )
@@ -876,8 +994,8 @@ async fn open_subscription<T: DeserializeOwned + Send + 'static>(
     Ok(WireSubscription { receiver, task })
 }
 
-async fn send_value<T: Serialize>(
-    stream: &mut TcpStream,
+async fn send_value<W: AsyncWrite + Unpin, T: Serialize>(
+    stream: &mut W,
     value: &T,
 ) -> Result<(), WorldSessionWireError> {
     with_timeout(
@@ -893,7 +1011,10 @@ async fn send_value<T: Serialize>(
     .await
 }
 
-async fn send_error(stream: &mut TcpStream, message: String) -> Result<(), WorldSessionWireError> {
+async fn send_error<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    message: String,
+) -> Result<(), WorldSessionWireError> {
     with_timeout(
         "error response write",
         FRAME_IO_TIMEOUT,
@@ -902,8 +1023,8 @@ async fn send_error(stream: &mut TcpStream, message: String) -> Result<(), World
     .await
 }
 
-async fn send_timeout(
-    stream: &mut TcpStream,
+async fn send_timeout<W: AsyncWrite + Unpin>(
+    stream: &mut W,
     operation: &'static str,
     timeout: Duration,
 ) -> Result<(), WorldSessionWireError> {
@@ -921,8 +1042,8 @@ async fn send_timeout(
     .await
 }
 
-async fn send_gap(
-    stream: &mut TcpStream,
+async fn send_gap<W: AsyncWrite + Unpin>(
+    stream: &mut W,
     stream_name: &'static str,
     skipped: u64,
 ) -> Result<(), WorldSessionWireError> {
@@ -1101,7 +1222,7 @@ mod tests {
     use crate::model::world::{WorldDigest, WorldInstanceId, WorldProgress, WorldProvenance};
     use crate::world::api::session::diagnostics::ObservedWorldPacing;
     use crate::world::api::session::{WorldLifecycle, WorldMotion};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn compatible_patch_other_than_current() -> FrameworkVersion {
         let current = FrameworkVersion::CURRENT;
@@ -1122,6 +1243,8 @@ mod tests {
         race_state_subscription: AtomicBool,
         race_diagnostics_subscription: AtomicBool,
         hang_attach: bool,
+        control_calls: AtomicUsize,
+        attach_calls: AtomicUsize,
     }
 
     impl TestHandler {
@@ -1171,6 +1294,8 @@ mod tests {
                 race_state_subscription: AtomicBool::new(false),
                 race_diagnostics_subscription: AtomicBool::new(false),
                 hang_attach: false,
+                control_calls: AtomicUsize::new(0),
+                attach_calls: AtomicUsize::new(0),
             }
         }
 
@@ -1257,6 +1382,7 @@ mod tests {
             request: WorldSessionControlRequest,
         ) -> WorldSessionOperation<'_, WorldSessionState> {
             Box::pin(async move {
+                self.control_calls.fetch_add(1, Ordering::AcqRel);
                 Ok(match request {
                     WorldSessionControlRequest::Pause => self.replace_motion(WorldMotion::Paused),
                     WorldSessionControlRequest::Resume => self.replace_motion(WorldMotion::Running),
@@ -1283,6 +1409,7 @@ mod tests {
             _spawn: Option<SpawnId>,
         ) -> WorldSessionOperation<'_, WorldSessionState> {
             Box::pin(async move {
+                self.attach_calls.fetch_add(1, Ordering::AcqRel);
                 if self.hang_attach {
                     std::future::pending::<()>().await;
                 }
@@ -1404,6 +1531,45 @@ mod tests {
         ));
 
         server.close().await.expect("the server closes cleanly");
+    }
+
+    #[tokio::test]
+    async fn stale_client_cannot_mutate_a_reused_endpoint() {
+        let first = Arc::new(TestHandler::new());
+        let first_server = WorldSessionServer::bind(Arc::clone(&first))
+            .await
+            .expect("the first loopback server binds");
+        let client = WorldSessionClient::connect(first_server.endpoint())
+            .await
+            .expect("the client captures the first bootstrap");
+        let endpoint = parse_endpoint(first_server.endpoint()).expect("the endpoint parses");
+        first_server
+            .close()
+            .await
+            .expect("the first server releases its endpoint");
+
+        let replacement = Arc::new(TestHandler::new());
+        let replacement_server = WorldSessionServer::bind_at(endpoint, Arc::clone(&replacement))
+            .await
+            .expect("the replacement server reuses the endpoint");
+
+        assert!(matches!(
+            client.control(WorldSessionControlRequest::Stop).await,
+            Err(WorldSessionWireError::Refused(message)) if message.contains("targets instance")
+        ));
+        assert_eq!(replacement.control_calls.load(Ordering::Acquire), 0);
+        assert!(matches!(
+            client
+                .attach(ExecutionId::mint(), "tcp/localhost:7447", None)
+                .await,
+            Err(WorldSessionWireError::Refused(message)) if message.contains("targets instance")
+        ));
+        assert_eq!(replacement.attach_calls.load(Ordering::Acquire), 0);
+
+        replacement_server
+            .close()
+            .await
+            .expect("the replacement server closes cleanly");
     }
 
     #[tokio::test]
@@ -1548,6 +1714,35 @@ mod tests {
             .await
             .expect("expired handshakes release permits for a valid client");
         drop(idle);
+        server.close().await.expect("the server closes cleanly");
+    }
+
+    #[tokio::test]
+    async fn idle_subscription_disconnects_release_connection_permits() {
+        let handler = Arc::new(TestHandler::new());
+        let server = WorldSessionServer::bind(Arc::clone(&handler))
+            .await
+            .expect("the loopback server binds");
+        let client = WorldSessionClient::connect(server.endpoint())
+            .await
+            .expect("the client verifies bootstrap");
+
+        for _ in 0..MAX_CONNECTIONS * 2 {
+            let subscription = client
+                .state_subscription()
+                .await
+                .expect("an idle state subscription opens");
+            drop(subscription);
+            tokio::task::yield_now().await;
+        }
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            client.control(WorldSessionControlRequest::Resume),
+        )
+        .await
+        .expect("idle subscriptions release their server permits")
+        .expect("a fresh control request succeeds");
         server.close().await.expect("the server closes cleanly");
     }
 }

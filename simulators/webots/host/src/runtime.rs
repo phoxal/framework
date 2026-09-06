@@ -20,10 +20,10 @@ use phoxal::world::api::session::{WorldLifecycle, WorldMotion};
 use tokio::sync::broadcast;
 
 use crate::evidence::{EvidenceSession, world_checkpoint};
-use crate::protocol::NativeMotion;
 use crate::registration::ProcessIdentity;
 use crate::server::HostServer;
 use crate::state::{NativeWorldFailure, NativeWorldLifecycle, NativeWorldState};
+use phoxal_simulator_webots_shared::protocol::NativeMotion;
 
 const STREAM_CAPACITY: usize = 64;
 const PACING_WINDOW_TRANSITIONS: usize = 128;
@@ -195,9 +195,9 @@ impl WorldRuntime {
                 motion: WorldMotion::Running
             }
         );
-        drop(state);
-        let _ = self.state_updates.send(projected.clone());
         self.persist_progress_checkpoint(&projected)?;
+        let _ = self.state_updates.send(projected.clone());
+        drop(state);
         self.observe_pacing(progress, running)?;
         Ok(())
     }

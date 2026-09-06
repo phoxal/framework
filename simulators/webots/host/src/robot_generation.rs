@@ -14,8 +14,8 @@ use phoxal::model::identity::ComponentInstanceId;
 use phoxal::model::simulation::{CameraProjection, Capability as SimulatedCapability};
 use phoxal::model::structure::{Joint, JointKind, Link, Material, Pose, Structure};
 
-use crate::plan::{PlannedTarget, RobotSimulationPlan};
 use crate::{ROBOT_CONTROLLER_PACKAGE, generation};
+use phoxal_simulator_webots_shared::plan::{CapabilityBinding, PlannedTarget, RobotSimulationPlan};
 
 /// Stable DEF used for import, verification, rollback, and removal.
 #[must_use]
@@ -637,7 +637,7 @@ fn render_link_devices(
 
 fn render_link_device(
     out: &mut String,
-    binding: &crate::plan::CapabilityBinding,
+    binding: &CapabilityBinding,
     declared: &DeclaredCapability,
     simulated: &SimulatedCapability,
     execution: ExecutionId,

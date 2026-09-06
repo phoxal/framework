@@ -7,9 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::artifact::ArtifactKind;
-use super::executable::{
-    PHOXAL_PROVIDER, validate_executable_targets_with_library, validate_registry_publish,
-};
+use super::executable::{PHOXAL_PROVIDER, validate_executable_targets, validate_registry_publish};
 use super::{Subject, Violation};
 
 /// One permitted framework-owned executable package.
@@ -23,7 +21,6 @@ pub struct Spec {
     manifest_path: &'static str,
     bin_name: &'static str,
     source_path: &'static str,
-    library: Option<(&'static str, &'static str)>,
     forbidden_dependencies: &'static [&'static str],
 }
 
@@ -34,10 +31,6 @@ impl Spec {
 
     pub const fn manifest_path(self) -> &'static str {
         self.manifest_path
-    }
-
-    pub const fn library(self) -> Option<(&'static str, &'static str)> {
-        self.library
     }
 
     /// Dependencies that would move authoring or parsing policy into this
@@ -73,12 +66,11 @@ impl Spec {
             root,
             manifest_path,
         )?;
-        validate_executable_targets_with_library(
+        validate_executable_targets(
             package_name,
             "the framework-owned root executable",
             self.bin_name,
             Some(Path::new(self.source_path)),
-            self.library.map(|(name, source)| (name, Path::new(source))),
             &package.targets,
             root,
         )
@@ -92,7 +84,6 @@ pub const SPECS: [Spec; 4] = [
         manifest_path: "supervisor/Cargo.toml",
         bin_name: "phoxal-supervisor",
         source_path: "supervisor/src/main.rs",
-        library: None,
         forbidden_dependencies: &[
             // The supervisor is built from the one framework library, never from
             // its former CLI owner.
@@ -109,10 +100,6 @@ pub const SPECS: [Spec; 4] = [
         manifest_path: "simulators/webots/host/Cargo.toml",
         bin_name: "phoxal-simulator-webots-host",
         source_path: "simulators/webots/host/src/main.rs",
-        library: Some((
-            "phoxal_simulator_webots_host",
-            "simulators/webots/host/src/lib.rs",
-        )),
         forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
     },
     Spec {
@@ -120,7 +107,6 @@ pub const SPECS: [Spec; 4] = [
         manifest_path: "simulators/webots/world-controller/Cargo.toml",
         bin_name: "phoxal-simulator-webots-world-controller",
         source_path: "simulators/webots/world-controller/src/main.rs",
-        library: None,
         forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
     },
     Spec {
@@ -128,7 +114,6 @@ pub const SPECS: [Spec; 4] = [
         manifest_path: "simulators/webots/robot-controller/Cargo.toml",
         bin_name: "phoxal-simulator-webots-robot-controller",
         source_path: "simulators/webots/robot-controller/src/main.rs",
-        library: None,
         forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
     },
 ];

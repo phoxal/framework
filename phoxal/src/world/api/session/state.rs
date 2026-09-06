@@ -75,7 +75,18 @@ pub struct WorldSessionStateStream {
     phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
-pub struct WorldSessionStateCurrentRequest {}
+pub struct WorldSessionStateCurrentRequest {
+    pub instance: WorldInstanceId,
+}
+
+/// Identity binding for a long-lived state subscription.
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+pub struct WorldSessionStateSubscriptionRequest {
+    pub instance: WorldInstanceId,
+}
 
 #[derive(
     phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,

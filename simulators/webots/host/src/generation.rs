@@ -23,16 +23,10 @@ pub struct ControllerExecutables {
 /// Paths of one fully staged Webots project.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedProject {
-    root: PathBuf,
     world: PathBuf,
 }
 
 impl GeneratedProject {
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     #[must_use]
     pub fn world(&self) -> &Path {
         &self.world
@@ -140,13 +134,11 @@ pub fn stage_project(
     let world = worlds.join("world.wbt");
     std::fs::write(&world, source.as_bytes())
         .with_context(|| format!("failed to write generated world {}", world.display()))?;
-    Ok(GeneratedProject {
-        root: root.to_path_buf(),
-        world,
-    })
+    Ok(GeneratedProject { world })
 }
 
 /// Render stable R2025a source without touching the filesystem.
+#[cfg(test)]
 pub fn render_world(bundle: &WorldBundle, host_connect: &str) -> Result<String> {
     validate_endpoint(host_connect)?;
     let decoded_assets = DecodedWorldAssets::decode(bundle)?;

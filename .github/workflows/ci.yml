@@ -93,7 +93,7 @@ jobs:
       - name: Prove decoded GLB geometry in R2025a
         run: >-
           xvfb-run --auto-servernum
-          cargo test -p phoxal-simulator-webots-host --lib
+          cargo test -p phoxal-simulator-webots-host --bin phoxal-simulator-webots-host
           installed_webots_loads_native_decoded_geometry_without_asset_warnings
           -- --ignored --nocapture
 

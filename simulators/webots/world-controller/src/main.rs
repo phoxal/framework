@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
-use phoxal_simulator_webots_host::protocol::{
+use phoxal_simulator_webots_shared::protocol::{
     ControllerEvent, ControllerFault, ControllerLink, ControllerRole, HostDirective, NativeMotion,
     NativeMutation, NativeProgressObservation, ObservedNativeMode,
 };

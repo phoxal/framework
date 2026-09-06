@@ -1,4 +1,4 @@
-//! Bounded private coordination between the Webots session host and native controllers.
+//! Bounded private coordination shared by the Webots host and native controllers.
 //!
 //! This is not a public simulation API and it never leaves the local host.
 //! Each controller publishes observations through a bounded nonblocking queue.
@@ -28,7 +28,8 @@ use crate::plan::RobotSimulationPlan;
 const MAX_ROBOT_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = MAX_ROBOT_SOURCE_BYTES + 1024;
 
-pub(crate) fn validate_robot_import(definition: &str, source: &str) -> Result<(), LinkError> {
+/// Reject an oversized generated robot import before it crosses the native link.
+pub fn validate_robot_import(definition: &str, source: &str) -> Result<(), LinkError> {
     let bytes = definition.len().saturating_add(source.len());
     if bytes > MAX_ROBOT_SOURCE_BYTES {
         return Err(LinkError::FrameTooLarge {
@@ -487,10 +488,8 @@ fn run_worker(
     }
 }
 
-pub(crate) fn write_frame<W: Write, T: Serialize>(
-    writer: &mut W,
-    value: &T,
-) -> Result<(), LinkError> {
+/// Encode one bounded private-link frame.
+pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> Result<(), LinkError> {
     let body = rmp_serde::to_vec_named(value)?;
     if body.len() > MAX_FRAME_BYTES {
         return Err(LinkError::FrameTooLarge {
@@ -508,7 +507,8 @@ pub(crate) fn write_frame<W: Write, T: Serialize>(
     Ok(())
 }
 
-pub(crate) fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<T, LinkError> {
+/// Decode one bounded private-link frame.
+pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<T, LinkError> {
     let mut length = [0_u8; 4];
     reader.read_exact(&mut length)?;
     let bytes = u32::from_be_bytes(length) as usize;

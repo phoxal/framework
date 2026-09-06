@@ -15,6 +15,7 @@ use super::framework_executable::{SPECS, Spec, spec_for_manifest, spec_for_packa
 use super::{
     artifact::{OfficialArtifact, discover_package},
     executable::PHOXAL_PROVIDER,
+    is_adapter_library_package,
 };
 
 /// The two disjoint executable sets declared by the workspace.
@@ -69,6 +70,9 @@ impl Workspace {
             }
             if let Some(artifact) = discover_package(&root, package)? {
                 official_artifacts.push(artifact);
+                continue;
+            }
+            if is_adapter_library_package(package.name.as_str()) {
                 continue;
             }
             if publishes_to_phoxal(package) {
@@ -190,20 +194,10 @@ autolib = false
             let directory = manifest.parent().context("spec manifest has no parent")?;
             fs::create_dir_all(directory.join("src"))?;
             fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
-            let library = if let Some((name, source)) = spec.library() {
-                let source = root.join(source);
-                fs::write(&source, "//! exact internal adapter library\n")?;
-                format!(
-                    "\n[lib]\nname = \"{name}\"\npath = \"{}\"\n",
-                    source.strip_prefix(directory)?.display()
-                )
-            } else {
-                String::new()
-            };
             fs::write(
                 manifest,
                 format!(
-                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n{library}",
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
                     spec.package_name(),
                     spec.package_name()
                 ),

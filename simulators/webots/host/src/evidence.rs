@@ -25,7 +25,6 @@ const ACTUATION_SCHEMA: &str = "phoxal/world-member-actuation/v0";
 #[derive(Debug)]
 pub struct EvidenceSession {
     root: PathBuf,
-    log_byte_limit: u64,
     writes: Mutex<()>,
     native_process: Mutex<Option<NativeProcessIdentity>>,
 }
@@ -57,7 +56,6 @@ impl EvidenceSession {
             .context("failed to retain the canonical world bundle")?;
         Ok(Self {
             root,
-            log_byte_limit,
             writes: Mutex::new(()),
             native_process: Mutex::new(None),
         })
@@ -74,18 +72,8 @@ impl EvidenceSession {
     }
 
     #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    #[must_use]
     pub fn webots_log(&self) -> PathBuf {
         self.root.join("webots.log")
-    }
-
-    #[must_use]
-    pub const fn log_byte_limit(&self) -> u64 {
-        self.log_byte_limit
     }
 
     /// Atomically retain one member-terminal record.
@@ -105,7 +93,7 @@ impl EvidenceSession {
     pub fn write_actuation(
         &self,
         execution: ExecutionId,
-        records: Vec<crate::protocol::ActuationEvidence>,
+        records: Vec<phoxal_simulator_webots_shared::protocol::ActuationEvidence>,
         dropped_records: u64,
     ) -> Result<String> {
         let relative = format!("members/{execution}.actuation.json");
@@ -220,7 +208,7 @@ pub struct MemberActuationEvidence {
     pub schema: String,
     pub execution: ExecutionId,
     pub retention: ActuationRetention,
-    pub records: Vec<crate::protocol::ActuationEvidence>,
+    pub records: Vec<phoxal_simulator_webots_shared::protocol::ActuationEvidence>,
 }
 
 /// Exact bounded-retention accounting for one applied-action artifact.
@@ -347,7 +335,6 @@ mod tests {
         std::fs::create_dir(directory.path().join("members")).expect("member evidence directory");
         let evidence = EvidenceSession {
             root: directory.path().to_path_buf(),
-            log_byte_limit: 1024,
             writes: Mutex::new(()),
             native_process: Mutex::new(None),
         };

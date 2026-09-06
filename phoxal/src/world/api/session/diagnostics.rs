@@ -1,5 +1,7 @@
 //! Bounded operational evidence that never controls pacing or scheduling.
 
+use super::WorldInstanceId;
+
 crate::endpoints! {
     self: Stream<WorldSessionDiagnosticsStream, Out>;
     current: Query<WorldSessionDiagnosticsCurrentRequest, WorldSessionDiagnosticsCurrentResponse>;
@@ -94,7 +96,18 @@ pub struct WorldSessionDiagnosticsStream {
     serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
-pub struct WorldSessionDiagnosticsCurrentRequest {}
+pub struct WorldSessionDiagnosticsCurrentRequest {
+    pub instance: WorldInstanceId,
+}
+
+/// Identity binding for a long-lived diagnostics subscription.
+#[derive(
+    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+pub struct WorldSessionDiagnosticsSubscriptionRequest {
+    pub instance: WorldInstanceId,
+}
 
 #[derive(
     phoxal_macros::DescribeWire,

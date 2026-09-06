@@ -37,6 +37,7 @@ members = [
     "services/safety",
     "services/video",
     "simulators/webots/host",
+    "simulators/webots/shared",
     "simulators/webots/world-controller",
     "simulators/webots/robot-controller",
     "xtask",
@@ -70,6 +71,7 @@ default-members = [
     "services/safety",
     "services/video",
     "simulators/webots/host",
+    "simulators/webots/shared",
     "simulators/webots/world-controller",
     "simulators/webots/robot-controller",
 ]

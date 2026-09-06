@@ -21,6 +21,7 @@ pub struct RegistrationGuard {
     registration_path: PathBuf,
     lease_path: PathBuf,
     lease: Option<File>,
+    #[cfg(test)]
     document: LocalWorldRegistration,
 }
 
@@ -66,11 +67,13 @@ impl RegistrationGuard {
             registration_path,
             lease_path,
             lease: Some(lease),
+            #[cfg(test)]
             document,
         })
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn document(&self) -> &LocalWorldRegistration {
         &self.document
     }

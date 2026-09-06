@@ -5,6 +5,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::attachment::WebotsAttachments;
+use crate::evidence::{EvidenceSession, world_terminal_summary};
+use crate::generation::{ControllerExecutables, stage_project};
+use crate::lifecycle::{
+    LogCaptureOutcome, NativeProcessIdentity, WebotsInstallation, WebotsProcess,
+};
+use crate::registration::{
+    EVIDENCE_DIRECTORY_ENV, LOG_BYTE_LIMIT_ENV, REGISTRY_DIRECTORY_ENV, RegistrationGuard,
+    current_process_identity,
+};
+use crate::runtime::{AttachmentOperation, WorldRuntime};
+use crate::server::HostServer;
+use crate::state::{NativeWorldFailure, NativeWorldLifecycle};
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use phoxal::model::world::{WorldBundle, WorldInstanceId};
@@ -14,25 +27,27 @@ use phoxal::world::api::session::document::{
     TerminalCleanup, TerminalFailure, TerminalOutcome, TerminalRetention,
 };
 use phoxal::world::api::session::{WorldLifecycle, WorldMember, WorldMemberPhase};
-use phoxal_simulator_webots_host::attachment::WebotsAttachments;
-use phoxal_simulator_webots_host::evidence::{EvidenceSession, world_terminal_summary};
-use phoxal_simulator_webots_host::generation::{ControllerExecutables, stage_project};
-use phoxal_simulator_webots_host::lifecycle::{
-    LogCaptureOutcome, NativeProcessIdentity, WebotsInstallation, WebotsProcess,
-};
-use phoxal_simulator_webots_host::registration::{
-    EVIDENCE_DIRECTORY_ENV, LOG_BYTE_LIMIT_ENV, REGISTRY_DIRECTORY_ENV, RegistrationGuard,
-    current_process_identity,
-};
-use phoxal_simulator_webots_host::runtime::WorldRuntime;
-use phoxal_simulator_webots_host::server::HostServer;
-use phoxal_simulator_webots_host::state::{NativeWorldFailure, NativeWorldLifecycle};
-use phoxal_simulator_webots_host::{ROBOT_CONTROLLER_PACKAGE, WORLD_CONTROLLER_PACKAGE};
 use tracing_subscriber::EnvFilter;
 
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
 const WORLD_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const RECONCILE_INTERVAL: Duration = Duration::from_millis(5);
+
+mod attachment;
+mod evidence;
+mod generation;
+mod glb;
+mod lifecycle;
+mod obj;
+mod registration;
+mod robot_generation;
+mod runtime;
+mod server;
+mod state;
+
+/// The exact native controller executable names generated into a Webots project.
+const WORLD_CONTROLLER_PACKAGE: &str = "phoxal-simulator-webots-world-controller";
+const ROBOT_CONTROLLER_PACKAGE: &str = "phoxal-simulator-webots-robot-controller";
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -111,8 +126,7 @@ async fn run(args: Args, log_byte_limit: u64, host_log: BoundedStderr) -> Result
             &bundle,
             installation.version(),
             Arc::clone(&native),
-            Arc::clone(&attachments)
-                as Arc<dyn phoxal_simulator_webots_host::runtime::AttachmentOperation>,
+            Arc::clone(&attachments) as Arc<dyn AttachmentOperation>,
             Arc::clone(&evidence),
             process,
         )
@@ -312,7 +326,7 @@ async fn serve_live(
     attachments: &Arc<WebotsAttachments>,
     native: &Arc<HostServer>,
     webots: &mut WebotsProcess,
-    process: phoxal_simulator_webots_host::registration::ProcessIdentity,
+    process: registration::ProcessIdentity,
     public_slot: &mut Option<WorldSessionServer>,
     registration_slot: &mut Option<RegistrationGuard>,
 ) -> Result<()> {
@@ -556,11 +570,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registration::ProcessIdentity;
     use phoxal::bus::RobotInstant;
     use phoxal::identity::{ExecutionId, ProducerId, TimelineId};
     use phoxal::model::identity::{RobotId, SpawnId};
     use phoxal::model::world::{LiveAttachmentBoundary, WorldProgress};
-    use phoxal_simulator_webots_host::registration::ProcessIdentity;
 
     fn member(execution: &str, producer: u128, phase: WorldMemberPhase) -> WorldMember {
         WorldMember {

@@ -30,6 +30,7 @@ pub enum WorldSessionConnectRequest {
     Bootstrap { framework: FrameworkVersion },
     Attach {
         framework: FrameworkVersion,
+        instance: WorldInstanceId,
         execution: ExecutionId,
         supervisor_endpoint: String,
         spawn: Option<SpawnId>,

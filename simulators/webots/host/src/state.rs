@@ -11,7 +11,7 @@ use phoxal::identity::{ExecutionId, ProducerId};
 use phoxal::model::world::WorldProgress;
 use phoxal::version::FrameworkVersion;
 
-use crate::protocol::{
+use phoxal_simulator_webots_shared::protocol::{
     ControllerEvent, ControllerFault, ControllerRole, HostDirective, NativeMotion,
     NativeProgressObservation, ObservedNativeMode,
 };
@@ -467,6 +467,7 @@ impl NativeWorldState {
 
     /// Whether any native controller state remains for this execution.
     #[must_use]
+    #[cfg(test)]
     pub fn has_robot(&self, execution: ExecutionId) -> bool {
         self.robots.contains_key(&execution_key(execution))
     }

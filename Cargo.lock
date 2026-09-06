@@ -2736,6 +2736,7 @@ dependencies = [
  "libc",
  "nalgebra",
  "phoxal",
+ "phoxal-simulator-webots-shared",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -2757,7 +2758,7 @@ dependencies = [
  "anyhow",
  "clap",
  "phoxal",
- "phoxal-simulator-webots-host",
+ "phoxal-simulator-webots-shared",
  "serde_json",
  "tokio",
  "tracing",
@@ -2766,12 +2767,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-simulator-webots-shared"
+version = "0.67.1"
+dependencies = [
+ "phoxal",
+ "rmp-serde",
+ "serde",
+ "sha2",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "phoxal-simulator-webots-world-controller"
 version = "0.67.1"
 dependencies = [
  "anyhow",
  "clap",
- "phoxal-simulator-webots-host",
+ "phoxal-simulator-webots-shared",
  "tracing",
  "tracing-subscriber",
  "webots-rs",

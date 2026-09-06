@@ -21,10 +21,10 @@ use phoxal::simulator::{
 };
 use phoxal::simulator::{SimulatorConnectOptions, SimulatorError, SimulatorSession};
 use phoxal::supervisor::api::simulation::SimulationAttachmentPhase;
-use phoxal_simulator_webots_host::plan::{
+use phoxal_simulator_webots_shared::plan::{
     ActuationPlan, CapabilityBinding as PlannedBinding, RobotSimulationPlan,
 };
-use phoxal_simulator_webots_host::protocol::{
+use phoxal_simulator_webots_shared::protocol::{
     ActuationDecision, ActuationEvidence, ActuationSelection, AppliedActuation, ControllerEvent,
     ControllerFault, ControllerLink, ControllerRole, HostDirective, NativeMotion,
     NoActuationReason, OfferedActuation,
@@ -759,16 +759,41 @@ impl DeviceSet {
         for motor in &mut self.motors {
             motor.receiver.flush();
             motor.authority.clear();
-            motor.stop()?;
         }
-        Ok(())
+        self.stop_all_motors()
     }
 
     fn stop_native(&mut self) -> Result<()> {
-        for motor in &mut self.motors {
-            motor.stop()?;
+        self.stop_all_motors()
+    }
+
+    /// Attempt every independent native motor stop before reporting cleanup failure.
+    fn stop_all_motors(&mut self) -> Result<()> {
+        stop_every(
+            &mut self.motors,
+            |motor| motor.capability.to_string(),
+            |motor| motor.stop(),
+        )
+    }
+}
+
+/// Complete every independent stop attempt before returning their aggregate failure.
+fn stop_every<T>(
+    targets: &mut [T],
+    label: impl Fn(&T) -> String,
+    mut stop: impl FnMut(&mut T) -> Result<()>,
+) -> Result<()> {
+    let mut failures = Vec::new();
+    for target in targets {
+        let target_label = label(target);
+        if let Err(error) = stop(target) {
+            failures.push(format!("{target_label}: {error:#}"));
         }
+    }
+    if failures.is_empty() {
         Ok(())
+    } else {
+        bail!("failed to stop native motors: {}", failures.join("; "));
     }
 }
 
@@ -1121,6 +1146,37 @@ mod tests {
             .expect("torque command"),
             MotorAction::Torque(6.0)
         );
+    }
+
+    #[test]
+    fn parking_attempts_every_motor_after_one_stop_fails() {
+        struct Probe {
+            name: &'static str,
+            parked: bool,
+        }
+        let mut motors = [
+            Probe {
+                name: "first",
+                parked: false,
+            },
+            Probe {
+                name: "second",
+                parked: false,
+            },
+        ];
+        let result = stop_every(
+            &mut motors,
+            |motor| motor.name.to_owned(),
+            |motor| {
+                motor.parked = true;
+                if motor.name == "first" {
+                    anyhow::bail!("injected motor failure");
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(motors.iter().all(|motor| motor.parked));
     }
 
     #[test]

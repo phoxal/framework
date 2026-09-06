@@ -67,11 +67,6 @@ impl WebotsInstallation {
     }
 
     #[must_use]
-    pub fn home(&self) -> &Path {
-        &self.home
-    }
-
-    #[must_use]
     pub fn executable(&self) -> &Path {
         &self.executable
     }

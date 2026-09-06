@@ -65,6 +65,12 @@ pub(crate) const FACADE: &str = "phoxal";
 /// missing entry would silently turn that crate into a grammar violation.
 pub(crate) const LIBRARY_CRATE_DIRS: [&str; 2] = ["phoxal", "crates/macros"];
 
+/// Narrow adapter libraries shared only by exact-train simulator executables.
+///
+/// They are published through the `phoxal` registry, but do not widen the
+/// reusable framework library graph.
+pub(crate) const ADAPTER_LIBRARY_CRATE_DIRS: [&str; 1] = ["simulators/webots/shared"];
+
 /// Library crates that serve this workspace's own tests and reach no
 /// registry. They carry a library target, so the completeness check below
 /// still demands they be listed; they are simply listed here rather than in
@@ -79,11 +85,9 @@ pub(crate) const INTERNAL_CRATE_DIRS: [&str; 1] = ["crates/fixture"];
 /// The package a library crate directory must hold, or `None` for a directory
 /// that names no library crate location.
 ///
-/// One rule, no exceptions: a library crate is `phoxal-<suffix>` and lives at
-/// `crates/<suffix>`. The facade is the single crate whose name carries no
-/// suffix, so it is the single crate that does not live in the suffix
-/// directory; it sits at the workspace root as `phoxal/`. That falls out of
-/// the rule rather than carving a hole in it.
+/// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>`, except for
+/// the `phoxal/` facade. Exact-train adapter libraries have one explicit
+/// location because they are controller contracts, not framework API.
 ///
 /// This is the whole reason the directory can be shortened at all. `crates/`
 /// already says `phoxal`, so repeating it in every child would be the
@@ -91,6 +95,9 @@ pub(crate) const INTERNAL_CRATE_DIRS: [&str; 1] = ["crates/fixture"];
 pub(crate) fn library_package_name(directory: &str) -> Option<String> {
     if directory == FACADE {
         return Some(FACADE.to_owned());
+    }
+    if directory == "simulators/webots/shared" {
+        return Some("phoxal-simulator-webots-shared".to_owned());
     }
     let suffix = directory
         .strip_prefix(LIBRARY_CRATE_ROOT)?
@@ -111,6 +118,12 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
 /// unpublished crate has no place in the published dependency graph.
 pub(crate) fn is_library_package(package_name: &str) -> bool {
     LIBRARY_CRATE_DIRS
+        .iter()
+        .any(|directory| library_package_name(directory).as_deref() == Some(package_name))
+}
+
+pub(crate) fn is_adapter_library_package(package_name: &str) -> bool {
+    ADAPTER_LIBRARY_CRATE_DIRS
         .iter()
         .any(|directory| library_package_name(directory).as_deref() == Some(package_name))
 }
@@ -348,10 +361,9 @@ impl fmt::Display for PolicyReport {
 /// A hand-maintained list that silently skips validation when it goes stale is
 /// worse than no list, so the workspace itself is the authority: every
 /// workspace member carrying a reusable library target must be listed as either
-/// published or internal, and every listed directory must still hold one. The
-/// one exact host-side adapter library is owned by the framework executable
-/// policy because it exists only to share implementation with its two native
-/// controller packages.
+/// published or internal, and every listed directory must still hold one.
+/// Exact-train adapter libraries are explicit because they serve only the
+/// native controller packages, rather than widening the framework API.
 fn the_library_crate_list_matches_the_workspace_members(
     subject: &Subject,
 ) -> Result<Vec<Violation>> {
@@ -362,11 +374,6 @@ fn the_library_crate_list_matches_the_workspace_members(
             .targets
             .iter()
             .any(|target| target.kind.iter().any(executable::is_library_target_kind))
-        {
-            continue;
-        }
-        if framework_executable::spec_for_package(package.name.as_str())
-            .is_some_and(|spec| spec.library().is_some())
         {
             continue;
         }
@@ -394,6 +401,7 @@ fn the_library_crate_list_matches_the_workspace_members(
 
     for directory in &discovered {
         if !LIBRARY_CRATE_DIRS.contains(&directory.as_str())
+            && !ADAPTER_LIBRARY_CRATE_DIRS.contains(&directory.as_str())
             && !INTERNAL_CRATE_DIRS.contains(&directory.as_str())
         {
             violations.push(Violation::new(format!(
@@ -402,7 +410,11 @@ fn the_library_crate_list_matches_the_workspace_members(
             )));
         }
     }
-    for directory in LIBRARY_CRATE_DIRS.iter().chain(INTERNAL_CRATE_DIRS.iter()) {
+    for directory in LIBRARY_CRATE_DIRS
+        .iter()
+        .chain(ADAPTER_LIBRARY_CRATE_DIRS.iter())
+        .chain(INTERNAL_CRATE_DIRS.iter())
+    {
         if !discovered.iter().any(|found| found == directory) {
             violations.push(Violation::new(format!(
                 "{directory} is listed as a library crate but no workspace member with a library \
@@ -452,7 +464,11 @@ mod tests {
     /// become a place to smuggle a crate past it.
     #[test]
     fn every_listed_library_crate_directory_obeys_the_rule() {
-        for directory in LIBRARY_CRATE_DIRS.iter().chain(INTERNAL_CRATE_DIRS.iter()) {
+        for directory in LIBRARY_CRATE_DIRS
+            .iter()
+            .chain(ADAPTER_LIBRARY_CRATE_DIRS.iter())
+            .chain(INTERNAL_CRATE_DIRS.iter())
+        {
             assert!(
                 library_package_name(directory).is_some(),
                 "{directory} is listed as a library crate but names no package"

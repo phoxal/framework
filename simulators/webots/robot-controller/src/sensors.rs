@@ -7,7 +7,7 @@ use phoxal::model::component::capability::{
     CameraMode, Capability as DeclaredCapability, GnssCoordinateSystem,
 };
 use phoxal::simulator::{LiveSamplePublisher, LiveTransitionStamp, SimulatorSession};
-use phoxal_simulator_webots_host::plan::CapabilityBinding;
+use phoxal_simulator_webots_shared::plan::CapabilityBinding;
 use webots_rs::Webots;
 
 pub(crate) struct SensorSet {
@@ -457,7 +457,7 @@ mod tests {
     #[test]
     fn every_sample_waits_for_a_native_observation_after_late_attachment() {
         use phoxal::model::identity::{CapabilityId, CapabilityRef, ComponentInstanceId};
-        use phoxal_simulator_webots_host::plan::{PlannedTarget, SamplingPlan};
+        use phoxal_simulator_webots_shared::plan::{PlannedTarget, SamplingPlan};
         let binding = CapabilityBinding {
             reference: CapabilityRef {
                 component_id: ComponentInstanceId::new("wheel").expect("component"),

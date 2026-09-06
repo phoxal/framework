@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::plan::RobotSimulationPlan;
-use crate::protocol::{
+use crate::state::{NativeRobotFailure, NativeWorldFailure, NativeWorldState};
+use phoxal_simulator_webots_shared::plan::RobotSimulationPlan;
+use phoxal_simulator_webots_shared::protocol::{
     ActuationEvidence, ControllerEvent, ControllerRole, HostDirective, HostRequest, HostResponse,
     NativeMutation, read_frame, write_frame,
 };
-use crate::state::{NativeRobotFailure, NativeWorldFailure, NativeWorldState};
 
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -173,6 +173,7 @@ impl HostServer {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn has_robot(&self, execution: phoxal::identity::ExecutionId) -> bool {
         lock(&self.state).has_robot(execution)
     }
@@ -218,7 +219,7 @@ impl HostServer {
         definition: String,
         source: String,
     ) -> Result<()> {
-        crate::protocol::validate_robot_import(&definition, &source)?;
+        phoxal_simulator_webots_shared::protocol::validate_robot_import(&definition, &source)?;
         self.mutate(|transaction| NativeMutation::ImportRobot {
             transaction,
             execution,
@@ -246,7 +247,7 @@ impl HostServer {
     /// Request the only supported Live native motion policy.
     pub fn request_motion(
         &self,
-        motion: crate::protocol::NativeMotion,
+        motion: phoxal_simulator_webots_shared::protocol::NativeMotion,
     ) -> Result<(), NativeWorldFailure> {
         lock(&self.state).request_motion(motion).map(|_| ())
     }
@@ -690,14 +691,14 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{
-        ActuationSelection, AppliedActuation, ControllerEvent, ControllerLink, ControllerRole,
-        NoActuationReason, ObservedNativeMode,
-    };
     use phoxal::bus::RobotInstant;
     use phoxal::identity::TimelineId;
     use phoxal::model::identity::{CapabilityId, CapabilityRef, ComponentInstanceId};
     use phoxal::model::world::WorldProgress;
+    use phoxal_simulator_webots_shared::protocol::{
+        ActuationSelection, AppliedActuation, ControllerEvent, ControllerLink, ControllerRole,
+        NoActuationReason, ObservedNativeMode,
+    };
 
     fn execution(value: u128) -> phoxal::identity::ExecutionId {
         phoxal::identity::ExecutionId::try_from(value).expect("execution")
@@ -743,7 +744,7 @@ mod tests {
                     server.snapshot()
                 ),
                 Ok(HostDirective::Continue {
-                    motion: crate::protocol::NativeMotion::Paused,
+                    motion: phoxal_simulator_webots_shared::protocol::NativeMotion::Paused,
                 }) => break,
                 Ok(HostDirective::Park) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(5));

@@ -25,11 +25,12 @@ use tokio::task::JoinSet;
 use crate::evidence::{EvidenceSession, world_member_evidence};
 use crate::generation::stage_decoded_images;
 use crate::glb::DecodedMesh;
-use crate::plan::RobotSimulationPlan;
 use crate::robot_generation::{render_robot, robot_definition};
 use crate::runtime::{AttachmentOperation, HostOperation, WorldRuntime};
 use crate::server::HostServer;
 use crate::state::{NativeRobotFailure, NativeWorldLifecycle};
+use phoxal_simulator_webots_shared::plan::RobotSimulationPlan;
+use phoxal_simulator_webots_shared::protocol::validate_robot_import;
 
 const CONTROLLER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -243,13 +244,17 @@ impl WebotsAttachments {
 
     /// End every retained execution before the native world process exits.
     pub async fn end_all(&self, runtime: &WorldRuntime, reason: SimulationEndReason) -> Result<()> {
-        self.cancel_and_join_workers().await?;
+        let mut failures = self
+            .cancel_and_join_workers()
+            .await
+            .err()
+            .map(|error| vec![format!("attachment worker cleanup failed: {error:#}")])
+            .unwrap_or_default();
         let member_reason = match reason {
             SimulationEndReason::WorldStopped => WorldMemberEndReason::Stopped,
             SimulationEndReason::ControllerLost => WorldMemberEndReason::ControllerFault,
             _ => WorldMemberEndReason::AttachmentFailed,
         };
-        let mut failures = Vec::new();
         loop {
             let session = {
                 let mut sessions = self.sessions.lock().await;
@@ -589,7 +594,7 @@ impl WebotsAttachments {
                     self.native.endpoint(),
                 )
                 .context("failed to render the admitted native Robot")?;
-                crate::protocol::validate_robot_import(&definition, &source)
+                validate_robot_import(&definition, &source)
                     .context("generated Robot exceeds the native import budget")?;
                 let _: webots_proto_ast::Proto = source
                     .parse()

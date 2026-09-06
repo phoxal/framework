@@ -1,11 +1,11 @@
-//! Complete pre-mutation planning for one simulated robot.
+//! Shared typed planning for one simulated robot.
 //!
 //! The compiled robot model and its asset resolver remain authoritative.
 //! A plan is a deterministic derived value shared by early preflight, host admission, native
 //! generation, and the controller. No Webots scene mutation is allowed before this derivation has
 //! validated the entire robot.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use phoxal::model::Robot;
 use phoxal::model::asset::AssetId;
@@ -15,7 +15,9 @@ use phoxal::model::component::capability::{
 };
 use phoxal::model::identity::{CapabilityRef, ComponentInstanceId};
 use phoxal::model::robot::KinematicConfig;
-use phoxal::model::simulation::{ActuatorType, Capability as SimulatedCapability, Simulation};
+use phoxal::model::simulation::{
+    ActuatorType, Capability as SimulatedCapability, FullSimulationError, FullSimulationPlan,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -124,27 +126,6 @@ pub struct PlannedAsset {
 pub enum PlanError {
     #[error("Webots basicTimeStep must be a positive whole millisecond")]
     InvalidTimeStep,
-    #[error("component '{component}' has no compiled simulation mapping")]
-    MissingSimulation { component: String },
-    #[error("component '{component}' capability '{capability}' has no simulation binding")]
-    MissingCapability {
-        component: String,
-        capability: String,
-    },
-    #[error("component '{component}' simulation contains unknown capability '{capability}'")]
-    ExtraCapability {
-        component: String,
-        capability: String,
-    },
-    #[error(
-        "component '{component}' capability '{capability}' is {declared}, but its simulation binding is {simulated}"
-    )]
-    KindMismatch {
-        component: String,
-        capability: String,
-        declared: String,
-        simulated: String,
-    },
     #[error("Webots does not support {kind} capability '{capability}': {detail}")]
     UnsupportedCapability {
         capability: String,
@@ -167,35 +148,21 @@ pub enum PlanError {
         first: String,
         second: String,
     },
-    #[error("simulation asset id '{value}' is invalid")]
-    InvalidAssetId { value: String },
     #[error("required simulation asset '{asset}' is unavailable: {detail}")]
     MissingAsset { asset: String, detail: String },
     #[error("required simulation asset '{asset}' is empty")]
     EmptyAsset { asset: String },
+    #[error(transparent)]
+    FullSimulation(#[from] FullSimulationError),
 }
 
 impl RobotSimulationPlan {
     /// Enumerate the complete deterministic asset closure for asynchronous prefetch.
     pub fn required_assets(robot: &Robot) -> Result<Vec<AssetId>, PlanError> {
-        let mut assets = robot
-            .structure()
-            .asset_ids()
+        Ok(FullSimulationPlan::derive(robot)?
+            .required_assets()
             .cloned()
-            .collect::<BTreeSet<_>>();
-        for component in robot.components() {
-            assets.extend(component.component_type().structure().asset_ids().cloned());
-            let simulation =
-                component
-                    .simulation()
-                    .ok_or_else(|| PlanError::MissingSimulation {
-                        component: component.id().to_string(),
-                    })?;
-            for (_, capability) in simulation.capabilities() {
-                collect_simulation_assets(capability, &mut assets)?;
-            }
-        }
-        Ok(assets.into_iter().collect())
+            .collect())
     }
 
     /// Derive and validate the complete plan, including every asset byte, before mutation.
@@ -211,34 +178,36 @@ impl RobotSimulationPlan {
         if basic_time_step_ms <= 0 {
             return Err(PlanError::InvalidTimeStep);
         }
-        let mut substitutions = Vec::new();
+        let full_plan = FullSimulationPlan::derive(robot)?;
+        let substitutions = full_plan
+            .substitutions()
+            .map(|substitution| DriverSubstitution {
+                participant: substitution.participant().clone(),
+                capabilities: substitution.capabilities().cloned().collect(),
+            })
+            .collect();
         let mut capabilities = Vec::new();
         let mut links = Vec::new();
         let mut claimed_devices = BTreeMap::<String, String>::new();
-        let asset_ids = Self::required_assets(robot)?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
+        let asset_ids = full_plan.required_assets();
 
         for component in robot.components() {
             let component_id = component.id();
-            let component_name = component_id.to_string();
             let declared = component.component_type();
-            let simulation =
-                component
-                    .simulation()
-                    .ok_or_else(|| PlanError::MissingSimulation {
-                        component: component_name.clone(),
-                    })?;
-            validate_complete_coverage(&component_name, declared, simulation)?;
+            let simulation = component.simulation().ok_or_else(|| {
+                PlanError::FullSimulation(FullSimulationError::MissingSimulation {
+                    component: component_id.clone(),
+                })
+            })?;
 
-            let mut substituted = Vec::new();
             for (capability_id, capability) in declared.capabilities() {
                 let reference = CapabilityRef::new(component_id.clone(), capability_id.clone());
                 let simulated = simulation
                     .capability(capability_id.as_str())
-                    .ok_or_else(|| PlanError::MissingCapability {
-                        component: component_name.clone(),
-                        capability: capability_id.to_string(),
+                    .ok_or_else(|| {
+                        PlanError::FullSimulation(FullSimulationError::MissingCapability {
+                            capability: reference.clone(),
+                        })
                     })?;
                 validate_supported_facts(&reference, capability, simulated)?;
                 let binding =
@@ -254,7 +223,7 @@ impl RobotSimulationPlan {
                                 kind: capability.kind().to_string(),
                                 detail: format!(
                                     "target joint '{id}' is absent from component structure {}",
-                                    component_name
+                                    component_id
                                 ),
                             }
                         })?;
@@ -292,7 +261,7 @@ impl RobotSimulationPlan {
                                 kind: capability.kind().to_string(),
                                 detail: format!(
                                     "target link '{id}' is absent from component structure {}",
-                                    component_name
+                                    component_id
                                 ),
                             });
                         }
@@ -309,20 +278,13 @@ impl RobotSimulationPlan {
                         });
                     }
                 }
-                substituted.push(reference);
                 capabilities.push(binding);
-            }
-            if component.instance().driver().is_some() {
-                substitutions.push(DriverSubstitution {
-                    participant: component_id.clone(),
-                    capabilities: substituted,
-                });
             }
             for (link, config) in simulation.links() {
                 let structure = declared.structure();
                 if structure.link(link.as_str()).is_none() {
                     return Err(PlanError::UnsupportedCapability {
-                        capability: component_name.clone(),
+                        capability: component_id.to_string(),
                         kind: "link_simulation".to_owned(),
                         detail: format!(
                             "simulation link '{link}' is absent from the component structure"
@@ -333,7 +295,7 @@ impl RobotSimulationPlan {
                     && !has_movable_parent(structure, link.as_str())
                 {
                     return Err(PlanError::UnsupportedCapability {
-                        capability: component_name.clone(),
+                        capability: component_id.to_string(),
                         kind: "contact_material".to_owned(),
                         detail: format!(
                             "contact material on rigidly mounted link '{link}' cannot be represented independently after fixed-body aggregation"
@@ -350,7 +312,7 @@ impl RobotSimulationPlan {
 
         let mut assets = Vec::with_capacity(asset_ids.len());
         for id in asset_ids {
-            let bytes = resolve_asset(&id).map_err(|error| PlanError::MissingAsset {
+            let bytes = resolve_asset(id).map_err(|error| PlanError::MissingAsset {
                 asset: id.to_string(),
                 detail: error.to_string(),
             })?;
@@ -360,7 +322,7 @@ impl RobotSimulationPlan {
                 });
             }
             assets.push(PlannedAsset {
-                id,
+                id: id.clone(),
                 bytes: u64::try_from(bytes.len()).map_err(|_| PlanError::MissingAsset {
                     asset: "asset larger than addressable memory".to_owned(),
                     detail: "length does not fit u64".to_owned(),
@@ -461,39 +423,6 @@ fn validate_drive_authority(robot: &Robot, reference: &CapabilityRef) -> Result<
                 "the v0 drive authority is valid only when this motor occurs exactly once in the compiled kinematic actuator topology; found {count} occurrences"
             ),
         });
-    }
-    Ok(())
-}
-
-fn validate_complete_coverage(
-    component: &str,
-    declared: &phoxal::model::component::Component,
-    simulation: &Simulation,
-) -> Result<(), PlanError> {
-    for (id, capability) in declared.capabilities() {
-        let simulated =
-            simulation
-                .capability(id.as_str())
-                .ok_or_else(|| PlanError::MissingCapability {
-                    component: component.to_owned(),
-                    capability: id.to_string(),
-                })?;
-        if capability.kind() != simulated.kind() {
-            return Err(PlanError::KindMismatch {
-                component: component.to_owned(),
-                capability: id.to_string(),
-                declared: capability.kind().to_string(),
-                simulated: simulated.kind().to_string(),
-            });
-        }
-    }
-    for (id, _) in simulation.capabilities() {
-        if declared.capability(id.as_str()).is_none() {
-            return Err(PlanError::ExtraCapability {
-                component: component.to_owned(),
-                capability: id.to_string(),
-            });
-        }
     }
     Ok(())
 }
@@ -709,21 +638,6 @@ fn sampling_plan(
     })
 }
 
-fn collect_simulation_assets(
-    capability: &SimulatedCapability,
-    assets: &mut BTreeSet<AssetId>,
-) -> Result<(), PlanError> {
-    if let SimulatedCapability::Camera(config) = capability
-        && let Some(value) = &config.noise_mask_url
-    {
-        let id = AssetId::new(value.clone()).map_err(|_| PlanError::InvalidAssetId {
-            value: value.clone(),
-        })?;
-        assets.insert(id);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use phoxal::model::builder::{Joint, RobotBuilder};
@@ -776,7 +690,9 @@ mod tests {
             RobotSimulationPlan::derive(&missing, 12, |_id| {
                 Result::<Vec<u8>, &'static str>::Ok(vec![1])
             }),
-            Err(PlanError::MissingSimulation { .. })
+            Err(PlanError::FullSimulation(
+                FullSimulationError::MissingSimulation { .. }
+            ))
         ));
 
         let led = RobotBuilder::new("led")
