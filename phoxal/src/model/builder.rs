@@ -102,7 +102,8 @@ use crate::model::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId, RobotId,
     ServiceId,
 };
-use crate::model::robot::{Driver, KinematicConfig, MotionLimits, Robot};
+use crate::model::kinematics::{KinematicConfig, MotionLimits};
+use crate::model::robot::{Driver, Robot};
 use crate::model::simulation;
 use crate::model::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, JointKind, Structure};
 
@@ -1824,7 +1825,7 @@ mod tests {
     use crate::model::error::{IdentifierKind, ModelError, StructureError};
     use crate::model::geometry::Geometry;
     use crate::model::identity::{CapabilityRef, JointId, LinkId};
-    use crate::model::robot::{DriveKinematics, KinematicConfig, MotionLimits};
+    use crate::model::kinematics::{DriveKinematics, KinematicConfig, MotionLimits};
     use crate::model::simulation;
     use crate::model::structure::JointKind;
 

@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use crate::model::CapabilityRole;
 use crate::model::component::capability::CapabilityKind;
 use crate::model::identity::{CapabilityId, LinkId};
-use crate::model::robot::{KinematicConfig, MotionLimits};
+use crate::model::kinematics::{KinematicConfig, MotionLimits};
 
 use crate::authoring::source::robot::driver::DriverConfig;
 

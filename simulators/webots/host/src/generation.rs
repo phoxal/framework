@@ -5,10 +5,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use phoxal::bundle::WorldBundle;
 use phoxal::model::asset::AssetId;
 use phoxal::model::geometry::Geometry;
 use phoxal::model::structure::Pose;
-use phoxal::model::world::WorldBundle;
 
 use crate::glb::DecodedMesh;
 use crate::{ROBOT_CONTROLLER_PACKAGE, WORLD_CONTROLLER_PACKAGE};

@@ -12,7 +12,7 @@ use crate::model::identity::{
     CapabilityId, CapabilityRef, ComponentInstanceId, ComponentTypeId, JointId, LinkId,
     MODULE_INSTANCE_SEPARATOR,
 };
-use crate::model::robot::KinematicKind;
+use crate::model::kinematics::KinematicKind;
 use crate::model::structure::JointKind;
 
 /// A canonical robot model that violates the runtime model's invariants.

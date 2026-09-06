@@ -11,7 +11,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-phoxal = { workspace = true }
+phoxal = { workspace = true, features = ["session"] }
 rmp-serde = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

@@ -5,7 +5,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use phoxal::model::world::{WorldBundle, WorldInstanceId};
+use phoxal::bundle::WorldBundle;
+use phoxal::model::world::WorldInstanceId;
 use phoxal::version::FrameworkVersion;
 use phoxal::world::api::session::document::LOCAL_WORLD_REGISTRATION_SCHEMA;
 pub use phoxal::world::api::session::document::{

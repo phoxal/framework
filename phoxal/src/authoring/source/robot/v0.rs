@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 // definition. This document describes the shape they take in authored YAML; it
 // does not re-export them, so `crate::model::robot` stays their only path.
 use crate::model::CapabilityRole;
-use crate::model::robot::{KinematicConfig, MotionLimits};
+use crate::model::kinematics::{KinematicConfig, MotionLimits};
 
 // The driver block is shared across robot document generations rather than
 // owned by this one, so it is named here at its established authored path and

@@ -6,10 +6,11 @@ use std::path::{Component, Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::authoring::normalized::{World as NormalizedWorld, WorldGeometry};
+use crate::bundle::{WorldBundle, WorldBundleError};
 use crate::model::asset::AssetId;
 use crate::model::geometry::Geometry;
 use crate::model::identity::{EntityDeclarationId, SpawnId, WorldAssetName, WorldId};
-use crate::model::world::{WorldBundle, WorldBundleError, compiled_entity, compiled_world};
+use crate::model::world::{compiled_entity, compiled_world};
 
 /// Compile one explicit `world.yaml` path.
 ///
@@ -172,7 +173,7 @@ fn fenced_mesh(root: &Path, relative: &Path) -> Result<PathBuf, WorldCompileErro
 }
 
 fn validate_glb(path: &Path, bytes: &[u8]) -> Result<(), WorldCompileError> {
-    crate::model::world::validate_closed_glb(bytes).map_err(|source| WorldCompileError::Glb {
+    crate::bundle::glb::validate_closed(bytes).map_err(|source| WorldCompileError::Glb {
         path: path.to_path_buf(),
         detail: source.to_string(),
     })

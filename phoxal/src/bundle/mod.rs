@@ -46,7 +46,10 @@ mod error;
 pub use error::BundleError;
 mod writer;
 pub use writer::BundleWriter;
+mod world;
+pub use world::{WorldBundle, WorldBundleError};
 mod fs;
+pub(crate) mod glb;
 pub(crate) use fs::{
     BundleRoot, copy_executable_source, create_staging_root, ensure_staging_directory,
     open_bundle_file, prepare_publish_parent, publish_staging_root, read_manifest_document,

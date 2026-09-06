@@ -14,7 +14,7 @@ use phoxal::api;
 use phoxal::geometry::normalize_angle;
 use phoxal::model::Robot;
 use phoxal::model::identity::CapabilityRef;
-use phoxal::model::robot::{DifferentialDrive, DifferentialWheelSpeeds, KinematicConfig};
+use phoxal::model::kinematics::{DifferentialDrive, DifferentialWheelSpeeds, KinematicConfig};
 use phoxal::prelude::*;
 
 /// One encoder binding resolved from the robot model.

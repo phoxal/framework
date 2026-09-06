@@ -1,24 +1,22 @@
 //! Canonical compiled worlds, identities, progress, and runtime provenance.
 //!
 //! Authored paths end at the world compiler.
-//! A runtime adapter receives one [`WorldBundle`] containing a canonical expanded world and every reachable asset byte.
+//! A runtime adapter receives one [`WorldBundle`](crate::bundle::WorldBundle)
+//! containing a canonical expanded world and every reachable asset byte.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bundle::WorldBundleError;
 use crate::model::asset::AssetId;
 use crate::model::geometry::Geometry;
 use crate::model::identity::{EntityDeclarationId, SpawnId, WorldId};
 use crate::model::structure::Pose;
 use crate::version::FrameworkVersion;
 
-const WORLD_FILE: &str = "world.json";
-const ASSETS_DIRECTORY: &str = "assets";
-const ARCHIVE_MAGIC: &[u8] = b"phoxal-world-bundle-v0\0";
 const SESSION_ID_BYTES: usize = 16;
 const SESSION_ID_HEX_LEN: usize = SESSION_ID_BYTES * 2;
 const CANONICAL_TOP_NIBBLE: u128 = 1 << 124;
@@ -275,7 +273,7 @@ pub struct LiveAttachmentBoundary {
 pub struct WorldDigest([u8; 32]);
 
 impl WorldDigest {
-    fn of(bytes: &[u8]) -> Self {
+    pub(crate) fn of(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
 
@@ -431,7 +429,7 @@ impl World {
         self.entities.iter()
     }
 
-    fn referenced_assets(&self) -> BTreeSet<AssetId> {
+    pub(crate) fn referenced_assets(&self) -> BTreeSet<AssetId> {
         self.entities
             .iter()
             .flat_map(|entity| [entity.geometry.asset_id(), entity.collision.asset_id()])
@@ -440,7 +438,7 @@ impl World {
             .collect()
     }
 
-    fn validate(&self, assets: &BTreeMap<AssetId, Vec<u8>>) -> Result<(), WorldBundleError> {
+    pub(crate) fn validate_intrinsic(&self) -> Result<(), WorldBundleError> {
         if self.time_step_ns == 0 || !self.time_step_ns.is_multiple_of(1_000_000) {
             return Err(WorldBundleError::Invalid(
                 "time_step_ns must be a positive whole number of milliseconds".to_owned(),
@@ -513,33 +511,6 @@ impl World {
             previous_declaration = Some(&entity.declaration);
             previous_instance = entity.instance;
         }
-        let referenced = self.referenced_assets();
-        let present = assets.keys().cloned().collect::<BTreeSet<_>>();
-        if referenced != present {
-            return Err(WorldBundleError::AssetClosure {
-                referenced: referenced
-                    .into_iter()
-                    .map(|id| id.as_str().to_owned())
-                    .collect(),
-                present: present
-                    .into_iter()
-                    .map(|id| id.as_str().to_owned())
-                    .collect(),
-            });
-        }
-        for (id, bytes) in assets {
-            let expected = format!("sha256/{:x}.glb", Sha256::digest(bytes));
-            if id.as_str() != expected {
-                return Err(WorldBundleError::AssetDigestMismatch {
-                    asset: id.as_str().to_owned(),
-                    expected,
-                });
-            }
-            validate_closed_glb(bytes).map_err(|source| WorldBundleError::InvalidAsset {
-                asset: id.as_str().to_owned(),
-                detail: source.to_string(),
-            })?;
-        }
         WorldProgress::zero(self.time_step_ns)?;
         Ok(())
     }
@@ -569,142 +540,6 @@ pub struct WorldProvenance {
     pub time_step_ns: u64,
 }
 
-/// A canonical expanded world plus every asset byte it can reach.
-#[derive(Clone, Debug)]
-pub struct WorldBundle {
-    world: World,
-    assets: BTreeMap<AssetId, Vec<u8>>,
-    canonical_archive: Vec<u8>,
-    digest: WorldDigest,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "schema", deny_unknown_fields)]
-enum WorldDocument {
-    #[serde(rename = "phoxal/world-bundle/v0")]
-    V0(World),
-}
-
-impl WorldBundle {
-    pub(crate) fn from_compiler(
-        world: World,
-        assets: BTreeMap<AssetId, Vec<u8>>,
-    ) -> Result<Self, WorldBundleError> {
-        world.validate(&assets)?;
-        let canonical_archive = canonical_archive(&world, &assets)?;
-        let digest = WorldDigest::of(&canonical_archive);
-        Ok(Self {
-            world,
-            assets,
-            canonical_archive,
-            digest,
-        })
-    }
-
-    /// Open and validate one inspectable `world.json` plus `assets/` bundle.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorldBundleError`] for I/O, document, path, or closure failures.
-    pub fn open(root: impl AsRef<Path>) -> Result<Self, WorldBundleError> {
-        let root = root
-            .as_ref()
-            .canonicalize()
-            .map_err(|source| WorldBundleError::Io {
-                path: root.as_ref().to_path_buf(),
-                source,
-            })?;
-        validate_root_layout(&root)?;
-        let document_path = root.join(WORLD_FILE);
-        let document = std::fs::read(&document_path).map_err(|source| WorldBundleError::Io {
-            path: document_path.clone(),
-            source,
-        })?;
-        let WorldDocument::V0(world) =
-            serde_json::from_slice(&document).map_err(|source| WorldBundleError::Document {
-                path: document_path,
-                source,
-            })?;
-        let assets = read_assets(&root.join(ASSETS_DIRECTORY))?;
-        Self::from_compiler(world, assets)
-    }
-
-    /// Atomically write this bundle into a new target directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorldBundleError::TargetExists`] when `root` already exists or an I/O error while staging.
-    pub fn write(&self, root: impl AsRef<Path>) -> Result<(), WorldBundleError> {
-        let root = root.as_ref();
-        if root.exists() {
-            return Err(WorldBundleError::TargetExists(root.to_path_buf()));
-        }
-        let parent = root.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent).map_err(|source| WorldBundleError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-        let staging = tempfile::Builder::new()
-            .prefix(".phoxal-world-")
-            .tempdir_in(parent)
-            .map_err(|source| WorldBundleError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        let assets_root = staging.path().join(ASSETS_DIRECTORY);
-        std::fs::create_dir(&assets_root).map_err(|source| WorldBundleError::Io {
-            path: assets_root.clone(),
-            source,
-        })?;
-        let document = serde_json::to_vec_pretty(&WorldDocument::V0(self.world.clone()))?;
-        let document_path = staging.path().join(WORLD_FILE);
-        std::fs::write(&document_path, document).map_err(|source| WorldBundleError::Io {
-            path: document_path,
-            source,
-        })?;
-        for (id, bytes) in &self.assets {
-            let path = asset_path(&assets_root, id)?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| WorldBundleError::Io {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-            std::fs::write(&path, bytes).map_err(|source| WorldBundleError::Io { path, source })?;
-        }
-        std::fs::rename(staging.path(), root).map_err(|source| WorldBundleError::Io {
-            path: root.to_path_buf(),
-            source,
-        })?;
-        Ok(())
-    }
-
-    #[must_use]
-    pub const fn world(&self) -> &World {
-        &self.world
-    }
-
-    #[must_use]
-    pub const fn digest(&self) -> WorldDigest {
-        self.digest
-    }
-
-    pub fn assets(&self) -> impl ExactSizeIterator<Item = (&AssetId, &[u8])> {
-        self.assets.iter().map(|(id, bytes)| (id, bytes.as_slice()))
-    }
-
-    #[must_use]
-    pub fn asset(&self, id: &AssetId) -> Option<&[u8]> {
-        self.assets.get(id).map(Vec::as_slice)
-    }
-
-    /// Deterministic bytes over which [`WorldDigest`] is computed.
-    #[must_use]
-    pub fn canonical_archive(&self) -> &[u8] {
-        &self.canonical_archive
-    }
-}
-
 fn canonical_float(value: f64) -> bool {
     value.is_finite() && (value != 0.0 || value.is_sign_positive())
 }
@@ -720,377 +555,6 @@ fn geometry_is_canonical(geometry: &Geometry) -> bool {
             .as_ref()
             .is_none_or(|values| values.iter().copied().all(canonical_float)),
     }
-}
-
-fn validate_root_layout(root: &Path) -> Result<(), WorldBundleError> {
-    let mut world = false;
-    let mut assets = false;
-    let entries = std::fs::read_dir(root)
-        .and_then(Iterator::collect::<std::io::Result<Vec<_>>>)
-        .map_err(|source| WorldBundleError::Io {
-            path: root.to_path_buf(),
-            source,
-        })?;
-    for entry in entries {
-        let path = entry.path();
-        let metadata = std::fs::symlink_metadata(&path).map_err(|source| WorldBundleError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        match entry.file_name().to_str() {
-            Some(WORLD_FILE) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-                world = true;
-            }
-            Some(ASSETS_DIRECTORY) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                assets = true;
-            }
-            _ => {
-                return Err(WorldBundleError::Invalid(format!(
-                    "world bundle contains an unsupported root entry: {}",
-                    path.display()
-                )));
-            }
-        }
-    }
-    if !world || !assets {
-        return Err(WorldBundleError::Invalid(
-            "world bundle must contain exactly world.json and assets/".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn canonical_archive(
-    world: &World,
-    assets: &BTreeMap<AssetId, Vec<u8>>,
-) -> Result<Vec<u8>, WorldBundleError> {
-    let document = serde_json::to_vec(&WorldDocument::V0(world.clone()))?;
-    let mut archive = Vec::new();
-    archive.extend_from_slice(ARCHIVE_MAGIC);
-    append_archive_entry(&mut archive, WORLD_FILE.as_bytes(), &document)?;
-    for (id, bytes) in assets {
-        let name = format!("{ASSETS_DIRECTORY}/{}", id.as_str());
-        append_archive_entry(&mut archive, name.as_bytes(), bytes)?;
-    }
-    Ok(archive)
-}
-
-fn append_archive_entry(
-    archive: &mut Vec<u8>,
-    name: &[u8],
-    bytes: &[u8],
-) -> Result<(), WorldBundleError> {
-    let name_len = u64::try_from(name.len()).map_err(|_| WorldBundleError::ArchiveTooLarge)?;
-    let bytes_len = u64::try_from(bytes.len()).map_err(|_| WorldBundleError::ArchiveTooLarge)?;
-    archive.extend_from_slice(&name_len.to_be_bytes());
-    archive.extend_from_slice(name);
-    archive.extend_from_slice(&bytes_len.to_be_bytes());
-    archive.extend_from_slice(bytes);
-    Ok(())
-}
-
-fn asset_path(root: &Path, id: &AssetId) -> Result<PathBuf, WorldBundleError> {
-    let path = root.join(id.as_str());
-    if !path.starts_with(root) {
-        return Err(WorldBundleError::InvalidAssetPath(id.as_str().to_owned()));
-    }
-    Ok(path)
-}
-
-fn read_assets(root: &Path) -> Result<BTreeMap<AssetId, Vec<u8>>, WorldBundleError> {
-    if !root.is_dir() {
-        return Err(WorldBundleError::Invalid(format!(
-            "world bundle is missing {}",
-            root.display()
-        )));
-    }
-    let mut assets = BTreeMap::new();
-    read_asset_directory(root, root, &mut assets)?;
-    Ok(assets)
-}
-
-fn read_asset_directory(
-    root: &Path,
-    current: &Path,
-    assets: &mut BTreeMap<AssetId, Vec<u8>>,
-) -> Result<(), WorldBundleError> {
-    let mut entries = std::fs::read_dir(current)
-        .and_then(Iterator::collect::<std::io::Result<Vec<_>>>)
-        .map_err(|source| WorldBundleError::Io {
-            path: current.to_path_buf(),
-            source,
-        })?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let metadata = std::fs::symlink_metadata(&path).map_err(|source| WorldBundleError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(WorldBundleError::Invalid(format!(
-                "world bundle asset is a forbidden symlink: {}",
-                path.display()
-            )));
-        }
-        if metadata.is_dir() {
-            read_asset_directory(root, &path, assets)?;
-            continue;
-        }
-        if !metadata.is_file() {
-            return Err(WorldBundleError::Invalid(format!(
-                "world bundle contains an unsupported asset entry: {}",
-                path.display()
-            )));
-        }
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|_| WorldBundleError::InvalidAssetPath(path.display().to_string()))?;
-        let relative = relative
-            .to_str()
-            .ok_or_else(|| WorldBundleError::InvalidAssetPath(path.display().to_string()))?
-            .replace(std::path::MAIN_SEPARATOR, "/");
-        let id = AssetId::new(relative)
-            .map_err(|_| WorldBundleError::InvalidAssetPath(path.display().to_string()))?;
-        let bytes = std::fs::read(&path).map_err(|source| WorldBundleError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        assets.insert(id, bytes);
-    }
-    Ok(())
-}
-
-/// Validate the one closed binary glTF form accepted by world compilation and reopening.
-pub(crate) fn validate_closed_glb(bytes: &[u8]) -> Result<(), ClosedGlbError> {
-    const JSON_CHUNK: u32 = 0x4E4F_534A;
-    const BIN_CHUNK: u32 = 0x004E_4942;
-
-    if bytes.len() < 20 || bytes.get(0..4) != Some(b"glTF") {
-        return Err(ClosedGlbError("missing the GLB header".to_owned()));
-    }
-    let version = glb_u32(bytes, 4, "truncated GLB version")?;
-    let declared = glb_u32(bytes, 8, "truncated GLB length")?;
-    if version != 2 || usize::try_from(declared).ok() != Some(bytes.len()) {
-        return Err(ClosedGlbError(format!(
-            "expected GLB version 2 with declared length {}, found version {version} and length {declared}",
-            bytes.len()
-        )));
-    }
-
-    let mut offset = 12_usize;
-    let mut json = None;
-    let mut binary = None;
-    while offset < bytes.len() {
-        let header_end = offset
-            .checked_add(8)
-            .ok_or_else(|| ClosedGlbError("chunk header offset overflows".to_owned()))?;
-        let header = bytes
-            .get(offset..header_end)
-            .ok_or_else(|| ClosedGlbError("truncated GLB chunk header".to_owned()))?;
-        let length = glb_u32(header, 0, "invalid GLB chunk length")? as usize;
-        let kind = glb_u32(header, 4, "invalid GLB chunk type")?;
-        if !length.is_multiple_of(4) {
-            return Err(ClosedGlbError(
-                "GLB chunk length is not four-byte aligned".to_owned(),
-            ));
-        }
-        let end = header_end
-            .checked_add(length)
-            .ok_or_else(|| ClosedGlbError("GLB chunk length overflows".to_owned()))?;
-        let chunk = bytes
-            .get(header_end..end)
-            .ok_or_else(|| ClosedGlbError("truncated GLB chunk".to_owned()))?;
-        match kind {
-            JSON_CHUNK if offset == 12 && json.is_none() => json = Some(chunk),
-            JSON_CHUNK => {
-                return Err(ClosedGlbError(
-                    "GLB JSON must be the first and only JSON chunk".to_owned(),
-                ));
-            }
-            BIN_CHUNK if json.is_some() && binary.is_none() => binary = Some(chunk),
-            BIN_CHUNK => {
-                return Err(ClosedGlbError(
-                    "GLB may contain at most one binary chunk after JSON".to_owned(),
-                ));
-            }
-            _ => {
-                return Err(ClosedGlbError(format!(
-                    "unsupported GLB chunk type {kind:#010x}"
-                )));
-            }
-        }
-        offset = end;
-    }
-
-    let json = json.ok_or_else(|| ClosedGlbError("GLB has no JSON chunk".to_owned()))?;
-    let json = std::str::from_utf8(json)
-        .map_err(|source| ClosedGlbError(format!("JSON chunk is not UTF-8: {source}")))?;
-    let json = json
-        .trim_end_matches(|character: char| character == '\0' || character.is_ascii_whitespace());
-    let document: serde_json::Value = serde_json::from_str(json)
-        .map_err(|source| ClosedGlbError(format!("JSON chunk is invalid: {source}")))?;
-    if document
-        .get("asset")
-        .and_then(|asset| asset.get("version"))
-        .and_then(serde_json::Value::as_str)
-        != Some("2.0")
-    {
-        return Err(ClosedGlbError(
-            "JSON asset.version must be exactly '2.0'".to_owned(),
-        ));
-    }
-    let buffers = match document.get("buffers") {
-        Some(serde_json::Value::Array(buffers)) => buffers.as_slice(),
-        Some(_) => {
-            return Err(ClosedGlbError("JSON buffers must be an array".to_owned()));
-        }
-        None => &[],
-    };
-    let mut embedded_buffer_length = None;
-    for (index, buffer) in buffers.iter().enumerate() {
-        let buffer = buffer
-            .as_object()
-            .ok_or_else(|| ClosedGlbError(format!("buffers[{index}] must be an object")))?;
-        let byte_length = buffer
-            .get("byteLength")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| {
-                ClosedGlbError(format!(
-                    "buffers[{index}].byteLength must be a non-negative integer"
-                ))
-            })?;
-        let byte_length = usize::try_from(byte_length).map_err(|_| {
-            ClosedGlbError(format!(
-                "buffers[{index}].byteLength exceeds the supported size"
-            ))
-        })?;
-        match buffer.get("uri") {
-            Some(serde_json::Value::String(uri)) if uri.starts_with("data:") => {}
-            Some(serde_json::Value::String(uri)) => {
-                return Err(ClosedGlbError(format!(
-                    "buffers contains external URI '{uri}'"
-                )));
-            }
-            Some(_) => {
-                return Err(ClosedGlbError(format!(
-                    "buffers[{index}].uri must be a string"
-                )));
-            }
-            None if index == 0 => embedded_buffer_length = Some(byte_length),
-            None => {
-                return Err(ClosedGlbError(
-                    "only buffers[0] may omit uri and use the GLB binary chunk".to_owned(),
-                ));
-            }
-        }
-    }
-    match (embedded_buffer_length, binary) {
-        (None, None) => {}
-        (None, Some(_)) => {
-            return Err(ClosedGlbError(
-                "GLB binary chunk has no matching buffers[0] without uri".to_owned(),
-            ));
-        }
-        (Some(_), None) => {
-            return Err(ClosedGlbError(
-                "buffers[0] omits uri but the GLB binary chunk is missing".to_owned(),
-            ));
-        }
-        (Some(byte_length), Some(binary)) => {
-            let maximum = byte_length
-                .checked_add(3)
-                .ok_or_else(|| ClosedGlbError("buffer byte length overflows".to_owned()))?;
-            if binary.len() < byte_length || binary.len() > maximum {
-                return Err(ClosedGlbError(format!(
-                    "GLB binary chunk length {} does not cover buffers[0].byteLength {byte_length} with at most three padding bytes",
-                    binary.len()
-                )));
-            }
-            if binary[byte_length..].iter().any(|byte| *byte != 0) {
-                return Err(ClosedGlbError(
-                    "GLB binary chunk padding bytes must be zero".to_owned(),
-                ));
-            }
-        }
-    }
-    if let Some(images) = document.get("images") {
-        let images = images
-            .as_array()
-            .ok_or_else(|| ClosedGlbError("JSON images must be an array".to_owned()))?;
-        for (index, image) in images.iter().enumerate() {
-            let image = image
-                .as_object()
-                .ok_or_else(|| ClosedGlbError(format!("images[{index}] must be an object")))?;
-            if let Some(uri) = image.get("uri") {
-                let uri = uri.as_str().ok_or_else(|| {
-                    ClosedGlbError(format!("images[{index}].uri must be a string"))
-                })?;
-                if !uri.starts_with("data:") {
-                    return Err(ClosedGlbError(format!(
-                        "images contains external URI '{uri}'"
-                    )));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn glb_u32(bytes: &[u8], offset: usize, detail: &'static str) -> Result<u32, ClosedGlbError> {
-    let end = offset
-        .checked_add(4)
-        .ok_or_else(|| ClosedGlbError(detail.to_owned()))?;
-    let value = bytes
-        .get(offset..end)
-        .ok_or_else(|| ClosedGlbError(detail.to_owned()))?;
-    Ok(u32::from_le_bytes(
-        value
-            .try_into()
-            .map_err(|_| ClosedGlbError(detail.to_owned()))?,
-    ))
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub(crate) struct ClosedGlbError(String);
-
-/// A compiled world bundle that is not closed and canonical.
-#[derive(Debug, thiserror::Error)]
-pub enum WorldBundleError {
-    #[error("world bundle target already exists: {}", .0.display())]
-    TargetExists(PathBuf),
-    #[error("world bundle I/O failed at {}: {source}", path.display())]
-    Io {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("world bundle document {} is invalid: {source}", path.display())]
-    Document {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("world bundle JSON could not be encoded: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("invalid world bundle: {0}")]
-    Invalid(String),
-    #[error("invalid world bundle asset path '{0}'")]
-    InvalidAssetPath(String),
-    #[error("world bundle asset '{asset}' is not a closed GLB v2 file: {detail}")]
-    InvalidAsset { asset: String, detail: String },
-    #[error("world bundle asset closure differs: referenced {referenced:?}, present {present:?}")]
-    AssetClosure {
-        referenced: Vec<String>,
-        present: Vec<String>,
-    },
-    #[error("world bundle asset '{asset}' does not match its byte digest; expected '{expected}'")]
-    AssetDigestMismatch { asset: String, expected: String },
-    #[error(transparent)]
-    Progress(#[from] WorldProgressError),
-    #[error("world bundle canonical archive exceeds supported length")]
-    ArchiveTooLarge,
 }
 
 #[allow(

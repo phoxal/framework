@@ -21,7 +21,7 @@ use serde::Deserialize;
 
 use crate::model::CapabilityRole;
 use crate::model::component::capability::CapabilityKind;
-use crate::model::robot::KinematicConfig;
+use crate::model::kinematics::KinematicConfig;
 
 use crate::authoring::normalized;
 
@@ -124,7 +124,7 @@ impl TestAltRobotDto {
             id: self.identity,
             structure: self.frame,
             kinematic: self.drive,
-            motion_limits: crate::model::robot::MotionLimits {
+            motion_limits: crate::model::kinematics::MotionLimits {
                 max_linear_speed_mps: self.limits.linear_mps,
                 max_angular_speed_radps: self.limits.angular_radps,
             },

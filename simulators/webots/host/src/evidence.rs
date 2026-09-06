@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, ensure};
+use phoxal::bundle::WorldBundle;
 use phoxal::identity::ExecutionId;
-use phoxal::model::world::{WorldBundle, WorldInstanceId, WorldProgress, WorldProvenance};
+use phoxal::model::world::{WorldInstanceId, WorldProgress, WorldProvenance};
 use phoxal::world::api::session::document::{
     ProcessIdentity, TerminalCleanup, TerminalFailure, TerminalOutcome, TerminalRetention,
     WORLD_CHECKPOINT_SCHEMA, WORLD_MEMBER_TERMINAL_SCHEMA, WORLD_TERMINAL_SUMMARY_SCHEMA,

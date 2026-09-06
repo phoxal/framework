@@ -69,3 +69,46 @@ impl DriveCommandAuthority {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::component::motor::Command;
+    use crate::bus::{
+        LeaseDecision, LocalInstant, ParticipantReadyStatus, ParticipantSourceIdentity,
+    };
+    use crate::identity::ProducerId;
+
+    #[test]
+    fn paused_drive_intent_expires_by_host_time_and_a_later_command_stays_fresh() {
+        let authority = DriveCommandAuthority::standard().expect("drive authority");
+        let producer = ProducerId::try_from(0x1000_0000_0000_0000_0000_0000_0000_0001)
+            .expect("canonical producer");
+        let source = ParticipantSourceIdentity::new(authority.source().clone(), producer);
+        let mut lease = authority.motor_lease();
+        lease.update_ready(&source, ParticipantReadyStatus::Ready);
+        let paused_at = LocalInstant::from_boot_ns(1_000_000_000);
+        assert_eq!(
+            lease.offer(Some(&source), 1, paused_at, Command::Velocity(1.0)),
+            LeaseDecision::Acquired
+        );
+        assert!(
+            lease
+                .live_host(paused_at.saturating_add(DriveCommandAuthority::silence()))
+                .is_none()
+        );
+
+        let later = paused_at.saturating_add(Duration::from_millis(250));
+        assert_eq!(
+            lease.offer(Some(&source), 2, later, Command::Velocity(2.0)),
+            LeaseDecision::Renewed
+        );
+        assert!(
+            lease
+                .live_host(later.saturating_add(Duration::from_millis(149)))
+                .is_some()
+        );
+        lease.update_ready(&source, ParticipantReadyStatus::Lost);
+        assert!(lease.live_host(later).is_none());
+    }
+}
