@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use crate::bus::session::{BusConfig, BusOwner};
 use crate::bus::{
@@ -80,7 +79,6 @@ pub enum SimulatorError {
 }
 
 const ATTACHMENT_TRANSITION_CAPACITY: usize = 32;
-const DRIVE_COMMAND_SILENCE: Duration = Duration::from_millis(150);
 
 /// Framework-owned transport and immutable facts common to every Live role.
 ///
@@ -228,114 +226,6 @@ pub struct ActiveBoundaryStamp {
     world: WorldInstanceId,
     revision: u64,
     attached_at: LiveAttachmentBoundary,
-}
-
-/// The one currently supported authority for locomotion motor commands.
-///
-/// The framework owns this source and expiry contract. Native adapters only
-/// consume the resulting lease immediately before their transitions.
-#[derive(Clone, Debug)]
-pub struct DriveCommandAuthority {
-    source: ParticipantId,
-}
-
-/// A motor is not present exactly once in the compiled drive topology.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error(
-    "motor '{capability}' must occur exactly once in the compiled kinematic actuator topology for the built-in drive authority; found {count} occurrences"
-)]
-pub struct DriveAuthorityError {
-    pub capability: crate::model::identity::CapabilityRef,
-    pub count: usize,
-}
-
-impl DriveCommandAuthority {
-    /// Construct the fixed authority represented by the built-in drive service.
-    pub fn standard() -> Result<Self, crate::identity::ParticipantIdError> {
-        Ok(Self {
-            source: ParticipantId::new("drive")?,
-        })
-    }
-
-    /// The service that exclusively supplies locomotion setpoints.
-    #[must_use]
-    pub fn source(&self) -> &ParticipantId {
-        &self.source
-    }
-
-    /// Maximum host-monotonic age of a reusable drive command.
-    #[must_use]
-    pub const fn silence() -> Duration {
-        DRIVE_COMMAND_SILENCE
-    }
-
-    /// Create the fail-closed lease that guards one motor command lane.
-    #[must_use]
-    pub fn lease<B>(&self) -> FixedSourceLease<B> {
-        FixedSourceLease::new(
-            "component/motor/command",
-            self.source.clone(),
-            DRIVE_COMMAND_SILENCE,
-            Duration::MAX,
-        )
-    }
-
-    /// Verify that this framework-owned authority can control `capability`.
-    ///
-    /// The built-in drive service has one command source for each motor in the
-    /// robot's compiled locomotion topology. Native adapters call this while
-    /// planning, before they create a device or mutate a simulator world.
-    pub fn validate_motor(
-        robot: &crate::model::Robot,
-        capability: &crate::model::identity::CapabilityRef,
-    ) -> Result<(), DriveAuthorityError> {
-        let count = match robot.motion().kinematic() {
-            crate::model::robot::KinematicConfig::Differential {
-                left_actuators,
-                right_actuators,
-                ..
-            } => left_actuators
-                .iter()
-                .chain(right_actuators)
-                .filter(|candidate| *candidate == capability)
-                .count(),
-            crate::model::robot::KinematicConfig::Mecanum {
-                front_left_actuator,
-                front_right_actuator,
-                rear_left_actuator,
-                rear_right_actuator,
-                ..
-            } => [
-                front_left_actuator,
-                front_right_actuator,
-                rear_left_actuator,
-                rear_right_actuator,
-            ]
-            .into_iter()
-            .filter(|candidate| *candidate == capability)
-            .count(),
-            crate::model::robot::KinematicConfig::Ackermann {
-                steering_actuator,
-                drive_actuator,
-                ..
-            } => [steering_actuator, drive_actuator]
-                .into_iter()
-                .filter(|candidate| *candidate == capability)
-                .count(),
-            crate::model::robot::KinematicConfig::Omnidirectional { actuators, .. } => actuators
-                .iter()
-                .filter(|candidate| *candidate == capability)
-                .count(),
-        };
-        if count == 1 {
-            Ok(())
-        } else {
-            Err(DriveAuthorityError {
-                capability: capability.clone(),
-                count,
-            })
-        }
-    }
 }
 
 /// A simulator sample publisher that can emit only under the exact current

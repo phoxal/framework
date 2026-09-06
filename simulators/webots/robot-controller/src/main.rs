@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use phoxal::SampleSchedule;
 use phoxal::api;
+use phoxal::api::drive::DriveCommandAuthority;
 use phoxal::bus::{FixedSourceLease, LeaseDecision, LeaseRejection, ParticipantReadyEvents};
 use phoxal::identity::ParticipantId;
 use phoxal::model::component::capability::{
@@ -19,8 +20,7 @@ use phoxal::model::component::capability::{
 use phoxal::model::world::{WorldProgress, WorldProgressError};
 use phoxal::simulation::api::step::StepEvent;
 use phoxal::simulator::{
-    ActiveBoundaryStamp, DriveCommandAuthority, LiveSamplePublisher, LiveSetpointReceiver,
-    LiveTransitionStamp,
+    ActiveBoundaryStamp, LiveSamplePublisher, LiveSetpointReceiver, LiveTransitionStamp,
 };
 use phoxal::simulator::{SimulatorConnectOptions, SimulatorError, SimulatorSession};
 use phoxal::supervisor::api::simulation::SimulationAttachmentPhase;
@@ -605,7 +605,7 @@ impl DeviceSet {
                         receiver: session
                             .setpoint_receiver(component()?.motor(id)?.command().owner())
                             .await?,
-                        authority: drive_authority.lease(),
+                        authority: drive_authority.motor_lease(),
                         ready: session
                             .participant_ready_events(drive_authority.source())
                             .await?,

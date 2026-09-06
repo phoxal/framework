@@ -1403,7 +1403,7 @@ mod tests {
             .component("left", "wheel")
             .build()
             .expect("robot");
-        let plan = RobotSimulationPlan::derive(&robot, 12, |_id| {
+        let plan = crate::plan::derive_robot_plan(&robot, 12, |_id| {
             Result::<Vec<u8>, &'static str>::Ok(vec![1])
         })
         .expect("complete plan");
@@ -1454,7 +1454,7 @@ mod tests {
             .build()
             .expect("mesh Robot");
         let assets = BTreeMap::from([(asset, bytes)]);
-        let plan = RobotSimulationPlan::derive(&robot, 12, |id| {
+        let plan = crate::plan::derive_robot_plan(&robot, 12, |id| {
             assets
                 .get(id)
                 .cloned()
@@ -1511,8 +1511,9 @@ mod tests {
             })
             .build()
             .expect("painted Robot");
-        let plan = RobotSimulationPlan::derive(&robot, 12, |_| Err("unexpected asset".to_owned()))
-            .expect("painted plan");
+        let plan =
+            crate::plan::derive_robot_plan(&robot, 12, |_| Err("unexpected asset".to_owned()))
+                .expect("painted plan");
         let source = render_robot(
             &robot,
             &plan,

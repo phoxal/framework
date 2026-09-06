@@ -25,11 +25,11 @@ use tokio_util::sync::CancellationToken;
 use crate::evidence::{EvidenceSession, world_member_evidence};
 use crate::generation::stage_decoded_images;
 use crate::glb::DecodedMesh;
+use crate::plan::{lower_robot_plan, required_assets};
 use crate::robot_generation::{render_robot, robot_definition};
 use crate::runtime::{AttachmentOperation, HostOperation, WorldRuntime};
 use crate::server::HostServer;
 use crate::state::{NativeRobotFailure, NativeWorldLifecycle};
-use phoxal_simulator_webots_shared::plan::RobotSimulationPlan;
 use phoxal_simulator_webots_shared::protocol::validate_robot_import;
 
 const CONTROLLER_READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -557,7 +557,8 @@ impl WebotsAttachments {
                     "session endpoint resolved execution {}, expected {execution}",
                     host.execution()
                 );
-                let asset_ids = RobotSimulationPlan::required_assets(host.robot())?;
+                let full_plan = required_assets(host.robot())?;
+                let asset_ids = full_plan.required_assets();
                 let mut assets = BTreeMap::new();
                 for id in asset_ids {
                     assets.insert(
@@ -610,7 +611,7 @@ impl WebotsAttachments {
                 }
                 let step_ms = i32::try_from(self.world.time_step_ns() / 1_000_000)
                     .context("world time step does not fit Webots milliseconds")?;
-                let plan = RobotSimulationPlan::derive(host.robot(), step_ms, |id| {
+                let plan = lower_robot_plan(host.robot(), &full_plan, step_ms, |id| {
                     assets
                         .get(id)
                         .cloned()
@@ -1346,6 +1347,34 @@ mod tests {
                 .is_err()
         );
         assert!(tasks.join_next().await.expect("worker result").is_ok());
+    }
+
+    #[tokio::test]
+    async fn repeated_shutdown_never_reopens_attachment_admission() {
+        let mut workers = AttachmentWorkers::new();
+        let first = workers.close_admission();
+        assert!(workers.shutdown.is_cancelled());
+        let mut second = workers.close_admission();
+        assert!(first.is_empty());
+        assert!(second.join_next().await.is_none());
+        assert!(workers.shutdown.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_panicked_attachment_worker_is_reported_without_losing_other_workers() {
+        let mut workers = AttachmentWorkers::new();
+        workers
+            .tasks
+            .spawn(async { panic!("deterministic worker failure") });
+        workers.tasks.spawn(async {});
+        tokio::task::yield_now().await;
+
+        let error = workers.reap_finished().expect_err("panic is retained");
+        assert!(error.to_string().contains("attachment worker failed"));
+        assert!(
+            workers.tasks.is_empty(),
+            "all completed workers were reaped"
+        );
     }
 
     #[test]

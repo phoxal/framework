@@ -36,17 +36,14 @@ pub(crate) type HostOperation<'a, T> = Pin<Box<dyn Future<Output = Result<T, Str
 #[derive(Clone)]
 pub struct WorldRuntime {
     bootstrap: WorldSessionBootstrap,
-    state: Arc<Mutex<WorldSessionState>>,
-    diagnostics: Arc<Mutex<DiagnosticsState>>,
+    projection: Arc<Mutex<WorldProjection>>,
     state_updates: broadcast::Sender<WorldSessionState>,
     diagnostics_updates: broadcast::Sender<WorldSessionDiagnostics>,
     native: Arc<HostServer>,
     attachment: Arc<dyn AttachmentOperation>,
     operation: Arc<tokio::sync::Mutex<()>>,
-    projection: Arc<Mutex<()>>,
     evidence: Arc<EvidenceSession>,
     process: ProcessIdentity,
-    last_progress_checkpoint: Arc<Mutex<Option<Instant>>>,
 }
 
 /// Serialized attachment implementation injected into the public session handler.
@@ -65,6 +62,17 @@ struct DiagnosticsState {
     pacing: VecDeque<PacingPoint>,
     last_transition: Option<Instant>,
     last_emission: Option<Instant>,
+}
+
+/// All revisioned facts projected from the native world share one owner.
+///
+/// Keeping state, pacing, and checkpoint throttling together prevents a stale
+/// native observation or delayed pacing update from overtaking a newer world
+/// transition.
+struct WorldProjection {
+    state: WorldSessionState,
+    diagnostics: DiagnosticsState,
+    last_progress_checkpoint: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -112,22 +120,23 @@ impl WorldRuntime {
                 world: bundle.world().id().clone(),
                 digest: bundle.digest(),
             },
-            state: Arc::new(Mutex::new(state.clone())),
-            diagnostics: Arc::new(Mutex::new(DiagnosticsState {
-                revision: 0,
-                pacing: VecDeque::with_capacity(PACING_WINDOW_TRANSITIONS),
-                last_transition: None,
-                last_emission: None,
+            projection: Arc::new(Mutex::new(WorldProjection {
+                state: state.clone(),
+                diagnostics: DiagnosticsState {
+                    revision: 0,
+                    pacing: VecDeque::with_capacity(PACING_WINDOW_TRANSITIONS),
+                    last_transition: None,
+                    last_emission: None,
+                },
+                last_progress_checkpoint: None,
             })),
             state_updates,
             diagnostics_updates,
             native,
             attachment,
             operation: Arc::new(tokio::sync::Mutex::new(())),
-            projection: Arc::new(Mutex::new(())),
             evidence,
             process,
-            last_progress_checkpoint: Arc::new(Mutex::new(None)),
         };
         runtime.persist_checkpoint(&state)?;
         Ok(runtime)
@@ -142,14 +151,16 @@ impl WorldRuntime {
 
     /// Retain public stopping intent while native member cleanup converges.
     pub fn mark_stopping(&self) -> Result<WorldSessionState, String> {
-        self.clear_pacing()?;
-        self.replace_lifecycle(WorldLifecycle::Stopping)
+        let mut projection = lock(&self.projection);
+        self.clear_pacing_locked(&mut projection)?;
+        self.replace_lifecycle_locked(&mut projection, WorldLifecycle::Stopping)
     }
 
     /// Publish a host-classified fatal world outcome before terminal cleanup begins.
     pub fn fail(&self, reason: SimulationEndReason) -> Result<WorldSessionState, String> {
-        self.clear_pacing()?;
-        self.replace_lifecycle(WorldLifecycle::Failed { reason })
+        let mut projection = lock(&self.projection);
+        self.clear_pacing_locked(&mut projection)?;
+        self.replace_lifecycle_locked(&mut projection, WorldLifecycle::Failed { reason })
     }
 
     /// Reconcile one latest native snapshot into world progress and fatal state.
@@ -157,30 +168,37 @@ impl WorldRuntime {
     /// Snapshot acquisition and projection publication share one synchronous
     /// boundary so an older observation cannot overtake a newer projection.
     pub fn reconcile_latest_native(&self) -> Result<NativeWorldState, String> {
-        let _projection = lock(&self.projection);
+        let mut projection = lock(&self.projection);
         let native = self.native.snapshot();
-        self.reconcile_observed_native(&native)?;
+        self.reconcile_observed_native_locked(&mut projection, &native)?;
         Ok(native)
     }
 
-    fn reconcile_observed_native(&self, native: &NativeWorldState) -> Result<(), String> {
+    fn reconcile_observed_native_locked(
+        &self,
+        projection: &mut WorldProjection,
+        native: &NativeWorldState,
+    ) -> Result<(), String> {
         match native.lifecycle() {
             NativeWorldLifecycle::Failed(failure) => {
                 let reason = failure_reason(failure);
-                self.replace_lifecycle(WorldLifecycle::Failed { reason })?;
+                self.replace_lifecycle_locked(projection, WorldLifecycle::Failed { reason })?;
                 return Ok(());
             }
             NativeWorldLifecycle::Stopping => {
-                self.replace_lifecycle(WorldLifecycle::Stopping)?;
+                self.replace_lifecycle_locked(projection, WorldLifecycle::Stopping)?;
             }
             NativeWorldLifecycle::Ready { observed, .. } => {
-                if !matches!(lock(&self.state).lifecycle, WorldLifecycle::Stopping) {
-                    self.replace_lifecycle(WorldLifecycle::Ready {
-                        motion: match observed {
-                            NativeMotion::Paused => WorldMotion::Paused,
-                            NativeMotion::RealTime => WorldMotion::Running,
+                if !matches!(projection.state.lifecycle, WorldLifecycle::Stopping) {
+                    self.replace_lifecycle_locked(
+                        projection,
+                        WorldLifecycle::Ready {
+                            motion: match observed {
+                                NativeMotion::Paused => WorldMotion::Paused,
+                                NativeMotion::RealTime => WorldMotion::Running,
+                            },
                         },
-                    })?;
+                    )?;
                 }
             }
             NativeWorldLifecycle::Starting => {}
@@ -188,29 +206,27 @@ impl WorldRuntime {
         let observed = native.progress();
         let progress = WorldProgress::at(
             observed.completed_step,
-            lock(&self.state).provenance.time_step_ns,
+            projection.state.provenance.time_step_ns,
         )
         .map_err(|error| error.to_string())?;
-        let mut state = lock(&self.state);
-        if progress == state.progress {
+        if progress == projection.state.progress {
             return Ok(());
         }
-        if progress.completed_step() < state.progress.completed_step() {
+        if progress.completed_step() < projection.state.progress.completed_step() {
             return Err("validated native projection regressed world progress".to_owned());
         }
-        state.progress = progress;
-        state.revision = next_revision(state.revision)?;
-        let projected = state.clone();
+        projection.state.progress = progress;
+        projection.state.revision = next_revision(projection.state.revision)?;
+        let projected = projection.state.clone();
         let running = matches!(
-            state.lifecycle,
+            projection.state.lifecycle,
             WorldLifecycle::Ready {
                 motion: WorldMotion::Running
             }
         );
-        self.persist_progress_checkpoint(&projected)?;
+        self.persist_progress_checkpoint_locked(projection, &projected)?;
         let _ = self.state_updates.send(projected.clone());
-        drop(state);
-        self.observe_pacing_locked(progress, running)?;
+        self.observe_pacing_locked(projection, progress, running)?;
         Ok(())
     }
 
@@ -218,21 +234,21 @@ impl WorldRuntime {
         &self,
         change: impl FnOnce(&mut WorldSessionState) -> Result<bool, String>,
     ) -> Result<WorldSessionState, String> {
-        let mut state = lock(&self.state);
-        let mut candidate = state.clone();
+        let mut projection = lock(&self.projection);
+        let mut candidate = projection.state.clone();
         if change(&mut candidate)? {
             candidate
                 .members
                 .sort_by_key(|member| member.execution.to_string());
             candidate.revision = next_revision(candidate.revision)?;
             candidate.validate().map_err(|error| error.to_string())?;
-            *state = candidate;
-            let projected = state.clone();
+            projection.state = candidate;
+            let projected = projection.state.clone();
             self.persist_checkpoint(&projected)?;
             let _ = self.state_updates.send(projected.clone());
             Ok(projected)
         } else {
-            Ok(state.clone())
+            Ok(projection.state.clone())
         }
     }
 
@@ -240,7 +256,7 @@ impl WorldRuntime {
         let _operation = self.operation.lock().await;
         match request {
             WorldControl::Pause => {
-                let state = lock(&self.state).clone();
+                let state = self.snapshot();
                 if matches!(
                     state.lifecycle,
                     WorldLifecycle::Ready {
@@ -259,7 +275,7 @@ impl WorldRuntime {
                 self.await_motion(NativeMotion::Paused).await
             }
             WorldControl::Resume => {
-                let state = lock(&self.state).clone();
+                let state = self.snapshot();
                 if matches!(
                     state.lifecycle,
                     WorldLifecycle::Ready {
@@ -278,7 +294,7 @@ impl WorldRuntime {
                 self.await_motion(NativeMotion::RealTime).await
             }
             WorldControl::Stop => {
-                let state = lock(&self.state).clone();
+                let state = self.snapshot();
                 if matches!(state.lifecycle, WorldLifecycle::Stopping) {
                     return Ok(state);
                 }
@@ -299,7 +315,7 @@ impl WorldRuntime {
                 NativeWorldLifecycle::Failed(_) => None,
                 NativeWorldLifecycle::Starting | NativeWorldLifecycle::Stopping => None,
             };
-            let state = lock(&self.state).clone();
+            let state = self.snapshot();
             if let WorldLifecycle::Failed { reason } = state.lifecycle {
                 return Err(format!(
                     "native motion request failed the world: {reason:?}"
@@ -323,7 +339,7 @@ impl WorldRuntime {
 
     #[must_use]
     pub fn snapshot(&self) -> WorldSessionState {
-        lock(&self.state).clone()
+        lock(&self.projection).state.clone()
     }
 
     pub(crate) async fn pause_native_for_operation(&self) -> Result<WorldSessionState, String> {
@@ -332,12 +348,12 @@ impl WorldRuntime {
             return Err(format!("native isolation is unavailable: {reason:?}"));
         }
         if matches!(
-            lock(&self.state).lifecycle,
+            self.snapshot().lifecycle,
             WorldLifecycle::Ready {
                 motion: WorldMotion::Paused
             }
         ) {
-            return Ok(lock(&self.state).clone());
+            return Ok(self.snapshot());
         }
         self.native
             .request_motion(NativeMotion::Paused)
@@ -351,7 +367,7 @@ impl WorldRuntime {
         was_running: bool,
     ) -> Result<WorldSessionState, String> {
         if !was_running {
-            return Ok(lock(&self.state).clone());
+            return Ok(self.snapshot());
         }
         self.native
             .request_motion(NativeMotion::RealTime)
@@ -361,22 +377,41 @@ impl WorldRuntime {
     }
 
     fn replace_lifecycle(&self, lifecycle: WorldLifecycle) -> Result<WorldSessionState, String> {
-        self.update_state(|state| {
-            if state.lifecycle == lifecycle
-                || matches!(state.lifecycle, WorldLifecycle::Failed { .. })
-            {
-                Ok(false)
-            } else {
-                state.lifecycle = lifecycle;
-                Ok(true)
-            }
-        })
+        let mut projection = lock(&self.projection);
+        self.replace_lifecycle_locked(&mut projection, lifecycle)
     }
 
-    fn observe_pacing_locked(&self, progress: WorldProgress, running: bool) -> Result<(), String> {
-        let mut diagnostics = lock(&self.diagnostics);
+    fn replace_lifecycle_locked(
+        &self,
+        projection: &mut WorldProjection,
+        lifecycle: WorldLifecycle,
+    ) -> Result<WorldSessionState, String> {
+        if projection.state.lifecycle == lifecycle
+            || matches!(projection.state.lifecycle, WorldLifecycle::Failed { .. })
+        {
+            return Ok(projection.state.clone());
+        }
+        projection.state.lifecycle = lifecycle;
+        projection.state.revision = next_revision(projection.state.revision)?;
+        projection
+            .state
+            .validate()
+            .map_err(|error| error.to_string())?;
+        let state = projection.state.clone();
+        self.persist_checkpoint(&state)?;
+        let _ = self.state_updates.send(state.clone());
+        Ok(state)
+    }
+
+    fn observe_pacing_locked(
+        &self,
+        projection: &mut WorldProjection,
+        progress: WorldProgress,
+        running: bool,
+    ) -> Result<(), String> {
+        let diagnostics = &mut projection.diagnostics;
         let now = Instant::now();
-        if !record_pacing(&mut diagnostics, progress, running, now)? {
+        if !record_pacing(diagnostics, progress, running, now)? {
             return Ok(());
         }
         let projection = project_diagnostics(&diagnostics);
@@ -385,13 +420,13 @@ impl WorldRuntime {
     }
 
     fn clear_pacing(&self) -> Result<(), String> {
-        let _projection = lock(&self.projection);
-        self.clear_pacing_locked()
+        let mut projection = lock(&self.projection);
+        self.clear_pacing_locked(&mut projection)
     }
 
-    fn clear_pacing_locked(&self) -> Result<(), String> {
-        let mut diagnostics = lock(&self.diagnostics);
-        clear_pacing_state(&mut diagnostics, Instant::now())?;
+    fn clear_pacing_locked(&self, projection: &mut WorldProjection) -> Result<(), String> {
+        let diagnostics = &mut projection.diagnostics;
+        clear_pacing_state(diagnostics, Instant::now())?;
         let projection = project_diagnostics(&diagnostics);
         let _ = self.diagnostics_updates.send(projection);
         Ok(())
@@ -412,14 +447,20 @@ impl WorldRuntime {
         self.persist_checkpoint(&self.snapshot())
     }
 
-    fn persist_progress_checkpoint(&self, state: &WorldSessionState) -> Result<(), String> {
+    fn persist_progress_checkpoint_locked(
+        &self,
+        projection: &mut WorldProjection,
+        state: &WorldSessionState,
+    ) -> Result<(), String> {
         let now = Instant::now();
-        let mut last = lock(&self.last_progress_checkpoint);
-        if last.is_some_and(|last| now.duration_since(last) < DIAGNOSTICS_EMISSION_INTERVAL) {
+        if projection
+            .last_progress_checkpoint
+            .is_some_and(|last| now.duration_since(last) < DIAGNOSTICS_EMISSION_INTERVAL)
+        {
             return Ok(());
         }
         self.persist_checkpoint(state)?;
-        *last = Some(now);
+        projection.last_progress_checkpoint = Some(now);
         Ok(())
     }
 }
@@ -465,7 +506,7 @@ impl WorldSessionHandler for WorldRuntime {
     }
 
     fn state(&self) -> WorldSessionState {
-        lock(&self.state).clone()
+        self.snapshot()
     }
 
     fn subscribe_state(&self) -> broadcast::Receiver<WorldSessionState> {
@@ -473,7 +514,7 @@ impl WorldSessionHandler for WorldRuntime {
     }
 
     fn diagnostics(&self) -> WorldSessionDiagnostics {
-        project_diagnostics(&lock(&self.diagnostics))
+        project_diagnostics(&lock(&self.projection).diagnostics)
     }
 
     fn subscribe_diagnostics(&self) -> broadcast::Receiver<WorldSessionDiagnostics> {

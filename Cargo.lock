@@ -2774,7 +2774,6 @@ dependencies = [
  "phoxal",
  "rmp-serde",
  "serde",
- "sha2",
  "thiserror 2.0.19",
 ]
 

@@ -39,6 +39,7 @@ mod generation;
 mod glb;
 mod lifecycle;
 mod obj;
+mod plan;
 mod registration;
 mod robot_generation;
 mod runtime;

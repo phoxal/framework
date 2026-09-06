@@ -16,6 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::bus::QueryEndpoint;
 use crate::identity::ExecutionId;
 use crate::model::identity::SpawnId;
 use crate::version::FrameworkVersion;
@@ -914,11 +915,11 @@ fn timeout_millis(timeout: Duration) -> u64 {
     u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
 }
 
-async fn request<Req: Serialize, Resp: DeserializeOwned>(
+async fn request<E: QueryEndpoint>(
     endpoint: SocketAddr,
     path: &str,
-    request: &Req,
-) -> Result<Resp, WorldSessionWireError> {
+    request: &E,
+) -> Result<E::Response, WorldSessionWireError> {
     let mut stream = with_timeout("connect", CONNECT_TIMEOUT, async move {
         Ok(TcpStream::connect(endpoint).await?)
     })

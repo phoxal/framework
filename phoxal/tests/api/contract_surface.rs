@@ -163,4 +163,14 @@ fn an_endpoint_record_carries_the_payload_types_own_schema() {
     )
     .expect("a declared schema renders as JSON");
     assert_eq!(by_path["supervisor/connect"]["request"], request);
+
+    // World control is bound to the bootstrap instance in the request itself.
+    // Keeping this exact record in the checked surface prevents a future
+    // endpoint refactor from silently accepting unbound control operations.
+    let control_request: Value = serde_json::from_str(
+        &<phoxal::world::api::session::control::WorldSessionControlRequest as DescribeWire>::wire_schema()
+            .canonical_json(),
+    )
+    .expect("a declared schema renders as JSON");
+    assert_eq!(by_path["world/session/control"]["request"], control_request);
 }
