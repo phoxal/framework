@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.68.0](https://github.com/phoxal/framework/compare/v0.67.1...v0.68.0) - 2026-09-06
+
+### Added
+
+- [**breaking**] deliver runtime v2 and world-first Live simulation ([#476](https://github.com/phoxal/framework/pull/476))
+
+### Other
+
+- clarify framework documentation authority ([#474](https://github.com/phoxal/framework/pull/474))
+
 ## [0.67.1](https://github.com/phoxal/framework/compare/v0.67.0...v0.67.1) - 2026-08-21
 
 ### Fixed
