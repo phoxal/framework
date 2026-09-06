@@ -349,7 +349,7 @@ async fn serve_live(
             NativeWorldLifecycle::Ready { .. } => break,
             NativeWorldLifecycle::Failed(reason) => {
                 runtime
-                    .reconcile_native(&snapshot)
+                    .reconcile_latest_native()
                     .map_err(anyhow::Error::msg)?;
                 bail!("native Webots bootstrap failed: {reason:?}");
             }
@@ -410,9 +410,8 @@ async fn serve_live(
             );
         }
         native.enforce_liveness();
-        let snapshot = native.snapshot();
-        runtime
-            .reconcile_native(&snapshot)
+        let snapshot = runtime
+            .reconcile_latest_native()
             .map_err(anyhow::Error::msg)?;
         match runtime.snapshot().lifecycle {
             WorldLifecycle::Stopping => break,

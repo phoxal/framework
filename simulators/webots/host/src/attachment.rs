@@ -2,8 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
@@ -21,6 +20,7 @@ use phoxal::world::api::session::{WorldMemberCleanup, WorldMemberEndReason, Worl
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::evidence::{EvidenceSession, world_member_evidence};
 use crate::generation::stage_decoded_images;
@@ -43,28 +43,65 @@ pub struct WebotsAttachments {
     native: Arc<HostServer>,
     evidence: Arc<EvidenceSession>,
     sessions: Arc<Mutex<BTreeMap<String, AttachedSession>>>,
-    workers: Arc<Mutex<JoinSet<()>>>,
-    cancellations: Arc<std::sync::Mutex<Vec<Weak<AtomicBool>>>>,
+    workers: Arc<Mutex<AttachmentWorkers>>,
 }
 
 #[derive(Clone)]
-struct OperationCancellation(Arc<AtomicBool>);
+struct OperationCancellation(CancellationToken);
+
+struct AttachmentWorkers {
+    shutdown: CancellationToken,
+    tasks: JoinSet<()>,
+}
+
+impl AttachmentWorkers {
+    fn new() -> Self {
+        Self {
+            shutdown: CancellationToken::new(),
+            tasks: JoinSet::new(),
+        }
+    }
+
+    fn reap_finished(&mut self) -> Result<()> {
+        let mut failures = Vec::new();
+        while let Some(result) = self.tasks.try_join_next() {
+            if let Err(error) = result {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!("attachment worker failed: {}", failures.join("; "))
+        }
+    }
+
+    fn close_admission(&mut self) -> JoinSet<()> {
+        self.shutdown.cancel();
+        std::mem::take(&mut self.tasks)
+    }
+}
 
 impl OperationCancellation {
+    fn child(parent: &CancellationToken) -> Self {
+        Self(parent.child_token())
+    }
+
+    #[cfg(test)]
     fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
+        Self(CancellationToken::new())
     }
 
     fn check(&self) -> Result<()> {
         ensure!(
-            !self.0.load(Ordering::Acquire),
+            !self.0.is_cancelled(),
             "world attachment operation was cancelled"
         );
         Ok(())
     }
 
     fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.cancel();
     }
 }
 
@@ -141,29 +178,20 @@ impl WebotsAttachments {
             native,
             evidence,
             sessions: Arc::new(Mutex::new(BTreeMap::new())),
-            workers: Arc::new(Mutex::new(JoinSet::new())),
-            cancellations: Arc::new(std::sync::Mutex::new(Vec::new())),
+            workers: Arc::new(Mutex::new(AttachmentWorkers::new())),
         }
     }
 
     async fn cancel_and_join_workers(&self) -> Result<()> {
-        {
-            let mut cancellations = self
-                .cancellations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cancellations.retain(|cancellation| {
-                if let Some(cancellation) = cancellation.upgrade() {
-                    cancellation.store(true, Ordering::Release);
-                    true
-                } else {
-                    false
-                }
-            });
-        }
         let mut failures = Vec::new();
-        let mut workers = self.workers.lock().await;
-        while let Some(result) = workers.join_next().await {
+        let mut tasks = {
+            let mut workers = self.workers.lock().await;
+            if let Err(error) = workers.reap_finished() {
+                failures.push(error.to_string());
+            }
+            workers.close_admission()
+        };
+        while let Some(result) = tasks.join_next().await {
             if let Err(error) = result {
                 failures.push(error.to_string());
             }
@@ -491,6 +519,13 @@ impl WebotsAttachments {
     ) -> Result<WorldSessionState> {
         let _operation = runtime.lock_operation().await;
         cancellation.check()?;
+        ensure!(
+            matches!(
+                runtime.snapshot().lifecycle,
+                phoxal::world::api::session::WorldLifecycle::Ready { .. }
+            ),
+            "world attachment requires a Ready world"
+        );
         let mut sessions = self.sessions.lock().await;
         cancellation.check()?;
         let (spawn, initial_pose) = resolve_spawn(&self.world, requested_spawn)?;
@@ -777,7 +812,7 @@ impl WebotsAttachments {
                             supervisor_endpoint,
                         },
                     );
-                    return Ok(state);
+                    return Ok(runtime.snapshot());
                 }
             }
             Err(error) => error,
@@ -952,35 +987,34 @@ impl AttachmentOperation for WebotsAttachments {
         spawn: Option<SpawnId>,
     ) -> HostOperation<'a, WorldSessionState> {
         Box::pin(async move {
-            let cancellation = OperationCancellation::new();
             let (result_tx, result_rx) = oneshot::channel();
-            {
-                let mut cancellations = self
-                    .cancellations
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                cancellations.retain(|existing| existing.strong_count() > 0);
-                cancellations.push(Arc::downgrade(&cancellation.0));
-            }
             let owned = self.clone();
             let runtime = runtime.clone();
-            let worker_cancellation = cancellation.clone();
-            let mut workers = self.workers.lock().await;
-            while workers.try_join_next().is_some() {}
-            workers.spawn(async move {
-                let result = owned
-                    .attach_inner(
-                        &runtime,
-                        execution,
-                        supervisor_endpoint,
-                        spawn,
-                        &worker_cancellation,
-                    )
-                    .await
-                    .map_err(|error| format!("{error:#}"));
-                let _ = result_tx.send(result);
-            });
-            drop(workers);
+            let cancellation = {
+                let mut workers = self.workers.lock().await;
+                if let Err(error) = workers.reap_finished() {
+                    return Err(format!("{error:#}"));
+                }
+                if workers.shutdown.is_cancelled() {
+                    return Err("world attachment admission is closed".to_owned());
+                }
+                let cancellation = OperationCancellation::child(&workers.shutdown);
+                let worker_cancellation = cancellation.clone();
+                workers.tasks.spawn(async move {
+                    let result = owned
+                        .attach_inner(
+                            &runtime,
+                            execution,
+                            supervisor_endpoint,
+                            spawn,
+                            &worker_cancellation,
+                        )
+                        .await
+                        .map_err(|error| format!("{error:#}"));
+                    let _ = result_tx.send(result);
+                });
+                cancellation
+            };
             let mut cancel_on_drop = CancelOnDrop::new(cancellation);
             let result = result_rx
                 .await
@@ -1178,6 +1212,7 @@ mod tests {
     use phoxal::identity::{ProducerId, TimelineId};
     use phoxal::model::identity::RobotId;
     use phoxal::model::world::{LiveAttachmentBoundary, WorldProgress};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn pose(x: f64) -> phoxal::model::structure::Pose {
         serde_json::from_value(serde_json::json!({
@@ -1291,6 +1326,26 @@ mod tests {
         request.abort();
         worker.await.expect("owned cleanup worker converged");
         assert!(cleaned.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_admission_before_worker_drain() {
+        let mut workers = AttachmentWorkers::new();
+        let admitted = OperationCancellation::child(&workers.shutdown);
+        let worker_cancellation = admitted.clone();
+        workers.tasks.spawn(async move {
+            worker_cancellation.0.cancelled().await;
+        });
+
+        let mut tasks = workers.close_admission();
+
+        assert!(admitted.check().is_err());
+        assert!(
+            OperationCancellation::child(&workers.shutdown)
+                .check()
+                .is_err()
+        );
+        assert!(tasks.join_next().await.expect("worker result").is_ok());
     }
 
     #[test]

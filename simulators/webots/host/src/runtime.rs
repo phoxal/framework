@@ -13,7 +13,7 @@ use phoxal::supervisor::api::simulation::SimulationEndReason;
 use phoxal::version::FrameworkVersion;
 use phoxal::world::WorldSessionHandler;
 use phoxal::world::api::session::connect::WorldSessionBootstrap;
-use phoxal::world::api::session::control::WorldSessionControlRequest;
+use phoxal::world::api::session::control::WorldControl;
 use phoxal::world::api::session::diagnostics::{ObservedWorldPacing, WorldSessionDiagnostics};
 use phoxal::world::api::session::state::WorldSessionState;
 use phoxal::world::api::session::{WorldLifecycle, WorldMotion};
@@ -43,6 +43,7 @@ pub struct WorldRuntime {
     native: Arc<HostServer>,
     attachment: Arc<dyn AttachmentOperation>,
     operation: Arc<tokio::sync::Mutex<()>>,
+    projection: Arc<Mutex<()>>,
     evidence: Arc<EvidenceSession>,
     process: ProcessIdentity,
     last_progress_checkpoint: Arc<Mutex<Option<Instant>>>,
@@ -123,6 +124,7 @@ impl WorldRuntime {
             native,
             attachment,
             operation: Arc::new(tokio::sync::Mutex::new(())),
+            projection: Arc::new(Mutex::new(())),
             evidence,
             process,
             last_progress_checkpoint: Arc::new(Mutex::new(None)),
@@ -150,8 +152,18 @@ impl WorldRuntime {
         self.replace_lifecycle(WorldLifecycle::Failed { reason })
     }
 
-    /// Reconcile one validated native snapshot into world progress and fatal state.
-    pub fn reconcile_native(&self, native: &NativeWorldState) -> Result<(), String> {
+    /// Reconcile one latest native snapshot into world progress and fatal state.
+    ///
+    /// Snapshot acquisition and projection publication share one synchronous
+    /// boundary so an older observation cannot overtake a newer projection.
+    pub fn reconcile_latest_native(&self) -> Result<NativeWorldState, String> {
+        let _projection = lock(&self.projection);
+        let native = self.native.snapshot();
+        self.reconcile_observed_native(&native)?;
+        Ok(native)
+    }
+
+    fn reconcile_observed_native(&self, native: &NativeWorldState) -> Result<(), String> {
         match native.lifecycle() {
             NativeWorldLifecycle::Failed(failure) => {
                 let reason = failure_reason(failure);
@@ -198,7 +210,7 @@ impl WorldRuntime {
         self.persist_progress_checkpoint(&projected)?;
         let _ = self.state_updates.send(projected.clone());
         drop(state);
-        self.observe_pacing(progress, running)?;
+        self.observe_pacing_locked(progress, running)?;
         Ok(())
     }
 
@@ -207,12 +219,14 @@ impl WorldRuntime {
         change: impl FnOnce(&mut WorldSessionState) -> Result<bool, String>,
     ) -> Result<WorldSessionState, String> {
         let mut state = lock(&self.state);
-        if change(&mut state)? {
-            state
+        let mut candidate = state.clone();
+        if change(&mut candidate)? {
+            candidate
                 .members
                 .sort_by_key(|member| member.execution.to_string());
-            state.revision = next_revision(state.revision)?;
-            state.validate().map_err(|error| error.to_string())?;
+            candidate.revision = next_revision(candidate.revision)?;
+            candidate.validate().map_err(|error| error.to_string())?;
+            *state = candidate;
             let projected = state.clone();
             self.persist_checkpoint(&projected)?;
             let _ = self.state_updates.send(projected.clone());
@@ -222,13 +236,10 @@ impl WorldRuntime {
         }
     }
 
-    async fn apply_control(
-        &self,
-        request: WorldSessionControlRequest,
-    ) -> Result<WorldSessionState, String> {
+    async fn apply_control(&self, request: WorldControl) -> Result<WorldSessionState, String> {
         let _operation = self.operation.lock().await;
         match request {
-            WorldSessionControlRequest::Pause => {
+            WorldControl::Pause => {
                 let state = lock(&self.state).clone();
                 if matches!(
                     state.lifecycle,
@@ -247,7 +258,7 @@ impl WorldRuntime {
                 self.clear_pacing()?;
                 self.await_motion(NativeMotion::Paused).await
             }
-            WorldSessionControlRequest::Resume => {
+            WorldControl::Resume => {
                 let state = lock(&self.state).clone();
                 if matches!(
                     state.lifecycle,
@@ -266,7 +277,7 @@ impl WorldRuntime {
                 self.clear_pacing()?;
                 self.await_motion(NativeMotion::RealTime).await
             }
-            WorldSessionControlRequest::Stop => {
+            WorldControl::Stop => {
                 let state = lock(&self.state).clone();
                 if matches!(state.lifecycle, WorldLifecycle::Stopping) {
                     return Ok(state);
@@ -282,13 +293,12 @@ impl WorldRuntime {
     async fn await_motion(&self, expected: NativeMotion) -> Result<WorldSessionState, String> {
         let deadline = tokio::time::Instant::now() + CONTROL_TIMEOUT;
         loop {
-            let snapshot = self.native.snapshot();
+            let snapshot = self.reconcile_latest_native()?;
             let native_observed = match snapshot.lifecycle() {
                 NativeWorldLifecycle::Ready { observed, .. } => Some(observed),
                 NativeWorldLifecycle::Failed(_) => None,
                 NativeWorldLifecycle::Starting | NativeWorldLifecycle::Stopping => None,
             };
-            self.reconcile_native(&snapshot)?;
             let state = lock(&self.state).clone();
             if let WorldLifecycle::Failed { reason } = state.lifecycle {
                 return Err(format!(
@@ -317,7 +327,7 @@ impl WorldRuntime {
     }
 
     pub(crate) async fn pause_native_for_operation(&self) -> Result<WorldSessionState, String> {
-        self.reconcile_native(&self.native.snapshot())?;
+        self.reconcile_latest_native()?;
         if let WorldLifecycle::Failed { reason } = self.snapshot().lifecycle {
             return Err(format!("native isolation is unavailable: {reason:?}"));
         }
@@ -363,23 +373,26 @@ impl WorldRuntime {
         })
     }
 
-    fn observe_pacing(&self, progress: WorldProgress, running: bool) -> Result<(), String> {
+    fn observe_pacing_locked(&self, progress: WorldProgress, running: bool) -> Result<(), String> {
         let mut diagnostics = lock(&self.diagnostics);
         let now = Instant::now();
         if !record_pacing(&mut diagnostics, progress, running, now)? {
             return Ok(());
         }
         let projection = project_diagnostics(&diagnostics);
-        drop(diagnostics);
         let _ = self.diagnostics_updates.send(projection);
         Ok(())
     }
 
     fn clear_pacing(&self) -> Result<(), String> {
+        let _projection = lock(&self.projection);
+        self.clear_pacing_locked()
+    }
+
+    fn clear_pacing_locked(&self) -> Result<(), String> {
         let mut diagnostics = lock(&self.diagnostics);
         clear_pacing_state(&mut diagnostics, Instant::now())?;
         let projection = project_diagnostics(&diagnostics);
-        drop(diagnostics);
         let _ = self.diagnostics_updates.send(projection);
         Ok(())
     }
@@ -467,7 +480,7 @@ impl WorldSessionHandler for WorldRuntime {
         self.diagnostics_updates.subscribe()
     }
 
-    fn control(&self, request: WorldSessionControlRequest) -> HostOperation<'_, WorldSessionState> {
+    fn control(&self, request: WorldControl) -> HostOperation<'_, WorldSessionState> {
         Box::pin(async move { self.apply_control(request).await })
     }
 

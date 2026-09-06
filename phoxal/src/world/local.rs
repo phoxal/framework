@@ -24,7 +24,7 @@ use crate::world::api::session::connect::{
     WorldSessionBootstrap, WorldSessionConnectRequest, WorldSessionConnectResponse,
 };
 use crate::world::api::session::control::{
-    WorldSessionControlEnvelope, WorldSessionControlRequest, WorldSessionControlResponse,
+    WorldControl, WorldSessionControlRequest, WorldSessionControlResponse,
 };
 use crate::world::api::session::diagnostics::{
     WorldSessionDiagnostics, WorldSessionDiagnosticsCurrentRequest,
@@ -87,10 +87,7 @@ pub trait WorldSessionHandler: Send + Sync + 'static {
     fn subscribe_state(&self) -> broadcast::Receiver<WorldSessionState>;
     fn diagnostics(&self) -> WorldSessionDiagnostics;
     fn subscribe_diagnostics(&self) -> broadcast::Receiver<WorldSessionDiagnostics>;
-    fn control(
-        &self,
-        request: WorldSessionControlRequest,
-    ) -> WorldSessionOperation<'_, WorldSessionState>;
+    fn control(&self, operation: WorldControl) -> WorldSessionOperation<'_, WorldSessionState>;
     fn attach(
         &self,
         execution: ExecutionId,
@@ -268,12 +265,12 @@ impl WorldSessionClient {
 
     pub async fn control(
         &self,
-        operation: WorldSessionControlRequest,
+        operation: WorldControl,
     ) -> Result<WorldSessionState, WorldSessionWireError> {
         let response: WorldSessionControlResponse = request(
             self.endpoint,
             CONTROL_PATH,
-            &WorldSessionControlEnvelope {
+            &WorldSessionControlRequest {
                 instance: self.bootstrap.instance,
                 operation,
             },
@@ -667,7 +664,7 @@ async fn serve_connection<H: WorldSessionHandler>(
             .await
         }
         CONTROL_PATH => {
-            let control = decode_body::<WorldSessionControlEnvelope>(&request.body)?;
+            let control = decode_body::<WorldSessionControlRequest>(&request.body)?;
             if let Err(error) = validate_instance(handler.as_ref(), control.instance) {
                 return send_error(&mut stream, error.to_string()).await;
             }
@@ -1377,16 +1374,13 @@ mod tests {
             updates
         }
 
-        fn control(
-            &self,
-            request: WorldSessionControlRequest,
-        ) -> WorldSessionOperation<'_, WorldSessionState> {
+        fn control(&self, request: WorldControl) -> WorldSessionOperation<'_, WorldSessionState> {
             Box::pin(async move {
                 self.control_calls.fetch_add(1, Ordering::AcqRel);
                 Ok(match request {
-                    WorldSessionControlRequest::Pause => self.replace_motion(WorldMotion::Paused),
-                    WorldSessionControlRequest::Resume => self.replace_motion(WorldMotion::Running),
-                    WorldSessionControlRequest::Stop => {
+                    WorldControl::Pause => self.replace_motion(WorldMotion::Paused),
+                    WorldControl::Resume => self.replace_motion(WorldMotion::Running),
+                    WorldControl::Stop => {
                         let mut state = self
                             .state
                             .lock()
@@ -1435,7 +1429,7 @@ mod tests {
             .expect("subscribe-first state reconciliation succeeds");
         assert_eq!(states.current().revision, 0);
         let running = client
-            .control(WorldSessionControlRequest::Resume)
+            .control(WorldControl::Resume)
             .await
             .expect("resume is accepted");
         assert_eq!(running.revision, 1);
@@ -1444,7 +1438,7 @@ mod tests {
             &running
         );
         let retry = client
-            .control(WorldSessionControlRequest::Resume)
+            .control(WorldControl::Resume)
             .await
             .expect("resume retry is idempotent");
         assert_eq!(retry.revision, running.revision);
@@ -1554,7 +1548,7 @@ mod tests {
             .expect("the replacement server reuses the endpoint");
 
         assert!(matches!(
-            client.control(WorldSessionControlRequest::Stop).await,
+            client.control(WorldControl::Stop).await,
             Err(WorldSessionWireError::Refused(message)) if message.contains("targets instance")
         ));
         assert_eq!(replacement.control_calls.load(Ordering::Acquire), 0);
@@ -1736,13 +1730,10 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            client.control(WorldSessionControlRequest::Resume),
-        )
-        .await
-        .expect("idle subscriptions release their server permits")
-        .expect("a fresh control request succeeds");
+        tokio::time::timeout(Duration::from_secs(2), client.control(WorldControl::Resume))
+            .await
+            .expect("idle subscriptions release their server permits")
+            .expect("a fresh control request succeeds");
         server.close().await.expect("the server closes cleanly");
     }
 }
