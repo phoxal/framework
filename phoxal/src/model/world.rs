@@ -1,7 +1,7 @@
 //! Canonical compiled worlds, identities, progress, and runtime provenance.
 //!
 //! Authored paths end at the world compiler.
-//! A runtime adapter receives one [`WorldBundle`](crate::bundle::WorldBundle)
+//! A runtime adapter receives one `WorldBundle`
 //! containing a canonical expanded world and every reachable asset byte.
 
 use std::collections::{BTreeMap, BTreeSet};
