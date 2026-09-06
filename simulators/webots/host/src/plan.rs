@@ -60,6 +60,7 @@ pub(crate) fn required_assets(robot: &Robot) -> Result<FullSimulationPlan, PlanE
     Ok(FullSimulationPlan::derive(robot)?)
 }
 
+#[cfg(test)]
 pub(crate) fn derive_robot_plan<F, E>(
     robot: &Robot,
     basic_time_step_ms: i32,

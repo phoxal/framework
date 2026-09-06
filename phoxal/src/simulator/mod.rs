@@ -7,6 +7,8 @@
 //! monotonic timeline, and `simulation/step` is passive progress published
 //! after that transition's outputs.
 
+mod bootstrap;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +29,8 @@ use crate::supervisor::api::simulation::{
     SimulationAttachmentPhase, SimulationAttachmentState, SimulationEndReason,
 };
 use crate::supervisor::api::time_domain::{TimeDomain, TimeMode};
+
+use bootstrap::{LiveBootstrap, open_live_bootstrap};
 
 /// A failure while attaching or operating one Live controller session.
 #[derive(Debug, thiserror::Error)]
@@ -79,86 +83,6 @@ pub enum SimulatorError {
 }
 
 const ATTACHMENT_TRANSITION_CAPACITY: usize = 32;
-
-/// Framework-owned transport and immutable facts common to every Live role.
-///
-/// Role-specific sessions retain separate authority after this point. The
-/// controller owns device I/O, while the host owns attachment management.
-struct LiveBootstrap {
-    owner: BusOwner,
-    bus: BusHandle,
-    bootstrap: crate::execution::ExecutionBootstrap,
-    robot: crate::model::Robot,
-    assets: crate::bundle::ParticipantAssets,
-}
-
-async fn open_live_bootstrap(
-    connect: String,
-    label: String,
-) -> Result<LiveBootstrap, SimulatorError> {
-    let execution = crate::execution::resolve_execution(&connect)
-        .await
-        .map_err(simulator_bootstrap_error)?;
-    let label = SourceLabel::new(label)?;
-    let (owner, bus) = BusOwner::open(BusConfig::for_external(
-        execution,
-        Some(label),
-        vec![connect],
-    ))
-    .await?;
-    let result = async {
-        let bootstrap = crate::execution::attach_execution(&bus)
-            .await
-            .map_err(|error| SimulatorError::Bootstrap {
-                detail: error.to_string(),
-            })?;
-        if bootstrap.time_domain.mode != TimeMode::Monotonic {
-            return Err(SimulatorError::NonMonotonicTimeDomain);
-        }
-        let robot = bootstrap.info.manifest.clone().into_robot();
-        let assets =
-            crate::bundle::ParticipantAssets::from_supervisor(bus.clone()).map_err(|error| {
-                SimulatorError::Bootstrap {
-                    detail: error.to_string(),
-                }
-            })?;
-        Ok((bootstrap, robot, assets))
-    }
-    .await;
-    match result {
-        Ok((bootstrap, robot, assets)) => Ok(LiveBootstrap {
-            owner,
-            bus,
-            bootstrap,
-            robot,
-            assets,
-        }),
-        Err(error) => {
-            let _ = owner.close().await;
-            Err(error)
-        }
-    }
-}
-
-fn simulator_bootstrap_error(error: crate::execution::BootstrapError) -> SimulatorError {
-    match error {
-        crate::execution::BootstrapError::NoExecution { endpoint } => {
-            SimulatorError::NoExecution { connect: endpoint }
-        }
-        crate::execution::BootstrapError::MultipleExecutions {
-            endpoint,
-            count,
-            executions,
-        } => SimulatorError::MultipleExecutions {
-            connect: endpoint,
-            count,
-            executions,
-        },
-        error => SimulatorError::Bootstrap {
-            detail: error.to_string(),
-        },
-    }
-}
 
 /// The simulator session closed, but a close stage left evidence.
 #[derive(Debug, thiserror::Error)]

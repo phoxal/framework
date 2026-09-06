@@ -564,7 +564,7 @@ impl WebotsAttachments {
                     assets.insert(
                         id.clone(),
                         host.assets()
-                            .read(&id)
+                            .read(id)
                             .await
                             .with_context(|| format!("failed to preflight asset {id}"))?,
                     );

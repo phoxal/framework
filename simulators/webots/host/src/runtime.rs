@@ -85,7 +85,7 @@ struct CheckpointWriter {
 }
 
 impl CheckpointWriter {
-    fn new(evidence: Arc<EvidenceSession>) -> Self {
+    fn new(evidence: Arc<EvidenceSession>) -> Result<Self, String> {
         let (sender, receiver) =
             mpsc::sync_channel::<(WorldCheckpoint, mpsc::Sender<Result<(), String>>)>(64);
         let failure = Arc::new(Mutex::new(None));
@@ -103,8 +103,8 @@ impl CheckpointWriter {
                     let _ = acknowledgement.send(result);
                 }
             })
-            .expect("checkpoint writer thread starts");
-        Self { sender, failure }
+            .map_err(|error| format!("failed to start checkpoint writer thread: {error}"))?;
+        Ok(Self { sender, failure })
     }
 
     fn write(&self, checkpoint: WorldCheckpoint) -> Result<(), String> {
@@ -181,7 +181,7 @@ impl WorldRuntime {
             native,
             attachment,
             operation: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: Arc::new(CheckpointWriter::new(Arc::clone(&evidence))),
+            checkpoints: Arc::new(CheckpointWriter::new(Arc::clone(&evidence))?),
             evidence,
             process,
         };
@@ -461,7 +461,7 @@ impl WorldRuntime {
         if !record_pacing(diagnostics, progress, running, now)? {
             return Ok(());
         }
-        let projection = project_diagnostics(&diagnostics);
+        let projection = project_diagnostics(diagnostics);
         let _ = self.diagnostics_updates.send(projection);
         Ok(())
     }
@@ -474,7 +474,7 @@ impl WorldRuntime {
     fn clear_pacing_locked(&self, projection: &mut WorldProjection) -> Result<(), String> {
         let diagnostics = &mut projection.diagnostics;
         clear_pacing_state(diagnostics, Instant::now())?;
-        let projection = project_diagnostics(&diagnostics);
+        let projection = project_diagnostics(diagnostics);
         let _ = self.diagnostics_updates.send(projection);
         Ok(())
     }
