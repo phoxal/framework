@@ -20,9 +20,16 @@ use super::{Subject, Violation, is_library_package};
 ///
 /// Stated as the complete list rather than as a set of bans: a graph that is
 /// only forbidden from growing particular edges says nothing about the one it
-/// grows next. The framework is one library plus the proc-macro package the
-/// Rust language forces to be separate, so the complete list is one edge.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 1] = [("phoxal", "phoxal-macros")];
+/// grows next. The reusable library graph is explicit. The facade owns the
+/// optional typed port surface, while service-owned contract crates consume
+/// that same port vocabulary. Build-time generators are checked separately by
+/// Cargo's graph and are not normal runtime edges.
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 4] = [
+    ("phoxal", "phoxal-macros"),
+    ("phoxal", "phoxal-port"),
+    ("phoxal-motion", "phoxal-port"),
+    ("phoxal-navigation", "phoxal-port"),
+];
 
 /// The edges a canonical crate may never grow, whatever the dependency kind.
 ///
@@ -168,7 +175,7 @@ pub(super) fn retired_framework_libraries_stay_absent(subject: &Subject) -> Resu
             if RETIRED_LIBRARIES.contains(&dependency.name.as_str()) {
                 violations.push(Violation::new(format!(
                     "{} -> {} ({:?}); that package is a module of {} now, and depending on its \
-                     last published version would compile a second copy of contracts this train \
+                     last published version would compile a second copy of contracts this package \
                      owns exactly one of",
                     package.name,
                     dependency.name,

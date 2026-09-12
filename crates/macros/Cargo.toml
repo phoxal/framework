@@ -1,12 +1,10 @@
 [package]
 name = "phoxal-macros"
-version.workspace = true
+version = "0.68.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-# Published to crates.io: `phoxal` depends on it by version, so it must be a real
-# published crate (a path-only dependency cannot be published).
-publish = true
+publish = ["phoxal"]
 description = "Proc-macros for the phoxal framework API tree and participant authoring model."
 documentation.workspace = true
 homepage.workspace = true

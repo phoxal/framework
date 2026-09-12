@@ -1,4 +1,4 @@
-//! Workspace-wide discovery for executable publication policy.
+//! Workspace-wide discovery for publication policy.
 
 use std::collections::BTreeSet;
 
@@ -10,18 +10,27 @@ use anyhow::Context;
 #[cfg(test)]
 use cargo_metadata::MetadataCommand;
 
-use super::executable::{publishes_to_phoxal, relative_display};
+use super::executable::{
+    PHOXAL_PROVIDER, publishes_to_phoxal, relative_display, validate_executable_targets,
+    validate_registry_publish,
+};
 use super::framework_executable::{SPECS, Spec, spec_for_manifest, spec_for_package};
 use super::{
     artifact::{OfficialArtifact, discover_package},
-    executable::PHOXAL_PROVIDER,
-    is_adapter_library_package,
+    is_adapter_library_package, is_internal_package_directory, is_library_directory,
+    is_library_package, library_package_name,
 };
 
-/// The two disjoint executable sets declared by the workspace.
+const CARGO_PHOXAL_PACKAGE: &str = "cargo-phoxal";
+const CARGO_PHOXAL_MANIFEST: &str = "tools/cargo-phoxal/Cargo.toml";
+const CARGO_PHOXAL_BIN: &str = "cargo-phoxal";
+const CARGO_PHOXAL_SOURCE: &str = "tools/cargo-phoxal/src/main.rs";
+
+/// The disjoint executable sets declared by the workspace.
 ///
 /// Authored artifacts are catalogue/graph participants. Framework executables
-/// publish through the same registry train, but never enter that catalogue.
+/// and the developer tool publish through the same registry, but never enter
+/// that catalogue.
 #[derive(Debug)]
 pub struct Workspace {
     official_artifacts: Vec<OfficialArtifact>,
@@ -54,6 +63,13 @@ impl Workspace {
 
         for package in metadata.workspace_packages() {
             let manifest_path = package.manifest_path.clone().into_std_path_buf();
+            let relative_manifest = manifest_path.strip_prefix(&root).map_err(|_| {
+                anyhow::anyhow!("{} is outside the workspace root", manifest_path.display())
+            })?;
+            let relative_directory = relative_manifest
+                .parent()
+                .and_then(|directory| directory.to_str())
+                .unwrap_or_default();
             if let Some(spec) = spec_for_manifest(&root, &manifest_path) {
                 spec.validate(package, &root, &manifest_path)?;
                 framework_executables.push(spec);
@@ -68,12 +84,54 @@ impl Workspace {
                     spec.manifest_path()
                 );
             }
+            if relative_manifest == std::path::Path::new(CARGO_PHOXAL_MANIFEST) {
+                validate_cargo_phoxal(package, &root, &manifest_path)?;
+                continue;
+            }
+            if package.name.as_str() == CARGO_PHOXAL_PACKAGE {
+                bail!(
+                    "{} declares the developer tool package '{}'; expected its one manifest at {}",
+                    relative_display(&root, &manifest_path),
+                    package.name,
+                    CARGO_PHOXAL_MANIFEST
+                );
+            }
             if let Some(artifact) = discover_package(&root, package)? {
                 official_artifacts.push(artifact);
                 continue;
             }
-            if is_adapter_library_package(package.name.as_str()) {
+            if is_internal_package_directory(relative_directory) {
+                if package.publish.as_deref() != Some(&[]) {
+                    bail!(
+                        "{} is an internal fixture but does not set publish = false",
+                        relative_display(&root, &manifest_path)
+                    );
+                }
                 continue;
+            }
+            if is_library_directory(relative_directory) {
+                let expected_name = library_package_name(relative_directory);
+                if expected_name.as_deref() == Some(package.name.as_str())
+                    && (is_library_package(package.name.as_str())
+                        || is_adapter_library_package(package.name.as_str()))
+                {
+                    continue;
+                }
+                bail!(
+                    "{} declares a library package at {}, but that directory maps to {:?}",
+                    package.name,
+                    relative_directory,
+                    expected_name
+                );
+            }
+            if is_library_package(package.name.as_str())
+                || is_adapter_library_package(package.name.as_str())
+            {
+                bail!(
+                    "{} declares a published library package from {}, but its package directory is not classified",
+                    package.name,
+                    relative_display(&root, &manifest_path)
+                );
             }
             if publishes_to_phoxal(package) {
                 bail!(
@@ -121,6 +179,36 @@ impl Workspace {
     pub fn framework_executables(&self) -> &[Spec] {
         &self.framework_executables
     }
+}
+
+fn validate_cargo_phoxal(
+    package: &cargo_metadata::Package,
+    root: &std::path::Path,
+    manifest_path: &std::path::Path,
+) -> Result<()> {
+    if package.name.as_str() != CARGO_PHOXAL_PACKAGE {
+        bail!(
+            "{} is the developer tool manifest but package.name is '{}'; expected '{}'",
+            relative_display(root, manifest_path),
+            package.name,
+            CARGO_PHOXAL_PACKAGE
+        );
+    }
+    validate_registry_publish(
+        CARGO_PHOXAL_PACKAGE,
+        "the Phoxal developer tool",
+        package.publish.as_deref(),
+        root,
+        manifest_path,
+    )?;
+    validate_executable_targets(
+        CARGO_PHOXAL_PACKAGE,
+        "the Phoxal developer tool",
+        CARGO_PHOXAL_BIN,
+        Some(std::path::Path::new(CARGO_PHOXAL_SOURCE)),
+        &package.targets,
+        root,
+    )
 }
 
 #[cfg(test)]
@@ -181,6 +269,13 @@ autolib = false
                     .display()
                     .to_string()
             })
+            .chain(std::iter::once(
+                Path::new(CARGO_PHOXAL_MANIFEST)
+                    .parent()
+                    .expect("developer tool manifest has a parent")
+                    .display()
+                    .to_string(),
+            ))
             .collect::<Vec<_>>();
         fs::write(
             root.join("Cargo.toml"),
@@ -203,6 +298,20 @@ autolib = false
                 ),
             )?;
         }
+        let tool_manifest = root.join(CARGO_PHOXAL_MANIFEST);
+        fs::create_dir_all(
+            tool_manifest
+                .parent()
+                .expect("tool manifest has a parent")
+                .join("src"),
+        )?;
+        fs::write(
+            &tool_manifest,
+            format!(
+                "[package]\nname = \"{CARGO_PHOXAL_PACKAGE}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{CARGO_PHOXAL_BIN}\"\npath = \"src/main.rs\"\n"
+            ),
+        )?;
+        fs::write(root.join(CARGO_PHOXAL_SOURCE), "fn main() {}\n")?;
         let workspace =
             Workspace::discover(MetadataCommand::new().manifest_path(root.join("Cargo.toml")))?;
         assert!(workspace.official_artifacts().is_empty());
@@ -297,6 +406,14 @@ autolib = false
                 "[\"phoxal\"]",
                 "[[bin]]\nname = \"phoxal-executor\"\npath = \"src/main.rs\"\n",
                 "neither an authored artifact nor an explicitly listed framework-owned executable",
+            ),
+            (
+                "published-internal-fixture",
+                "crates/contract-consumer-fixture",
+                "phoxal-contract-consumer-fixture",
+                "[\"phoxal\"]",
+                "[[bin]]\nname = \"phoxal-contract-consumer-fixture\"\npath = \"src/main.rs\"\n",
+                "internal fixture but does not set publish = false",
             ),
         ];
 

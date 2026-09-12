@@ -1,10 +1,10 @@
 [package]
 name = "phoxal"
-version.workspace = true
+version = "0.68.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = true
+publish = ["phoxal"]
 description = "Phoxal - production-oriented autonomous robot framework: the one framework library, holding the runtime engine, the api contract tree, the typed bus, the canonical model, and the bundle."
 documentation.workspace = true
 homepage.workspace = true

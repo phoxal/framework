@@ -7,7 +7,7 @@
 name = "phoxal-fixture"
 edition.workspace = true
 rust-version.workspace = true
-version.workspace = true
+version = "0.1.0"
 license.workspace = true
 description = "Staging for the workspace fixture robot, used by other crates' tests."
 # Never published. It exists only so the workspace's own tests share one answer

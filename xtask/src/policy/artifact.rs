@@ -22,8 +22,8 @@ use cargo_metadata::Target;
 use super::executable::PHOXAL_PROVIDER;
 use super::executable::{validate_executable_targets, validate_registry_publish};
 use super::{
-    ADAPTER_LIBRARY_CRATE_DIRS, FACADE, INTERNAL_CRATE_DIRS, LIBRARY_CRATE_DIRS,
-    LIBRARY_CRATE_ROOT, Subject, Violation, library_package_name,
+    FACADE, LIBRARY_CRATE_ROOT, Subject, Violation, is_internal_package_directory,
+    is_library_directory, library_package_name,
 };
 
 /// The Cargo `package.name` prefix backing [`PHOXAL_PROVIDER`]: the package
@@ -69,8 +69,8 @@ impl ArtifactKind {
     /// The leading segment of both of this kind's names: `service` in
     /// `phoxal/service-drive` and in `phoxal-service-drive`.
     ///
-    /// This is published identity. It reaches crates.io, the `phoxal`
-    /// registry, and every robot manifest that names an artifact, so it is
+    /// This is published identity. It reaches the `phoxal` registry and every
+    /// robot manifest that names an artifact, so it is
     /// frozen independently of where the sources happen to sit in this
     /// repository.
     pub fn name_segment(self) -> &'static str {
@@ -220,9 +220,8 @@ impl OfficialArtifact {
     /// there.
     ///
     /// This is the Cargo-side guard against an accidental crates.io
-    /// publication. It is also what keeps release-plz able to see these
-    /// packages at all: a `publish = false` package is invisible to it, and an
-    /// invisible package cannot bump the train when it changes.
+    /// publication. It also keeps the package visible to release-plz's
+    /// change-driven version planner.
     fn validate_publish(
         package_name: &str,
         publish: Option<&[String]>,
@@ -321,10 +320,7 @@ impl ManifestClassification {
             );
         };
         let directory = directory.join("/");
-        if LIBRARY_CRATE_DIRS.contains(&directory.as_str())
-            || ADAPTER_LIBRARY_CRATE_DIRS.contains(&directory.as_str())
-            || INTERNAL_CRATE_DIRS.contains(&directory.as_str())
-        {
+        if is_library_directory(&directory) || is_internal_package_directory(&directory) {
             return Ok(Self::Excluded);
         }
         // A manifest under the library root that neither list names is a
@@ -386,9 +382,9 @@ fn relative_display(root: &Path, path: &Path) -> String {
 ///
 /// Discovery has already rejected anything that claims to be an artifact
 /// without obeying the grammar, so what is left to state is the scope itself:
-/// which packages the train carries. Spelled out in full rather than counted,
-/// because a package silently entering or leaving the release scope is the
-/// failure this rule exists to catch.
+/// which official artifact packages exist. Spelled out in full rather than
+/// counted, because a package silently entering or leaving the release scope
+/// is the failure this rule exists to catch.
 const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 16] = [
     "phoxal/component-bno085",
     "phoxal/component-ddsm115",
@@ -536,9 +532,9 @@ mod tests {
 
     /// An executable publishes to the `phoxal` registry and nowhere else. The
     /// two rejected cases are the two ways to get this wrong: `publish = false`
-    /// hides the package from release-plz so its changes stop cutting trains,
-    /// and anything naming crates.io (explicitly or by omission) points the
-    /// executables at the wrong channel entirely.
+    /// hides the package from release-plz's change detection, and anything
+    /// naming crates.io (explicitly or by omission) points the executables at
+    /// the wrong channel entirely.
     #[test]
     fn an_executable_publishes_only_to_the_phoxal_registry() {
         let manifest = root().join("components/ddsm115/Cargo.toml");

@@ -60,34 +60,58 @@ pub(crate) const FACADE: &str = "phoxal";
 ///
 /// These are outside the artifact grammar: they are libraries, not official
 /// artifact packages, so discovery must skip them rather than reject them.
-/// [`the_library_crate_list_matches_the_workspace_members`] fails when a
-/// library crate is added to the workspace without being added here, because a
-/// missing entry would silently turn that crate into a grammar violation.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 2] = ["phoxal", "crates/macros"];
+/// The list is deliberately explicit because a new public package is a
+/// release-owner decision, not an accidental consequence of placing a library
+/// under `crates/` or `contracts/`.
+///
+/// `crates/installation` is named here before its implementation lands so the
+/// policy keeps the planned owner classified when the package is added by the
+/// project-tooling cutover.
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 10] = [
+    "phoxal",
+    "crates/macros",
+    "crates/build",
+    "crates/port",
+    "crates/robotics",
+    "crates/project",
+    "crates/installation",
+    "crates/mujoco",
+    "contracts/motion",
+    "contracts/navigation",
+];
 
-/// Narrow adapter libraries shared only by exact-train simulator executables.
+/// Narrow adapter libraries shared only by the simulator executables.
 ///
 /// They are published through the `phoxal` registry, but do not widen the
 /// reusable framework library graph.
 pub(crate) const ADAPTER_LIBRARY_CRATE_DIRS: [&str; 1] = ["simulators/webots/shared"];
 
-/// Library crates that serve this workspace's own tests and reach no
-/// registry. They carry a library target, so the completeness check below
-/// still demands they be listed; they are simply listed here rather than in
-/// [`LIBRARY_CRATE_DIRS`], which keeps them out of the published dependency
-/// graph [`is_library_package`] describes.
+/// Workspace-only package directories that are intentionally outside the
+/// published registry graph.
 ///
-/// `crates/fixture` obeys the library naming rule exactly - `phoxal-fixture`
-/// at `crates/fixture` - and appears here only because it is unpublished, not
-/// because it sits anywhere unusual.
-pub(crate) const INTERNAL_CRATE_DIRS: [&str; 1] = ["crates/fixture"];
+/// The contract fixtures include one library-plus-binary owner fixture and two
+/// binary-only consumers. They all need an explicit exclusion so adding a
+/// fixture cannot accidentally make it an official artifact or a release
+/// candidate.
+pub(crate) const INTERNAL_CRATE_DIRS: [&str; 4] = [
+    "crates/fixture",
+    "crates/contract-owner-fixture",
+    "crates/contract-consumer-fixture",
+    "crates/port-consumer-fixture",
+];
+
+/// The subset of [`INTERNAL_CRATE_DIRS`] that carries a library target and is
+/// therefore checked by the library-directory completeness rule.
+pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] =
+    ["crates/fixture", "crates/contract-owner-fixture"];
 
 /// The package a library crate directory must hold, or `None` for a directory
 /// that names no library crate location.
 ///
-/// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>`, except for
-/// the `phoxal/` facade. Exact-train adapter libraries have one explicit
-/// location because they are controller contracts, not framework API.
+/// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>` or
+/// `contracts/<suffix>`, except for the `phoxal/` facade. simulator adapter
+/// libraries have one explicit location because they are controller contracts,
+/// not framework API.
 ///
 /// This is the whole reason the directory can be shortened at all. `crates/`
 /// already says `phoxal`, so repeating it in every child would be the
@@ -100,7 +124,8 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
         return Some("phoxal-simulator-webots-shared".to_owned());
     }
     let suffix = directory
-        .strip_prefix(LIBRARY_CRATE_ROOT)?
+        .strip_prefix(LIBRARY_CRATE_ROOT)
+        .or_else(|| directory.strip_prefix("contracts"))?
         .strip_prefix('/')?;
     // A library crate is one directory deep and no deeper: `crates/protocol/inner`
     // would be a second package hiding under the first one's name.
@@ -122,6 +147,16 @@ pub(crate) fn is_library_package(package_name: &str) -> bool {
         .any(|directory| library_package_name(directory).as_deref() == Some(package_name))
 }
 
+pub(crate) fn is_library_directory(directory: &str) -> bool {
+    LIBRARY_CRATE_DIRS.contains(&directory)
+        || ADAPTER_LIBRARY_CRATE_DIRS.contains(&directory)
+        || INTERNAL_LIBRARY_CRATE_DIRS.contains(&directory)
+}
+
+pub(crate) fn is_internal_package_directory(directory: &str) -> bool {
+    INTERNAL_CRATE_DIRS.contains(&directory)
+}
+
 pub(crate) fn is_adapter_library_package(package_name: &str) -> bool {
     ADAPTER_LIBRARY_CRATE_DIRS
         .iter()
@@ -136,7 +171,7 @@ pub(crate) struct Subject {
     root: PathBuf,
     /// `cargo metadata --no-deps`: this workspace's own packages.
     members: Metadata,
-    /// The two executable sets the workspace declares, or the grammar
+    /// The executable sets the workspace declares, or the grammar
     /// violation that stopped discovery. Several rules stand on it, so it is
     /// resolved at most once.
     executables: OnceCell<Result<registry::Workspace, String>>,
@@ -174,6 +209,7 @@ impl Subject {
 }
 
 /// One offending package, path or edge, stated the way the rule found it.
+#[derive(Debug)]
 pub(crate) struct Violation(String);
 
 impl Violation {
@@ -211,8 +247,8 @@ const RULES: [Rule; 17] = [
         check: framework_executable::the_supervisor_is_a_default_member_and_non_catalog_executable,
     },
     Rule {
-        name: "every registry executable participates in the release train",
-        check: framework_executable::every_registry_executable_participates_in_the_release_train,
+        name: "registry packages have independent release policy",
+        check: framework_executable::registry_packages_have_independent_release_policy,
     },
     Rule {
         name: "public library dependency direction is exact",
@@ -362,7 +398,7 @@ impl fmt::Display for PolicyReport {
 /// worse than no list, so the workspace itself is the authority: every
 /// workspace member carrying a reusable library target must be listed as either
 /// published or internal, and every listed directory must still hold one.
-/// Exact-train adapter libraries are explicit because they serve only the
+/// simulator adapter libraries are explicit because they serve only the
 /// native controller packages, rather than widening the framework API.
 fn the_library_crate_list_matches_the_workspace_members(
     subject: &Subject,
@@ -396,14 +432,28 @@ fn the_library_crate_list_matches_the_workspace_members(
                 package.name
             )));
         }
+        let is_internal = INTERNAL_LIBRARY_CRATE_DIRS.contains(&directory);
+        let publish_is_valid = if is_internal {
+            package.publish.as_deref() == Some(&[])
+        } else {
+            package.publish.as_deref() == Some(&[executable::PHOXAL_PROVIDER.to_owned()])
+        };
+        if !publish_is_valid {
+            violations.push(Violation::new(format!(
+                "library crate {directory} has publish = {:?}; expected {}",
+                package.publish,
+                if is_internal {
+                    "publish = false for internal library support"
+                } else {
+                    "publish = [\"phoxal\"] for a registry library"
+                }
+            )));
+        }
         discovered.push(directory.to_owned());
     }
 
     for directory in &discovered {
-        if !LIBRARY_CRATE_DIRS.contains(&directory.as_str())
-            && !ADAPTER_LIBRARY_CRATE_DIRS.contains(&directory.as_str())
-            && !INTERNAL_CRATE_DIRS.contains(&directory.as_str())
-        {
+        if !is_library_directory(directory) {
             violations.push(Violation::new(format!(
                 "{directory} carries a library target but is listed as neither a published nor an \
                  internal library crate"
@@ -413,8 +463,15 @@ fn the_library_crate_list_matches_the_workspace_members(
     for directory in LIBRARY_CRATE_DIRS
         .iter()
         .chain(ADAPTER_LIBRARY_CRATE_DIRS.iter())
-        .chain(INTERNAL_CRATE_DIRS.iter())
+        .chain(INTERNAL_LIBRARY_CRATE_DIRS.iter())
     {
+        // The installation owner is part of the target release shape, but its
+        // package is introduced by the project-tooling change. Keep this
+        // policy valid on the preceding commit while requiring the package as
+        // soon as its source directory exists.
+        if !subject.root.join(directory).is_dir() {
+            continue;
+        }
         if !discovered.iter().any(|found| found == directory) {
             violations.push(Violation::new(format!(
                 "{directory} is listed as a library crate but no workspace member with a library \
@@ -445,6 +502,10 @@ mod tests {
             library_package_name("crates/fixture").as_deref(),
             Some("phoxal-fixture")
         );
+        assert_eq!(
+            library_package_name("contracts/motion").as_deref(),
+            Some("phoxal-motion")
+        );
         // A hyphenated suffix maps through unchanged; no such crate exists
         // today, and the rule has to hold for the one that might.
         assert_eq!(
@@ -457,6 +518,8 @@ mod tests {
         assert_eq!(library_package_name("crates/macros/inner"), None);
         assert_eq!(library_package_name("phoxal-macros"), None);
         assert_eq!(library_package_name("services/drive"), None);
+        assert_eq!(library_package_name("contracts"), None);
+        assert_eq!(library_package_name("contracts/motion/inner"), None);
         assert_eq!(library_package_name("cratesfoo"), None);
     }
 
@@ -467,13 +530,36 @@ mod tests {
         for directory in LIBRARY_CRATE_DIRS
             .iter()
             .chain(ADAPTER_LIBRARY_CRATE_DIRS.iter())
-            .chain(INTERNAL_CRATE_DIRS.iter())
+            .chain(INTERNAL_LIBRARY_CRATE_DIRS.iter())
         {
             assert!(
                 library_package_name(directory).is_some(),
                 "{directory} is listed as a library crate but names no package"
             );
         }
+    }
+
+    #[test]
+    fn every_public_owner_has_a_stable_registry_package_identity() {
+        for (directory, package) in [
+            ("phoxal", "phoxal"),
+            ("crates/macros", "phoxal-macros"),
+            ("crates/build", "phoxal-build"),
+            ("crates/port", "phoxal-port"),
+            ("crates/robotics", "phoxal-robotics"),
+            ("crates/project", "phoxal-project"),
+            ("crates/installation", "phoxal-installation"),
+            ("crates/mujoco", "phoxal-mujoco"),
+            ("contracts/motion", "phoxal-motion"),
+            ("contracts/navigation", "phoxal-navigation"),
+        ] {
+            assert_eq!(library_package_name(directory).as_deref(), Some(package));
+            assert!(
+                is_library_package(package),
+                "{package} is not a public library"
+            );
+        }
+        assert!(!is_library_package("phoxal-contract-owner-fixture"));
     }
 
     /// A rule that holds prints as a single PASS line; one that does not names

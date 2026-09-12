@@ -1,6 +1,6 @@
 # Webots adapter
 
-This directory contains the official Webots adapter packages for the Phoxal framework train.
+This directory contains independently versioned official Webots adapter packages for Phoxal.
 The adapter supports exactly Webots R2025a.
 It discovers Webots through `WEBOTS_HOME` or the platform default and refuses every other observed version.
 

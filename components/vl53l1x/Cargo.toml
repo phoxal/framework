@@ -1,6 +1,6 @@
 [package]
 name = "phoxal-component-vl53l1x"
-version.workspace = true
+version = "0.68.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

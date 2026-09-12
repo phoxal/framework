@@ -9,14 +9,31 @@ This repository and its source are the authority for current framework implement
 
 ## Repository
 
-- `phoxal/` - the one framework library
-- `crates/` - the proc-macro package and the test fixture stager
-- `supervisor/` - framework-train execution observer
+- `phoxal/` - the framework facade and runtime library
+- `crates/` and `contracts/` - independently versioned public libraries, proc
+  macros, service-owned contracts, project tooling, and test fixtures
+- `supervisor/` - the framework execution supervisor
 - `services/`, `components/` - official runtime packages
-- `simulators/` - exact-train simulator adapter packages kept outside the universal framework library
+- `simulators/` - independently versioned simulator adapter packages kept
+  outside the universal framework library
+- `tools/cargo-phoxal/` - the registry-aware project and publication command
 - `fixture/` - the authored test robot, world, and components (the example robot project is [phoxal/robot-rover](https://github.com/phoxal/robot-rover))
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
+
+## Releases
+
+Every published library, contract, executable, and simulator package owns an
+independent semantic version in its Cargo manifest.
+Changes are planned by release-plz in a reviewable pull request, and unrelated
+packages remain unchanged.
+The framework does not publish rewritten packages to crates.io.
+After the owner change is merged, the exact `cargo package` archive and
+checksum follow the reviewed `phoxal` registry admission path in dependency
+order.
+Registry publication is intentionally separate from release-plz because the
+static registry has no Cargo upload API and requires human review of provenance
+and ownership records.
 
 ```sh
 cargo fmt --all -- --check

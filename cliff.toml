@@ -42,6 +42,6 @@ commit_parsers = [
 ]
 protect_breaking_commits = true
 filter_commits = false
-# The framework publishes as one train and therefore has one shared `v<version>`
-# release boundary.
+# Release-plz plans package versions independently. The tag pattern remains
+# available for an owner workflow that chooses to annotate a package release.
 tag_pattern = "^v[0-9].*"

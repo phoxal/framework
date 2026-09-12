@@ -21,7 +21,7 @@ pub(crate) fn validate_registry_publish(
             "{package_name} is {role} but {} does not set publish = \
              [\"{PHOXAL_PROVIDER}\"]; executables publish to the static \
              {PHOXAL_PROVIDER} registry and never to crates.io, and release-plz must be able \
-             to see them so their changes cut trains. Found: {}",
+             to see them for change-driven version planning. Found: {}",
             relative_display(root, manifest_path),
             if publish.is_none() {
                 "no publish field (defaults to crates.io)".to_string()

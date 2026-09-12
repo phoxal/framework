@@ -3,7 +3,7 @@
 [alias]
 xtask = "run --quiet --package xtask --"
 
-# The static registry this workspace's executables publish to.
+# The static registry this workspace's published packages use.
 # Committed here rather than passed per
 # invocation because everything that touches this workspace needs it:
 # release-plz aborts outright without it ("registry index was not found in any
