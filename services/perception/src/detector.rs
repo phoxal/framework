@@ -175,10 +175,10 @@ fn local_to_map_position(
 impl From<api::perception::InvalidDetection> for DetectionValidationError {
     fn from(error: api::perception::InvalidDetection) -> Self {
         match error {
-            api::perception::InvalidDetection::InvalidClassId => Self::InvalidClassId,
-            api::perception::InvalidDetection::InvalidConfidence => Self::ConfidenceOutOfRange,
-            api::perception::InvalidDetection::InvalidPosition => Self::NonFinitePosition,
-            api::perception::InvalidDetection::InvalidFrameId => Self::InvalidFrameId,
+            api::perception::InvalidDetection::ClassId => Self::InvalidClassId,
+            api::perception::InvalidDetection::Confidence => Self::ConfidenceOutOfRange,
+            api::perception::InvalidDetection::Position => Self::NonFinitePosition,
+            api::perception::InvalidDetection::FrameId => Self::InvalidFrameId,
         }
     }
 }

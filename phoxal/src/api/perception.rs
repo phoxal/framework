@@ -109,19 +109,19 @@ struct DetectionWire {
 /// Why a detection could not be admitted to the current wire contract.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum InvalidDetection {
-    InvalidClassId,
-    InvalidConfidence,
-    InvalidPosition,
-    InvalidFrameId,
+    ClassId,
+    Confidence,
+    Position,
+    FrameId,
 }
 
 impl std::fmt::Display for InvalidDetection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
-            Self::InvalidClassId => "perception class id must be a bounded non-empty identifier",
-            Self::InvalidConfidence => "perception confidence must be finite and in [0, 1]",
-            Self::InvalidPosition => "perception position must contain only finite coordinates",
-            Self::InvalidFrameId => "perception frame id must be a bounded non-empty identifier",
+            Self::ClassId => "perception class id must be a bounded non-empty identifier",
+            Self::Confidence => "perception confidence must be finite and in [0, 1]",
+            Self::Position => "perception position must contain only finite coordinates",
+            Self::FrameId => "perception frame id must be a bounded non-empty identifier",
         };
         formatter.write_str(message)
     }
@@ -139,17 +139,17 @@ impl Detection {
     ) -> Result<Self, InvalidDetection> {
         let class_id = class_id.into();
         if !valid_identifier(&class_id) {
-            return Err(InvalidDetection::InvalidClassId);
+            return Err(InvalidDetection::ClassId);
         }
         if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
-            return Err(InvalidDetection::InvalidConfidence);
+            return Err(InvalidDetection::Confidence);
         }
         if !position_m.iter().all(|coordinate| coordinate.is_finite()) {
-            return Err(InvalidDetection::InvalidPosition);
+            return Err(InvalidDetection::Position);
         }
         let frame_id = frame_id.into();
         if !valid_identifier(&frame_id) {
-            return Err(InvalidDetection::InvalidFrameId);
+            return Err(InvalidDetection::FrameId);
         }
         Ok(Self {
             class_id,
