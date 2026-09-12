@@ -98,6 +98,10 @@ pub trait OutputBindings: 'static {
     const FIELDS: &'static [OutputField];
 }
 
+impl OutputBindings for () {
+    const FIELDS: &'static [OutputField] = &[];
+}
+
 // Attribute macros share the Rust module namespace with this metadata.  The
 // re-exports are intentionally nested so authors can spell the normative
 // `#[phoxal::runtime::outputs::state(...)]` path.

@@ -62,6 +62,44 @@ impl Row {
 }
 
 impl Presence {
+    /// Construct presence rows from an already admitted executable graph.
+    ///
+    /// Source-side `phoxal/bundle/v0` bundles carry the exact executable set,
+    /// so the supervisor must observe that set rather than reconstructing a
+    /// graph from package names or component capabilities.
+    pub(crate) fn for_entries(
+        entries: impl IntoIterator<Item = (String, ParticipantKind)>,
+    ) -> crate::Result<Self> {
+        let mut rows = BTreeMap::new();
+        for (id, kind) in entries {
+            let participant = ParticipantId::new(&id)
+                .map_err(|error| anyhow::anyhow!("invalid executable instance `{id}`: {error}"))?;
+            if rows
+                .insert(
+                    participant,
+                    Row {
+                        kind,
+                        producers: Vec::new(),
+                    },
+                )
+                .is_some()
+            {
+                return Err(anyhow::anyhow!(
+                    "executable graph contains duplicate instance `{id}`"
+                ));
+            }
+        }
+        if !rows.keys().any(|participant| participant.as_str() == BRAIN) {
+            return Err(anyhow::anyhow!(
+                "executable graph is missing required instance `brain`"
+            ));
+        }
+        Ok(Self {
+            rows,
+            completed: false,
+        })
+    }
+
     /// The expected runtime set of one compiled robot: `brain`, every service,
     /// and every component instance that declares a `driver` block.
     ///
@@ -74,6 +112,10 @@ impl Presence {
         reason = "a service and component-instance id are validated `is_topology_token` values and \
                   `brain` is a literal in that same alphabet, which is exactly what a participant \
                   id accepts, so no robot the bundle could have parsed reaches the failure arm"
+    )]
+    #[allow(
+        dead_code,
+        reason = "legacy observer fixtures still construct expected component-driver rows"
     )]
     pub(crate) fn for_robot(robot: &Robot) -> Self {
         let mut rows = BTreeMap::new();

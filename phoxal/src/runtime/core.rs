@@ -788,18 +788,21 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
     }
 }
 
-/// Process entrypoint placeholder for the transport-owned runner.
+/// Run one registered runtime process from the supervisor's explicit launch
+/// contract.
 ///
-/// A runtime binary can expose `main` with this function while the selected
-/// host supplies configuration, transport, and scheduling through its bundle
-/// runner.  Returning a typed error is preferable to silently constructing a
-/// default configuration or running an unbounded loop.
+/// The process entrypoint owns its Tokio runtime, parses `RuntimeLaunch`,
+/// attaches a bus session scoped to the admitted execution, and drives the
+/// serialized runtime owner until SIGINT or SIGTERM. Configuration and the
+/// selected executable are read from the immutable bundle named by argv;
+/// there is no default configuration or source-tree fallback.
 #[allow(dead_code, reason = "the transport-owned binary calls this entrypoint")]
-pub fn run<R: RegisteredRuntime>(_service: R) -> crate::Result<()> {
-    R::__retain_artifact_metadata();
-    Err(anyhow::anyhow!(
-        "the transport-owned runtime runner is not available in the direct authoring profile"
-    ))
+pub fn run<R>(service: R) -> crate::Result<()>
+where
+    R: RegisteredRuntime,
+    R::Inputs: super::input::InputSnapshot,
+{
+    super::runner::run_transport(service)
 }
 
 #[cfg(test)]

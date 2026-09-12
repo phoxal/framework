@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
+use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::core::{AcceptedInvocation, Config, OutputAdmission, RegisteredRuntime, RuntimeOwner};
-use super::input::InputSnapshot;
+use super::input::{InputSet, InputSnapshot};
+use super::outputs::{OutputBindings, OutputSet};
 use super::schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 use super::{ExecutionTime, RuntimeStatus};
 
@@ -306,6 +308,251 @@ impl RuntimeClock for SystemClock {
     }
 }
 
+/// Run one compiled runtime process against its supervisor-owned execution.
+///
+/// The process owns exactly one bus session and one serialized runner.  The
+/// session is opened only for the execution id resolved from the explicit
+/// rendezvous endpoint, and the Ready lease is held for the whole time the
+/// runner is live.  The first transport adapter is intentionally narrow: an
+/// empty generated input/output surface is a complete, useful runtime (for
+/// example a composition root), while a typed field is refused until its
+/// generated Protobuf codec and endpoint binding are available.  Refusing the
+/// latter is important because silently dropping a declared field would make
+/// the runtime appear healthy while violating its contract.
+pub(crate) fn run_transport<R>(service: R) -> crate::Result<()>
+where
+    R: RegisteredRuntime,
+    R::Inputs: InputSnapshot,
+{
+    R::__retain_artifact_metadata();
+    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    tokio_runtime.block_on(run_transport_async(service))
+}
+
+async fn run_transport_async<R>(service: R) -> crate::Result<()>
+where
+    R: RegisteredRuntime,
+    R::Inputs: InputSnapshot,
+{
+    let launch = RuntimeLaunch::parse()?;
+    validate_empty_transport_surface::<R>(&launch)?;
+    let manifest = RuntimeLaunchManifest::open(&launch.bundle_root, &launch.instance_id)?;
+    let config = manifest.decode_config::<R>()?;
+    let participant = crate::identity::ParticipantId::new(launch.instance_id.clone())
+        .map_err(|error| anyhow::anyhow!("invalid runtime participant id: {error}"))?;
+    let shutdown = crate::participant::runner::signal::shutdown_signal()?;
+    tokio::pin!(shutdown);
+
+    let execution = tokio::select! {
+        biased;
+        _ = &mut shutdown => return Ok(()),
+        result = crate::execution::resolve_execution(&launch.connect) => result?,
+    };
+
+    // Runtime initialization is local and serialized before transport Ready
+    // is declared.  The adapters retain the execution-scoped handle and
+    // therefore cannot accidentally read or publish another execution root.
+    let input = ExecutionInputAdapter::unbound();
+    let output = ExecutionOutputAdapter::unbound();
+    let mut runner = RuntimeRunner::new(service, ExecutionTime::default(), config, input, output)?;
+
+    let (owner, bus) = tokio::select! {
+        biased;
+        _ = &mut shutdown => return Ok(()),
+        result = crate::bus::BusOwner::open(crate::bus::BusConfig::for_participant(
+            execution,
+            participant,
+            vec![launch.connect.clone()],
+        )) => result?,
+    };
+    let ready = match tokio::select! {
+        biased;
+        _ = &mut shutdown => {
+            let _ = owner.close().await;
+            return Ok(());
+        }
+        result = owner.declare_participant_ready() => result,
+    } {
+        Ok(ready) => ready,
+        Err(error) => {
+            let _ = owner.close().await;
+            return Err(error.into());
+        }
+    };
+
+    runner.inputs_mut().bind(bus.clone());
+    runner.outputs_mut().bind(bus);
+
+    let mut ticker = tokio::time::interval(R::SPEC.period.as_duration());
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut clock = SystemClock::new();
+    let result = loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => break Ok(()),
+            _ = ticker.tick() => match runner.poll(clock.now()) {
+                Ok(PollOutcome::NotDue { .. } | PollOutcome::Accepted { .. }) => {}
+                Ok(PollOutcome::Stopped) => break Ok(()),
+                Err(error) => break Err(error),
+            },
+        }
+    };
+
+    let stop_result = runner.stop();
+    drop(ready);
+    let _close_report = owner.close().await;
+    result.and(stop_result)
+}
+
+fn validate_empty_transport_surface<R: RegisteredRuntime>(
+    launch: &RuntimeLaunch,
+) -> crate::Result<()>
+where
+    R::Inputs: InputSet,
+    R::Outputs: OutputSet,
+{
+    if !<R::Inputs as InputSet>::FIELDS.is_empty()
+        || !<R::Outputs as OutputSet>::FIELDS.is_empty()
+        || !<R as OutputBindings>::FIELDS.is_empty()
+    {
+        return Err(anyhow::anyhow!(RunnerError::TypedBindingsUnavailable {
+            instance: launch.instance_id.clone(),
+            connect: launch.connect.clone(),
+        }));
+    }
+    Ok(())
+}
+
+/// The execution-scoped input side of the runtime process boundary.
+///
+/// The empty implementation still owns the live bus handle once the process
+/// has joined its execution.  It is useful for runtimes with no input fields
+/// and, importantly, makes bus closure a runtime failure rather than an
+/// invisible source of invented defaults.
+struct ExecutionInputAdapter<R> {
+    bus: Option<crate::bus::BusHandle>,
+    stopped: bool,
+    _runtime: PhantomData<fn() -> R>,
+}
+
+impl<R> ExecutionInputAdapter<R> {
+    fn unbound() -> Self {
+        Self {
+            bus: None,
+            stopped: false,
+            _runtime: PhantomData,
+        }
+    }
+
+    fn bind(&mut self, bus: crate::bus::BusHandle) {
+        self.bus = Some(bus);
+    }
+
+    fn ensure_open(&self) -> crate::Result<()> {
+        let bus = self
+            .bus
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(crate::bus::BusError::Closed))?;
+        if matches!(bus.terminal(), crate::bus::BusTerminal::Open) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(crate::bus::BusError::Closed))
+        }
+    }
+}
+
+impl<R> InputSource<R> for ExecutionInputAdapter<R>
+where
+    R: RegisteredRuntime,
+    R::Inputs: InputSnapshot,
+{
+    fn freeze(&mut self, _candidate: &HardwareInvocation) -> crate::Result<R::Inputs> {
+        if self.stopped {
+            return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
+        }
+        self.ensure_open()?;
+        Ok(R::Inputs::empty())
+    }
+
+    fn stop(&mut self) -> crate::Result<()> {
+        self.stopped = true;
+        Ok(())
+    }
+
+    fn reset(&mut self) -> crate::Result<()> {
+        self.stopped = false;
+        Ok(())
+    }
+}
+
+/// The execution-scoped output side of the runtime process boundary.
+struct ExecutionOutputAdapter<Outputs> {
+    bus: Option<crate::bus::BusHandle>,
+    stopped: bool,
+    _outputs: PhantomData<fn() -> Outputs>,
+}
+
+impl<Outputs> ExecutionOutputAdapter<Outputs> {
+    fn unbound() -> Self {
+        Self {
+            bus: None,
+            stopped: false,
+            _outputs: PhantomData,
+        }
+    }
+
+    fn bind(&mut self, bus: crate::bus::BusHandle) {
+        self.bus = Some(bus);
+    }
+
+    fn ensure_open(&self) -> crate::Result<()> {
+        let bus = self
+            .bus
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(crate::bus::BusError::Closed))?;
+        if matches!(bus.terminal(), crate::bus::BusTerminal::Open) {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(crate::bus::BusError::Closed))
+        }
+    }
+}
+
+impl<Outputs> OutputAdmission<Outputs> for ExecutionOutputAdapter<Outputs> {
+    type Reservation = ();
+
+    fn reserve(&mut self, _outputs: &Outputs) -> crate::Result<Self::Reservation> {
+        if self.stopped {
+            return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
+        }
+        self.ensure_open()?;
+        Ok(())
+    }
+}
+
+impl<Outputs> OutputSink<Outputs> for ExecutionOutputAdapter<Outputs> {
+    fn publish(
+        &mut self,
+        accepted: AcceptedInvocation<Outputs, Self::Reservation>,
+    ) -> crate::Result<()> {
+        self.ensure_open()?;
+        let _ = accepted.into_parts();
+        Ok(())
+    }
+
+    fn stop(&mut self) -> crate::Result<()> {
+        self.stopped = true;
+        Ok(())
+    }
+
+    fn reset(&mut self) -> crate::Result<()> {
+        self.stopped = false;
+        Ok(())
+    }
+}
+
 /// Result of one bounded runner poll.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PollOutcome {
@@ -458,6 +705,16 @@ where
             })?;
         self.stopped = false;
         Ok(())
+    }
+
+    /// Borrow the input adapter for process-boundary binding or inspection.
+    pub(crate) fn inputs_mut(&mut self) -> &mut Inputs {
+        &mut self.inputs
+    }
+
+    /// Borrow the output adapter for process-boundary binding or inspection.
+    pub(crate) fn outputs_mut(&mut self) -> &mut Outputs {
+        &mut self.outputs
     }
 
     /// Runtime lifecycle status.

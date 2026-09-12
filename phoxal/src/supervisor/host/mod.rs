@@ -1,20 +1,19 @@
-//! Watch one compiled bundle's execution and answer questions about it.
+//! Own one compiled bundle's execution and answer questions about it.
 //!
 //! The supervisor reads `manifest.json`, runs the embedded router every
-//! participant dials, watches participant Ready leases, retains logs and
-//! telemetry, serves the bundle, and can reboot or power off its host. It
-//! starts nothing and stops nothing: runtime process ownership remains with
-//! the deployment launcher until the new process boundary is admitted.
+//! participant dials, launches the exact admitted executable graph, watches
+//! participant Ready leases, retains logs and telemetry, serves the bundle,
+//! and can reboot or power off its host. Required child processes remain
+//! owned by this foreground task until they are reaped.
 //!
 //! Only four things end the run, and every one of them means this process can
 //! no longer do its job: the manifest is unreadable, the router cannot bind,
 //! the router disappears under it, or the control plane dies. A runtime being
-//! absent is none of those - it is the `Degraded` lifecycle, published and
-//! waited on. There is no failure document either: all four fatal conditions
-//! take the transport with them, so nothing this process published on the way
-//! down would reach anyone. What a client sees instead is the
-//! `supervisor/presence` liveliness token disappearing, which is the one piece
-//! of evidence that survives its author.
+//! absent after the graph became ready is an execution failure: the child
+//! graph is stopped, status and logs remain available, and a fresh execution
+//! requires an explicit new supervisor start. The supervisor itself remains
+//! alive until an operator asks it to stop, so failure evidence is not lost
+//! with the required children.
 //!
 //! # This is an implementation, not an SDK
 //!
@@ -33,6 +32,7 @@
 pub(crate) mod bundle;
 pub(crate) mod lock;
 pub(crate) mod presence;
+pub(crate) mod process;
 pub(crate) mod router;
 pub(crate) mod serve;
 pub(crate) mod signal;
@@ -47,9 +47,7 @@ use crate::bus::{
     BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
     ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
-use crate::communication::{
-    DeploymentTarget, ExecutionDefinition, ServicePorts, SupervisorAdapter,
-};
+use crate::communication::{DeploymentTarget, ExecutionDefinition, ServicePorts, SupervisorAdapter};
 use crate::communication::session::{ExecutionState as PublicExecutionState, ExecutionSummary};
 use crate::communication_transport::{PrincipalPolicy, PublicSessionServer, PublicTransportLimits};
 use crate::identity::ExecutionId;
@@ -59,6 +57,8 @@ use tokio_util::sync::CancellationToken;
 
 use presence::Presence;
 use state::ExecutionState;
+use bundle::Bundle;
+use process::ProcessSupervisor;
 
 const SUPERVISOR_LABEL: &str = "phoxal-supervisor";
 
@@ -84,13 +84,14 @@ pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> 
     let runtime = bundle::open(&canonical)?;
     tracing::info!(
         bundle = %runtime.root().display(),
+        robot = runtime.robot_id(),
         lock = %lock.path().display(),
         scope = target.scope(),
         supervisor_id = target.supervisor(),
         "phoxal-supervisor starting"
     );
 
-    let state = ExecutionState::new(Presence::for_robot(runtime.robot()))?;
+    let state = ExecutionState::new(Presence::for_entries(runtime.expected_processes())?)?;
 
     let shutdown = CancellationToken::new();
     // Installed before the router is opened, so a signal arriving mid-startup
@@ -103,7 +104,7 @@ pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> 
 }
 
 async fn execute(
-    runtime: crate::bundle::RuntimeBundle,
+    runtime: Bundle,
     paths: &RuntimeRendezvous,
     state: &ExecutionState,
     target: DeploymentTarget,
@@ -162,20 +163,163 @@ async fn execute(
 
     // Declared before the control plane starts serving, so a participant that
     // was already up is seen through the observer's history rather than missed.
-    let readiness = observe_participants(&bus, state).await?;
+    let readiness = match observe_participants(&bus, state).await {
+        Ok(readiness) => readiness,
+        Err(error) => {
+            return finish_startup_error(error, public, identity, owner, router).await;
+        }
+    };
     // Readiness is the router being up and reachable, which is exactly what
     // this point is. It is deliberately not the graph being complete: systemd
     // orders the runtime units after this one, so a supervisor that withheld
     // READY until they were present would be waiting on units waiting on it.
-    let watchdog = notify_systemd(shutdown.clone())?;
+    let watchdog = match notify_systemd(shutdown.clone()) {
+        Ok(watchdog) => watchdog,
+        Err(error) => {
+            drop(readiness);
+            return finish_startup_error(error, public, identity, owner, router).await;
+        }
+    };
 
-    let outcome = match serve::serve(bus.clone(), state.clone(), runtime, shutdown.clone()).await {
-        Ok(()) if !shutdown.is_cancelled() => Err(anyhow::anyhow!(
-            "the supervisor control plane ended unexpectedly"
-        )),
-        other => other,
+    if shutdown.is_cancelled() {
+        drop(readiness);
+        drop(identity);
+        return finish_startup_stop(public, owner, router, watchdog).await;
+    }
+    let mut processes = match runtime.source() {
+        Some(source) => match ProcessSupervisor::launch(source, &endpoint).await {
+            Ok(processes) => Some(processes),
+            Err(error) => {
+                let error = anyhow::anyhow!(
+                    "failed to launch the source bundle runtime graph: {error:#}"
+                );
+                mark_execution_failed(&public, execution, &error).await;
+                let serve_result = serve_until_stop(
+                    &bus,
+                    state,
+                    runtime.root(),
+                    runtime.legacy_manifest(),
+                    shutdown.clone(),
+                )
+                .await;
+                return finish_failed_execution(
+                    error,
+                    serve_result,
+                    public,
+                    owner,
+                    router,
+                    watchdog,
+                    shutdown.clone(),
+                )
+                .await;
+            }
+        },
+        None => None,
+    };
+    let process_readiness = if let Some(processes) = processes.as_mut() {
+        processes.wait_ready(state, &shutdown).await
+    } else {
+        Ok(())
+    };
+    if let Err(error) = process_readiness {
+        let intentional_stop = shutdown.is_cancelled();
+        if let Some(processes) = processes.as_mut() {
+            let _ = processes.stop().await;
+        }
+        if intentional_stop {
+            drop(readiness);
+            drop(identity);
+            return finish_startup_stop(public, owner, router, watchdog).await;
+        }
+        mark_execution_failed(&public, execution, &error).await;
+        let serve_result = serve_until_stop(
+            &bus,
+            state,
+            runtime.root(),
+            runtime.legacy_manifest(),
+            shutdown.clone(),
+        )
+        .await;
+        return finish_failed_execution(
+            error,
+            serve_result,
+            public,
+            owner,
+            router,
+            watchdog,
+            shutdown.clone(),
+        )
+        .await;
+    }
+    if runtime.source().is_some() {
+        if let Err(error) = public
+            .set_status(
+                crate::communication::session::SupervisorState::Ready,
+                None,
+            )
+            .await
+        {
+            tracing::warn!(error = %error, "failed to publish supervisor Ready status");
+        }
+        if let Err(error) = public
+            .set_execution_state(&execution.to_string(), PublicExecutionState::Ready)
+            .await
+        {
+            tracing::warn!(error = %error, "failed to publish execution Ready state");
+        }
+    }
+    let serve_bundle_root = runtime.root().to_path_buf();
+    let serve_manifest = runtime.legacy_manifest();
+    let mut process_monitor = processes;
+    let outcome = tokio::select! {
+        result = serve::serve(
+            bus.clone(),
+            state.clone(),
+            serve_bundle_root.clone(),
+            serve_manifest.clone(),
+            shutdown.clone(),
+        ) => match result {
+            Ok(()) if !shutdown.is_cancelled() => Err(anyhow::anyhow!(
+                "the supervisor control plane ended unexpectedly"
+            )),
+            other => other,
+        },
+        result = async {
+            match process_monitor.as_mut() {
+                Some(processes) => processes.monitor(&shutdown).await,
+                None => std::future::pending().await,
+            }
+        }, if process_monitor.is_some() => {
+            match result {
+                Ok(()) if shutdown.is_cancelled() => Ok(()),
+                Ok(()) => Err(anyhow::anyhow!("required runtime process monitor ended unexpectedly")),
+                Err(error) => {
+                    let error = anyhow::anyhow!("required runtime process failed: {error:#}");
+                    if let Some(processes) = process_monitor.as_mut() {
+                        if let Err(stop_error) = processes.stop().await {
+                            tracing::warn!(error = %stop_error, "failed to stop all runtime processes after failure");
+                        }
+                    }
+                    mark_execution_failed(&public, execution, &error).await;
+                    let _ = serve_until_stop(
+                        &bus,
+                        state,
+                        &serve_bundle_root,
+                        serve_manifest.clone(),
+                        shutdown.clone(),
+                    )
+                    .await;
+                    Err(error)
+                }
+            }
+        }
     };
     shutdown.cancel();
+
+    let process_close = match process_monitor.as_mut() {
+        Some(processes) => processes.stop().await,
+        None => Ok(()),
+    };
 
     let public_outcome = public.close().await.map_err(anyhow::Error::from);
 
@@ -197,6 +341,9 @@ async fn execute(
         close,
         router_close,
     );
+    if let Err(error) = process_close {
+        return Err(error);
+    }
     match router_loss.get() {
         Some(reason) => Err(anyhow::anyhow!("{reason}")),
         None => outcome,
@@ -234,7 +381,7 @@ fn finish_after_transport_close(
 async fn start_public_session(
     bus: &BusHandle,
     target: &DeploymentTarget,
-    runtime: &crate::bundle::RuntimeBundle,
+    runtime: &Bundle,
     state: &ExecutionState,
     execution: ExecutionId,
 ) -> Result<PublicSessionServer> {
@@ -244,9 +391,9 @@ async fn start_public_session(
         crate::version::FrameworkVersion::CURRENT_SPELLING,
     )?;
     let services = runtime
-        .robot()
         .services()
-        .map(|(instance, _)| ServicePorts::new(instance.as_str(), Vec::new()))
+        .into_iter()
+        .map(|instance| ServicePorts::new(instance, Vec::new()))
         .collect::<Result<Vec<_>, _>>()?;
     let timeline = state.time_domain().timeline.to_string();
     adapter.install_execution(ExecutionDefinition::new(
@@ -269,6 +416,110 @@ async fn start_public_session(
         PublicTransportLimits::default(),
     )
     .await?)
+}
+
+async fn serve_until_stop(
+    bus: &BusHandle,
+    state: &ExecutionState,
+    bundle_root: &Path,
+    manifest: Option<crate::model::manifest::ManifestDocument>,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    serve::serve(
+        bus.clone(),
+        state.clone(),
+        bundle_root.to_path_buf(),
+        manifest,
+        shutdown,
+    )
+    .await
+}
+
+async fn mark_execution_failed(
+    public: &PublicSessionServer,
+    execution: ExecutionId,
+    error: &anyhow::Error,
+) {
+    let detail = format!("{error:#}");
+    if let Err(status_error) = public
+        .set_status(
+            crate::communication::session::SupervisorState::Failed,
+            Some(detail),
+        )
+        .await
+    {
+        tracing::warn!(error = %status_error, "failed to publish supervisor Failed status");
+    }
+    if let Err(state_error) = public
+        .set_execution_state(&execution.to_string(), PublicExecutionState::Failed)
+        .await
+    {
+        tracing::warn!(error = %state_error, "failed to publish execution Failed state");
+    }
+    tracing::error!(execution = %execution, error = %error, "required runtime graph failed");
+}
+
+async fn finish_startup_stop(
+    public: PublicSessionServer,
+    owner: BusOwner,
+    router: self::router::EmbeddedRouter,
+    watchdog: Option<tokio::task::JoinHandle<Result<()>>>,
+) -> Result<()> {
+    let public = public.close().await.map_err(anyhow::Error::from);
+    let watchdog = match watchdog {
+        Some(task) => task
+            .await
+            .context("the systemd watchdog task panicked")
+            .and_then(std::convert::identity),
+        None => Ok(()),
+    };
+    let close = owner.close().await;
+    let router = router.close().await;
+    finish_after_transport_close(Ok(()), watchdog, public, close, router)
+}
+
+async fn finish_startup_error(
+    failure: anyhow::Error,
+    public: PublicSessionServer,
+    identity: crate::bus::KeyLivelinessToken,
+    owner: BusOwner,
+    router: self::router::EmbeddedRouter,
+) -> Result<()> {
+    drop(identity);
+    let public = public.close().await.map_err(anyhow::Error::from);
+    let close = owner.close().await;
+    let router = router.close().await;
+    finish_after_transport_close(Err(failure), Ok(()), public, close, router)
+}
+
+async fn finish_failed_execution(
+    failure: anyhow::Error,
+    served: Result<()>,
+    public: PublicSessionServer,
+    owner: BusOwner,
+    router: self::router::EmbeddedRouter,
+    watchdog: Option<tokio::task::JoinHandle<Result<()>>>,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    if let Err(error) = served {
+        tracing::warn!(error = %error, "failed execution could not keep its diagnostic surface alive");
+    }
+    shutdown.cancel();
+    let public = public.close().await.map_err(anyhow::Error::from);
+    let watchdog = match watchdog {
+        Some(task) => task
+            .await
+            .context("the systemd watchdog task panicked")
+            .and_then(std::convert::identity),
+        None => Ok(()),
+    };
+    let close = owner.close().await;
+    let router = router.close().await;
+    let cleanup = finish_after_transport_close(Ok(()), watchdog, public, close, router);
+    if let Err(error) = cleanup {
+        tracing::warn!(error = %error, "failed execution cleanup was not fully clean");
+    }
+    Err(failure)
 }
 
 async fn abort_router_startup(

@@ -198,12 +198,14 @@ jsonschema = { workspace = true }
 # other place in either repository that parses this section.
 object = "0.36"
 serial_test = { workspace = true }
+sha2 = { workspace = true }
 trybuild = { workspace = true }
 # `test-util` (paused/mocked virtual time) is additive to the `[dependencies]`
 # `tokio` features above and only applies to test/bench/example builds, never
 # the published lib artifact - the step-scheduler tests use it to prove
 # deterministic tick order/collapse without any real sleeping.
 tokio = { workspace = true, features = ["test-util"] }
+zenoh = { workspace = true }
 
 [lints]
 workspace = true
@@ -238,6 +240,11 @@ required-features = ["test-harness", "session"]
 name = "session_attaches_to_the_supervisor"
 path = "tests/session_attaches_to_the_supervisor.rs"
 required-features = ["session", "supervisor", "authoring"]
+
+[[test]]
+name = "runtime_supervisor_e2e"
+path = "tests/runtime_supervisor_e2e.rs"
+required-features = ["participant", "supervisor"]
 
 [[test]]
 name = "authoring_compile"
@@ -277,4 +284,9 @@ required-features = ["participant"]
 [[example]]
 name = "runtime_async_entrypoint"
 path = "examples/runtime_async_entrypoint.rs"
+required-features = ["participant"]
+
+[[bin]]
+name = "phoxal-runtime-reference"
+path = "tests/fixtures/runtime_reference.rs"
 required-features = ["participant"]

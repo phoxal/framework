@@ -9,7 +9,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::bundle::{BundlePath, RuntimeBundle};
+use crate::bundle::BundlePath;
 use crate::bus::{
     BusHandle, Codec, IncomingQuery, LivelinessStatus, MessagePack, QueryEndpoint, QueryFailure,
     ServeQuery, ServerQueryable, StreamPublisher, Topic,
@@ -71,12 +71,15 @@ const SIMULATION_PREPARATION_GRACE: Duration = Duration::from_secs(4);
 pub(crate) async fn serve(
     bus: BusHandle,
     state: ExecutionState,
-    bundle: RuntimeBundle,
+    bundle_root: std::path::PathBuf,
+    manifest: Option<ManifestDocument>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let mut tasks = JoinSet::new();
     tasks.spawn(serve_connect(bus.clone()));
-    tasks.spawn(serve_info(bus.clone(), bundle.manifest().clone()));
+    if let Some(manifest) = manifest {
+        tasks.spawn(serve_info(bus.clone(), manifest));
+    }
     tasks.spawn(serve_snapshots(bus.clone(), state.clone()));
     tasks.spawn(serve_current(bus.clone(), state.clone()));
     tasks.spawn(serve_time_domains(bus.clone(), state.clone()));
@@ -98,7 +101,7 @@ pub(crate) async fn serve(
         state.clone(),
         shutdown.clone(),
     ));
-    tasks.spawn(serve_bundle(bus.clone(), bundle.root().to_path_buf()));
+    tasks.spawn(serve_bundle(bus.clone(), bundle_root));
     tasks.spawn(serve_commands(bus.clone(), state.clone()));
     tasks.spawn(logs::run(bus.clone()));
     tasks.spawn(telemetry::run(bus.clone()));

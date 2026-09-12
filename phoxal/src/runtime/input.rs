@@ -83,6 +83,10 @@ pub trait InputSet: 'static {
     const FIELDS: &'static [InputField];
 }
 
+impl InputSet for () {
+    const FIELDS: &'static [InputField] = &[];
+}
+
 /// Constructs the first empty input cut for a runtime process.
 ///
 /// The empty cut is an explicit absence for every input form.  A transport
@@ -92,6 +96,10 @@ pub trait InputSet: 'static {
 pub trait InputSnapshot: InputSet {
     /// Build an immutable cut with no admitted observations or operations.
     fn empty() -> Self;
+}
+
+impl InputSnapshot for () {
+    fn empty() -> Self {}
 }
 
 /// A fixed bound for one frozen or pending batch.

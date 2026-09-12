@@ -24,10 +24,10 @@ use zenoh::query::{ConsolidationMode, Query, QueryTarget, Queryable};
 
 use crate::communication::bootstrap::SessionOffers;
 use crate::communication::session::{
-    BindPortRequest, BindPortResponse, CloseSessionRequest, CloseSessionResponse,
+    BindPortRequest, BindPortResponse, CloseSessionRequest, CloseSessionResponse, ExecutionState,
     ListExecutionsRequest, ListExecutionsResponse, ListPortsRequest, ListPortsResponse,
     OpenSessionRequest, OpenSessionResponse, RenewSessionRequest, RenewSessionResponse,
-    SupervisorInfoRequest, SupervisorInfoResponse, SupervisorStatusRequest,
+    SupervisorInfoRequest, SupervisorInfoResponse, SupervisorState, SupervisorStatusRequest,
     SupervisorStatusResponse,
 };
 use crate::communication::{
@@ -320,6 +320,7 @@ pub enum PublicTransportError {
 pub struct PublicSessionServer {
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
+    adapter: Arc<Mutex<SupervisorAdapter>>,
     _presence: zenoh::liveliness::LivelinessToken,
     _session: zenoh::Session,
 }
@@ -399,9 +400,42 @@ impl PublicSessionServer {
         Ok(Self {
             shutdown,
             tasks,
+            adapter,
             _presence: presence,
             _session: session,
         })
+    }
+
+    /// Update the supervisor status while retaining the public surface.
+    pub(crate) async fn set_status(
+        &self,
+        state: SupervisorState,
+        detail: Option<String>,
+    ) -> Result<(), PublicTransportError> {
+        self.adapter
+            .lock()
+            .await
+            .set_status(state, detail)
+            .map_err(|error| PublicTransportError::Adapter {
+                operation: "status".to_owned(),
+                detail: error.to_string(),
+            })
+    }
+
+    /// Update the execution lifecycle after a process graph transition.
+    pub(crate) async fn set_execution_state(
+        &self,
+        execution_id: &str,
+        state: ExecutionState,
+    ) -> Result<(), PublicTransportError> {
+        self.adapter
+            .lock()
+            .await
+            .set_execution_state(execution_id, state)
+            .map_err(|error| PublicTransportError::Adapter {
+                operation: "execution-state".to_owned(),
+                detail: error.to_string(),
+            })
     }
 
     /// Stop every public queryable and wait for its bounded receive loop.

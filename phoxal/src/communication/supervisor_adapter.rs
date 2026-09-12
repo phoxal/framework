@@ -692,6 +692,23 @@ impl SupervisorAdapter {
         Ok(())
     }
 
+    /// Replace one execution's lifecycle projection without changing its
+    /// identity, timeline, or admitted public service metadata.
+    pub(crate) fn set_execution_state(
+        &mut self,
+        execution_id: &str,
+        state: ExecutionState,
+    ) -> Result<(), SupervisorAdapterError> {
+        validate_execution_state(state as i32)?;
+        let execution = self.executions.get_mut(execution_id).ok_or_else(|| {
+            SupervisorAdapterError::ExecutionNotFound {
+                execution_id: execution_id.to_owned(),
+            }
+        })?;
+        execution.summary.state = state as i32;
+        Ok(())
+    }
+
     /// Install or replace one execution's generated public metadata.
     ///
     /// Replacing an existing execution always retires its bindings, even when
