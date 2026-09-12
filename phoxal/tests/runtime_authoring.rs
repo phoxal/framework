@@ -1,7 +1,7 @@
 use phoxal::runtime::input::{Events, Latest};
 use phoxal::runtime::{
-    ExecutionDuration, ExecutionTime, InitContext, ObservationStamp, Runtime, RuntimeOwner,
-    RuntimeStatus, StepContext, initialize, invoke,
+    ExecutionDuration, ExecutionTime, InitContext, ObservationStamp, OutputAdmission, Runtime,
+    RuntimeOwner, RuntimeStatus, StepContext, initialize, invoke,
 };
 
 struct Counter;
@@ -141,4 +141,39 @@ fn direct_owner_serializes_state_and_acceptance() {
     assert_eq!(second.invocation().index(), 1);
     assert_eq!(second.outputs().events, [9]);
     assert_eq!(owner.next_invocation().index(), 2);
+}
+
+struct RejectOutputs;
+
+impl OutputAdmission<CounterOutputs> for RejectOutputs {
+    type Reservation = ();
+
+    fn reserve(&mut self, _outputs: &CounterOutputs) -> phoxal::Result<Self::Reservation> {
+        anyhow::bail!("fixture capacity exhausted")
+    }
+}
+
+#[test]
+fn output_capacity_is_reserved_before_invocation_acceptance() {
+    let mut owner = RuntimeOwner::new(
+        Counter,
+        ExecutionTime::from_nanos(0),
+        CounterConfig { initial: 7 },
+    )
+    .expect("owner initialization");
+    let context = StepContext::first(
+        ExecutionTime::from_nanos(20_000_000),
+        ExecutionDuration::from_millis(20),
+    );
+    let inputs = CounterInputs {
+        latest: Latest::unavailable(),
+        events: Events::default(),
+    };
+    let error = match owner.accept_with(&context, &inputs, &mut RejectOutputs) {
+        Ok(_) => panic!("capacity rejection must reject the complete candidate"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("capacity exhausted"));
+    assert_eq!(owner.status(), RuntimeStatus::Failed);
+    assert_eq!(owner.next_invocation().index(), 0);
 }

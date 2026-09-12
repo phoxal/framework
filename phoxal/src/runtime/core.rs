@@ -457,20 +457,27 @@ pub enum RuntimeStatus {
 }
 
 /// The accepted products of one direct invocation.
-pub struct AcceptedInvocation<Outputs> {
+pub struct AcceptedInvocation<Outputs, Reservation = ()> {
     invocation: Invocation,
     context: StepContext,
     outputs: Outputs,
+    reservation: Reservation,
 }
 
-impl<Outputs> AcceptedInvocation<Outputs> {
+impl<Outputs, Reservation> AcceptedInvocation<Outputs, Reservation> {
     /// Creates an accepted invocation record.
     #[must_use]
-    pub const fn new(invocation: Invocation, context: StepContext, outputs: Outputs) -> Self {
+    pub const fn new(
+        invocation: Invocation,
+        context: StepContext,
+        outputs: Outputs,
+        reservation: Reservation,
+    ) -> Self {
         Self {
             invocation,
             context,
             outputs,
+            reservation,
         }
     }
 
@@ -492,16 +499,56 @@ impl<Outputs> AcceptedInvocation<Outputs> {
         &self.outputs
     }
 
-    /// Consumes the accepted products.
+    /// Capacity reserved before this invocation was accepted.
     #[must_use]
-    pub fn into_parts(self) -> (Invocation, StepContext, Outputs) {
-        (self.invocation, self.context, self.outputs)
+    pub const fn reservation(&self) -> &Reservation {
+        &self.reservation
     }
 
+    /// Consumes the accepted products.
+    #[must_use]
+    pub fn into_parts(self) -> (Invocation, StepContext, Outputs, Reservation) {
+        (
+            self.invocation,
+            self.context,
+            self.outputs,
+            self.reservation,
+        )
+    }
+}
+
+impl<Outputs> AcceptedInvocation<Outputs> {
     /// Consumes the record and returns only its output products.
+    ///
+    /// This convenience exists only for the direct adapter, whose unit
+    /// reservation carries no required-delivery capacity.
     #[must_use]
     pub fn into_outputs(self) -> Outputs {
         self.outputs
+    }
+}
+
+/// Local output validation and required-capacity reservation.
+///
+/// The host implements this against the complete candidate output set. A
+/// successful returned reservation remains owned by [`AcceptedInvocation`]
+/// across publication and required-delivery completion. Returning an error
+/// rejects the whole candidate and faults the current runtime execution.
+pub trait OutputAdmission<Outputs> {
+    /// Reservation that owns the admitted capacity.
+    type Reservation;
+
+    /// Validate the complete candidate and reserve all required local capacity.
+    fn reserve(&mut self, outputs: &Outputs) -> crate::Result<Self::Reservation>;
+}
+
+struct PermitAll;
+
+impl<Outputs> OutputAdmission<Outputs> for PermitAll {
+    type Reservation = ();
+
+    fn reserve(&mut self, _outputs: &Outputs) -> crate::Result<Self::Reservation> {
+        Ok(())
     }
 }
 
@@ -627,6 +674,23 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
         context: &StepContext,
         inputs: &R::Inputs,
     ) -> crate::Result<AcceptedInvocation<R::Outputs>> {
+        self.accept_with(context, inputs, &mut PermitAll)
+    }
+
+    /// Prepare one complete candidate, reserve output capacity, then accept it.
+    ///
+    /// No returned State or output becomes current before `admission` accepts
+    /// the complete output set. Admission failure is terminal for this runtime
+    /// execution, just like a step error or panic.
+    pub fn accept_with<A>(
+        &mut self,
+        context: &StepContext,
+        inputs: &R::Inputs,
+        admission: &mut A,
+    ) -> crate::Result<AcceptedInvocation<R::Outputs, A::Reservation>>
+    where
+        A: OutputAdmission<R::Outputs>,
+    {
         if self.status == RuntimeStatus::Failed {
             return Err(anyhow::anyhow!(InvocationError::Failed));
         }
@@ -662,6 +726,13 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
                 return Err(anyhow::anyhow!(InvocationError::Panicked));
             }
         };
+        let reservation = match admission.reserve(&outputs) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                self.status = RuntimeStatus::Failed;
+                return Err(error);
+            }
+        };
         self.state = Some(next_state);
         self.last_time = Some(context.now());
         self.next_index = self.next_index.saturating_add(1);
@@ -669,6 +740,7 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
             Invocation::new(actual),
             *context,
             outputs,
+            reservation,
         ))
     }
 }

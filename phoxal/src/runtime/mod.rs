@@ -19,8 +19,8 @@ pub use phoxal_macros::{input, inputs};
 
 pub use core::{
     AcceptedInvocation, Config, ExecutionDuration, ExecutionTime, InitContext, Invocation,
-    InvocationError, ObservationStamp, RegisteredRuntime, Runtime, RuntimeOwner, RuntimeSpec,
-    RuntimeSpecError, RuntimeStatus, Sample, StepContext, initialize, invoke, run,
+    InvocationError, ObservationStamp, OutputAdmission, RegisteredRuntime, Runtime, RuntimeOwner,
+    RuntimeSpec, RuntimeSpecError, RuntimeStatus, Sample, StepContext, initialize, invoke, run,
 };
 pub use operation::{
     ManagedOperation, OperationCompletion, OperationError, OperationKey, OperationOutcome,
