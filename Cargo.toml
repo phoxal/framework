@@ -20,6 +20,7 @@ members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
+    "crates/project",
     "contracts/motion",
     "contracts/navigation",
     "phoxal",
@@ -46,6 +47,7 @@ members = [
     "simulators/webots/world-controller",
     "simulators/webots/robot-controller",
     "xtask",
+    "tools/cargo-phoxal",
 ]
 # Keep the workspace's command runner out of plain root cargo builds: `xtask`
 # is the runner a maintainer invokes by name (`cargo xtask <verb>`), not part of
@@ -59,6 +61,7 @@ default-members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
+    "crates/project",
     "contracts/motion",
     "contracts/navigation",
     "phoxal",
@@ -84,6 +87,7 @@ default-members = [
     "simulators/webots/shared",
     "simulators/webots/world-controller",
     "simulators/webots/robot-controller",
+    "tools/cargo-phoxal",
 ]
 
 [workspace.dependencies]
@@ -172,6 +176,7 @@ phoxal-port = { path = "crates/port", version = "0.1.0", registry = "phoxal" }
 phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "phoxal" }
 phoxal-motion = { path = "contracts/motion", version = "0.1.0", registry = "phoxal" }
 phoxal-navigation = { path = "contracts/navigation", version = "0.1.0", registry = "phoxal" }
+phoxal-project = { path = "crates/project", version = "0.1.0" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.

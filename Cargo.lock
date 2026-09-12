@@ -468,6 +468,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-phoxal"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "phoxal-project",
+]
+
+[[package]]
 name = "cargo-platform"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2676,6 +2684,19 @@ dependencies = [
 [[package]]
 name = "phoxal-port"
 version = "0.1.0"
+
+[[package]]
+name = "phoxal-project"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.19",
+ "toml 1.1.3+spec-1.1.0",
+]
 
 [[package]]
 name = "phoxal-robotics"

@@ -1,0 +1,22 @@
+[package]
+name = "cargo-phoxal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "The Phoxal project compiler and Cargo source-development command."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "cargo-phoxal"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+phoxal-project = { workspace = true }
+
+[lints]
+workspace = true
