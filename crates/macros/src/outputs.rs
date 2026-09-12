@@ -920,6 +920,10 @@ fn output_metadata(name: &Ident, role: Role, options: &Options) -> TokenStream {
         .port
         .as_ref()
         .map_or_else(|| quote!(None), |port| quote!(Some((#port).name())));
+    let port_signature = options
+        .port
+        .as_ref()
+        .map_or_else(|| quote!(None), |port| quote!(Some((#port).signature())));
     let input = options.selector.as_ref().map_or_else(
         || quote!(None),
         |selector| quote!(Some(stringify!(#selector))),
@@ -942,6 +946,7 @@ fn output_metadata(name: &Ident, role: Role, options: &Options) -> TokenStream {
             name: stringify!(#name),
             kind: ::phoxal::runtime::outputs::OutputKind::#kind,
             port: #port,
+            port_signature: #port_signature,
             input: #input,
             project: #project,
             max_items: #max_items,

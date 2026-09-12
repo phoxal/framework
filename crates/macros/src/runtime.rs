@@ -53,6 +53,10 @@ pub fn expand_runtime(attr: TokenStream, item: TokenStream) -> syn::Result<Token
         "__phoxal_runtime_inputs_{}",
         service_name.to_string().to_snake_case()
     );
+    let artifact_static = format_ident!(
+        "__PHOXAL_RUNTIME_ARTIFACT_{}",
+        service_name.to_string().to_snake_case()
+    );
     let period = options.period_ms;
     let timeout = options.timeout_ms;
     let init_timeout = options.init_timeout_ms;
@@ -62,7 +66,40 @@ pub fn expand_runtime(attr: TokenStream, item: TokenStream) -> syn::Result<Token
         impl ::phoxal::runtime::RegisteredRuntime for #self_type {
             const SPEC: ::phoxal::runtime::RuntimeSpec =
                 ::phoxal::runtime::RuntimeSpec::from_millis(#period, #timeout, #init_timeout);
+
+            #[doc(hidden)]
+            fn __retain_artifact_metadata() {
+                ::std::hint::black_box(&#artifact_static);
+                for field in <Self::Inputs as ::phoxal::runtime::input::InputSet>::FIELDS {
+                    if let Some(signature) = field.port_signature {
+                        ::std::hint::black_box(signature.descriptor_set());
+                    }
+                }
+                for field in <Self::Outputs as ::phoxal::runtime::outputs::OutputSet>::FIELDS {
+                    if let Some(signature) = field.port_signature {
+                        ::std::hint::black_box(signature.descriptor_set());
+                    }
+                }
+                for field in <Self as ::phoxal::runtime::outputs::OutputBindings>::FIELDS {
+                    if let Some(signature) = field.port_signature {
+                        ::std::hint::black_box(signature.descriptor_set());
+                    }
+                }
+            }
         }
+
+        #[used]
+        #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_art"))]
+        #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_art"))]
+        #[doc(hidden)]
+        static #artifact_static: ::phoxal::runtime::artifact::ArtifactRecord =
+            ::phoxal::runtime::artifact::runtime_record(
+                ::phoxal::runtime::RuntimeSpec::from_millis(#period, #timeout, #init_timeout),
+                <<#self_type as ::phoxal::runtime::Runtime>::Config as ::phoxal::runtime::Config>::SCHEMA_JSON,
+                <<#self_type as ::phoxal::runtime::Runtime>::Inputs as ::phoxal::runtime::input::InputSet>::FIELDS,
+                <<#self_type as ::phoxal::runtime::Runtime>::Outputs as ::phoxal::runtime::outputs::OutputSet>::FIELDS,
+                <#self_type as ::phoxal::runtime::outputs::OutputBindings>::FIELDS,
+            );
 
         const fn #check_name<T: ::phoxal::runtime::input::InputSet>() {}
         const _: () = {

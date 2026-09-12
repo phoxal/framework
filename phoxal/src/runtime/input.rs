@@ -9,6 +9,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use super::{ExecutionTime, ObservationStamp, Sample};
+use crate::port::PortSignature;
 
 /// The input kind fixed by one runtime input form.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -33,6 +34,24 @@ pub enum InputKind {
     Operation,
 }
 
+impl InputKind {
+    /// Returns the stable lower-case spelling used by artifact contracts.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Latest => "latest",
+            Self::Samples => "samples",
+            Self::Events => "events",
+            Self::Setpoint => "setpoint",
+            Self::Stream => "stream",
+            Self::Commands => "commands",
+            Self::Read => "read",
+            Self::Request => "request",
+            Self::Operation => "operation",
+        }
+    }
+}
+
 /// Compile-time metadata emitted by `#[phoxal::runtime::inputs]`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputField {
@@ -48,6 +67,8 @@ pub struct InputField {
     pub max_bytes: Option<u64>,
     /// Optional served Commands descriptor name.
     pub port: Option<&'static str>,
+    /// Complete generated descriptor identity for a bound input port.
+    pub port_signature: Option<PortSignature>,
 }
 
 /// A type-level marker implemented by every supported input form.

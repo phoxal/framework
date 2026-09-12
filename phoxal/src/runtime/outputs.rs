@@ -4,6 +4,8 @@
 //! publish, start an activation, or retain a batch.  The runner owns those
 //! actions after a complete invocation has been accepted.
 
+use crate::port::PortSignature;
+
 /// The output role declared by one field or method.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputKind {
@@ -27,6 +29,24 @@ pub enum OutputKind {
     Operation,
 }
 
+impl OutputKind {
+    /// Returns the stable lower-case spelling used by artifact contracts.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Sample => "sample",
+            Self::Event => "event",
+            Self::Stream => "stream",
+            Self::Setpoint => "setpoint",
+            Self::Read => "read",
+            Self::Reply => "reply",
+            Self::Activate => "activate",
+            Self::Operation => "operation",
+        }
+    }
+}
+
 /// Compile-time metadata for one collected output role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputField {
@@ -36,6 +56,8 @@ pub struct OutputField {
     pub kind: OutputKind,
     /// Public port name for served outputs.
     pub port: Option<&'static str>,
+    /// Complete generated descriptor identity for a bound served port.
+    pub port_signature: Option<PortSignature>,
     /// Local input field selected by a reply, activation, or worker.
     pub input: Option<&'static str>,
     /// Projection method selected by an offered read.
@@ -64,6 +86,10 @@ pub struct OutputField {
 pub trait OutputSet: 'static {
     /// Declared transient fields in source order.
     const FIELDS: &'static [OutputField];
+}
+
+impl OutputSet for () {
+    const FIELDS: &'static [OutputField] = &[];
 }
 
 /// Metadata emitted for an inherent service output collector.

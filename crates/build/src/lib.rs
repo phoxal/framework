@@ -16,6 +16,8 @@ pub const PORT_PROTO: &str = include_str!("../proto/phoxal/port.proto");
 
 const DESCRIPTOR_FILE: &str = "phoxal-descriptors.bin";
 const PORT_KIND_EXTENSION: &str = "phoxal.port.kind";
+const MAX_DESCRIPTOR_BYTES: usize = 8 * 1024 * 1024;
+const MAX_DESCRIPTOR_FILES: usize = 1_024;
 
 /// Returns the packaged Protobuf include root containing `phoxal/port.proto`.
 #[must_use]
@@ -67,6 +69,16 @@ pub enum Error {
     /// The retained descriptors are invalid.
     #[error("invalid Protobuf descriptor closure: {0}")]
     Descriptor(#[from] prost_reflect::DescriptorError),
+    /// The retained descriptor closure exceeded one of the build-time bounds.
+    #[error("Protobuf descriptor closure exceeds {what} bound of {limit} (actual {actual})")]
+    DescriptorBounds {
+        /// Bounded descriptor quantity.
+        what: &'static str,
+        /// Maximum accepted value.
+        limit: usize,
+        /// Observed value.
+        actual: usize,
+    },
     /// The packaged method option is absent from the compiled descriptor closure.
     #[error("compiled descriptor closure is missing {PORT_KIND_EXTENSION}")]
     MissingPortKindExtension,
@@ -174,9 +186,30 @@ fn compile_to(
             path: descriptor_path.clone(),
             source,
         })?;
+    if descriptor_bytes.len() > MAX_DESCRIPTOR_BYTES {
+        return Err(Error::DescriptorBounds {
+            what: "encoded bytes",
+            limit: MAX_DESCRIPTOR_BYTES,
+            actual: descriptor_bytes.len(),
+        });
+    }
     let pool = DescriptorPool::decode(descriptor_bytes.as_slice())?;
+    let file_count = pool.files().count();
+    if file_count > MAX_DESCRIPTOR_FILES {
+        return Err(Error::DescriptorBounds {
+            what: "file count",
+            limit: MAX_DESCRIPTOR_FILES,
+            actual: file_count,
+        });
+    }
     let ports = validate_owned_ports(&pool, &owned_names)?;
 
+    let has_ports = !ports.is_empty();
+    let service_package = ports.keys().next().and_then(|name| {
+        name.rsplit_once('.')
+            .and_then(|(prefix, _)| prefix.rsplit_once('.'))
+            .map(|(package, _)| package.to_owned())
+    });
     let mut config = prost_build::Config::new();
     config
         .out_dir(out_dir)
@@ -186,6 +219,14 @@ fn compile_to(
         .enable_type_names()
         .service_generator(Box::new(PortGenerator { ports }));
     config.compile_protos(&owned_paths, &include_roots)?;
+
+    if has_ports {
+        embed_descriptor_section(
+            out_dir,
+            service_package.as_deref().unwrap_or_default(),
+            descriptor_bytes.len(),
+        )?;
+    }
 
     for path in owned_paths {
         println!("cargo:rerun-if-changed={}", path.display());
@@ -277,6 +318,35 @@ struct PortSpec {
     kind: Kind,
     public_name: String,
     constant_name: String,
+}
+
+fn embed_descriptor_section(
+    out_dir: &Path,
+    service_package: &str,
+    descriptor_len: usize,
+) -> Result<(), Error> {
+    let generated = out_dir.join(format!("{service_package}.rs"));
+    let frame_len = descriptor_len
+        .checked_add(phoxal_port_frame_header_bytes())
+        .ok_or(Error::DescriptorBounds {
+            what: "framed bytes",
+            limit: usize::MAX,
+            actual: descriptor_len,
+        })?;
+    let section = format!(
+        "\n#[doc(hidden)]\n#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\nstatic __PHOXAL_DESCRIPTOR_SET: [u8; {frame_len}] = ::phoxal_port::descriptor_frame::<{frame_len}>(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{DESCRIPTOR_FILE}\")));\n"
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&generated)
+        .map_err(|source| Error::Prost(std::io::Error::new(source.kind(), source)))?;
+    use std::io::Write;
+    file.write_all(section.as_bytes())?;
+    Ok(())
+}
+
+const fn phoxal_port_frame_header_bytes() -> usize {
+    16
 }
 
 fn validate_owned_ports(
@@ -415,21 +485,40 @@ impl prost_build::ServiceGenerator for PortGenerator {
             let port_type = spec.kind.rust_type();
             let input_type = nested_type(&method.input_type);
             let output_type = nested_type(&method.output_type);
+            let request_name = proto_type_name(&method.input_proto_type);
+            let response_name = proto_type_name(&method.output_proto_type);
+            let service_name = if service.package.is_empty() {
+                service.proto_name.clone()
+            } else {
+                format!("{}.{}", service.package, service.proto_name)
+            };
             if spec.kind.is_publication() {
                 buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal_port::{}<{}> = ::phoxal_port::{}::new({:?});",
-                    spec.constant_name, port_type, output_type, port_type, spec.public_name,
+                    "    pub const {}: ::phoxal_port::{}<{}> = ::phoxal_port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
+                    spec.constant_name,
+                    port_type,
+                    output_type,
+                    port_type,
+                    spec.public_name,
+                    service_name,
+                    method.proto_name,
+                    request_name,
+                    response_name,
                 ));
                 buffer.push('\n');
             } else {
                 buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal_port::{}<{}, {}> = ::phoxal_port::{}::new({:?});",
+                    "    pub const {}: ::phoxal_port::{}<{}, {}> = ::phoxal_port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
                     spec.constant_name,
                     port_type,
                     input_type,
                     output_type,
                     port_type,
                     spec.public_name,
+                    service_name,
+                    method.proto_name,
+                    request_name,
+                    response_name,
                 ));
                 buffer.push('\n');
             }
@@ -445,6 +534,10 @@ impl prost_build::ServiceGenerator for PortGenerator {
         }
         buffer.push_str("    }\n}\n");
     }
+}
+
+fn proto_type_name(proto_type: &str) -> String {
+    proto_type.trim_start_matches('.').to_owned()
 }
 
 fn nested_type(rust_type: &str) -> String {

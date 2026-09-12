@@ -15,6 +15,7 @@ use cargo_metadata::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::artifact::{self, ArtifactContract, ArtifactSummary};
 use crate::cargo;
 use crate::selection::{PackageSource, SelectedTarget};
 use crate::{CargoOptions, Error, PreparedProject, RobotDocument};
@@ -112,6 +113,26 @@ pub struct BundleExecutable {
     pub bytes: u64,
     /// Lowercase SHA-256 digest of the executable bytes.
     pub sha256: String,
+    /// Runtime contract and retained descriptor inventory when present.
+    pub artifact: Option<BundleArtifact>,
+}
+
+/// Manifest-safe native artifact contract inventory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleArtifact {
+    /// Runtime timing, configuration, and binding records.
+    pub runtime: crate::artifact::RuntimeRecord,
+    /// Original descriptor closure digests and file names.
+    pub descriptors: Vec<crate::artifact::DescriptorSummary>,
+}
+
+impl From<ArtifactSummary> for BundleArtifact {
+    fn from(summary: ArtifactSummary) -> Self {
+        Self {
+            runtime: summary.runtime,
+            descriptors: summary.descriptors,
+        }
+    }
 }
 
 /// One mounted component retained in the compiled graph.
@@ -257,13 +278,23 @@ pub(crate) fn assemble(
             });
         }
         let digest = digest_file(&executable)?;
-        artifacts.insert(key, (target.clone(), executable, digest));
+        let contract = match artifact::inspect_file(&executable) {
+            Ok(contract) => Some(contract),
+            Err(artifact::Error::MissingRecord) => None,
+            Err(error) => {
+                return Err(Error::ArtifactInvalid {
+                    path: executable,
+                    message: error.to_string(),
+                });
+            }
+        };
+        artifacts.insert(key, (target.clone(), executable, digest, contract));
     }
 
     let mut executable_records = Vec::new();
     for (instance, target) in prepared.assembly_targets() {
         let key = (target.package_id.clone(), target.target.clone());
-        let (built_target, source, digest) =
+        let (built_target, source, digest, contract) =
             artifacts.get(&key).ok_or_else(|| Error::ArtifactCapture {
                 package: target.package.clone(),
                 target: target.target.clone(),
@@ -286,9 +317,12 @@ pub(crate) fn assemble(
             path: relative,
             bytes: digest.bytes,
             sha256: digest.sha256.clone(),
+            artifact: contract.as_ref().map(|value| value.summary().into()),
         });
     }
     executable_records.sort_by(|left, right| left.path.cmp(&right.path));
+
+    validate_bundle_connections(prepared, &artifacts)?;
 
     let mut components = prepared
         .sources()
@@ -359,6 +393,36 @@ fn provenance(prepared: &PreparedProject) -> Result<BundleProvenance, Error> {
         cargo_manifest_sha256: digest_file(prepared.layout().cargo_manifest())?.sha256,
         cargo_lock_sha256: optional_digest(&prepared.cargo_lock())?,
         model,
+    })
+}
+
+fn validate_bundle_connections(
+    prepared: &PreparedProject,
+    artifacts: &BTreeMap<
+        (String, String),
+        (
+            SelectedTarget,
+            PathBuf,
+            FileDigest,
+            Option<ArtifactContract>,
+        ),
+    >,
+) -> Result<(), Error> {
+    let mut contracts = BTreeMap::new();
+    for (instance, target) in prepared.assembly_targets() {
+        let key = (target.package_id.clone(), target.target.clone());
+        if let Some(Some(contract)) = artifacts.get(&key).map(|entry| entry.3.as_ref()) {
+            contracts.insert(instance, contract.clone());
+        }
+    }
+    if contracts.is_empty() || prepared.document().connections.is_empty() {
+        return Ok(());
+    }
+    artifact::validate_connected_endpoints(prepared.document(), &contracts).map_err(|error| {
+        Error::ArtifactInvalid {
+            path: prepared.layout().robot_manifest().to_owned(),
+            message: error.to_string(),
+        }
     })
 }
 

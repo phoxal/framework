@@ -8,6 +8,8 @@
 use std::fmt;
 use std::time::Duration;
 
+use super::outputs::{OutputBindings, OutputSet};
+
 /// Configuration accepted by a [`Runtime`].
 ///
 /// Configuration is deserialized once at the owning boundary and then passed
@@ -392,9 +394,13 @@ impl fmt::Display for RuntimeSpecError {
 impl std::error::Error for RuntimeSpecError {}
 
 /// A marker implemented by `#[phoxal::runtime(...)]`.
-pub trait RegisteredRuntime: Runtime {
+pub trait RegisteredRuntime: Runtime + OutputBindings {
     /// The source-authored cadence and deadline metadata.
     const SPEC: RuntimeSpec;
+
+    /// Retains the compile-time artifact record through the final native link.
+    #[doc(hidden)]
+    fn __retain_artifact_metadata();
 }
 
 /// The direct, synchronous service behavior contract.
@@ -406,7 +412,7 @@ pub trait Runtime {
     /// Immutable input snapshot for one invocation.
     type Inputs;
     /// Fresh transient output batches for one invocation.
-    type Outputs;
+    type Outputs: OutputSet;
 
     /// Validates business invariants after typed configuration decoding and
     /// before initialization reaches Ready.
@@ -790,6 +796,7 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
 /// default configuration or running an unbounded loop.
 #[allow(dead_code, reason = "the transport-owned binary calls this entrypoint")]
 pub fn run<R: RegisteredRuntime>(_service: R) -> crate::Result<()> {
+    R::__retain_artifact_metadata();
     Err(anyhow::anyhow!(
         "the transport-owned runtime runner is not available in the direct authoring profile"
     ))

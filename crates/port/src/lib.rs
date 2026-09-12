@@ -29,6 +29,124 @@ pub enum PortKind {
     Commands,
 }
 
+impl PortKind {
+    /// Returns the stable lower-case spelling used by artifact contracts.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Sample => "sample",
+            Self::Event => "event",
+            Self::Stream => "stream",
+            Self::Setpoint => "setpoint",
+            Self::Read => "read",
+            Self::Commands => "commands",
+        }
+    }
+}
+
+/// The complete identity of one generated public port.
+///
+/// The request and response names are fully-qualified Protobuf message names.
+/// Publication ports use `google.protobuf.Empty` as their request identity.
+/// The optional descriptor frame is retained by generated owner bindings so a
+/// release artifact can carry the unchanged descriptor closure without
+/// executing the binary.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PortSignature {
+    /// Public port name.
+    pub name: &'static str,
+    /// Fully-qualified owning Protobuf service name.
+    pub service: &'static str,
+    /// Protobuf method name within the owning service.
+    pub method: &'static str,
+    /// Semantic port kind.
+    pub kind: PortKind,
+    /// Fully-qualified request message name.
+    pub request: &'static str,
+    /// Fully-qualified response message name.
+    pub response: &'static str,
+    descriptor_set: &'static [u8],
+}
+
+impl PortSignature {
+    /// Creates an identity without an embedded descriptor set.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        service: &'static str,
+        method: &'static str,
+        kind: PortKind,
+        request: &'static str,
+        response: &'static str,
+    ) -> Self {
+        Self::with_descriptor(name, service, method, kind, request, response, &[])
+    }
+
+    /// Creates an identity retaining the owner's original descriptor bytes.
+    #[must_use]
+    pub const fn with_descriptor(
+        name: &'static str,
+        service: &'static str,
+        method: &'static str,
+        kind: PortKind,
+        request: &'static str,
+        response: &'static str,
+        descriptor_set: &'static [u8],
+    ) -> Self {
+        Self {
+            name,
+            service,
+            method,
+            kind,
+            request,
+            response,
+            descriptor_set,
+        }
+    }
+
+    /// Returns the framed original descriptor closure retained by the owner.
+    #[must_use]
+    pub const fn descriptor_set(self) -> &'static [u8] {
+        self.descriptor_set
+    }
+}
+
+/// Magic prefix used for framed descriptor payloads in native artifact
+/// sections.
+pub const DESCRIPTOR_FRAME_MAGIC: [u8; 8] = *b"PHXDESC0";
+
+/// Number of bytes before a framed descriptor payload.
+pub const DESCRIPTOR_FRAME_HEADER_BYTES: usize = 16;
+
+/// Builds one bounded, length-delimited descriptor frame at compile time.
+///
+/// A length prefix is required because linkers concatenate same-named section
+/// fragments from every object file and may add alignment padding between
+/// them.  The generated owner code supplies the exact output array length.
+pub const fn descriptor_frame<const N: usize>(descriptor_set: &[u8]) -> [u8; N] {
+    assert!(N == DESCRIPTOR_FRAME_HEADER_BYTES + descriptor_set.len());
+    let mut frame = [0_u8; N];
+    let mut index = 0;
+    while index < DESCRIPTOR_FRAME_MAGIC.len() {
+        frame[index] = DESCRIPTOR_FRAME_MAGIC[index];
+        index += 1;
+    }
+    let length = descriptor_set.len() as u64;
+    let length_bytes = length.to_le_bytes();
+    index = 0;
+    while index < length_bytes.len() {
+        frame[8 + index] = length_bytes[index];
+        index += 1;
+    }
+    index = 0;
+    while index < descriptor_set.len() {
+        frame[DESCRIPTOR_FRAME_HEADER_BYTES + index] = descriptor_set[index];
+        index += 1;
+    }
+    frame
+}
+
 /// Common metadata exposed by every typed port reference.
 pub trait PortDescriptor: Copy + fmt::Debug + Send + Sync + 'static {
     /// The semantic kind fixed by the owning Protobuf method.
@@ -36,13 +154,16 @@ pub trait PortDescriptor: Copy + fmt::Debug + Send + Sync + 'static {
 
     /// The public port name fixed by the owning Protobuf method.
     fn name(self) -> &'static str;
+
+    /// The complete method identity fixed by the owning Protobuf method.
+    fn signature(self) -> PortSignature;
 }
 
 macro_rules! payload_descriptor {
     ($name:ident, $kind:ident, $summary:literal) => {
         #[doc = $summary]
         pub struct $name<T> {
-            name: &'static str,
+            signature: PortSignature,
             payload: PhantomData<fn() -> T>,
         }
 
@@ -51,7 +172,31 @@ macro_rules! payload_descriptor {
             #[must_use]
             pub const fn new(name: &'static str) -> Self {
                 Self {
-                    name,
+                    signature: PortSignature::new(name, "", "", PortKind::$kind, "", ""),
+                    payload: PhantomData,
+                }
+            }
+
+            /// Creates a typed descriptor with its generated Protobuf identity.
+            #[must_use]
+            pub const fn with_signature(
+                name: &'static str,
+                service: &'static str,
+                method: &'static str,
+                request: &'static str,
+                response: &'static str,
+                descriptor_set: &'static [u8],
+            ) -> Self {
+                Self {
+                    signature: PortSignature::with_descriptor(
+                        name,
+                        service,
+                        method,
+                        PortKind::$kind,
+                        request,
+                        response,
+                        descriptor_set,
+                    ),
                     payload: PhantomData,
                 }
             }
@@ -59,7 +204,13 @@ macro_rules! payload_descriptor {
             /// Returns the public port name.
             #[must_use]
             pub const fn name(self) -> &'static str {
-                self.name
+                self.signature.name
+            }
+
+            /// Returns the complete generated Protobuf identity.
+            #[must_use]
+            pub const fn signature(self) -> PortSignature {
+                self.signature
             }
         }
 
@@ -75,7 +226,7 @@ macro_rules! payload_descriptor {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter
                     .debug_struct(stringify!($name))
-                    .field("name", &self.name)
+                    .field("name", &self.signature.name)
                     .finish()
             }
         }
@@ -84,7 +235,11 @@ macro_rules! payload_descriptor {
             const KIND: PortKind = PortKind::$kind;
 
             fn name(self) -> &'static str {
-                self.name
+                self.signature.name
+            }
+
+            fn signature(self) -> PortSignature {
+                self.signature
             }
         }
     };
@@ -104,7 +259,7 @@ macro_rules! exchange_descriptor {
     ($name:ident, $kind:ident, $summary:literal) => {
         #[doc = $summary]
         pub struct $name<Request, Response> {
-            name: &'static str,
+            signature: PortSignature,
             exchange: PhantomData<fn(Request) -> Response>,
         }
 
@@ -113,7 +268,31 @@ macro_rules! exchange_descriptor {
             #[must_use]
             pub const fn new(name: &'static str) -> Self {
                 Self {
-                    name,
+                    signature: PortSignature::new(name, "", "", PortKind::$kind, "", ""),
+                    exchange: PhantomData,
+                }
+            }
+
+            /// Creates a typed descriptor with its generated Protobuf identity.
+            #[must_use]
+            pub const fn with_signature(
+                name: &'static str,
+                service: &'static str,
+                method: &'static str,
+                request: &'static str,
+                response: &'static str,
+                descriptor_set: &'static [u8],
+            ) -> Self {
+                Self {
+                    signature: PortSignature::with_descriptor(
+                        name,
+                        service,
+                        method,
+                        PortKind::$kind,
+                        request,
+                        response,
+                        descriptor_set,
+                    ),
                     exchange: PhantomData,
                 }
             }
@@ -121,7 +300,13 @@ macro_rules! exchange_descriptor {
             /// Returns the public port name.
             #[must_use]
             pub const fn name(self) -> &'static str {
-                self.name
+                self.signature.name
+            }
+
+            /// Returns the complete generated Protobuf identity.
+            #[must_use]
+            pub const fn signature(self) -> PortSignature {
+                self.signature
             }
         }
 
@@ -137,7 +322,7 @@ macro_rules! exchange_descriptor {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter
                     .debug_struct(stringify!($name))
-                    .field("name", &self.name)
+                    .field("name", &self.signature.name)
                     .finish()
             }
         }
@@ -146,7 +331,11 @@ macro_rules! exchange_descriptor {
             const KIND: PortKind = PortKind::$kind;
 
             fn name(self) -> &'static str {
-                self.name
+                self.signature.name
+            }
+
+            fn signature(self) -> PortSignature {
+                self.signature
             }
         }
     };

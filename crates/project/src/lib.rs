@@ -4,6 +4,7 @@
 //! It deliberately does not depend on the Runtime SDK, supervisor, service
 //! implementations, simulator, registry client, or the archived CLI.
 
+pub mod artifact;
 mod bundle;
 mod cargo;
 mod discovery;
@@ -13,9 +14,14 @@ mod publication;
 mod selection;
 mod submission;
 
+pub use artifact::{
+    ArtifactContract, ArtifactSummary, DescriptorInfo, DescriptorSummary, InputKind, InputRecord,
+    OutputKind, OutputRecord, PortKind, PortSignature, RuntimeRecord, validate_connected_endpoints,
+};
 pub use bundle::{
-    BUNDLE_SCHEMA, BundleComponent, BundleExecutable, BundleFile, BundleManifest, BundlePackage,
-    BundleProvenance, CompiledBundle, LocalIdentity, LocalRunPlan, LocalSimulationPlan,
+    BUNDLE_SCHEMA, BundleArtifact, BundleComponent, BundleExecutable, BundleFile, BundleManifest,
+    BundlePackage, BundleProvenance, CompiledBundle, LocalIdentity, LocalRunPlan,
+    LocalSimulationPlan,
 };
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, LockMode};
 pub use discovery::ProjectLayout;

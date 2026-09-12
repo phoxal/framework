@@ -3,6 +3,7 @@
 //! [`api`] is the `runtime` contract family: log events plus bus and step
 //! telemetry. Any process publishes here; the family names no collector.
 
+pub mod artifact;
 mod core;
 pub mod input;
 mod operation;

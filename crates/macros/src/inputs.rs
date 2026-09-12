@@ -76,6 +76,10 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             .port
             .as_ref()
             .map_or_else(|| quote!(None), |port| quote!(Some((#port).name())));
+        let port_signature = options
+            .port
+            .as_ref()
+            .map_or_else(|| quote!(None), |port| quote!(Some((#port).signature())));
         metadata.push(quote! {
             ::phoxal::runtime::input::InputField {
                 name: stringify!(#field_name),
@@ -84,6 +88,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 max_items: #max_items,
                 max_bytes: #max_bytes,
                 port: #port,
+                port_signature: #port_signature,
             }
         });
         checks.push(input_type_check(&ty, &field_name));
