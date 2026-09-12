@@ -20,6 +20,8 @@ members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
+    "contracts/motion",
+    "contracts/navigation",
     "phoxal",
     "crates/macros",
     "supervisor",
@@ -57,6 +59,8 @@ default-members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
+    "contracts/motion",
+    "contracts/navigation",
     "phoxal",
     "crates/macros",
     "supervisor",
@@ -166,6 +170,8 @@ phoxal-macros = { path = "crates/macros", version = "=0.68.0" }
 phoxal-build = { path = "crates/build", version = "0.1.0", registry = "phoxal" }
 phoxal-port = { path = "crates/port", version = "0.1.0", registry = "phoxal" }
 phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "phoxal" }
+phoxal-motion = { path = "contracts/motion", version = "0.1.0", registry = "phoxal" }
+phoxal-navigation = { path = "contracts/navigation", version = "0.1.0", registry = "phoxal" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.

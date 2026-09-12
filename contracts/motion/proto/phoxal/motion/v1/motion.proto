@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package phoxal.motion.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/port.proto";
+
+message ActuatorTarget {
+  string actuator_id = 1;
+  oneof control {
+    double velocity_radps = 2;
+    double torque_nm = 3;
+  }
+}
+
+message ActuatorSetpoint {
+  repeated ActuatorTarget targets = 1;
+}
+
+service Motion {
+  rpc Actuators(google.protobuf.Empty) returns (stream ActuatorSetpoint) {
+    option (phoxal.port.kind) = SETPOINT;
+  }
+}

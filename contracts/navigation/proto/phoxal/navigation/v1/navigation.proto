@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package phoxal.navigation.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/port.proto";
+
+message GoalTarget {
+  string frame_id = 1;
+  double x_m = 2;
+  double y_m = 3;
+  optional double final_heading_rad = 4;
+}
+
+message StartGoal {
+  string goal_id = 1;
+  GoalTarget target = 2;
+}
+
+message CancelGoal {
+  string goal_id = 1;
+}
+
+message ApplyCommandRequest {
+  oneof command {
+    StartGoal start = 1;
+    CancelGoal cancel = 2;
+  }
+}
+
+message Accepted {}
+
+enum RefusalReason {
+  REFUSAL_REASON_UNSPECIFIED = 0;
+  REFUSAL_REASON_INVALID_GOAL = 1;
+  REFUSAL_REASON_UNKNOWN_GOAL = 2;
+  REFUSAL_REASON_CONFLICTING_GOAL = 3;
+  REFUSAL_REASON_UNAVAILABLE = 4;
+}
+
+enum UnavailableReason {
+  UNAVAILABLE_REASON_UNSPECIFIED = 0;
+  UNAVAILABLE_REASON_INPUTS_NOT_READY = 1;
+  UNAVAILABLE_REASON_LOCALIZATION = 2;
+  UNAVAILABLE_REASON_MAP = 3;
+  UNAVAILABLE_REASON_MOTION = 4;
+}
+
+message Refused {
+  RefusalReason reason = 1;
+  repeated UnavailableReason unavailable_reasons = 2;
+}
+
+message ApplyCommandResponse {
+  oneof decision {
+    Accepted accepted = 1;
+    Refused refused = 2;
+  }
+}
+
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_IDLE = 1;
+  PHASE_SEARCHING = 2;
+  PHASE_FOLLOWING = 3;
+}
+
+message NavigationState {
+  Phase phase = 1;
+  optional string active_goal_id = 2;
+  optional uint64 map_revision = 3;
+  repeated UnavailableReason unavailable_reasons = 4;
+}
+
+enum GoalOutcome {
+  GOAL_OUTCOME_UNSPECIFIED = 0;
+  GOAL_OUTCOME_REACHED = 1;
+  GOAL_OUTCOME_CANCELLED = 2;
+  GOAL_OUTCOME_REPLACED = 3;
+  GOAL_OUTCOME_NO_PATH = 4;
+  GOAL_OUTCOME_UNAVAILABLE = 5;
+}
+
+message GoalFinished {
+  string goal_id = 1;
+  GoalOutcome outcome = 2;
+  repeated UnavailableReason unavailable_reasons = 3;
+}
+
+message GetGoalStatusRequest {
+  string goal_id = 1;
+}
+
+message GoalRunning {
+  string goal_id = 1;
+}
+
+message GoalUnknownOrNoLongerRetained {
+  string goal_id = 1;
+}
+
+message GetGoalStatusResponse {
+  oneof status {
+    GoalRunning running = 1;
+    GoalFinished finished = 2;
+    GoalUnknownOrNoLongerRetained unknown_or_no_longer_retained = 3;
+  }
+}
+
+service Navigation {
+  rpc Status(google.protobuf.Empty) returns (stream NavigationState) {
+    option (phoxal.port.kind) = STATE;
+  }
+
+  rpc Commands(ApplyCommandRequest) returns (ApplyCommandResponse) {
+    option (phoxal.port.kind) = COMMANDS;
+  }
+
+  rpc Finished(google.protobuf.Empty) returns (stream GoalFinished) {
+    option (phoxal.port.kind) = EVENT;
+  }
+
+  rpc GetGoalStatus(GetGoalStatusRequest) returns (GetGoalStatusResponse) {
+    option (phoxal.port.kind) = READ;
+  }
+}
