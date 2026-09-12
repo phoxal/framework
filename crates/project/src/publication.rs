@@ -42,6 +42,21 @@ pub enum PublicationKind {
     Component,
     /// A service implementation or configuration preset package.
     Service,
+    /// A configuration preset for one service implementation.
+    Preset,
+    /// A reusable library package.
+    Library,
+    /// A procedural macro package.
+    ProcMacro,
+    /// An independently built simulator application.
+    Simulator,
+    /// An independently built non-simulator application.
+    Application,
+    /// A standalone developer or operator tool.
+    Tool,
+    /// Any explicitly classified package, used by owner release automation.
+    #[serde(skip)]
+    Package,
 }
 
 impl PublicationKind {
@@ -51,6 +66,27 @@ impl PublicationKind {
         match self {
             Self::Component => "component",
             Self::Service => "service",
+            Self::Preset => "preset",
+            Self::Library => "library",
+            Self::ProcMacro => "proc-macro",
+            Self::Simulator => "simulator",
+            Self::Application => "application",
+            Self::Tool => "tool",
+            Self::Package => "package",
+        }
+    }
+
+    const fn accepts(self, actual: Self) -> bool {
+        match self {
+            Self::Component => matches!(actual, Self::Component),
+            Self::Service => matches!(actual, Self::Service | Self::Preset),
+            Self::Package => !matches!(actual, Self::Package),
+            Self::Preset => matches!(actual, Self::Preset),
+            Self::Library => matches!(actual, Self::Library),
+            Self::ProcMacro => matches!(actual, Self::ProcMacro),
+            Self::Simulator => matches!(actual, Self::Simulator),
+            Self::Application => matches!(actual, Self::Application),
+            Self::Tool => matches!(actual, Self::Tool),
         }
     }
 }
@@ -295,13 +331,24 @@ enum PackageRole {
     RustComponent,
     Service,
     Preset,
+    Library,
+    ProcMacro,
+    Simulator,
+    Application,
+    Tool,
 }
 
 impl PackageRole {
     const fn publication_kind(self) -> PublicationKind {
         match self {
             Self::PassiveComponent | Self::RustComponent => PublicationKind::Component,
-            Self::Service | Self::Preset => PublicationKind::Service,
+            Self::Service => PublicationKind::Service,
+            Self::Preset => PublicationKind::Preset,
+            Self::Library => PublicationKind::Library,
+            Self::ProcMacro => PublicationKind::ProcMacro,
+            Self::Simulator => PublicationKind::Simulator,
+            Self::Application => PublicationKind::Application,
+            Self::Tool => PublicationKind::Tool,
         }
     }
 
@@ -310,6 +357,11 @@ impl PackageRole {
             Self::PassiveComponent | Self::RustComponent => "component",
             Self::Service => "service",
             Self::Preset => "preset",
+            Self::Library => "library",
+            Self::ProcMacro => "proc-macro",
+            Self::Simulator => "simulator",
+            Self::Application => "application",
+            Self::Tool => "tool",
         }
     }
 }
@@ -321,6 +373,11 @@ impl std::fmt::Display for PackageRole {
             Self::RustComponent => "component",
             Self::Service => "service",
             Self::Preset => "service preset",
+            Self::Library => "library",
+            Self::ProcMacro => "procedural macro",
+            Self::Simulator => "simulator",
+            Self::Application => "application",
+            Self::Tool => "tool",
         })
     }
 }
@@ -511,7 +568,7 @@ fn selected_from_manifest(
         .to_owned();
     let workspace = find_workspace(&source_root, &manifest)?;
     let role = classify_package(&source_root, &manifest_value, actual_name)?;
-    if role.publication_kind() != options.kind {
+    if !options.kind.accepts(role.publication_kind()) {
         return Err(PublicationError::WrongPublicationKind {
             package: actual_name.to_owned(),
             path: source_root,
@@ -570,26 +627,69 @@ fn classify_package(
         .and_then(|phoxal| phoxal.get("kind"))
         .and_then(toml::Value::as_str);
     if let Some(kind) = metadata_kind {
+        let targets = target_shape(source_root, manifest);
         let role = match kind {
             "component" => {
                 require_component_definition(source_root, package, manifest)?;
-                if has_authored_target(source_root, manifest) {
+                if targets.library {
                     PackageRole::RustComponent
+                } else if targets.binaries || has_authored_target(source_root, manifest) {
+                    return Err(PublicationError::InvalidPackageShape {
+                        package: package.to_owned(),
+                        kind: kind.to_owned(),
+                        requirement:
+                            "component packages with Rust targets must expose a library target"
+                                .to_owned(),
+                    }
+                    .into());
                 } else {
                     PackageRole::PassiveComponent
                 }
             }
             "service" => {
-                if has_authored_target(source_root, manifest) {
+                if targets.library && targets.binaries {
                     PackageRole::Service
                 } else {
-                    return Err(PublicationError::ServiceWithoutTarget {
+                    return Err(PublicationError::InvalidPackageShape {
                         package: package.to_owned(),
+                        kind: kind.to_owned(),
+                        requirement: "service packages must expose both library and binary targets"
+                            .to_owned(),
                     }
                     .into());
                 }
             }
-            "preset" => PackageRole::Preset,
+            "preset" if !targets.binaries => PackageRole::Preset,
+            "preset" => {
+                return Err(PublicationError::InvalidPackageShape {
+                    package: package.to_owned(),
+                    kind: kind.to_owned(),
+                    requirement: "configuration presets cannot expose a binary target".to_owned(),
+                }
+                .into());
+            }
+            "library" if targets.library => PackageRole::Library,
+            "proc-macro" if targets.proc_macro => PackageRole::ProcMacro,
+            "simulator" if targets.binaries => PackageRole::Simulator,
+            "application" if targets.binaries => PackageRole::Application,
+            "tool" if targets.binaries => PackageRole::Tool,
+            "library" | "proc-macro" | "simulator" | "application" | "tool" => {
+                return Err(PublicationError::InvalidPackageShape {
+                    package: package.to_owned(),
+                    kind: kind.to_owned(),
+                    requirement: match kind {
+                        "library" => "library packages must expose a library target",
+                        "proc-macro" => {
+                            "proc-macro packages must expose a proc-macro library target"
+                        }
+                        _ => {
+                            "application, simulator, and tool packages must expose a binary target"
+                        }
+                    }
+                    .to_owned(),
+                }
+                .into());
+            }
             other => {
                 return Err(PublicationError::UnsupportedPackageKind {
                     package: package.to_owned(),
@@ -598,25 +698,40 @@ fn classify_package(
                 .into());
             }
         };
-        if role == PackageRole::Preset && has_authored_target(source_root, manifest) {
-            return Ok(PackageRole::Service);
-        }
         return Ok(role);
     }
 
     if source_root.join("component.yaml").is_file() {
         require_component_definition(source_root, package, manifest)?;
-        return Ok(if has_authored_target(source_root, manifest) {
-            PackageRole::RustComponent
+        let targets = target_shape(source_root, manifest);
+        return if targets.library {
+            Ok(PackageRole::RustComponent)
+        } else if targets.binaries || has_authored_target(source_root, manifest) {
+            Err(PublicationError::InvalidPackageShape {
+                package: package.to_owned(),
+                kind: "component".to_owned(),
+                requirement: "component packages with Rust targets must expose a library target"
+                    .to_owned(),
+            }
+            .into())
         } else {
-            PackageRole::PassiveComponent
-        });
+            Ok(PackageRole::PassiveComponent)
+        };
     }
     if source_root.join("service.yaml").is_file() {
-        return if has_authored_target(source_root, manifest) {
+        let targets = target_shape(source_root, manifest);
+        return if targets.library && targets.binaries {
             Ok(PackageRole::Service)
-        } else {
+        } else if !targets.binaries {
             Ok(PackageRole::Preset)
+        } else {
+            Err(PublicationError::InvalidPackageShape {
+                package: package.to_owned(),
+                kind: "service".to_owned(),
+                requirement: "service packages must expose both library and binary targets"
+                    .to_owned(),
+            }
+            .into())
         };
     }
     Err(PublicationError::MissingPackageKind {
@@ -624,6 +739,42 @@ fn classify_package(
         path: source_root.to_owned(),
     }
     .into())
+}
+
+#[derive(Clone, Copy)]
+struct TargetShape {
+    library: bool,
+    binaries: bool,
+    proc_macro: bool,
+}
+
+fn target_shape(source_root: &Path, manifest: &toml::Value) -> TargetShape {
+    let package = manifest.get("package").and_then(toml::Value::as_table);
+    let automatic_library = package
+        .and_then(|package| package.get("autolib"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+    let automatic_binaries = package
+        .and_then(|package| package.get("autobins"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+    let library_table = manifest.get("lib").and_then(toml::Value::as_table);
+    let library =
+        library_table.is_some() || (automatic_library && source_root.join("src/lib.rs").is_file());
+    let binaries = manifest
+        .get("bin")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|targets| !targets.is_empty())
+        || (automatic_binaries && source_root.join("src/main.rs").is_file());
+    let proc_macro = library_table
+        .and_then(|library| library.get("proc-macro"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
+    TargetShape {
+        library,
+        binaries,
+        proc_macro,
+    }
 }
 
 fn require_component_definition(
@@ -1275,7 +1426,12 @@ fn definition_for_package(selected: &SelectedPackage) -> Result<Option<PathBuf>,
                 &selected.manifest_value,
             )?))
         }
-        PackageRole::Service => Ok(None),
+        PackageRole::Service
+        | PackageRole::Library
+        | PackageRole::ProcMacro
+        | PackageRole::Simulator
+        | PackageRole::Application
+        | PackageRole::Tool => Ok(None),
         PackageRole::Preset => {
             let path = selected.source_root.join("service.yaml");
             Ok(path.is_file().then_some(path))
@@ -1911,6 +2067,52 @@ mod tests {
     }
 
     #[test]
+    fn owner_publication_retains_an_explicit_library_role() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        write(
+            &directory.path().join("Cargo.toml"),
+            "[package]\nname = \"owned-library\"\nversion = \"0.1.0\"\nedition = \"2024\"\ndescription = \"Owned library\"\nlicense = \"MIT\"\n\n[package.metadata.phoxal]\nkind = \"library\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )?;
+        write(
+            &directory.path().join("src/lib.rs"),
+            "pub struct Library;\n",
+        )?;
+        let result = prepare_publication(&PublicationOptions {
+            kind: PublicationKind::Package,
+            name: "owned-library".to_owned(),
+            path: Some(directory.path().to_owned()),
+            dry_run: true,
+        })?;
+        assert_eq!(result.kind(), PublicationKind::Library);
+        assert_eq!(result.registry_kind(), "library");
+        Ok(())
+    }
+
+    #[test]
+    fn service_publication_requires_the_importable_library_and_exact_binary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        write(
+            &directory.path().join("Cargo.toml"),
+            "[package]\nname = \"bin-only-service\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[[bin]]\nname = \"bin-only-service\"\npath = \"src/main.rs\"\n",
+        )?;
+        write(&directory.path().join("src/main.rs"), "fn main() {}\n")?;
+        let error = select_package(&PublicationOptions {
+            kind: PublicationKind::Service,
+            name: "bin-only-service".to_owned(),
+            path: Some(directory.path().to_owned()),
+            dry_run: true,
+        })
+        .expect_err("a service without its public library must fail");
+        assert!(matches!(
+            error,
+            Error::Publication(PublicationError::InvalidPackageShape { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn asset_paths_reject_parent_escape_and_missing_files() -> Result<(), Box<dyn std::error::Error>>
     {
         let directory = tempfile::tempdir()?;
@@ -2050,11 +2252,15 @@ mod tests {
         )?;
         write(
             &directory.path().join("services/example/Cargo.toml"),
-            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense.workspace = true\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense.workspace = true\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
         )?;
         write(
             &directory.path().join("services/example/src/main.rs"),
             "fn main() {}\n",
+        )?;
+        write(
+            &directory.path().join("services/example/src/lib.rs"),
+            "pub struct Service;\n",
         )?;
         let result = prepare_publication(&PublicationOptions {
             kind: PublicationKind::Service,

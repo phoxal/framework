@@ -542,6 +542,16 @@ pub enum PublicationError {
         /// Package source directory.
         path: PathBuf,
     },
+    /// A declared registry role did not match the package's Cargo targets.
+    #[error("package '{package}' declares registry kind '{kind}', but {requirement}")]
+    InvalidPackageShape {
+        /// Cargo package name.
+        package: String,
+        /// Declared registry kind.
+        kind: String,
+        /// Required Cargo target shape.
+        requirement: String,
+    },
     /// A service package has no real Cargo target.
     #[error("service package '{package}' has no Cargo library or binary target")]
     ServiceWithoutTarget {
