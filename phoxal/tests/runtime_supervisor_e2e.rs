@@ -2,10 +2,8 @@
 //!
 //! The fixture binary is copied into a source `phoxal/bundle/v0` manifest, so
 //! the supervisor has to admit its digest, launch the exact selected path,
-//! and observe the child's execution-scoped Ready liveliness token. The raw
-//! Zenoh observer is intentional here: source bundles currently carry an
-//! authored document rather than the canonical model `Session` serves, so a
-//! session cannot honestly be used as the observer for this source-only test.
+//! and observe the child's execution-scoped Ready liveliness token through the
+//! bus-owned transport test helper.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -41,88 +39,28 @@ async fn compiled_runtime_crosses_supervisor_and_zenoh_before_termination() {
         .await
     });
 
-    let observer_result =
-        tokio::time::timeout(STARTUP, connect_observer(&endpoint, &supervisor)).await;
-    let observer = match observer_result {
-        Ok(observer) => observer,
+    let ready_result = tokio::time::timeout(
+        STARTUP,
+        phoxal::__bus_test_support::wait_for_participant_ready(&endpoint, "brain"),
+    )
+    .await;
+    match ready_result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => panic!("runtime Ready observer remains live: {error:#}"),
         Err(_) => {
             if supervisor.is_finished() {
                 eprintln!("supervisor result: {:?}", supervisor.await);
             }
-            panic!("supervisor router becomes reachable before the startup deadline");
+            panic!("runtime Ready arrives before the startup deadline");
         }
-    };
-    let ready = tokio::time::timeout(STARTUP, wait_for_runtime_ready(&observer, "brain"))
-        .await
-        .expect("runtime Ready arrives")
-        .expect("runtime Ready observer remains live");
-    assert!(
-        ready,
-        "the compiled brain must declare execution-scoped Ready"
-    );
+    }
     tokio::time::timeout(STARTUP, wait_for_step(&root))
         .await
         .expect("runtime executes a bounded step")
         .expect("runtime step marker is readable");
 
-    observer.close().await.expect("observer session closes");
     supervisor.abort();
     let _ = supervisor.await;
-}
-
-async fn connect_observer(
-    endpoint: &str,
-    supervisor: &tokio::task::JoinHandle<phoxal::Result<()>>,
-) -> zenoh::Session {
-    loop {
-        assert!(
-            !supervisor.is_finished(),
-            "supervisor exited before its Zenoh endpoint became reachable"
-        );
-        let mut config = zenoh::Config::default();
-        config
-            .insert_json5("mode", "\"client\"")
-            .expect("client mode is valid");
-        config
-            .insert_json5(
-                "connect/endpoints",
-                &serde_json::to_string(&[endpoint]).expect("endpoint serializes"),
-            )
-            .expect("connect endpoint is valid");
-        config
-            .insert_json5("scouting/multicast/enabled", "false")
-            .expect("scouting setting is valid");
-        config
-            .insert_json5("connect/timeout_ms", "250")
-            .expect("bounded connect timeout is valid");
-        match zenoh::open(config).await {
-            Ok(session) => return session,
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-        }
-    }
-}
-
-async fn wait_for_runtime_ready(session: &zenoh::Session, instance: &str) -> phoxal::Result<bool> {
-    let subscriber = session
-        .liveliness()
-        .declare_subscriber("phoxal/**")
-        .history(true)
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to observe liveliness: {error}"))?;
-    loop {
-        let sample = subscriber
-            .recv_async()
-            .await
-            .map_err(|error| anyhow::anyhow!("liveliness observer ended: {error}"))?;
-        if sample.kind() == zenoh::sample::SampleKind::Put
-            && sample
-                .key_expr()
-                .as_str()
-                .contains(&format!("/liveliness/participants/{instance}/"))
-        {
-            return Ok(true);
-        }
-    }
 }
 
 async fn wait_for_step(root: &Path) -> phoxal::Result<()> {

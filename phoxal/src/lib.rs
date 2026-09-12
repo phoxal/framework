@@ -483,6 +483,11 @@ pub mod __compat;
 #[cfg_attr(docsrs, doc(cfg(feature = "test-harness")))]
 pub mod testing;
 
+#[cfg(feature = "test-harness")]
+#[doc(hidden)]
+#[path = "bus/integration_test_support.rs"]
+pub mod __bus_test_support;
+
 #[cfg(all(
     feature = "legacy-runtime",
     any(feature = "participant", feature = "session", feature = "simulator")

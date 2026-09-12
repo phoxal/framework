@@ -205,7 +205,6 @@ trybuild = { workspace = true }
 # the published lib artifact - the step-scheduler tests use it to prove
 # deterministic tick order/collapse without any real sleeping.
 tokio = { workspace = true, features = ["test-util"] }
-zenoh = { workspace = true }
 
 [lints]
 workspace = true
@@ -244,7 +243,7 @@ required-features = ["session", "supervisor", "authoring"]
 [[test]]
 name = "runtime_supervisor_e2e"
 path = "tests/runtime_supervisor_e2e.rs"
-required-features = ["participant", "supervisor"]
+required-features = ["participant", "supervisor", "test-harness"]
 
 [[test]]
 name = "authoring_compile"
