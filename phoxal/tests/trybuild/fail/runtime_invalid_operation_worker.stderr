@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `std::result::Result<u16, anyhow::Error>: phoxal::runtime::input::OperationWorkerFor<phoxal::runtime::Operation<u64, u32>>` is not satisfied
+  --> tests/trybuild/fail/runtime_invalid_operation_worker.rs:40:29
+   |
+40 |     fn worker(input: u8) -> phoxal::Result<u16> {
+   |                             ^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `OperationWorkerFor<phoxal::runtime::Operation<u64, u32>>` is not implemented for `std::result::Result<u16, anyhow::Error>`
+      but trait `OperationWorkerFor<phoxal::runtime::Operation<u64, u16>>` is implemented for it
+  --> src/runtime/input.rs
+   |
+   | / impl<Key: 'static, Response: 'static, Error: 'static> OperationWorkerFor<Operation<Key, Response>>
+   | |     for Result<Response, Error>
+   | |_______________________________^
+   = help: for that trait implementation, expected `u16`, found `u32`
+note: required by a bound in `__phoxal_operation_worker`
+  --> tests/trybuild/fail/runtime_invalid_operation_worker.rs:32:1
+   |
+32 | #[phoxal::runtime::outputs]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `__phoxal_operation_worker`
+...
+40 |     fn worker(input: u8) -> phoxal::Result<u16> {
+   |        ------ required by a bound in this function
+   = note: this error originates in the attribute macro `phoxal::runtime::outputs` (in Nightly builds, run with -Z macro-backtrace for more info)

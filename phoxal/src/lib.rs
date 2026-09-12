@@ -327,7 +327,13 @@ pub mod version;
 // read a running execution and the supervisor that retains its live evidence.
 #[cfg(all(
     feature = "legacy-runtime",
-    any(feature = "session", feature = "simulator", feature = "supervisor")
+    any(
+        feature = "participant",
+        feature = "session",
+        feature = "simulator",
+        feature = "supervisor",
+        feature = "runtime"
+    )
 ))]
 #[cfg_attr(
     docsrs,
@@ -336,7 +342,13 @@ pub mod version;
 pub mod runtime;
 #[cfg(all(
     feature = "legacy-runtime",
-    not(any(feature = "session", feature = "simulator", feature = "supervisor"))
+    not(any(
+        feature = "participant",
+        feature = "session",
+        feature = "simulator",
+        feature = "supervisor",
+        feature = "runtime"
+    ))
 ))]
 #[allow(
     dead_code,
@@ -517,9 +529,14 @@ pub mod communication;
 
 /// Derive a participant config's compile-time JSON Schema from a `Config`
 /// struct.
-#[cfg(feature = "participant")]
+#[cfg(any(feature = "participant", feature = "runtime"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use phoxal_macros::Config;
+
+/// Register a synchronous Runtime implementation with cadence and deadlines.
+#[cfg(any(feature = "participant", feature = "runtime"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
+pub use phoxal_macros::runtime;
 
 /// Link a participant state struct to its `Config`/`Api` types as a checked
 /// service.

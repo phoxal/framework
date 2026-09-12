@@ -1,0 +1,7 @@
+error: runtime requires init_timeout_ms
+ --> tests/trybuild/fail/runtime_missing_deadline.rs:1:1
+  |
+1 | #[phoxal_macros::runtime(period_ms = 20, timeout_ms = 100)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `phoxal_macros::runtime` (in Nightly builds, run with -Z macro-backtrace for more info)

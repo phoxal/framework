@@ -1,0 +1,5 @@
+error: batch item must be Reply<T>
+ --> tests/trybuild/fail/runtime_invalid_reply_form.rs:4:5
+  |
+4 |     replies: Vec<u32>,
+  |     ^^^^^^^^^^^^^^^^^

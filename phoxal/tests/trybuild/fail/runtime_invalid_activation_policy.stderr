@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: activation timeout policy does not match its input form
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:33:1
+   |
+33 | #[phoxal::runtime::outputs]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_::_` failed inside this call
+   |
+note: inside `__phoxal_activate_select::<Inputs, Option<Activation<u64, u8>>, Service, ()>`
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:33:1
+   |
+33 | #[phoxal::runtime::outputs]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here

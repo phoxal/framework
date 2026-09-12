@@ -1,0 +1,5 @@
+error: served runtime outputs require port = public::CONSTANT
+ --> tests/trybuild/fail/runtime_output_missing_port.rs:4:5
+  |
+4 |     events: Vec<u32>,
+  |     ^^^^^^^^^^^^^^^^

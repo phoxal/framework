@@ -69,6 +69,12 @@ legacy-runtime = [
     "dep:zenoh",
 ]
 
+# Synchronous Runtime authoring, typed input/output forms, and bounded managed
+# operations.  The initial integration keeps the legacy dependency boundary
+# enabled so existing framework contract families continue to compile while
+# the transport-owned runner is migrated in a later slice.
+runtime = ["legacy-runtime"]
+
 # Ordinary robot services, drivers, and the root brain: the robot `api`, the
 # role attributes, the runner, the prelude, and the typed handles they build.
 participant = ["legacy-runtime"]

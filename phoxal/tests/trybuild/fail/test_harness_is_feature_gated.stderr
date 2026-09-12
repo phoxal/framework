@@ -7,8 +7,8 @@ error[E0432]: unresolved import `phoxal::testing`
 note: found an item that was configured out
  --> src/lib.rs
   |
-  | #[cfg(feature = "test-harness")]
-  |       ------------------------ the item is gated behind the `test-harness` feature
+  | #[cfg(all(feature = "legacy-runtime", feature = "test-harness"))]
+  |                                       ------------------------ the item is gated behind the `test-harness` feature
   | #[cfg_attr(docsrs, doc(cfg(feature = "test-harness")))]
   | pub mod testing;
   |         ^^^^^^^
