@@ -2878,13 +2878,13 @@ dependencies = [
 name = "phoxal-project"
 version = "0.1.0"
 dependencies = [
-  "base64",
-  "cargo_metadata",
-  "flate2",
-  "keyring",
-  "reqwest",
-  "object",
-  "prost-reflect",
+ "base64",
+ "cargo_metadata",
+ "flate2",
+ "keyring",
+ "object",
+ "prost-reflect",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
