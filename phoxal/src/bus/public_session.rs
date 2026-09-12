@@ -545,7 +545,99 @@ impl PublicSessionConfig {
     }
 }
 
-/// One established logical session over an owned Zenoh transport.
+/// One shared Zenoh transport for independently routed logical sessions.
+///
+/// A client that needs more than one robot should open this owner once and
+/// call [`Self::open`] for each target. Closing one returned logical session
+/// never closes this transport or invalidates another target.
+pub struct PublicSessionTransport {
+    session: zenoh::Session,
+    endpoint: String,
+    principal: String,
+    limits: PublicTransportLimits,
+}
+
+impl std::fmt::Debug for PublicSessionTransport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PublicSessionTransport")
+            .field("endpoint", &self.endpoint)
+            .field("principal", &self.principal)
+            .field("limits", &self.limits)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PublicSessionTransport {
+    /// Open one client transport to a router endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint or principal is malformed, the
+    /// limits are invalid, or Zenoh cannot open the configured connection.
+    pub async fn connect(
+        endpoint: impl Into<String>,
+        principal: impl Into<String>,
+    ) -> Result<Self, PublicTransportError> {
+        Self::connect_with_limits(endpoint, principal, PublicTransportLimits::default()).await
+    }
+
+    /// Open one client transport with caller-selected finite limits.
+    pub async fn connect_with_limits(
+        endpoint: impl Into<String>,
+        principal: impl Into<String>,
+        limits: PublicTransportLimits,
+    ) -> Result<Self, PublicTransportError> {
+        limits.validate()?;
+        let endpoint = endpoint.into();
+        if endpoint.is_empty() {
+            return Err(PublicTransportError::Malformed {
+                operation: "connect".to_owned(),
+                detail: "router endpoint is empty".to_owned(),
+            });
+        }
+        let principal = principal.into();
+        let validation_target = DeploymentTarget::new("local", "local")?;
+        PublicRoute::for_operation(&validation_target, &principal, PublicOperation::Open)
+            .map_err(|error| malformed_client("connect", error))?;
+        let session = zenoh::open(
+            crate::bus::session::client_config(&endpoint)
+                .map_err(|error| PublicTransportError::Transport(error.to_string()))?,
+        )
+        .await
+        .map_err(|error| PublicTransportError::Transport(error.to_string()))?;
+        Ok(Self {
+            session,
+            endpoint,
+            principal,
+            limits,
+        })
+    }
+
+    /// Open one independent logical session on this shared transport.
+    pub async fn open(
+        &self,
+        target: DeploymentTarget,
+    ) -> Result<PublicSessionConnection, PublicTransportError> {
+        let config = PublicSessionConfig::new(&self.endpoint, target, &self.principal)?
+            .with_limits(self.limits.clone())?;
+        PublicSessionConnection::connect_on_session(self.session.clone(), config, false).await
+    }
+
+    /// Close the shared physical transport.
+    ///
+    /// Callers should first close every logical session. Closing the transport
+    /// deliberately invalidates all remaining handles because it is the
+    /// single owner of their shared router connection.
+    pub async fn close(self) -> Result<(), PublicTransportError> {
+        self.session
+            .close()
+            .await
+            .map_err(|error| PublicTransportError::Transport(error.to_string()))
+    }
+}
+
+/// One established logical session over either a dedicated or shared Zenoh transport.
 pub struct PublicSessionConnection {
     session: zenoh::Session,
     target: DeploymentTarget,
@@ -554,6 +646,7 @@ pub struct PublicSessionConnection {
     lease_deadline: Instant,
     info: SupervisorInfoResponse,
     limits: PublicTransportLimits,
+    close_transport: bool,
 }
 
 impl std::fmt::Debug for PublicSessionConnection {
@@ -578,7 +671,7 @@ impl PublicSessionConnection {
         )
         .await
         .map_err(|error| PublicTransportError::Transport(error.to_string()))?;
-        match Self::connect_on_session(session.clone(), config).await {
+        match Self::connect_on_session(session.clone(), config, true).await {
             Ok(connection) => Ok(connection),
             Err(error) => {
                 let _ = session.close().await;
@@ -590,6 +683,7 @@ impl PublicSessionConnection {
     async fn connect_on_session(
         session: zenoh::Session,
         config: PublicSessionConfig,
+        close_transport: bool,
     ) -> Result<Self, PublicTransportError> {
         let bootstrap_key = config.target.bootstrap_key();
         let bootstrap_bytes =
@@ -670,6 +764,7 @@ impl PublicSessionConnection {
             lease_deadline,
             info,
             limits: config.limits,
+            close_transport,
         })
     }
 
@@ -826,6 +921,7 @@ impl PublicSessionConnection {
             session_id,
             lease_deadline,
             limits,
+            close_transport,
             ..
         } = self;
         let close_result = if Instant::now() < lease_deadline {
@@ -847,10 +943,14 @@ impl PublicSessionConnection {
         } else {
             Err(PublicTransportError::LeaseExpired)
         };
-        let transport_result = session
-            .close()
-            .await
-            .map_err(|error| PublicTransportError::Transport(error.to_string()));
+        let transport_result = if close_transport {
+            session
+                .close()
+                .await
+                .map_err(|error| PublicTransportError::Transport(error.to_string()))
+        } else {
+            Ok(())
+        };
         match (close_result, transport_result) {
             (Ok(response), Ok(())) => Ok(response),
             (Err(error), Ok(())) => Err(error),
@@ -1539,22 +1639,17 @@ mod tests {
         let server_b = PublicSessionServer::start(
             bus_b.session().expect("b session").clone(),
             adapter_b,
-            PrincipalPolicy::only(["operator-b"]),
+            PrincipalPolicy::only(["operator-a"]),
             PublicTransportLimits::default(),
         )
         .await
         .expect("server b");
 
-        let connection_a = PublicSessionConnection::connect(
-            PublicSessionConfig::new(&endpoint, target_a, "operator-a").expect("client a"),
-        )
-        .await
-        .expect("session a");
-        let connection_b = PublicSessionConnection::connect(
-            PublicSessionConfig::new(&endpoint, target_b, "operator-b").expect("client b"),
-        )
-        .await
-        .expect("session b");
+        let transport_a = PublicSessionTransport::connect(&endpoint, "operator-a")
+            .await
+            .expect("transport a");
+        let connection_a = transport_a.open(target_a).await.expect("session a");
+        let connection_b = transport_a.open(target_b).await.expect("session b");
         assert_eq!(connection_a.info().supervisor_version, "supervisor-a");
         assert_eq!(connection_b.info().supervisor_version, "supervisor-b");
         assert_eq!(connection_a.status().await.expect("status a").state, 1);
@@ -1583,6 +1678,7 @@ mod tests {
             1
         );
         connection_b.close().await.expect("close b");
+        transport_a.close().await.expect("transport a close");
         server_a.close().await.expect("server a close");
         server_b.close().await.expect("server b close");
         let _ = owner_a.close().await;

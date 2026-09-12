@@ -39,8 +39,8 @@ mod connection;
 mod error;
 
 pub use crate::communication_transport::{
-    PrincipalPolicy, PublicSessionConfig, PublicSessionConnection, PublicTransportError,
-    PublicTransportLimits,
+    PrincipalPolicy, PublicSessionConfig, PublicSessionConnection, PublicSessionTransport,
+    PublicTransportError, PublicTransportLimits,
 };
 pub use crate::world::{
     WorldDiagnosticsSubscription, WorldSessionClient, WorldSessionWireError, WorldStateSubscription,
