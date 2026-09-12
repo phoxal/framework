@@ -26,10 +26,17 @@ pub mod simulation {
 }
 
 mod session_state;
+mod supervisor_adapter;
 mod validation;
 pub use session_state::{
     DEFAULT_LEASE_MS, DEFAULT_MAX_SESSIONS, LogicalSession, SessionId, SessionTable,
     SessionTableError,
+};
+pub use supervisor_adapter::{
+    AdapterLimits, BindingId, DEFAULT_MAX_DETAIL_BYTES, DEFAULT_MAX_EXECUTIONS, DEFAULT_MAX_PORTS,
+    DEFAULT_MAX_SESSIONS_PER_ADAPTER, DEFAULT_PAGE_SIZE, ExecutionDefinition, Invalidation,
+    MAX_PAGE_TOKEN_BYTES, PublicRoute, PublicRouteKind, ServicePorts, SupervisorAdapter,
+    SupervisorAdapterError,
 };
 pub use validation::{
     BootstrapError, DeploymentTarget, MAX_BOOTSTRAP_BYTES, MAX_KEY_PREFIX_BYTES,

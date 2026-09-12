@@ -133,6 +133,20 @@ impl SessionTable {
         self.sessions.is_empty()
     }
 
+    /// The fixed lease duration applied to newly opened or renewed sessions.
+    #[must_use]
+    pub const fn lease_ms(&self) -> u32 {
+        self.lease_ms
+    }
+
+    /// Return the principal for an active session without extending its lease.
+    #[must_use]
+    pub fn principal(&self, id: SessionId) -> Option<String> {
+        self.sessions
+            .get(&id)
+            .map(|session| session.principal.clone())
+    }
+
     /// Admit a new session for the exact baseline protocol and routed principal.
     ///
     /// Expired entries are swept before the finite capacity check. A new random
