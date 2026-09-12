@@ -21,6 +21,7 @@ members = [
     "crates/port",
     "crates/robotics",
     "crates/project",
+    "crates/installation",
     "contracts/motion",
     "contracts/navigation",
     "crates/contract-owner-fixture",
@@ -65,6 +66,7 @@ default-members = [
     "crates/port",
     "crates/robotics",
     "crates/project",
+    "crates/installation",
     "contracts/motion",
     "contracts/navigation",
     "crates/contract-owner-fixture",
@@ -106,6 +108,7 @@ clap = { version = "4.6.1", features = ["derive", "env"] }
 const_format = "0.2"
 ctrlc = { version = "3.5.2", features = ["termination"] }
 derive_setters = "0.1.9"
+flate2 = "1.1.10"
 gilrs = "0.11.2"
 getrandom = "0.3.4"
 heck = "0.5.0"
@@ -131,6 +134,7 @@ serde_json = "1.0.149"
 serde_yaml = "0.9"
 serial_test = "3"
 system_shutdown = "4.1.0"
+tar = "0.4.46"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 # `system` and `disk` are the minimal features for host/process CPU and memory
 # sampling plus mounted-filesystem capacity. Default features additionally pull
@@ -183,6 +187,7 @@ phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "pho
 phoxal-motion = { path = "contracts/motion", version = "0.1.0", registry = "phoxal" }
 phoxal-navigation = { path = "contracts/navigation", version = "0.1.0", registry = "phoxal" }
 phoxal-project = { path = "crates/project", version = "0.1.0" }
+phoxal-installation = { path = "crates/installation", version = "0.1.0", registry = "phoxal" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.
