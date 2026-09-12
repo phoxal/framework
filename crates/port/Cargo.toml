@@ -1,0 +1,18 @@
+[package]
+name = "phoxal-port"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "Inert typed public port descriptors for Phoxal service contracts."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lib]
+name = "phoxal_port"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

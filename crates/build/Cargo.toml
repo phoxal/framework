@@ -1,0 +1,27 @@
+[package]
+name = "phoxal-build"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "Build-time Protobuf contract and typed port generation for Phoxal."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+include = ["src/**", "proto/**", "Cargo.toml", "README.md"]
+
+[dependencies]
+heck = { workspace = true }
+prost = { workspace = true }
+prost-build = { workspace = true }
+prost-reflect = { workspace = true }
+prost-types = { workspace = true }
+protoc-bin-vendored = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
