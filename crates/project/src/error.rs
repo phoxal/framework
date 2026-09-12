@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use crate::selection::TargetRole;
 
+use crate::publication::PublicationKind;
+
 /// A failure while discovering a project from an invocation directory.
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
@@ -422,6 +424,239 @@ pub enum Error {
         /// Invalid value.
         value: String,
     },
+    /// Package publication preparation failed.
+    #[error("package publication failed: {0}")]
+    Publication(#[from] PublicationError),
+}
+
+/// A failure while selecting, staging, packaging, or verifying a publication.
+#[derive(Debug, thiserror::Error)]
+pub enum PublicationError {
+    /// A package name was missing or not a valid Cargo package selector.
+    #[error("publication package name '{name}' is invalid")]
+    InvalidName {
+        /// Requested package name.
+        name: String,
+    },
+    /// The explicit source directory could not be resolved.
+    #[error("cannot resolve publication source {path}: {source}")]
+    ResolveSource {
+        /// Source path supplied by the caller.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// The explicit source path is not a directory.
+    #[error("publication source {path} is not a directory")]
+    SourceNotDirectory {
+        /// Source path supplied by the caller.
+        path: PathBuf,
+    },
+    /// A source directory does not contain Cargo.toml.
+    #[error("publication source {path} has no Cargo.toml")]
+    MissingPackageManifest {
+        /// Source directory.
+        path: PathBuf,
+    },
+    /// The requested package was not found in the current package/workspace.
+    #[error("no local package named '{name}' was found from {start}")]
+    PackageNotFound {
+        /// Requested package name.
+        name: String,
+        /// Current directory used for selection.
+        start: PathBuf,
+    },
+    /// More than one workspace member matched the requested package name.
+    #[error("package name '{name}' is ambiguous in workspace {workspace}: {candidates}")]
+    AmbiguousPackage {
+        /// Requested package name.
+        name: String,
+        /// Workspace root.
+        workspace: PathBuf,
+        /// Matching package manifest paths.
+        candidates: String,
+    },
+    /// The selected package name differs from the exact command selector.
+    #[error(
+        "publication selector '{expected}' does not match Cargo package name '{actual}' in {path}"
+    )]
+    PackageNameMismatch {
+        /// Exact command selector.
+        expected: String,
+        /// Authored Cargo package name.
+        actual: String,
+        /// Authored manifest path.
+        path: PathBuf,
+    },
+    /// The authored Cargo manifest could not be parsed.
+    #[error("cannot parse publication Cargo.toml at {path}: {source}")]
+    ParsePublicationManifest {
+        /// Authored manifest path.
+        path: PathBuf,
+        /// TOML parser failure.
+        source: toml::de::Error,
+    },
+    /// The authored package metadata is missing its name or version.
+    #[error("publication Cargo.toml at {path} must declare package.{field}")]
+    MissingPackageField {
+        /// Authored manifest path.
+        path: PathBuf,
+        /// Missing package field.
+        field: &'static str,
+    },
+    /// The selected package does not match the command's semantic kind.
+    #[error("package '{package}' at {path} is a {actual} package, not a {requested} publication")]
+    WrongPublicationKind {
+        /// Cargo package name.
+        package: String,
+        /// Package source directory.
+        path: PathBuf,
+        /// Detected role.
+        actual: String,
+        /// Requested role.
+        requested: PublicationKind,
+    },
+    /// A component package is missing its semantic definition.
+    #[error("component package '{package}' has no component definition at {path}")]
+    MissingComponentDefinition {
+        /// Cargo package name.
+        package: String,
+        /// Expected definition path.
+        path: PathBuf,
+    },
+    /// A package metadata role was not recognized.
+    #[error("package '{package}' declares unsupported [package.metadata.phoxal].kind '{kind}'")]
+    UnsupportedPackageKind {
+        /// Cargo package name.
+        package: String,
+        /// Unsupported role.
+        kind: String,
+    },
+    /// A service package has no real Cargo target.
+    #[error("service package '{package}' has no Cargo library or binary target")]
+    ServiceWithoutTarget {
+        /// Cargo package name.
+        package: String,
+    },
+    /// A targetless source contains Rust code and cannot be a passive carrier.
+    #[error("targetless package '{package}' contains authored Rust source {path}")]
+    TargetlessRustSource {
+        /// Cargo package name.
+        package: String,
+        /// Unexpected Rust source path.
+        path: PathBuf,
+    },
+    /// A referenced definition or asset path is unsafe or outside the package.
+    #[error("publication reference '{reference}' from {definition} is unsafe or escapes {root}")]
+    UnsafeAssetPath {
+        /// Authored reference text.
+        reference: String,
+        /// Definition that declared the reference.
+        definition: PathBuf,
+        /// Package root that must contain the reference.
+        root: PathBuf,
+    },
+    /// A referenced definition or asset does not exist.
+    #[error("publication reference '{reference}' from {definition} does not exist")]
+    MissingAsset {
+        /// Authored reference text.
+        reference: String,
+        /// Definition that declared the reference.
+        definition: PathBuf,
+    },
+    /// A source tree contains a symbolic link that cannot be captured safely.
+    #[error("publication source contains unsupported symbolic link {path}")]
+    SymbolicLink {
+        /// Symbolic link path.
+        path: PathBuf,
+    },
+    /// A source file could not be read or copied.
+    #[error("cannot capture publication source {path}: {source}")]
+    CaptureSource {
+        /// Source path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Staging directory creation failed.
+    #[error("cannot create publication staging directory: {source}")]
+    StagingDirectory {
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// A staged manifest could not be serialized.
+    #[error("cannot serialize staged Cargo.toml: {source}")]
+    SerializeStagedManifest {
+        /// TOML serialization failure.
+        source: toml::ser::Error,
+    },
+    /// A staging file could not be written.
+    #[error("cannot write staged publication file {path}: {source}")]
+    WriteStagedFile {
+        /// Staged file path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Cargo package failed in isolated staging.
+    #[error("cargo package failed for '{package}': {message}")]
+    CargoPackage {
+        /// Cargo package name.
+        package: String,
+        /// Cargo diagnostic output.
+        message: String,
+    },
+    /// Cargo did not produce the expected archive.
+    #[error("cargo package produced no archive for '{package}' at {path}")]
+    MissingArchive {
+        /// Cargo package name.
+        package: String,
+        /// Expected archive path.
+        path: PathBuf,
+    },
+    /// The produced archive exceeded the bounded verifier input.
+    #[error("publication archive {path} is too large ({bytes} bytes)")]
+    ArchiveTooLarge {
+        /// Archive path.
+        path: PathBuf,
+        /// Archive byte count.
+        bytes: u64,
+    },
+    /// A produced archive could not be read or decoded.
+    #[error("cannot read publication archive {path}: {message}")]
+    InvalidArchive {
+        /// Archive path.
+        path: PathBuf,
+        /// Verification diagnostic.
+        message: String,
+    },
+    /// A required authored asset was absent from the resulting archive.
+    #[error("publication archive for '{package}' omits required asset '{asset}'")]
+    MissingArchivedAsset {
+        /// Cargo package name.
+        package: String,
+        /// Package-relative asset path.
+        asset: String,
+    },
+    /// Publication inventory could not be written.
+    #[error("cannot write publication inventory {path}: {source}")]
+    WriteInventory {
+        /// Inventory path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Publication checksums could not be written.
+    #[error("cannot write publication checksum {path}: {source}")]
+    WriteChecksum {
+        /// Checksum path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Remote registry submission was intentionally not included in this slice.
+    #[error("remote registry submission is not available; rerun with --dry-run")]
+    SubmissionUnavailable,
 }
 
 /// A stable display wrapper for all validation failures in one document.

@@ -9,6 +9,7 @@ mod cargo;
 mod discovery;
 mod document;
 mod error;
+mod publication;
 mod selection;
 
 pub use bundle::{
@@ -21,7 +22,13 @@ pub use document::{
     BrainSelection, ComponentInstance, ConnectionSources, PortReference, PortReferenceError,
     ROBOT_SCHEMA, RobotDocument, RobotSection, ServiceSelection, is_identifier,
 };
-pub use error::{DiscoveryError, Error, SourceError, ValidationError, ValidationErrors};
+pub use error::{
+    DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,
+};
+pub use publication::{
+    PUBLICATION_SCHEMA, PublicationFile, PublicationKind, PublicationOptions, PublicationResult,
+    prepare_publication,
+};
 pub use selection::{
     PackageSource, SelectedComponent, SelectedService, SelectedTarget, SourceSelection, TargetRole,
     resolve_sources,

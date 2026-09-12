@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use phoxal_project::{CargoOperation, CargoOptions, LockMode, Project};
+use phoxal_project::{
+    CargoOperation, CargoOptions, LockMode, Project, PublicationKind, PublicationOptions,
+    prepare_publication,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -17,35 +20,68 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), phoxal_project::Error> {
     let command = Cli::parse().command;
-    let project = Project::discover(std::env::current_dir().map_err(|source| {
-        phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
-            path: ".".into(),
-            source,
-        })
-    })?)?;
     match command {
-        Command::Check(arguments) => run_cargo(
-            &project,
-            CargoOperation::Check,
-            arguments.into_options(Vec::new()),
-        ),
-        Command::Build(arguments) => {
-            let output = arguments.output.clone();
-            let options = arguments.into_options();
-            let prepared = project.prepare(&options)?;
-            let output = output.unwrap_or_else(|| prepared.default_bundle_path());
-            let bundle = prepared.build_bundle(&options, output)?;
-            println!("compiled bundle: {}", bundle.root().display());
-            Ok(())
+        Command::Publish(arguments) => run_publication(arguments),
+        command => {
+            let project = Project::discover(std::env::current_dir().map_err(|source| {
+                phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+                    path: ".".into(),
+                    source,
+                })
+            })?)?;
+            match command {
+                Command::Check(arguments) => run_cargo(
+                    &project,
+                    CargoOperation::Check,
+                    arguments.into_options(Vec::new()),
+                ),
+                Command::Build(arguments) => {
+                    let output = arguments.output.clone();
+                    let options = arguments.into_options();
+                    let prepared = project.prepare(&options)?;
+                    let output = output.unwrap_or_else(|| prepared.default_bundle_path());
+                    let bundle = prepared.build_bundle(&options, output)?;
+                    println!("compiled bundle: {}", bundle.root().display());
+                    Ok(())
+                }
+                Command::Test(arguments) => run_cargo(
+                    &project,
+                    CargoOperation::Test,
+                    arguments
+                        .options
+                        .into_options(Vec::new(), arguments.test_args),
+                ),
+                Command::Publish(_) => unreachable!("publish was handled above"),
+            }
         }
-        Command::Test(arguments) => run_cargo(
-            &project,
-            CargoOperation::Test,
-            arguments
-                .options
-                .into_options(Vec::new(), arguments.test_args),
-        ),
     }
+}
+
+fn run_publication(arguments: PublishArgs) -> Result<(), phoxal_project::Error> {
+    let (kind, package) = match arguments.package {
+        PublishPackage::Component(package) => (PublicationKind::Component, package),
+        PublishPackage::Service(package) => (PublicationKind::Service, package),
+    };
+    let result = prepare_publication(&PublicationOptions {
+        kind,
+        name: package.name,
+        path: package.path,
+        dry_run: package.dry_run,
+    })?;
+    println!("publication: dry-run");
+    println!("kind: {}", result.kind());
+    println!("package: {}", result.package());
+    println!("version: {}", result.version());
+    println!("archive: {}", result.archive().display());
+    println!("sha256: {}", result.checksum());
+    println!("inventory: {}", result.inventory().display());
+    println!("checksum-file: {}", result.checksum_file().display());
+    println!("bytes: {}", result.bytes());
+    println!("files:");
+    for file in result.files() {
+        println!("  {} {} {}", file.path, file.bytes, file.sha256);
+    }
+    Ok(())
 }
 
 fn run_cargo(
@@ -91,6 +127,34 @@ enum Command {
     Build(BuildArgs),
     /// Prepare the project and run tests for the root robot package.
     Test(TestArgs),
+    /// Prepare an authored component or service package for registry review.
+    Publish(PublishArgs),
+}
+
+#[derive(Debug, Args)]
+struct PublishArgs {
+    #[command(subcommand)]
+    package: PublishPackage,
+}
+
+#[derive(Debug, Subcommand)]
+enum PublishPackage {
+    /// Prepare a component package, including a targetless passive carrier.
+    Component(PublishPackageArgs),
+    /// Prepare a service implementation or configuration preset package.
+    Service(PublishPackageArgs),
+}
+
+#[derive(Debug, Args)]
+struct PublishPackageArgs {
+    /// Exact Cargo package name from the authored Cargo.toml.
+    name: String,
+    /// Source directory containing the authored Cargo.toml.
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Required until the remote registry submission client is available.
+    #[arg(long, required = true)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -253,5 +317,27 @@ mod tests {
         ])
         .expect("build command parses");
         assert!(matches!(parsed.command, Command::Build(_)));
+    }
+
+    #[test]
+    fn publication_requires_explicit_dry_run_until_submission_exists() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "publish",
+            "component",
+            "example-passive-caster",
+            "--dry-run",
+        ])
+        .expect("publication dry-run parses");
+        assert!(matches!(parsed.command, Command::Publish(_)));
+        assert!(
+            Cli::try_parse_from([
+                "cargo-phoxal",
+                "publish",
+                "component",
+                "example-passive-caster",
+            ])
+            .is_err()
+        );
     }
 }
