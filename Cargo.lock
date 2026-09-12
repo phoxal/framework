@@ -2809,6 +2809,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-kinematics"
+version = "0.1.0"
+dependencies = [
+ "phoxal-build",
+ "phoxal-port",
+ "prost",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "phoxal-macros"
 version = "0.68.0"
 dependencies = [
@@ -2890,45 +2900,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-service-drive"
-version = "0.68.0"
+name = "phoxal-safety"
+version = "0.1.0"
 dependencies = [
- "anyhow",
- "phoxal",
- "tracing",
+ "phoxal-build",
+ "phoxal-port",
+ "prost",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
-name = "phoxal-service-frame"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "nalgebra",
- "phoxal",
-]
-
-[[package]]
-name = "phoxal-service-joint"
+name = "phoxal-service-kinematics"
 version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
-]
-
-[[package]]
-name = "phoxal-service-localize"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
-]
-
-[[package]]
-name = "phoxal-service-map"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
+ "phoxal-kinematics",
+ "serde",
 ]
 
 [[package]]
@@ -2952,14 +2940,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-service-odometry"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
-]
-
-[[package]]
 name = "phoxal-service-perception"
 version = "0.68.0"
 dependencies = [
@@ -2973,7 +2953,8 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "tokio",
+ "phoxal-safety",
+ "serde",
 ]
 
 [[package]]
@@ -2982,6 +2963,16 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
+]
+
+[[package]]
+name = "phoxal-service-world"
+version = "0.68.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-world",
+ "serde",
 ]
 
 [[package]]
@@ -3055,6 +3046,16 @@ dependencies = [
  "phoxal",
  "tokio",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "phoxal-world"
+version = "0.1.0"
+dependencies = [
+ "phoxal-build",
+ "phoxal-port",
+ "prost",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

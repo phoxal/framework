@@ -67,7 +67,7 @@ pub(crate) const FACADE: &str = "phoxal";
 /// `crates/installation` is named here before its implementation lands so the
 /// policy keeps the planned owner classified when the package is added by the
 /// project-tooling cutover.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 10] = [
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 13] = [
     "phoxal",
     "crates/macros",
     "crates/build",
@@ -78,6 +78,9 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 10] = [
     "crates/mujoco",
     "contracts/motion",
     "contracts/navigation",
+    "contracts/kinematics",
+    "contracts/world",
+    "contracts/safety",
 ];
 
 /// Narrow adapter libraries shared only by the simulator executables.
@@ -552,6 +555,9 @@ mod tests {
             ("crates/mujoco", "phoxal-mujoco"),
             ("contracts/motion", "phoxal-motion"),
             ("contracts/navigation", "phoxal-navigation"),
+            ("contracts/kinematics", "phoxal-kinematics"),
+            ("contracts/world", "phoxal-world"),
+            ("contracts/safety", "phoxal-safety"),
         ] {
             assert_eq!(library_package_name(directory).as_deref(), Some(package));
             assert!(

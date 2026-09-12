@@ -24,6 +24,9 @@ members = [
     "crates/mujoco",
     "contracts/motion",
     "contracts/navigation",
+    "contracts/kinematics",
+    "contracts/world",
+    "contracts/safety",
     "crates/contract-owner-fixture",
     "crates/contract-consumer-fixture",
     "crates/port-consumer-fixture",
@@ -35,17 +38,13 @@ members = [
     "components/oak_d_lite",
     "components/vl53l1x",
     "components/zed_f9p",
-    "services/drive",
-    "services/frame",
-    "services/joint",
-    "services/localize",
-    "services/map",
+    "services/kinematics",
     "services/motion",
     "services/navigation",
-    "services/odometry",
     "services/perception",
     "services/safety",
     "services/video",
+    "services/world",
     "simulators/webots/host",
     "simulators/webots/shared",
     "simulators/webots/world-controller",
@@ -70,6 +69,9 @@ default-members = [
     "crates/mujoco",
     "contracts/motion",
     "contracts/navigation",
+    "contracts/kinematics",
+    "contracts/world",
+    "contracts/safety",
     "crates/contract-owner-fixture",
     "crates/contract-consumer-fixture",
     "crates/port-consumer-fixture",
@@ -81,17 +83,13 @@ default-members = [
     "components/oak_d_lite",
     "components/vl53l1x",
     "components/zed_f9p",
-    "services/drive",
-    "services/frame",
-    "services/joint",
-    "services/localize",
-    "services/map",
+    "services/kinematics",
     "services/motion",
     "services/navigation",
-    "services/odometry",
     "services/perception",
     "services/safety",
     "services/video",
+    "services/world",
     "simulators/webots/host",
     "simulators/webots/shared",
     "simulators/webots/world-controller",
@@ -190,6 +188,9 @@ phoxal-port = { path = "crates/port", version = "0.1.0", registry = "phoxal" }
 phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "phoxal" }
 phoxal-motion = { path = "contracts/motion", version = "0.1.0", registry = "phoxal" }
 phoxal-navigation = { path = "contracts/navigation", version = "0.1.0", registry = "phoxal" }
+phoxal-kinematics = { path = "contracts/kinematics", version = "0.1.0", registry = "phoxal" }
+phoxal-world = { path = "contracts/world", version = "0.1.0", registry = "phoxal" }
+phoxal-safety = { path = "contracts/safety", version = "0.1.0", registry = "phoxal" }
 phoxal-project = { path = "crates/project", version = "0.1.0", registry = "phoxal" }
 phoxal-installation = { path = "crates/installation", version = "0.1.0", registry = "phoxal" }
 # Test-support only, and never published. Deliberately carries no version: a

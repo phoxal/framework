@@ -385,23 +385,19 @@ fn relative_display(root: &Path, path: &Path) -> String {
 /// which official artifact packages exist. Spelled out in full rather than
 /// counted, because a package silently entering or leaving the release scope
 /// is the failure this rule exists to catch.
-const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 16] = [
+const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 12] = [
     "phoxal/component-bno085",
     "phoxal/component-ddsm115",
     "phoxal/component-oak_d_lite",
     "phoxal/component-vl53l1x",
     "phoxal/component-zed_f9p",
-    "phoxal/service-drive",
-    "phoxal/service-frame",
-    "phoxal/service-joint",
-    "phoxal/service-localize",
-    "phoxal/service-map",
+    "phoxal/service-kinematics",
     "phoxal/service-motion",
     "phoxal/service-navigation",
-    "phoxal/service-odometry",
     "phoxal/service-perception",
     "phoxal/service-safety",
     "phoxal/service-video",
+    "phoxal/service-world",
 ];
 
 pub(super) fn the_official_artifact_release_scope_is_exact(

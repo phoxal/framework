@@ -1,23 +1,23 @@
 [package]
-name = "phoxal-service-safety"
+name = "phoxal-service-kinematics"
 version = "0.68.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Phoxal official service: bounded measured/world safety assessment."
+description = "Phoxal official service: kinematics - measured joints, odometry, and frames."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-service-safety"
+name = "phoxal-service-kinematics"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["runtime"] }
-phoxal-safety = { workspace = true }
 anyhow = { workspace = true }
+phoxal = { workspace = true, features = ["runtime"] }
+phoxal-kinematics = { workspace = true }
 serde = { workspace = true }
 
 [lints]
