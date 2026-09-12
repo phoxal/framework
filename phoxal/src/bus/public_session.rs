@@ -49,6 +49,8 @@ pub const DEFAULT_PUBLIC_QUERY_CAPACITY: usize = 64;
 pub const DEFAULT_PUBLIC_DEADLINE: Duration = Duration::from_secs(5);
 /// Maximum deadline accepted by the public transport configuration.
 pub const MAX_PUBLIC_DEADLINE: Duration = Duration::from_secs(30);
+/// Maximum supervisors returned by one bounded scope inventory.
+pub const DEFAULT_MAX_DISCOVERED_SUPERVISORS: usize = 256;
 /// Maximum diagnostic text sent on the native Zenoh error leg.
 pub const MAX_PUBLIC_ERROR_BYTES: usize = 4 * 1024;
 
@@ -309,6 +311,18 @@ pub enum PublicTransportError {
         operation: String,
         /// Decoder diagnostic.
         detail: String,
+    },
+    /// A routed scope contained more supervisors than the caller's bound.
+    #[error("public supervisor inventory exceeds its {maximum}-target bound")]
+    InventoryOverflow {
+        /// Maximum number of targets the caller allowed.
+        maximum: usize,
+    },
+    /// A liveliness reply did not name one exact supervisor presence key.
+    #[error("public supervisor inventory contains malformed presence key '{key}'")]
+    MalformedPresence {
+        /// Key returned by the trusted router.
+        key: String,
     },
 }
 
@@ -622,6 +636,78 @@ impl PublicSessionTransport {
         let config = PublicSessionConfig::new(&self.endpoint, target, &self.principal)?
             .with_limits(self.limits.clone())?;
         PublicSessionConnection::connect_on_session(self.session.clone(), config, false).await
+    }
+
+    /// Discover the current bounded supervisor inventory in one authorized scope.
+    ///
+    /// This is a point-in-time liveliness query. A supervisor can disappear
+    /// immediately after it is returned, so opening the logical session and
+    /// obtaining its information remain authoritative.
+    pub async fn discover(
+        &self,
+        scope: &str,
+    ) -> Result<Vec<DeploymentTarget>, PublicTransportError> {
+        self.discover_bounded(scope, DEFAULT_MAX_DISCOVERED_SUPERVISORS)
+            .await
+    }
+
+    /// Discover a scope with an explicit nonzero result bound.
+    pub async fn discover_bounded(
+        &self,
+        scope: &str,
+        maximum: usize,
+    ) -> Result<Vec<DeploymentTarget>, PublicTransportError> {
+        if maximum == 0 {
+            return Err(PublicTransportError::InvalidLimits);
+        }
+        DeploymentTarget::new(scope, "validation")?;
+        let prefix = format!("phoxal/{scope}/supervisors/");
+        let suffix = "/presence";
+        let selector = format!("{prefix}*{suffix}");
+        let replies = self
+            .session
+            .liveliness()
+            .get(selector)
+            .timeout(self.limits.deadline())
+            .with(FifoChannel::new(maximum.saturating_add(1)))
+            .await
+            .map_err(|error| PublicTransportError::Transport(error.to_string()))?;
+        let mut supervisors = BTreeSet::new();
+        while let Ok(reply) = replies.recv_async().await {
+            let sample = reply
+                .result()
+                .map_err(|error| PublicTransportError::Rejected {
+                    operation: "discover".to_owned(),
+                    detail: bounded_error_detail(
+                        error
+                            .payload()
+                            .try_to_string()
+                            .as_deref()
+                            .unwrap_or("liveliness query failed"),
+                    ),
+                })?;
+            let key = sample.key_expr().as_str();
+            let supervisor = key
+                .strip_prefix(&prefix)
+                .and_then(|value| value.strip_suffix(suffix))
+                .filter(|value| !value.contains('/'))
+                .ok_or_else(|| PublicTransportError::MalformedPresence {
+                    key: key.to_owned(),
+                })?;
+            let target = DeploymentTarget::new(scope, supervisor).map_err(|_| {
+                PublicTransportError::MalformedPresence {
+                    key: key.to_owned(),
+                }
+            })?;
+            supervisors.insert(target.supervisor().to_owned());
+            if supervisors.len() > maximum {
+                return Err(PublicTransportError::InventoryOverflow { maximum });
+            }
+        }
+        supervisors
+            .into_iter()
+            .map(|supervisor| DeploymentTarget::new(scope, supervisor).map_err(Into::into))
+            .collect()
     }
 
     /// Close the shared physical transport.
@@ -1553,6 +1639,17 @@ fn malformed_client(operation: &str, error: SupervisorAdapterError) -> PublicTra
     }
 }
 
+fn bounded_error_detail(detail: &str) -> String {
+    if detail.len() <= MAX_PUBLIC_ERROR_BYTES {
+        return detail.to_owned();
+    }
+    let mut end = MAX_PUBLIC_ERROR_BYTES;
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    detail[..end].to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1648,6 +1745,21 @@ mod tests {
         let transport_a = PublicSessionTransport::connect(&endpoint, "operator-a")
             .await
             .expect("transport a");
+        let discovered = transport_a
+            .discover("workshop")
+            .await
+            .expect("bounded supervisor inventory");
+        assert_eq!(
+            discovered
+                .iter()
+                .map(DeploymentTarget::supervisor)
+                .collect::<Vec<_>>(),
+            ["rover-a", "rover-b"]
+        );
+        assert!(matches!(
+            transport_a.discover_bounded("workshop", 1).await,
+            Err(PublicTransportError::InventoryOverflow { maximum: 1 })
+        ));
         let connection_a = transport_a.open(target_a).await.expect("session a");
         let connection_b = transport_a.open(target_b).await.expect("session b");
         assert_eq!(connection_a.info().supervisor_version, "supervisor-a");
