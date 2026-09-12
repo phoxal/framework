@@ -28,6 +28,10 @@ passive-sensor = { path = "passive-sensor" }
     )?;
     write(&directory.path().join("src/main.rs"), "fn main() {}\n")?;
     write(
+        &directory.path().join("model.xml"),
+        "<model name=\"fixture\" />\n",
+    )?;
+    write(
         &directory.path().join("counter-service/Cargo.toml"),
         r#"[package]
 name = "counter-service"
@@ -166,5 +170,47 @@ fn check_runs_the_root_and_selected_service_targets() -> Result<(), Box<dyn std:
     let prepared = project.prepare(&options)?;
     let outputs = prepared.run(CargoOperation::Check, &options)?;
     assert_eq!(outputs.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let prepared = project.prepare(&options)?;
+    let output = fixture.path().join("target/phoxal/fixture-robot/bundle");
+    let bundle = prepared.build_bundle(&options, &output)?;
+
+    assert_eq!(bundle.manifest().schema, "phoxal/bundle/v0");
+    assert_eq!(bundle.manifest().executables.len(), 2);
+    assert_eq!(
+        bundle
+            .manifest()
+            .executables
+            .iter()
+            .map(|executable| executable.instance.as_str())
+            .collect::<Vec<_>>(),
+        ["brain", "counter"]
+    );
+    assert!(bundle.executable("brain").is_file());
+    assert!(bundle.executable("counter").is_file());
+    assert!(output.join("manifest.json").is_file());
+    assert!(output.join("provenance.json").is_file());
+    assert!(bundle.provenance().cargo_lock_sha256.is_some());
+    assert!(bundle.provenance().model.is_some());
+
+    let output_modified = std::fs::metadata(&output)?.modified()?;
+    let second = prepared.build_bundle(&options, &output)?;
+    assert_eq!(second.manifest(), bundle.manifest());
+    assert_eq!(
+        std::fs::metadata(&output)?.modified()?,
+        output_modified,
+        "unchanged assembly must preserve its output timestamp"
+    );
     Ok(())
 }

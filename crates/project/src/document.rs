@@ -9,7 +9,7 @@ use crate::error::{ValidationError, ValidationErrors};
 pub const ROBOT_SCHEMA: &str = "phoxal/robot/v0";
 
 /// A parsed and validated `robot.yaml` document.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RobotDocument {
     /// The authored document generation.
@@ -274,7 +274,7 @@ pub struct BrainSelection {
 }
 
 /// Robot-level model and component composition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RobotSection {
     /// Stable robot identity.
@@ -295,7 +295,7 @@ pub struct RobotSection {
 }
 
 /// One mounted component and its physical connection information.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
     /// Cargo dependency key selecting the component package.
@@ -311,7 +311,7 @@ pub struct ComponentInstance {
 }
 
 /// One explicit behavioral service instance.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceSelection {
     /// Cargo dependency key selecting the implementation.
@@ -335,7 +335,7 @@ where
 }
 
 /// One or more ordered producer endpoints for a local consuming input.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ConnectionSources {
     /// A single producer endpoint.

@@ -335,6 +335,101 @@ pub enum Error {
         /// Option diagnostic.
         message: String,
     },
+    /// Cargo did not report the selected executable in its machine-readable
+    /// artifact stream.
+    #[error(
+        "cargo build produced no executable for package '{package}' target '{target}': {message}"
+    )]
+    ArtifactCapture {
+        /// Selected package name.
+        package: String,
+        /// Selected Cargo target.
+        target: String,
+        /// Artifact-stream diagnostic.
+        message: String,
+    },
+    /// A reported or authored artifact was not a safe regular file.
+    #[error("invalid artifact {path}: {message}")]
+    ArtifactInvalid {
+        /// Artifact path.
+        path: PathBuf,
+        /// Validation diagnostic.
+        message: String,
+    },
+    /// Reading an artifact input failed.
+    #[error("cannot read artifact {path}: {source}")]
+    ArtifactFile {
+        /// Artifact path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Creating a compiled bundle directory failed.
+    #[error("cannot create bundle directory {path}: {source}")]
+    BundleDirectory {
+        /// Bundle directory path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Copying one executable into a bundle failed.
+    #[error("cannot copy executable {from} to {to}: {source}")]
+    BundleCopy {
+        /// Cargo-produced executable.
+        from: PathBuf,
+        /// Bundle destination.
+        to: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Serializing a bundle record failed.
+    #[error("cannot serialize bundle record {path}: {source}")]
+    BundleJson {
+        /// Record path.
+        path: PathBuf,
+        /// Serialization failure.
+        source: serde_json::Error,
+    },
+    /// Writing a bundle record failed.
+    #[error("cannot write bundle record {path}: {source}")]
+    BundleWrite {
+        /// Record path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Publishing the complete bundle failed.
+    #[error("cannot publish compiled bundle {path}: {source}")]
+    BundlePublish {
+        /// Bundle output path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Cleaning a replaced bundle failed.
+    #[error("cannot clean replaced bundle {path}: {source}")]
+    BundleCleanup {
+        /// Replaced bundle path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// A local launch identity was malformed.
+    #[error("invalid local execution identity {field} '{value}'")]
+    InvalidExecutionIdentity {
+        /// Identity field.
+        field: &'static str,
+        /// Invalid value.
+        value: String,
+    },
+    /// The source-side run boundary is not yet a process-launch boundary.
+    #[error("{operation} prepared bundle {bundle}, but process launch is not implemented")]
+    ExecutionUnavailable {
+        /// Requested launch operation.
+        operation: &'static str,
+        /// Prepared bundle path.
+        bundle: PathBuf,
+    },
 }
 
 /// A stable display wrapper for all validation failures in one document.

@@ -103,7 +103,7 @@ impl CargoOptions {
         Ok(())
     }
 
-    fn append_common(&self, command: &mut Command) {
+    fn append_common(&self, command: &mut Command, include_message_format: bool) {
         for flag in self.lock.flags() {
             command.arg(flag);
         }
@@ -125,7 +125,7 @@ impl CargoOptions {
         if !self.features.is_empty() {
             command.args(["--features", &self.features.join(",")]);
         }
-        if let Some(message_format) = &self.message_format {
+        if include_message_format && let Some(message_format) = &self.message_format {
             command.args(["--message-format", message_format]);
         }
         command.args(&self.cargo_args);
@@ -190,6 +190,9 @@ pub(crate) fn load_metadata(manifest: &Path, options: &CargoOptions) -> Result<M
     if options.offline {
         extra.push("--offline".to_owned());
     }
+    if let Some(target) = &options.target {
+        extra.extend(["--filter-platform".to_owned(), target.clone()]);
+    }
     command.other_options(extra);
     command.exec().map_err(|source| Error::CargoMetadata {
         manifest: manifest.to_owned(),
@@ -208,7 +211,7 @@ pub(crate) fn run(
     match operation {
         CargoOperation::Test => {
             let root = &prepared.root_package;
-            let mut command = command_for(prepared, operation, options);
+            let mut command = command_for(prepared, operation, options, true);
             command.args(["--package", root.id.to_string().as_str()]);
             command.args([
                 "--manifest-path",
@@ -220,7 +223,7 @@ pub(crate) fn run(
         }
         CargoOperation::Check | CargoOperation::Build => {
             for target in prepared.execution_targets() {
-                let mut command = command_for(prepared, operation, options);
+                let mut command = command_for(prepared, operation, options, true);
                 command.args([
                     "--manifest-path",
                     &prepared.layout.cargo_manifest().display().to_string(),
@@ -238,13 +241,40 @@ fn command_for(
     prepared: &crate::PreparedProject,
     operation: CargoOperation,
     options: &CargoOptions,
+    include_message_format: bool,
 ) -> Command {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(cargo);
     command.current_dir(prepared.layout.root());
     command.arg(operation.as_str());
-    options.append_common(&mut command);
+    options.append_common(&mut command, include_message_format);
     command
+}
+
+/// Builds one selected executable while retaining Cargo's machine-readable
+/// artifact records for bundle assembly.
+pub(crate) fn build_target(
+    prepared: &crate::PreparedProject,
+    target: &crate::SelectedTarget,
+    options: &CargoOptions,
+) -> Result<CargoOutput, Error> {
+    options.validate()?;
+    let mut command = command_for(prepared, CargoOperation::Build, options, false);
+    command.args([
+        "--manifest-path",
+        &prepared.layout().cargo_manifest().display().to_string(),
+    ]);
+    command.args(["--package", target.package_id.as_str()]);
+    command.args(["--bin", target.target.as_str()]);
+    command.args([
+        "--message-format",
+        options
+            .message_format
+            .as_deref()
+            .filter(|format| format.starts_with("json"))
+            .unwrap_or("json-render-diagnostics"),
+    ]);
+    run_command(command, CargoOperation::Build)
 }
 
 fn run_command(mut command: Command, operation: CargoOperation) -> Result<CargoOutput, Error> {

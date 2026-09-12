@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
@@ -16,13 +17,70 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), phoxal_project::Error> {
     let command = Cli::parse().command;
-    let (operation, options) = command.into_parts();
     let project = Project::discover(std::env::current_dir().map_err(|source| {
         phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
             path: ".".into(),
             source,
         })
     })?)?;
+    match command {
+        Command::Check(arguments) => run_cargo(
+            &project,
+            CargoOperation::Check,
+            arguments.into_options(Vec::new()),
+        ),
+        Command::Build(arguments) => {
+            let output = arguments.output.clone();
+            let options = arguments.into_options();
+            let prepared = project.prepare(&options)?;
+            let output = output.unwrap_or_else(|| prepared.default_bundle_path());
+            let bundle = prepared.build_bundle(&options, output)?;
+            println!("compiled bundle: {}", bundle.root().display());
+            Ok(())
+        }
+        Command::Test(arguments) => run_cargo(
+            &project,
+            CargoOperation::Test,
+            arguments
+                .options
+                .into_options(Vec::new(), arguments.test_args),
+        ),
+        Command::Run(arguments) => {
+            let output = arguments.output.clone();
+            let scope = arguments.scope.clone();
+            let supervisor_id = arguments.supervisor_id.clone();
+            let options = arguments.into_options();
+            let prepared = project.prepare(&options)?;
+            let output = output.unwrap_or_else(|| prepared.default_bundle_path());
+            let plan = prepared.local_run_plan(&options, output, scope, supervisor_id)?;
+            Err(phoxal_project::Error::ExecutionUnavailable {
+                operation: "cargo phoxal run",
+                bundle: plan.bundle.root().to_owned(),
+            })
+        }
+        Command::Simulation {
+            command: SimulationCommand::Run(arguments),
+        } => {
+            let output = arguments.output.clone();
+            let scope = arguments.scope.clone();
+            let supervisor_id = arguments.supervisor_id.clone();
+            let options = arguments.into_options();
+            let prepared = project.prepare(&options)?;
+            let output = output.unwrap_or_else(|| prepared.default_bundle_path());
+            let plan = prepared.local_simulation_plan(&options, output, scope, supervisor_id)?;
+            Err(phoxal_project::Error::ExecutionUnavailable {
+                operation: "cargo phoxal simulation run",
+                bundle: plan.bundle.root().to_owned(),
+            })
+        }
+    }
+}
+
+fn run_cargo(
+    project: &Project,
+    operation: CargoOperation,
+    options: CargoOptions,
+) -> Result<(), phoxal_project::Error> {
     let prepared = project.prepare(&options)?;
     for output in prepared.run(operation, &options)? {
         print_bytes(&output.stdout, false);
@@ -58,24 +116,22 @@ enum Command {
     /// Prepare the project, validate composition, and Cargo-check selected targets.
     Check(CommandArgs),
     /// Prepare the project, validate composition, and build selected targets.
-    Build(CommandArgs),
+    Build(BuildArgs),
     /// Prepare the project and run tests for the root robot package.
     Test(TestArgs),
+    /// Prepare a local hardware bundle without claiming supervisor readiness.
+    Run(RunArgs),
+    /// Prepare an independent simulator boundary.
+    Simulation {
+        #[command(subcommand)]
+        command: SimulationCommand,
+    },
 }
 
-impl Command {
-    fn into_parts(self) -> (CargoOperation, CargoOptions) {
-        match self {
-            Self::Check(arguments) => (CargoOperation::Check, arguments.into_options(Vec::new())),
-            Self::Build(arguments) => (CargoOperation::Build, arguments.into_options(Vec::new())),
-            Self::Test(arguments) => (
-                CargoOperation::Test,
-                arguments
-                    .options
-                    .into_options(Vec::new(), arguments.test_args),
-            ),
-        }
-    }
+#[derive(Debug, Subcommand)]
+enum SimulationCommand {
+    /// Prepare the robot bundle for an independent simulator application.
+    Run(RunArgs),
 }
 
 #[derive(Debug, Args)]
@@ -90,6 +146,48 @@ struct CommandArgs {
 impl CommandArgs {
     fn into_options(self, trailing: Vec<OsString>) -> CargoOptions {
         self.options.into_options(self.cargo_args, trailing)
+    }
+}
+
+#[derive(Debug, Args)]
+struct BuildArgs {
+    #[command(flatten)]
+    options: CommonArgs,
+    /// Compiled bundle directory, defaulting below Cargo's target directory.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Additional arguments passed to Cargo after Phoxal's standard selectors.
+    #[arg(last = true, allow_hyphen_values = true)]
+    cargo_args: Vec<OsString>,
+}
+
+impl BuildArgs {
+    fn into_options(self) -> CargoOptions {
+        self.options.into_options(self.cargo_args, Vec::new())
+    }
+}
+
+#[derive(Debug, Args)]
+struct RunArgs {
+    #[command(flatten)]
+    options: CommonArgs,
+    /// Compiled bundle directory, defaulting below Cargo's target directory.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Local router namespace used by the future supervisor launch.
+    #[arg(long, default_value = "local")]
+    scope: String,
+    /// Local supervisor identity used by the future supervisor launch.
+    #[arg(long = "supervisor-id", default_value = "local")]
+    supervisor_id: String,
+    /// Additional arguments passed to Cargo after Phoxal's standard selectors.
+    #[arg(last = true, allow_hyphen_values = true)]
+    cargo_args: Vec<OsString>,
+}
+
+impl RunArgs {
+    fn into_options(self) -> CargoOptions {
+        self.options.into_options(self.cargo_args, Vec::new())
     }
 }
 
@@ -165,12 +263,20 @@ mod tests {
     fn documented_commands_parse_and_preserve_lock_policy() {
         let parsed = Cli::try_parse_from(["cargo-phoxal", "check", "--locked"])
             .expect("check command parses");
-        let (_, options) = parsed.command.into_parts();
+        let options = match parsed.command {
+            Command::Check(arguments) => arguments.into_options(Vec::new()),
+            _ => panic!("the check command parsed as a different variant"),
+        };
         assert_eq!(options.lock, LockMode::Locked);
 
         let parsed =
             Cli::try_parse_from(["cargo-phoxal", "test", "--frozen"]).expect("test command parses");
-        let (_, options) = parsed.command.into_parts();
+        let options = match parsed.command {
+            Command::Test(arguments) => arguments
+                .options
+                .into_options(Vec::new(), arguments.test_args),
+            _ => panic!("the test command parsed as a different variant"),
+        };
         assert_eq!(options.lock, LockMode::Frozen);
     }
 
@@ -185,7 +291,12 @@ mod tests {
             "brain_tests::starts_empty",
         ])
         .expect("test arguments parse");
-        let (_, options) = parsed.command.into_parts();
+        let options = match parsed.command {
+            Command::Test(arguments) => arguments
+                .options
+                .into_options(Vec::new(), arguments.test_args),
+            _ => panic!("the test command parsed as a different variant"),
+        };
         assert!(options.cargo_args.is_empty());
         assert_eq!(
             options.test_args,
@@ -194,5 +305,35 @@ mod tests {
                 OsString::from("brain_tests::starts_empty")
             ]
         );
+    }
+
+    #[test]
+    fn build_and_local_boundaries_parse_without_extra_process_options() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "build",
+            "--output",
+            "target/bundle",
+            "--offline",
+        ])
+        .expect("build command parses");
+        assert!(matches!(parsed.command, Command::Build(_)));
+
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "simulation",
+            "run",
+            "--scope",
+            "local",
+            "--supervisor-id",
+            "local",
+        ])
+        .expect("simulation command parses");
+        assert!(matches!(
+            parsed.command,
+            Command::Simulation {
+                command: SimulationCommand::Run(_),
+            }
+        ));
     }
 }

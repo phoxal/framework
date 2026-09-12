@@ -4,12 +4,17 @@
 //! It deliberately does not depend on the Runtime SDK, supervisor, service
 //! implementations, simulator, registry client, or the archived CLI.
 
+mod bundle;
 mod cargo;
 mod discovery;
 mod document;
 mod error;
 mod selection;
 
+pub use bundle::{
+    BUNDLE_SCHEMA, BundleComponent, BundleExecutable, BundleFile, BundleManifest, BundlePackage,
+    BundleProvenance, CompiledBundle, LocalIdentity, LocalRunPlan, LocalSimulationPlan,
+};
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, LockMode};
 pub use discovery::ProjectLayout;
 pub use document::{
@@ -158,6 +163,68 @@ impl PreparedProject {
         options: &CargoOptions,
     ) -> Result<Vec<CargoOutput>, Error> {
         cargo::run(self, operation, options)
+    }
+
+    /// Builds and atomically publishes the complete selected executable bundle.
+    ///
+    /// The output is a source-side compiled directory containing the selected
+    /// brain and service binaries plus inspectable manifest and provenance
+    /// records. It does not install or launch the bundle.
+    pub fn build_bundle(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+    ) -> Result<CompiledBundle, Error> {
+        bundle::assemble(self, options, output)
+    }
+
+    /// Returns the default bundle path under Cargo's target directory.
+    #[must_use]
+    pub fn default_bundle_path(&self) -> PathBuf {
+        self.metadata
+            .target_directory
+            .as_std_path()
+            .join("phoxal")
+            .join(&self.document.robot.id)
+            .join("bundle")
+    }
+
+    /// Prepares a local hardware launch without claiming process readiness.
+    pub fn local_run_plan(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+        scope: impl Into<String>,
+        supervisor_id: impl Into<String>,
+    ) -> Result<LocalRunPlan, Error> {
+        let identity = LocalIdentity::new(scope, supervisor_id)?;
+        let bundle = self.build_bundle(options, output)?;
+        Ok(LocalRunPlan { bundle, identity })
+    }
+
+    /// Prepares a local simulation launch without provisioning or launching an
+    /// independent simulator application.
+    pub fn local_simulation_plan(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+        scope: impl Into<String>,
+        supervisor_id: impl Into<String>,
+    ) -> Result<LocalSimulationPlan, Error> {
+        let identity = LocalIdentity::new(scope, supervisor_id)?;
+        let bundle = self.build_bundle(options, output)?;
+        Ok(LocalSimulationPlan { bundle, identity })
+    }
+
+    pub(crate) fn assembly_targets(&self) -> Vec<(String, &SelectedTarget)> {
+        let mut targets = vec![(String::from("brain"), &self.sources.brain)];
+        targets.extend(
+            self.sources
+                .services
+                .iter()
+                .map(|(instance, service)| (instance.clone(), &service.binary)),
+        );
+        targets
     }
 
     pub(crate) fn execution_targets(&self) -> Vec<&SelectedTarget> {
