@@ -27,6 +27,12 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use tar::{Archive, Builder, EntryType, Header};
 
+mod service;
+pub use service::{
+    DeploymentIdentity, IdentityUpdate, SERVICE_UNIT_FILE, ServiceConfigError,
+    configure_systemd_service, read_systemd_identity, render_systemd_service,
+};
+
 /// The supervisor executable stored beside every compiled bundle.
 pub const SUPERVISOR_FILE: &str = "phoxal-supervisor";
 /// The compiled runtime bundle directory.
