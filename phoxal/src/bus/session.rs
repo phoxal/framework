@@ -902,7 +902,7 @@ impl BusHandle {
     }
 
     #[cfg(test)]
-    #[expect(
+    #[allow(
         dead_code,
         reason = "used by simulator tests but compiled by narrower test profiles"
     )]
