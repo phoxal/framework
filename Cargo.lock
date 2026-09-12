@@ -2834,7 +2834,8 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "tracing",
+ "phoxal-motion",
+ "serde",
 ]
 
 [[package]]
@@ -2843,7 +2844,8 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "tokio",
+ "phoxal-navigation",
+ "serde",
 ]
 
 [[package]]

@@ -1,8 +1,6 @@
-mod follower;
-mod frontiers;
-mod navigation;
-mod planner;
+#[path = "service.rs"]
+mod service;
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<navigation::Navigation>()
+    phoxal::runtime::run(service::Navigation)
 }

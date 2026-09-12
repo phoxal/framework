@@ -1,6 +1,6 @@
-mod arbitration;
-mod motion;
+#[path = "service.rs"]
+mod service;
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<motion::Motion>()
+    phoxal::runtime::run(service::Motion)
 }
