@@ -7,6 +7,7 @@ mod core;
 pub mod input;
 mod operation;
 pub mod outputs;
+mod schedule;
 
 // The collector attributes live in the runtime namespace so authors can use
 // the exact `#[phoxal::runtime::inputs]` and `#[phoxal::runtime::input(...)]`
@@ -25,6 +26,7 @@ pub use operation::{
     ManagedOperation, OperationCompletion, OperationError, OperationKey, OperationOutcome,
     OperationPolicy, OperationState,
 };
+pub use schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 
 pub use input::{
     Activation, Capacity, CapacityError, Command, CommandId, CommandOrder, CommandOrderError,

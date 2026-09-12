@@ -902,6 +902,10 @@ impl BusHandle {
     }
 
     #[cfg(test)]
+    #[expect(
+        dead_code,
+        reason = "used by simulator tests but compiled by narrower test profiles"
+    )]
     pub(crate) fn test_queued_delivery_metadata(
         &self,
     ) -> Vec<(String, DeliveryFamily, DeliveryMetadata)> {
