@@ -39,6 +39,18 @@ impl DeploymentTarget {
         Ok(Self { scope, supervisor })
     }
 
+    /// Configured deployment scope.
+    #[must_use]
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    /// Stable supervisor identifier within the scope.
+    #[must_use]
+    pub fn supervisor(&self) -> &str {
+        &self.supervisor
+    }
+
     /// Exact deployment prefix.
     #[must_use]
     pub fn prefix(&self) -> String {
@@ -103,11 +115,15 @@ pub fn validate_session_offers(
 
 fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 128
+        && value.len() <= 64
         && value.is_ascii()
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && value.bytes().skip(1).all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
 }
 
 fn valid_protocol(value: &str) -> bool {
@@ -227,5 +243,18 @@ mod tests {
             validate_session_offers(&target, MAX_BOOTSTRAP_BYTES + 1, &SessionOffers::default()),
             Err(BootstrapError::ResponseTooLarge)
         );
+    }
+
+    #[test]
+    fn deployment_segments_use_the_fixed_routing_grammar() {
+        for invalid in ["", "Workshop", "-rover", "rover.1", &"r".repeat(65)] {
+            assert_eq!(
+                DeploymentTarget::new(invalid, "rover-01"),
+                Err(BootstrapError::InvalidTarget)
+            );
+        }
+        let target = target();
+        assert_eq!(target.scope(), "workshop");
+        assert_eq!(target.supervisor(), "rover-01");
     }
 }
