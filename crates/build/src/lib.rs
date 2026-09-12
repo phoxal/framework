@@ -3,6 +3,9 @@
 //! [`compile_protos`] supplies the shared `phoxal/port.proto` import and a
 //! pinned Protobuf compiler, emits Prost messages with type names, retains the
 //! original descriptor closure, and generates inert typed port references.
+//! [`compile_protos_with_externs`] additionally maps imported owner packages to
+//! their canonical Rust contract crates, so a service can consume one shared
+//! wire vocabulary without generating a second local type.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -127,16 +130,41 @@ pub fn compile_protos(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
 ) -> Result<(), Error> {
+    compile_protos_with_externs(protos, includes, &[])
+}
+
+/// Compiles owned Protobuf files while mapping imported package names to
+/// already-generated Rust contract crates.
+///
+/// Each tuple contains the fully-qualified Protobuf package (including its
+/// leading dot) and the Rust path Prost should use for that package. The
+/// imported descriptors remain in the owner's descriptor closure, while their
+/// messages are referenced rather than regenerated.
+pub fn compile_protos_with_externs(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    extern_paths: &[(&str, &str)],
+) -> Result<(), Error> {
     let out_dir = std::env::var_os("OUT_DIR")
         .map(PathBuf::from)
         .ok_or(Error::MissingEnvironment("OUT_DIR"))?;
-    compile_to(protos, includes, &out_dir)
+    compile_to_with_externs(protos, includes, &out_dir, extern_paths)
 }
 
+#[cfg(test)]
 fn compile_to(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
     out_dir: &Path,
+) -> Result<(), Error> {
+    compile_to_with_externs(protos, includes, out_dir, &[])
+}
+
+fn compile_to_with_externs(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    out_dir: &Path,
+    extern_paths: &[(&str, &str)],
 ) -> Result<(), Error> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let google_include = protoc_bin_vendored::include_path()?;
@@ -218,6 +246,9 @@ fn compile_to(
         .skip_protoc_run()
         .enable_type_names()
         .service_generator(Box::new(PortGenerator { ports }));
+    for (proto_package, rust_path) in extern_paths {
+        config.extern_path(*proto_package, *rust_path);
+    }
     config.compile_protos(&owned_paths, &include_roots)?;
 
     if has_ports {
@@ -474,6 +505,25 @@ struct PortGenerator {
 
 impl prost_build::ServiceGenerator for PortGenerator {
     fn generate(&mut self, service: prost_build::Service, buffer: &mut String) {
+        // `protoc` hands Prost every service in the imported descriptor
+        // closure, while typed ports are generated only for the owner's
+        // service methods. Imported owner services are referenced through
+        // `extern_path` and must not be looked up in this owner's port map.
+        if !service.methods.iter().any(|method| {
+            let full_name = format!(
+                "{}.{}.{}",
+                service.package, service.proto_name, method.proto_name
+            );
+            self.ports.contains_key(&full_name)
+        }) {
+            // Prost still expects a generated module for every imported
+            // service package when it finalizes service output. Keep that
+            // module empty because the imported package is mapped through an
+            // `extern_path` and its service ports belong to its owner crate.
+            let module_name = service.proto_name.to_snake_case();
+            buffer.push_str(&format!("pub mod {module_name} {{}}\n"));
+            return;
+        }
         let module_name = service.proto_name.to_snake_case();
         buffer.push_str(&format!("pub mod {module_name} {{\n"));
         for method in &service.methods {

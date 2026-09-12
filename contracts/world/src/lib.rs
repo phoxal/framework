@@ -1,8 +1,18 @@
 //! Generated world messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.world.v1.rs"));
+
+/// The kinematics-owned odometry payload admitted at the world boundary.
+pub use phoxal_kinematics::OdometryState;
+
+/// Returns the packaged Protobuf include root for downstream contract owners.
+#[must_use]
+pub fn proto_include_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
+}
 
 /// Public typed ports owned by the World Protobuf service.
 pub use world::ports;
@@ -41,15 +51,6 @@ pub enum ValidationError {
     /// A response has no selected result or an invalid unavailable reason.
     #[error("world window response is missing or invalid")]
     InvalidResponse,
-}
-
-impl PoseObservation {
-    /// Validates a measured pose observation.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        validate_id(&self.frame_id, "frame_id")?;
-        validate_pose(self.x_m, self.y_m, self.yaw_rad)?;
-        validate_confidence(self.confidence)
-    }
 }
 
 impl WorldBelief {
@@ -238,7 +239,7 @@ mod tests {
         assert_eq!(ports::WINDOW.name(), "window");
         assert_eq!(ports::STATUS.name(), "status");
         assert_eq!(
-            <phoxal_port::Sample<PoseObservation> as PortDescriptor>::KIND,
+            <phoxal_port::Sample<OdometryState> as PortDescriptor>::KIND,
             PortKind::Sample
         );
         assert_eq!(
@@ -303,18 +304,6 @@ mod tests {
 
     #[test]
     fn rejects_invalid_pose_and_grid_shape() {
-        assert_eq!(
-            (PoseObservation {
-                frame_id: "odom".into(),
-                x_m: f64::NAN,
-                y_m: 0.0,
-                yaw_rad: 0.0,
-                confidence: 1.0,
-                source_revision: 1,
-            })
-            .validate(),
-            Err(ValidationError::NonFinite("x_m"))
-        );
         let bounds = Bounds {
             min_x_m: 0.0,
             min_y_m: 0.0,

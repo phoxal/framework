@@ -10,13 +10,22 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal]
+kind = "service"
+
+[lib]
+name = "phoxal_service_safety"
+path = "src/lib.rs"
+
 [[bin]]
 name = "phoxal-service-safety"
 path = "src/main.rs"
 
 [dependencies]
 phoxal = { workspace = true, features = ["runtime"] }
+phoxal-motion = { workspace = true }
 phoxal-safety = { workspace = true }
+phoxal-world = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 

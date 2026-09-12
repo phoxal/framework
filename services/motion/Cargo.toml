@@ -10,6 +10,9 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal]
+kind = "service"
+
 [lib]
 name = "phoxal_service_motion"
 path = "src/lib.rs"
@@ -19,8 +22,9 @@ name = "phoxal-service-motion"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["participant"] }
+phoxal = { workspace = true, features = ["runtime"] }
 phoxal-motion = { workspace = true }
+phoxal-safety = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 

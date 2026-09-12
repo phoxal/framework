@@ -92,6 +92,136 @@ pub(crate) fn validate_executable_targets(
     Ok(())
 }
 
+/// The target names and authored source paths of one official service package.
+pub(crate) struct ServiceTargetSpec<'a> {
+    /// Package-named executable target.
+    pub(crate) expected_bin: &'a str,
+    /// Underscore-normalized library target.
+    pub(crate) expected_lib: &'a str,
+    /// Package-relative executable source path.
+    pub(crate) expected_bin_source: Option<&'a Path>,
+    /// Package-relative library source path.
+    pub(crate) expected_lib_source: Option<&'a Path>,
+}
+
+/// Validate the two implementation targets every official service exposes.
+///
+/// A service package is both a reusable Runtime library and an executable
+/// process.  The library and binary are one implementation, so discovery
+/// requires exactly one target of each kind and pins both target names and
+/// source paths to the package identity.  Test, example, bench, and build
+/// targets remain allowed as development targets, just as they are for the
+/// binary-only component grammar.
+pub(crate) fn validate_service_targets(
+    package_name: &str,
+    role: &str,
+    spec: ServiceTargetSpec<'_>,
+    targets: &[Target],
+    root: &Path,
+) -> Result<()> {
+    if let Some((target, target_kind)) = targets.iter().find_map(|target| {
+        target
+            .kind
+            .iter()
+            .find(|kind| !is_allowed_target_kind(kind) && **kind != TargetKind::Lib)
+            .map(|kind| (target, kind))
+    }) {
+        if is_library_target_kind(target_kind) {
+            bail!(
+                "{package_name} is {role} but target '{}' has library kind '{target_kind}'; an \
+                 official service must expose exactly one ordinary lib target",
+                target.name
+            );
+        }
+        bail!(
+            "{package_name} is {role} but target '{}' has unsupported target kind \
+             '{target_kind}'; expected lib, bin, test, bench, example, or custom-build",
+            target.name
+        );
+    }
+
+    let library_targets: Vec<_> = targets
+        .iter()
+        .filter(|target| target.is_kind(TargetKind::Lib))
+        .collect();
+    let [library_target] = library_targets.as_slice() else {
+        bail!(
+            "{package_name} is {role} but has {} library targets; expected exactly one",
+            library_targets.len()
+        );
+    };
+    if library_target.name != spec.expected_lib {
+        bail!(
+            "{package_name} is {role} but its only library target is '{}'; expected \
+             '{}'",
+            library_target.name,
+            spec.expected_lib
+        );
+    }
+    validate_target_source(
+        package_name,
+        role,
+        "library",
+        library_target,
+        spec.expected_lib_source,
+        root,
+    )?;
+
+    let binary_targets: Vec<_> = targets
+        .iter()
+        .filter(|target| target.is_kind(TargetKind::Bin))
+        .collect();
+    let [binary_target] = binary_targets.as_slice() else {
+        bail!(
+            "{package_name} is {role} but has {} binary targets; expected exactly one",
+            binary_targets.len()
+        );
+    };
+    if binary_target.name != spec.expected_bin {
+        bail!(
+            "{package_name} is {role} but its only binary target is '{}'; expected \
+             '{}'",
+            binary_target.name,
+            spec.expected_bin
+        );
+    }
+    validate_target_source(
+        package_name,
+        role,
+        "binary",
+        binary_target,
+        spec.expected_bin_source,
+        root,
+    )?;
+    Ok(())
+}
+
+fn validate_target_source(
+    package_name: &str,
+    role: &str,
+    target_role: &str,
+    target: &Target,
+    expected_source: Option<&Path>,
+    root: &Path,
+) -> Result<()> {
+    let Some(expected_source) = expected_source else {
+        return Ok(());
+    };
+    let actual = target
+        .src_path
+        .as_std_path()
+        .strip_prefix(root)
+        .unwrap_or(target.src_path.as_std_path());
+    if actual != expected_source {
+        bail!(
+            "{package_name} is {role} but its {target_role} source is {}; expected {}",
+            actual.display(),
+            expected_source.display()
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn publishes_to_phoxal(package: &cargo_metadata::Package) -> bool {
     package
         .publish

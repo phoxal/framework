@@ -28,11 +28,6 @@ message MotionMeasurement {
   double angular_z_radps = 2;
 }
 
-message SafetyState {
-  bool protective_state_clear = 1;
-  repeated string reasons = 2;
-}
-
 message EngageEmergency {}
 
 message ReleaseEmergency {
@@ -101,10 +96,6 @@ service Motion {
 
   rpc Autonomous(google.protobuf.Empty) returns (stream MotionIntent) {
     option (phoxal.port.kind) = SETPOINT;
-  }
-
-  rpc Safety(google.protobuf.Empty) returns (stream SafetyState) {
-    option (phoxal.port.kind) = STATE;
   }
 
   rpc Measurements(google.protobuf.Empty) returns (stream MotionMeasurement) {

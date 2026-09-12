@@ -12,9 +12,10 @@ use std::collections::{BTreeMap, VecDeque};
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{InitContext, ObservationStamp, Runtime, Sample, StepContext};
 use phoxal_kinematics::{
-    EncoderMeasurement, FrameTransform, FrameTree, JointState, KinematicsStatus,
-    LookupFrameRequest, LookupFrameResponse, OdometryState, UnavailableReason, ports,
+    FrameTransform, FrameTree, JointState, KinematicsStatus, LookupFrameRequest,
+    LookupFrameResponse, OdometryState, UnavailableReason, ports,
 };
+use phoxal_robotics::EncoderSample;
 
 const DEFAULT_MAX_AGE_MS: u64 = 100;
 const DEFAULT_HISTORY_CAPACITY: u32 = 64;
@@ -289,7 +290,7 @@ impl KinematicsState {
 pub struct KinematicsInputs {
     /// Bounded measurements, retaining each producer's capture stamp.
     #[phoxal::runtime::input(max_items = 32, max_bytes = 16_384)]
-    pub encoders: Samples<EncoderMeasurement>,
+    pub encoders: Samples<EncoderSample>,
 }
 
 /// Fresh measured joint products.
@@ -330,11 +331,15 @@ impl Runtime for Kinematics {
         mut state: Self::State,
         inputs: &Self::Inputs,
     ) -> phoxal::Result<(Self::State, Self::Outputs)> {
-        let mut latest = BTreeMap::<String, (EncoderMeasurement, ObservationStamp)>::new();
+        let mut latest = BTreeMap::<String, (EncoderSample, ObservationStamp)>::new();
         let mut invalid_measurement = false;
         for sample in inputs.encoders.items() {
             let measurement = sample.payload();
             if measurement.validate().is_err() {
+                invalid_measurement = true;
+                continue;
+            }
+            if measurement.position_rad.is_none() || measurement.velocity_radps.is_none() {
                 invalid_measurement = true;
                 continue;
             }
@@ -348,13 +353,18 @@ impl Runtime for Kinematics {
             if age.as_millis() > state.config.max_age_ms {
                 continue;
             }
+            let encoder_id = sample.stamp().source();
+            if encoder_id.is_empty() {
+                invalid_measurement = true;
+                continue;
+            }
             let replace = latest
-                .get(&measurement.encoder_id)
+                .get(encoder_id)
                 .is_none_or(|(_, stamp)| stamp.capture_time() < sample.stamp().capture_time());
             if replace {
                 latest.insert(
-                    measurement.encoder_id.clone(),
-                    (measurement.clone(), sample.stamp().clone()),
+                    encoder_id.to_owned(),
+                    (*measurement, sample.stamp().clone()),
                 );
             }
         }
@@ -378,11 +388,17 @@ impl Runtime for Kinematics {
                     continue;
                 };
             let scale = f64::from(direction_sign) / gear_ratio;
+            let (Some(position_rad), Some(velocity_radps)) =
+                (measurement.position_rad, measurement.velocity_radps)
+            else {
+                invalid_measurement = true;
+                continue;
+            };
             let joint = JointState {
                 joint_id: joint_id.clone(),
-                position_rad: measurement.position_rad * scale,
-                velocity_radps: measurement.velocity_radps * scale,
-                effort_nm: measurement.effort_nm.map(|effort| effort * scale),
+                position_rad: position_rad * scale,
+                velocity_radps: velocity_radps * scale,
+                effort_nm: None,
             };
             state.joints.insert(joint_id.clone(), joint.clone());
             outputs.joints.push(Sample::new(joint, stamp.clone()));
@@ -391,25 +407,32 @@ impl Runtime for Kinematics {
         let left = latest.get(&state.config.left_encoder_id);
         let right = latest.get(&state.config.right_encoder_id);
         if let (Some((left, _)), Some((right, _))) = (left, right) {
-            let left_radps = left.velocity_radps * f64::from(state.config.left_direction_sign)
-                / state.config.left_gear_ratio;
-            let right_radps = right.velocity_radps * f64::from(state.config.right_direction_sign)
-                / state.config.right_gear_ratio;
-            let linear = state.config.wheel_radius_m * (left_radps + right_radps) / 2.0;
-            let angular = state.config.wheel_radius_m * (right_radps - left_radps)
-                / state.config.wheel_base_m;
-            if linear.is_finite() && angular.is_finite() {
-                let dt_s = ctx.elapsed().as_nanos() as f64 / 1_000_000_000.0;
-                state.x_m += linear * dt_s * state.yaw_rad.cos();
-                state.y_m += linear * dt_s * state.yaw_rad.sin();
-                state.yaw_rad = normalize_yaw(state.yaw_rad + angular * dt_s);
-                state.linear_x_mps = linear;
-                state.angular_z_radps = angular;
-                state.revision = state.revision.saturating_add(1);
-                state.available = true;
-                state.unavailable_reasons.clear();
-                let frames = state.frames();
-                state.retain_frames(frames);
+            if let (Some(left_velocity_radps), Some(right_velocity_radps)) =
+                (left.velocity_radps, right.velocity_radps)
+            {
+                let left_radps = left_velocity_radps * f64::from(state.config.left_direction_sign)
+                    / state.config.left_gear_ratio;
+                let right_radps = right_velocity_radps
+                    * f64::from(state.config.right_direction_sign)
+                    / state.config.right_gear_ratio;
+                let linear = state.config.wheel_radius_m * (left_radps + right_radps) / 2.0;
+                let angular = state.config.wheel_radius_m * (right_radps - left_radps)
+                    / state.config.wheel_base_m;
+                if linear.is_finite() && angular.is_finite() {
+                    let dt_s = ctx.elapsed().as_nanos() as f64 / 1_000_000_000.0;
+                    state.x_m += linear * dt_s * state.yaw_rad.cos();
+                    state.y_m += linear * dt_s * state.yaw_rad.sin();
+                    state.yaw_rad = normalize_yaw(state.yaw_rad + angular * dt_s);
+                    state.linear_x_mps = linear;
+                    state.angular_z_radps = angular;
+                    state.revision = state.revision.saturating_add(1);
+                    state.available = true;
+                    state.unavailable_reasons.clear();
+                    let frames = state.frames();
+                    state.retain_frames(frames);
+                } else {
+                    invalid_measurement = true;
+                }
             } else {
                 invalid_measurement = true;
             }
@@ -531,13 +554,11 @@ mod tests {
         position_rad: f64,
         velocity_radps: f64,
         at_ms: u64,
-    ) -> Sample<EncoderMeasurement> {
+    ) -> Sample<EncoderSample> {
         Sample::new(
-            EncoderMeasurement {
-                encoder_id: encoder_id.to_owned(),
-                position_rad,
-                velocity_radps,
-                effort_nm: None,
+            EncoderSample {
+                position_rad: Some(position_rad),
+                velocity_radps: Some(velocity_radps),
             },
             ObservationStamp::new(
                 encoder_id,

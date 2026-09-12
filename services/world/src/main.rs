@@ -1,5 +1,3 @@
-mod service;
-
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(service::World)
+    phoxal::runtime::run(phoxal_service_world::World)
 }

@@ -1,5 +1,3 @@
-mod service;
-
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(service::Kinematics)
+    phoxal::runtime::run(phoxal_service_kinematics::Kinematics)
 }

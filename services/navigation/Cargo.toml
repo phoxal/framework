@@ -10,6 +10,9 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal]
+kind = "service"
+
 [lib]
 name = "phoxal_service_navigation"
 path = "src/lib.rs"
@@ -19,8 +22,10 @@ name = "phoxal-service-navigation"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["participant"] }
+phoxal = { workspace = true, features = ["runtime"] }
+phoxal-kinematics = { workspace = true }
 phoxal-navigation = { workspace = true }
+phoxal-world = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 

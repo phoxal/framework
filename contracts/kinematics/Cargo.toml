@@ -16,11 +16,13 @@ kind = "library"
 
 [dependencies]
 phoxal-port = { workspace = true }
+phoxal-robotics = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
 phoxal-build = { workspace = true }
+phoxal-robotics = { workspace = true }
 
 [lints]
 workspace = true

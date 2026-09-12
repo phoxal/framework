@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 
 use phoxal::runtime::input::{Latest, Samples};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
+use phoxal_motion::MotionStatus;
 use phoxal_safety::{
-    Constraint, ConstraintReason, MotionConstraints, MotionHealth, Permission, RangeObservation,
-    SafetyStatus, WorldAssessment, ports,
+    Constraint, ConstraintReason, MotionConstraints, Permission, RangeObservation, SafetyStatus,
+    WorldBelief, WorldRevision, ports,
 };
 
 const DEFAULT_INPUT_MAX_AGE_MS: u64 = 100;
@@ -145,13 +146,16 @@ impl SafetyState {
 /// One immutable input cut for Safety.
 #[phoxal::runtime::inputs]
 pub struct SafetyInputs {
-    /// Latest world assessment from the world-owned integration boundary.
+    /// Latest world belief from the world-owned integration boundary.
     #[phoxal::runtime::input(max_age_ms = 100)]
-    pub world: Latest<WorldAssessment>,
-    /// Latest motion health evidence.  This is health only, not actuator
+    pub world: Latest<WorldBelief>,
+    /// Latest immutable world revision marker.
+    #[phoxal::runtime::input(max_age_ms = 100)]
+    pub world_revision: Latest<WorldRevision>,
+    /// Latest motion status evidence. This is health only, not actuator
     /// authority.
     #[phoxal::runtime::input(max_age_ms = 100)]
-    pub motion: Latest<MotionHealth>,
+    pub motion: Latest<MotionStatus>,
     /// Bounded range observations retaining each sensor's capture stamp.
     #[phoxal::runtime::input(max_items = 64, max_bytes = 16_384)]
     pub ranges: Samples<RangeObservation>,
@@ -270,7 +274,7 @@ fn assess_world(
         constraints.push(stop_constraint(ConstraintReason::WorldUnavailable));
         return;
     };
-    if world.validate().is_err() || !world.localization_available {
+    if world.validate().is_err() || !world.available {
         constraints.push(stop_constraint(ConstraintReason::WorldUnavailable));
         return;
     }
@@ -280,10 +284,13 @@ fn assess_world(
             f64::from(world.confidence),
         ));
     }
-    if !world.map_available {
+    let Some(revision) = fresh_latest(&inputs.world_revision, now, state.config.input_max_age_ms)
+    else {
         constraints.push(stop_constraint(ConstraintReason::MapUnavailable));
-    } else if !world.map_clear {
-        constraints.push(stop_constraint(ConstraintReason::MapBlocked));
+        return;
+    };
+    if revision.validate().is_err() || !revision.available {
+        constraints.push(stop_constraint(ConstraintReason::MapUnavailable));
     }
 }
 
@@ -297,10 +304,7 @@ fn assess_motion(
         constraints.push(stop_constraint(ConstraintReason::MotionUnavailable));
         return;
     };
-    if !motion.available {
-        constraints.push(stop_constraint(ConstraintReason::MotionUnavailable));
-    }
-    if motion.fault {
+    if motion.validate().is_err() {
         constraints.push(stop_constraint(ConstraintReason::MotionFault));
     }
 }
@@ -438,26 +442,39 @@ mod tests {
         )
     }
 
-    fn world(at_ms: u64) -> Latest<WorldAssessment> {
+    fn world(at_ms: u64) -> Latest<WorldBelief> {
         Latest::from_sample(Sample::new(
-            WorldAssessment {
-                localization_available: true,
+            WorldBelief {
+                frame_id: "odom".into(),
                 x_m: 0.0,
                 y_m: 0.0,
                 yaw_rad: 0.0,
                 confidence: 1.0,
-                map_available: true,
-                map_clear: true,
+                revision: 1,
+                available: true,
             },
             ObservationStamp::new("world", ExecutionTime::from_nanos(at_ms * 1_000_000), None),
         ))
     }
 
-    fn motion(at_ms: u64) -> Latest<MotionHealth> {
+    fn world_revision(at_ms: u64) -> Latest<WorldRevision> {
         Latest::from_sample(Sample::new(
-            MotionHealth {
+            WorldRevision {
+                revision: 1,
                 available: true,
-                fault: false,
+            },
+            ObservationStamp::new("world", ExecutionTime::from_nanos(at_ms * 1_000_000), None),
+        ))
+    }
+
+    fn motion(at_ms: u64) -> Latest<MotionStatus> {
+        Latest::from_sample(Sample::new(
+            MotionStatus {
+                mode: phoxal_motion::ControlMode::Disarmed as i32,
+                emergency_latched: false,
+                selected_owner_id: None,
+                protective_state_clear: false,
+                stopped: true,
             },
             ObservationStamp::new("motion", ExecutionTime::from_nanos(at_ms * 1_000_000), None),
         ))
@@ -481,6 +498,7 @@ mod tests {
     fn clear_inputs(at_ms: u64) -> SafetyInputs {
         SafetyInputs {
             world: world(at_ms),
+            world_revision: world_revision(at_ms),
             motion: motion(at_ms),
             ranges: Samples::new(vec![range("front", 2.0, at_ms)]),
         }
@@ -506,6 +524,7 @@ mod tests {
                 state,
                 &SafetyInputs {
                     world: Latest::unavailable(),
+                    world_revision: Latest::unavailable(),
                     motion: Latest::unavailable(),
                     ranges: Samples::default(),
                 },
@@ -536,6 +555,7 @@ mod tests {
                 state,
                 &SafetyInputs {
                     world: world(20),
+                    world_revision: world_revision(20),
                     motion: motion(20),
                     ranges: Samples::new(vec![range("front", 0.2, 20)]),
                 },
@@ -549,6 +569,7 @@ mod tests {
                 state,
                 &SafetyInputs {
                     world: world(40),
+                    world_revision: world_revision(40),
                     motion: motion(40),
                     ranges: Samples::new(vec![range("front", 0.5, 40)]),
                 },

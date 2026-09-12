@@ -24,7 +24,7 @@ use super::{Subject, Violation, is_library_package};
 /// optional typed port surface, while service-owned contract crates consume
 /// that same port vocabulary. Build-time generators are checked separately by
 /// Cargo's graph and are not normal runtime edges.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 7] = [
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 11] = [
     ("phoxal", "phoxal-macros"),
     ("phoxal", "phoxal-port"),
     ("phoxal-motion", "phoxal-port"),
@@ -32,6 +32,10 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 7] = [
     ("phoxal-kinematics", "phoxal-port"),
     ("phoxal-world", "phoxal-port"),
     ("phoxal-safety", "phoxal-port"),
+    ("phoxal-kinematics", "phoxal-robotics"),
+    ("phoxal-world", "phoxal-kinematics"),
+    ("phoxal-safety", "phoxal-motion"),
+    ("phoxal-safety", "phoxal-world"),
 ];
 
 /// The edges a canonical crate may never grow, whatever the dependency kind.

@@ -4,13 +4,7 @@ package phoxal.kinematics.v1;
 
 import "google/protobuf/empty.proto";
 import "phoxal/port.proto";
-
-message EncoderMeasurement {
-  string encoder_id = 1;
-  double position_rad = 2;
-  double velocity_radps = 3;
-  optional double effort_nm = 4;
-}
+import "phoxal/robotics/v1/robotics.proto";
 
 message JointState {
   string joint_id = 1;
@@ -67,7 +61,7 @@ message LookupFrameResponse {
 }
 
 service Kinematics {
-  rpc EncoderMeasurements(google.protobuf.Empty) returns (stream EncoderMeasurement) {
+  rpc EncoderMeasurements(google.protobuf.Empty) returns (stream phoxal.robotics.v1.EncoderSample) {
     option (phoxal.port.kind) = SAMPLE;
   }
 

@@ -10,6 +10,13 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal]
+kind = "service"
+
+[lib]
+name = "phoxal_service_kinematics"
+path = "src/lib.rs"
+
 [[bin]]
 name = "phoxal-service-kinematics"
 path = "src/main.rs"
@@ -18,6 +25,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 phoxal = { workspace = true, features = ["runtime"] }
 phoxal-kinematics = { workspace = true }
+phoxal-robotics = { workspace = true }
 serde = { workspace = true }
 
 [lints]

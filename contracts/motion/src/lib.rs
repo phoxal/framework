@@ -1,8 +1,15 @@
 //! Generated motion messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.motion.v1.rs"));
+
+/// Returns the packaged Protobuf include root for downstream contract owners.
+#[must_use]
+pub fn proto_include_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
+}
 
 /// Public typed ports owned by the Motion Protobuf service.
 pub use motion::ports;
@@ -34,9 +41,6 @@ pub enum ValidationError {
     /// A motion intent owner is absent or too long.
     #[error("owner_id must contain 1 to 64 UTF-8 bytes")]
     InvalidOwner,
-    /// A safety reason is malformed or repeated.
-    #[error("safety reasons must contain at most four distinct non-empty values")]
-    InvalidSafetyReasons,
     /// A required emergency command or decision is absent.
     #[error("{0} is required")]
     Missing(&'static str),
@@ -96,22 +100,6 @@ impl MotionStatus {
             && (owner.is_empty() || owner.len() > 64)
         {
             return Err(ValidationError::InvalidOwner);
-        }
-        Ok(())
-    }
-}
-
-impl SafetyState {
-    /// Validates the bounded protective-state reason list.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        let mut reasons = HashSet::with_capacity(self.reasons.len());
-        if self.reasons.len() > 4 {
-            return Err(ValidationError::InvalidSafetyReasons);
-        }
-        for reason in &self.reasons {
-            if reason.is_empty() || reason.len() > 64 || !reasons.insert(reason) {
-                return Err(ValidationError::InvalidSafetyReasons);
-            }
         }
         Ok(())
     }
@@ -233,7 +221,6 @@ mod tests {
         );
         assert_eq!(ports::MANUAL.name(), "manual");
         assert_eq!(ports::AUTONOMOUS.name(), "autonomous");
-        assert_eq!(ports::SAFETY.name(), "safety");
         assert_eq!(ports::MEASUREMENTS.name(), "measurements");
         assert_eq!(ports::STATUS.name(), "status");
         assert_eq!(ports::EMERGENCY.name(), "emergency");
@@ -304,12 +291,6 @@ mod tests {
         }
         .validate()
         .expect("finite intent");
-        SafetyState {
-            protective_state_clear: true,
-            reasons: vec!["reset-confirmed".into()],
-        }
-        .validate()
-        .expect("bounded safety state");
         let request = ApplyEmergencyRequest {
             command: Some(apply_emergency_request::Command::Release(
                 ReleaseEmergency {
@@ -334,14 +315,6 @@ mod tests {
                 owner_id: String::new(),
                 linear_x_mps: 0.0,
                 angular_z_radps: 0.0,
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            SafetyState {
-                protective_state_clear: false,
-                reasons: vec!["same".into(), "same".into()],
             }
             .validate()
             .is_err()

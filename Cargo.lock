@@ -2817,6 +2817,7 @@ version = "0.1.0"
 dependencies = [
  "phoxal-build",
  "phoxal-port",
+ "phoxal-robotics",
  "prost",
  "thiserror 2.0.19",
 ]
@@ -2909,7 +2910,11 @@ name = "phoxal-safety"
 version = "0.1.0"
 dependencies = [
  "phoxal-build",
+ "phoxal-kinematics",
+ "phoxal-motion",
  "phoxal-port",
+ "phoxal-robotics",
+ "phoxal-world",
  "prost",
  "thiserror 2.0.19",
 ]
@@ -2921,6 +2926,7 @@ dependencies = [
  "anyhow",
  "phoxal",
  "phoxal-kinematics",
+ "phoxal-robotics",
  "serde",
 ]
 
@@ -2931,6 +2937,7 @@ dependencies = [
  "anyhow",
  "phoxal",
  "phoxal-motion",
+ "phoxal-safety",
  "serde",
 ]
 
@@ -2940,16 +2947,10 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-kinematics",
  "phoxal-navigation",
+ "phoxal-world",
  "serde",
-]
-
-[[package]]
-name = "phoxal-service-perception"
-version = "0.68.0"
-dependencies = [
- "phoxal",
- "tracing",
 ]
 
 [[package]]
@@ -2958,16 +2959,10 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-motion",
  "phoxal-safety",
+ "phoxal-world",
  "serde",
-]
-
-[[package]]
-name = "phoxal-service-video"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
 ]
 
 [[package]]
@@ -2976,6 +2971,7 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-kinematics",
  "phoxal-world",
  "serde",
 ]
@@ -3058,7 +3054,9 @@ name = "phoxal-world"
 version = "0.1.0"
 dependencies = [
  "phoxal-build",
+ "phoxal-kinematics",
  "phoxal-port",
+ "phoxal-robotics",
  "prost",
  "thiserror 2.0.19",
 ]

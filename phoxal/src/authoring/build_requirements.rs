@@ -30,10 +30,12 @@ pub enum BuildRequirementsError {
     NotATable { label: String, table: &'static str },
 
     /// Package identity is derived from the directory convention, so declaring
-    /// it here would create a second, disagreeing source of truth.
+    /// an id here would create a second, disagreeing source of truth.  The
+    /// package role is separate semantic metadata and is accepted for the
+    /// publication policy.
     #[error(
-        "{label}: [package.metadata.phoxal] must not declare kind or id; package identity is \
-         derived from the directory convention"
+        "{label}: [package.metadata.phoxal] must not declare id; package identity is derived \
+         from the directory convention"
     )]
     DeclaredIdentity { label: String },
 
@@ -90,12 +92,21 @@ impl BuildRequirements {
             return Ok(Self::default());
         };
         let phoxal = table(phoxal, label, PHOXAL_TABLE)?;
-        if phoxal.contains_key("kind") || phoxal.contains_key("id") {
+        if phoxal.contains_key("id") {
             return Err(BuildRequirementsError::DeclaredIdentity {
                 label: label.to_string(),
             });
         }
-        only_key(phoxal.keys(), label, PHOXAL_TABLE, "build")?;
+        for key in phoxal.keys() {
+            if key != "kind" && key != "build" {
+                return Err(BuildRequirementsError::UnknownKey {
+                    label: label.to_string(),
+                    table: PHOXAL_TABLE,
+                    key: key.clone(),
+                    allowed: "kind or build",
+                });
+            }
+        }
 
         let Some(build) = phoxal.get("build") else {
             return Ok(Self::default());
@@ -225,15 +236,20 @@ mod tests {
     }
 
     #[test]
-    fn kind_and_id_are_rejected_with_a_specific_message() {
-        for key in ["kind", "id"] {
-            let source = format!("[package.metadata.phoxal]\n{key} = \"x\"");
-            let error = BuildRequirements::from_manifest(&source, "test").unwrap_err();
-            assert!(
-                error.to_string().contains("must not declare kind or id"),
-                "{error:#}"
-            );
-        }
+    fn role_metadata_is_accepted_but_id_remains_derived() -> anyhow::Result<()> {
+        assert_eq!(
+            BuildRequirements::from_manifest(
+                "[package.metadata.phoxal]\nkind = \"service\"",
+                "test",
+            )?,
+            BuildRequirements::default()
+        );
+
+        let error =
+            BuildRequirements::from_manifest("[package.metadata.phoxal]\nid = \"service\"", "test")
+                .unwrap_err();
+        assert!(error.to_string().contains("must not declare id"));
+        Ok(())
     }
 
     #[test]

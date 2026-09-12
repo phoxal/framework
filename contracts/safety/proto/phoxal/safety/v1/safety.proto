@@ -4,26 +4,13 @@ package phoxal.safety.v1;
 
 import "google/protobuf/empty.proto";
 import "phoxal/port.proto";
-
-message WorldAssessment {
-  bool localization_available = 1;
-  double x_m = 2;
-  double y_m = 3;
-  double yaw_rad = 4;
-  float confidence = 5;
-  bool map_available = 6;
-  bool map_clear = 7;
-}
+import "phoxal/motion/v1/motion.proto";
+import "phoxal/world/v1/world.proto";
 
 message RangeObservation {
   string sensor_id = 1;
   double distance_m = 2;
   bool valid = 3;
-}
-
-message MotionHealth {
-  bool available = 1;
-  bool fault = 2;
 }
 
 enum ConstraintReason {
@@ -68,7 +55,11 @@ message SafetyStatus {
 }
 
 service Safety {
-  rpc World(google.protobuf.Empty) returns (stream WorldAssessment) {
+  rpc World(google.protobuf.Empty) returns (stream phoxal.world.v1.WorldBelief) {
+    option (phoxal.port.kind) = STATE;
+  }
+
+  rpc WorldRevision(google.protobuf.Empty) returns (stream phoxal.world.v1.WorldRevision) {
     option (phoxal.port.kind) = STATE;
   }
 
@@ -76,7 +67,7 @@ service Safety {
     option (phoxal.port.kind) = SAMPLE;
   }
 
-  rpc Motion(google.protobuf.Empty) returns (stream MotionHealth) {
+  rpc Motion(google.protobuf.Empty) returns (stream phoxal.motion.v1.MotionStatus) {
     option (phoxal.port.kind) = STATE;
   }
 

@@ -427,6 +427,14 @@ fn the_library_crate_list_matches_the_workspace_members(
         let directory = relative
             .to_str()
             .with_context(|| format!("{} is not a UTF-8 workspace path", relative.display()))?;
+        // Official service libraries are implementation targets of their
+        // artifact packages, not separately released framework libraries.
+        // Artifact discovery validates their paired lib+bin shape before this
+        // rule runs, so this rule must not classify those libs as rogue
+        // reusable crates.
+        if artifact::is_official_service_directory(directory) {
+            continue;
+        }
         if library_package_name(directory).as_deref() != Some(package.name.as_str()) {
             violations.push(Violation::new(format!(
                 "library crate {directory} does not hold the package its directory names; a \

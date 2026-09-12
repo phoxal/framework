@@ -1,8 +1,20 @@
 //! Generated safety messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.safety.v1.rs"));
+
+/// Canonical motion status consumed by the safety assessment.
+pub use phoxal_motion::MotionStatus;
+/// Canonical world products consumed by the safety assessment.
+pub use phoxal_world::{WorldBelief, WorldRevision};
+
+/// Returns the packaged Protobuf include root for downstream contract owners.
+#[must_use]
+pub fn proto_include_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
+}
 
 /// Public typed ports owned by the Safety Protobuf service.
 pub use safety::ports;
@@ -43,23 +55,6 @@ pub enum ValidationError {
     InvalidReasons,
 }
 
-impl WorldAssessment {
-    /// Validates measured/world evidence before assessment.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        validate_finite(self.x_m, "x_m")?;
-        validate_finite(self.y_m, "y_m")?;
-        if !self.yaw_rad.is_finite()
-            || !(-std::f64::consts::PI..=std::f64::consts::PI).contains(&self.yaw_rad)
-        {
-            return Err(ValidationError::InvalidYaw);
-        }
-        if !self.confidence.is_finite() || !(0.0..=1.0).contains(&self.confidence) {
-            return Err(ValidationError::InvalidConfidence);
-        }
-        Ok(())
-    }
-}
-
 impl RangeObservation {
     /// Validates one measured range observation.
     pub fn validate(&self) -> Result<(), ValidationError> {
@@ -67,13 +62,6 @@ impl RangeObservation {
         if !self.distance_m.is_finite() || self.distance_m < 0.0 {
             return Err(ValidationError::InvalidDistance);
         }
-        Ok(())
-    }
-}
-
-impl MotionHealth {
-    /// Validates the closed health flags.
-    pub const fn validate(&self) -> Result<(), ValidationError> {
         Ok(())
     }
 }
@@ -189,22 +177,17 @@ fn validate_id(value: &str, field: &'static str) -> Result<(), ValidationError> 
     Ok(())
 }
 
-fn validate_finite(value: f64, field: &'static str) -> Result<(), ValidationError> {
-    value
-        .is_finite()
-        .then_some(())
-        .ok_or(ValidationError::NonFinite(field))
-}
-
 #[cfg(test)]
 mod tests {
     use phoxal_port::{PortDescriptor, PortKind};
+    use prost::Name;
 
     use super::*;
 
     #[test]
     fn generated_ports_retain_names_kinds_and_message_identity() {
         assert_eq!(ports::WORLD.name(), "world");
+        assert_eq!(ports::WORLD_REVISION.name(), "world_revision");
         assert_eq!(ports::RANGES.name(), "ranges");
         assert_eq!(ports::MOTION.name(), "motion");
         assert_eq!(ports::CONSTRAINTS.name(), "constraints");
@@ -217,6 +200,8 @@ mod tests {
             <phoxal_port::State<MotionConstraints> as PortDescriptor>::KIND,
             PortKind::State
         );
+        assert_eq!(WorldBelief::PACKAGE, "phoxal.world.v1");
+        assert_eq!(MotionStatus::PACKAGE, "phoxal.motion.v1");
         assert!(!FILE_DESCRIPTOR_SET.is_empty());
     }
 
@@ -248,19 +233,6 @@ mod tests {
 
     #[test]
     fn rejects_nonfinite_world_and_range_values() {
-        assert_eq!(
-            (WorldAssessment {
-                localization_available: true,
-                x_m: f64::NAN,
-                y_m: 0.0,
-                yaw_rad: 0.0,
-                confidence: 1.0,
-                map_available: true,
-                map_clear: true,
-            })
-            .validate(),
-            Err(ValidationError::NonFinite("x_m"))
-        );
         assert_eq!(
             (RangeObservation {
                 sensor_id: "front".into(),

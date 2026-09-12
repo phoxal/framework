@@ -4,15 +4,7 @@ package phoxal.world.v1;
 
 import "google/protobuf/empty.proto";
 import "phoxal/port.proto";
-
-message PoseObservation {
-  string frame_id = 1;
-  double x_m = 2;
-  double y_m = 3;
-  double yaw_rad = 4;
-  float confidence = 5;
-  uint64 source_revision = 6;
-}
+import "phoxal/kinematics/v1/kinematics.proto";
 
 message WorldBelief {
   string frame_id = 1;
@@ -94,7 +86,7 @@ message WorldStatus {
 }
 
 service World {
-  rpc Pose(google.protobuf.Empty) returns (stream PoseObservation) {
+  rpc Pose(google.protobuf.Empty) returns (stream phoxal.kinematics.v1.OdometryState) {
     option (phoxal.port.kind) = SAMPLE;
   }
 

@@ -9,12 +9,14 @@ use std::collections::VecDeque;
 
 use phoxal::runtime::input::{Commands, Latest};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, Sample, StepContext};
+use phoxal_kinematics::OdometryState;
 use phoxal_navigation::{
     ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
     GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
     UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
     ports,
 };
+use phoxal_world::WorldRevision;
 
 const LOCALIZATION_MAX_AGE_MS: u64 = 100;
 const MAP_MAX_AGE_MS: u64 = 100;
@@ -40,22 +42,6 @@ fn validate_navigation_config(config: &NavigationConfig) -> phoxal::Result<()> {
         ));
     }
     Ok(())
-}
-
-/// A measured pose supplied by the configured localization provider.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MeasuredPose {
-    /// Position in the goal frame.
-    pub x_m: f64,
-    /// Position in the goal frame.
-    pub y_m: f64,
-}
-
-/// The immutable map revision selected for a goal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MapRevision {
-    /// Revision identity of the map snapshot.
-    pub revision: u64,
 }
 
 /// Private navigation state retained by the serialized compute owner.
@@ -124,10 +110,10 @@ pub struct NavigationInputs {
     )]
     pub commands: Commands<ApplyCommandRequest, ApplyCommandResponse>,
     /// The latest measured pose, retaining the provider's capture stamp.
-    pub localization: Latest<MeasuredPose>,
+    pub localization: Latest<OdometryState>,
     /// The latest immutable map revision, retaining the provider's capture
     /// stamp.
-    pub map: Latest<MapRevision>,
+    pub map: Latest<WorldRevision>,
 }
 
 /// Fresh per-invocation Navigation products.
@@ -301,13 +287,22 @@ fn public_status(state: &PlannerState) -> NavigationState {
 
 fn unavailable_reasons(inputs: &NavigationInputs, now: ExecutionTime) -> Vec<i32> {
     let mut reasons = Vec::with_capacity(2);
-    if !inputs
+    let localization_ready = inputs
         .localization
         .is_fresh_at(now, Some(LOCALIZATION_MAX_AGE_MS))
-    {
+        && inputs
+            .localization
+            .value()
+            .is_some_and(|pose| pose.validate().is_ok() && pose.available);
+    if !localization_ready {
         reasons.push(UnavailableReason::Localization.into());
     }
-    if !inputs.map.is_fresh_at(now, Some(MAP_MAX_AGE_MS)) {
+    let map_ready = inputs.map.is_fresh_at(now, Some(MAP_MAX_AGE_MS))
+        && inputs
+            .map
+            .value()
+            .is_some_and(|revision| revision.validate().is_ok() && revision.available);
+    if !map_ready {
         reasons.push(UnavailableReason::Map.into());
     }
     reasons
@@ -317,7 +312,13 @@ fn fresh_map_revision(inputs: &NavigationInputs, now: ExecutionTime) -> Option<u
     inputs
         .map
         .is_fresh_at(now, Some(MAP_MAX_AGE_MS))
-        .then(|| inputs.map.value().map(|value| value.revision))
+        .then(|| {
+            inputs
+                .map
+                .value()
+                .filter(|value| value.validate().is_ok() && value.available)
+                .map(|value| value.revision)
+        })
         .flatten()
 }
 
@@ -399,7 +400,7 @@ fn apply_command(
     }
 }
 
-fn advance_search_or_follow(state: &mut PlannerState, pose: Option<&MeasuredPose>) {
+fn advance_search_or_follow(state: &mut PlannerState, pose: Option<&OdometryState>) {
     match state.phase {
         Phase::Searching if state.search_steps_remaining > 0 => {
             state.search_steps_remaining = state
@@ -429,28 +430,32 @@ fn advance_search_or_follow(state: &mut PlannerState, pose: Option<&MeasuredPose
     }
 }
 
-/// Construct a stamped measured pose for direct Runtime tests and adapters.
+/// Construct a stamped kinematics odometry sample for direct Runtime tests and
+/// adapters.
 #[must_use]
 #[allow(
     dead_code,
     reason = "constructor helpers are shared by direct tests and host adapters"
 )]
-pub fn measured_pose(value: MeasuredPose, at: ExecutionTime) -> Latest<MeasuredPose> {
+pub fn odometry(value: OdometryState, at: ExecutionTime) -> Latest<OdometryState> {
     Latest::from_sample(Sample::new(
         value,
         phoxal::runtime::ObservationStamp::new("localization", at, None),
     ))
 }
 
-/// Construct a stamped map revision for direct Runtime tests and adapters.
+/// Construct a stamped world revision for direct Runtime tests and adapters.
 #[must_use]
 #[allow(
     dead_code,
     reason = "constructor helpers are shared by direct tests and host adapters"
 )]
-pub fn map_revision(revision: u64, at: ExecutionTime) -> Latest<MapRevision> {
+pub fn map_revision(revision: u64, at: ExecutionTime) -> Latest<WorldRevision> {
     Latest::from_sample(Sample::new(
-        MapRevision { revision },
+        WorldRevision {
+            revision,
+            available: true,
+        },
         phoxal::runtime::ObservationStamp::new("map", at, Some(revision)),
     ))
 }
@@ -505,7 +510,18 @@ mod tests {
     ) -> NavigationInputs {
         NavigationInputs {
             commands: Commands::new(commands),
-            localization: measured_pose(MeasuredPose { x_m: 0.0, y_m: 0.0 }, at(0)),
+            localization: odometry(
+                OdometryState {
+                    x_m: 0.0,
+                    y_m: 0.0,
+                    yaw_rad: 0.0,
+                    linear_x_mps: 0.0,
+                    angular_z_radps: 0.0,
+                    revision: 1,
+                    available: true,
+                },
+                at(0),
+            ),
             map: map_revision(7, at(0)),
         }
     }

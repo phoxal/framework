@@ -11,9 +11,10 @@ use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
 use phoxal_motion::{
     ActuatorSetpoint, ActuatorTarget, ApplyEmergencyRequest, ApplyEmergencyResponse, Arm,
     ControlMode, EmergencyAccepted, EmergencyRefusalReason, EmergencyRefused, MotionIntent,
-    MotionMeasurement, MotionStatus, SafetyState, actuator_target, apply_emergency_request,
+    MotionMeasurement, MotionStatus, actuator_target, apply_emergency_request,
     apply_emergency_response, ports,
 };
+use phoxal_safety::{Constraint, ConstraintReason, MotionConstraints, Permission};
 
 const INPUT_MAX_AGE_MS: u64 = 100;
 #[allow(
@@ -111,8 +112,9 @@ pub struct MotionInputs {
     /// independently from their publication timestamps.
     pub manual: Setpoint<MotionIntent>,
     pub autonomous: Setpoint<MotionIntent>,
-    /// Safety is a current protective-state fact, never an authority lease.
-    pub safety: Latest<SafetyState>,
+    /// Safety is an expiring protective constraint product, never an
+    /// authority lease or a motion-owned duplicate state.
+    pub safety: Latest<MotionConstraints>,
     /// Measured evidence is required before arm and actuation.
     pub measurements: Latest<MotionMeasurement>,
     /// Emergency, arm, and disarm commands are processed in admission order.
@@ -165,13 +167,7 @@ impl Runtime for Motion {
 
         state.engaged_this_invocation = false;
         state.protective_state_clear = fresh_safety(inputs, ctx.now())
-            .and_then(|safety| {
-                safety
-                    .validate()
-                    .ok()
-                    .map(|_| safety.protective_state_clear)
-            })
-            .unwrap_or(false);
+            .is_some_and(|safety| safety_is_clear(safety, ctx.now()));
         state.measurement_available = fresh_measurement(inputs, ctx.now())
             .is_some_and(|measurement| measurement.validate().is_ok());
         let mut outputs = MotionOutputs::default();
@@ -241,12 +237,19 @@ impl Motion {
     }
 }
 
-fn fresh_safety(inputs: &MotionInputs, now: ExecutionTime) -> Option<&SafetyState> {
+fn fresh_safety(inputs: &MotionInputs, now: ExecutionTime) -> Option<&MotionConstraints> {
     inputs
         .safety
         .is_fresh_at(now, Some(INPUT_MAX_AGE_MS))
         .then(|| inputs.safety.value())
         .flatten()
+}
+
+fn safety_is_clear(safety: &MotionConstraints, now: ExecutionTime) -> bool {
+    safety.validate().is_ok()
+        && Permission::try_from(safety.permission).ok() == Some(Permission::Clear)
+        && safety.valid_from_nanos <= now.as_nanos()
+        && safety.expires_at_nanos > now.as_nanos()
 }
 
 fn fresh_measurement(inputs: &MotionInputs, now: ExecutionTime) -> Option<&MotionMeasurement> {
@@ -458,17 +461,34 @@ pub fn autonomous_intent(
     manual_intent(owner_id, linear_x_mps, angular_z_radps, issued_at)
 }
 
-/// Build a stamped safety fact for a direct Runtime test or adapter.
+/// Build a stamped safety constraints product for a direct Runtime test or
+/// adapter.
 #[must_use]
 #[allow(
     dead_code,
     reason = "constructor helpers are shared by direct tests and host adapters"
 )]
-pub fn safety_state(protective_state_clear: bool, at: ExecutionTime) -> Latest<SafetyState> {
+pub fn safety_state(protective_state_clear: bool, at: ExecutionTime) -> Latest<MotionConstraints> {
+    let (permission, constraints) = if protective_state_clear {
+        (Permission::Clear, Vec::new())
+    } else {
+        (
+            Permission::Stopped,
+            vec![Constraint {
+                reason: ConstraintReason::WorldUnavailable as i32,
+                max_linear_speed_mps: None,
+                max_angular_speed_radps: None,
+                observed_value: Some(0.0),
+            }],
+        )
+    };
     Latest::from_sample(phoxal::runtime::Sample::new(
-        SafetyState {
-            protective_state_clear,
-            reasons: Vec::new(),
+        MotionConstraints {
+            sequence: 1,
+            permission: permission as i32,
+            constraints,
+            valid_from_nanos: at.as_nanos(),
+            expires_at_nanos: at.as_nanos().saturating_add(100_000_000),
         },
         phoxal::runtime::ObservationStamp::new("safety", at, None),
     ))

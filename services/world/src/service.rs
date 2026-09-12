@@ -10,10 +10,11 @@ use std::collections::VecDeque;
 
 use phoxal::runtime::input::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
+use phoxal_kinematics::OdometryState;
 use phoxal_world::{
-    Bounds, GridWindow, Occupancy, PoseObservation, UnavailableReason, WindowRequest,
-    WindowResponse, WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision,
-    WorldStatus, ports, window_response,
+    Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
+    WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus, ports,
+    window_response,
 };
 
 const DEFAULT_MAX_AGE_MS: u64 = 100;
@@ -223,9 +224,9 @@ impl WorldState {
 /// One immutable pose cut for World.
 #[phoxal::runtime::inputs]
 pub struct WorldInputs {
-    /// The latest kinematics-owned pose, retaining its capture stamp.
+    /// The latest kinematics-owned odometry, retaining its capture stamp.
     #[phoxal::runtime::input(max_age_ms = 100)]
-    pub pose: Latest<PoseObservation>,
+    pub pose: Latest<OdometryState>,
 }
 
 /// World has no transient products.  Belief, revision, status, and immutable
@@ -268,20 +269,26 @@ impl Runtime for World {
             state.belief.available = false;
             return Ok((state, ()));
         };
-        if pose.validate().is_err() || pose.frame_id != state.config.frame_id {
+        if pose.validate().is_err() {
             state.available = false;
             state.unavailable_reasons = vec![UnavailableReason::InvalidPose as i32];
+            state.belief.available = false;
+            return Ok((state, ()));
+        }
+        if !pose.available {
+            state.available = false;
+            state.unavailable_reasons = vec![UnavailableReason::Pose as i32];
             state.belief.available = false;
             return Ok((state, ()));
         }
 
         state.revision = state.revision.saturating_add(1);
         state.belief = WorldBelief {
-            frame_id: pose.frame_id.clone(),
+            frame_id: state.config.frame_id.clone(),
             x_m: pose.x_m,
             y_m: pose.y_m,
             yaw_rad: pose.yaw_rad,
-            confidence: pose.confidence,
+            confidence: 1.0,
             revision: state.revision,
             available: true,
         };
@@ -422,15 +429,16 @@ mod tests {
         )
     }
 
-    fn pose(at_ms: u64, source_revision: u64) -> Latest<PoseObservation> {
+    fn pose(at_ms: u64, source_revision: u64) -> Latest<OdometryState> {
         Latest::from_sample(Sample::new(
-            PoseObservation {
-                frame_id: "odom".into(),
+            OdometryState {
                 x_m: 0.2,
                 y_m: -0.1,
                 yaw_rad: 0.0,
-                confidence: 0.9,
-                source_revision,
+                linear_x_mps: 0.0,
+                angular_z_radps: 0.0,
+                revision: source_revision,
+                available: true,
             },
             ObservationStamp::new(
                 "kinematics",

@@ -10,6 +10,13 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal]
+kind = "service"
+
+[lib]
+name = "phoxal_service_world"
+path = "src/lib.rs"
+
 [[bin]]
 name = "phoxal-service-world"
 path = "src/main.rs"
@@ -17,6 +24,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 phoxal = { workspace = true, features = ["runtime"] }
+phoxal-kinematics = { workspace = true }
 phoxal-world = { workspace = true }
 serde = { workspace = true }
 

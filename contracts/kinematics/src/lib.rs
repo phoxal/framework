@@ -1,8 +1,19 @@
 //! Generated kinematics messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.kinematics.v1.rs"));
+
+/// The shared encoder payload used by physical producers and this service's
+/// encoder input port.
+pub use phoxal_robotics::EncoderSample;
+
+/// Returns the packaged Protobuf include root for downstream contract owners.
+#[must_use]
+pub fn proto_include_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
+}
 
 /// Public typed ports owned by the Kinematics Protobuf service.
 pub use kinematics::ports;
@@ -32,19 +43,6 @@ pub enum ValidationError {
     /// A frame tree contains contradictory transform identities.
     #[error("frame tree contains duplicate or self-referential transforms")]
     InvalidFrameTree,
-}
-
-impl EncoderMeasurement {
-    /// Validates a measured encoder observation.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        validate_id(&self.encoder_id, "encoder_id")?;
-        validate_finite(self.position_rad, "position_rad")?;
-        validate_finite(self.velocity_radps, "velocity_radps")?;
-        if let Some(effort_nm) = self.effort_nm {
-            validate_finite(effort_nm, "effort_nm")?;
-        }
-        Ok(())
-    }
 }
 
 impl JointState {
@@ -176,7 +174,7 @@ mod tests {
         assert_eq!(ports::STATUS.name(), "status");
         assert_eq!(ports::LOOKUP_FRAME.name(), "lookup_frame");
         assert_eq!(
-            <phoxal_port::Sample<EncoderMeasurement> as PortDescriptor>::KIND,
+            <phoxal_port::Sample<EncoderSample> as PortDescriptor>::KIND,
             PortKind::Sample
         );
         assert_eq!(
@@ -189,11 +187,9 @@ mod tests {
 
     #[test]
     fn finite_measurements_and_frame_trees_are_accepted() {
-        EncoderMeasurement {
-            encoder_id: "left".into(),
-            position_rad: 0.0,
-            velocity_radps: -0.0,
-            effort_nm: Some(0.0),
+        EncoderSample {
+            position_rad: Some(0.0),
+            velocity_radps: Some(-0.0),
         }
         .validate()
         .expect("zero is a measurement");
@@ -213,16 +209,6 @@ mod tests {
 
     #[test]
     fn rejects_invalid_measurement_and_duplicate_frame_children() {
-        assert_eq!(
-            (EncoderMeasurement {
-                encoder_id: "left".into(),
-                position_rad: f64::NAN,
-                velocity_radps: 0.0,
-                effort_nm: None,
-            })
-            .validate(),
-            Err(ValidationError::NonFinite("position_rad"))
-        );
         let duplicate = FrameTree {
             transforms: vec![
                 FrameTransform {
