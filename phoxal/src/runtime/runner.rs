@@ -720,6 +720,10 @@ mod tests {
         value: u64,
     }
 
+    impl super::super::outputs::OutputSet for TestOutputs {
+        const FIELDS: &'static [super::super::outputs::OutputField] = &[];
+    }
+
     struct TestRuntime {
         validate: Arc<Mutex<Vec<&'static str>>>,
         fail_step: bool,
@@ -761,6 +765,12 @@ mod tests {
 
     impl RegisteredRuntime for TestRuntime {
         const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 10, 100);
+
+        fn __retain_artifact_metadata() {}
+    }
+
+    impl super::super::outputs::OutputBindings for TestRuntime {
+        const FIELDS: &'static [super::super::outputs::OutputField] = &[];
     }
 
     struct TestInputsSource;
