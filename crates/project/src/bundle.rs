@@ -23,6 +23,7 @@ use crate::{CargoOptions, Error, PreparedProject, RobotDocument};
 /// The compiled project-bundle schema emitted by this source compiler.
 pub const BUNDLE_SCHEMA: &str = "phoxal/bundle/v0";
 const BIN_DIR: &str = "bin";
+const ASSET_DIR: &str = "assets";
 const MANIFEST_FILE: &str = "manifest.json";
 const PROVENANCE_FILE: &str = "provenance.json";
 
@@ -163,6 +164,8 @@ pub struct BundleProvenance {
     pub cargo_lock_sha256: Option<String>,
     /// Model path and digest when the authored model exists.
     pub model: Option<BundleFile>,
+    /// The validated model/resource closure copied into the bundle's assets.
+    pub model_closure: Option<BundleModelClosure>,
 }
 
 /// One authored input file and its digest.
@@ -175,6 +178,49 @@ pub struct BundleFile {
     /// Exact byte count.
     pub bytes: u64,
 }
+
+/// The portable closed model closure carried by a compiled bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleModelClosure {
+    /// Bundle-relative entry passed to the native parser.
+    pub entry: String,
+    /// Digest of the normalized entry/resource closure.
+    pub digest: String,
+    /// Every resource copied below the bundle's assets directory.
+    pub resources: Vec<BundleResource>,
+}
+
+/// One resource copied into a compiled bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleResource {
+    /// Bundle-relative resource path.
+    pub path: String,
+    /// Lowercase SHA-256 digest of the resource bytes.
+    pub sha256: String,
+    /// Exact resource byte count.
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct StagedModel {
+    source: BundleFile,
+    closure: BundleModelClosure,
+}
+
+#[derive(Debug, Clone)]
+struct StagedResource {
+    name: String,
+    bytes: Vec<u8>,
+}
+
+type ArtifactKey = (String, String);
+type BuiltArtifact = (
+    SelectedTarget,
+    PathBuf,
+    FileDigest,
+    Option<ArtifactContract>,
+);
+type BuiltArtifacts = BTreeMap<ArtifactKey, BuiltArtifact>;
 
 /// A local identity used by the explicit run and simulation boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +304,7 @@ pub(crate) fn assemble(
         path: staged_root.join(BIN_DIR),
         source,
     })?;
+    let staged_model = stage_model(prepared, staged_root)?;
 
     let mut artifacts = BTreeMap::new();
     for (_, target) in prepared.assembly_targets() {
@@ -356,7 +403,7 @@ pub(crate) fn assemble(
         executables: executable_records,
         components,
     };
-    let provenance = provenance(prepared)?;
+    let provenance = provenance(prepared, staged_model.as_ref())?;
     write_json(&staged_root.join(MANIFEST_FILE), &manifest)?;
     write_json(&staged_root.join(PROVENANCE_FILE), &provenance)?;
 
@@ -369,44 +416,286 @@ pub(crate) fn assemble(
     })
 }
 
-fn provenance(prepared: &PreparedProject) -> Result<BundleProvenance, Error> {
-    let root = prepared.layout().root();
-    let model = prepared
-        .document()
-        .robot
-        .model
-        .as_ref()
-        .map(|path| -> Result<BundleFile, Error> {
-            let relative = safe_input_path(path)?;
-            let full = safe_source_file(root, &relative)?;
-            let digest = digest_file(&full)?;
-            Ok(BundleFile {
-                path: relative.to_string_lossy().replace('\\', "/"),
-                sha256: digest.sha256,
-                bytes: digest.bytes,
-            })
-        })
-        .transpose()?;
+fn provenance(
+    prepared: &PreparedProject,
+    staged_model: Option<&StagedModel>,
+) -> Result<BundleProvenance, Error> {
     Ok(BundleProvenance {
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_manifest_sha256: digest_file(prepared.layout().robot_manifest())?.sha256,
         cargo_manifest_sha256: digest_file(prepared.layout().cargo_manifest())?.sha256,
         cargo_lock_sha256: optional_digest(&prepared.cargo_lock())?,
-        model,
+        model: staged_model.map(|model| model.source.clone()),
+        model_closure: staged_model.map(|model| model.closure.clone()),
     })
+}
+
+fn stage_model(
+    prepared: &PreparedProject,
+    staged_root: &Path,
+) -> Result<Option<StagedModel>, Error> {
+    let Some(path) = prepared.document().robot.model.as_ref() else {
+        return Ok(None);
+    };
+    let relative = safe_input_path(path)?;
+    let root = prepared.layout().root();
+    let full = safe_source_file(root, &relative)?;
+    let source_digest = digest_file(&full)?;
+    let source = BundleFile {
+        path: relative.to_string_lossy().replace('\\', "/"),
+        sha256: source_digest.sha256,
+        bytes: source_digest.bytes,
+    };
+    let closure = closed_robot_model(root, &relative, &full)?;
+    let mut resources = Vec::new();
+    for resource in &closure.resources {
+        let relative_path = format!("{ASSET_DIR}/{}", resource.name);
+        let destination = staged_root.join(&relative_path);
+        write_model_resource(&destination, resource)?;
+        let digest = digest_bytes(&resource.bytes);
+        resources.push(BundleResource {
+            path: relative_path,
+            sha256: digest.sha256,
+            bytes: digest.bytes,
+        });
+    }
+    Ok(Some(StagedModel {
+        source,
+        closure: BundleModelClosure {
+            entry: format!("{ASSET_DIR}/{}", closure.entry),
+            digest: closure.digest,
+            resources,
+        },
+    }))
+}
+
+fn closed_robot_model(root: &Path, relative: &Path, full: &Path) -> Result<ModelClosure, Error> {
+    let parent = relative
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        let resource_root = root.join(parent);
+        let entry = relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                invalid_model(root, relative, "model path must have a UTF-8 file name")
+            })?;
+        let resources = collect_model_files(&resource_root, &resource_root, root, relative)?;
+        return model_closure(entry, resources)
+            .map_err(|message| invalid_model(root, relative, message));
+    }
+
+    let entry = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid_model(root, relative, "model path must have a UTF-8 file name"))?;
+    let mut resources = vec![StagedResource {
+        name: entry.to_owned(),
+        bytes: read_model_bytes(full, root, relative)?,
+    }];
+    let assets = root.join(ASSET_DIR);
+    if assets.exists() {
+        let metadata = fs::symlink_metadata(&assets).map_err(|source| Error::ArtifactFile {
+            path: assets.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(invalid_model(
+                root,
+                relative,
+                "model assets must be a regular directory",
+            ));
+        }
+        resources.extend(collect_model_files(root, &assets, root, relative)?);
+    }
+    model_closure(entry, resources).map_err(|message| invalid_model(root, relative, message))
+}
+
+fn collect_model_files(
+    resource_root: &Path,
+    directory: &Path,
+    root: &Path,
+    model_relative: &Path,
+) -> Result<Vec<StagedResource>, Error> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|source| Error::ArtifactFile {
+            path: directory.to_owned(),
+            source,
+        })?
+        .map(|entry| {
+            entry
+                .map_err(|source| Error::ArtifactFile {
+                    path: directory.to_owned(),
+                    source,
+                })
+                .and_then(|entry| {
+                    let path = entry.path();
+                    let metadata =
+                        fs::symlink_metadata(&path).map_err(|source| Error::ArtifactFile {
+                            path: path.clone(),
+                            source,
+                        })?;
+                    let relative =
+                        path.strip_prefix(resource_root)
+                            .map_err(|_| Error::ArtifactInvalid {
+                                path: path.clone(),
+                                message: "model resource escaped its resource root".to_owned(),
+                            })?;
+                    Ok((relative.to_owned(), path, metadata))
+                })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut resources = Vec::new();
+    for (relative, path, metadata) in entries {
+        if metadata.file_type().is_symlink() {
+            return Err(invalid_model(
+                root,
+                model_relative,
+                "model resources must not contain symlinks",
+            ));
+        }
+        if metadata.is_dir() {
+            resources.extend(collect_model_files(
+                resource_root,
+                &path,
+                root,
+                model_relative,
+            )?);
+        } else if metadata.is_file() {
+            let name = normalize_model_resource_name(&relative)
+                .map_err(|message| invalid_model(root, model_relative, message))?;
+            let bytes = read_model_bytes(&path, root, model_relative)?;
+            resources.push(StagedResource { name, bytes });
+        } else {
+            return Err(invalid_model(
+                root,
+                model_relative,
+                "model resources must be regular files or directories",
+            ));
+        }
+    }
+    Ok(resources)
+}
+
+fn read_model_bytes(path: &Path, root: &Path, relative: &Path) -> Result<Vec<u8>, Error> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(invalid_model(
+            root,
+            relative,
+            "model resources must be regular files",
+        ));
+    }
+    fs::read(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn write_model_resource(path: &Path, resource: &StagedResource) -> Result<(), Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::BundleDirectory {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    let mut file = File::create(path).map_err(|source| Error::BundleWrite {
+        path: path.to_owned(),
+        source,
+    })?;
+    file.write_all(&resource.bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| Error::BundleWrite {
+            path: path.to_owned(),
+            source,
+        })
+}
+
+fn model_closure(entry: &str, mut resources: Vec<StagedResource>) -> Result<ModelClosure, String> {
+    if entry.is_empty() {
+        return Err("model entry name must not be empty".to_owned());
+    }
+    normalize_model_resource_name(Path::new(entry))?;
+    resources.sort_by(|left, right| left.name.cmp(&right.name));
+    for pair in resources.windows(2) {
+        if pair[0].name == pair[1].name {
+            return Err(format!(
+                "model resource {:?} appears more than once",
+                pair[0].name
+            ));
+        }
+    }
+    if !resources.iter().any(|resource| resource.name == entry) {
+        return Err(format!(
+            "model entry {entry:?} is not present in the resource closure"
+        ));
+    }
+    Ok(ModelClosure {
+        digest: digest_model_closure(entry, &resources),
+        entry: entry.to_owned(),
+        resources,
+    })
+}
+
+fn normalize_model_resource_name(path: &Path) -> Result<String, String> {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.to_string_lossy().contains('\\')
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::CurDir
+                    | Component::ParentDir
+                    | Component::RootDir
+                    | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "model resource name {:?} must be relative, normalized, and use '/' separators",
+            path
+        ));
+    }
+    Ok(path.to_string_lossy().replace('\\', "/"))
+}
+
+fn digest_model_closure(entry: &str, resources: &[StagedResource]) -> String {
+    let mut hasher = Sha256::new();
+    update_digest_bytes(&mut hasher, entry.as_bytes());
+    for resource in resources {
+        update_digest_bytes(&mut hasher, resource.name.as_bytes());
+        update_digest_bytes(&mut hasher, &resource.bytes);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn update_digest_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+#[derive(Debug, Clone)]
+struct ModelClosure {
+    entry: String,
+    resources: Vec<StagedResource>,
+    digest: String,
+}
+
+fn invalid_model(root: &Path, relative: &Path, message: impl Into<String>) -> Error {
+    Error::ArtifactInvalid {
+        path: root.join(relative),
+        message: message.into(),
+    }
 }
 
 fn validate_bundle_connections(
     prepared: &PreparedProject,
-    artifacts: &BTreeMap<
-        (String, String),
-        (
-            SelectedTarget,
-            PathBuf,
-            FileDigest,
-            Option<ArtifactContract>,
-        ),
-    >,
+    artifacts: &BuiltArtifacts,
 ) -> Result<(), Error> {
     let mut contracts = BTreeMap::new();
     for (instance, target) in prepared.assembly_targets() {
@@ -514,6 +803,13 @@ fn digest_file(path: &Path) -> Result<FileDigest, Error> {
         sha256: format!("{:x}", hasher.finalize()),
         bytes,
     })
+}
+
+fn digest_bytes(bytes: &[u8]) -> FileDigest {
+    FileDigest {
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+        bytes: bytes.len() as u64,
+    }
 }
 
 fn copy_executable(source: &Path, destination: &Path) -> Result<(), Error> {
@@ -699,7 +995,10 @@ fn safe_input_path(path: &Path) -> Result<PathBuf, Error> {
         || path.components().any(|component| {
             matches!(
                 component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                Component::CurDir
+                    | Component::ParentDir
+                    | Component::RootDir
+                    | Component::Prefix(_)
             )
         })
     {
@@ -717,6 +1016,26 @@ fn safe_source_file(root: &Path, relative: &Path) -> Result<PathBuf, Error> {
         source,
     })?;
     let full = root.join(relative);
+    let mut current = root.clone();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err(Error::ArtifactInvalid {
+                path: full,
+                message: "authored input path must be normalized".to_owned(),
+            });
+        };
+        current.push(part);
+        let metadata = fs::symlink_metadata(&current).map_err(|source| Error::ArtifactFile {
+            path: current.clone(),
+            source,
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(Error::ArtifactInvalid {
+                path: current,
+                message: "authored model path must not contain symlinks".to_owned(),
+            });
+        }
+    }
     let canonical = full.canonicalize().map_err(|source| Error::ArtifactFile {
         path: full.clone(),
         source,

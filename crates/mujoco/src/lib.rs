@@ -17,6 +17,8 @@ mod error;
 #[cfg(feature = "native")]
 mod model;
 #[cfg(feature = "native")]
+mod provider;
+#[cfg(feature = "native")]
 mod scene;
 
 pub use artifact::{ClosedModel, Resource, ResourceLimits};
@@ -29,6 +31,12 @@ pub use model::{
     ActuatorHandle, ActuatorInfo, BodyHandle, BodyInfo, JointHandle, JointInfo, JointKind, Model,
     ModelCounts, ModelHandle, ModelIdentity, ObjectKind, SensorHandle, SensorInfo, SiteHandle,
     SiteInfo,
+};
+#[cfg(feature = "native")]
+pub use provider::{
+    ActuatorSelection, Boundary, ControlledError, ControlledPhase, ControlledScene, ControlledStep,
+    ExecutionId, HoldProvider, ObservationReceipt, PrepareRequest, ProviderReset,
+    SimulationProvider, SourceId, TimelineId,
 };
 #[cfg(feature = "native")]
 pub use scene::{PhysicsQuantum, Scene, ScenePhase, SceneStep, StateSnapshot, Workspace};

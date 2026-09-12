@@ -158,6 +158,9 @@ pub enum SceneError {
     /// The scene workspace could not be allocated or reset.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
+    /// The scene has failed and cannot be advanced, mutated, or reset.
+    #[error("scene is terminally failed and must be replaced")]
+    Failed,
     /// `advance` must request at least one native transition.
     #[error("advance count must be positive")]
     ZeroAdvance,

@@ -213,6 +213,15 @@ impl ClosedModel {
         limits: ResourceLimits,
     ) -> Result<Self, ArtifactError> {
         let root = root.as_ref();
+        let root_metadata = fs::symlink_metadata(root).map_err(|source| ArtifactError::Io {
+            path: root.to_owned(),
+            source,
+        })?;
+        if root_metadata.file_type().is_symlink() {
+            return Err(ArtifactError::InvalidResourceName(
+                root.to_string_lossy().into_owned(),
+            ));
+        }
         let root = root.canonicalize().map_err(|source| ArtifactError::Io {
             path: root.to_owned(),
             source,
@@ -564,6 +573,22 @@ mod tests {
             .unwrap();
         assert!(matches!(
             ClosedModel::from_directory(root.path(), "model.xml"),
+            Err(ArtifactError::InvalidResourceName(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_closure_refuses_a_symlinked_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let actual = parent.path().join("actual");
+        fs::create_dir(&actual).unwrap();
+        fs::write(actual.join("model.xml"), XML).unwrap();
+        let link = parent.path().join("link");
+        std::os::unix::fs::symlink(&actual, &link).unwrap();
+
+        assert!(matches!(
+            ClosedModel::from_directory(&link, "model.xml"),
             Err(ArtifactError::InvalidResourceName(_))
         ));
     }

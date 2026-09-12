@@ -20,8 +20,8 @@ pub use artifact::{
 };
 pub use bundle::{
     BUNDLE_SCHEMA, BundleArtifact, BundleComponent, BundleExecutable, BundleFile, BundleManifest,
-    BundlePackage, BundleProvenance, CompiledBundle, LocalIdentity, LocalRunPlan,
-    LocalSimulationPlan,
+    BundleModelClosure, BundlePackage, BundleProvenance, BundleResource, CompiledBundle,
+    LocalIdentity, LocalRunPlan, LocalSimulationPlan,
 };
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, LockMode};
 pub use discovery::ProjectLayout;

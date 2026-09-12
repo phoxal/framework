@@ -11,6 +11,7 @@ The crate deliberately has no dependency on the Runtime SDK, supervisor, service
 PreparedProject::build_bundle builds each selected executable from the root
 Cargo graph, copies the complete selected set into an atomic bin/ directory,
 and writes deterministic manifest.json and provenance.json records.
+When `robot.model` is authored, the bundle also carries its closed model/resource byte closure under `assets/` with per-resource digests and the closure digest in provenance.
 Repeated unchanged assembly keeps the existing output directory and its
 timestamps.
 The records retain the authored robot document, package identities, target

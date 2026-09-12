@@ -375,6 +375,9 @@ impl Scene {
     /// Controls are validated as finite values and against the model's native
     /// finite control range before any data mutation occurs.
     pub fn set_control(&mut self, index: usize, value: f64) -> Result<(), SceneError> {
+        if self.phase == ScenePhase::Failed {
+            return Err(SceneError::Failed);
+        }
         let mut controls = self.workspace.snapshot()?.controls.into_vec();
         if index >= controls.len() {
             return Err(SceneError::ControlIndex {
@@ -390,6 +393,9 @@ impl Scene {
 
     /// Selects all scalar controls for the next native transition atomically.
     pub fn set_controls(&mut self, values: &[f64]) -> Result<(), SceneError> {
+        if self.phase == ScenePhase::Failed {
+            return Err(SceneError::Failed);
+        }
         let expected = self.model().counts().controls;
         if values.len() != expected {
             return Err(SceneError::ControlLength {
@@ -409,6 +415,77 @@ impl Scene {
         self.advance(1)
     }
 
+    /// Performs one native transition using a complete validated control cut.
+    ///
+    /// This is crate-visible so the controlled provider coordinator can place
+    /// its admission boundary immediately before native mutation while direct
+    /// callers continue to use [`Scene::step`] or [`Scene::advance`].
+    pub(crate) fn integrate_controls(&mut self, controls: &[f64]) -> Result<SceneStep, SceneError> {
+        if self.phase == ScenePhase::Failed {
+            return Err(SceneError::Failed);
+        }
+        let start_boundary = self.boundary;
+        let end_boundary = start_boundary
+            .checked_add(1)
+            .ok_or(SceneError::BoundaryOverflow {
+                start: start_boundary,
+                count: 1,
+            })?;
+        if controls.len() != self.model().counts().controls {
+            return Err(SceneError::ControlLength {
+                actual: controls.len(),
+                expected: self.model().counts().controls,
+            });
+        }
+        for (index, value) in controls.iter().copied().enumerate() {
+            validate_control(&self.workspace, index, value)?;
+        }
+
+        self.phase = ScenePhase::Running;
+        if let Err(error) = self.workspace.set_controls(controls) {
+            self.phase = ScenePhase::Failed;
+            return Err(SceneError::Workspace(error));
+        }
+        if let Err(error) = self.workspace.step() {
+            self.phase = ScenePhase::Failed;
+            return Err(SceneError::Workspace(error));
+        }
+        self.boundary = end_boundary;
+        let native_time = match self.workspace.snapshot() {
+            Ok(snapshot) => snapshot.time_seconds,
+            Err(error) => {
+                self.phase = ScenePhase::Failed;
+                return Err(SceneError::Workspace(error));
+            }
+        };
+        if !native_time.is_finite() {
+            self.phase = ScenePhase::Failed;
+            return Err(SceneError::NonFiniteTime(native_time));
+        }
+        let expected = self.boundary as f64 * self.quantum.as_seconds();
+        if !time_matches(native_time, expected) {
+            self.phase = ScenePhase::Failed;
+            return Err(SceneError::TimeMismatch {
+                actual: native_time,
+                expected,
+            });
+        }
+        self.phase = ScenePhase::Paused;
+        let mut state = match self.workspace.snapshot() {
+            Ok(state) => state,
+            Err(error) => {
+                self.phase = ScenePhase::Failed;
+                return Err(SceneError::Workspace(error));
+            }
+        };
+        state.boundary = self.boundary;
+        Ok(SceneStep {
+            start_boundary,
+            end_boundary,
+            state,
+        })
+    }
+
     /// Performs exactly `count` native transitions, including every intermediate
     /// state update and boundary check.
     pub fn advance(&mut self, count: u64) -> Result<SceneStep, SceneError> {
@@ -416,10 +493,7 @@ impl Scene {
             return Err(SceneError::ZeroAdvance);
         }
         if self.phase == ScenePhase::Failed {
-            return Err(SceneError::Workspace(WorkspaceError::Native {
-                operation: "advance",
-                message: "scene is terminally failed".to_owned(),
-            }));
+            return Err(SceneError::Failed);
         }
         let start_boundary = self.boundary;
         let end_boundary =
@@ -431,29 +505,16 @@ impl Scene {
                 })?;
         self.phase = ScenePhase::Running;
         for _ in 0..count {
-            if let Err(error) = self.workspace.step() {
-                self.phase = ScenePhase::Failed;
-                return Err(SceneError::Workspace(error));
-            }
-            self.boundary += 1;
-            let native_time = match self.workspace.snapshot() {
-                Ok(snapshot) => snapshot.time_seconds,
+            let controls = match self.workspace.snapshot() {
+                Ok(snapshot) => snapshot.controls().to_vec(),
                 Err(error) => {
                     self.phase = ScenePhase::Failed;
                     return Err(SceneError::Workspace(error));
                 }
             };
-            if !native_time.is_finite() {
+            if let Err(error) = self.integrate_controls(&controls) {
                 self.phase = ScenePhase::Failed;
-                return Err(SceneError::NonFiniteTime(native_time));
-            }
-            let expected = self.boundary as f64 * self.quantum.as_seconds();
-            if !time_matches(native_time, expected) {
-                self.phase = ScenePhase::Failed;
-                return Err(SceneError::TimeMismatch {
-                    actual: native_time,
-                    expected,
-                });
+                return Err(error);
             }
         }
         self.phase = ScenePhase::Paused;
@@ -474,6 +535,9 @@ impl Scene {
 
     /// Resets the same compiled model to boundary zero without changing model identity.
     pub fn reset(&mut self) -> Result<StateSnapshot, SceneError> {
+        if self.phase == ScenePhase::Failed {
+            return Err(SceneError::Failed);
+        }
         if let Err(error) = self.workspace.reset() {
             self.phase = ScenePhase::Failed;
             return Err(SceneError::Workspace(error));

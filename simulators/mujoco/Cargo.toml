@@ -10,9 +10,22 @@ license = "AGPL-3.0-only"
 publish = false
 description = "Independent Phoxal MuJoCo simulator application."
 
+[features]
+default = []
+desktop = ["dep:eframe"]
+
 [dependencies]
+eframe = {
+    version = "0.36.2",
+    default-features = false,
+    features = ["default_fonts", "glow"],
+    optional = true,
+}
 phoxal-mujoco = {
     path = "../../crates/mujoco",
     version = "0.1.0",
     features = ["native"],
 }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"

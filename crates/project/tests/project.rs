@@ -177,6 +177,7 @@ fn check_runs_the_root_and_selected_service_targets() -> Result<(), Box<dyn std:
 fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = project_fixture()?;
+    write(&fixture.path().join("assets/mesh.stl"), "mesh-bytes\n")?;
     let project = Project::discover(fixture.path())?;
     let options = CargoOptions {
         offline: true,
@@ -203,6 +204,28 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
     assert!(output.join("provenance.json").is_file());
     assert!(bundle.provenance().cargo_lock_sha256.is_some());
     assert!(bundle.provenance().model.is_some());
+    let model_closure = bundle
+        .provenance()
+        .model_closure
+        .as_ref()
+        .expect("the model closure is recorded");
+    assert_eq!(model_closure.entry, "assets/model.xml");
+    assert_eq!(
+        model_closure
+            .resources
+            .iter()
+            .map(|resource| resource.path.as_str())
+            .collect::<Vec<_>>(),
+        ["assets/assets/mesh.stl", "assets/model.xml"]
+    );
+    assert_eq!(
+        fs::read(output.join("assets/model.xml"))?,
+        fs::read(fixture.path().join("model.xml"))?
+    );
+    assert_eq!(
+        fs::read(output.join("assets/assets/mesh.stl"))?,
+        fs::read(fixture.path().join("assets/mesh.stl"))?
+    );
 
     let output_modified = std::fs::metadata(&output)?.modified()?;
     let second = prepared.build_bundle(&options, &output)?;

@@ -1,13 +1,19 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phoxal_mujoco::{ClosedModel, Model, Scene};
+use phoxal_simulator_mujoco::core::{RunBounds, RunOutcome, SimulationCore};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presentation {
+    Headless,
+    Desktop,
+}
 
 #[derive(Debug)]
 struct Options {
     model_path: PathBuf,
-    steps: Option<u64>,
-    duration_seconds: Option<f64>,
+    bounds: RunBounds,
+    presentation: Presentation,
 }
 
 fn main() -> ExitCode {
@@ -23,41 +29,38 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let options = Options::parse(std::env::args_os().skip(1))?;
-    let artifact = ClosedModel::from_file(&options.model_path).map_err(|error| error.to_string())?;
-    let model = Model::from_closed(artifact).map_err(|error| error.to_string())?;
-    let mut scene = Scene::new(model).map_err(|error| error.to_string())?;
-    let steps = match (options.steps, options.duration_seconds) {
-        (Some(steps), None) => steps,
-        (None, Some(duration)) => {
-            let exact_steps = duration / scene.quantum().as_seconds();
-            let rounded_steps = exact_steps.round();
-            if !exact_steps.is_finite()
-                || rounded_steps < 1.0
-                || (exact_steps - rounded_steps).abs() > 1.0e-9
-                || rounded_steps > u64::MAX as f64
-            {
-                return Err(format!(
-                    "duration {duration} is not an integral number of native quanta ({})",
-                    scene.quantum().as_seconds()
-                ));
+    let mut core = SimulationCore::from_model_path(&options.model_path)
+        .map_err(|error| error.to_string())?;
+    match options.presentation {
+        Presentation::Headless => {
+            let summary = core
+                .run_finite(options.bounds)
+                .map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary).map_err(|error| error.to_string())?
+            );
+            if summary.outcome == RunOutcome::Success {
+                Ok(())
+            } else {
+                Err(summary
+                    .failure
+                    .map(|failure| failure.message)
+                    .unwrap_or_else(|| "finite simulation did not complete".to_owned()))
             }
-            rounded_steps as u64
         }
-        (None, None) => 1,
-        (Some(_), Some(_)) => return Err("choose either --steps or --duration".to_owned()),
-    };
-    let result = scene.advance(steps).map_err(|error| error.to_string())?;
-    let state = result.state;
-    println!(
-        "{{\"model_id\":\"{}\",\"native_version\":\"{}\",\"boundary\":{},\"time_seconds\":{:.17},\"qpos_len\":{},\"sensor_data_len\":{}}}",
-        scene.model().identity(),
-        Model::native_version(),
-        state.boundary(),
-        state.time_seconds(),
-        state.qpos().len(),
-        state.sensor_data().len(),
-    );
-    Ok(())
+        Presentation::Desktop => {
+            #[cfg(feature = "desktop")]
+            {
+                phoxal_simulator_mujoco::desktop::run(core, options.bounds)
+            }
+            #[cfg(not(feature = "desktop"))]
+            {
+                let _ = core;
+                Err("desktop presentation requires the `desktop` feature".to_owned())
+            }
+        }
+    }
 }
 
 impl Options {
@@ -65,6 +68,7 @@ impl Options {
         let mut model_path = None;
         let mut steps = None;
         let mut duration_seconds = None;
+        let mut presentation = None;
         let mut args = args.peekable();
         while let Some(argument) = args.next() {
             let argument = argument
@@ -72,10 +76,25 @@ impl Options {
                 .map_err(|_| "arguments must be valid UTF-8".to_owned())?;
             match argument.as_str() {
                 "--help" | "-h" => {
-                    println!("usage: phoxal-simulator-mujoco <model.xml> [--steps N | --duration SECONDS]");
+                    println!(
+                        "usage: phoxal-simulator-mujoco <model.xml> [--headless|--desktop] [--steps N | --duration SECONDS]"
+                    );
                     return Err(String::new());
                 }
-                "--headless" => {}
+                "--headless" => {
+                    if presentation.replace(Presentation::Headless).is_some_and(|value| {
+                        value != Presentation::Headless
+                    }) {
+                        return Err("choose either --headless or --desktop".to_owned());
+                    }
+                }
+                "--desktop" => {
+                    if presentation.replace(Presentation::Desktop).is_some_and(|value| {
+                        value != Presentation::Desktop
+                    }) {
+                        return Err("choose either --headless or --desktop".to_owned());
+                    }
+                }
                 "--steps" => {
                     let value = args
                         .next()
@@ -122,15 +141,16 @@ impl Options {
             return Err("choose either --steps or --duration".to_owned());
         }
         let model_path = model_path.ok_or_else(|| "a model path is required".to_owned())?;
-        if let Some(duration) = duration_seconds
-            && (!duration.is_finite() || duration <= 0.0)
-        {
-            return Err("--duration requires a positive finite number".to_owned());
-        }
+        let bounds = match (steps, duration_seconds) {
+            (Some(steps), None) => RunBounds::Steps(steps),
+            (None, Some(duration)) => RunBounds::Duration(duration),
+            (None, None) => RunBounds::Steps(1),
+            (Some(_), Some(_)) => unreachable!("bounds conflict was checked above"),
+        };
         Ok(Self {
             model_path,
-            steps,
-            duration_seconds,
+            bounds,
+            presentation: presentation.unwrap_or(Presentation::Headless),
         })
     }
 }
@@ -147,8 +167,15 @@ mod tests {
     fn options_parse_exact_steps_and_headless_mode() {
         let options = parse(&["fixture.xml", "--headless", "--steps", "12"]).unwrap();
         assert_eq!(options.model_path, PathBuf::from("fixture.xml"));
-        assert_eq!(options.steps, Some(12));
-        assert_eq!(options.duration_seconds, None);
+        assert_eq!(options.bounds, RunBounds::Steps(12));
+        assert_eq!(options.presentation, Presentation::Headless);
+    }
+
+    #[test]
+    fn options_parse_desktop_and_exact_duration() {
+        let options = parse(&["fixture.xml", "--desktop", "--duration", "0.1"]).unwrap();
+        assert_eq!(options.bounds, RunBounds::Duration(0.1));
+        assert_eq!(options.presentation, Presentation::Desktop);
     }
 
     #[test]
@@ -156,6 +183,7 @@ mod tests {
         assert!(parse(&["fixture.xml", "--steps", "0"]).is_err());
         assert!(parse(&["fixture.xml", "--steps", "2", "--duration", "0.02"]).is_err());
         assert!(parse(&["fixture.xml", "--duration", "NaN"]).is_err());
+        assert!(parse(&["fixture.xml", "--headless", "--desktop"]).is_err());
     }
 
     #[test]
