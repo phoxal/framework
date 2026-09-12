@@ -156,5 +156,4 @@ pub mod __private {
 }
 
 /// The `runtime` contract family.
-#[cfg(feature = "legacy-runtime")]
 pub mod api;
