@@ -1,7 +1,7 @@
 //! `phoxal-supervisor` - the Phoxal Framework execution observer.
 //!
 //! ```text
-//! phoxal-supervisor <BUNDLE_ROOT>
+//! phoxal-supervisor <BUNDLE_ROOT> --scope <SCOPE> --supervisor-id <ID>
 //! ```
 //!
 //! That is the entire command line, and deliberately so.
@@ -13,7 +13,8 @@
 //!
 //! `clap` parses that one operand. It is not here to advertise a surface this
 //! binary does not have - there is still nothing to choose - but because the
-//! surface *is* one operand plus the two conventional non-executing flags, and
+//! surface *is* one operand, two deployment identity flags, and the two
+//! conventional non-executing flags, and
 //! those are exactly what clap already does correctly: `-h/--help` and
 //! `-V/--version` in their standard shape on stdout, and strict rejection of a
 //! missing operand, a second operand, or any flag this binary does not have,
@@ -60,6 +61,14 @@ struct Cli {
     /// The compiled bundle directory whose execution to observe.
     #[arg(value_name = "BUNDLE_ROOT")]
     bundle_root: PathBuf,
+
+    /// Deployment namespace governed by router authorization.
+    #[arg(long, value_name = "SCOPE")]
+    scope: String,
+
+    /// Stable supervisor target within the deployment namespace.
+    #[arg(long, value_name = "ID")]
+    supervisor_id: String,
 }
 
 const ABOUT: &str = "phoxal-supervisor - the Phoxal Framework execution observer";
@@ -68,9 +77,10 @@ const LONG_ABOUT: &str = "\
 phoxal-supervisor - the Phoxal Framework execution observer
 
 <BUNDLE_ROOT> is a compiled bundle directory: manifest.json, assets/, and bin/.
-Build one with `phoxal build`. The supervisor runs the router, reports which of
-the robot's runtimes are present, and retains their logs and telemetry. It
-launches no runtime and takes no other options.
+Build one with `cargo phoxal build`. The required --scope and --supervisor-id
+select the installed public routing namespace; neither value comes from the
+bundle. The supervisor runs the router, reports which of the robot's runtimes
+are present, and retains their logs and telemetry. It launches no runtime.
 
 `--version` reports this supervisor package's own version. The framework train
 this supervisor speaks is answered by the `supervisor/connect` endpoint.";
@@ -82,8 +92,15 @@ async fn main() -> ExitCode {
     // Parse first: help, version, and misuse all end the process without ever
     // needing a subscriber installed.
     let cli = Cli::parse();
+    let target = match phoxal::communication::DeploymentTarget::new(cli.scope, cli.supervisor_id) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("phoxal-supervisor: invalid deployment identity: {error}");
+            return ExitCode::from(2);
+        }
+    };
     init_tracing();
-    match phoxal::supervisor::host::run(&cli.bundle_root).await {
+    match phoxal::supervisor::host::run(&cli.bundle_root, target).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // Stderr is the supervisor's diagnostic channel under systemd,

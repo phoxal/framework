@@ -48,6 +48,7 @@ use crate::bus::{
     BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
     ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
+use crate::communication::DeploymentTarget;
 use crate::identity::ExecutionId;
 use crate::supervisor::api::connect::PRESENCE_KEY;
 use crate::supervisor::rendezvous::RuntimeRendezvous;
@@ -68,7 +69,7 @@ const SUPERVISOR_LABEL: &str = "phoxal-supervisor";
 /// Returns an error when the bundle cannot be opened, the supervisor lock is
 /// already held, the embedded router cannot bind or disappears under the run,
 /// or the control plane ends unexpectedly.
-pub async fn run(requested_root: &Path) -> Result<()> {
+pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> {
     let canonical = requested_root.canonicalize().with_context(|| {
         format!(
             "failed to canonicalize bundle root {}",
@@ -81,6 +82,8 @@ pub async fn run(requested_root: &Path) -> Result<()> {
     tracing::info!(
         bundle = %runtime.root().display(),
         lock = %lock.path().display(),
+        scope = target.scope(),
+        supervisor_id = target.supervisor(),
         "phoxal-supervisor starting"
     );
 

@@ -39,7 +39,14 @@ async fn a_session_attaches_to_a_live_supervisor_and_reads_the_running_robot() {
     let socket = RuntimeRendezvous::for_root(owning_root).supervisor_socket();
 
     let bundle_root = root.clone();
-    let supervisor = tokio::spawn(async move { phoxal::supervisor::host::run(&bundle_root).await });
+    let supervisor = tokio::spawn(async move {
+        phoxal::supervisor::host::run(
+            &bundle_root,
+            phoxal::communication::DeploymentTarget::new("local", "local")
+                .expect("valid isolated local deployment identity"),
+        )
+        .await
+    });
 
     let endpoint = format!("unixsock-stream/{}", socket.display());
     let session = tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &supervisor))
