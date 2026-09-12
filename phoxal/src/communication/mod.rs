@@ -25,7 +25,12 @@ pub mod simulation {
     include!(concat!(env!("OUT_DIR"), "/phoxal.simulation.v1.rs"));
 }
 
+mod session_state;
 mod validation;
+pub use session_state::{
+    DEFAULT_LEASE_MS, DEFAULT_MAX_SESSIONS, LogicalSession, SessionId, SessionTable,
+    SessionTableError,
+};
 pub use validation::{
     BootstrapError, DeploymentTarget, MAX_BOOTSTRAP_BYTES, MAX_KEY_PREFIX_BYTES,
     MAX_PROTOCOL_BYTES, MAX_SESSION_OFFERS, SESSION_PROTOCOL, validate_session_offers,

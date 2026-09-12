@@ -113,7 +113,7 @@ pub fn validate_session_offers(
     selected.ok_or(BootstrapError::UnsupportedSessionProtocol)
 }
 
-fn valid_identifier(value: &str) -> bool {
+pub(crate) fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && value.is_ascii()

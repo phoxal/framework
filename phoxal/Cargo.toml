@@ -36,7 +36,7 @@ port = ["dep:phoxal-port"]
 
 # Framework-owned public protocol messages and pure admission state.
 # This layer has no scheduler, transport, simulator, or project dependency.
-protocol = ["port", "dep:prost", "dep:thiserror"]
+protocol = ["port", "dep:getrandom", "dep:prost", "dep:thiserror"]
 
 # The pre-rewrite implementation remains one coherent private compilation
 # boundary while the new contract surface is introduced. Every existing
