@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use phoxal_project::{
     CargoOperation, CargoOptions, LockMode, Project, PublicationKind, PublicationOptions,
-    prepare_publication,
+    SubmissionResult, prepare_publication, submit_publication,
 };
 
 fn main() -> ExitCode {
@@ -62,13 +62,17 @@ fn run_publication(arguments: PublishArgs) -> Result<(), phoxal_project::Error> 
         PublishPackage::Component(package) => (PublicationKind::Component, package),
         PublishPackage::Service(package) => (PublicationKind::Service, package),
     };
+    let dry_run = package.dry_run;
     let result = prepare_publication(&PublicationOptions {
         kind,
         name: package.name,
         path: package.path,
-        dry_run: package.dry_run,
+        dry_run,
     })?;
-    println!("publication: dry-run");
+    println!(
+        "publication: {}",
+        if dry_run { "dry-run" } else { "prepared" }
+    );
     println!("kind: {}", result.kind());
     println!("package: {}", result.package());
     println!("version: {}", result.version());
@@ -80,6 +84,33 @@ fn run_publication(arguments: PublishArgs) -> Result<(), phoxal_project::Error> 
     println!("files:");
     for file in result.files() {
         println!("  {} {} {}", file.path, file.bytes, file.sha256);
+    }
+    if !dry_run {
+        let submission = submit_publication(&result, |authorization| {
+            eprintln!(
+                "Authorize cargo-phoxal at {} with code {} (expires in {} seconds).",
+                authorization.verification_uri,
+                authorization.user_code,
+                authorization.expires_in.as_secs()
+            );
+            eprintln!(
+                "GitHub's public_repo scope covers every public repository accessible to this account."
+            );
+        })?;
+        match submission {
+            SubmissionResult::Available { archive_url } => {
+                println!("publication: available");
+                println!("archive-url: {archive_url}");
+            }
+            SubmissionResult::PendingReview {
+                pull_request_url,
+                branch,
+            } => {
+                println!("publication: pending-review");
+                println!("branch: {branch}");
+                println!("pull-request: {pull_request_url}");
+            }
+        }
     }
     Ok(())
 }
@@ -152,8 +183,8 @@ struct PublishPackageArgs {
     /// Source directory containing the authored Cargo.toml.
     #[arg(long)]
     path: Option<PathBuf>,
-    /// Required until the remote registry submission client is available.
-    #[arg(long, required = true)]
+    /// Prepare and verify locally without GitHub authentication or mutation.
+    #[arg(long)]
     dry_run: bool,
 }
 
@@ -320,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_requires_explicit_dry_run_until_submission_exists() {
+    fn publication_supports_normal_submission_and_explicit_dry_run() {
         let parsed = Cli::try_parse_from([
             "cargo-phoxal",
             "publish",
@@ -330,14 +361,13 @@ mod tests {
         ])
         .expect("publication dry-run parses");
         assert!(matches!(parsed.command, Command::Publish(_)));
-        assert!(
-            Cli::try_parse_from([
-                "cargo-phoxal",
-                "publish",
-                "component",
-                "example-passive-caster",
-            ])
-            .is_err()
-        );
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "publish",
+            "component",
+            "example-passive-caster",
+        ])
+        .expect("normal publication parses");
+        assert!(matches!(parsed.command, Command::Publish(_)));
     }
 }

@@ -102,6 +102,7 @@ default-members = [
 [workspace.dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.89"
+base64 = "0.22.1"
 # The workspace's own manifest reader, shared by the `cargo xtask policy` gate
 # and by the two crates whose tests read the workspace the same way.
 cargo_metadata = "0.23.1"
@@ -128,6 +129,8 @@ rmp-serde = "1.3.1"
 schemars = "1.2.1"
 sha2 = "0.10.9"
 jsonschema = { version = "0.46.6", default-features = false }
+keyring = "3.6.3"
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_derive_internals = "0.29.1"
 serde_bytes = "0.11.19"

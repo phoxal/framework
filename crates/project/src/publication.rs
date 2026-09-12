@@ -5,9 +5,9 @@
 //! outside that source tree, invokes Cargo's own packager, and verifies the
 //! resulting archive before writing review inventory and checksum records.
 //!
-//! Remote registry submission is deliberately not implemented here. The dry
-//! run result is the exact archive and evidence that a later submission client
-//! would upload.
+//! Remote submission consumes this module's exact retained result through the
+//! sibling `submission` module. Keeping preparation independent means dry runs
+//! never initialize credentials or make a remote request.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -97,6 +97,8 @@ pub struct PublicationResult {
     inventory: PathBuf,
     checksum_file: PathBuf,
     checksum: String,
+    source_digest: String,
+    registry_kind: String,
     bytes: u64,
     files: Vec<PublicationFile>,
 }
@@ -156,6 +158,18 @@ impl PublicationResult {
         &self.checksum
     }
 
+    /// Returns the deterministic digest of the authored source tree.
+    #[must_use]
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
+    }
+
+    /// Returns the registry's exact content role for this archive.
+    #[must_use]
+    pub fn registry_kind(&self) -> &str {
+        &self.registry_kind
+    }
+
     /// Returns the archive byte count.
     #[must_use]
     pub const fn bytes(&self) -> u64 {
@@ -171,15 +185,11 @@ impl PublicationResult {
 
 /// Prepares and verifies one local package publication.
 ///
-/// The function currently supports the dry-run half of the workflow. A
-/// non-dry-run call fails before creating a staging directory because remote
-/// GitHub fork, authorization, and pull-request submission are not yet a
-/// supported implementation.
+/// This function only prepares immutable local bytes. The caller decides
+/// whether those bytes remain a dry run or are submitted for review.
 pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationResult, Error> {
-    if !options.dry_run {
-        return Err(PublicationError::SubmissionUnavailable.into());
-    }
     let selected = select_package(options)?;
+    let source_digest = digest_source_tree(&selected.source_root)?;
     let staging = tempfile::Builder::new()
         .prefix("phoxal-publication-")
         .tempdir()
@@ -256,6 +266,8 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
         inventory: inventory_path,
         checksum_file,
         checksum: verified.checksum,
+        source_digest,
+        registry_kind: selected.role.registry_kind().to_owned(),
         bytes: verified.bytes,
         files: verified.files,
     })
@@ -290,6 +302,14 @@ impl PackageRole {
         match self {
             Self::PassiveComponent | Self::RustComponent => PublicationKind::Component,
             Self::Service | Self::Preset => PublicationKind::Service,
+        }
+    }
+
+    const fn registry_kind(self) -> &'static str {
+        match self {
+            Self::PassiveComponent | Self::RustComponent => "component",
+            Self::Service => "service",
+            Self::Preset => "preset",
         }
     }
 }
@@ -1448,6 +1468,42 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
         files.extend(walk_files(&path)?);
     }
     Ok(files)
+}
+
+fn digest_source_tree(root: &Path) -> Result<String, Error> {
+    let mut files = walk_files(root)?;
+    files.sort();
+    let mut tree = Sha256::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| PublicationError::CaptureSource {
+                path: path.clone(),
+                source: io::Error::other("source file escaped its selected root"),
+            })?;
+        let relative = path_string(relative);
+        tree.update((relative.len() as u64).to_be_bytes());
+        tree.update(relative.as_bytes());
+        let mut file = File::open(&path).map_err(|source| PublicationError::CaptureSource {
+            path: path.clone(),
+            source,
+        })?;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read =
+                file.read(&mut buffer)
+                    .map_err(|source| PublicationError::CaptureSource {
+                        path: path.clone(),
+                        source,
+                    })?;
+            if read == 0 {
+                break;
+            }
+            tree.update((read as u64).to_be_bytes());
+            tree.update(&buffer[..read]);
+        }
+    }
+    Ok(format!("{:x}", tree.finalize()))
 }
 
 fn package_with_cargo(package: &str, captured: &CapturedSource) -> Result<PathBuf, Error> {

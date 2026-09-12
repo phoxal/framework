@@ -11,6 +11,7 @@ mod document;
 mod error;
 mod publication;
 mod selection;
+mod submission;
 
 pub use bundle::{
     BUNDLE_SCHEMA, BundleComponent, BundleExecutable, BundleFile, BundleManifest, BundlePackage,
@@ -33,6 +34,7 @@ pub use selection::{
     PackageSource, SelectedComponent, SelectedService, SelectedTarget, SourceSelection, TargetRole,
     resolve_sources,
 };
+pub use submission::{DeviceAuthorization, SubmissionResult, submit_publication};
 
 use std::path::{Path, PathBuf};
 

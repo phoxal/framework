@@ -654,9 +654,46 @@ pub enum PublicationError {
         /// Filesystem failure.
         source: std::io::Error,
     },
-    /// Remote registry submission was intentionally not included in this slice.
-    #[error("remote registry submission is not available; rerun with --dry-run")]
-    SubmissionUnavailable,
+    /// The prepared archive exceeds GitHub's Git blob upload limit.
+    #[error("prepared archive has {bytes} bytes, exceeding GitHub's {maximum}-byte Git blob limit")]
+    SubmissionArchiveTooLarge {
+        /// Exact archive byte count.
+        bytes: u64,
+        /// Supported Git blob bound.
+        maximum: u64,
+    },
+    /// Remote authentication could not be established or refreshed.
+    #[error("GitHub authentication failed: {message}")]
+    Authentication {
+        /// Safe diagnostic without credential material.
+        message: String,
+    },
+    /// The operating-system credential store could not complete an operation.
+    #[error("credential store failed: {message}")]
+    CredentialStore {
+        /// Safe credential-store diagnostic.
+        message: String,
+    },
+    /// An HTTPS or response-decoding operation failed.
+    #[error("registry submission transport failed: {message}")]
+    SubmissionTransport {
+        /// Safe transport diagnostic.
+        message: String,
+    },
+    /// The remote registry already contains incompatible state.
+    #[error("registry submission conflict: {message}")]
+    SubmissionConflict {
+        /// Exact conflicting state.
+        message: String,
+    },
+    /// GitHub rejected an authenticated API request.
+    #[error("GitHub API returned HTTP {status}: {message}")]
+    GitHub {
+        /// HTTP response status.
+        status: u16,
+        /// Bounded response diagnostic.
+        message: String,
+    },
 }
 
 /// A stable display wrapper for all validation failures in one document.
