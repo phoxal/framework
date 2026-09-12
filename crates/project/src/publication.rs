@@ -50,7 +50,8 @@ pub enum PublicationKind {
     #[serde(rename = "proc-macro")]
     ProcMacro,
     /// An independently built simulator application.
-    Simulator,
+    #[serde(rename = "simulator")]
+    SimulatorApplication,
     /// An independently built non-simulator application.
     Application,
     /// A standalone developer or operator tool.
@@ -71,7 +72,7 @@ impl PublicationKind {
             Self::Preset => "preset",
             Self::Library => "library",
             Self::ProcMacro => "proc-macro",
-            Self::Simulator => "simulator",
+            Self::SimulatorApplication => "simulator",
             Self::Application => "application",
             Self::Tool => "tool",
             Self::Package => "package",
@@ -86,7 +87,7 @@ impl PublicationKind {
             Self::Preset => matches!(actual, Self::Preset),
             Self::Library => matches!(actual, Self::Library),
             Self::ProcMacro => matches!(actual, Self::ProcMacro),
-            Self::Simulator => matches!(actual, Self::Simulator),
+            Self::SimulatorApplication => matches!(actual, Self::SimulatorApplication),
             Self::Application => matches!(actual, Self::Application),
             Self::Tool => matches!(actual, Self::Tool),
         }
@@ -335,7 +336,7 @@ enum PackageRole {
     Preset,
     Library,
     ProcMacro,
-    Simulator,
+    SimulatorApplication,
     Application,
     Tool,
 }
@@ -348,7 +349,7 @@ impl PackageRole {
             Self::Preset => PublicationKind::Preset,
             Self::Library => PublicationKind::Library,
             Self::ProcMacro => PublicationKind::ProcMacro,
-            Self::Simulator => PublicationKind::Simulator,
+            Self::SimulatorApplication => PublicationKind::SimulatorApplication,
             Self::Application => PublicationKind::Application,
             Self::Tool => PublicationKind::Tool,
         }
@@ -361,7 +362,7 @@ impl PackageRole {
             Self::Preset => "preset",
             Self::Library => "library",
             Self::ProcMacro => "proc-macro",
-            Self::Simulator => "simulator",
+            Self::SimulatorApplication => "simulator",
             Self::Application => "application",
             Self::Tool => "tool",
         }
@@ -377,7 +378,7 @@ impl std::fmt::Display for PackageRole {
             Self::Preset => "service preset",
             Self::Library => "library",
             Self::ProcMacro => "procedural macro",
-            Self::Simulator => "simulator",
+            Self::SimulatorApplication => "simulator",
             Self::Application => "application",
             Self::Tool => "tool",
         })
@@ -672,7 +673,7 @@ fn classify_package(
             }
             "library" if targets.library => PackageRole::Library,
             "proc-macro" if targets.proc_macro => PackageRole::ProcMacro,
-            "simulator" if targets.binaries => PackageRole::Simulator,
+            "simulator" if targets.binaries => PackageRole::SimulatorApplication,
             "application" if targets.binaries => PackageRole::Application,
             "tool" if targets.binaries => PackageRole::Tool,
             "library" | "proc-macro" | "simulator" | "application" | "tool" => {
@@ -1431,7 +1432,7 @@ fn definition_for_package(selected: &SelectedPackage) -> Result<Option<PathBuf>,
         PackageRole::Service
         | PackageRole::Library
         | PackageRole::ProcMacro
-        | PackageRole::Simulator
+        | PackageRole::SimulatorApplication
         | PackageRole::Application
         | PackageRole::Tool => Ok(None),
         PackageRole::Preset => {
@@ -2099,7 +2100,7 @@ mod tests {
             (PublicationKind::Preset, "preset"),
             (PublicationKind::Library, "library"),
             (PublicationKind::ProcMacro, "proc-macro"),
-            (PublicationKind::Simulator, "simulator"),
+            (PublicationKind::SimulatorApplication, "simulator"),
             (PublicationKind::Application, "application"),
             (PublicationKind::Tool, "tool"),
         ] {
