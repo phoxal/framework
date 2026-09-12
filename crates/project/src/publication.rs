@@ -55,6 +55,7 @@ pub enum PublicationKind {
     /// A standalone developer or operator tool.
     Tool,
     /// Any explicitly classified package, used by owner release automation.
+    #[doc(hidden)]
     #[serde(skip)]
     Package,
 }
