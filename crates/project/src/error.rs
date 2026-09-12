@@ -532,6 +532,16 @@ pub enum PublicationError {
         /// Unsupported role.
         kind: String,
     },
+    /// A Rust package did not declare which reviewed registry role it owns.
+    #[error(
+        "package '{package}' at {path} must declare [package.metadata.phoxal].kind or contain a recognized component.yaml/service.yaml definition"
+    )]
+    MissingPackageKind {
+        /// Cargo package name.
+        package: String,
+        /// Package source directory.
+        path: PathBuf,
+    },
     /// A service package has no real Cargo target.
     #[error("service package '{package}' has no Cargo library or binary target")]
     ServiceWithoutTarget {

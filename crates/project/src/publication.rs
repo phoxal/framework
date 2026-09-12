@@ -619,14 +619,11 @@ fn classify_package(
             Ok(PackageRole::Preset)
         };
     }
-    if has_authored_target(source_root, manifest) {
-        Ok(PackageRole::Service)
-    } else {
-        Err(PublicationError::ServiceWithoutTarget {
-            package: package.to_owned(),
-        }
-        .into())
+    Err(PublicationError::MissingPackageKind {
+        package: package.to_owned(),
+        path: source_root.to_owned(),
     }
+    .into())
 }
 
 fn require_component_definition(
@@ -1888,6 +1885,32 @@ mod tests {
     }
 
     #[test]
+    fn an_unclassified_rust_package_is_not_silently_published_as_a_service()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        write(
+            &directory.path().join("Cargo.toml"),
+            "[package]\nname = \"plain-library\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )?;
+        write(
+            &directory.path().join("src/lib.rs"),
+            "pub struct Library;\n",
+        )?;
+        let options = PublicationOptions {
+            kind: PublicationKind::Service,
+            name: "plain-library".to_owned(),
+            path: Some(directory.path().to_owned()),
+            dry_run: true,
+        };
+        let error = select_package(&options).expect_err("an unclassified library must fail");
+        assert!(matches!(
+            error,
+            Error::Publication(PublicationError::MissingPackageKind { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn asset_paths_reject_parent_escape_and_missing_files() -> Result<(), Box<dyn std::error::Error>>
     {
         let directory = tempfile::tempdir()?;
@@ -1997,7 +2020,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
-            "[package]\nname = \"example-service\"\nversion = \"0.2.0\"\nedition = \"2024\"\ndescription = \"Example service\"\nlicense = \"MIT\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"example-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"example-service\"\nversion = \"0.2.0\"\nedition = \"2024\"\ndescription = \"Example service\"\nlicense = \"MIT\"\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"example-service\"\npath = \"src/main.rs\"\n",
         )?;
         write(
             &directory.path().join("src/lib.rs"),
@@ -2027,7 +2050,7 @@ mod tests {
         )?;
         write(
             &directory.path().join("services/example/Cargo.toml"),
-            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense.workspace = true\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense.workspace = true\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
         )?;
         write(
             &directory.path().join("services/example/src/main.rs"),
