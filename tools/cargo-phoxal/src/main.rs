@@ -45,34 +45,6 @@ fn run() -> Result<(), phoxal_project::Error> {
                 .options
                 .into_options(Vec::new(), arguments.test_args),
         ),
-        Command::Run(arguments) => {
-            let output = arguments.output.clone();
-            let scope = arguments.scope.clone();
-            let supervisor_id = arguments.supervisor_id.clone();
-            let options = arguments.into_options();
-            let prepared = project.prepare(&options)?;
-            let output = output.unwrap_or_else(|| prepared.default_bundle_path());
-            let plan = prepared.local_run_plan(&options, output, scope, supervisor_id)?;
-            Err(phoxal_project::Error::ExecutionUnavailable {
-                operation: "cargo phoxal run",
-                bundle: plan.bundle.root().to_owned(),
-            })
-        }
-        Command::Simulation {
-            command: SimulationCommand::Run(arguments),
-        } => {
-            let output = arguments.output.clone();
-            let scope = arguments.scope.clone();
-            let supervisor_id = arguments.supervisor_id.clone();
-            let options = arguments.into_options();
-            let prepared = project.prepare(&options)?;
-            let output = output.unwrap_or_else(|| prepared.default_bundle_path());
-            let plan = prepared.local_simulation_plan(&options, output, scope, supervisor_id)?;
-            Err(phoxal_project::Error::ExecutionUnavailable {
-                operation: "cargo phoxal simulation run",
-                bundle: plan.bundle.root().to_owned(),
-            })
-        }
     }
 }
 
@@ -119,19 +91,6 @@ enum Command {
     Build(BuildArgs),
     /// Prepare the project and run tests for the root robot package.
     Test(TestArgs),
-    /// Prepare a local hardware bundle without claiming supervisor readiness.
-    Run(RunArgs),
-    /// Prepare an independent simulator boundary.
-    Simulation {
-        #[command(subcommand)]
-        command: SimulationCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum SimulationCommand {
-    /// Prepare the robot bundle for an independent simulator application.
-    Run(RunArgs),
 }
 
 #[derive(Debug, Args)]
@@ -162,30 +121,6 @@ struct BuildArgs {
 }
 
 impl BuildArgs {
-    fn into_options(self) -> CargoOptions {
-        self.options.into_options(self.cargo_args, Vec::new())
-    }
-}
-
-#[derive(Debug, Args)]
-struct RunArgs {
-    #[command(flatten)]
-    options: CommonArgs,
-    /// Compiled bundle directory, defaulting below Cargo's target directory.
-    #[arg(long)]
-    output: Option<PathBuf>,
-    /// Local router namespace used by the future supervisor launch.
-    #[arg(long, default_value = "local")]
-    scope: String,
-    /// Local supervisor identity used by the future supervisor launch.
-    #[arg(long = "supervisor-id", default_value = "local")]
-    supervisor_id: String,
-    /// Additional arguments passed to Cargo after Phoxal's standard selectors.
-    #[arg(last = true, allow_hyphen_values = true)]
-    cargo_args: Vec<OsString>,
-}
-
-impl RunArgs {
     fn into_options(self) -> CargoOptions {
         self.options.into_options(self.cargo_args, Vec::new())
     }
@@ -308,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn build_and_local_boundaries_parse_without_extra_process_options() {
+    fn build_boundary_parses_without_extra_process_options() {
         let parsed = Cli::try_parse_from([
             "cargo-phoxal",
             "build",
@@ -318,22 +253,5 @@ mod tests {
         ])
         .expect("build command parses");
         assert!(matches!(parsed.command, Command::Build(_)));
-
-        let parsed = Cli::try_parse_from([
-            "cargo-phoxal",
-            "simulation",
-            "run",
-            "--scope",
-            "local",
-            "--supervisor-id",
-            "local",
-        ])
-        .expect("simulation command parses");
-        assert!(matches!(
-            parsed.command,
-            Command::Simulation {
-                command: SimulationCommand::Run(_),
-            }
-        ));
     }
 }

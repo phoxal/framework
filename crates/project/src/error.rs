@@ -422,14 +422,6 @@ pub enum Error {
         /// Invalid value.
         value: String,
     },
-    /// The source-side run boundary is not yet a process-launch boundary.
-    #[error("{operation} prepared bundle {bundle}, but process launch is not implemented")]
-    ExecutionUnavailable {
-        /// Requested launch operation.
-        operation: &'static str,
-        /// Prepared bundle path.
-        bundle: PathBuf,
-    },
 }
 
 /// A stable display wrapper for all validation failures in one document.

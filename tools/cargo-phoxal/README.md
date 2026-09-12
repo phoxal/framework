@@ -12,12 +12,14 @@ deterministic bundle under Cargo's target directory by default, or at
 The bundle includes inspectable manifest and provenance records and is
 published atomically.
 
-cargo phoxal run and cargo phoxal simulation run independently prepare and
-build that bundle with the isolated local/local identity by default.
-They currently stop with an explicit launch-unavailable diagnostic because
-supervisor process admission and independent simulator provisioning are not
-owned by this source compiler slice.
-They never report a process as Ready merely because Cargo built it.
+Hardware and simulation process launch are intentionally not exposed by this
+slice.
+The hardware boundary still needs supervisor process admission over the
+assembled bundle and its local identity, while simulation needs the
+independent MuJoCo application and its native provenance.
+The library retains typed local identity/plan primitives for that integration;
+bundle assembly itself never claims process startup, protocol admission,
+domain readiness, or physical safety.
 
 Registry submission, artifact installation, and passive package staging remain
 separate follow-up slices.

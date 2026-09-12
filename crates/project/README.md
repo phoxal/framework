@@ -21,3 +21,6 @@ The bundle is a source-side compiled product.
 It is not an installed release, does not contain a supervisor unless that
 executable is selected by the current graph, and does not imply process
 startup, protocol admission, domain readiness, or physical safety.
+LocalRunPlan and LocalSimulationPlan only retain the bundle and isolated
+local identity for a future supervisor or simulator owner; they do not launch
+processes.
