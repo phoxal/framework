@@ -11,6 +11,9 @@ homepage.workspace = true
 repository.workspace = true
 include = ["build.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
 
+[package.metadata.phoxal]
+kind = "library"
+
 [dependencies]
 prost = { workspace = true }
 thiserror = { workspace = true }

@@ -10,6 +10,9 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal]
+kind = "application"
+
 # The durable headless execution observer. It takes one compiled bundle root and
 # nothing else: no mode flags, no driver flags, and no subcommands - `phoxal`
 # builds and launches, `phoxal-supervisor` runs the router and reports what it

@@ -10,6 +10,9 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal]
+kind = "library"
+
 [lib]
 name = "phoxal_port"
 path = "src/lib.rs"

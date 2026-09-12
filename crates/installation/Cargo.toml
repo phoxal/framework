@@ -11,6 +11,9 @@ homepage.workspace = true
 repository.workspace = true
 readme = "README.md"
 
+[package.metadata.phoxal]
+kind = "library"
+
 [dependencies]
 flate2.workspace = true
 serde_json.workspace = true
