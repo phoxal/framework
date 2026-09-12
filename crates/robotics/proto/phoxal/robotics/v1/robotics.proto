@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package phoxal.robotics.v1;
+
+message EncoderSample {
+  optional double position_rad = 1;
+  optional double velocity_radps = 2;
+}

@@ -283,16 +283,23 @@ fn validate_owned_ports(
     pool: &DescriptorPool,
     owned_names: &HashSet<String>,
 ) -> Result<HashMap<String, PortSpec>, Error> {
+    let owned_files = pool
+        .files()
+        .filter(|file| owned_names.contains(file.name()))
+        .collect::<Vec<_>>();
+    if !owned_files
+        .iter()
+        .any(|file| file.services().next().is_some())
+    {
+        return Ok(HashMap::new());
+    }
     let extension = pool
         .get_extension_by_name(PORT_KIND_EXTENSION)
         .ok_or(Error::MissingPortKindExtension)?;
     let mut ports = HashMap::new();
     let mut package_modules: HashMap<String, HashSet<String>> = HashMap::new();
 
-    for file in pool
-        .files()
-        .filter(|file| owned_names.contains(file.name()))
-    {
+    for file in owned_files {
         for service in file.services() {
             let module_name = service.name().to_snake_case();
             if !package_modules
@@ -459,6 +466,30 @@ mod tests {
         assert!(PORT_PROTO.contains("package phoxal.port;"));
         assert!(PORT_PROTO.contains("PortKind kind = 50000;"));
         assert!(include_dir().join("phoxal/port.proto").is_file());
+    }
+
+    #[test]
+    fn compiles_message_only_contract_without_port_option_import() {
+        let source = tempfile::tempdir().expect("temporary source");
+        let output = tempfile::tempdir().expect("temporary output");
+        let proto = source.path().join("vocabulary.proto");
+        fs::write(
+            &proto,
+            r#"
+                syntax = "proto3";
+                package example.vocabulary.v1;
+                message Measurement { optional double value = 1; }
+            "#,
+        )
+        .expect("fixture source");
+
+        compile_to(&[&proto], &[source.path()], output.path()).expect("contract generation");
+
+        let generated = fs::read_to_string(output.path().join("example.vocabulary.v1.rs"))
+            .expect("generated Rust");
+        assert!(generated.contains("pub struct Measurement"));
+        assert!(!generated.contains("phoxal_port"));
+        assert!(output.path().join(DESCRIPTOR_FILE).is_file());
     }
 
     #[test]

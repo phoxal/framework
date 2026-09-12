@@ -19,6 +19,7 @@ members = [
     "crates/fixture",
     "crates/build",
     "crates/port",
+    "crates/robotics",
     "phoxal",
     "crates/macros",
     "supervisor",
@@ -55,6 +56,7 @@ default-members = [
     "crates/fixture",
     "crates/build",
     "crates/port",
+    "crates/robotics",
     "phoxal",
     "crates/macros",
     "supervisor",
@@ -161,7 +163,9 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # role it is. Every member below names its own.
 phoxal = { path = "phoxal", version = "=0.68.0", default-features = false }
 phoxal-macros = { path = "crates/macros", version = "=0.68.0" }
-phoxal-port = { path = "crates/port", version = "0.1.0" }
+phoxal-build = { path = "crates/build", version = "0.1.0", registry = "phoxal" }
+phoxal-port = { path = "crates/port", version = "0.1.0", registry = "phoxal" }
+phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "phoxal" }
 # Test-support only, and never published. Deliberately carries no version: a
 # dev-dependency without one is stripped from the manifest on publish, so the
 # participant crates that use it in tests stay publishable.

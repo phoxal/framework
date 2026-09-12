@@ -2658,6 +2658,15 @@ name = "phoxal-port"
 version = "0.1.0"
 
 [[package]]
+name = "phoxal-robotics"
+version = "0.1.0"
+dependencies = [
+ "phoxal-build",
+ "prost",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "phoxal-service-drive"
 version = "0.68.0"
 dependencies = [
