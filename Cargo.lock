@@ -2559,6 +2559,7 @@ dependencies = [
  "object",
  "phoxal-fixture",
  "phoxal-macros",
+ "phoxal-port",
  "rmp-serde",
  "schemars 1.2.1",
  "serde",
@@ -2642,6 +2643,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-contract-consumer-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal-contract-owner-fixture",
+ "phoxal-port",
+ "prost",
+]
+
+[[package]]
+name = "phoxal-contract-owner-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal-build",
+ "phoxal-port",
+ "prost",
+ "prost-types",
+]
+
+[[package]]
 name = "phoxal-fixture"
 version = "0.68.0"
 dependencies = [
@@ -2684,6 +2704,13 @@ dependencies = [
 [[package]]
 name = "phoxal-port"
 version = "0.1.0"
+
+[[package]]
+name = "phoxal-port-consumer-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+]
 
 [[package]]
 name = "phoxal-project"

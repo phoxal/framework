@@ -189,6 +189,7 @@
 // path resolve to this crate so the role/config macros and the `DescribeWire`
 // derive expand the same way inside the framework as they do in a downstream
 // service crate.
+#[cfg(feature = "legacy-runtime")]
 extern crate self as phoxal;
 
 // # Consumer profiles
@@ -216,7 +217,9 @@ mod sample_schedule;
 // the profile that *is* one - a participant author reaches the engine through
 // the crate-root facade below, and the role attributes reach it through
 // `__private`, the macro ABI, which is the only path either needs.
+#[cfg(feature = "legacy-runtime")]
 mod execution;
+#[cfg(feature = "legacy-runtime")]
 #[cfg(any(feature = "session", feature = "supervisor", feature = "authoring"))]
 #[cfg_attr(
     docsrs,
@@ -231,11 +234,13 @@ mod execution;
               without this allow, so the engine is still linted where it is alive."
 )]
 pub mod participant;
+#[cfg(feature = "legacy-runtime")]
 #[cfg(all(
     feature = "participant",
     not(any(feature = "session", feature = "supervisor", feature = "authoring"))
 ))]
 mod participant;
+#[cfg(feature = "legacy-runtime")]
 #[cfg(not(any(
     feature = "participant",
     feature = "session",
@@ -258,6 +263,7 @@ mod participant;
 // from this file's scope and take every intra-doc link in it with it. What
 // this file says about a module is therefore a plain comment, and it says only
 // what belongs to the profile decision.
+#[cfg(feature = "legacy-runtime")]
 pub mod bus;
 
 // The embedded Zenoh router the graph meets on. Its file is `bus/router.rs`,
@@ -268,22 +274,29 @@ pub mod bus;
 // profile carries, and a profile gate may live nowhere but this file.
 //
 // Crate-private in every profile: raw fabric ownership is not an SDK.
-#[cfg(feature = "supervisor")]
+#[cfg(all(feature = "legacy-runtime", feature = "supervisor"))]
 #[path = "bus/router.rs"]
 pub(crate) mod router;
 
+#[cfg(feature = "legacy-runtime")]
 pub mod model;
 
 // A participant reads its bundle through the runner - `ctx.robot()` and
 // `ctx.assets()` - rather than by opening one, so the reader and the writer are
 // the host roles' surface.
-#[cfg(any(feature = "simulator", feature = "supervisor", feature = "authoring"))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    any(feature = "simulator", feature = "supervisor", feature = "authoring")
+))]
 #[cfg_attr(
     docsrs,
     doc(cfg(any(feature = "simulator", feature = "supervisor", feature = "authoring")))
 )]
 pub mod bundle;
-#[cfg(not(any(feature = "simulator", feature = "supervisor", feature = "authoring")))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    not(any(feature = "simulator", feature = "supervisor", feature = "authoring"))
+))]
 #[allow(
     dead_code,
     unused_imports,
@@ -293,6 +306,7 @@ pub mod bundle;
               profile that does publish it is where these lints have something to say."
 )]
 mod bundle;
+#[cfg(feature = "legacy-runtime")]
 pub mod drive;
 
 // Build/source tooling only. A launched participant reads the compiled
@@ -302,20 +316,28 @@ pub mod drive;
 #[cfg_attr(docsrs, doc(cfg(feature = "authoring")))]
 pub mod authoring;
 
+#[cfg(feature = "legacy-runtime")]
 pub mod identity;
 
+#[cfg(feature = "legacy-runtime")]
 pub mod version;
 
 // A participant emits its logs and telemetry through the runner and never names
 // the runtime family, so the family is a host-role surface: applications that
 // read a running execution and the supervisor that retains its live evidence.
-#[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    any(feature = "session", feature = "simulator", feature = "supervisor")
+))]
 #[cfg_attr(
     docsrs,
     doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
 )]
 pub mod runtime;
-#[cfg(not(any(feature = "session", feature = "simulator", feature = "supervisor")))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    not(any(feature = "session", feature = "simulator", feature = "supervisor"))
+))]
 #[allow(
     dead_code,
     unused_imports,
@@ -330,13 +352,19 @@ mod runtime;
 // consumes it internally, but participant-authored code never receives this
 // module as a public surface. World hosts, sessions, and the supervisor
 // publish or inspect it through the one canonical path below.
-#[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    any(feature = "session", feature = "simulator", feature = "supervisor")
+))]
 #[cfg_attr(
     docsrs,
     doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
 )]
 pub mod simulation;
-#[cfg(not(any(feature = "session", feature = "simulator", feature = "supervisor")))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    not(any(feature = "session", feature = "simulator", feature = "supervisor"))
+))]
 #[allow(
     dead_code,
     unused_imports,
@@ -345,13 +373,19 @@ pub mod simulation;
 mod simulation;
 
 /// Backend-neutral world-session documents and local client/server wire.
-#[cfg(any(feature = "session", feature = "simulator", feature = "supervisor"))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    any(feature = "session", feature = "simulator", feature = "supervisor")
+))]
 #[cfg_attr(
     docsrs,
     doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
 )]
 pub mod world;
-#[cfg(not(any(feature = "session", feature = "simulator", feature = "supervisor")))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    not(any(feature = "session", feature = "simulator", feature = "supervisor"))
+))]
 #[allow(
     dead_code,
     unused_imports,
@@ -365,6 +399,7 @@ mod world;
 /// own profile *inside* a module whose own visibility flips - and a profile
 /// gate may live nowhere but this file. Expanding one declaration twice is what
 /// keeps the two visibilities from drifting apart.
+#[cfg(feature = "legacy-runtime")]
 macro_rules! supervisor_boundary {
     ( $( #[$attribute:meta] )* $visibility:vis mod supervisor ; ) => {
         $( #[$attribute] )*
@@ -393,11 +428,17 @@ macro_rules! supervisor_boundary {
     };
 }
 
-#[cfg(any(feature = "session", feature = "supervisor"))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    any(feature = "session", feature = "supervisor")
+))]
 supervisor_boundary!(
     pub mod supervisor;
 );
-#[cfg(not(any(feature = "session", feature = "supervisor")))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    not(any(feature = "session", feature = "supervisor"))
+))]
 supervisor_boundary!(
     #[allow(
         dead_code,
@@ -410,11 +451,11 @@ supervisor_boundary!(
     mod supervisor;
 );
 
-#[cfg(feature = "session")]
+#[cfg(all(feature = "legacy-runtime", feature = "session"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "session")))]
 pub mod session;
 
-#[cfg(feature = "simulator")]
+#[cfg(all(feature = "legacy-runtime", feature = "simulator"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "simulator")))]
 pub mod simulator;
 
@@ -423,19 +464,26 @@ pub mod simulator;
 // every profile: hiding a contract family from participant rustdoc must not
 // remove it from the train.
 #[doc(hidden)]
+#[cfg(feature = "legacy-runtime")]
 pub mod __compat;
 
-#[cfg(feature = "test-harness")]
+#[cfg(all(feature = "legacy-runtime", feature = "test-harness"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "test-harness")))]
 pub mod testing;
 
-#[cfg(any(feature = "participant", feature = "session", feature = "simulator"))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    any(feature = "participant", feature = "session", feature = "simulator")
+))]
 #[cfg_attr(
     docsrs,
     doc(cfg(any(feature = "participant", feature = "session", feature = "simulator")))
 )]
 pub mod api;
-#[cfg(not(any(feature = "participant", feature = "session", feature = "simulator")))]
+#[cfg(all(
+    feature = "legacy-runtime",
+    not(any(feature = "participant", feature = "session", feature = "simulator"))
+))]
 #[allow(
     dead_code,
     unused_imports,
@@ -449,11 +497,18 @@ mod api;
 /// The two declarations the api tree is built from, at the crate root so a
 /// family module reads `crate::nodes!` / `crate::endpoints!` whatever its
 /// depth. Crate-private: the api tree is framework-owned and closed.
+#[cfg(feature = "legacy-runtime")]
 pub(crate) use crate::bus::tree::{endpoints, nodes};
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
 /// `Result<T>` via `phoxal::prelude`.
 pub use anyhow::Result;
+
+/// The inert typed port descriptors shared by contract owners, runtimes, and
+/// clients.
+#[cfg(feature = "port")]
+#[cfg_attr(docsrs, doc(cfg(feature = "port")))]
+pub use phoxal_port as port;
 
 /// Derive a participant config's compile-time JSON Schema from a `Config`
 /// struct.
@@ -497,6 +552,7 @@ pub use participant::runner::run;
 #[cfg(feature = "participant")]
 #[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
 pub use crate::bundle::ParticipantAssets as ParticipantAssetResolver;
+#[cfg(feature = "legacy-runtime")]
 pub use crate::model::AssetId;
 #[cfg(feature = "participant")]
 #[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
@@ -550,6 +606,7 @@ pub mod prelude {
 /// from here, that is a missing facade entry, not a licence to import this
 /// module.
 #[doc(hidden)]
+#[cfg(feature = "legacy-runtime")]
 pub mod __private {
     /// The compatibility declaration a participant binary carries.
     ///

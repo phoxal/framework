@@ -30,20 +30,55 @@ path = "src/lib.rs"
 [features]
 default = ["participant"]
 
+# The contract descriptor family is deliberately available without selecting a
+# runner, transport, host, or authoring profile.
+port = ["dep:phoxal-port"]
+
+# The pre-rewrite implementation remains one coherent private compilation
+# boundary while the new contract surface is introduced. Every existing
+# profile enables it, so this feature only changes dependency isolation for
+# `port`-only consumers and does not change legacy profile behavior.
+legacy-runtime = [
+    "port",
+    "dep:phoxal-macros",
+    "dep:clap",
+    "dep:const_format",
+    "dep:ctrlc",
+    "dep:getrandom",
+    "dep:libc",
+    "dep:rmp-serde",
+    "dep:schemars",
+    "dep:serde",
+    "dep:serde_bytes",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:serde_yaml",
+    "dep:system_shutdown",
+    "dep:thiserror",
+    "dep:tempfile",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:toml",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:urdf-rs",
+    "dep:zenoh",
+]
+
 # Ordinary robot services, drivers, and the root brain: the robot `api`, the
 # role attributes, the runner, the prelude, and the typed handles they build.
-participant = []
+participant = ["legacy-runtime"]
 
 # The CLI, Operator, and any other application attaching to a running
 # execution: `phoxal::session`, the runtime and supervisor contract families,
 # the participant launch encoder, and the embedded participant metadata reader.
 # Visibility only - a session build compiles nothing a participant build lacks.
-session = []
+session = ["legacy-runtime"]
 
 # Webots, Isaac Sim, or another external world adapter: `phoxal::simulator`,
 # the runtime contract family, the bundle reader, and `model::simulation`.
 # Visibility only, for the same reason as `session`.
-simulator = []
+simulator = ["legacy-runtime"]
 
 # The exact-train `phoxal-supervisor` executable, and nothing else: it compiles
 # `phoxal::supervisor::host`, the whole supervisor implementation, plus the
@@ -55,14 +90,14 @@ simulator = []
 # build. `libc` is deliberately absent from this list - `bus::time` and
 # `supervisor::rendezvous` need it in every profile, so it is a plain
 # dependency rather than one this profile turns on.
-supervisor = ["zenoh/unstable", "dep:ctrlc", "dep:system_shutdown", "dep:tokio-util"]
+supervisor = ["legacy-runtime", "zenoh/unstable"]
 
 # The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
 # URDF, their JSON Schemas, and the project compiler. Off by default: a launched
 # participant reads the compiled `manifest.json` and never an authored document,
 # so its readers - and the YAML/TOML/URDF parsers under them - have no place in
 # a robot binary.
-authoring = ["dep:serde_yaml", "dep:toml", "dep:urdf-rs"]
+authoring = ["legacy-runtime"]
 
 # Explicit participant test support: the in-process harness, the deterministic
 # `TestClock`, and the clock-injection seam, which exist only so tests can drive
@@ -73,40 +108,42 @@ authoring = ["dep:serde_yaml", "dep:toml", "dep:urdf-rs"]
 test-harness = ["participant"]
 
 [dependencies]
-phoxal-macros = { workspace = true }
+phoxal-macros = { workspace = true, optional = true }
 anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-const_format = { workspace = true }
+clap = { workspace = true, features = ["derive"], optional = true }
+const_format = { workspace = true, optional = true }
 # `termination`: SIGTERM and SIGHUP alongside SIGINT, so every "stop" signal
 # reaches the supervisor's one orderly shutdown path.
 ctrlc = { workspace = true, optional = true }
-getrandom = { workspace = true }
-libc = { workspace = true }
-rmp-serde = { workspace = true }
+getrandom = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+rmp-serde = { workspace = true, optional = true }
 # Not optional, and not a `cfg_attr` gate inside the model: a feature that
 # changes what a canonical type derives is a second shape of the same type, and
 # the authored-source layer points editor schemas at the one canonical
 # definition. The weight is a derive, and the alternative is `cfg(feature = …)`
 # inside a domain module.
-schemars = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_bytes = { workspace = true }
-serde_json = { workspace = true }
-sha2 = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_bytes = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 serde_yaml = { workspace = true, optional = true }
 # The supervisor asks its own host to reboot or power off.
 system_shutdown = { workspace = true, optional = true }
-thiserror = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "io-util", "net"] }
+thiserror = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "io-util", "net"], optional = true }
 # `rt`: the supervisor's one shutdown token, cancelled from the signal handler
 # and awaited by everything it owns.
 tokio-util = { workspace = true, features = ["rt"], optional = true }
 toml = { workspace = true, optional = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 urdf-rs = { workspace = true, optional = true }
-zenoh = { workspace = true }
+zenoh = { workspace = true, optional = true }
+
+phoxal-port = { workspace = true, optional = true }
 
 # `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
 # cannot see dependencies named only inside attributes.

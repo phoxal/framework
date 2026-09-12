@@ -1,0 +1,27 @@
+[package]
+name = "phoxal-contract-owner-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Independent service-owned Protobuf contract fixture."
+
+[lib]
+name = "phoxal_contract_owner_fixture"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phoxal-contract-owner-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal-port = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+[build-dependencies]
+phoxal-build = { workspace = true }
+
+[lints]
+workspace = true

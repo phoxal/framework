@@ -458,8 +458,85 @@ fn nested_type(rust_type: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
-    use super::{DESCRIPTOR_FILE, PORT_PROTO, compile_to, include_dir};
+    use prost_reflect::{DescriptorPool, Value};
+
+    use super::{DESCRIPTOR_FILE, Error, Kind, PORT_PROTO, compile_to, include_dir};
+
+    fn compile_sources(
+        files: &[(&str, &str)],
+    ) -> (tempfile::TempDir, tempfile::TempDir, Result<(), Error>) {
+        let source = tempfile::tempdir().expect("temporary source");
+        let output = tempfile::tempdir().expect("temporary output");
+        let mut paths = Vec::with_capacity(files.len());
+        for (relative, contents) in files {
+            let path = source.path().join(relative);
+            fs::create_dir_all(path.parent().expect("fixture has a parent directory"))
+                .expect("fixture directory");
+            fs::write(&path, contents).expect("fixture source");
+            paths.push(path);
+        }
+        let result = compile_to(&paths, &[source.path()], output.path());
+        (source, output, result)
+    }
+
+    const MESSAGES: &str = r#"
+        syntax = "proto3";
+        package example.inspection.v1;
+        import "example/shared/v1/payload.proto";
+
+        message InspectionState { example.shared.v1.SharedPayload payload = 1; }
+        message InspectionSample { uint64 sequence = 1; }
+        message InspectionEvent { string kind = 1; }
+        message InspectionStream { uint64 sequence = 1; }
+        message InspectionSetpoint { double target = 1; }
+        message InspectionReadRequest { string key = 1; }
+        message InspectionReadResponse { example.shared.v1.SharedPayload payload = 1; }
+        message InspectionCommandRequest { string command = 1; }
+        message InspectionCommandResponse { bool accepted = 1; }
+    "#;
+
+    const SHARED_PAYLOAD: &str = r#"
+        syntax = "proto3";
+        package example.shared.v1;
+        message SharedPayload { uint64 value = 1; }
+    "#;
+
+    const ALL_KINDS: &str = r#"
+        syntax = "proto3";
+        package example.inspection.v1;
+        import "google/protobuf/empty.proto";
+        import "phoxal/port.proto";
+        import "example/inspection/v1/messages.proto";
+
+        service Inspection {
+          rpc Status(google.protobuf.Empty) returns (stream InspectionState) {
+            option (phoxal.port.kind) = STATE;
+          }
+          rpc Samples(google.protobuf.Empty) returns (stream InspectionSample) {
+            option (phoxal.port.kind) = SAMPLE;
+          }
+          rpc Events(google.protobuf.Empty) returns (stream InspectionEvent) {
+            option (phoxal.port.kind) = EVENT;
+          }
+          rpc Records(google.protobuf.Empty) returns (stream InspectionStream) {
+            option (phoxal.port.kind) = STREAM;
+          }
+          rpc Target(google.protobuf.Empty) returns (stream InspectionSetpoint) {
+            option (phoxal.port.kind) = SETPOINT;
+          }
+          rpc Read(InspectionReadRequest) returns (InspectionReadResponse) {
+            option (phoxal.port.kind) = READ;
+          }
+          rpc Commands(InspectionCommandRequest) returns (InspectionCommandResponse) {
+            option (phoxal.port.kind) = COMMANDS;
+          }
+          rpc Current(google.protobuf.Empty) returns (stream InspectionState) {
+            option (phoxal.port.kind) = SAMPLE;
+          }
+        }
+    "#;
 
     #[test]
     fn packaged_option_has_stable_public_identity() {
@@ -494,39 +571,306 @@ mod tests {
 
     #[test]
     fn generates_typed_ports_and_original_descriptors() {
-        let source = tempfile::tempdir().expect("temporary source");
-        let output = tempfile::tempdir().expect("temporary output");
-        let proto = source.path().join("inspection.proto");
-        fs::write(
-            &proto,
-            r#"
-                syntax = "proto3";
-                package example.inspection.v1;
-                import "google/protobuf/empty.proto";
-                import "phoxal/port.proto";
-                message InspectionState { uint64 count = 1; }
-                message GetRequest {}
-                message GetResponse { InspectionState status = 1; }
-                service Inspection {
-                  rpc Status(google.protobuf.Empty) returns (stream InspectionState) {
-                    option (phoxal.port.kind) = STATE;
-                  }
-                  rpc Current(GetRequest) returns (GetResponse) {
-                    option (phoxal.port.kind) = READ;
-                  }
-                }
-            "#,
-        )
-        .expect("fixture source");
-
-        compile_to(&[&proto], &[source.path()], output.path()).expect("contract generation");
+        let (_source, output, result) = compile_sources(&[
+            ("example/shared/v1/payload.proto", SHARED_PAYLOAD),
+            ("example/inspection/v1/messages.proto", MESSAGES),
+            ("example/inspection/v1/inspection.proto", ALL_KINDS),
+        ]);
+        result.expect("contract generation");
 
         let generated = fs::read_to_string(output.path().join("example.inspection.v1.rs"))
             .expect("generated Rust");
         assert!(generated.contains("pub mod inspection"));
         assert!(generated.contains("phoxal_port::State<super::InspectionState>"));
-        assert!(generated.contains("phoxal_port::Read<super::GetRequest, super::GetResponse>"));
+        assert!(generated.contains("phoxal_port::Sample<super::InspectionSample>"));
+        assert!(generated.contains("phoxal_port::Event<super::InspectionEvent>"));
+        assert!(generated.contains("phoxal_port::Stream<super::InspectionStream>"));
+        assert!(generated.contains("phoxal_port::Setpoint<super::InspectionSetpoint>"));
+        assert!(generated.contains("phoxal_port::Read<"));
+        assert!(generated.contains("super::InspectionReadRequest"));
+        assert!(generated.contains("super::InspectionReadResponse"));
+        assert!(generated.contains("phoxal_port::Commands<"));
+        assert!(generated.contains("super::InspectionCommandRequest"));
+        assert!(generated.contains("super::InspectionCommandResponse"));
         assert!(generated.contains("pub use super::STATUS"));
+        assert!(generated.contains("pub use super::CURRENT"));
         assert!(output.path().join(DESCRIPTOR_FILE).is_file());
+
+        let descriptors = fs::read(output.path().join(DESCRIPTOR_FILE)).expect("descriptors");
+        let pool = DescriptorPool::decode(descriptors.as_slice()).expect("descriptor closure");
+        assert!(
+            pool.files()
+                .any(|file| file.name() == "example/shared/v1/payload.proto")
+        );
+        assert!(
+            pool.files()
+                .any(|file| file.name() == "google/protobuf/empty.proto")
+        );
+        let extension = pool
+            .get_extension_by_name("phoxal.port.kind")
+            .expect("packaged kind extension");
+        let service = pool
+            .get_service_by_name("example.inspection.v1.Inspection")
+            .expect("inspection service");
+        let status = service
+            .methods()
+            .find(|method| method.name() == "Status")
+            .expect("status method");
+        assert_eq!(
+            status.options().get_extension(&extension).as_ref(),
+            &Value::EnumNumber(1)
+        );
+        assert!(pool.get_message_by_name("google.protobuf.Empty").is_some());
+    }
+
+    #[test]
+    fn rejects_a_missing_kind() {
+        let (_source, _output, result) = compile_sources(&[(
+            "missing.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                service Missing {
+                  rpc Status(google.protobuf.Empty) returns (stream State) {}
+                }
+            "#,
+        )]);
+        assert!(
+            matches!(result, Err(Error::MissingKind(method)) if method == "example.invalid.Missing.Status")
+        );
+    }
+
+    #[test]
+    fn rejects_unspecified_and_unknown_kinds() {
+        let (_source, _output, unspecified) = compile_sources(&[(
+            "unspecified.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                service Unspecified {
+                  rpc Status(google.protobuf.Empty) returns (stream State) {
+                    option (phoxal.port.kind) = PORT_KIND_UNSPECIFIED;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            unspecified,
+            Err(Error::InvalidKind { value: 0, .. })
+        ));
+
+        let (_source, _output, unknown) = compile_sources(&[(
+            "unknown.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                service Unknown {
+                  rpc Status(google.protobuf.Empty) returns (stream State) {
+                    option (phoxal.port.kind) = 42;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(unknown, Err(Error::ProtocFailed(_))));
+        assert!(matches!(
+            Kind::from_number("example.invalid.Unknown.Status", 42),
+            Err(Error::InvalidKind { value: 42, .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_publication_with_unary_or_non_empty_input() {
+        let (_source, _output, unary) = compile_sources(&[(
+            "unary.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                service Unary {
+                  rpc Status(google.protobuf.Empty) returns (State) {
+                    option (phoxal.port.kind) = STATE;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            unary,
+            Err(Error::InvalidShape {
+                reason: "publication ports must return a stream",
+                ..
+            })
+        ));
+
+        let (_source, _output, non_empty) = compile_sources(&[(
+            "non_empty.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                message Request {}
+                service NonEmpty {
+                  rpc Status(Request) returns (stream State) {
+                    option (phoxal.port.kind) = STATE;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            non_empty,
+            Err(Error::InvalidShape {
+                reason: "publication ports must accept google.protobuf.Empty",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_read_and_command_streaming_shapes() {
+        let (_source, _output, server_stream) = compile_sources(&[(
+            "server_stream.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "phoxal/port.proto";
+                message Request {}
+                message Response {}
+                service ServerStream {
+                  rpc Read(Request) returns (stream Response) {
+                    option (phoxal.port.kind) = READ;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            server_stream,
+            Err(Error::InvalidShape {
+                reason: "read and command ports must be unary",
+                ..
+            })
+        ));
+
+        let (_source, _output, client_stream) = compile_sources(&[(
+            "client_stream.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "phoxal/port.proto";
+                message Request {}
+                message Response {}
+                service ClientStream {
+                  rpc Read(stream Request) returns (Response) {
+                    option (phoxal.port.kind) = READ;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            client_stream,
+            Err(Error::InvalidShape {
+                reason: "client streaming is not supported",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_normalized_method_name_collisions() {
+        let (_source, _output, result) = compile_sources(&[(
+            "methods.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                service Methods {
+                  rpc FooBar(google.protobuf.Empty) returns (stream State) {
+                    option (phoxal.port.kind) = STATE;
+                  }
+                  rpc Foo_Bar(google.protobuf.Empty) returns (stream State) {
+                    option (phoxal.port.kind) = STATE;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            result,
+            Err(Error::NameCollision { what: "public port", name, .. }) if name == "foo_bar"
+        ));
+    }
+
+    #[test]
+    fn rejects_normalized_service_module_collisions() {
+        let (_source, _output, result) = compile_sources(&[(
+            "services.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                service FooBar {
+                  rpc Status(google.protobuf.Empty) returns (stream State) {
+                    option (phoxal.port.kind) = STATE;
+                  }
+                }
+                service Foo_Bar {
+                  rpc Status(google.protobuf.Empty) returns (stream State) {
+                    option (phoxal.port.kind) = STATE;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(
+            result,
+            Err(Error::NameCollision { what: "service module", name, .. }) if name == "foo_bar"
+        ));
+    }
+
+    #[test]
+    fn protoc_rejects_duplicate_singular_kind_options() {
+        let (_source, _output, result) = compile_sources(&[(
+            "duplicate.proto",
+            r#"
+                syntax = "proto3";
+                package example.invalid;
+                import "google/protobuf/empty.proto";
+                import "phoxal/port.proto";
+                message State {}
+                service Duplicate {
+                  rpc Status(google.protobuf.Empty) returns (stream State) {
+                    option (phoxal.port.kind) = STATE;
+                    option (phoxal.port.kind) = SAMPLE;
+                  }
+                }
+            "#,
+        )]);
+        assert!(matches!(result, Err(Error::ProtocFailed(_))));
+    }
+
+    #[test]
+    fn rejects_owned_sources_outside_include_roots() {
+        let source = tempfile::tempdir().expect("temporary source");
+        let output = tempfile::tempdir().expect("temporary output");
+        let outside = tempfile::NamedTempFile::new().expect("temporary outside source");
+        let result = compile_to(
+            &[PathBuf::from(outside.path())],
+            &[source.path()],
+            output.path(),
+        );
+        assert!(matches!(result, Err(Error::SourceOutsideIncludes(_))));
     }
 }
