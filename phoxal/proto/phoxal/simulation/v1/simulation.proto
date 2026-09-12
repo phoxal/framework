@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package phoxal.simulation.v1;
+
+message AcquireAuthorityRequest {
+  string execution_id = 1;
+  string model_identity = 2;
+  uint64 quantum_ns = 3;
+  repeated ProviderRequirement providers = 4;
+}
+
+message ProviderRequirement {
+  string service_instance = 1;
+  string port = 2;
+  string payload_fqn = 3;
+}
+
+message AcquireAuthorityResponse {
+  bytes authority_grant = 1;
+  string timeline_id = 2;
+  uint64 boundary = 3;
+  uint32 lease_ms = 4;
+}
+
+message AdvanceRequest {
+  bytes authority_grant = 1;
+  string execution_id = 2;
+  string timeline_id = 3;
+  uint64 boundary = 4;
+  repeated Observation observations = 5;
+}
+
+message Observation {
+  string service_instance = 1;
+  string port = 2;
+  uint64 capture_time_ns = 3;
+  bytes payload = 4;
+}
+
+message AdvanceResponse {
+  uint64 completed_boundary = 1;
+  repeated Actuation actuation = 2;
+  repeated ProductReceipt observation_receipts = 3;
+}
+
+message Actuation {
+  string service_instance = 1;
+  string port = 2;
+  bytes payload = 3;
+  uint64 valid_until_ns = 4;
+}
+
+message ProductReceipt {
+  string service_instance = 1;
+  string port = 2;
+  uint64 sequence = 3;
+}
+
+message ResetRequest {
+  bytes authority_grant = 1;
+  string execution_id = 2;
+  string timeline_id = 3;
+  uint64 completed_boundary = 4;
+}
+
+message ResetResponse {
+  string next_timeline_id = 1;
+  uint64 boundary = 2;
+}
+
+message ReleaseAuthorityRequest {
+  bytes authority_grant = 1;
+}
+
+message ReleaseAuthorityResponse {}
+
+message ProgressRequest {
+  bytes authority_grant = 1;
+}
+
+message ProgressResponse {
+  string execution_id = 1;
+  string timeline_id = 2;
+  uint64 completed_boundary = 3;
+  bool failed = 4;
+  optional string detail = 5;
+}

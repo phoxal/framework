@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package phoxal.execution.v1;
+
+message ContractRequirement {
+  string protocol = 1;
+  repeated string capabilities = 2;
+}
+
+message AdmitExecutionRequest {
+  string execution_id = 1;
+  string timeline_id = 2;
+  bytes artifact_digest = 3;
+  repeated ContractRequirement required_contracts = 4;
+}
+
+message AdmitExecutionResponse {
+  bool admitted = 1;
+  repeated string unsupported_contracts = 2;
+  optional string detail = 3;
+}
+
+message Ready {
+  string execution_id = 1;
+  string timeline_id = 2;
+  string runtime_instance = 3;
+}
+
+message Invocation {
+  string execution_id = 1;
+  string timeline_id = 2;
+  string runtime_instance = 3;
+  uint64 boundary = 4;
+  uint64 logical_time_ns = 5;
+}
+
+message InvocationAccepted {
+  string execution_id = 1;
+  string timeline_id = 2;
+  string runtime_instance = 3;
+  uint64 boundary = 4;
+  repeated ProductReceipt required_products = 5;
+}
+
+message ProductReceipt {
+  string port = 1;
+  uint64 sequence = 2;
+  uint32 items = 3;
+  uint64 bytes = 4;
+}
+
+message ResetExecutionRequest {
+  string execution_id = 1;
+  string retired_timeline_id = 2;
+  string next_timeline_id = 3;
+  uint64 completed_boundary = 4;
+}
+
+message ResetExecutionResponse {
+  bool accepted = 1;
+  optional string detail = 2;
+}
+
+message RuntimeFailure {
+  string execution_id = 1;
+  string timeline_id = 2;
+  string runtime_instance = 3;
+  uint64 boundary = 4;
+  string reason = 5;
+}

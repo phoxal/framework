@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package phoxal.session.v1;
+
+message OpenSessionRequest {
+  string protocol = 1;
+}
+
+message OpenSessionResponse {
+  bytes session_id = 1;
+  string protocol = 2;
+  uint32 lease_ms = 3;
+}
+
+message RenewSessionRequest {
+  bytes session_id = 1;
+}
+
+message RenewSessionResponse {
+  uint32 lease_ms = 1;
+}
+
+message CloseSessionRequest {
+  bytes session_id = 1;
+}
+
+message CloseSessionResponse {}
+
+message SupervisorInfoRequest {}
+
+message SupervisorInfoResponse {
+  string supervisor_version = 1;
+  string framework_version = 2;
+}
+
+message SupervisorStatusRequest {}
+
+message SupervisorStatusResponse {
+  SupervisorState state = 1;
+  optional string detail = 2;
+}
+
+enum SupervisorState {
+  SUPERVISOR_STATE_UNSPECIFIED = 0;
+  SUPERVISOR_STATE_IDLE = 1;
+  SUPERVISOR_STATE_PREPARING = 2;
+  SUPERVISOR_STATE_READY = 3;
+  SUPERVISOR_STATE_FAILED = 4;
+  SUPERVISOR_STATE_STOPPING = 5;
+}
+
+message ListExecutionsRequest {
+  uint32 page_size = 1;
+  bytes page_token = 2;
+}
+
+message ListExecutionsResponse {
+  repeated ExecutionSummary executions = 1;
+  bytes next_page_token = 2;
+}
+
+message ExecutionSummary {
+  string execution_id = 1;
+  string timeline_id = 2;
+  ExecutionState state = 3;
+}
+
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_STATE_PREPARING = 1;
+  EXECUTION_STATE_READY = 2;
+  EXECUTION_STATE_ACTIVE = 3;
+  EXECUTION_STATE_PAUSED = 4;
+  EXECUTION_STATE_FAILED = 5;
+  EXECUTION_STATE_STOPPED = 6;
+}
+
+message ListPortsRequest {
+  string execution_id = 1;
+  string service_instance = 2;
+  uint32 page_size = 3;
+  bytes page_token = 4;
+}
+
+message ListPortsResponse {
+  repeated PortMetadata ports = 1;
+  bytes next_page_token = 2;
+}
+
+message PortMetadata {
+  string name = 1;
+  PortKind kind = 2;
+  string input_fqn = 3;
+  string output_fqn = 4;
+  uint32 max_message_bytes = 5;
+  uint32 max_buffered_items = 6;
+}
+
+enum PortKind {
+  PORT_KIND_UNSPECIFIED = 0;
+  PORT_KIND_STATE = 1;
+  PORT_KIND_SAMPLE = 2;
+  PORT_KIND_EVENT = 3;
+  PORT_KIND_STREAM = 4;
+  PORT_KIND_SETPOINT = 5;
+  PORT_KIND_READ = 6;
+  PORT_KIND_COMMANDS = 7;
+}
+
+message BindPortRequest {
+  bytes session_id = 1;
+  string execution_id = 2;
+  string service_instance = 3;
+  PortMetadata expected = 4;
+}
+
+message BindPortResponse {
+  bytes binding_id = 1;
+  PortMetadata admitted = 2;
+}
+
+message OperationRequest {
+  bytes session_id = 1;
+  bytes binding_id = 2;
+  bytes correlation_id = 3;
+  string execution_id = 4;
+  string timeline_id = 5;
+  bytes payload = 6;
+  uint32 timeout_ms = 7;
+}
+
+message OperationResponse {
+  bytes session_id = 1;
+  bytes binding_id = 2;
+  bytes correlation_id = 3;
+  string execution_id = 4;
+  string timeline_id = 5;
+  OperationOutcome outcome = 6;
+  bytes payload = 7;
+  optional string detail = 8;
+}
+
+enum OperationOutcome {
+  OPERATION_OUTCOME_UNSPECIFIED = 0;
+  OPERATION_OUTCOME_RECEIVED = 1;
+  OPERATION_OUTCOME_NOT_SENT = 2;
+  OPERATION_OUTCOME_REJECTED_BEFORE_ADMISSION = 3;
+  OPERATION_OUTCOME_UNKNOWN = 4;
+}
+
+message SubscriptionRequest {
+  bytes session_id = 1;
+  bytes binding_id = 2;
+  bytes subscription_id = 3;
+  string execution_id = 4;
+  string timeline_id = 5;
+  uint32 max_buffered_items = 6;
+  uint32 max_buffered_bytes = 7;
+}
+
+message SubscriptionRecord {
+  bytes session_id = 1;
+  bytes binding_id = 2;
+  bytes subscription_id = 3;
+  string execution_id = 4;
+  string timeline_id = 5;
+  uint64 revision = 6;
+  RecordKind kind = 7;
+  bytes payload = 8;
+  uint64 dropped = 9;
+  optional string detail = 10;
+}
+
+enum RecordKind {
+  RECORD_KIND_UNSPECIFIED = 0;
+  RECORD_KIND_INITIAL_ABSENT = 1;
+  RECORD_KIND_VALUE = 2;
+  RECORD_KIND_GAP = 3;
+  RECORD_KIND_END = 4;
+  RECORD_KIND_FAILED = 5;
+}

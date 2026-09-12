@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package phoxal.bootstrap.v1;
+
+message SessionOffers {
+  repeated SessionOffer sessions = 1;
+}
+
+message SessionOffer {
+  string protocol = 1;
+  string key_prefix = 2;
+}

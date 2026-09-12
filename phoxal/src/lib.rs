@@ -510,6 +510,11 @@ pub use anyhow::Result;
 #[cfg_attr(docsrs, doc(cfg(feature = "port")))]
 pub use phoxal_port as port;
 
+/// Framework-owned public bootstrap, session, execution, and simulation contracts.
+#[cfg(feature = "protocol")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
+pub mod communication;
+
 /// Derive a participant config's compile-time JSON Schema from a `Config`
 /// struct.
 #[cfg(feature = "participant")]

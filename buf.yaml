@@ -10,6 +10,7 @@ modules:
         - PACKAGE_DIRECTORY_MATCH
         - PACKAGE_VERSION_SUFFIX
   - path: crates/robotics/proto
+  - path: phoxal/proto
   - path: contracts/motion/proto
     lint:
       use:

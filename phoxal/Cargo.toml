@@ -34,6 +34,10 @@ default = ["participant"]
 # runner, transport, host, or authoring profile.
 port = ["dep:phoxal-port"]
 
+# Framework-owned public protocol messages and pure admission state.
+# This layer has no scheduler, transport, simulator, or project dependency.
+protocol = ["port", "dep:prost", "dep:thiserror"]
+
 # The pre-rewrite implementation remains one coherent private compilation
 # boundary while the new contract surface is introduced. Every existing
 # profile enables it, so this feature only changes dependency isolation for
@@ -73,12 +77,12 @@ participant = ["legacy-runtime"]
 # execution: `phoxal::session`, the runtime and supervisor contract families,
 # the participant launch encoder, and the embedded participant metadata reader.
 # Visibility only - a session build compiles nothing a participant build lacks.
-session = ["legacy-runtime"]
+session = ["legacy-runtime", "protocol"]
 
 # Webots, Isaac Sim, or another external world adapter: `phoxal::simulator`,
 # the runtime contract family, the bundle reader, and `model::simulation`.
 # Visibility only, for the same reason as `session`.
-simulator = ["legacy-runtime"]
+simulator = ["legacy-runtime", "protocol"]
 
 # The exact-train `phoxal-supervisor` executable, and nothing else: it compiles
 # `phoxal::supervisor::host`, the whole supervisor implementation, plus the
@@ -90,7 +94,7 @@ simulator = ["legacy-runtime"]
 # build. `libc` is deliberately absent from this list - `bus::time` and
 # `supervisor::rendezvous` need it in every profile, so it is a plain
 # dependency rather than one this profile turns on.
-supervisor = ["legacy-runtime", "zenoh/unstable"]
+supervisor = ["legacy-runtime", "protocol", "zenoh/unstable"]
 
 # The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
 # URDF, their JSON Schemas, and the project compiler. Off by default: a launched
@@ -144,6 +148,10 @@ urdf-rs = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 
 phoxal-port = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+
+[build-dependencies]
+phoxal-build.workspace = true
 
 # `serde_bytes` is referenced by `#[serde(with = "serde_bytes")]`; cargo-machete
 # cannot see dependencies named only inside attributes.
