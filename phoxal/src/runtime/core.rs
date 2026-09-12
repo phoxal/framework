@@ -574,6 +574,9 @@ pub enum InvocationError {
     /// The service panicked while preparing an invocation.
     #[error("runtime invocation panicked")]
     Panicked,
+    /// The service did not complete before its host-monotonic deadline.
+    #[error("runtime invocation exceeded its deadline")]
+    DeadlineExceeded,
     /// The supplied logical clock moved backwards.
     #[error("invocation time moved backwards")]
     ClockReversed,
@@ -726,11 +729,17 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
                 return Err(anyhow::anyhow!(InvocationError::Panicked));
             }
         };
-        let reservation = match admission.reserve(&outputs) {
-            Ok(reservation) => reservation,
-            Err(error) => {
+        let reservation = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            admission.reserve(&outputs)
+        })) {
+            Ok(Ok(reservation)) => reservation,
+            Ok(Err(error)) => {
                 self.status = RuntimeStatus::Failed;
                 return Err(error);
+            }
+            Err(_) => {
+                self.status = RuntimeStatus::Failed;
+                return Err(anyhow::anyhow!(InvocationError::Panicked));
             }
         };
         self.state = Some(next_state);
@@ -742,6 +751,34 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
             outputs,
             reservation,
         ))
+    }
+
+    /// Reinitializes this owner from a fresh owned configuration value.
+    ///
+    /// The old state is discarded only after validation and initialization
+    /// succeed, so a failed reset leaves the owner terminal rather than
+    /// accidentally retaining a stale state/configuration pair.
+    pub fn reset(&mut self, now: ExecutionTime, config: R::Config) -> crate::Result<()> {
+        let state = match initialize(&self.service, now, config) {
+            Ok(state) => state,
+            Err(error) => {
+                self.state = None;
+                self.status = RuntimeStatus::Failed;
+                return Err(error);
+            }
+        };
+        self.state = Some(state);
+        self.next_index = 0;
+        self.last_time = None;
+        self.status = RuntimeStatus::Ready;
+        Ok(())
+    }
+
+    /// Mark this owner terminal after a host-side failure such as a deadline,
+    /// publication failure, or input process failure.
+    pub fn fail(&mut self) {
+        self.state = None;
+        self.status = RuntimeStatus::Failed;
     }
 }
 

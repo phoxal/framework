@@ -41,6 +41,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut metadata = Vec::new();
     let mut checks = Vec::new();
     let mut bindings = Vec::new();
+    let mut field_names = Vec::new();
     for field in fields.iter_mut() {
         let Some(field_name) = field.ident.clone() else {
             return Err(syn::Error::new_spanned(
@@ -49,6 +50,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             ));
         };
         let ty = field.ty.clone();
+        field_names.push(field_name.clone());
         let kind = input_kind(&ty)?;
         let mut options = Options::default();
         let mut retained = Vec::new();
@@ -111,6 +113,14 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
 
         impl ::phoxal::runtime::input::InputSet for #name {
             const FIELDS: &'static [::phoxal::runtime::input::InputField] = &[#(#metadata),*];
+        }
+
+        impl ::phoxal::runtime::input::InputSnapshot for #name {
+            fn empty() -> Self {
+                Self {
+                    #(#field_names: ::core::default::Default::default(),)*
+                }
+            }
         }
 
         #(#bindings)*

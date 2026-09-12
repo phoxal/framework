@@ -7,6 +7,7 @@ mod core;
 pub mod input;
 mod operation;
 pub mod outputs;
+pub mod runner;
 mod schedule;
 
 // The collector attributes live in the runtime namespace so authors can use
@@ -26,13 +27,17 @@ pub use operation::{
     ManagedOperation, OperationCompletion, OperationError, OperationKey, OperationOutcome,
     OperationPolicy, OperationState,
 };
+pub use runner::{
+    InputSource, OutputSink, PollOutcome, RunnerError, RuntimeClock, RuntimeLaunch,
+    RuntimeLaunchManifest, RuntimeRunner, SystemClock,
+};
 pub use schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 
 pub use input::{
     Activation, Capacity, CapacityError, Command, CommandId, CommandOrder, CommandOrderError,
-    Commands, Events, Latest, Operation, OperationInputError, Read, ReadCompletion, ReadError,
-    ReadStatus, ReadSuccess, Reply, Request, RequestCompletion, RequestError, Samples, Setpoint,
-    Stream, StreamFailure, StreamItem,
+    Commands, Events, InputSnapshot, Latest, Operation, OperationInputError, Read, ReadCompletion,
+    ReadError, ReadStatus, ReadSuccess, Reply, Request, RequestCompletion, RequestError, Samples,
+    Setpoint, Stream, StreamFailure, StreamItem,
 };
 
 /// The common descriptor checks emitted by the runtime authoring macros.

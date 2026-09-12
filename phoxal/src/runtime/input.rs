@@ -62,6 +62,17 @@ pub trait InputSet: 'static {
     const FIELDS: &'static [InputField];
 }
 
+/// Constructs the first empty input cut for a runtime process.
+///
+/// The empty cut is an explicit absence for every input form.  A transport
+/// owner replaces it with an admitted cut before invoking a service; it is
+/// useful to keep the construction rule on the typed input set so a runner
+/// never has to deserialize or invent service-owned payload values.
+pub trait InputSnapshot: InputSet {
+    /// Build an immutable cut with no admitted observations or operations.
+    fn empty() -> Self;
+}
+
 /// A fixed bound for one frozen or pending batch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capacity {

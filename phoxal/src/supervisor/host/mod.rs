@@ -3,9 +3,8 @@
 //! The supervisor reads `manifest.json`, runs the embedded router every
 //! participant dials, watches participant Ready leases, retains logs and
 //! telemetry, serves the bundle, and can reboot or power off its host. It
-//! starts nothing and stops nothing: runtimes are launched by `phoxal` locally
-//! and by systemd on a device, and each of those already owns the child facts
-//! of what it started.
+//! starts nothing and stops nothing: runtime process ownership remains with
+//! the deployment launcher until the new process boundary is admitted.
 //!
 //! Only four things end the run, and every one of them means this process can
 //! no longer do its job: the manifest is unreadable, the router cannot bind,
@@ -48,7 +47,11 @@ use crate::bus::{
     BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
     ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
-use crate::communication::DeploymentTarget;
+use crate::communication::{
+    DeploymentTarget, ExecutionDefinition, ServicePorts, SupervisorAdapter,
+};
+use crate::communication::session::{ExecutionState as PublicExecutionState, ExecutionSummary};
+use crate::communication_transport::{PrincipalPolicy, PublicSessionServer, PublicTransportLimits};
 use crate::identity::ExecutionId;
 use crate::supervisor::api::connect::PRESENCE_KEY;
 use crate::supervisor::rendezvous::RuntimeRendezvous;
@@ -94,7 +97,7 @@ pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> 
     // cancels the same token an ordinary stop does. One execution per process,
     // so the handler is never uninstalled.
     signal::cancel_on_termination(shutdown.clone())?;
-    let outcome = execute(runtime, &paths, &state, shutdown.clone()).await;
+    let outcome = execute(runtime, &paths, &state, target, shutdown.clone()).await;
     shutdown.cancel();
     outcome
 }
@@ -103,6 +106,7 @@ async fn execute(
     runtime: crate::bundle::RuntimeBundle,
     paths: &RuntimeRendezvous,
     state: &ExecutionState,
+    target: DeploymentTarget,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let execution = ExecutionId::mint();
@@ -151,6 +155,11 @@ async fn execute(
     };
     tracing::info!(%execution, endpoint = %endpoint, "supervisor control plane is up");
 
+    let public = match start_public_session(&bus, &target, &runtime, state, execution).await {
+        Ok(public) => public,
+        Err(error) => return Err(abort_router_startup(router, Some(owner), error).await),
+    };
+
     // Declared before the control plane starts serving, so a participant that
     // was already up is seen through the observer's history rather than missed.
     let readiness = observe_participants(&bus, state).await?;
@@ -168,6 +177,8 @@ async fn execute(
     };
     shutdown.cancel();
 
+    let public_outcome = public.close().await.map_err(anyhow::Error::from);
+
     let watchdog_outcome = match watchdog {
         Some(task) => task
             .await
@@ -179,7 +190,13 @@ async fn execute(
     drop(identity);
     let close = owner.close().await;
     let router_close = router.close().await;
-    let outcome = finish_after_transport_close(outcome, watchdog_outcome, close, router_close);
+    let outcome = finish_after_transport_close(
+        outcome,
+        watchdog_outcome,
+        public_outcome,
+        close,
+        router_close,
+    );
     match router_loss.get() {
         Some(reason) => Err(anyhow::anyhow!("{reason}")),
         None => outcome,
@@ -195,6 +212,7 @@ async fn execute(
 fn finish_after_transport_close(
     outcome: Result<()>,
     watchdog: Result<()>,
+    public: Result<()>,
     close: BusCloseReport,
     router_close: Result<()>,
 ) -> Result<()> {
@@ -204,7 +222,53 @@ fn finish_after_transport_close(
     if let Err(error) = router_close {
         tracing::warn!(error = %error, "embedded router did not close cleanly");
     }
-    outcome.and(watchdog)
+    outcome.and(watchdog).and(public)
+}
+
+/// Start the public session surface on the supervisor's own Zenoh session.
+///
+/// The adapter is deliberately populated only with service identities here.
+/// A service port is advertised only after generated owner metadata and a
+/// concrete runtime binding exist, so an empty record is preferable to
+/// claiming an endpoint the runner cannot serve.
+async fn start_public_session(
+    bus: &BusHandle,
+    target: &DeploymentTarget,
+    runtime: &crate::bundle::RuntimeBundle,
+    state: &ExecutionState,
+    execution: ExecutionId,
+) -> Result<PublicSessionServer> {
+    let mut adapter = SupervisorAdapter::with_defaults(
+        target.clone(),
+        env!("CARGO_PKG_VERSION"),
+        crate::version::FrameworkVersion::CURRENT_SPELLING,
+    )?;
+    let services = runtime
+        .robot()
+        .services()
+        .map(|(instance, _)| ServicePorts::new(instance.as_str(), Vec::new()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let timeline = state.time_domain().timeline.to_string();
+    adapter.install_execution(ExecutionDefinition::new(
+        ExecutionSummary {
+            execution_id: execution.to_string(),
+            timeline_id: timeline,
+            state: PublicExecutionState::Preparing as i32,
+        },
+        services,
+    )?)?;
+    adapter.set_status(
+        crate::communication::session::SupervisorState::Preparing,
+        Some("runtime processes are being admitted".to_owned()),
+    )?;
+    let session = bus.session()?.clone();
+    Ok(PublicSessionServer::start(
+        session,
+        adapter,
+        PrincipalPolicy::Any,
+        PublicTransportLimits::default(),
+    )
+    .await?)
 }
 
 async fn abort_router_startup(
@@ -309,6 +373,7 @@ mod tests {
         finish_after_transport_close(
             Ok(()),
             Ok(()),
+            Ok(()),
             timed_out(),
             Err(anyhow::anyhow!("router close failed")),
         )
@@ -319,6 +384,7 @@ mod tests {
     fn transport_cleanup_does_not_mask_a_serving_failure() {
         let error = finish_after_transport_close(
             Err(anyhow::anyhow!("the supervisor control plane failed")),
+            Ok(()),
             Ok(()),
             timed_out(),
             Err(anyhow::anyhow!("router close failed")),
@@ -332,6 +398,7 @@ mod tests {
         let error = finish_after_transport_close(
             Ok(()),
             Err(anyhow::anyhow!("the watchdog notification failed")),
+            Ok(()),
             timed_out(),
             Err(anyhow::anyhow!("router close failed")),
         )
