@@ -47,6 +47,7 @@ pub enum PublicationKind {
     /// A reusable library package.
     Library,
     /// A procedural macro package.
+    #[serde(rename = "proc-macro")]
     ProcMacro,
     /// An independently built simulator application.
     Simulator,
@@ -2088,6 +2089,25 @@ mod tests {
         assert_eq!(result.kind(), PublicationKind::Library);
         assert_eq!(result.registry_kind(), "library");
         Ok(())
+    }
+
+    #[test]
+    fn every_registry_role_serializes_to_its_admission_spelling() {
+        for (kind, expected) in [
+            (PublicationKind::Component, "component"),
+            (PublicationKind::Service, "service"),
+            (PublicationKind::Preset, "preset"),
+            (PublicationKind::Library, "library"),
+            (PublicationKind::ProcMacro, "proc-macro"),
+            (PublicationKind::Simulator, "simulator"),
+            (PublicationKind::Application, "application"),
+            (PublicationKind::Tool, "tool"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(kind).expect("registry role serializes"),
+                expected
+            );
+        }
     }
 
     #[test]
