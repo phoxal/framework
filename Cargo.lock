@@ -1968,9 +1968,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lru-slab"
@@ -2072,6 +2072,18 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mujoco-rs"
+version = "6.0.1+mj-3.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f90d47db7f6ba9fb1c4c959a0491397dd498c0c219a879bf742187b22b44a6c"
+dependencies = [
+ "bytemuck",
+ "log",
+ "paste",
+ "pkg-config",
 ]
 
 [[package]]
@@ -2727,6 +2739,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-mujoco"
+version = "0.1.0"
+dependencies = [
+ "mujoco-rs",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "phoxal-navigation"
 version = "0.1.0"
 dependencies = [
@@ -2972,6 +2994,12 @@ dependencies = [
  "der",
  "spki",
 ]
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "pnet_base"

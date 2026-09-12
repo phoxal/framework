@@ -54,6 +54,58 @@ jobs:
       webots-version: R2025a
     secrets: inherit
 
+  # MuJoCo is an explicit native boundary owned by the independent simulator.
+  # Keep it out of the ordinary workspace job, which must remain usable for
+  # hardware-only and generic runtime consumers without a native installation.
+  mujoco-native:
+    name: MuJoCo native
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache MuJoCo distribution
+        id: cache-mujoco
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mujoco-3.12.0-linux-x86_64.tar.gz
+          key: mujoco-3.12.0-linux-x86_64-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Download MuJoCo distribution
+        if: steps.cache-mujoco.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            "https://github.com/google-deepmind/mujoco/releases/download/3.12.0/mujoco-3.12.0-linux-x86_64.tar.gz" \
+            --output "$RUNNER_TEMP/mujoco-3.12.0-linux-x86_64.tar.gz"
+
+      - name: Verify MuJoCo distribution
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            "https://github.com/google-deepmind/mujoco/releases/download/3.12.0/mujoco-3.12.0-linux-x86_64.tar.gz.sha256" \
+            --output mujoco-3.12.0-linux-x86_64.tar.gz.sha256
+          sha256sum --check mujoco-3.12.0-linux-x86_64.tar.gz.sha256
+
+      - name: Install MuJoCo environment
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/mujoco-3.12.0-linux-x86_64.tar.gz" -C "$RUNNER_TEMP"
+          echo "MUJOCO_DYNAMIC_LINK_DIR=$RUNNER_TEMP/mujoco-3.12.0/lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mujoco-3.12.0/lib" >> "$GITHUB_ENV"
+
+      - name: Test native model and scene foundation
+        run: cargo test -p phoxal-mujoco --features native
+
+      - name: Compile independent simulator application
+        run: cargo test --manifest-path simulators/mujoco/Cargo.toml
+
   # The ordinary tests prove deterministic source generation. This launches the
   # supported native runtime and refuses asset-loader warnings, so IndexedFaceSet
   # output cannot regress to a representation R2025a only appears to parse.
