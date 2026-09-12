@@ -25,6 +25,25 @@ concurrency:
 # `cargo check`, so the shared workflow installs the one supported native SDK
 # before its clippy and test jobs.
 jobs:
+  contracts:
+    name: Protobuf contracts
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: "1.73.0"
+          lint: true
+          format: true
+          breaking: ${{ github.event_name == 'pull_request' }}
+          push: false
+          archive: false
+          pr_comment: false
+
   ci:
     if: >-
       github.event_name == 'pull_request' ||
