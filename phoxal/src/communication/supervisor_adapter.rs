@@ -58,6 +58,104 @@ pub enum PublicRouteKind {
     Mutation,
 }
 
+/// The exact operation suffix carried by one public session route.
+///
+/// Operation names are part of the routed contract, rather than inferred from
+/// a request body. This lets router policy separate inspection from mutation
+/// and lets the supervisor reject a request that was sent through the wrong
+/// lane before it reaches domain admission.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum PublicOperation {
+    /// Establish a logical session.
+    Open,
+    /// Renew an established logical session.
+    Renew,
+    /// Close an established logical session.
+    Close,
+    /// Read executable and framework version information.
+    Info,
+    /// Read the current supervisor lifecycle projection.
+    Status,
+    /// List bounded execution summaries.
+    ListExecutions,
+    /// List bounded generated port metadata.
+    ListPorts,
+    /// Admit one exact generated public port binding.
+    Bind,
+    /// Read one bound public port.
+    Read,
+    /// Admit one request on a bound mutable public port.
+    Command,
+    /// Establish a bounded state/event observation.
+    Watch,
+    /// Establish a bounded event/stream subscription.
+    Subscribe,
+}
+
+impl PublicOperation {
+    /// The exact key segment used for this operation.
+    #[must_use]
+    pub const fn segment(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Renew => "renew",
+            Self::Close => "close",
+            Self::Info => "info",
+            Self::Status => "status",
+            Self::ListExecutions => "list-executions",
+            Self::ListPorts => "list-ports",
+            Self::Bind => "bind",
+            Self::Read => "read",
+            Self::Command => "command",
+            Self::Watch => "watch",
+            Self::Subscribe => "subscribe",
+        }
+    }
+
+    fn from_segment(segment: &str) -> Option<Self> {
+        Some(match segment {
+            "open" => Self::Open,
+            "renew" => Self::Renew,
+            "close" => Self::Close,
+            "info" => Self::Info,
+            "status" => Self::Status,
+            "list-executions" => Self::ListExecutions,
+            "list-ports" => Self::ListPorts,
+            "bind" => Self::Bind,
+            "read" => Self::Read,
+            "command" => Self::Command,
+            "watch" => Self::Watch,
+            "subscribe" => Self::Subscribe,
+            _ => return None,
+        })
+    }
+
+    /// The ACL lane required for this operation.
+    #[must_use]
+    pub const fn kind(self) -> PublicRouteKind {
+        match self {
+            Self::Open | Self::Renew | Self::Close => PublicRouteKind::Control,
+            Self::Info
+            | Self::Status
+            | Self::ListExecutions
+            | Self::ListPorts
+            | Self::Bind
+            | Self::Read
+            | Self::Watch
+            | Self::Subscribe => PublicRouteKind::Inspection,
+            Self::Command => PublicRouteKind::Mutation,
+        }
+    }
+}
+
+const fn default_operation(kind: PublicRouteKind) -> PublicOperation {
+    match kind {
+        PublicRouteKind::Control => PublicOperation::Open,
+        PublicRouteKind::Inspection => PublicOperation::Info,
+        PublicRouteKind::Mutation => PublicOperation::Command,
+    }
+}
+
 impl PublicRouteKind {
     const fn segment(self) -> &'static str {
         match self {
@@ -79,14 +177,16 @@ impl PublicRouteKind {
 
 /// One exact public session route under a validated deployment target.
 ///
-/// A route is the source of the authenticated principal. No request body field
-/// can override it. Construct routes through [`DeploymentTarget::public_route`]
-/// or parse an exact incoming key with [`PublicRoute::parse`].
+/// A route is the source of the asserted principal after trusted ingress has
+/// protected the namespace. No request body field can override it. Construct
+/// routes through [`DeploymentTarget::public_route`] or parse an exact
+/// incoming key with [`PublicRoute::parse`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicRoute {
     target: DeploymentTarget,
     principal: String,
     kind: PublicRouteKind,
+    operation: PublicOperation,
 }
 
 impl PublicRoute {
@@ -109,13 +209,41 @@ impl PublicRoute {
             target: target.clone(),
             principal,
             kind,
+            operation: default_operation(kind),
         })
+    }
+
+    /// Construct one principal-bound route for an exact operation.
+    ///
+    /// The operation determines its ACL lane. A caller cannot construct a
+    /// command operation on an inspection route or vice versa.
+    pub fn for_operation(
+        target: &DeploymentTarget,
+        principal: impl Into<String>,
+        operation: PublicOperation,
+    ) -> Result<Self, SupervisorAdapterError> {
+        let route = Self::new(target, principal, operation.kind())?;
+        Ok(Self { operation, ..route })
+    }
+
+    /// Return this route with an explicitly selected operation.
+    pub fn with_operation(
+        self,
+        operation: PublicOperation,
+    ) -> Result<Self, SupervisorAdapterError> {
+        if operation.kind() != self.kind {
+            return Err(SupervisorAdapterError::RouteKindMismatch {
+                expected: operation.kind(),
+                actual: self.kind,
+            });
+        }
+        Ok(Self { operation, ..self })
     }
 
     /// Parse an exact public route key for the selected target.
     ///
     /// Accepted keys have exactly this shape:
-    /// `{P}/session/v1/clients/{principal}/{control|inspection|mutation}`.
+    /// `{P}/session/v1/clients/{principal}/{control|inspection|mutation}/{operation}`.
     /// Wildcards, query expressions, extra path segments, redirects, and
     /// another supervisor's prefix are rejected.
     pub fn parse(target: &DeploymentTarget, key: &str) -> Result<Self, SupervisorAdapterError> {
@@ -131,10 +259,14 @@ impl PublicRoute {
             .next()
             .and_then(PublicRouteKind::from_segment)
             .ok_or(SupervisorAdapterError::MalformedRoute)?;
-        if segments.next().is_some() || !valid_identifier(principal) {
+        let operation = segments
+            .next()
+            .and_then(PublicOperation::from_segment)
+            .ok_or(SupervisorAdapterError::MalformedRoute)?;
+        if segments.next().is_some() || !valid_identifier(principal) || operation.kind() != kind {
             return Err(SupervisorAdapterError::MalformedRoute);
         }
-        Self::new(target, principal, kind)
+        Self::for_operation(target, principal, operation)
     }
 
     /// The deployment target addressed by this route.
@@ -161,14 +293,21 @@ impl PublicRoute {
         self.kind
     }
 
+    /// The exact operation encoded by this route.
+    #[must_use]
+    pub const fn operation(&self) -> PublicOperation {
+        self.operation
+    }
+
     /// The exact concrete key to query or publish through the transport.
     #[must_use]
     pub fn key(&self) -> String {
         format!(
-            "{}/clients/{}/{}",
+            "{}/clients/{}/{}/{}",
             self.target.session_prefix(),
             self.principal,
-            self.kind.segment()
+            self.kind.segment(),
+            self.operation.segment()
         )
     }
 }
@@ -640,7 +779,7 @@ impl SupervisorAdapter {
         request: &OpenSessionRequest,
         now_ms: u64,
     ) -> Result<OpenSessionResponse, SupervisorAdapterError> {
-        self.require_route(route, PublicRouteKind::Control)?;
+        self.require_operation(route, PublicOperation::Open)?;
         self.sweep(now_ms);
         let session = self
             .sessions
@@ -659,7 +798,7 @@ impl SupervisorAdapter {
         request: &RenewSessionRequest,
         now_ms: u64,
     ) -> Result<RenewSessionResponse, SupervisorAdapterError> {
-        self.require_route(route, PublicRouteKind::Control)?;
+        self.require_operation(route, PublicOperation::Renew)?;
         let id = SessionId::from_bytes(&request.session_id)?;
         self.sessions.renew(id, route.principal(), now_ms)?;
         Ok(RenewSessionResponse {
@@ -674,7 +813,7 @@ impl SupervisorAdapter {
         request: &super::session::CloseSessionRequest,
         now_ms: u64,
     ) -> Result<super::session::CloseSessionResponse, SupervisorAdapterError> {
-        self.require_route(route, PublicRouteKind::Control)?;
+        self.require_operation(route, PublicOperation::Close)?;
         let id = SessionId::from_bytes(&request.session_id)?;
         self.sessions.close(id, route.principal(), now_ms)?;
         self.remove_bindings_for_session(id);
@@ -689,7 +828,7 @@ impl SupervisorAdapter {
         _request: &SupervisorInfoRequest,
         now_ms: u64,
     ) -> Result<SupervisorInfoResponse, SupervisorAdapterError> {
-        self.authorize_session(route, PublicRouteKind::Inspection, session_id, now_ms)?;
+        self.authorize_session(route, PublicOperation::Info, session_id, now_ms)?;
         Ok(self.info.clone())
     }
 
@@ -702,7 +841,7 @@ impl SupervisorAdapter {
         _request: &SupervisorStatusRequest,
         now_ms: u64,
     ) -> Result<SupervisorStatusResponse, SupervisorAdapterError> {
-        self.authorize_session(route, PublicRouteKind::Inspection, session_id, now_ms)?;
+        self.authorize_session(route, PublicOperation::Status, session_id, now_ms)?;
         Ok(self.status.clone())
     }
 
@@ -714,7 +853,7 @@ impl SupervisorAdapter {
         request: &ListExecutionsRequest,
         now_ms: u64,
     ) -> Result<ListExecutionsResponse, SupervisorAdapterError> {
-        self.authorize_session(route, PublicRouteKind::Inspection, session_id, now_ms)?;
+        self.authorize_session(route, PublicOperation::ListExecutions, session_id, now_ms)?;
         let page = self.page(
             request.page_size,
             &request.page_token,
@@ -741,7 +880,7 @@ impl SupervisorAdapter {
         request: &ListPortsRequest,
         now_ms: u64,
     ) -> Result<ListPortsResponse, SupervisorAdapterError> {
-        self.authorize_session(route, PublicRouteKind::Inspection, session_id, now_ms)?;
+        self.authorize_session(route, PublicOperation::ListPorts, session_id, now_ms)?;
         let execution = self.execution(&request.execution_id)?;
         let service = execution
             .service(&request.service_instance)
@@ -771,14 +910,9 @@ impl SupervisorAdapter {
         request: &BindPortRequest,
         now_ms: u64,
     ) -> Result<BindPortResponse, SupervisorAdapterError> {
-        self.require_route(route, PublicRouteKind::Inspection)?;
+        self.require_operation(route, PublicOperation::Bind)?;
         let session = SessionId::from_bytes(&request.session_id)?;
-        self.authorize_session(
-            route,
-            PublicRouteKind::Inspection,
-            &request.session_id,
-            now_ms,
-        )?;
+        self.authorize_session(route, PublicOperation::Bind, &request.session_id, now_ms)?;
         let expected = request
             .expected
             .as_ref()
@@ -853,9 +987,9 @@ impl SupervisorAdapter {
             })
             .ok_or(SupervisorAdapterError::UnknownBinding)??;
         let required_route = if matches!(expected_kind, PortKind::Commands | PortKind::Setpoint) {
-            PublicRouteKind::Mutation
+            PublicOperation::Command
         } else {
-            PublicRouteKind::Inspection
+            PublicOperation::Read
         };
         self.authorize_session(route, required_route, &request.session_id, now_ms)?;
         let binding = self
@@ -955,14 +1089,29 @@ impl SupervisorAdapter {
     fn authorize_session(
         &mut self,
         route: &PublicRoute,
-        expected_kind: PublicRouteKind,
+        expected_operation: PublicOperation,
         session_id: &[u8],
         now_ms: u64,
     ) -> Result<SessionId, SupervisorAdapterError> {
-        self.require_route(route, expected_kind)?;
+        self.require_operation(route, expected_operation)?;
         let id = SessionId::from_bytes(session_id)?;
         self.sessions.authorize(id, route.principal(), now_ms)?;
         Ok(id)
+    }
+
+    fn require_operation(
+        &self,
+        route: &PublicRoute,
+        expected: PublicOperation,
+    ) -> Result<(), SupervisorAdapterError> {
+        self.require_route(route, expected.kind())?;
+        if route.operation() != expected {
+            return Err(SupervisorAdapterError::OperationMismatch {
+                expected,
+                actual: route.operation(),
+            });
+        }
+        Ok(())
     }
 
     fn remove_bindings_for_execution(&mut self, execution_id: &str) -> usize {
@@ -1137,6 +1286,14 @@ pub enum SupervisorAdapterError {
         expected: PublicRouteKind,
         /// The lane encoded by the request route.
         actual: PublicRouteKind,
+    },
+    /// The request reached the right ACL lane but the wrong exact operation.
+    #[error("public route operation mismatch: expected {expected:?}, got {actual:?}")]
+    OperationMismatch {
+        /// The exact operation required by the adapter method.
+        expected: PublicOperation,
+        /// The operation encoded by the incoming route.
+        actual: PublicOperation,
     },
     /// A generated binding identifier was not exactly 32 bytes.
     #[error("binding identifier is invalid")]
@@ -1332,19 +1489,22 @@ mod tests {
         );
         let route = target
             .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::Info))
             .expect("route");
         assert_eq!(
             route.key(),
-            "phoxal/workshop/supervisors/rover-01/session/v1/clients/operator-a/inspection"
+            "phoxal/workshop/supervisors/rover-01/session/v1/clients/operator-a/inspection/info"
         );
         let parsed = PublicRoute::parse(&target, &route.key()).expect("parse");
         assert_eq!(parsed.principal(), "operator-a");
         assert_eq!(parsed.kind(), PublicRouteKind::Inspection);
+        assert_eq!(parsed.operation(), PublicOperation::Info);
         for invalid in [
             "phoxal/other/supervisors/rover-01/session/v1/clients/operator-a/inspection",
             "phoxal/workshop/supervisors/rover-01/session/v1/clients/Operator/inspection",
             "phoxal/workshop/supervisors/rover-01/session/v1/clients/operator-a/inspection/extra",
             "phoxal/workshop/supervisors/rover-01/session/v1/clients/operator-a/*",
+            "phoxal/workshop/supervisors/rover-01/session/v1/clients/operator-a/inspection/command",
         ] {
             assert!(PublicRoute::parse(&target, invalid).is_err(), "{invalid}");
         }
@@ -1353,27 +1513,49 @@ mod tests {
     #[test]
     fn open_renew_info_status_and_close_are_principal_bound() {
         let mut adapter = adapter();
-        let (control, session) = open(&mut adapter, "operator-a");
+        let (_, session) = open(&mut adapter, "operator-a");
         let inspect = target()
             .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::Info))
             .expect("route");
         let info = adapter
-            .info(&inspect, &session, &SupervisorInfoRequest {}, 101)
+            .info(
+                &inspect,
+                &session,
+                &SupervisorInfoRequest {
+                    session_id: session.clone(),
+                },
+                101,
+            )
             .expect("info");
         assert_eq!(info.framework_version, "0.1.0");
         adapter
             .set_status(SupervisorState::Preparing, Some("loading".to_owned()))
             .expect("status");
+        let status_route = target()
+            .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::Status))
+            .expect("route");
         assert_eq!(
             adapter
-                .status(&inspect, &session, &SupervisorStatusRequest {}, 102,)
+                .status(
+                    &status_route,
+                    &session,
+                    &SupervisorStatusRequest {
+                        session_id: session.clone(),
+                    },
+                    102,
+                )
                 .expect("status")
                 .state,
             SupervisorState::Preparing as i32
         );
         adapter
             .renew(
-                &control,
+                &target()
+                    .public_route("operator-a", PublicRouteKind::Control)
+                    .and_then(|route| route.with_operation(PublicOperation::Renew))
+                    .expect("route"),
                 &RenewSessionRequest {
                     session_id: session.clone(),
                 },
@@ -1382,16 +1564,27 @@ mod tests {
             .expect("renew");
         let wrong_principal = target()
             .public_route("operator-b", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::Info))
             .expect("route");
         assert_eq!(
-            adapter.info(&wrong_principal, &session, &SupervisorInfoRequest {}, 104,),
+            adapter.info(
+                &wrong_principal,
+                &session,
+                &SupervisorInfoRequest {
+                    session_id: session.clone(),
+                },
+                104,
+            ),
             Err(SupervisorAdapterError::Session(
                 SessionTableError::PrincipalMismatch
             ))
         );
         adapter
             .close(
-                &control,
+                &target()
+                    .public_route("operator-a", PublicRouteKind::Control)
+                    .and_then(|route| route.with_operation(PublicOperation::Close))
+                    .expect("route"),
                 &super::super::session::CloseSessionRequest {
                     session_id: session.clone(),
                 },
@@ -1400,7 +1593,14 @@ mod tests {
             .expect("close");
         assert_eq!(adapter.session_count(), 0);
         assert_eq!(
-            adapter.info(&inspect, &session, &SupervisorInfoRequest {}, 106,),
+            adapter.info(
+                &inspect,
+                &session,
+                &SupervisorInfoRequest {
+                    session_id: session.clone(),
+                },
+                106,
+            ),
             Err(SupervisorAdapterError::Session(
                 SessionTableError::UnknownSession
             ))
@@ -1413,6 +1613,15 @@ mod tests {
         let (_, session) = open(&mut adapter, "operator-a");
         let inspect = target()
             .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::ListExecutions))
+            .expect("route");
+        let ports_route = target()
+            .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::ListPorts))
+            .expect("route");
+        let bind_route = target()
+            .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::Bind))
             .expect("route");
         adapter
             .install_execution(execution("timeline-1"))
@@ -1424,6 +1633,7 @@ mod tests {
                 &ListExecutionsRequest {
                     page_size: 1,
                     page_token: Vec::new(),
+                    session_id: session.clone(),
                 },
                 101,
             )
@@ -1431,13 +1641,14 @@ mod tests {
         assert_eq!(listed.executions.len(), 1);
         let first_ports = adapter
             .list_ports(
-                &inspect,
+                &ports_route,
                 &session,
                 &ListPortsRequest {
                     execution_id: "execution-1".to_owned(),
                     service_instance: "navigation".to_owned(),
                     page_size: 1,
                     page_token: Vec::new(),
+                    session_id: session.clone(),
                 },
                 101,
             )
@@ -1448,7 +1659,7 @@ mod tests {
         let expected = port("commands", PortKind::Commands);
         let response = adapter
             .bind(
-                &inspect,
+                &bind_route,
                 &BindPortRequest {
                     session_id: session.clone(),
                     execution_id: "execution-1".to_owned(),
@@ -1461,7 +1672,7 @@ mod tests {
         assert_eq!(response.admitted, Some(expected));
         assert_eq!(adapter.binding_count(), 1);
         let wrong = adapter.bind(
-            &inspect,
+            &bind_route,
             &BindPortRequest {
                 session_id: session,
                 execution_id: "execution-1".to_owned(),
@@ -1482,9 +1693,11 @@ mod tests {
         let (_, session) = open(&mut adapter, "operator-a");
         let inspect = target()
             .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::Bind))
             .expect("route");
         let mutation = target()
             .public_route("operator-a", PublicRouteKind::Mutation)
+            .and_then(|route| route.with_operation(PublicOperation::Command))
             .expect("route");
         adapter
             .install_execution(execution("timeline-1"))
@@ -1545,6 +1758,7 @@ mod tests {
             .bind(
                 &target()
                     .public_route("operator-a", PublicRouteKind::Inspection)
+                    .and_then(|route| route.with_operation(PublicOperation::Bind))
                     .expect("route"),
                 &BindPortRequest {
                     session_id: session,
@@ -1568,13 +1782,21 @@ mod tests {
             (
                 target()
                     .public_route("operator-a", PublicRouteKind::Inspection)
+                    .and_then(|route| route.with_operation(PublicOperation::Info))
                     .expect("route"),
                 session,
             )
         };
         let mut restarted = adapter();
         assert_eq!(
-            restarted.info(&inspect, &session, &SupervisorInfoRequest {}, 101,),
+            restarted.info(
+                &inspect,
+                &session,
+                &SupervisorInfoRequest {
+                    session_id: session.clone(),
+                },
+                101,
+            ),
             Err(SupervisorAdapterError::Session(
                 SessionTableError::UnknownSession
             ))
@@ -1592,6 +1814,7 @@ mod tests {
             .expect("install");
         let inspect = target()
             .public_route("operator-a", PublicRouteKind::Inspection)
+            .and_then(|route| route.with_operation(PublicOperation::ListExecutions))
             .expect("route");
         assert_eq!(
             adapter.open(
@@ -1613,6 +1836,7 @@ mod tests {
                 &ListExecutionsRequest {
                     page_size: 1,
                     page_token: Vec::new(),
+                    session_id: session.clone(),
                 },
                 102,
             )
@@ -1625,6 +1849,7 @@ mod tests {
                 &ListExecutionsRequest {
                     page_size: 2,
                     page_token: Vec::new(),
+                    session_id: session.clone(),
                 },
                 103,
             ),
@@ -1637,6 +1862,7 @@ mod tests {
                 &ListExecutionsRequest {
                     page_size: 1,
                     page_token: vec![1],
+                    session_id: session.clone(),
                 },
                 104,
             ),

@@ -527,6 +527,15 @@ pub use phoxal_port as port;
 #[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
 pub mod communication;
 
+// The public session transport is compiled only when both the Protobuf
+// protocol and the legacy-runtime dependency closure are present. Keeping
+// this declaration at the crate root preserves the protocol-only dependency
+// boundary while letting the session and supervisor owners share one adapter.
+#[cfg(all(feature = "legacy-runtime", feature = "protocol"))]
+#[doc(hidden)]
+#[path = "bus/public_session.rs"]
+pub mod communication_transport;
+
 /// Derive a participant config's compile-time JSON Schema from a `Config`
 /// struct.
 #[cfg(any(feature = "participant", feature = "runtime"))]

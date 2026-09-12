@@ -1,8 +1,10 @@
 //! Bounded supervisor-side logical-session admission state.
 //!
 //! This owner is deliberately independent of Zenoh and async execution. The
-//! public transport adapter derives the authenticated principal from its
-//! protected route, then applies this table before admitting every operation.
+//! public transport adapter derives the asserted principal from its protected
+//! trusted-ingress route, then applies this table before admitting every
+//! operation. The route is not a credential by itself: the configured router
+//! must enforce the principal-to-namespace association.
 
 use std::collections::BTreeMap;
 
