@@ -17,7 +17,6 @@ use crate::identity::ProducerId;
 
 /// The phase of the serialized attachment transaction.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,
@@ -39,7 +38,6 @@ pub enum SimulationAttachmentPhase {
 
 /// The complete execution-local binding to one Live world.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,
@@ -79,7 +77,6 @@ impl SimulationAttachmentState {
 
 /// Why a world host ended one execution's simulation attachment.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,

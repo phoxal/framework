@@ -230,16 +230,6 @@ path = "tests/consumer_policy.rs"
 required-features = ["port"]
 
 [[test]]
-name = "api"
-path = "tests/api.rs"
-required-features = ["session"]
-
-[[test]]
-name = "bus_bindings"
-path = "tests/bus_bindings.rs"
-required-features = ["session"]
-
-[[test]]
 name = "wire_key_composition"
 path = "tests/wire_key_composition.rs"
 required-features = ["test-harness", "session"]

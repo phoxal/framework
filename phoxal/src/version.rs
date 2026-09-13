@@ -27,8 +27,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::__compat::wire::{DescribeWire, WireSchema};
-
 /// The framework train one binary was built from, and therefore the whole of
 /// what it claims about compatibility.
 ///
@@ -257,15 +255,6 @@ impl<'de> Deserialize<'de> for FrameworkVersion {
         let value = String::deserialize(deserializer)?;
         Self::parse(value.as_bytes())
             .ok_or_else(|| serde::de::Error::custom(FrameworkVersionError { value }))
-    }
-}
-
-impl DescribeWire for FrameworkVersion {
-    // Invariant: this states what the `Serialize` above writes - one string
-    // holding the canonical SemVer spelling, never the three-field struct the
-    // type is made of.
-    fn wire_schema() -> WireSchema {
-        WireSchema::opaque("FrameworkVersion", WireSchema::String)
     }
 }
 

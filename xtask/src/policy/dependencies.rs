@@ -155,9 +155,8 @@ pub(super) fn canonical_crates_and_the_framework_executable_keep_forbidden_edges
             // authored-source reader stops at bundle compilation and never
             // links into a process that runs a robot. It is a feature of the
             // one framework library now, so the edge to look for is the feature
-            // rather than a package. The official participants are held to the
-            // same thing, and to the three host profiles beside it, by
-            // `consumer_profile`.
+            // rather than a package. Official participants own their profile
+            // selection directly in their manifests.
             if dependency.name.as_str() == super::FACADE
                 && dependency
                     .features

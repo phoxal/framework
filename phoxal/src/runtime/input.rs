@@ -165,16 +165,6 @@ pub trait TransportInputSet: InputSnapshot {
         self.decode_transport_field_with_keys(field, binding, samples, keys)
     }
 
-    /// Returns the generated request codec owned by one consuming field.
-    ///
-    /// A consuming runtime may be isolated from the process that owns the
-    /// served port.  The codec therefore comes from the generated consumer
-    /// contract, never from a process-local type registry.
-    fn request_codec(field: &str) -> Option<crate::port::PortCodec> {
-        let _ = field;
-        None
-    }
-
     /// Expire any retained age-bounded latest values at the current freeze
     /// boundary, including when no replacement sample arrived in this cut.
     fn expire_transport_fields_at(&mut self, now: ExecutionTime) -> crate::Result<()> {
@@ -240,11 +230,6 @@ pub trait GeneratedTransportDecoder<Inputs>: 'static {
         Self::decode_with_keys(inputs, field, binding, samples, keys)
     }
 
-    /// Returns the generated request codec for one Read or Request field.
-    fn request_codec(_field: &str) -> Option<crate::port::PortCodec> {
-        None
-    }
-
     /// Expire retained age-bounded latest values at a freeze boundary.
     fn expire_at(_inputs: &mut Inputs, _now: ExecutionTime) -> crate::Result<()> {
         Ok(())
@@ -308,10 +293,6 @@ where
         <T::Transport as GeneratedTransportDecoder<T>>::decode_with_keys_at(
             self, field, binding, samples, keys, now,
         )
-    }
-
-    fn request_codec(field: &str) -> Option<crate::port::PortCodec> {
-        <T::Transport as GeneratedTransportDecoder<T>>::request_codec(field)
     }
 
     fn expire_transport_fields_at(&mut self, now: ExecutionTime) -> crate::Result<()> {

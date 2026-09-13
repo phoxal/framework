@@ -24,7 +24,6 @@
 //! and receiver-specific, so it belongs on
 //! [`Observed`](crate::bus::handle::subscriber::Observed), never on the wire.
 
-use crate::__compat::wire::{DescribeWire, WireSchema};
 use crate::identity::{ParticipantId, ProducerId};
 use serde::{Deserialize, Serialize};
 
@@ -71,15 +70,6 @@ impl<'de> Deserialize<'de> for SourceLabel {
     }
 }
 
-impl DescribeWire for SourceLabel {
-    // Invariant: this states what `#[serde(transparent)]` writes above - the
-    // bounded diagnostic text as one string, with no wrapper. The bound itself
-    // is a decode rule, not a shape.
-    fn wire_schema() -> WireSchema {
-        WireSchema::opaque("SourceLabel", WireSchema::String)
-    }
-}
-
 /// A label that is empty or exceeds the diagnostic wire budget.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("source label must be non-empty and at most {MAX_SOURCE_LABEL_BYTES} bytes, got {0:?}")]
@@ -91,9 +81,7 @@ pub struct SourceLabelError(String);
 /// concrete transport session incarnation. They are one source identity for
 /// authority and freshness decisions; keeping them together prevents callers
 /// from accidentally comparing one without the other.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize,
-)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct ParticipantSourceIdentity {
     /// The compiled topology participant.
     pub participant: ParticipantId,
@@ -117,7 +105,7 @@ impl ParticipantSourceIdentity {
 /// Every attribution carries a producer at the envelope level. Only compiled
 /// participants receive a topology [`ParticipantId`]; attached/operator
 /// sessions remain external and may carry a bounded diagnostic label.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceAttribution {
     /// A compiled participant process.
     Participant(ParticipantSourceIdentity),
@@ -169,7 +157,7 @@ impl SourceAttribution {
 /// position in between two chunks. The bus therefore attaches this separate
 /// position only to stream publications, keyed by the concrete topic at each
 /// receiver.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamPosition {
     /// The zero-based position of this accepted stream chunk.
     pub sequence: u64,
@@ -183,7 +171,7 @@ pub struct StreamPosition {
 /// rules are preserved across framework majors. A change here is a
 /// bootstrap-breaking event - see `xtask/README.md` "When a gate fails", rule 3
 /// "A frozen bootstrap fact drifted".
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusMetadata {
     /// The codec used for the body payload.
     pub codec: u8,
@@ -208,7 +196,7 @@ pub struct BusMetadata {
 /// The nested [`BusMetadata`] is the common provenance and timing base. The
 /// Live attachment revision belongs only to delivery and therefore never rides
 /// a query request, query reply, or frozen supervisor bootstrap reply.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryMetadata {
     /// The common codec, sequence, timing, and source metadata.
     pub bus: BusMetadata,
@@ -310,15 +298,6 @@ mod tests {
     use crate::identity::TimelineId;
 
     use crate::bus::test_support::producer;
-
-    /// The label's serializer is hand-written, so the declared shape is checked
-    /// against a real serialized value rather than asserted.
-    #[test]
-    fn the_declared_label_shape_is_the_shape_its_serializer_writes() {
-        let label = SourceLabel::new("external-bridge").expect("a bounded label");
-        let json = serde_json::to_value(&label).expect("a label serializes");
-        assert_eq!(SourceLabel::wire_schema().conforms(&json), Ok(()));
-    }
 
     fn metadata(produced_at: Option<TimeWindow>) -> BusMetadata {
         BusMetadata {

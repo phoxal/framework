@@ -111,7 +111,6 @@ pub trait RuntimeWorkSink {
         key: TransportValue,
         request: TransportValue,
         worker: Option<OperationWorker>,
-        request_codec: Option<crate::port::PortCodec>,
         timeout_ms: Option<u64>,
         refresh_every_steps: Option<u64>,
         cancel_grace_ms: Option<u64>,

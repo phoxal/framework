@@ -43,7 +43,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut bindings = Vec::new();
     let mut transport_fields = Vec::new();
     let mut transport_decoders = Vec::new();
-    let mut generated_request_codecs = Vec::new();
     let mut generated_transport_fields = Vec::new();
     let mut generated_transport_decoders = Vec::new();
     let mut generated_transport_bounds = Vec::new();
@@ -145,7 +144,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                     max_age_ms: None,
                     max_items: Some(#max_items),
                     max_bytes: Some(#max_bytes),
-                    request_codec: (#port).signature().codec(),
                 }
             });
             transport_decoders.push(quote! {
@@ -179,6 +177,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                         let request: #request = ::phoxal::runtime::transport::decode_request(
                             (#port).signature(),
                             &sample,
+                            #max_bytes,
                         )
                         .map_err(|error| ::anyhow::anyhow!(error))?;
                         let order = ::phoxal::runtime::transport::command_order(sample.metadata())
@@ -212,23 +211,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             | InputKind::Request => max_bytes.clone(),
             InputKind::Latest | InputKind::Setpoint | InputKind::Operation => quote!(None),
         };
-        let request_codec = match kind {
-            InputKind::Commands => options
-                .port
-                .as_ref()
-                .map_or_else(|| quote!(None), |port| quote!((#port).signature().codec())),
-            // Read and Request bodies are encoded by the generated
-            // activation binding.  Keeping this startup descriptor inert
-            // preserves transport-free direct fixtures whose private request
-            // types are intentionally not Prost messages.
-            InputKind::Read | InputKind::Request => quote!(None),
-            InputKind::Latest
-            | InputKind::Samples
-            | InputKind::Events
-            | InputKind::Setpoint
-            | InputKind::Stream
-            | InputKind::Operation => quote!(None),
-        };
         generated_transport_fields.push(quote! {
             ::phoxal::runtime::transport::InputTransportField {
                 name: stringify!(#field_name),
@@ -237,7 +219,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 max_age_ms: #max_age,
                 max_items: #transport_max_items,
                 max_bytes: #transport_max_bytes,
-                request_codec: #request_codec,
             }
         });
 
@@ -253,9 +234,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
         )?;
         generated_transport_decoders.push(generated.decoder);
         generated_transport_bounds.extend(generated.bounds);
-        if !generated.request_codec.is_empty() {
-            generated_request_codecs.push(generated.request_codec);
-        }
 
         let sink = expand_transport_sink(kind, &field_name, &ty, &options, field)?;
         if kind == InputKind::Latest {
@@ -413,13 +391,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                             detail: format!("input field `{field}` has no generated transport binding"),
                         }
                     )),
-                }
-            }
-
-            fn request_codec(field: &str) -> Option<::phoxal::port::PortCodec> {
-                match field {
-                    #(#generated_request_codecs,)*
-                    _ => None,
                 }
             }
 
@@ -669,7 +640,6 @@ fn input_kind(ty: &Type) -> syn::Result<InputKind> {
 struct TransportDecoder {
     decoder: TokenStream,
     bounds: Vec<TokenStream>,
-    request_codec: TokenStream,
 }
 
 fn fresh_param(params: &mut Vec<Ident>) -> Ident {
@@ -692,7 +662,6 @@ fn expand_transport_decoder(
     let field_text = quote!(stringify!(#field_name));
     let max_age = option_tokens(options.max_age_ms);
     let mut bounds = Vec::new();
-    let mut request_codec = TokenStream::new();
     let decoder = match kind {
         InputKind::Latest => {
             let payload_type = generic_type(ty, 1, item)?;
@@ -1107,14 +1076,6 @@ fn expand_transport_decoder(
             })?;
             bounds.push(prost_bound(&request));
             bounds.push(prost_bound(&response));
-            request_codec = quote! {
-                #field_text => Some(::phoxal::port::PortCodec::new(
-                    Some(::phoxal::runtime::transport::encode_prost::<#request>),
-                    Some(::phoxal::runtime::transport::decode_prost::<#request>),
-                    None,
-                    None,
-                ))
-            };
             bounds.push(quote! {
                 #key: ::core::convert::From<u64> + ::core::marker::Send + 'static,
             });
@@ -1209,14 +1170,6 @@ fn expand_transport_decoder(
             })?;
             bounds.push(prost_bound(&request));
             bounds.push(prost_bound(&response));
-            request_codec = quote! {
-                #field_text => Some(::phoxal::port::PortCodec::new(
-                    Some(::phoxal::runtime::transport::encode_prost::<#request>),
-                    Some(::phoxal::runtime::transport::decode_prost::<#request>),
-                    None,
-                    None,
-                ))
-            };
             bounds.push(quote! {
                 #key: ::core::convert::From<u64> + ::core::marker::Send + 'static,
             });
@@ -1318,11 +1271,7 @@ fn expand_transport_decoder(
         }
     };
 
-    Ok(TransportDecoder {
-        decoder,
-        bounds,
-        request_codec,
-    })
+    Ok(TransportDecoder { decoder, bounds })
 }
 
 struct TransportSink {

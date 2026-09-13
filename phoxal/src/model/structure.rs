@@ -58,7 +58,7 @@ pub struct Joint {
 }
 
 /// A normalized rigid transform.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pose {
     xyz: [f64; 3],
@@ -66,7 +66,7 @@ pub struct Pose {
 }
 
 /// Canonical mass properties for one link.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inertial {
     origin: Pose,
@@ -75,7 +75,7 @@ pub struct Inertial {
 }
 
 /// Canonical symmetric inertia tensor.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inertia {
     ixx: f64,
@@ -87,7 +87,7 @@ pub struct Inertia {
 }
 
 /// One canonical visual shape.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Visual {
     name: Option<String>,
@@ -97,7 +97,7 @@ pub struct Visual {
 }
 
 /// One canonical collision shape.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Collision {
     name: Option<String>,
@@ -106,7 +106,7 @@ pub struct Collision {
 }
 
 /// Canonical render material.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Material {
     name: String,
@@ -115,7 +115,7 @@ pub struct Material {
 }
 
 /// Canonical joint limits.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JointLimit {
     lower: f64,
@@ -125,7 +125,7 @@ pub struct JointLimit {
 }
 
 /// Canonical joint calibration.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Calibration {
     rising: Option<f64>,
@@ -133,7 +133,7 @@ pub struct Calibration {
 }
 
 /// Canonical joint damping and friction.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dynamics {
     damping: f64,
@@ -141,7 +141,7 @@ pub struct Dynamics {
 }
 
 /// Canonical mimic relationship.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mimic {
     joint: JointId,
@@ -150,7 +150,7 @@ pub struct Mimic {
 }
 
 /// Canonical software joint safety limits.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Safety {
     soft_lower_limit: f64,
@@ -160,9 +160,7 @@ pub struct Safety {
 }
 
 /// Supported structural joint kinds.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JointKind {
     Revolute,
@@ -829,24 +827,12 @@ impl<'de> Deserialize<'de> for Structure {
     }
 }
 
-impl crate::__compat::wire::DescribeWire for Structure {
-    // Invariant: the `Serialize` above re-emits the canonical document this
-    // type was built from, and that document is `Summary` serialized, so the
-    // summary's shape is exactly what goes on the wire.
-    fn wire_schema() -> crate::__compat::wire::WireSchema {
-        crate::__compat::wire::WireSchema::opaque(
-            "Structure",
-            <Summary as crate::__compat::wire::DescribeWire>::wire_schema(),
-        )
-    }
-}
-
 /// The canonical structure document, exactly as the compiler emits it.
 ///
 /// `Structure` re-serializes this document verbatim, so every authored field
 /// has to survive the round trip - including `name`, which the runtime model
 /// itself never consults but must not drop from the document it forwards.
-#[derive(phoxal_macros::DescribeWire, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Summary {
     name: String,
@@ -855,7 +841,7 @@ struct Summary {
     materials: Vec<Material>,
 }
 
-#[derive(phoxal_macros::DescribeWire, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LinkSummary {
     name: LinkId,
@@ -864,7 +850,7 @@ struct LinkSummary {
     collisions: Vec<Collision>,
 }
 
-#[derive(phoxal_macros::DescribeWire, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct JointSummary {
     name: JointId,
@@ -880,7 +866,7 @@ struct JointSummary {
     safety: Option<Safety>,
 }
 
-#[derive(phoxal_macros::DescribeWire, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PoseSummary {
     xyz: [f64; 3],

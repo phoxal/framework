@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// one entry from another. The config stays an opaque JSON value because its
 /// shape belongs to the service binary, which validates it against the schema it
 /// embeds; the model carries it without an opinion.
-#[derive(phoxal_macros::DescribeWire, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
     config: Option<serde_json::Value>,
@@ -52,9 +52,7 @@ impl Service {
 ///
 /// Its presence on an instance is what declares that a component driver runs
 /// for that instance, under the instance's own id.
-#[derive(
-    phoxal_macros::DescribeWire, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Driver {
     connection: Connection,
@@ -84,7 +82,7 @@ impl Driver {
 ///
 /// The instance is keyed by its own id in [`Robot::components`], so it carries
 /// no copy of that id: the map is the identity.
-#[derive(phoxal_macros::DescribeWire, Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentInstance {
     #[serde(rename = "type")]
@@ -166,7 +164,7 @@ pub struct Robot {
 /// that turns them into a `Robot`. Keeping the wire helper here also means
 /// deserialization can never construct an invalid robot by bypassing
 /// [`Robot::new`].
-#[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RobotWire {
     id: RobotId,
@@ -184,7 +182,7 @@ struct RobotWire {
 /// `Option<T>` is normally permissive in a derived serde struct: both a
 /// missing key and `null` become `None`. The manifest needs to distinguish
 /// them so every persisted robot says explicitly whether a footprint exists.
-#[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedFootprint(Option<FootprintEnvelope>);
 
 impl serde::Serialize for Robot {
@@ -200,17 +198,6 @@ impl serde::Serialize for Robot {
             footprint: PersistedFootprint(self.footprint),
         }
         .serialize(serializer)
-    }
-}
-
-impl crate::__compat::wire::DescribeWire for Robot {
-    // Invariant: the `Serialize` above builds a `RobotWire` and writes that, so
-    // the wire helper's shape is the whole of what a persisted robot is.
-    fn wire_schema() -> crate::__compat::wire::WireSchema {
-        crate::__compat::wire::WireSchema::opaque(
-            "Robot",
-            <RobotWire as crate::__compat::wire::DescribeWire>::wire_schema(),
-        )
     }
 }
 
@@ -981,24 +968,6 @@ mod tests {
 
     fn robot_with(instance_ids: &[&str]) -> Robot {
         robot_with_structure(robot_structure(), instance_ids)
-    }
-
-    /// `Robot` and `Structure` both write through a private wire helper their
-    /// own declarations do not predict, so the declared shape is checked
-    /// against a real serialized robot rather than asserted. This is the whole
-    /// canonical model - components, capabilities, structure, footprint - so a
-    /// type anywhere below it whose shape drifted fails here.
-    #[test]
-    fn the_declared_robot_shape_is_the_shape_serde_writes() {
-        use crate::__compat::wire::DescribeWire;
-
-        for robot in [
-            robot_with(&["left"]),
-            robot_with_structure(robot_structure_with_collision(), &[]),
-        ] {
-            let json = serde_json::to_value(&robot).expect("a canonical robot serializes");
-            assert_eq!(Robot::wire_schema().conforms(&json), Ok(()));
-        }
     }
 
     #[test]

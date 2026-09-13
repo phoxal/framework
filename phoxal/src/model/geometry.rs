@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::asset::AssetId;
 
 /// Complete canonical geometry vocabulary.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Geometry {
     Box {

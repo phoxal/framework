@@ -1693,7 +1693,7 @@ mod tests {
 
     const NON_CLONE_TOPIC: &str = "yTEST/nonclone/state";
 
-    #[derive(phoxal_macros::DescribeWire, Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct NonCloneBody {
         bytes: Vec<u8>,
     }
@@ -1705,7 +1705,7 @@ mod tests {
         type Semantics = State;
     }
 
-    #[derive(phoxal_macros::DescribeWire, Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct OrderedChunk(u8);
 
     impl crate::bus::contract::sealed::Endpoint for OrderedChunk {}

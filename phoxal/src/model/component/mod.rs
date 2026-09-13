@@ -18,7 +18,7 @@ use capability::Capability;
 /// way, because it is only ever meaningful together with the capabilities it
 /// models: a simulated capability that names none of them is the one error the
 /// pairing makes impossible to write.
-#[derive(phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     capabilities: BTreeMap<CapabilityId, Capability>,

@@ -14,7 +14,6 @@ use crate::identity::TimelineId;
 /// The cadence source an execution currently authorizes for services and the
 /// brain.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,
@@ -34,7 +33,6 @@ pub enum TimeMode {
 
 /// The supervisor's complete current scheduling authority.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,
@@ -55,14 +53,14 @@ pub struct TimeDomain {
 
 /// Ask for the current complete domain after subscribing to its update stream.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct CurrentRequest {}
 
 /// The complete value returned by [`CurrentRequest`].
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct CurrentResponse {
@@ -72,7 +70,7 @@ pub struct CurrentResponse {
 
 /// A complete replacement published on the ordered domain stream.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct TimeDomainStream {

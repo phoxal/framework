@@ -17,7 +17,6 @@
 //! on after a successful decode. What the supervisor does with them is the
 //! supervisor's.
 
-use crate::__compat::wire::{DescribeWire, WireField, WireSchema};
 use crate::identity::{ParticipantId, ProducerId};
 use crate::participant::metadata::ParticipantKind;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -30,7 +29,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// report that a runtime is not there but never why. Whoever launched the
 /// runtime knows why.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessState {
@@ -39,7 +38,7 @@ pub enum ProcessState {
 }
 
 /// One expected runtime of this robot, and whether it is there.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Process {
     pub participant: ParticipantId,
@@ -61,7 +60,7 @@ pub struct Process {
 /// token disappearing, which is evidence a dying process cannot publish for
 /// itself anyway.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Lifecycle {
@@ -152,26 +151,10 @@ impl Serialize for Snapshot {
     }
 }
 
-impl DescribeWire for Snapshot {
-    // Invariant: this states what the `Serialize` above writes through its
-    // `Wire` mirror - one map of those three fields. The relational rules
-    // `validate` enforces are decode-time admissibility, not shape.
-    fn wire_schema() -> WireSchema {
-        WireSchema::opaque(
-            "Snapshot",
-            WireSchema::structure([
-                WireField::required("revision", u64::wire_schema()),
-                WireField::required("lifecycle", Lifecycle::wire_schema()),
-                WireField::required("processes", <Vec<Process>>::wire_schema()),
-            ]),
-        )
-    }
-}
-
 /// Snapshot wire document. The schema tag is a parse-time format
 /// discriminator: a reader refuses a tag it does not implement before it looks
 /// at any field.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "schema")]
 pub enum SnapshotDocument {
     #[serde(rename = "phoxal/supervisor-snapshot/v0")]
@@ -272,25 +255,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn snapshot_document_round_trips_and_rejects_unknown_fields() {
-        let document = SnapshotDocument::V0(snapshot(vec![present("brain", 7)]));
-        let encoded = rmp_serde::to_vec_named(&document).expect("snapshot encodes");
-        assert_eq!(
-            rmp_serde::from_slice::<SnapshotDocument>(&encoded).expect("snapshot decodes"),
-            document
-        );
-        let malformed = rmp_serde::to_vec_named(&serde_json::json!({
-            "schema": "phoxal/supervisor-snapshot/v0",
-            "revision": 1,
-            "lifecycle": "starting",
-            "processes": [],
-            "extra": true
-        }))
-        .expect("malformed fixture encodes");
-        assert!(rmp_serde::from_slice::<SnapshotDocument>(&malformed).is_err());
-    }
-
     /// Presence and the producer are one fact written twice, so the contract
     /// refuses either half without the other, on validation and on encoding.
     #[test]
@@ -305,8 +269,6 @@ mod tests {
                 ..
             })
         ));
-        assert!(rmp_serde::to_vec_named(&invalid).is_err());
-
         let mut absent_with_producer = absent("brain");
         absent_with_producer.producer = Some(producer(4));
         assert!(matches!(

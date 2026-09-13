@@ -186,8 +186,7 @@
 // of being missing from the published documentation.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 // Generated macro output refers to the framework as `::phoxal::…`; make that
-// path resolve to this crate so the role/config macros and the `DescribeWire`
-// derive expand the same way inside the framework as they do in a downstream
+// path resolve to this crate inside the framework as it does in a downstream
 // service crate.
 #[cfg(feature = "legacy-runtime")]
 extern crate self as phoxal;
@@ -306,8 +305,6 @@ pub mod bundle;
               profile that does publish it is where these lints have something to say."
 )]
 mod bundle;
-#[cfg(feature = "legacy-runtime")]
-pub mod drive;
 
 // Build/source tooling only. A launched participant reads the compiled
 // `manifest.json`, never an authored document, so the YAML/TOML/URDF readers
@@ -382,27 +379,6 @@ pub mod simulation;
 )]
 mod simulation;
 
-/// Backend-neutral world-session documents and local client/server wire.
-#[cfg(all(
-    feature = "legacy-runtime",
-    any(feature = "session", feature = "simulator", feature = "supervisor")
-))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(feature = "session", feature = "simulator", feature = "supervisor")))
-)]
-pub mod world;
-#[cfg(all(
-    feature = "legacy-runtime",
-    not(any(feature = "session", feature = "simulator", feature = "supervisor"))
-))]
-#[allow(
-    dead_code,
-    unused_imports,
-    reason = "every profile compiles the complete compatibility surface"
-)]
-mod world;
-
 /// Declare the `supervisor` boundary at the visibility this profile gives it.
 ///
 /// The tree is written once, here, because `supervisor::host` is gated on its
@@ -465,18 +441,6 @@ supervisor_boundary!(
 #[cfg_attr(docsrs, doc(cfg(feature = "session")))]
 pub mod session;
 
-#[cfg(all(feature = "legacy-runtime", feature = "simulator"))]
-#[cfg_attr(docsrs, doc(cfg(feature = "simulator")))]
-pub mod simulator;
-
-// Not public API. It exists so compatibility CI can read this crate's declared
-// process boundary out of the crate itself, and it is the same aggregate in
-// every profile: hiding a contract family from participant rustdoc must not
-// remove it from the train.
-#[doc(hidden)]
-#[cfg(feature = "legacy-runtime")]
-pub mod __compat;
-
 #[cfg(all(feature = "legacy-runtime", feature = "test-harness"))]
 #[cfg_attr(docsrs, doc(cfg(feature = "test-harness")))]
 pub mod testing;
@@ -485,35 +449,6 @@ pub mod testing;
 #[doc(hidden)]
 #[path = "bus/integration_test_support.rs"]
 pub mod __bus_test_support;
-
-#[cfg(all(
-    feature = "legacy-runtime",
-    any(feature = "runtime", feature = "session", feature = "simulator")
-))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(feature = "runtime", feature = "session", feature = "simulator")))
-)]
-pub mod api;
-#[cfg(all(
-    feature = "legacy-runtime",
-    not(any(feature = "runtime", feature = "session", feature = "simulator"))
-))]
-#[allow(
-    dead_code,
-    unused_imports,
-    reason = "a profile that does not publish a tree still compiles it - the \
-              compatibility aggregate reads every contract family, and the runner \
-              reads the bundle - so everything in it reads as unreachable here. The \
-              profile that does publish it is where these lints have something to say."
-)]
-mod api;
-
-/// The two declarations the api tree is built from, at the crate root so a
-/// family module reads `crate::nodes!` / `crate::endpoints!` whatever its
-/// depth. Crate-private: the api tree is framework-owned and closed.
-#[cfg(feature = "legacy-runtime")]
-pub(crate) use crate::bus::tree::{endpoints, nodes};
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
 /// `Result<T>` via `phoxal::prelude`.

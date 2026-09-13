@@ -47,16 +47,7 @@ pub mod sealing {
 /// The wire form is internally tagged: `{"type": "can", "bus": 0, "node_id": 1}`
 /// is one connection, tag and payload in one map, which is how a robot document
 /// has always spelled it.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Connection {
     /// CAN bus connection.
@@ -94,9 +85,7 @@ impl Connection {
 /// A connection kind with no payload: what a driver *declares* it accepts, and
 /// what the embedded participant metadata carries so build tooling can compare
 /// a binary's declaration against an authored document without parsing either.
-#[derive(
-    phoxal_macros::DescribeWire, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionKind {
     Can,
@@ -222,16 +211,7 @@ macro_rules! payloads {
 payloads!(Can, I2c, Spi, Serial, Uart, Usb, Gpio);
 
 /// CAN bus connection.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Can {
     pub bus: u8,
@@ -239,16 +219,7 @@ pub struct Can {
 }
 
 /// I2C connection.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct I2c {
     pub bus: u8,
@@ -256,16 +227,7 @@ pub struct I2c {
 }
 
 /// SPI connection.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Spi {
     pub bus: u8,
@@ -273,16 +235,7 @@ pub struct Spi {
 }
 
 /// Serial port connection (RS-232/RS-485).
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Serial {
     pub port: String,
@@ -290,16 +243,7 @@ pub struct Serial {
 }
 
 /// UART connection (distinct from Serial for hardware-specific drivers).
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Uart {
     pub port: String,
@@ -307,16 +251,7 @@ pub struct Uart {
 }
 
 /// USB connection.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Usb {
     pub vendor_id: Option<u16>,
@@ -324,16 +259,7 @@ pub struct Usb {
 }
 
 /// GPIO pins.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Gpio {
     pub chip: String,
@@ -342,16 +268,7 @@ pub struct Gpio {
 
 /// One GPIO line: which line on the chip it is, which way it is driven, and
 /// whether it reads and drives inverted.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GpioPin {
     pub line: u16,
@@ -361,17 +278,7 @@ pub struct GpioPin {
 }
 
 /// Which way one GPIO line is driven.
-#[derive(
-    phoxal_macros::DescribeWire,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GpioDirection {
     Input,

@@ -18,7 +18,6 @@ mod authoring;
 mod inputs;
 mod outputs;
 mod runtime;
-mod wire_schema;
 
 use proc_macro::TokenStream;
 
@@ -93,22 +92,6 @@ pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Config, attributes(serde))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     authoring::expand_config(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Derive the serialized wire shape a type puts on the wire, read from the same
-/// `#[serde(...)]` model `Serialize` itself reads.
-///
-/// The declared shape is what compatibility CI compares against a published
-/// baseline, so a serde feature whose serialized form this cannot compute -
-/// `flatten`, adjacent tagging, an arbitrary `serialize_with` - is a compile
-/// error pointing at a hand-written
-/// `phoxal::__compat::wire::DescribeWire`, never an approximate
-/// schema.
-#[proc_macro_derive(DescribeWire, attributes(serde))]
-pub fn derive_describe_wire(input: TokenStream) -> TokenStream {
-    wire_schema::expand(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

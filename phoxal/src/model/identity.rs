@@ -137,17 +137,6 @@ macro_rules! token_identifier {
             }
         }
 
-        impl crate::__compat::wire::DescribeWire for $name {
-            // Invariant: this states what `#[serde(into = "String")]` above
-            // writes - the bare normalized token as one string. The token
-            // grammar itself is a decode rule, not a shape.
-            fn wire_schema() -> crate::__compat::wire::WireSchema {
-                crate::__compat::wire::WireSchema::opaque(
-                    stringify!($name),
-                    crate::__compat::wire::WireSchema::String,
-                )
-            }
-        }
     };
 }
 
@@ -275,16 +264,6 @@ macro_rules! structural_identifier {
             }
         }
 
-        impl crate::__compat::wire::DescribeWire for $name {
-            // Invariant: this states what `#[serde(transparent)]` above writes -
-            // the authored structural name as one string, with no wrapper.
-            fn wire_schema() -> crate::__compat::wire::WireSchema {
-                crate::__compat::wire::WireSchema::opaque(
-                    stringify!($name),
-                    crate::__compat::wire::WireSchema::String,
-                )
-            }
-        }
     };
 }
 
@@ -382,18 +361,6 @@ impl TryFrom<String> for CapabilityRef {
 impl From<CapabilityRef> for String {
     fn from(value: CapabilityRef) -> Self {
         value.to_string()
-    }
-}
-
-impl crate::__compat::wire::DescribeWire for CapabilityRef {
-    // Invariant: this states what `#[serde(into = "String")]` above writes -
-    // the one dotted `component.capability` string, never the two-field struct
-    // the type is made of.
-    fn wire_schema() -> crate::__compat::wire::WireSchema {
-        crate::__compat::wire::WireSchema::opaque(
-            "CapabilityRef",
-            crate::__compat::wire::WireSchema::String,
-        )
     }
 }
 

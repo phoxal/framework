@@ -23,7 +23,7 @@ const AXIS_INVARIANCE_TOLERANCE: f64 = 1.0e-9;
 
 /// A conservative planar radial envelope around the robot's ground-projection
 /// origin.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct FootprintEnvelope {
     /// Maximum planar distance from `base_footprint` to any collision point.
     pub radius_m: f64,

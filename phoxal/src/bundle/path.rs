@@ -3,7 +3,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::__compat::wire::{DescribeWire, WireSchema};
 use serde::{Deserialize, Serialize};
 
 /// A normalized bundle-relative path: forward slashes only, no leading slash,
@@ -62,31 +61,9 @@ impl<'de> Deserialize<'de> for BundlePath {
     }
 }
 
-impl DescribeWire for BundlePath {
-    // Invariant: this states what the `Serialize` above writes - the normalized
-    // forward-slash path as one string.
-    fn wire_schema() -> WireSchema {
-        WireSchema::opaque("BundlePath", WireSchema::String)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `BundlePath` has a hand-written serializer whose output shape the Rust
-    /// declaration does not predict, so the declared shape is checked against a
-    /// real serialized value.
-    #[test]
-    fn the_declared_shape_is_the_shape_its_serializer_writes() {
-        let path = BundlePath::new("bin/brain").expect("a canonical bundle path");
-        let json = serde_json::to_value(&path).expect("a bundle path serializes");
-        assert_eq!(BundlePath::wire_schema().conforms(&json), Ok(()));
-        assert_eq!(
-            BundlePath::wire_schema(),
-            WireSchema::opaque("BundlePath", WireSchema::String)
-        );
-    }
 
     /// Every way of naming something outside the bundle is refused, which is
     /// what makes an asset read unable to escape `assets/`.

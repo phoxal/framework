@@ -13,14 +13,7 @@ pub struct MotionModel {
 
 /// The outer envelope every motion command is clamped to.
 #[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    schemars::JsonSchema,
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, schemars::JsonSchema,
 )]
 #[serde(deny_unknown_fields)]
 pub struct MotionLimits {
@@ -29,15 +22,7 @@ pub struct MotionLimits {
 }
 
 /// The drive geometry, and the capabilities that realize it.
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    PartialEq,
-    schemars::JsonSchema,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KinematicConfig {
     Differential {

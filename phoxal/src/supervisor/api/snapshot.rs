@@ -14,7 +14,7 @@ crate::endpoints! {
 use crate::supervisor::api::execution::SnapshotDocument;
 
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct CurrentRequest {}

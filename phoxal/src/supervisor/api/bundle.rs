@@ -10,7 +10,7 @@ crate::endpoints! {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 pub struct GetRequest {
     /// The normalized bundle-relative target.
@@ -23,7 +23,7 @@ pub struct GetRequest {
 /// A missing entry and a path the supervisor refuses to resolve are distinct
 /// answers, so a client can tell "not in this bundle" from "never ask that".
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 pub enum GetResponse {
     /// One supervisor-sized range. A non-final range always makes progress.

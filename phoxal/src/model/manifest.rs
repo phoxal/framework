@@ -26,7 +26,7 @@ pub const MANIFEST_SCHEMA: &str = "phoxal/manifest/v0";
 ///
 /// The tag is a format discriminator, not a compatibility identity: a reader
 /// refuses a generation it does not implement instead of guessing at the body.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum ManifestDocument {
     #[serde(rename = "phoxal/manifest/v0")]

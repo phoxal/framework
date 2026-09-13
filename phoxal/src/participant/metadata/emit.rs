@@ -19,9 +19,8 @@
 
 use serde::Serialize;
 
-use crate::__compat::wire::{DescribeWire, WireSchema};
 use crate::model::connection::ConnectionKind;
-use crate::participant::metadata::{ParticipantContract, ParticipantKind, ParticipantMetadata};
+use crate::participant::metadata::ParticipantKind;
 use crate::version::FrameworkVersion;
 
 /// The serialize side of the embedded metadata document.
@@ -49,23 +48,6 @@ pub enum ParticipantMetadataRecord<'a> {
         #[serde(flatten)]
         contract: ParticipantContractRecord<'a>,
     },
-}
-
-impl DescribeWire for ParticipantContractRecord<'_> {
-    // Invariant: this record is the serialize side of one contract, so it
-    // declares that contract's shape rather than a second copy of it. A field
-    // added to only one of the two stops matching here.
-    fn wire_schema() -> WireSchema {
-        ParticipantContract::wire_schema()
-    }
-}
-
-impl DescribeWire for ParticipantMetadataRecord<'_> {
-    // Invariant: the writer and the parser are one document, so the shape is
-    // stated exactly once, on the parser.
-    fn wire_schema() -> WireSchema {
-        ParticipantMetadata::wire_schema()
-    }
 }
 
 /// The JSON fragment a declared connection kind contributes to the embedded
@@ -211,21 +193,6 @@ mod tests {
             assert_eq!(
                 connection_json(Some(kind)),
                 format!("\"{}\"", kind.as_str())
-            );
-        }
-    }
-
-    /// The bytes that actually land in the linker section are checked against
-    /// the declared document shape, so the const evaluation mode is covered by
-    /// the same declaration the typed one is.
-    #[test]
-    fn the_const_written_bytes_have_the_declared_document_shape() {
-        for embedded in [EMBEDDED, EMBEDDED_DECLARED] {
-            let const_written: serde_json::Value =
-                serde_json::from_str(embedded).expect("the const writer emits a JSON document");
-            assert_eq!(
-                ParticipantMetadataRecord::wire_schema().conforms(&const_written),
-                Ok(())
             );
         }
     }

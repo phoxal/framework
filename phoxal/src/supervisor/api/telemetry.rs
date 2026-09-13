@@ -19,7 +19,7 @@ use crate::runtime::api::telemetry::{Cursor, Step, Topic};
 /// walks backwards through a window that keeps moving without ever repeating or
 /// skipping a record.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 pub struct SnapshotRequest {
     pub participant_id: Option<String>,
@@ -30,7 +30,7 @@ pub struct SnapshotRequest {
 /// One retained rollup, plus the producer identity and truncation count the
 /// live envelope carried.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 pub struct Record {
     pub sequence: u64,
@@ -43,7 +43,7 @@ pub struct Record {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 pub struct Snapshot {
     pub cursor: Cursor,
@@ -55,7 +55,7 @@ pub struct Snapshot {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 pub struct Follow {
     pub cursor: Cursor,

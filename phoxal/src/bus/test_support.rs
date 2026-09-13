@@ -49,7 +49,7 @@ pub(crate) const GET_TOPIC: &str = "yTEST/asset/get";
 
 /// A state body: it is published at a logical step, so it carries robot time
 /// and is subject to timeline barriers.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Target {
     pub(crate) linear_x_mps: f32,
     pub(crate) angular_z_radps: f32,
@@ -64,7 +64,7 @@ impl Endpoint for Target {
 
 /// A command body, standing in for a leased control input: it expresses no
 /// robot time, so it is never quarantined at a timeline barrier.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Manual {
     pub(crate) linear_x_mps: f32,
 }
@@ -77,13 +77,13 @@ impl Endpoint for Manual {
 }
 
 /// The request half of a stand-in query contract.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GetRequest {
     pub(crate) path: String,
 }
 
 /// The response half of a stand-in query contract.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) enum GetResponse {
     Found { bytes: Vec<u8> },
     Missing,

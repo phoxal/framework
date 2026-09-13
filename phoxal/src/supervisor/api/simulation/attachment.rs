@@ -9,7 +9,7 @@ use super::SimulationAttachmentState;
 
 /// One complete replacement of the execution's attachment state.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct SimulationAttachmentStream {
@@ -19,14 +19,14 @@ pub struct SimulationAttachmentStream {
 
 /// Ask for the current attachment after subscribing to the ordered stream.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct CurrentRequest {}
 
 /// The current complete attachment state.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct CurrentResponse {

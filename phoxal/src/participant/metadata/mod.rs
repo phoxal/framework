@@ -25,10 +25,6 @@ pub use emit::{ParticipantContractRecord, ParticipantMetadataRecord, connection_
 
 use serde::{Deserialize, Serialize};
 
-use crate::__compat::wire::{
-    DescribeWire, EnumRepresentation, FieldPresence, VariantBody, WireField, WireSchema,
-    WireVariant,
-};
 use crate::identity::ParticipantArtifactId;
 use crate::model::connection::ConnectionKind;
 use crate::version::FrameworkVersion;
@@ -68,35 +64,6 @@ pub struct ParticipantContract {
     pub config_schema: serde_json::Value,
 }
 
-// The wire shapes in this module are hand-written rather than derived: the
-// process-contract floor sits below `phoxal-macros` in the crate graph, so it
-// cannot use the derive that reads these same serde attributes. Each
-// implementation states the shape its adjacent `#[derive(Serialize)]` writes,
-// and `the_declared_document_shape_is_the_shape_the_writer_emits` checks the
-// two against each other rather than trusting either.
-impl DescribeWire for ParticipantContract {
-    // Invariant: this states what the derived `Serialize` above writes - one
-    // map of the five declared field names. `connection` is written on every
-    // record, `null` included, and is declared `Defaulted` rather than
-    // `Required` because that is what serde does with an `Option` field that
-    // carries no `#[serde(default)]`: an absent key decodes as `None`. The
-    // declaration states the decoder's real behaviour; it is not a licence to
-    // omit the key.
-    fn wire_schema() -> WireSchema {
-        WireSchema::structure([
-            WireField::required("framework", FrameworkVersion::wire_schema()),
-            WireField::required("id", ParticipantArtifactId::wire_schema()),
-            WireField::required("kind", ParticipantKind::wire_schema()),
-            WireField::new(
-                "connection",
-                Option::<ConnectionKind>::wire_schema(),
-                FieldPresence::Defaulted,
-            ),
-            WireField::required("config_schema", serde_json::Value::wire_schema()),
-        ])
-    }
-}
-
 /// What a participant binary is, as declared by the role macro it was built
 /// with. A supervisor schedules and supervises a process by this alone; there
 /// is no second, finer classification anywhere in the process contract.
@@ -128,18 +95,6 @@ impl ParticipantKind {
     const ALL: [Self; 3] = [Self::Service, Self::Driver, Self::Brain];
 }
 
-impl DescribeWire for ParticipantKind {
-    // Invariant: this states what the derived `Serialize` above writes - one
-    // externally tagged unit variant per kind, spelled by the `snake_case`
-    // rename that `as_str` also returns.
-    fn wire_schema() -> WireSchema {
-        WireSchema::enumeration(
-            EnumRepresentation::ExternallyTagged,
-            ParticipantKind::ALL.map(|kind| WireVariant::new(kind.as_str(), VariantBody::Unit)),
-        )
-    }
-}
-
 /// The record every participant binary embeds in its `.phoxal_meta` /
 /// `__DATA,__phoxal_meta` section at compile time.
 ///
@@ -154,28 +109,6 @@ pub enum ParticipantMetadata {
         #[serde(flatten)]
         contract: ParticipantContract,
     },
-}
-
-impl DescribeWire for ParticipantMetadata {
-    // Invariant: this states the one document both sides of this contract
-    // handle - the parser above and `emit::ParticipantMetadataRecord`, which is
-    // its only writer. The tag spelling comes from
-    // [`PARTICIPANT_METADATA_SCHEMA_TAG`], which the serde attribute above
-    // cannot name; every other part of the document composes from
-    // `ParticipantContract`, since `#[serde(flatten)]` merges that contract's
-    // fields into the tagged map and an internally tagged newtype variant over
-    // it describes exactly the same result.
-    fn wire_schema() -> WireSchema {
-        WireSchema::enumeration(
-            EnumRepresentation::InternallyTagged {
-                tag: String::from("schema"),
-            },
-            [WireVariant::new(
-                PARTICIPANT_METADATA_SCHEMA_TAG,
-                VariantBody::newtype(ParticipantContract::wire_schema()),
-            )],
-        )
-    }
 }
 
 impl ParticipantMetadata {
@@ -199,58 +132,6 @@ impl ParticipantMetadata {
 #[derive(Debug, thiserror::Error)]
 #[error("participant metadata is not a readable phoxal document: {0}")]
 pub struct MetadataError(#[from] serde_json::Error);
-
-/// The contract surface this module owns: the participant-metadata document
-/// every binary embeds.
-///
-/// Not public API. It exists so compatibility CI can read a declared process
-/// boundary out of the code that declares it, and its shape may change with the
-/// checker.
-#[doc(hidden)]
-pub mod __compat {
-    use super::{PARTICIPANT_METADATA_SCHEMA_TAG, ParticipantMetadata};
-    use crate::__compat::surface::{ContractRecord, ContractSurface};
-    use crate::__compat::wire::DescribeWire;
-
-    /// The canonical rendering of this module's own contract surface.
-    #[must_use]
-    pub fn contract_surface() -> String {
-        let mut records = Vec::new();
-        contract_records(&mut records);
-        ContractSurface::new(records).canonical_json()
-    }
-
-    /// This module's records, for the crate aggregate.
-    pub(crate) fn contract_records(out: &mut Vec<ContractRecord>) {
-        out.push(ContractRecord::document(
-            "ParticipantMetadata",
-            PARTICIPANT_METADATA_SCHEMA_TAG,
-            ParticipantMetadata::wire_schema(),
-        ));
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::contract_surface;
-
-        /// The surface is one JSON document, it names the embedded document's
-        /// tag, and two calls produce the same bytes - which is what lets a
-        /// checker compare it with a stored baseline by string equality.
-        #[test]
-        fn the_surface_is_deterministic_json_naming_the_metadata_document() {
-            let rendered = contract_surface();
-            serde_json::from_str::<serde_json::Value>(&rendered).expect("the surface is JSON");
-            assert_eq!(contract_surface(), rendered);
-            assert!(
-                rendered.contains(super::PARTICIPANT_METADATA_SCHEMA_TAG),
-                "{rendered}"
-            );
-            assert!(rendered.contains(r#""record":"document""#), "{rendered}");
-            assert!(rendered.contains("config_schema"), "{rendered}");
-            assert!(rendered.contains("connection"), "{rendered}");
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -346,32 +227,5 @@ mod tests {
     fn a_record_missing_its_framework_version_is_rejected() {
         let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","connection":null,"config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
-    }
-
-    /// The declared document shape is checked against a real record rather
-    /// than asserted, which is what keeps a hand-written declaration honest
-    /// about the flattened contract it merges under the tag.
-    #[test]
-    fn the_declared_document_shape_is_the_shape_the_writer_emits() {
-        for connection in [None, Some(ConnectionKind::Serial)] {
-            let emitted = crate::participant::metadata::ParticipantMetadataRecord::V0 {
-                contract: crate::participant::metadata::ParticipantContractRecord {
-                    framework: FrameworkVersion::CURRENT,
-                    id: "drive",
-                    kind: ParticipantKind::Service,
-                    connection,
-                    config_schema: serde_json::json!({"type": "null"}),
-                },
-            };
-            let json = serde_json::to_value(&emitted).expect("the writer's record serializes");
-            assert_eq!(ParticipantMetadata::wire_schema().conforms(&json), Ok(()));
-        }
-
-        // The reader's declaration and the writer's are one shape, because the
-        // two types are one document in two evaluation modes.
-        assert_eq!(
-            ParticipantMetadata::wire_schema(),
-            crate::participant::metadata::ParticipantMetadataRecord::wire_schema()
-        );
     }
 }

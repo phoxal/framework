@@ -5,8 +5,9 @@
 //! standard `application/protobuf` Zenoh encoding.  A small Protobuf
 //! attachment carries execution-local delivery facts that are not part of the
 //! service payload, such as the logical timestamp and command correlation.
-//! Descriptors provide the erased codec functions, so this module never keeps a
-//! handwritten payload catalogue or falls back to the legacy MessagePack bus.
+//! Payloads are encoded and decoded through their generated Prost message
+//! implementations, so descriptors carry identity only and never own wire
+//! functions or a payload registry.
 
 use std::any::{Any, TypeId};
 use std::collections::BTreeSet;
@@ -14,7 +15,7 @@ use std::collections::BTreeSet;
 use prost::Message;
 
 use super::{ExecutionTime, ObservationStamp, StepContext};
-use crate::port::{CodecError, PortCodec, PortKind, PortSignature};
+use crate::port::{PortKind, PortSignature};
 
 /// The generated-message capability required by a typed Runtime input.
 ///
@@ -25,23 +26,16 @@ pub trait ProstPayload: Message + prost::Name + Default + Send + Sync + 'static 
 
 impl<T> ProstPayload for T where T: Message + prost::Name + Default + Send + Sync + 'static {}
 
-/// Encode one generated Prost message through the erased descriptor codec
-/// shape used by [`PortSignature`].
-pub fn encode_prost<T: ProstPayload>(value: &dyn Any) -> Result<Vec<u8>, CodecError> {
-    let value = value.downcast_ref::<T>().ok_or(CodecError::TypeMismatch)?;
+/// Encode one generated Prost message using its standard message encoding.
+pub fn encode_prost<T: ProstPayload>(value: &T) -> Result<Vec<u8>, prost::EncodeError> {
     let mut bytes = Vec::with_capacity(value.encoded_len());
-    value.encode(&mut bytes).map_err(|_| CodecError::Encode)?;
+    value.encode(&mut bytes)?;
     Ok(bytes)
 }
 
-/// Decode one generated Prost message through the erased descriptor codec
-/// shape used by [`PortSignature`].
-pub fn decode_prost<T: ProstPayload>(
-    bytes: &[u8],
-) -> Result<Box<dyn Any + Send + Sync>, CodecError> {
+/// Decode one generated Prost message using its standard message encoding.
+pub fn decode_prost<T: ProstPayload>(bytes: &[u8]) -> Result<T, prost::DecodeError> {
     T::decode(bytes)
-        .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
-        .map_err(|_| CodecError::Decode)
 }
 
 /// Zenoh's standard encoding identifier for Runtime port payloads.
@@ -477,10 +471,11 @@ pub struct PreparedOutput {
 }
 
 impl PreparedOutput {
-    /// Encode one ordinary response/publication body under its declared bound.
-    pub fn response(
+    /// Encode one ordinary response/publication body with its generated
+    /// Protobuf message implementation.
+    pub fn response<T: ProstPayload>(
         signature: PortSignature,
-        value: &dyn Any,
+        value: &T,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
     ) -> Result<Self, TransportError> {
@@ -498,10 +493,11 @@ impl PreparedOutput {
         })
     }
 
-    /// Encode one correlated command response under its declared bound.
-    pub fn reply(
+    /// Encode one correlated command response with its generated Protobuf
+    /// message implementation.
+    pub fn reply<T: ProstPayload>(
         signature: PortSignature,
-        value: &dyn Any,
+        value: &T,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
     ) -> Result<Self, TransportError> {
@@ -520,31 +516,14 @@ impl PreparedOutput {
     }
 
     /// Encode one managed Read or Request activation body under its declared
-    /// request bound.  The generated input descriptor supplies the exact
-    /// request codec, so no endpoint-name registry is consulted here.
-    pub fn request(
+    /// request bound.
+    pub fn request<T: ProstPayload>(
         signature: PortSignature,
-        value: &dyn Any,
+        value: &T,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
     ) -> Result<Self, TransportError> {
-        let codec = signature.codec().ok_or(TransportError::MissingCodec {
-            port: signature.name.to_owned(),
-            direction: "request",
-        })?;
-        let payload = codec
-            .encode_request(value)
-            .map_err(|source| TransportError::Codec {
-                port: signature.name.to_owned(),
-                source,
-            })?;
-        if payload.len() as u64 > max_bytes {
-            return Err(TransportError::BodyTooLarge {
-                port: signature.name.to_owned(),
-                bytes: payload.len(),
-                maximum: max_bytes,
-            });
-        }
+        let payload = encode_response(signature, value, max_bytes)?;
         Ok(Self {
             endpoint: PreparedEndpoint::Signature(signature),
             target_instance: None,
@@ -558,21 +537,15 @@ impl PreparedOutput {
         })
     }
 
-    /// Encode one graph-resolved managed activation body with the generated
-    /// request codec belonging to the local input field.
+    /// Stage an already encoded managed activation body with its resolved
+    /// route.  Encoding happens at the generated call site, where the exact
+    /// Prost request type is available.
     pub fn request_binding(
         binding: PortBinding,
-        codec: PortCodec,
-        value: &dyn Any,
+        payload: Vec<u8>,
         max_bytes: u64,
         metadata: RuntimeWireMetadata,
     ) -> Result<Self, TransportError> {
-        let payload = codec
-            .encode_request(value)
-            .map_err(|source| TransportError::Codec {
-                port: binding.name.clone(),
-                source,
-            })?;
         if payload.len() as u64 > max_bytes {
             return Err(TransportError::BodyTooLarge {
                 port: binding.name.clone(),
@@ -726,8 +699,6 @@ pub struct InputTransportField {
     pub max_items: Option<u64>,
     /// Maximum accumulated encoded body bytes, when this form is bounded.
     pub max_bytes: Option<u64>,
-    /// Generated request codec for Read/Request activation bodies.
-    pub request_codec: Option<PortCodec>,
 }
 
 /// Error from generated input/output transport preparation.
@@ -750,19 +721,9 @@ pub enum TransportError {
     /// Metadata was malformed or incomplete.
     #[error("invalid runtime port metadata: {detail}")]
     InvalidMetadata { detail: String },
-    /// The generated descriptor does not carry the requested codec.
-    #[error("generated port `{port}` has no {direction} Protobuf codec")]
-    MissingCodec {
-        port: String,
-        direction: &'static str,
-    },
-    /// The generated codec received a value of an unexpected Rust type.
-    #[error("generated port `{port}` codec rejected the Rust value: {source}")]
-    Codec {
-        port: String,
-        #[source]
-        source: CodecError,
-    },
+    /// A generated payload could not be encoded as standard Protobuf.
+    #[error("runtime port `{port}` payload could not be encoded: {detail}")]
+    PayloadEncode { port: String, detail: String },
     /// A generated Prost payload could not be decoded as its declared type.
     #[error("runtime port `{port}` payload could not be decoded: {detail}")]
     PayloadDecode { port: String, detail: String },
@@ -790,21 +751,15 @@ pub enum TransportError {
 }
 
 /// Encode one generated response/publication payload exactly once.
-pub fn encode_response(
+pub fn encode_response<T: ProstPayload>(
     signature: PortSignature,
-    value: &dyn Any,
+    value: &T,
     max_bytes: u64,
 ) -> Result<Vec<u8>, TransportError> {
-    let codec = signature.codec().ok_or(TransportError::MissingCodec {
+    let payload = encode_prost(value).map_err(|error| TransportError::PayloadEncode {
         port: signature.name.to_owned(),
-        direction: "response",
+        detail: error.to_string(),
     })?;
-    let payload = codec
-        .encode_response(value)
-        .map_err(|source| TransportError::Codec {
-            port: signature.name.to_owned(),
-            source,
-        })?;
     if payload.len() as u64 > max_bytes {
         return Err(TransportError::BodyTooLarge {
             port: signature.name.to_owned(),
@@ -816,18 +771,27 @@ pub fn encode_response(
 }
 
 /// Decode one generated command request into the exact Rust request type.
-pub fn decode_request<T: Send + Sync + 'static>(
+pub fn decode_request<T: ProstPayload>(
     signature: PortSignature,
     sample: &WireSample,
+    max_bytes: u64,
 ) -> Result<T, TransportError> {
-    let value = decode_request_value(signature, sample, u64::MAX)?;
-    value
-        .downcast::<T>()
-        .map(|value| *value)
-        .map_err(|_| TransportError::Codec {
+    if sample.payload().len() as u64 > max_bytes {
+        return Err(TransportError::BodyTooLarge {
             port: signature.name.to_owned(),
-            source: CodecError::TypeMismatch,
-        })
+            bytes: sample.payload().len(),
+            maximum: max_bytes,
+        });
+    }
+    if sample.metadata().wire_control()? != WireControl::Data {
+        return Err(TransportError::InvalidMetadata {
+            detail: "command request used a stream control record".to_owned(),
+        });
+    }
+    T::decode(sample.payload()).map_err(|error| TransportError::PayloadDecode {
+        port: signature.name.to_owned(),
+        detail: error.to_string(),
+    })
 }
 
 /// Decode one generated Prost message body after checking the exact source
@@ -859,40 +823,6 @@ where
         port: binding.name.clone(),
         detail: error.to_string(),
     })
-}
-
-/// Decode a generated request body into an erased Send value.  The caller
-/// performs the exact Rust downcast after checking the source descriptor, so
-/// direct runtime fixtures can retain private request types while generated
-/// service ports use their Prost codecs.
-pub fn decode_request_value(
-    signature: PortSignature,
-    sample: &WireSample,
-    max_bytes: u64,
-) -> Result<super::input::TransportValue, TransportError> {
-    if sample.payload().len() as u64 > max_bytes {
-        return Err(TransportError::BodyTooLarge {
-            port: signature.name.to_owned(),
-            bytes: sample.payload().len(),
-            maximum: max_bytes,
-        });
-    }
-    if sample.metadata.wire_control()? != WireControl::Data {
-        return Err(TransportError::InvalidMetadata {
-            detail: "command request used a stream control record".to_owned(),
-        });
-    }
-    let codec = signature.codec().ok_or(TransportError::MissingCodec {
-        port: signature.name.to_owned(),
-        direction: "request",
-    })?;
-    let value = codec
-        .decode_request(sample.payload())
-        .map_err(|source| TransportError::Codec {
-            port: signature.name.to_owned(),
-            source,
-        })?;
-    Ok(value)
 }
 
 /// Validate a publication binding against one generated Prost payload type.
@@ -1329,12 +1259,6 @@ pub fn request_metadata(
         caller_rank,
     )
     .with_caller(caller)
-}
-
-/// Return the generated response codec for a port, useful to reply encoders.
-#[must_use]
-pub const fn descriptor_codec(signature: PortSignature) -> Option<PortCodec> {
-    signature.codec()
 }
 
 #[cfg(test)]

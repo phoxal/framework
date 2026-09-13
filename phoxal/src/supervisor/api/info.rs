@@ -18,7 +18,7 @@ crate::endpoints! {
 /// Ask which robot this supervisor is running. There is nothing to select: a
 /// supervisor is handed one bundle root and never reopens it.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize,
+    Clone, Debug, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct InfoRequest {}
@@ -29,7 +29,7 @@ pub struct InfoRequest {}
 /// every attachment reads one immutable model before it starts role-specific
 /// initialization.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Debug, serde::Serialize, serde::Deserialize,
+    Clone, Debug, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct InfoResponse {

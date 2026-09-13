@@ -321,9 +321,7 @@ impl EndpointSemantics for Query {
 ///
 /// The trait is sealed. A payload genuinely carried by two independent
 /// endpoints needs two meaningful newtypes, not one type with two contracts.
-pub trait Endpoint:
-    Payload + crate::__compat::wire::DescribeWire + sealed::Endpoint + 'static
-{
+pub trait Endpoint: Payload + sealed::Endpoint + 'static {
     /// The wire family this endpoint belongs to.
     type Family: Family;
     /// What the endpoint means, and therefore how it may be operated.
@@ -334,7 +332,7 @@ pub trait Endpoint:
 /// with.
 pub trait QueryEndpoint: Endpoint<Semantics = Query> {
     /// The response payload encoded in the reply.
-    type Response: Payload + crate::__compat::wire::DescribeWire;
+    type Response: Payload;
 }
 
 /// An endpoint of the [`Robot`] family: what participant IO accepts.

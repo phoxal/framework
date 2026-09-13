@@ -234,9 +234,7 @@ fn collect_capability_assets(
 }
 
 /// The simulated behaviour of one component type.
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Simulation {
     capabilities: BTreeMap<CapabilityId, Capability>,
@@ -244,9 +242,7 @@ pub struct Simulation {
 }
 
 /// The simulated properties of one component-local link.
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Link {
     contact_material: Option<String>,
@@ -292,9 +288,7 @@ impl Link {
 }
 
 /// Canonical simulation parameters normalized from a versioned `simulation.yaml`.
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Capability {
     Motor(Motor),
@@ -343,7 +337,6 @@ impl Capability {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire,
     serde::Serialize,
     serde::Deserialize,
     Debug,
@@ -363,15 +356,7 @@ pub enum ActuatorType {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    schemars::JsonSchema,
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CameraProjection {
@@ -380,15 +365,7 @@ pub enum CameraProjection {
     Spherical,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Motor {
     pub actuator_type: ActuatorType,
@@ -397,16 +374,7 @@ pub struct Motor {
     pub sampling_period_torque_hz: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Encoder {
     pub sampling_period_hz: f64,
@@ -414,15 +382,7 @@ pub struct Encoder {
     pub noise: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Accelerometer {
     pub sampling_period_hz: f64,
@@ -430,15 +390,7 @@ pub struct Accelerometer {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Gyroscope {
     pub sampling_period_hz: f64,
@@ -446,15 +398,7 @@ pub struct Gyroscope {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Magnetometer {
     pub sampling_period_hz: f64,
@@ -462,16 +406,7 @@ pub struct Magnetometer {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Imu {
     pub sampling_period_hz: f64,
@@ -479,16 +414,7 @@ pub struct Imu {
     pub noise: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Gnss {
     pub sampling_period_hz: f64,
@@ -499,15 +425,7 @@ pub struct Gnss {
     pub speed_noise: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Camera {
     pub sampling_period_hz: f64,
@@ -523,16 +441,7 @@ pub struct Camera {
     pub noise_mask_url: Option<String>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Depth {
     pub sampling_period_hz: f64,
@@ -541,16 +450,7 @@ pub struct Depth {
     pub motion_blur: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Range {
     pub sampling_period_hz: f64,
@@ -558,16 +458,7 @@ pub struct Range {
     pub resolution: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Lidar {
     pub sampling_period_hz: f64,
@@ -575,15 +466,7 @@ pub struct Lidar {
     pub resolution: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Mmwave {
     pub sampling_period_hz: f64,
@@ -592,16 +475,7 @@ pub struct Mmwave {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Microphone {
     pub sampling_period_hz: f64,

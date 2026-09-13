@@ -788,7 +788,7 @@ fn output_transport(
                     for (sequence, sample) in #field.iter().enumerate() {
                         let prepared = ::phoxal::runtime::transport::PreparedOutput::response(
                             signature,
-                            sample.payload() as &dyn ::core::any::Any,
+                            sample.payload(),
                             #max_bytes,
                             ::phoxal::runtime::transport::sample_metadata(
                                 sample.stamp(),
@@ -828,7 +828,7 @@ fn output_transport(
                     for (sequence, event) in #field.iter().enumerate() {
                         let prepared = ::phoxal::runtime::transport::PreparedOutput::response(
                             signature,
-                            event as &dyn ::core::any::Any,
+                            event,
                             #max_bytes,
                             ::phoxal::runtime::transport::publication_metadata(
                                 source,
@@ -871,7 +871,7 @@ fn output_transport(
                             ::phoxal::runtime::StreamItem::Data(sample) =>
                                 ::phoxal::runtime::transport::PreparedOutput::response(
                                     signature,
-                                    sample.payload() as &dyn ::core::any::Any,
+                                    sample.payload(),
                                     #max_bytes,
                                     ::phoxal::runtime::transport::sample_metadata(
                                         sample.stamp(),
@@ -951,7 +951,7 @@ fn output_transport(
                     for reply in #field.iter() {
                         let prepared = ::phoxal::runtime::transport::PreparedOutput::reply(
                             signature,
-                            reply.response() as &dyn ::core::any::Any,
+                            reply.response(),
                             #max_bytes,
                             ::phoxal::runtime::transport::reply_metadata_for_order(
                                 source,
@@ -1015,23 +1015,17 @@ fn read_transport(
             let sample = requests.swap_remove(request_index).sample;
             let signature = (#port).signature();
             let _request_stamp = ::phoxal::runtime::transport::observation_stamp(sample.metadata())?;
-            let request = ::phoxal::runtime::transport::decode_request_value(
+            let request = ::phoxal::runtime::transport::decode_request::<#request>(
                 signature,
                 &sample,
                 #max_request_bytes,
-            )?
-            .downcast::<#request>()
-            .map_err(|_| ::anyhow::anyhow!(
-                ::phoxal::runtime::transport::TransportError::InvalidMetadata {
-                    detail: format!("read handler `{}` received an unexpected request type", stringify!(#method_name)),
-                }
-            ))?;
+            )?;
             let view = #project(self, state);
             let response = self.#method_name(&view, &request);
             let metadata = sample.metadata();
             let output = ::phoxal::runtime::transport::PreparedOutput::reply(
                 signature,
-                &response as &dyn ::core::any::Any,
+                &response,
                 #max_response_bytes,
                 ::phoxal::runtime::transport::reply_metadata_for_request(
                     source,
@@ -1073,7 +1067,7 @@ fn projection_transport(
                         let sample = #call;
                         let prepared = ::phoxal::runtime::transport::PreparedOutput::response(
                             signature,
-                            sample.payload() as &dyn ::core::any::Any,
+                            sample.payload(),
                             #max_bytes,
                             ::phoxal::runtime::transport::sample_metadata(
                                 sample.stamp(),
@@ -1091,9 +1085,9 @@ fn projection_transport(
             } else {
                 let call = quote!(self.#method_name(state));
                 let value = if matches!(return_ty, Type::Reference(_)) {
-                    quote!(value as &dyn ::core::any::Any)
+                    quote!(value)
                 } else {
-                    quote!(&value as &dyn ::core::any::Any)
+                    quote!(&value)
                 };
                 let change_value = if matches!(return_ty, Type::Reference(_)) {
                     quote!(value)
@@ -1133,9 +1127,9 @@ fn projection_transport(
             };
             let call = quote!(self.#method_name(state));
             let value = if matches!(inner, Type::Reference(_)) {
-                quote!(value as &dyn ::core::any::Any)
+                quote!(value)
             } else {
-                quote!(&value as &dyn ::core::any::Any)
+                quote!(&value)
             };
             let valid_for_ms = options.valid_for_ms.ok_or_else(|| {
                 syn::Error::new_spanned(method, "setpoint requires valid_for_ms = ...")

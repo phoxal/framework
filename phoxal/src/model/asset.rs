@@ -59,17 +59,6 @@ impl<'de> Deserialize<'de> for AssetId {
     }
 }
 
-impl crate::__compat::wire::DescribeWire for AssetId {
-    // Invariant: this states what the `Serialize` above writes - the normalized
-    // forward-slash identity as one string.
-    fn wire_schema() -> crate::__compat::wire::WireSchema {
-        crate::__compat::wire::WireSchema::opaque(
-            "AssetId",
-            crate::__compat::wire::WireSchema::String,
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

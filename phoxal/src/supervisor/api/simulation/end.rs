@@ -8,7 +8,7 @@ use super::{SimulationAttachmentState, SimulationEndReason};
 
 /// One typed terminal outcome reported by the bound host.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct EndRequest {
@@ -17,7 +17,7 @@ pub struct EndRequest {
 
 /// The Removing state accepted from the bound host.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct EndResponse {

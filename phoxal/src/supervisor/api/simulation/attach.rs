@@ -10,7 +10,7 @@ use crate::supervisor::api::time_domain::TimeDomain;
 
 /// The host proposal for one already prepared per-Robot controller.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct AttachRequest {
@@ -62,7 +62,7 @@ impl AttachRequest {
 
 /// The committed Active binding and unchanged monotonic execution domain.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(deny_unknown_fields)]
 pub struct AttachResponse {

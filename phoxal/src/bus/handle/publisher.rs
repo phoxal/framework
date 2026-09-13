@@ -352,7 +352,7 @@ mod tests {
     /// handles.
     macro_rules! stand_in {
         ($name:ident ( $body:ty ), $semantics:ty) => {
-            #[derive(phoxal_macros::DescribeWire, Debug, serde::Serialize, serde::Deserialize)]
+            #[derive(Debug, serde::Serialize, serde::Deserialize)]
             struct $name($body);
 
             impl crate::bus::contract::sealed::Endpoint for $name {}

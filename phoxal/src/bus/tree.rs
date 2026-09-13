@@ -13,10 +13,10 @@
 //! - a leaf declares its endpoints with `endpoints!`, beside the
 //!   payload types they carry.
 //!
-//! Both declarations define the same items in their own module - a `Path` and a
-//! `contract_records` - so a module that declared both fails to compile with a
-//! duplicate-item error naming the second invocation. That is the intended
-//! diagnostic: a module is a branch or a leaf, never both.
+//! Both declarations define the same `Path` items in their own module, so a
+//! module that declared both fails to compile with a duplicate-item error
+//! naming the second invocation. That is the intended diagnostic: a module is
+//! a branch or a leaf, never both.
 //!
 //! Walking `Path` accumulates the concrete key; the leaf method returns a
 //! [`BoundEndpoint`], and the side is chosen last, at the endpoint, with
@@ -33,14 +33,6 @@
 //! `endpoints!` expansion emits `pub(crate) use super::Family;` at its own
 //! level, so `super::Family` resolves at any depth by induction.
 //!
-//! # Compatibility records
-//!
-//! The same declarations emit the compatibility evidence. A branch's
-//! `contract_records` recurses into its children, appending its own segment and
-//! spelling a dynamic child as `{variable}`; a leaf's pushes one record per
-//! endpoint. Concrete keys and `{placeholder}` templates are therefore built by
-//! the same structure and cannot drift.
-
 use std::marker::PhantomData;
 
 use crate::bus::contract::{Endpoint, EndpointSemantics};
@@ -128,8 +120,7 @@ impl TopicSegment for KeySegment {
 /// ```
 ///
 /// Each declaration owns one child module, its literal segment, its dynamic
-/// placeholder name and type, the builder method that binds it, and the
-/// recursive compatibility aggregation into it.
+/// placeholder name and type, and the builder method that binds it.
 macro_rules! nodes {
     // A family root: it states the family once, and is the only node with no
     // parent to inherit a key prefix from.
@@ -162,13 +153,6 @@ macro_rules! nodes {
         $( pub mod $node; )+
         $( crate::bus::tree::node_child!( $node $( ( $variable : $segment ) )? ); )+
 
-        /// Every endpoint record this family declares.
-        pub(crate) fn contract_records(
-            out: &mut ::std::vec::Vec<crate::__compat::surface::ContractRecord>,
-        ) {
-            let root = <Family as crate::bus::Family>::ID;
-            $( crate::bus::tree::node_record!(root, out, $node $( ( $variable : $segment ) )? ); )+
-        }
     };
 
     // An ordinary branch.
@@ -182,13 +166,6 @@ macro_rules! nodes {
         $( pub mod $node; )+
         $( crate::bus::tree::node_child!( $node $( ( $variable : $segment ) )? ); )+
 
-        /// Every endpoint record below this node, under `prefix`.
-        pub(crate) fn contract_records(
-            prefix: &str,
-            out: &mut ::std::vec::Vec<crate::__compat::surface::ContractRecord>,
-        ) {
-            $( crate::bus::tree::node_record!(prefix, out, $node $( ( $variable : $segment ) )? ); )+
-        }
     };
 }
 
@@ -205,7 +182,7 @@ macro_rules! nodes {
 /// node path itself, so a key such as `runtime/logs` carries no invented leaf
 /// segment. The declaration emits the sealed endpoint typing, the semantics,
 /// the query response linkage, the bound-leaf builder, the side branding, and
-/// the compatibility record.
+/// the bound-leaf builder, and side branding.
 macro_rules! endpoints {
     ( $( $leaf:tt : $semantics:tt < $( $body:tt ),+ $(,)? > ; )+ ) => {
         pub(crate) use super::Family;
@@ -216,13 +193,6 @@ macro_rules! endpoints {
 
         $( crate::bus::tree::endpoint!( $leaf, $semantics, $( $body ),+ ); )+
 
-        /// Every endpoint record this leaf declares, under `prefix`.
-        pub(crate) fn contract_records(
-            prefix: &str,
-            out: &mut ::std::vec::Vec<crate::__compat::surface::ContractRecord>,
-        ) {
-            $( crate::bus::tree::endpoint_record!(prefix, out, $leaf, $semantics, $( $body ),+ ); )+
-        }
     };
 }
 
@@ -283,28 +253,6 @@ macro_rules! node_child {
                 ))
             }
         }
-    };
-}
-
-/// Recurse the compatibility aggregation into one child node, spelling a
-/// dynamic segment as its `{variable}` template.
-macro_rules! node_record {
-    ( $prefix:expr, $out:expr, $node:ident ) => {
-        $node::contract_records(
-            &::std::format!("{}/{}", $prefix, ::core::stringify!($node)),
-            $out,
-        );
-    };
-    ( $prefix:expr, $out:expr, $node:ident ( $variable:ident : $segment:ty ) ) => {
-        $node::contract_records(
-            &::std::format!(
-                "{}/{}/{{{}}}",
-                $prefix,
-                ::core::stringify!($node),
-                ::core::stringify!($variable)
-            ),
-            $out,
-        );
     };
 }
 
@@ -393,70 +341,11 @@ macro_rules! endpoint_bind {
     };
 }
 
-/// The key template one endpoint contributes below `prefix`.
-macro_rules! endpoint_key {
-    ( $prefix:expr, self ) => {
-        ::std::string::String::from($prefix)
-    };
-    ( $prefix:expr, $leaf:ident ) => {
-        ::std::format!("{}/{}", $prefix, ::core::stringify!($leaf))
-    };
-}
-
-/// One endpoint's compatibility record.
-macro_rules! endpoint_record {
-    ( $prefix:expr, $out:expr, $leaf:tt, Stream, $body:tt, $direction:tt ) => {
-        crate::bus::tree::endpoint_topic_record!(
-            $prefix,
-            $out,
-            $leaf,
-            crate::bus::Stream<crate::bus::$direction>,
-            $body
-        );
-    };
-    ( $prefix:expr, $out:expr, $leaf:tt, Query, $request:tt, $response:tt ) => {
-        $out.push(crate::__compat::surface::ContractRecord::query(
-            <self::Family as crate::bus::Family>::ID,
-            crate::bus::tree::endpoint_key!($prefix, $leaf),
-            <crate::bus::Query as crate::bus::EndpointSemantics>::KIND.as_str(),
-            <crate::bus::Query as crate::bus::EndpointSemantics>::DELIVERY.as_str(),
-            <$request as crate::__compat::wire::DescribeWire>::wire_schema(),
-            <$response as crate::__compat::wire::DescribeWire>::wire_schema(),
-        ));
-    };
-    ( $prefix:expr, $out:expr, $leaf:tt, $semantics:tt, $body:tt ) => {
-        crate::bus::tree::endpoint_topic_record!(
-            $prefix,
-            $out,
-            $leaf,
-            crate::bus::$semantics,
-            $body
-        );
-    };
-}
-
-/// One pub/sub endpoint's compatibility record.
-macro_rules! endpoint_topic_record {
-    ( $prefix:expr, $out:expr, $leaf:tt, $semantics:ty, $body:tt ) => {
-        $out.push(crate::__compat::surface::ContractRecord::topic(
-            <self::Family as crate::bus::Family>::ID,
-            crate::bus::tree::endpoint_key!($prefix, $leaf),
-            <$semantics as crate::bus::EndpointSemantics>::KIND.as_str(),
-            <$semantics as crate::bus::EndpointSemantics>::DELIVERY.as_str(),
-            <$body as crate::__compat::wire::DescribeWire>::wire_schema(),
-        ));
-    };
-}
-
 pub(crate) use endpoint;
 pub(crate) use endpoint_bind;
 pub(crate) use endpoint_declare;
-pub(crate) use endpoint_key;
-pub(crate) use endpoint_record;
-pub(crate) use endpoint_topic_record;
 pub(crate) use endpoints;
 pub(crate) use node_child;
-pub(crate) use node_record;
 pub(crate) use nodes;
 pub(crate) use path_child;
 pub(crate) use path_node;

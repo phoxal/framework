@@ -98,15 +98,6 @@ impl<'de> Deserialize<'de> for WorldInstanceId {
     }
 }
 
-impl crate::__compat::wire::DescribeWire for WorldInstanceId {
-    fn wire_schema() -> crate::__compat::wire::WireSchema {
-        crate::__compat::wire::WireSchema::opaque(
-            "WorldInstanceId",
-            crate::__compat::wire::WireSchema::String,
-        )
-    }
-}
-
 /// A world-session identity that is not in canonical form.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error(
@@ -115,7 +106,7 @@ impl crate::__compat::wire::DescribeWire for WorldInstanceId {
 pub struct WorldIdentityError(String);
 
 /// Authoritative absolute physics progress in one world session.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldProgress {
     completed_step: u64,
@@ -257,9 +248,7 @@ pub enum WorldProgressError {
 }
 
 /// The immutable correlation recorded when a monotonic execution joins a world.
-#[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveAttachmentBoundary {
     /// The completed native-world boundary observed during attachment.
@@ -332,22 +321,13 @@ impl<'de> Deserialize<'de> for WorldDigest {
     }
 }
 
-impl crate::__compat::wire::DescribeWire for WorldDigest {
-    fn wire_schema() -> crate::__compat::wire::WireSchema {
-        crate::__compat::wire::WireSchema::opaque(
-            "WorldDigest",
-            crate::__compat::wire::WireSchema::String,
-        )
-    }
-}
-
 /// A digest spelling that is not canonical SHA-256 hexadecimal.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("world digest must be exactly 64 lowercase hexadecimal characters, got '{0}'")]
 pub struct WorldDigestError(String);
 
 /// One expanded static entity in a compiled world.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldEntity {
     declaration: EntityDeclarationId,
@@ -390,7 +370,7 @@ impl WorldEntity {
 }
 
 /// One canonical expanded world.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct World {
     id: WorldId,
@@ -517,7 +497,7 @@ impl World {
 }
 
 /// Immutable facts required to qualify one world run.
-#[derive(phoxal_macros::DescribeWire, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldProvenance {
     /// The stable authored world identity.

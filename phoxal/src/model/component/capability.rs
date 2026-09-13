@@ -11,7 +11,6 @@ use crate::model::identity::{ComponentInstanceId, JointId, LinkId};
 /// the closed vocabulary in the canonical model means every reader of a
 /// compiled manifest agrees on the same spelling and set of values.
 #[derive(
-    phoxal_macros::DescribeWire,
     serde::Serialize,
     serde::Deserialize,
     Debug,
@@ -54,9 +53,7 @@ impl fmt::Display for CapabilityRole {
     }
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Capability {
     Motor(Motor),
@@ -79,15 +76,7 @@ pub enum Capability {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    schemars::JsonSchema,
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum EncoderType {
@@ -96,15 +85,7 @@ pub enum EncoderType {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    schemars::JsonSchema,
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum MotorCommand {
@@ -114,9 +95,7 @@ pub enum MotorCommand {
 }
 
 /// The component-local structural item a capability is attached to.
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StructuralTarget {
     Joint { id: JointId },
@@ -165,15 +144,7 @@ impl StructuralTarget {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    schemars::JsonSchema,
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum LidarOutput {
@@ -182,15 +153,7 @@ pub enum LidarOutput {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire,
-    serde::Serialize,
-    serde::Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    schemars::JsonSchema,
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CameraMode {
@@ -199,7 +162,6 @@ pub enum CameraMode {
 }
 
 #[derive(
-    phoxal_macros::DescribeWire,
     serde::Serialize,
     serde::Deserialize,
     Debug,
@@ -328,9 +290,7 @@ impl Capability {
     }
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Motor {
     pub target: StructuralTarget,
@@ -340,9 +300,7 @@ pub struct Motor {
     pub max_velocity_radps: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Encoder {
     pub target: StructuralTarget,
@@ -352,9 +310,7 @@ pub struct Encoder {
     pub counts_per_revolution: u32,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Accelerometer {
     pub target: StructuralTarget,
@@ -362,9 +318,7 @@ pub struct Accelerometer {
     pub axes: Option<[bool; 3]>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Gyroscope {
     pub target: StructuralTarget,
@@ -372,9 +326,7 @@ pub struct Gyroscope {
     pub axes: Option<[bool; 3]>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Magnetometer {
     pub target: StructuralTarget,
@@ -382,9 +334,7 @@ pub struct Magnetometer {
     pub axes: Option<[bool; 3]>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Imu {
     pub target: StructuralTarget,
@@ -392,9 +342,7 @@ pub struct Imu {
     pub axes: Option<[bool; 3]>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Gnss {
     pub target: StructuralTarget,
@@ -402,9 +350,7 @@ pub struct Gnss {
     pub coordinate_system: GnssCoordinateSystem,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Camera {
     pub target: StructuralTarget,
@@ -415,9 +361,7 @@ pub struct Camera {
     pub field_of_view_rad: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Depth {
     pub target: StructuralTarget,
@@ -429,9 +373,7 @@ pub struct Depth {
     pub max_range_m: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Range {
     pub target: StructuralTarget,
@@ -441,17 +383,13 @@ pub struct Range {
     pub field_of_view_rad: f64,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EmergencyStop {
     pub target: StructuralTarget,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Lidar {
     pub target: StructuralTarget,
@@ -465,35 +403,27 @@ pub struct Lidar {
     pub vertical_resolution_rad: Option<f64>,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Mmwave {
     pub target: StructuralTarget,
     pub publish_rate_hz: f64,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Microphone {
     pub target: StructuralTarget,
     pub publish_rate_hz: f64,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Speaker {
     pub target: StructuralTarget,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Battery {
     pub target: StructuralTarget,
@@ -502,9 +432,7 @@ pub struct Battery {
     pub capacity_ah: f64,
 }
 
-#[derive(
-    phoxal_macros::DescribeWire, serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq,
-)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Led {
     pub target: StructuralTarget,

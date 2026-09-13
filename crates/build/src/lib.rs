@@ -685,20 +685,9 @@ impl prost_build::ServiceGenerator for PortGenerator {
             } else {
                 format!("{}.{}", service.package, service.proto_name)
             };
-            let method_name = method.proto_name.to_snake_case();
-            if !spec.kind.is_publication() {
-                buffer.push_str(&codec_functions(
-                    &format!("{method_name}_request"),
-                    &input_type,
-                ));
-            }
-            buffer.push_str(&codec_functions(
-                &format!("{method_name}_response"),
-                &output_type,
-            ));
             if spec.kind.is_publication() {
                 buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal_port::{}<{}> = ::phoxal_port::{}::with_codec_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET, ::phoxal_port::PortCodec::new(None, None, Some(__phoxal_encode_{}_response), Some(__phoxal_decode_{}_response)));",
+                    "    pub const {}: ::phoxal_port::{}<{}> = ::phoxal_port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
                     spec.constant_name,
                     port_type,
                     output_type,
@@ -708,13 +697,11 @@ impl prost_build::ServiceGenerator for PortGenerator {
                     method.proto_name,
                     request_name,
                     response_name,
-                    method_name,
-                    method_name,
                 ));
                 buffer.push('\n');
             } else {
                 buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal_port::{}<{}, {}> = ::phoxal_port::{}::with_codec_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET, ::phoxal_port::PortCodec::new(Some(__phoxal_encode_{}_request), Some(__phoxal_decode_{}_request), Some(__phoxal_encode_{}_response), Some(__phoxal_decode_{}_response)));",
+                    "    pub const {}: ::phoxal_port::{}<{}, {}> = ::phoxal_port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
                     spec.constant_name,
                     port_type,
                     input_type,
@@ -725,10 +712,6 @@ impl prost_build::ServiceGenerator for PortGenerator {
                     method.proto_name,
                     request_name,
                     response_name,
-                    method_name,
-                    method_name,
-                    method_name,
-                    method_name,
                 ));
                 buffer.push('\n');
             }
@@ -744,14 +727,6 @@ impl prost_build::ServiceGenerator for PortGenerator {
         }
         buffer.push_str("    }\n}\n");
     }
-}
-
-fn codec_functions(suffix: &str, rust_type: &str) -> String {
-    let encode_name = format!("__phoxal_encode_{suffix}");
-    let decode_name = format!("__phoxal_decode_{suffix}");
-    format!(
-        "    #[doc(hidden)]\n    fn {encode_name}(value: &dyn ::core::any::Any) -> ::core::result::Result<::std::vec::Vec<u8>, ::phoxal_port::CodecError> {{\n        let value = value.downcast_ref::<{rust_type}>().ok_or(::phoxal_port::CodecError::TypeMismatch)?;\n        let mut payload = ::std::vec::Vec::with_capacity(::prost::Message::encoded_len(value));\n        ::prost::Message::encode(value, &mut payload).map_err(|_| ::phoxal_port::CodecError::Encode)?;\n        Ok(payload)\n    }}\n\n    #[doc(hidden)]\n    fn {decode_name}(payload: &[u8]) -> ::core::result::Result<::std::boxed::Box<dyn ::core::any::Any + ::core::marker::Send + ::core::marker::Sync>, ::phoxal_port::CodecError> {{\n        <{rust_type} as ::prost::Message>::decode(payload)\n            .map(|value| ::std::boxed::Box::new(value) as ::std::boxed::Box<dyn ::core::any::Any + ::core::marker::Send + ::core::marker::Sync>)\n            .map_err(|_| ::phoxal_port::CodecError::Decode)\n    }}\n"
-    )
 }
 
 fn proto_type_name(proto_type: &str) -> String {

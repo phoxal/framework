@@ -14,7 +14,6 @@ crate::endpoints! {
 /// This event is producer-ordered progress. It is not a receiver-side
 /// transaction, an observation fence, or a participant scheduling trigger.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,

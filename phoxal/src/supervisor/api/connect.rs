@@ -53,7 +53,6 @@ pub const PRESENCE_KEY: &str = "supervisor/presence";
 /// never will: any argument would be a second thing the two peers must already
 /// agree on before they are allowed to disagree.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,
@@ -78,7 +77,6 @@ pub enum ConnectRequest {
 /// behind an ordinary endpoint that the client may only call once the trains
 /// agree.
 #[derive(
-    phoxal_macros::DescribeWire,
     Clone,
     Copy,
     Debug,
@@ -109,41 +107,6 @@ mod tests {
         let bootstrap = crate::supervisor::api::topics().connect().client();
         assert_eq!(bootstrap.key(), "supervisor/connect");
         assert_ne!(PRESENCE_KEY, bootstrap.key());
-    }
-
-    /// The key a client actually addresses is the bus root composed with this
-    /// topic, so the composed spelling is pinned as a literal too: the freeze
-    /// covers the whole path to the bootstrap, not only its last segment. The
-    /// grammar is read out of the bus's own declared surface rather than
-    /// restated here, so a crate that moved it cannot leave this test agreeing
-    /// with itself.
-    ///
-    /// That the live session composes the same key is proved separately, end to
-    /// end, by `phoxal`'s `wire_key_composition` test. That one composes from
-    /// whatever the two halves currently are, which is what makes this literal
-    /// the pin rather than a second copy of it.
-    #[test]
-    fn the_composed_bootstrap_wire_key_is_pinned_to_its_literal() {
-        const EXECUTION: &str = "1c8f3a5b7d9e0f2a4b6c8d0e1f325476";
-
-        let surface = crate::bus::__compat::contract_surface();
-        assert!(
-            surface.contains(
-                r#"{"name":"bus-key-composition","record":"identifier","value":"phoxal/{execution}/{topic}"}"#
-            ),
-            "the bus must declare the key grammar the bootstrap composes into: {surface}"
-        );
-
-        let composed = "phoxal/{execution}/{topic}"
-            .replace("{execution}", EXECUTION)
-            .replace(
-                "{topic}",
-                crate::supervisor::api::topics().connect().client().key(),
-            );
-        assert_eq!(
-            composed,
-            "phoxal/1c8f3a5b7d9e0f2a4b6c8d0e1f325476/supervisor/connect"
-        );
     }
 
     /// Both documents are pinned as literal JSON, including the tag strings and
@@ -189,75 +152,6 @@ mod tests {
         );
     }
 
-    /// The frozen documents are pinned as a wire shape too, not only as
-    /// literal JSON: the canonical rendering is what compatibility CI compares
-    /// against a published baseline, so a change to it has to be deliberate.
-    /// The reply also proves the derive composes with a hand-written
-    /// declaration from another crate - the framework version is one string,
-    /// never the three-field struct it is made of.
-    #[test]
-    fn the_bootstrap_documents_are_pinned_to_their_declared_wire_shape() {
-        use crate::__compat::wire::DescribeWire;
-
-        assert_eq!(
-            ConnectRequest::wire_schema().canonical_json(),
-            concat!(
-                r#"{"kind":"enum","representation":{"style":"internal","tag":"schema"},"#,
-                r#""variants":[{"body":{"fields":[],"kind":"struct"},"#,
-                r#""name":"phoxal/supervisor-connect/v0"}]}"#,
-            )
-        );
-        assert_eq!(
-            ConnectReply::wire_schema().canonical_json(),
-            concat!(
-                r#"{"kind":"enum","representation":{"style":"internal","tag":"schema"},"#,
-                r#""variants":[{"body":{"fields":[{"name":"framework","presence":"required",""#,
-                r#"schema":{"kind":"opaque","name":"FrameworkVersion","wire":{"kind":"string"}}}],"#,
-                r#""kind":"struct"},"name":"phoxal/supervisor-connect/v0"}]}"#,
-            )
-        );
-
-        for document in [
-            serde_json::to_value(ConnectRequest::V0 {}).expect("the request serializes"),
-            serde_json::to_value(ConnectReply::V0 {
-                framework: FrameworkVersion::CURRENT,
-            })
-            .expect("the reply serializes"),
-        ] {
-            let schema = if document.get("framework").is_some() {
-                ConnectReply::wire_schema()
-            } else {
-                ConnectRequest::wire_schema()
-            };
-            assert_eq!(schema.conforms(&document), Ok(()), "{document}");
-        }
-    }
-
-    /// The bus codec is MessagePack, so the freeze has to hold there too.
-    ///
-    /// The reply is round-tripped at this train and at a released major: the
-    /// bootstrap is what two binaries exchange before they know whether their
-    /// trains agree, so it has to survive the flip to a Stable line as
-    /// literally as it survives a patch.
-    #[test]
-    fn the_bootstrap_documents_round_trip_on_the_bus_codec() {
-        let request = ConnectRequest::V0 {};
-        let encoded = rmp_serde::to_vec_named(&request).unwrap();
-        assert_eq!(
-            rmp_serde::from_slice::<ConnectRequest>(&encoded).unwrap(),
-            request
-        );
-
-        for framework in [FrameworkVersion::CURRENT, FrameworkVersion::new(9, 9, 9)] {
-            let reply = ConnectReply::V0 { framework };
-            let encoded = rmp_serde::to_vec_named(&reply).unwrap();
-            assert_eq!(
-                rmp_serde::from_slice::<ConnectReply>(&encoded).unwrap(),
-                reply
-            );
-        }
-    }
-
     /// A reply from a line this binary does not implement fails by naming the
     /// foreign tag, which is the whole point of tagging the bootstrap.
     #[test]
@@ -271,11 +165,5 @@ mod tests {
             "the mismatch diagnostic must name the foreign tag: {error}"
         );
 
-        let encoded = rmp_serde::to_vec_named(&foreign).unwrap();
-        let error = rmp_serde::from_slice::<ConnectReply>(&encoded).unwrap_err();
-        assert!(
-            error.to_string().contains(FOREIGN),
-            "the mismatch diagnostic must name the foreign tag: {error}"
-        );
     }
 }

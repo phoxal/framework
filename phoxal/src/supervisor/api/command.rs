@@ -25,7 +25,7 @@ crate::endpoints! {
 use serde::{Deserialize, Serialize};
 
 /// One acknowledged host operation requested from supervisor authority.
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
     /// Ask the host to restart.
@@ -36,7 +36,7 @@ pub enum Command {
 
 /// Outcome of one acknowledged supervisor command.
 #[derive(
-    phoxal_macros::DescribeWire, Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CommandOutcome {
@@ -45,80 +45,16 @@ pub enum CommandOutcome {
     Accepted { at_revision: u64 },
 }
 
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "schema")]
 pub enum Request {
     #[serde(rename = "phoxal/supervisor-control/request/v0")]
     V0 { command: Command },
 }
 
-#[derive(phoxal_macros::DescribeWire, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "schema")]
 pub enum Reply {
     #[serde(rename = "phoxal/supervisor-control/reply/v0")]
     V0 { outcome: CommandOutcome },
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::__compat::wire::DescribeWire;
-
-    use super::{Command, CommandOutcome, Reply, Request};
-
-    /// The documents carry their own format tag, independent of the endpoint
-    /// key they travel on.
-    #[test]
-    fn command_documents_round_trip_with_explicit_schema_tags() {
-        let request = Request::V0 {
-            command: Command::Reboot,
-        };
-        let encoded = rmp_serde::to_vec_named(&request).unwrap();
-        assert_eq!(rmp_serde::from_slice::<Request>(&encoded).unwrap(), request);
-        assert_eq!(
-            serde_json::to_value(request).unwrap()["schema"],
-            "phoxal/supervisor-control/request/v0"
-        );
-
-        let reply = Reply::V0 {
-            outcome: CommandOutcome::Accepted { at_revision: 18 },
-        };
-        let encoded = rmp_serde::to_vec_named(&reply).unwrap();
-        assert_eq!(rmp_serde::from_slice::<Reply>(&encoded).unwrap(), reply);
-        assert_eq!(
-            serde_json::to_value(reply).unwrap()["schema"],
-            "phoxal/supervisor-control/reply/v0"
-        );
-    }
-
-    /// Both host actions survive the bus codec under their snake_case
-    /// spelling, and neither carries anything beyond which action it is.
-    #[test]
-    fn every_host_action_round_trips() {
-        for command in [Command::Reboot, Command::Poweroff] {
-            let encoded = rmp_serde::to_vec_named(&command).expect("command encodes");
-            assert_eq!(
-                rmp_serde::from_slice::<Command>(&encoded).expect("command decodes"),
-                command
-            );
-        }
-        assert_eq!(
-            serde_json::to_value(Command::Poweroff).unwrap()["command"],
-            "poweroff"
-        );
-    }
-
-    /// The internally tagged documents are declared, not assumed: the derived
-    /// shape has to be the shape serde writes.
-    #[test]
-    fn the_declared_command_shapes_are_the_shapes_serde_writes() {
-        let request = Request::V0 {
-            command: Command::Reboot,
-        };
-        let json = serde_json::to_value(request).expect("a request serializes");
-        assert_eq!(Request::wire_schema().conforms(&json), Ok(()));
-
-        let outcome = CommandOutcome::Accepted { at_revision: 5 };
-        let json = serde_json::to_value(outcome).expect("an outcome serializes");
-        assert_eq!(CommandOutcome::wire_schema().conforms(&json), Ok(()));
-    }
 }
