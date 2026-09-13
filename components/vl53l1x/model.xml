@@ -1,0 +1,14 @@
+<mujoco model="vl53l1x">
+  <worldbody>
+    <body name="mount">
+      <body name="sensor_link">
+        <inertial pos="0 0 0" mass="0.002" diaginertia="0.00000001 0.00000002 0.00000002" />
+        <geom name="sensor_body" type="box" size="0.0025 0.005 0.0015" mass="0.002" />
+        <site name="sensor_site" pos="0 0 0" size="0.001" />
+      </body>
+    </body>
+  </worldbody>
+  <sensor>
+    <rangefinder name="range" site="sensor_site" cutoff="4" />
+  </sensor>
+</mujoco>

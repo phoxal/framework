@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use mujoco_rs::prelude::{MjModel, MjSpec, MjtJoint, MjtObj};
 use mujoco_rs::wrappers::MjVfs;
+use phoxal_port::{PortDescriptor, PortKind, PortSignature};
 
 use crate::artifact::ClosedModel;
 use crate::error::ModelError;
+use crate::scene::StateSnapshot;
 
 /// An immutable compiled MuJoCo model and the closed artifact that produced it.
 ///
@@ -103,6 +105,7 @@ impl Model {
             bodies: self.inner.nbody() as usize,
             joints: self.inner.njnt() as usize,
             sites: self.inner.nsite() as usize,
+            cameras: self.inner.ncam() as usize,
             sensors: self.inner.nsensor() as usize,
             sensor_values: self.inner.nsensordata() as usize,
         }
@@ -131,6 +134,93 @@ impl Model {
     /// Looks up a sensor by its model-local name.
     pub fn sensor(&self, name: &str) -> Result<Option<SensorHandle>, ModelError> {
         Ok(self.find(name, ObjectKind::Sensor)?.map(SensorHandle))
+    }
+
+    /// Binds a generated sample port to one model-authored native sensor.
+    ///
+    /// The public descriptor remains the contract identity while the returned
+    /// handle and static range identify the model-local native source. The
+    /// caller chooses the explicit native name from the component model; no
+    /// name or sensor semantics are inferred from the port string.
+    pub fn bind_sensor<P: PortDescriptor>(
+        &self,
+        port: P,
+        native_name: &str,
+    ) -> Result<SensorBinding, ModelError> {
+        let signature = binding_signature(port, "sensor", PortKind::Sample)?;
+        let native = self
+            .sensor(native_name)?
+            .ok_or_else(|| missing_binding(signature, "sensor", native_name))?;
+        Ok(SensorBinding {
+            port: signature,
+            native,
+            info: self.sensor_info(native)?,
+        })
+    }
+
+    /// Binds a generated sample port to one model-authored native camera.
+    pub fn bind_camera<P: PortDescriptor>(
+        &self,
+        port: P,
+        native_name: &str,
+    ) -> Result<CameraBinding, ModelError> {
+        let signature = binding_signature(port, "camera", PortKind::Sample)?;
+        let native = self
+            .camera(native_name)?
+            .ok_or_else(|| missing_binding(signature, "camera", native_name))?;
+        Ok(CameraBinding {
+            port: signature,
+            native,
+            info: self.camera_info(native)?,
+        })
+    }
+
+    /// Binds a generated sample port to one model-authored native site.
+    ///
+    /// Sites are used for capabilities whose native output is derived from a
+    /// physical frame, such as GNSS antenna position or a finite-FOV range
+    /// query, rather than a direct MuJoCo sensor table.
+    pub fn bind_site<P: PortDescriptor>(
+        &self,
+        port: P,
+        native_name: &str,
+    ) -> Result<SiteBinding, ModelError> {
+        let signature = binding_signature(port, "site", PortKind::Sample)?;
+        let native = self
+            .site(native_name)?
+            .ok_or_else(|| missing_binding(signature, "site", native_name))?;
+        Ok(SiteBinding {
+            port: signature,
+            native,
+            info: self.site_info(native)?,
+        })
+    }
+
+    /// Binds a consuming setpoint port to one model-authored native actuator.
+    ///
+    /// A consuming input does not advertise a public port from the component
+    /// runtime. The compiled graph supplies its generated producer descriptor
+    /// and this explicit binding only associates that descriptor with native
+    /// actuation.
+    pub fn bind_actuator<P: PortDescriptor>(
+        &self,
+        port: P,
+        native_name: &str,
+    ) -> Result<ActuatorBinding, ModelError> {
+        let signature = binding_signature(port, "actuator", PortKind::Setpoint)?;
+        let native = self
+            .actuator(native_name)?
+            .ok_or_else(|| missing_binding(signature, "actuator", native_name))?;
+        Ok(ActuatorBinding {
+            port: signature,
+            native,
+            info: self.actuator_info(native)?,
+        })
+    }
+
+    /// Looks up a model-authored camera by its model-local name.
+    pub fn camera(&self, name: &str) -> Result<Option<CameraHandle>, ModelError> {
+        Ok(self.find(name, ObjectKind::Camera)?.map(CameraHandle))
     }
 
     /// Returns static model data for a body.
@@ -201,6 +291,20 @@ impl Model {
             handle,
             data_offset: offset,
             dimension,
+        })
+    }
+
+    /// Returns static model data for a camera.
+    pub fn camera_info(&self, handle: CameraHandle) -> Result<CameraInfo, ModelError> {
+        let index = self.check_handle(handle.0, ObjectKind::Camera, self.inner.ncam() as usize)?;
+        let [width, height] = self.inner.cam_resolution()[index];
+        Ok(CameraInfo {
+            handle,
+            body_index: self.inner.cam_bodyid()[index] as usize,
+            position: self.inner.cam_pos()[index],
+            orientation: self.inner.cam_quat()[index],
+            resolution: [width as usize, height as usize],
+            fovy_degrees: self.inner.cam_fovy()[index],
         })
     }
 
@@ -275,6 +379,34 @@ fn native_error(operation: &'static str, error: impl fmt::Display) -> ModelError
     }
 }
 
+fn binding_signature<P: PortDescriptor>(
+    port: P,
+    native_kind: &'static str,
+    expected: PortKind,
+) -> Result<PortSignature, ModelError> {
+    if P::KIND != expected {
+        return Err(ModelError::InvalidBindingKind {
+            port: port.name(),
+            actual: P::KIND,
+            native_kind,
+            expected,
+        });
+    }
+    Ok(port.signature())
+}
+
+fn missing_binding(
+    signature: PortSignature,
+    native_kind: &'static str,
+    native_name: &str,
+) -> ModelError {
+    ModelError::MissingBinding {
+        port: signature.name,
+        native_kind,
+        native_name: native_name.to_owned(),
+    }
+}
+
 /// Deterministic compiled model table sizes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModelCounts {
@@ -292,6 +424,8 @@ pub struct ModelCounts {
     pub joints: usize,
     /// Number of sites.
     pub sites: usize,
+    /// Number of model-authored cameras.
+    pub cameras: usize,
     /// Number of sensors.
     pub sensors: usize,
     /// Number of scalar sensor outputs.
@@ -331,6 +465,8 @@ pub enum ObjectKind {
     Joint,
     /// A site.
     Site,
+    /// A camera.
+    Camera,
     /// An actuator.
     Actuator,
     /// A sensor.
@@ -343,6 +479,7 @@ impl ObjectKind {
             Self::Body => MjtObj::mjOBJ_BODY,
             Self::Joint => MjtObj::mjOBJ_JOINT,
             Self::Site => MjtObj::mjOBJ_SITE,
+            Self::Camera => MjtObj::mjOBJ_CAMERA,
             Self::Actuator => MjtObj::mjOBJ_ACTUATOR,
             Self::Sensor => MjtObj::mjOBJ_SENSOR,
         }
@@ -353,6 +490,7 @@ impl ObjectKind {
             Self::Body => "body",
             Self::Joint => "joint",
             Self::Site => "site",
+            Self::Camera => "camera",
             Self::Actuator => "actuator",
             Self::Sensor => "sensor",
         }
@@ -421,6 +559,7 @@ macro_rules! typed_handle {
 typed_handle!(BodyHandle, body);
 typed_handle!(JointHandle, joint);
 typed_handle!(SiteHandle, site);
+typed_handle!(CameraHandle, camera);
 typed_handle!(ActuatorHandle, actuator);
 typed_handle!(SensorHandle, sensor);
 
@@ -511,4 +650,137 @@ pub struct SensorInfo {
     pub data_offset: usize,
     /// Number of scalar values emitted by this sensor.
     pub dimension: usize,
+}
+
+/// A generated sample port bound to a native sensor table range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SensorBinding {
+    /// Public generated port identity.
+    pub port: PortSignature,
+    /// Model-local sensor handle.
+    pub native: SensorHandle,
+    /// Native data range emitted by this sensor.
+    pub info: SensorInfo,
+}
+
+impl SensorBinding {
+    /// Reads this binding's native values from a snapshot owned by the same
+    /// compiled model.
+    pub fn values<'a>(&self, snapshot: &'a StateSnapshot) -> Result<&'a [f64], ModelError> {
+        ensure_snapshot_model(snapshot, self.native.model_identity())?;
+        let end = self
+            .info
+            .data_offset
+            .checked_add(self.info.dimension)
+            .ok_or(ModelError::InvalidHandleIndex {
+                kind: "sensor data",
+                index: self.info.data_offset,
+                length: snapshot.sensor_data().len(),
+            })?;
+        snapshot
+            .sensor_data()
+            .get(self.info.data_offset..end)
+            .ok_or(ModelError::InvalidHandleIndex {
+                kind: "sensor data",
+                index: self.info.data_offset,
+                length: snapshot.sensor_data().len(),
+            })
+    }
+}
+
+/// A generated sample port bound to a native camera.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraBinding {
+    /// Public generated port identity.
+    pub port: PortSignature,
+    /// Model-local camera handle.
+    pub native: CameraHandle,
+    /// Static camera facts.
+    pub info: CameraInfo,
+}
+
+/// A generated sample port bound to a native model site.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SiteBinding {
+    /// Public generated port identity.
+    pub port: PortSignature,
+    /// Model-local site handle.
+    pub native: SiteHandle,
+    /// Static site facts.
+    pub info: SiteInfo,
+}
+
+impl SiteBinding {
+    /// Reads this binding's post-forward Cartesian position from a snapshot
+    /// owned by the same compiled model.
+    pub fn position(&self, snapshot: &StateSnapshot) -> Result<[f64; 3], ModelError> {
+        ensure_snapshot_model(snapshot, self.native.model_identity())?;
+        snapshot
+            .site_positions()
+            .get(self.native.index())
+            .copied()
+            .ok_or(ModelError::InvalidHandleIndex {
+                kind: "site position",
+                index: self.native.index(),
+                length: snapshot.site_positions().len(),
+            })
+    }
+}
+
+/// A generated consuming setpoint bound to a native actuator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActuatorBinding {
+    /// Generated producer/setpoint identity supplied by the compiled graph.
+    pub port: PortSignature,
+    /// Model-local actuator handle.
+    pub native: ActuatorHandle,
+    /// Static actuator facts.
+    pub info: ActuatorInfo,
+}
+
+impl ActuatorBinding {
+    /// Reads the selected scalar control from a snapshot owned by the same
+    /// compiled model.
+    pub fn control(&self, snapshot: &StateSnapshot) -> Result<f64, ModelError> {
+        ensure_snapshot_model(snapshot, self.native.model_identity())?;
+        snapshot
+            .controls()
+            .get(self.info.control_index)
+            .copied()
+            .ok_or(ModelError::InvalidHandleIndex {
+                kind: "control",
+                index: self.info.control_index,
+                length: snapshot.controls().len(),
+            })
+    }
+}
+
+/// Read-only static camera facts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraInfo {
+    /// Handle for the camera.
+    pub handle: CameraHandle,
+    /// Owning body index in this model.
+    pub body_index: usize,
+    /// Position relative to the owning body.
+    pub position: [f64; 3],
+    /// Quaternion relative to the owning body in MuJoCo order `[w, x, y, z]`.
+    pub orientation: [f64; 4],
+    /// Render resolution as `[width, height]` pixels.
+    pub resolution: [usize; 2],
+    /// Vertical field of view in degrees for a perspective camera.
+    pub fovy_degrees: f64,
+}
+
+fn ensure_snapshot_model(
+    snapshot: &StateSnapshot,
+    expected: ModelIdentity,
+) -> Result<(), ModelError> {
+    if snapshot.model_identity() != expected {
+        return Err(ModelError::ForeignHandle {
+            found: snapshot.model_identity(),
+            expected,
+        });
+    }
+    Ok(())
 }

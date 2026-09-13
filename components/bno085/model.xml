@@ -1,0 +1,16 @@
+<mujoco model="bno085">
+  <worldbody>
+    <body name="mount">
+      <body name="sensor_link">
+        <inertial pos="0 0 0" mass="0.02" diaginertia="0.000001 0.000001 0.000001" />
+        <geom name="sensor_body" type="box" size="0.01 0.01 0.005" mass="0.02" />
+        <site name="sensor_site" pos="0 0 0" size="0.001" />
+      </body>
+    </body>
+  </worldbody>
+  <sensor>
+    <framequat name="imu_orientation" objtype="site" objname="sensor_site" />
+    <accelerometer name="accelerometer" site="sensor_site" />
+    <gyro name="gyroscope" site="sensor_site" />
+  </sensor>
+</mujoco>

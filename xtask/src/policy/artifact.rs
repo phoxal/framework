@@ -2,12 +2,13 @@
 //! what it is called, where it publishes, and which targets it may carry.
 //!
 //! One artifact is one Cargo package at `{services,components}/<id>`,
-//! producing the exact target shape for its kind. Services expose one library
-//! implementation and one package-named binary; components expose one binary
-//! alongside their assets. Discovery reads the workspace metadata and rejects
-//! any package that claims to be an artifact without obeying the grammar, which
-//! is what keeps the directory, the crate name and the published identity from
-//! drifting apart.
+//! producing the exact target shape for its kind. Services and components each
+//! expose one reusable implementation library and one package-named binary.
+//! Components also carry their `component.yaml`, canonical `model.xml`, and
+//! any locally referenced assets. Discovery reads the workspace metadata and
+//! rejects any package that claims to be an artifact without obeying the
+//! grammar, which is what keeps the directory, crate name, and published
+//! identity from drifting apart.
 //!
 //! A directory holds many artifacts and reads plural; a name qualifies one and
 //! reads singular, so `services/drive` is the crate `phoxal-service-drive`.
@@ -23,10 +24,7 @@ use cargo_metadata::Target;
 use serde_json::Value;
 
 use super::executable::PHOXAL_PROVIDER;
-use super::executable::{
-    ServiceTargetSpec, validate_executable_targets, validate_registry_publish,
-    validate_service_targets,
-};
+use super::executable::{ServiceTargetSpec, validate_registry_publish, validate_service_targets};
 use super::{
     FACADE, LIBRARY_CRATE_ROOT, Subject, Violation, is_internal_package_directory,
     is_library_directory, library_package_name,
@@ -44,12 +42,9 @@ const PHOXAL_PACKAGE_PREFIX: &str = "phoxal-";
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ArtifactKind {
     Service,
-    /// A component crate: the package-named driver binary plus its assets
-    /// (`component.yaml`, `simulation.yaml`, `structure.urdf`, and `meshes/`
-    /// if present) in one package. Components remain binary-only because
-    /// their package is selected for its process and authored assets.
-    /// `cargo package` picks the assets up by default, so they need no
-    /// inclusion rules.
+    /// A component crate: one reusable Runtime implementation library, its
+    /// package-named driver binary, and its authored assets (`component.yaml`,
+    /// `model.xml`, and any locally referenced files) in one package.
     Component,
 }
 
@@ -246,9 +241,8 @@ impl OfficialArtifact {
 
     /// Enforces the target convention for an official artifact package.
     ///
-    /// Services publish one reusable implementation library alongside their
-    /// package-named process binary. Components publish only that binary and
-    /// their package assets.
+    /// Services and components publish one reusable implementation library
+    /// alongside their package-named process binary.
     fn validate_targets(
         kind: ArtifactKind,
         package_name: &str,
@@ -281,22 +275,31 @@ impl OfficialArtifact {
                     root,
                 )
             }
-            ArtifactKind::Component => validate_executable_targets(
-                package_name,
-                "an official component package",
-                package_name,
-                None,
-                targets,
-                Path::new(""),
-            ),
+            ArtifactKind::Component => {
+                let expected_lib = package_name.replace('-', "_");
+                let expected_bin_source = relative_source("main.rs");
+                let expected_lib_source = relative_source("lib.rs");
+                validate_service_targets(
+                    package_name,
+                    "an official component package",
+                    ServiceTargetSpec {
+                        expected_bin: package_name,
+                        expected_lib: &expected_lib,
+                        expected_bin_source: Some(&expected_bin_source),
+                        expected_lib_source: Some(&expected_lib_source),
+                    },
+                    targets,
+                    root,
+                )
+            }
         }
     }
 }
 
-/// Official services carry their publication role in Cargo metadata as well
-/// as in their repository path.  The two declarations are intentionally
-/// checked together so registry admission cannot silently treat a service as
-/// another package role when its manifest is copied or republished.
+/// Official artifacts carry their publication role in Cargo metadata as well
+/// as in their repository path. The two declarations are intentionally checked
+/// together so registry admission cannot silently treat an artifact as another
+/// package role when its manifest is copied or republished.
 fn validate_role_metadata(
     kind: ArtifactKind,
     package_name: &str,
@@ -304,10 +307,6 @@ fn validate_role_metadata(
     root: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
-    if kind != ArtifactKind::Service {
-        return Ok(());
-    }
-
     let actual = metadata
         .get("phoxal")
         .and_then(Value::as_object)
@@ -319,9 +318,10 @@ fn validate_role_metadata(
             |value| format!("kind = {value:?}"),
         );
         bail!(
-            "{package_name} is an official service package but {} must declare exactly \
-             [package.metadata.phoxal] kind = \"service\"; found {found}",
-            relative_display(root, manifest_path)
+            "{package_name} is an official {kind} package but {} must declare exactly \
+             [package.metadata.phoxal] kind = \"{}\"; found {found}",
+            relative_display(root, manifest_path),
+            kind.name_segment()
         );
     }
     Ok(())
@@ -478,15 +478,15 @@ const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 10] = [
     "phoxal/service-world",
 ];
 
-/// Whether a workspace directory is an exact official service package
-/// directory. Service libraries are implementation targets, not reusable
+/// Whether a workspace directory is an exact official artifact package
+/// directory. Artifact libraries are implementation targets, not reusable
 /// library crates, so the library-directory completeness rule excludes them
 /// after artifact discovery has validated their own lib+bin grammar.
-pub(crate) fn is_official_service_directory(directory: &str) -> bool {
-    let Some(id) = directory.strip_prefix("services/") else {
+pub(crate) fn is_official_artifact_directory(directory: &str) -> bool {
+    let Some((kind, id)) = directory.split_once('/') else {
         return false;
     };
-    !id.is_empty() && !id.contains('/')
+    matches!(kind, "services" | "components") && !id.is_empty() && !id.contains('/')
 }
 
 pub(super) fn the_official_artifact_release_scope_is_exact(
@@ -676,9 +676,9 @@ mod tests {
             }
         );
         // A directory that names no kind is simply not an artifact; the
-        // simulators tree is gone and `simulators/` is now one such directory.
+        // independent simulator tree is outside this workspace's catalogue.
         assert_eq!(
-            classify("simulators/webots/Cargo.toml")?,
+            classify("simulators/mujoco/Cargo.toml")?,
             ManifestClassification::NonArtifact
         );
         Ok(())
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn official_services_require_the_exact_service_role_metadata() {
+    fn official_artifacts_require_the_exact_role_metadata() {
         let manifest = root().join("services/drive/Cargo.toml");
         let valid = serde_json::json!({"phoxal": {"kind": "service"}});
         validate_role_metadata(
@@ -800,15 +800,28 @@ mod tests {
         validate_role_metadata(
             ArtifactKind::Component,
             "phoxal-component-ddsm115",
+            &serde_json::json!({"phoxal": {"kind": "component"}}),
+            &root(),
+            &root().join("components/ddsm115/Cargo.toml"),
+        )
+        .expect("the exact component role should be accepted");
+        let error = validate_role_metadata(
+            ArtifactKind::Component,
+            "phoxal-component-ddsm115",
             &serde_json::json!({}),
             &root(),
             &root().join("components/ddsm115/Cargo.toml"),
         )
-        .expect("component role remains owned by its component definition");
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must declare exactly [package.metadata.phoxal] kind = \"component\"")
+        );
     }
 
     #[test]
-    fn discovery_enforces_executable_only_official_artifacts() -> Result<()> {
+    fn discovery_enforces_library_and_executable_official_artifacts() -> Result<()> {
         let workspace_dir = tempfile::tempdir().context("failed to create temp workspace dir")?;
         let root = workspace_dir.path();
 
@@ -856,12 +869,12 @@ mod tests {
             (
                 "lib-only",
                 "[lib]\npath = \"src/lib.rs\"\n",
-                "target 'phoxal_component_test' has library kind 'lib'",
+                "has 0 binary targets; expected exactly one",
             ),
             (
-                "mixed",
-                "[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n",
-                "target 'phoxal_component_test' has library kind 'lib'",
+                "bin-only",
+                "[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n",
+                "has 0 library targets; expected exactly one",
             ),
             (
                 "rlib",
@@ -876,7 +889,7 @@ mod tests {
             (
                 "zero-bin",
                 "[[example]]\nname = \"validation-example\"\npath = \"src/example.rs\"\n",
-                "has 0 binary targets; expected exactly one",
+                "has 0 library targets; expected exactly one",
             ),
             (
                 "wrong-name",
@@ -903,6 +916,9 @@ publish = ["phoxal"]
 description = "Component target validation fixture."
 autobins = false
 autolib = false
+
+[package.metadata.phoxal]
+kind = "component"
 
 {targets}"#
                 ),
@@ -932,6 +948,13 @@ autotests = false
 autoexamples = false
 autobenches = false
 build = "build.rs"
+
+[package.metadata.phoxal]
+kind = "component"
+
+[lib]
+name = "phoxal_component_test"
+path = "src/lib.rs"
 
 [[bin]]
 name = "phoxal-component-test"

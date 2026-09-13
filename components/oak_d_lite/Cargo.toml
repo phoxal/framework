@@ -9,6 +9,14 @@ description = "Phoxal official driver: oak_d_lite - camera/depth/IMU."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
+include = ["build.rs", "src/**", "proto/**", "Cargo.toml", "component.yaml", "model.xml"]
+
+[package.metadata.phoxal]
+kind = "component"
+
+[lib]
+name = "phoxal_component_oak_d_lite"
+path = "src/lib.rs"
 
 [[bin]]
 name = "phoxal-component-oak_d_lite"
@@ -17,12 +25,12 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true, features = ["participant"] }
 anyhow = { workspace = true }
+phoxal-port = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
 
-[dev-dependencies]
-# Tests use only the explicit caller-owned harness; shipped binaries do not
-# enable this bypass feature.
-phoxal = { workspace = true, features = ["test-harness"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+[build-dependencies]
+phoxal-build = { workspace = true }
 
 [lints]
 workspace = true

@@ -83,12 +83,6 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 13] = [
     "contracts/safety",
 ];
 
-/// Narrow adapter libraries shared only by the simulator executables.
-///
-/// They are published through the `phoxal` registry, but do not widen the
-/// reusable framework library graph.
-pub(crate) const ADAPTER_LIBRARY_CRATE_DIRS: [&str; 1] = ["simulators/webots/shared"];
-
 /// Workspace-only package directories that are intentionally outside the
 /// published registry graph.
 ///
@@ -112,9 +106,7 @@ pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] =
 /// that names no library crate location.
 ///
 /// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>` or
-/// `contracts/<suffix>`, except for the `phoxal/` facade. simulator adapter
-/// libraries have one explicit location because they are controller contracts,
-/// not framework API.
+/// `contracts/<suffix>`, except for the `phoxal/` facade.
 ///
 /// This is the whole reason the directory can be shortened at all. `crates/`
 /// already says `phoxal`, so repeating it in every child would be the
@@ -122,9 +114,6 @@ pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] =
 pub(crate) fn library_package_name(directory: &str) -> Option<String> {
     if directory == FACADE {
         return Some(FACADE.to_owned());
-    }
-    if directory == "simulators/webots/shared" {
-        return Some("phoxal-simulator-webots-shared".to_owned());
     }
     let suffix = directory
         .strip_prefix(LIBRARY_CRATE_ROOT)
@@ -151,19 +140,11 @@ pub(crate) fn is_library_package(package_name: &str) -> bool {
 }
 
 pub(crate) fn is_library_directory(directory: &str) -> bool {
-    LIBRARY_CRATE_DIRS.contains(&directory)
-        || ADAPTER_LIBRARY_CRATE_DIRS.contains(&directory)
-        || INTERNAL_LIBRARY_CRATE_DIRS.contains(&directory)
+    LIBRARY_CRATE_DIRS.contains(&directory) || INTERNAL_LIBRARY_CRATE_DIRS.contains(&directory)
 }
 
 pub(crate) fn is_internal_package_directory(directory: &str) -> bool {
     INTERNAL_CRATE_DIRS.contains(&directory)
-}
-
-pub(crate) fn is_adapter_library_package(package_name: &str) -> bool {
-    ADAPTER_LIBRARY_CRATE_DIRS
-        .iter()
-        .any(|directory| library_package_name(directory).as_deref() == Some(package_name))
 }
 
 /// The workspace one run of the gate judges.
@@ -401,8 +382,8 @@ impl fmt::Display for PolicyReport {
 /// worse than no list, so the workspace itself is the authority: every
 /// workspace member carrying a reusable library target must be listed as either
 /// published or internal, and every listed directory must still hold one.
-/// simulator adapter libraries are explicit because they serve only the
-/// native controller packages, rather than widening the framework API.
+/// Every listed library is an explicit owner rather than an accidental
+/// consequence of placing a package under a broad directory.
 fn the_library_crate_list_matches_the_workspace_members(
     subject: &Subject,
 ) -> Result<Vec<Violation>> {
@@ -427,12 +408,12 @@ fn the_library_crate_list_matches_the_workspace_members(
         let directory = relative
             .to_str()
             .with_context(|| format!("{} is not a UTF-8 workspace path", relative.display()))?;
-        // Official service libraries are implementation targets of their
+        // Official artifact libraries are implementation targets of their
         // artifact packages, not separately released framework libraries.
         // Artifact discovery validates their paired lib+bin shape before this
         // rule runs, so this rule must not classify those libs as rogue
         // reusable crates.
-        if artifact::is_official_service_directory(directory) {
+        if artifact::is_official_artifact_directory(directory) {
             continue;
         }
         if library_package_name(directory).as_deref() != Some(package.name.as_str()) {
@@ -473,7 +454,6 @@ fn the_library_crate_list_matches_the_workspace_members(
     }
     for directory in LIBRARY_CRATE_DIRS
         .iter()
-        .chain(ADAPTER_LIBRARY_CRATE_DIRS.iter())
         .chain(INTERNAL_LIBRARY_CRATE_DIRS.iter())
     {
         // The installation owner is part of the target release shape, but its
@@ -540,7 +520,6 @@ mod tests {
     fn every_listed_library_crate_directory_obeys_the_rule() {
         for directory in LIBRARY_CRATE_DIRS
             .iter()
-            .chain(ADAPTER_LIBRARY_CRATE_DIRS.iter())
             .chain(INTERNAL_LIBRARY_CRATE_DIRS.iter())
         {
             assert!(

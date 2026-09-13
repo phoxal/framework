@@ -1,0 +1,34 @@
+<mujoco model="oak_d_lite">
+  <worldbody>
+    <body name="mount">
+      <body name="body_link">
+        <inertial pos="0 0 0" mass="0.061" diaginertia="0.000046 0.000006 0.000044" />
+        <geom name="enclosure" type="box" size="0.00875 0.0455 0.014" mass="0.061" />
+        <body name="left_mono_link" pos="0.00875 -0.0375 0.005">
+          <site name="left_mono_site" pos="0 0 0" size="0.001" />
+          <camera name="left_mono" pos="0 0 0" fovy="72.91" resolution="640 400" />
+        </body>
+        <body name="rgb_link" pos="0.00875 0 0.005">
+          <site name="rgb_site" pos="0 0 0" size="0.001" />
+          <camera name="rgb" pos="0 0 0" fovy="68.97" resolution="640 480" />
+        </body>
+        <body name="right_mono_link" pos="0.00875 0.0375 0.005">
+          <site name="right_mono_site" pos="0 0 0" size="0.001" />
+          <camera name="right_mono" pos="0 0 0" fovy="72.91" resolution="640 400" />
+        </body>
+        <body name="stereo_center_link" pos="0.00875 0 0.005">
+          <site name="stereo_center_site" pos="0 0 0" size="0.001" />
+          <camera name="depth" pos="0 0 0" fovy="72.91" resolution="640 400" />
+        </body>
+        <body name="imu_link">
+          <site name="imu_site" pos="0 0 0" size="0.001" />
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <sensor>
+    <accelerometer name="accelerometer" site="imu_site" />
+    <gyro name="gyroscope" site="imu_site" />
+    <framequat name="imu_orientation" objtype="site" objname="imu_site" />
+  </sensor>
+</mujoco>

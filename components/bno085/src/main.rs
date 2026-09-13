@@ -1,5 +1,3 @@
-mod bno085;
-
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<bno085::Bno085>()
+    phoxal::runtime::run(phoxal_component_bno085::Bno085)
 }

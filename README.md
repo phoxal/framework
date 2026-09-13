@@ -14,7 +14,7 @@ This repository and its source are the authority for current framework implement
   macros, service-owned contracts, project tooling, and test fixtures
 - `supervisor/` - the framework execution supervisor
 - `services/`, `components/` - official runtime packages
-- `simulators/` - independently versioned simulator adapter packages kept
+- `simulators/mujoco/` - the independently versioned MuJoCo application kept
   outside the universal framework library
 - `tools/cargo-phoxal/` - the registry-aware project and publication command
 - `fixture/` - the authored test robot, world, and components (the example robot project is [phoxal/robot-rover](https://github.com/phoxal/robot-rover))

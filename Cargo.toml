@@ -13,7 +13,7 @@ resolver = "3"
 # The engine crate and its proc-macros, plus the official services and suite
 # component crates on the current authoring
 # surface (components/<name> also carries the component definition: component.yaml,
-# structure.urdf, simulation.yaml).
+# model.xml, and any locally referenced assets).
 members = [
     "crates/fixture",
     "crates/build",
@@ -43,10 +43,6 @@ members = [
     "services/navigation",
     "services/safety",
     "services/world",
-    "simulators/webots/host",
-    "simulators/webots/shared",
-    "simulators/webots/world-controller",
-    "simulators/webots/robot-controller",
     "xtask",
     "tools/cargo-phoxal",
 ]
@@ -86,10 +82,6 @@ default-members = [
     "services/navigation",
     "services/safety",
     "services/world",
-    "simulators/webots/host",
-    "simulators/webots/shared",
-    "simulators/webots/world-controller",
-    "simulators/webots/robot-controller",
     "tools/cargo-phoxal",
 ]
 
@@ -153,8 +145,6 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trybuild = "1"
 urdf-rs = "0.9.0"
-webots-proto-ast = "0.2.0"
-webots-rs = "0.2"
 # Default features minus transport_compression: Phoxal never enables zenoh
 # compression at runtime, so the feature only pulls lz4_flex into shipped
 # binaries. Re-enable defaults if a Phoxal transport ever compresses.

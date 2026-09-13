@@ -17,8 +17,7 @@ use super::executable::{
 use super::framework_executable::{SPECS, Spec, spec_for_manifest, spec_for_package};
 use super::{
     artifact::{OfficialArtifact, discover_package},
-    is_adapter_library_package, is_internal_package_directory, is_library_directory,
-    is_library_package, library_package_name,
+    is_internal_package_directory, is_library_directory, is_library_package, library_package_name,
 };
 
 const CARGO_PHOXAL_PACKAGE: &str = "cargo-phoxal";
@@ -112,8 +111,7 @@ impl Workspace {
             if is_library_directory(relative_directory) {
                 let expected_name = library_package_name(relative_directory);
                 if expected_name.as_deref() == Some(package.name.as_str())
-                    && (is_library_package(package.name.as_str())
-                        || is_adapter_library_package(package.name.as_str()))
+                    && is_library_package(package.name.as_str())
                 {
                     continue;
                 }
@@ -124,9 +122,7 @@ impl Workspace {
                     expected_name
                 );
             }
-            if is_library_package(package.name.as_str())
-                || is_adapter_library_package(package.name.as_str())
-            {
+            if is_library_package(package.name.as_str()) {
                 bail!(
                     "{} declares a published library package from {}, but its package directory is not classified",
                     package.name,

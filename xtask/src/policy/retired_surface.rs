@@ -228,9 +228,8 @@ const RETIRED: [Retired; 30] = [
         // the attribute may not come back, so only the attribute is matched.
         //
         // Literal text rather than an adjacent pair for a second reason too:
-        // the sibling repository the controller moved to is spelled
-        // `phoxal/simulator-webots`, and a pair rule would read that path as
-        // this attribute.
+        // a repository path containing the module spelling would otherwise be
+        // read as this attribute.
         token: Token::Text("#[phoxal::simulator"),
         train: "0.63.0",
         why: "the simulator role attribute went with the role itself; the module path \

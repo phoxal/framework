@@ -28,8 +28,9 @@ pub use error::ArtifactError;
 pub use error::{ModelError, SceneError, WorkspaceError};
 #[cfg(feature = "native")]
 pub use model::{
-    ActuatorHandle, ActuatorInfo, BodyHandle, BodyInfo, JointHandle, JointInfo, JointKind, Model,
-    ModelCounts, ModelHandle, ModelIdentity, ObjectKind, SensorHandle, SensorInfo, SiteHandle,
+    ActuatorBinding, ActuatorHandle, ActuatorInfo, BodyHandle, BodyInfo, CameraBinding,
+    CameraHandle, CameraInfo, JointHandle, JointInfo, JointKind, Model, ModelCounts, ModelHandle,
+    ModelIdentity, ObjectKind, SensorBinding, SensorHandle, SensorInfo, SiteBinding, SiteHandle,
     SiteInfo,
 };
 #[cfg(feature = "native")]

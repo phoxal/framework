@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 #[cfg(feature = "native")]
 use crate::ModelIdentity;
+#[cfg(feature = "native")]
+use phoxal_port::PortKind;
 
 /// Errors raised while validating a closed MJCF/resource artifact.
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +110,31 @@ pub enum ModelError {
         index: usize,
         /// Number of elements in the table.
         length: usize,
+    },
+    /// A public port has a semantic kind that cannot be served by the selected
+    /// native object binding.
+    #[error(
+        "public port {port:?} has kind {actual:?}; native {native_kind} binding requires {expected:?}"
+    )]
+    InvalidBindingKind {
+        /// Public port name.
+        port: &'static str,
+        /// Actual generated semantic kind.
+        actual: PortKind,
+        /// Native object family being selected.
+        native_kind: &'static str,
+        /// Required generated semantic kind.
+        expected: PortKind,
+    },
+    /// A public port could not be mapped to the named model object.
+    #[error("public port {port:?} has no native {native_kind} named {native_name:?}")]
+    MissingBinding {
+        /// Public port name.
+        port: &'static str,
+        /// Native object family being selected.
+        native_kind: &'static str,
+        /// Model-local object name requested by the provider.
+        native_name: String,
     },
 }
 

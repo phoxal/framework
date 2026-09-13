@@ -54,6 +54,7 @@ pub enum ScenePhase {
 /// scene owner returns to its event loop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StateSnapshot {
+    model_identity: crate::ModelIdentity,
     boundary: u64,
     time_seconds: f64,
     qpos: Box<[f64]>,
@@ -62,9 +63,16 @@ pub struct StateSnapshot {
     sensor_data: Box<[f64]>,
     body_positions: Box<[[f64; 3]]>,
     body_orientations: Box<[[f64; 4]]>,
+    site_positions: Box<[[f64; 3]]>,
 }
 
 impl StateSnapshot {
+    /// Returns the immutable model identity that owns this snapshot.
+    #[must_use]
+    pub const fn model_identity(&self) -> crate::ModelIdentity {
+        self.model_identity
+    }
+
     /// Returns the completed logical boundary represented by this snapshot.
     #[must_use]
     pub const fn boundary(&self) -> u64 {
@@ -111,6 +119,12 @@ impl StateSnapshot {
     #[must_use]
     pub fn body_orientations(&self) -> &[[f64; 4]] {
         &self.body_orientations
+    }
+
+    /// Returns post-forward Cartesian site positions.
+    #[must_use]
+    pub fn site_positions(&self) -> &[[f64; 3]] {
+        &self.site_positions
     }
 }
 
@@ -174,6 +188,7 @@ impl Workspace {
         self.ensure_finite_state()?;
         let time_seconds = self.data.time();
         Ok(StateSnapshot {
+            model_identity: self.model.identity(),
             boundary: 0,
             time_seconds,
             qpos: self.data.qpos().to_vec().into_boxed_slice(),
@@ -182,6 +197,7 @@ impl Workspace {
             sensor_data: self.data.sensordata().to_vec().into_boxed_slice(),
             body_positions: self.data.xpos().to_vec().into_boxed_slice(),
             body_orientations: self.data.xquat().to_vec().into_boxed_slice(),
+            site_positions: self.data.site_xpos().to_vec().into_boxed_slice(),
         })
     }
 
@@ -261,6 +277,17 @@ impl Workspace {
                     return Err(WorkspaceError::NonFinite {
                         name: "body_orientations",
                         index: index * 4 + component,
+                        value,
+                    });
+                }
+            }
+        }
+        for (index, vector) in self.data.site_xpos().iter().enumerate() {
+            for (component, value) in vector.iter().copied().enumerate() {
+                if !value.is_finite() {
+                    return Err(WorkspaceError::NonFinite {
+                        name: "site_positions",
+                        index: index * 3 + component,
                         value,
                     });
                 }

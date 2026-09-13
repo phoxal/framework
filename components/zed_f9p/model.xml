@@ -1,0 +1,11 @@
+<mujoco model="zed_f9p">
+  <worldbody>
+    <body name="mount">
+      <body name="sensor_link" pos="0 0 0.01">
+        <inertial pos="0 0 0" mass="0.032" diaginertia="0.00001 0.00001 0.00002" />
+        <geom name="receiver_body" type="box" size="0.03 0.03 0.006" mass="0.032" />
+        <site name="sensor_site" pos="0 0 0" size="0.001" />
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

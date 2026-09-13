@@ -79,45 +79,22 @@ impl Spec {
 
 /// The exact framework-owned executables published with the framework release
 /// set.
-pub const SPECS: [Spec; 4] = [
-    Spec {
-        package_name: "phoxal-supervisor",
-        manifest_path: "supervisor/Cargo.toml",
-        bin_name: "phoxal-supervisor",
-        source_path: "supervisor/src/main.rs",
-        forbidden_dependencies: &[
-            // The supervisor is built from the one framework library, never from
-            // its former CLI owner.
-            "phoxal-cli",
-            // Authored YAML/URDF and their parsers stop at bundle compilation. The
-            // `authoring` feature that would pull them in is refused separately, by
-            // the dependency rule that covers every official participant.
-            "serde_yaml",
-            "urdf-rs",
-        ],
-    },
-    Spec {
-        package_name: "phoxal-simulator-webots-host",
-        manifest_path: "simulators/webots/host/Cargo.toml",
-        bin_name: "phoxal-simulator-webots-host",
-        source_path: "simulators/webots/host/src/main.rs",
-        forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
-    },
-    Spec {
-        package_name: "phoxal-simulator-webots-world-controller",
-        manifest_path: "simulators/webots/world-controller/Cargo.toml",
-        bin_name: "phoxal-simulator-webots-world-controller",
-        source_path: "simulators/webots/world-controller/src/main.rs",
-        forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
-    },
-    Spec {
-        package_name: "phoxal-simulator-webots-robot-controller",
-        manifest_path: "simulators/webots/robot-controller/Cargo.toml",
-        bin_name: "phoxal-simulator-webots-robot-controller",
-        source_path: "simulators/webots/robot-controller/src/main.rs",
-        forbidden_dependencies: &["phoxal-cli", "serde_yaml", "urdf-rs"],
-    },
-];
+pub const SPECS: [Spec; 1] = [Spec {
+    package_name: "phoxal-supervisor",
+    manifest_path: "supervisor/Cargo.toml",
+    bin_name: "phoxal-supervisor",
+    source_path: "supervisor/src/main.rs",
+    forbidden_dependencies: &[
+        // The supervisor is built from the one framework library, never from
+        // its former CLI owner.
+        "phoxal-cli",
+        // Authored YAML/URDF and their parsers stop at bundle compilation. The
+        // `authoring` feature that would pull them in is refused separately, by
+        // the dependency rule that covers every official participant.
+        "serde_yaml",
+        "urdf-rs",
+    ],
+}];
 
 pub(crate) fn spec_for_manifest(root: &Path, manifest_path: &Path) -> Option<Spec> {
     let relative = manifest_path.strip_prefix(root).ok()?;

@@ -1,0 +1,41 @@
+<mujoco model="ddsm115">
+  <asset>
+    <mesh name="ddsm115_mesh" file="assets/meshes/ddsm115.obj" />
+  </asset>
+  <worldbody>
+    <body name="mount">
+      <body name="rotor_link">
+        <joint name="motor_joint" type="hinge" axis="0 0 1" />
+        <inertial pos="0 0 0" mass="0.8" diaginertia="0.0028 0.0028 0.0048" />
+        <geom
+          name="rotor_collision"
+          type="cylinder"
+          size="0.11 0.04"
+          pos="0 0 -0.022"
+          mass="0.8"
+        />
+        <geom
+          name="rotor_visual"
+          type="mesh"
+          mesh="ddsm115_mesh"
+          quat="0.70710678 0.70710678 0 0"
+          contype="0"
+          conaffinity="0"
+        />
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <velocity
+      name="motor"
+      joint="motor_joint"
+      kv="1"
+      ctrlrange="-20.943951 20.943951"
+      ctrllimited="true"
+    />
+  </actuator>
+  <sensor>
+    <jointpos name="encoder_position" joint="motor_joint" />
+    <jointvel name="encoder_velocity" joint="motor_joint" />
+  </sensor>
+</mujoco>

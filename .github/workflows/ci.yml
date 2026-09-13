@@ -12,9 +12,6 @@ concurrency:
 # Runnable crates own apt build requirements in package.metadata.phoxal.build;
 # phoxal's `authoring_workspace_build_requirements` test keeps that bootstrap
 # input synchronized with their declared union.
-# The two Webots controller packages link libController even during
-# `cargo check`, so the shared workflow installs the one supported native SDK
-# before its clippy and test jobs.
 jobs:
   contracts:
     name: Protobuf contracts
@@ -36,8 +33,6 @@ jobs:
 
   ci:
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
-    with:
-      webots-version: R2025a
     secrets: inherit
 
   # MuJoCo is an explicit native boundary owned by the independent simulator.
@@ -91,64 +86,6 @@ jobs:
 
       - name: Compile independent simulator application
         run: cargo test --manifest-path simulators/mujoco/Cargo.toml
-
-  # The ordinary tests prove deterministic source generation. This launches the
-  # supported native runtime and refuses asset-loader warnings, so IndexedFaceSet
-  # output cannot regress to a representation R2025a only appears to parse.
-  webots-native-renderer:
-    name: Webots native renderer
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Install native runtime prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            ffmpeg \
-            libavcodec-extra \
-            libegl1 \
-            libglu1-mesa \
-            libxkbcommon-x11-0 \
-            libxcb-keysyms1 \
-            libxcb-image0 \
-            libxcb-icccm4 \
-            libxcb-randr0 \
-            libxcb-render-util0 \
-            libxcb-cursor0 \
-            libxcb-xinerama0 \
-            libxcomposite1 \
-            libxtst6 \
-            libnss3 \
-            xvfb
-
-      - name: Cache Webots download
-        id: cache-webots-native-renderer
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/webots.tar.bz2
-          key: webots-R2025a-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Download Webots
-        if: steps.cache-webots-native-renderer.outputs.cache-hit != 'true'
-        run: |
-          curl --fail --location --silent --show-error \
-            "https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a-x86-64.tar.bz2" \
-            --output "$RUNNER_TEMP/webots.tar.bz2"
-
-      - name: Install Webots
-        run: |
-          tar -xjf "$RUNNER_TEMP/webots.tar.bz2" -C "$RUNNER_TEMP"
-          echo "WEBOTS_HOME=$RUNNER_TEMP/webots" >> "$GITHUB_ENV"
-
-      - name: Prove decoded GLB geometry in R2025a
-        run: >-
-          xvfb-run --auto-servernum
-          cargo test -p phoxal-simulator-webots-host --bin phoxal-simulator-webots-host
-          installed_webots_loads_native_decoded_geometry_without_asset_warnings
-          -- --ignored --nocapture
 
   # Every consumer profile, built explicitly.
   #

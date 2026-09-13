@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package phoxal.component.ddsm115.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/port.proto";
+import "phoxal/robotics/v1/robotics.proto";
+
+service Ddsm115 {
+  rpc Encoder(google.protobuf.Empty) returns (stream phoxal.robotics.v1.EncoderSample) {
+    option (phoxal.port.kind) = SAMPLE;
+  }
+}

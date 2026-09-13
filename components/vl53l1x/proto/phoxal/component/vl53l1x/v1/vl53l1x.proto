@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package phoxal.component.vl53l1x.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/port.proto";
+
+message RangeSample {
+  double distance_m = 1;
+  double min_range_m = 2;
+  double max_range_m = 3;
+  bool valid = 4;
+}
+
+service Vl53l1x {
+  rpc Range(google.protobuf.Empty) returns (stream RangeSample) {
+    option (phoxal.port.kind) = SAMPLE;
+  }
+}

@@ -1,5 +1,3 @@
-mod oak_d_lite;
-
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<oak_d_lite::OakDLite>()
+    phoxal::runtime::run(phoxal_component_oak_d_lite::OakDLite)
 }

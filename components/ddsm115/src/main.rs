@@ -1,5 +1,3 @@
-mod ddsm115;
-
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<ddsm115::Ddsm115>()
+    phoxal::runtime::run(phoxal_component_ddsm115::Ddsm115)
 }
