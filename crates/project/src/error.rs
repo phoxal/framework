@@ -430,6 +430,12 @@ pub enum Error {
         /// Option diagnostic.
         message: String,
     },
+    /// A simulation bundle could not carry a complete truthful native contract.
+    #[error("simulation preparation failed: {message}")]
+    SimulationInvalid {
+        /// Simulation contract diagnostic.
+        message: String,
+    },
     /// Cargo did not report the selected executable in its machine-readable
     /// artifact stream.
     #[error(

@@ -23,7 +23,10 @@ use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::bus::BusHandle;
-use crate::communication::{ExecutionDefinition, PublicOperation, ServicePorts, SimulationDefinition};
+use crate::communication::{
+    ExecutionDefinition, PublicOperation, ServicePorts, SimulationDefinition,
+    SimulationProviderDefinition,
+};
 use crate::communication::session::{
     PortKind, PortMetadata, RecordKind, SubscriptionRecord, SubscriptionRequest,
 };
@@ -40,7 +43,7 @@ use crate::runtime::transport::{
     PROTOBUF_ENCODING, RuntimeWireMetadata, WireControl, WireSample, port_key,
 };
 
-use super::bundle::{Bundle, SourceBundle};
+use super::bundle::{Bundle, SourceBundle, SourceSimulation};
 use super::state::ExecutionState;
 
 const PUBLIC_INGRESS_INSTANCE: &str = "supervisor";
@@ -488,12 +491,32 @@ impl RuntimePublicSurface {
             }
             services.push(service);
         }
+        let mut service_ports_by_instance = services
+            .into_iter()
+            .map(|service| (service.instance().to_owned(), service.ports().to_vec()))
+            .collect::<BTreeMap<_, _>>();
+        let simulation = source
+            .simulation()
+            .map(|simulation| {
+                add_simulation_provider_metadata(
+                    simulation,
+                    &mut service_ports_by_instance,
+                    &mut ports,
+                )?;
+                validate_simulation_actuation_bindings(simulation, &ports)?;
+                simulation_definition(simulation)
+            })
+            .transpose()?;
+        let mut services = service_ports_by_instance
+            .into_iter()
+            .map(|(instance, ports)| ServicePorts::new(instance, ports).map_err(anyhow::Error::from))
+            .collect::<Result<Vec<_>>>()?;
         services.sort_by(|left, right| left.instance().cmp(right.instance()));
         Ok(Self {
             services,
             ports: Arc::new(ports),
             ingress,
-            simulation: None,
+            simulation,
         })
     }
 
@@ -520,6 +543,122 @@ impl RuntimePublicSurface {
             None => Ok(execution),
         }
     }
+}
+
+fn simulation_definition(source: &SourceSimulation) -> Result<SimulationDefinition> {
+    let providers = source
+        .providers
+        .iter()
+        .map(|provider| {
+            let kind = output_kind(&provider.kind).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "simulation provider `{}.{}` has an unsupported public kind `{}`",
+                    provider.service_instance,
+                    provider.port,
+                    provider.kind
+                )
+            })?;
+            SimulationProviderDefinition::new(
+                provider.service_instance.clone(),
+                provider.port.clone(),
+                kind,
+                provider.input_fqn.clone(),
+                provider.payload_fqn.clone(),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    SimulationDefinition::new(source.model_identity.clone(), source.quantum_ns, providers)
+        .map_err(anyhow::Error::from)
+}
+
+fn add_simulation_provider_metadata(
+    source: &SourceSimulation,
+    service_ports: &mut BTreeMap<String, Vec<PortMetadata>>,
+    runtime_ports: &mut BTreeMap<(String, String), RuntimePortContract>,
+) -> Result<()> {
+    for provider in &source.providers {
+        let kind = output_kind(&provider.kind).ok_or_else(|| {
+            anyhow::anyhow!(
+                "simulation provider `{}.{}` has an unsupported public kind `{}`",
+                provider.service_instance,
+                provider.port,
+                provider.kind
+            )
+        })?;
+        let metadata = PortMetadata {
+            name: provider.port.clone(),
+            kind: kind as i32,
+            input_fqn: provider.input_fqn.clone(),
+            output_fqn: provider.payload_fqn.clone(),
+            max_message_bytes: provider.max_message_bytes,
+            max_buffered_items: provider.max_buffered_items,
+        };
+        let key = (provider.service_instance.clone(), provider.port.clone());
+        if let Some(existing) = runtime_ports.get(&key) {
+            if existing.metadata != metadata {
+                bail!(
+                    "simulation provider metadata for `{}.{}` conflicts with the compiled public port",
+                    key.0,
+                    key.1
+                );
+            }
+            continue;
+        }
+        runtime_ports.insert(
+            key,
+            RuntimePortContract {
+                request_max_bytes: u64::from(provider.max_message_bytes),
+                response_max_bytes: u64::from(provider.max_message_bytes),
+                metadata: metadata.clone(),
+            },
+        );
+        service_ports
+            .entry(provider.service_instance.clone())
+            .or_default()
+            .push(metadata);
+    }
+    Ok(())
+}
+
+fn validate_simulation_actuation_bindings(
+    source: &SourceSimulation,
+    runtime_ports: &BTreeMap<(String, String), RuntimePortContract>,
+) -> Result<()> {
+    let mut expected = BTreeSet::new();
+    for ((instance, port), contract) in runtime_ports {
+        if contract.metadata.kind == PortKind::Setpoint as i32 {
+            expected.insert((instance.clone(), port.clone()));
+        }
+    }
+    let actual = source
+        .actuation_bindings
+        .iter()
+        .map(|binding| (binding.service_instance.clone(), binding.port.clone()))
+        .collect::<BTreeSet<_>>();
+    if expected != actual {
+        bail!("simulation actuation bindings do not cover the compiled setpoint ports");
+    }
+    for binding in &source.actuation_bindings {
+        let key = (binding.service_instance.clone(), binding.port.clone());
+        let contract = runtime_ports.get(&key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "simulation actuation `{}.{}` is not a compiled public port",
+                binding.service_instance,
+                binding.port
+            )
+        })?;
+        if contract.metadata.kind != PortKind::Setpoint as i32
+            || contract.metadata.output_fqn != binding.payload_fqn
+        {
+            bail!(
+                "simulation actuation `{}.{}` does not match its compiled setpoint payload",
+                binding.service_instance,
+                binding.port
+            );
+        }
+    }
+    Ok(())
 }
 
 fn insert_runtime_port(
@@ -1550,6 +1689,61 @@ mod tests {
         assert_eq!(output_kind("state"), Some(PortKind::State));
         assert_eq!(output_kind("read"), Some(PortKind::Read));
         assert_eq!(output_kind("commands"), None);
+    }
+
+    #[test]
+    fn simulation_surface_retains_provider_metadata_and_exact_bindings() {
+        let source = SourceSimulation {
+            protocol: "phoxal.simulation.v1".to_owned(),
+            mode: "controlled".to_owned(),
+            model_identity: "model-digest".to_owned(),
+            quantum_ns: 10_000_000,
+            providers: vec![super::super::bundle::SourceSimulationProvider {
+                service_instance: "imu".to_owned(),
+                port: "sample".to_owned(),
+                kind: "sample".to_owned(),
+                input_fqn: "google.protobuf.Empty".to_owned(),
+                payload_fqn: "fixture.Imu".to_owned(),
+                max_message_bytes: 1024,
+                max_buffered_items: 16,
+            }],
+            actuation_bindings: vec![super::super::bundle::SourceActuationBinding {
+                service_instance: "motion".to_owned(),
+                port: "actuators".to_owned(),
+                payload_fqn: "fixture.Actuators".to_owned(),
+                actuator_ids: vec!["left".to_owned(), "right".to_owned()],
+            }],
+        };
+        let mut service_ports = BTreeMap::new();
+        let mut runtime_ports = BTreeMap::from([(
+            ("motion".to_owned(), "actuators".to_owned()),
+            RuntimePortContract {
+                metadata: PortMetadata {
+                    name: "actuators".to_owned(),
+                    kind: PortKind::Setpoint as i32,
+                    input_fqn: "fixture.Empty".to_owned(),
+                    output_fqn: "fixture.Actuators".to_owned(),
+                    max_message_bytes: 2048,
+                    max_buffered_items: 1,
+                },
+                request_max_bytes: 2048,
+                response_max_bytes: 2048,
+            },
+        )]);
+
+        add_simulation_provider_metadata(&source, &mut service_ports, &mut runtime_ports)
+            .expect("provider metadata is admitted");
+        validate_simulation_actuation_bindings(&source, &runtime_ports)
+            .expect("exact setpoint binding is admitted");
+        let definition = simulation_definition(&source).expect("public simulation definition");
+
+        assert_eq!(service_ports["imu"][0].name, "sample");
+        assert_eq!(
+            definition.providers()[0].payload_fqn(),
+            "fixture.Imu"
+        );
+        assert_eq!(definition.model_identity(), "model-digest");
+        assert_eq!(definition.quantum_ns(), 10_000_000);
     }
 
     #[test]

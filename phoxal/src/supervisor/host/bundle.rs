@@ -134,6 +134,11 @@ impl SourceBundle {
         &self.manifest.document.connections
     }
 
+    /// Return the immutable simulation contract carried by this source bundle.
+    pub(crate) fn simulation(&self) -> Option<&SourceSimulation> {
+        self.manifest.simulation.as_ref()
+    }
+
 }
 
 /// Open either the legacy observer fixture or a source-side `bundle/v0`.
@@ -174,6 +179,40 @@ pub(crate) struct SourceManifest {
     features: Vec<String>,
     pub(crate) executables: Vec<SourceExecutable>,
     components: Vec<SourceComponentRecord>,
+    #[serde(default)]
+    pub(crate) simulation: Option<SourceSimulation>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SourceSimulation {
+    pub(crate) protocol: String,
+    pub(crate) mode: String,
+    pub(crate) model_identity: String,
+    pub(crate) quantum_ns: u64,
+    pub(crate) providers: Vec<SourceSimulationProvider>,
+    pub(crate) actuation_bindings: Vec<SourceActuationBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SourceSimulationProvider {
+    pub(crate) service_instance: String,
+    pub(crate) port: String,
+    pub(crate) kind: String,
+    pub(crate) input_fqn: String,
+    pub(crate) payload_fqn: String,
+    pub(crate) max_message_bytes: u32,
+    pub(crate) max_buffered_items: u32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SourceActuationBinding {
+    pub(crate) service_instance: String,
+    pub(crate) port: String,
+    pub(crate) payload_fqn: String,
+    pub(crate) actuator_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -369,6 +408,7 @@ impl SourceManifest {
             features: Vec::new(),
             executables,
             components: Vec::new(),
+            simulation: None,
         }
     }
 
@@ -381,6 +421,10 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
     validate_segment(&manifest.robot_id, "robot_id")?;
     validate_source_document(&manifest)?;
     validate_source_metadata(&manifest)?;
+    if let Some(simulation) = manifest.simulation.as_ref() {
+        validate_source_simulation(simulation, &manifest.document.robot.components)?;
+    }
+    validate_simulation_executables(manifest.simulation.as_ref(), &manifest.executables)?;
     if manifest.executables.is_empty() {
         bail!("source bundle contains no executable records");
     }
@@ -473,6 +517,128 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
         }
     }
     Ok(SourceBundle { root, manifest })
+}
+
+fn validate_simulation_executables(
+    simulation: Option<&SourceSimulation>,
+    executables: &[SourceExecutable],
+) -> Result<()> {
+    if simulation.is_some() && executables.iter().any(|executable| executable.role == "driver") {
+        bail!("controlled simulation bundles must exclude physical driver executables");
+    }
+    Ok(())
+}
+
+fn validate_source_simulation(
+    simulation: &SourceSimulation,
+    components: &BTreeMap<String, SourceComponent>,
+) -> Result<()> {
+    if simulation.protocol != "phoxal.simulation.v1" {
+        bail!(
+            "unsupported simulation protocol `{}`; expected phoxal.simulation.v1",
+            simulation.protocol
+        );
+    }
+    if simulation.mode != "controlled" {
+        bail!(
+            "unsupported simulation mode `{}`; expected controlled",
+            simulation.mode
+        );
+    }
+    if simulation.model_identity.is_empty()
+        || simulation.model_identity.len() > 512
+        || !simulation.model_identity.is_ascii()
+        || simulation.model_identity.chars().any(char::is_whitespace)
+    {
+        bail!("simulation model identity is invalid");
+    }
+    if simulation.quantum_ns == 0 {
+        bail!("simulation quantum must be positive");
+    }
+    if simulation.providers.is_empty() {
+        bail!("simulation provider set must not be empty");
+    }
+    let physical_driver_instances = components
+        .iter()
+        .filter_map(|(instance, component)| component.driver.as_ref().map(|_| instance.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut providers = std::collections::BTreeSet::new();
+    for provider in &simulation.providers {
+        validate_segment(&provider.service_instance, "simulation provider service instance")?;
+        validate_segment(&provider.port, "simulation provider port")?;
+        if !physical_driver_instances.contains(provider.service_instance.as_str()) {
+            bail!(
+                "simulation provider `{}.{}` is not owned by a selected physical driver",
+                provider.service_instance,
+                provider.port
+            );
+        }
+        if !matches!(provider.kind.as_str(), "state" | "sample" | "event" | "stream") {
+            bail!(
+                "simulation provider `{}.{}` has unsupported kind `{}`",
+                provider.service_instance,
+                provider.port,
+                provider.kind
+            );
+        }
+        if provider.input_fqn.is_empty() || provider.payload_fqn.is_empty() {
+            bail!(
+                "simulation provider `{}.{}` has an empty message identity",
+                provider.service_instance,
+                provider.port
+            );
+        }
+        if provider.max_message_bytes == 0 || provider.max_buffered_items == 0 {
+            bail!(
+                "simulation provider `{}.{}` has a non-positive public bound",
+                provider.service_instance,
+                provider.port
+            );
+        }
+        if !providers.insert((&provider.service_instance, &provider.port)) {
+            bail!(
+                "simulation provider `{}.{}` is duplicated",
+                provider.service_instance,
+                provider.port
+            );
+        }
+    }
+    if simulation.actuation_bindings.is_empty() {
+        bail!("simulation actuation binding set must not be empty");
+    }
+    let mut bindings = std::collections::BTreeSet::new();
+    let mut actuators = std::collections::BTreeSet::new();
+    for binding in &simulation.actuation_bindings {
+        validate_segment(&binding.service_instance, "simulation actuation service instance")?;
+        validate_segment(&binding.port, "simulation actuation port")?;
+        if binding.payload_fqn.is_empty() || binding.actuator_ids.is_empty() {
+            bail!(
+                "simulation actuation `{}.{}` must carry a payload identity and native actuator IDs",
+                binding.service_instance,
+                binding.port
+            );
+        }
+        if !bindings.insert((&binding.service_instance, &binding.port)) {
+            bail!(
+                "simulation actuation `{}.{}` is duplicated",
+                binding.service_instance,
+                binding.port
+            );
+        }
+        for actuator in &binding.actuator_ids {
+            if actuator.is_empty()
+                || actuator.len() > 64
+                || !actuator.is_ascii()
+                || actuator.chars().any(char::is_whitespace)
+            {
+                bail!("simulation actuation contains an invalid native actuator ID");
+            }
+            if !actuators.insert(actuator) {
+                bail!("native actuator `{actuator}` is mapped more than once");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
@@ -771,5 +937,69 @@ mod tests {
                 .path(),
             Path::new("bin/brain")
         );
+    }
+
+    fn simulation_fixture() -> SourceSimulation {
+        SourceSimulation {
+            protocol: "phoxal.simulation.v1".to_owned(),
+            mode: "controlled".to_owned(),
+            model_identity: "model-digest".to_owned(),
+            quantum_ns: 10_000_000,
+            providers: vec![SourceSimulationProvider {
+                service_instance: "imu".to_owned(),
+                port: "sample".to_owned(),
+                kind: "sample".to_owned(),
+                input_fqn: "google.protobuf.Empty".to_owned(),
+                payload_fqn: "example.Imu".to_owned(),
+                max_message_bytes: 1024,
+                max_buffered_items: 16,
+            }],
+            actuation_bindings: vec![SourceActuationBinding {
+                service_instance: "motion".to_owned(),
+                port: "actuators".to_owned(),
+                payload_fqn: "example.Actuators".to_owned(),
+                actuator_ids: vec!["motor".to_owned()],
+            }],
+        }
+    }
+
+    fn driver_components() -> BTreeMap<String, SourceComponent> {
+        BTreeMap::from([(
+            "imu".to_owned(),
+            SourceComponent {
+                component: "bno085".to_owned(),
+                mount_link: "base".to_owned(),
+                driver: Some(serde_json::json!({})),
+                config: None,
+            },
+        )])
+    }
+
+    #[test]
+    fn simulation_admission_requires_provider_identity_to_be_a_driver_instance() {
+        let mut simulation = simulation_fixture();
+        simulation.providers[0].service_instance = "navigation".to_owned();
+        let error = validate_source_simulation(&simulation, &driver_components())
+            .expect_err("robot products cannot become native provider identities");
+        assert!(format!("{error:#}").contains("selected physical driver"));
+    }
+
+    #[test]
+    fn simulation_admission_rejects_non_positive_provider_bounds() {
+        let mut simulation = simulation_fixture();
+        simulation.providers[0].max_message_bytes = 0;
+        let error = validate_source_simulation(&simulation, &driver_components())
+            .expect_err("provider metadata must retain finite public bounds");
+        assert!(format!("{error:#}").contains("non-positive public bound"));
+    }
+
+    #[test]
+    fn simulation_admission_excludes_physical_driver_executables() {
+        let simulation = simulation_fixture();
+        let mut executable = SourceExecutable::for_test("imu", "bin/imu", 1, "0".repeat(64));
+        executable.role = "driver".to_owned();
+        let error = validate_simulation_executables(Some(&simulation), &[executable])
+            .expect_err("controlled bundles must not roster physical drivers");
+        assert!(format!("{error:#}").contains("exclude physical driver executables"));
     }
 }

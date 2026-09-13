@@ -92,6 +92,123 @@ pub struct BundleManifest {
     pub executables: Vec<BundleExecutable>,
     /// Every mounted component, including passive components without a binary.
     pub components: Vec<BundleComponent>,
+    /// The immutable controlled-simulation contract, when this bundle was
+    /// assembled for an independent simulator run.
+    #[serde(default)]
+    pub simulation: Option<BundleSimulation>,
+}
+
+/// The simulator-facing facts selected while assembling one robot bundle.
+///
+/// This type is deliberately a neutral bundle record.  The project compiler
+/// does not depend on the Runtime SDK, the supervisor, or a native simulator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleSimulation {
+    /// Public simulation protocol implemented by the independent application.
+    pub protocol: String,
+    /// Scheduling mode selected for this bundle.
+    pub mode: String,
+    /// Exact closed-scene model identity supplied by the native application.
+    pub model_identity: String,
+    /// Common controlled quantum in nanoseconds.
+    pub quantum_ns: u64,
+    /// Complete generated observation provider requirements.
+    pub providers: Vec<BundleSimulationProvider>,
+    /// Exact setpoint-to-native-actuator bindings selected for the scene.
+    pub actuation_bindings: Vec<BundleActuationBinding>,
+}
+
+/// One generated public observation provider required by a simulation run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleSimulationProvider {
+    /// Runtime service or brain instance owning the public port.
+    pub service_instance: String,
+    /// Generated public output port.
+    pub port: String,
+    /// Public observation semantic kind.
+    pub kind: crate::artifact::PortKind,
+    /// Request message identity from the generated port signature.
+    pub input_fqn: String,
+    /// Observation payload message identity from the generated port signature.
+    pub payload_fqn: String,
+    /// Maximum encoded provider payload admitted by the runtime.
+    pub max_message_bytes: u32,
+    /// Maximum provider items retained for one public port.
+    pub max_buffered_items: u32,
+}
+
+/// One explicit generated observation-provider binding supplied by the native
+/// simulator before bundle assembly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimulationProviderBinding {
+    /// Runtime driver instance owning the public port.
+    pub service_instance: String,
+    /// Generated public output port.
+    pub port: String,
+    /// Public observation semantic kind.
+    pub kind: crate::artifact::PortKind,
+    /// Request message identity from the generated port signature.
+    pub input_fqn: String,
+    /// Observation payload message identity from the generated port signature.
+    pub payload_fqn: String,
+}
+
+/// One exact generated setpoint output and its native actuator membership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleActuationBinding {
+    /// Runtime service instance owning the setpoint output.
+    pub service_instance: String,
+    /// Generated setpoint output port.
+    pub port: String,
+    /// Setpoint payload message identity from the generated signature.
+    pub payload_fqn: String,
+    /// Native actuator names covered by this output.
+    pub actuator_ids: Vec<String>,
+}
+
+/// Native scene facts and explicit generated bindings returned by the
+/// independent simulator before bundle assembly.
+///
+/// Keeping this input neutral prevents the project crate from acquiring
+/// native model parsing, physics, or owner-contract dependencies.  The
+/// simulator owns the native names and generated port constants; the project
+/// compiler only checks those facts against compiled artifact contracts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimulationModelFacts {
+    /// Exact closed-scene model identity.
+    pub model_identity: String,
+    /// Exact native physics quantum in nanoseconds.
+    pub quantum_ns: u64,
+    /// Complete explicit observation-provider bindings for substituted
+    /// physical drivers.
+    pub providers: Vec<SimulationProviderBinding>,
+    /// Complete explicit setpoint-to-native-actuator bindings.
+    pub actuation_bindings: Vec<BundleActuationBinding>,
+}
+
+impl SimulationModelFacts {
+    /// Construct native facts after the simulator has validated the scene and
+    /// selected every generated provider and actuator binding explicitly.
+    pub fn new(
+        model_identity: impl Into<String>,
+        quantum_ns: u64,
+        providers: Vec<SimulationProviderBinding>,
+        actuation_bindings: Vec<BundleActuationBinding>,
+    ) -> Result<Self, Error> {
+        let model_identity = model_identity.into();
+        validate_simulation_identity(&model_identity, "model identity")?;
+        if quantum_ns == 0 {
+            return Err(simulation_error("simulation quantum must be positive"));
+        }
+        let facts = Self {
+            model_identity,
+            quantum_ns,
+            providers,
+            actuation_bindings,
+        };
+        validate_simulation_facts(&facts)?;
+        Ok(facts)
+    }
 }
 
 /// A package identity retained in the compiled graph.
@@ -468,6 +585,7 @@ pub(crate) fn assemble_with_inputs(
     options: &CargoOptions,
     output: impl AsRef<Path>,
     expected_inputs: Option<&BuildInputs>,
+    simulation_facts: Option<&SimulationModelFacts>,
 ) -> Result<CompiledBundle, Error> {
     options.validate()?;
     let output = output.as_ref();
@@ -535,8 +653,20 @@ pub(crate) fn assemble_with_inputs(
         artifacts.insert(key, (target.clone(), executable, digest, contract));
     }
 
+    let simulation_contracts = prepared
+        .assembly_targets()
+        .into_iter()
+        .filter_map(|(instance, target)| {
+            artifacts
+                .get(&(target.package_id.clone(), target.target.clone()))
+                .map(|(_, _, _, contract)| (instance, contract.summary()))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut executable_records = Vec::new();
     for (instance, target) in prepared.assembly_targets() {
+        if simulation_facts.is_some() && prepared.executable_role(&instance) == "driver" {
+            continue;
+        }
         let key = (target.package_id.clone(), target.target.clone());
         let (built_target, source, digest, contract) =
             artifacts.get(&key).ok_or_else(|| Error::ArtifactCapture {
@@ -624,6 +754,9 @@ pub(crate) fn assemble_with_inputs(
     let target = effective_target(options);
     let profile = effective_profile(options);
     let features = effective_features(options);
+    let simulation = simulation_facts
+        .map(|facts| build_simulation_definition(prepared, facts, &simulation_contracts))
+        .transpose()?;
     let manifest = BundleManifest {
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_id: prepared.document().robot.id.clone(),
@@ -638,6 +771,7 @@ pub(crate) fn assemble_with_inputs(
         features,
         executables: executable_records,
         components,
+        simulation,
     };
     let provenance = provenance(
         prepared,
@@ -660,6 +794,399 @@ pub(crate) fn assemble_with_inputs(
         manifest,
         provenance,
     })
+}
+
+fn build_simulation_definition(
+    prepared: &PreparedProject,
+    facts: &SimulationModelFacts,
+    contracts: &BTreeMap<String, ArtifactSummary>,
+) -> Result<BundleSimulation, Error> {
+    const PROTOCOL: &str = "phoxal.simulation.v1";
+    validate_simulation_facts(facts)?;
+
+    let driver_instances = prepared
+        .sources()
+        .components
+        .iter()
+        .filter_map(|(instance, component)| component.driver.as_ref().map(|_| instance.clone()))
+        .collect::<BTreeSet<_>>();
+    if driver_instances.is_empty() {
+        return Err(simulation_error(
+            "simulation requires at least one selected physical driver to substitute",
+        ));
+    }
+
+    let mut expected_provider_keys = BTreeSet::new();
+    for instance in &driver_instances {
+        let contract = contracts.get(instance).ok_or_else(|| {
+            simulation_error(format!(
+                "selected physical driver `{instance}` has no compiled contract"
+            ))
+        })?;
+        for output in public_outputs(contract) {
+            let Some(port) = output.port.as_ref() else {
+                continue;
+            };
+            if output_port_kind(output).is_some() {
+                expected_provider_keys.insert((instance.clone(), port.clone()));
+            }
+        }
+    }
+    let actual_provider_keys = facts
+        .providers
+        .iter()
+        .map(|provider| (provider.service_instance.clone(), provider.port.clone()))
+        .collect::<BTreeSet<_>>();
+    if expected_provider_keys != actual_provider_keys {
+        return Err(simulation_error(format!(
+            "explicit simulation providers do not cover selected driver outputs (expected {:?}, got {:?})",
+            expected_provider_keys, actual_provider_keys
+        )));
+    }
+    for provider in &facts.providers {
+        let contract = contracts.get(&provider.service_instance).ok_or_else(|| {
+            simulation_error(format!(
+                "simulation provider `{}` has no compiled driver contract",
+                provider.service_instance
+            ))
+        })?;
+        let output = public_output(contract, &provider.port).ok_or_else(|| {
+            simulation_error(format!(
+                "simulation provider `{}.{}` has no compiled output",
+                provider.service_instance, provider.port
+            ))
+        })?;
+        let Some(expected_kind) = output_port_kind(output) else {
+            return Err(simulation_error(format!(
+                "simulation provider `{}.{}` is not an observation output",
+                provider.service_instance, provider.port
+            )));
+        };
+        let signature = output.signature.as_ref().ok_or_else(|| {
+            simulation_error(format!(
+                "simulation provider `{}.{}` has no generated signature",
+                provider.service_instance, provider.port
+            ))
+        })?;
+        if provider.kind != expected_kind
+            || provider.input_fqn != signature.request
+            || provider.payload_fqn != signature.response
+        {
+            return Err(simulation_error(format!(
+                "simulation provider `{}.{}` does not match its compiled generated signature",
+                provider.service_instance, provider.port
+            )));
+        }
+    }
+
+    let expected_setpoint_keys = contracts
+        .iter()
+        .filter(|(instance, _)| !driver_instances.contains(*instance))
+        .flat_map(|(instance, contract)| {
+            public_outputs(contract)
+                .filter(|output| output.kind == crate::artifact::OutputKind::Setpoint)
+                .filter_map(|output| output.port.clone().map(|port| (instance.clone(), port)))
+        })
+        .collect::<BTreeSet<_>>();
+    let actual_binding_keys = facts
+        .actuation_bindings
+        .iter()
+        .map(|binding| (binding.service_instance.clone(), binding.port.clone()))
+        .collect::<BTreeSet<_>>();
+    if expected_setpoint_keys != actual_binding_keys {
+        return Err(simulation_error(format!(
+            "explicit simulation actuation bindings do not cover compiled setpoints (expected {:?}, got {:?})",
+            expected_setpoint_keys, actual_binding_keys
+        )));
+    }
+    for binding in &facts.actuation_bindings {
+        let contract = contracts.get(&binding.service_instance).ok_or_else(|| {
+            simulation_error(format!(
+                "simulation actuation `{}.{}` has no compiled contract",
+                binding.service_instance, binding.port
+            ))
+        })?;
+        let output = public_output(contract, &binding.port).ok_or_else(|| {
+            simulation_error(format!(
+                "simulation actuation `{}.{}` has no compiled output",
+                binding.service_instance, binding.port
+            ))
+        })?;
+        if output.kind != crate::artifact::OutputKind::Setpoint {
+            return Err(simulation_error(format!(
+                "simulation actuation `{}.{}` is not a generated setpoint",
+                binding.service_instance, binding.port
+            )));
+        }
+        let signature = output.signature.as_ref().ok_or_else(|| {
+            simulation_error(format!(
+                "simulation actuation `{}.{}` has no generated signature",
+                binding.service_instance, binding.port
+            ))
+        })?;
+        if binding.payload_fqn != signature.response {
+            return Err(simulation_error(format!(
+                "simulation actuation `{}.{}` does not match its compiled payload signature",
+                binding.service_instance, binding.port
+            )));
+        }
+    }
+
+    let mut providers = facts
+        .providers
+        .iter()
+        .map(|provider| {
+            let contract = contracts
+                .get(&provider.service_instance)
+                .expect("provider contract was validated above");
+            let output = public_output(contract, &provider.port)
+                .expect("provider output was validated above");
+            let (max_message_bytes, max_buffered_items) = provider_bounds(output, &provider.port)?;
+            Ok(BundleSimulationProvider {
+                service_instance: provider.service_instance.clone(),
+                port: provider.port.clone(),
+                kind: provider.kind,
+                input_fqn: provider.input_fqn.clone(),
+                payload_fqn: provider.payload_fqn.clone(),
+                max_message_bytes,
+                max_buffered_items,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    providers.sort_by(|left, right| {
+        left.service_instance
+            .cmp(&right.service_instance)
+            .then_with(|| left.port.cmp(&right.port))
+    });
+    let mut actuation_bindings = facts.actuation_bindings.clone();
+    actuation_bindings.sort_by(|left, right| {
+        left.service_instance
+            .cmp(&right.service_instance)
+            .then_with(|| left.port.cmp(&right.port))
+    });
+
+    Ok(BundleSimulation {
+        protocol: PROTOCOL.to_owned(),
+        mode: "controlled".to_owned(),
+        model_identity: facts.model_identity.clone(),
+        quantum_ns: facts.quantum_ns,
+        providers,
+        actuation_bindings,
+    })
+}
+
+fn public_outputs(
+    contract: &ArtifactSummary,
+) -> impl Iterator<Item = &crate::artifact::OutputRecord> {
+    contract
+        .runtime
+        .transient_outputs
+        .iter()
+        .chain(contract.runtime.service_outputs.iter())
+}
+
+fn public_output<'a>(
+    contract: &'a ArtifactSummary,
+    port: &str,
+) -> Option<&'a crate::artifact::OutputRecord> {
+    public_outputs(contract).find(|output| output.port.as_deref() == Some(port))
+}
+
+fn output_port_kind(output: &crate::artifact::OutputRecord) -> Option<crate::artifact::PortKind> {
+    Some(match output.kind {
+        crate::artifact::OutputKind::State => crate::artifact::PortKind::State,
+        crate::artifact::OutputKind::Sample => crate::artifact::PortKind::Sample,
+        crate::artifact::OutputKind::Event => crate::artifact::PortKind::Event,
+        crate::artifact::OutputKind::Stream => crate::artifact::PortKind::Stream,
+        _ => return None,
+    })
+}
+
+fn provider_bounds(
+    output: &crate::artifact::OutputRecord,
+    port: &str,
+) -> Result<(u32, u32), Error> {
+    let max_message_bytes = output.max_bytes.ok_or_else(|| {
+        simulation_error(format!(
+            "simulation provider `{port}` has no encoded-byte bound"
+        ))
+    })?;
+    let max_message_bytes = u32::try_from(max_message_bytes).map_err(|_| {
+        simulation_error(format!(
+            "simulation provider `{port}` encoded-byte bound exceeds u32"
+        ))
+    })?;
+    if max_message_bytes == 0 {
+        return Err(simulation_error(format!(
+            "simulation provider `{port}` encoded-byte bound must be positive"
+        )));
+    }
+    let max_buffered_items = output
+        .max_items
+        .or_else(|| match output.kind {
+            crate::artifact::OutputKind::State => Some(1),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            simulation_error(format!(
+                "simulation provider `{port}` has no item-count bound"
+            ))
+        })?;
+    let max_buffered_items = u32::try_from(max_buffered_items).map_err(|_| {
+        simulation_error(format!(
+            "simulation provider `{port}` item-count bound exceeds u32"
+        ))
+    })?;
+    if max_buffered_items == 0 {
+        return Err(simulation_error(format!(
+            "simulation provider `{port}` item-count bound must be positive"
+        )));
+    }
+    Ok((max_message_bytes, max_buffered_items))
+}
+
+fn validate_simulation_facts(facts: &SimulationModelFacts) -> Result<(), Error> {
+    validate_simulation_identity(&facts.model_identity, "model identity")?;
+    if facts.quantum_ns == 0 {
+        return Err(simulation_error("simulation quantum must be positive"));
+    }
+    if facts.providers.is_empty() {
+        return Err(simulation_error(
+            "simulation provider set must not be empty",
+        ));
+    }
+    let mut providers = BTreeSet::new();
+    for provider in &facts.providers {
+        validate_simulation_segment(&provider.service_instance, "provider service instance")?;
+        validate_simulation_segment(&provider.port, "provider port")?;
+        if !matches!(
+            provider.kind,
+            crate::artifact::PortKind::State
+                | crate::artifact::PortKind::Sample
+                | crate::artifact::PortKind::Event
+                | crate::artifact::PortKind::Stream
+        ) {
+            return Err(simulation_error(format!(
+                "simulation provider `{}.{}` has an unsupported observation kind",
+                provider.service_instance, provider.port
+            )));
+        }
+        if !providers.insert((&provider.service_instance, &provider.port)) {
+            return Err(simulation_error(format!(
+                "simulation provider `{}.{}` is duplicated",
+                provider.service_instance, provider.port
+            )));
+        }
+        validate_simulation_fqn(
+            &provider.input_fqn,
+            &format!(
+                "simulation provider `{}.{}` input message identity",
+                provider.service_instance, provider.port
+            ),
+        )?;
+        validate_simulation_fqn(
+            &provider.payload_fqn,
+            &format!(
+                "simulation provider `{}.{}` payload message identity",
+                provider.service_instance, provider.port
+            ),
+        )?;
+    }
+    if facts.actuation_bindings.is_empty() {
+        return Err(simulation_error(
+            "simulation actuation binding set must not be empty",
+        ));
+    }
+    let mut bindings = BTreeSet::new();
+    let mut actuators = BTreeSet::new();
+    for binding in &facts.actuation_bindings {
+        validate_simulation_segment(&binding.service_instance, "actuation service instance")?;
+        validate_simulation_segment(&binding.port, "actuation port")?;
+        if binding.payload_fqn.is_empty() || binding.actuator_ids.is_empty() {
+            return Err(simulation_error(format!(
+                "simulation actuation `{}.{}` must carry a payload identity and native actuator IDs",
+                binding.service_instance, binding.port
+            )));
+        }
+        if !bindings.insert((&binding.service_instance, &binding.port)) {
+            return Err(simulation_error(format!(
+                "simulation actuation `{}.{}` is duplicated",
+                binding.service_instance, binding.port
+            )));
+        }
+        for actuator in &binding.actuator_ids {
+            if actuator.is_empty()
+                || actuator.len() > 64
+                || !actuator.is_ascii()
+                || actuator.chars().any(char::is_whitespace)
+            {
+                return Err(simulation_error(format!(
+                    "simulation actuation `{}.{}` contains an invalid native actuator ID",
+                    binding.service_instance, binding.port
+                )));
+            }
+            if !actuators.insert(actuator) {
+                return Err(simulation_error(format!(
+                    "native actuator `{actuator}` is mapped by more than one simulation output"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_simulation_segment(value: &str, field: &str) -> Result<(), Error> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        return Err(simulation_error(format!(
+            "{field} must be 1-64 lowercase ASCII letters, digits, '-' or '_'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_simulation_identity(value: &str, field: &str) -> Result<(), Error> {
+    if value.is_empty()
+        || value.len() > 512
+        || !value.is_ascii()
+        || value.chars().any(char::is_whitespace)
+    {
+        return Err(simulation_error(format!(
+            "{field} must be a bounded non-whitespace ASCII identity"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_simulation_fqn(value: &str, field: &str) -> Result<(), Error> {
+    if value.is_empty()
+        || value.len() > 512
+        || !value.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        })
+    {
+        return Err(simulation_error(format!(
+            "{field} must be a valid Protobuf message identity"
+        )));
+    }
+    Ok(())
+}
+
+fn simulation_error(message: impl Into<String>) -> Error {
+    Error::SimulationInvalid {
+        message: message.into(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3075,6 +3602,61 @@ mod tests {
         let identity = LocalIdentity::new("local", "local").expect("local identity is valid");
         assert_eq!(identity.scope(), "local");
         assert!(LocalIdentity::new("../outside", "local").is_err());
+    }
+
+    fn simulation_facts() -> SimulationModelFacts {
+        SimulationModelFacts::new(
+            "model-digest",
+            10_000_000,
+            vec![SimulationProviderBinding {
+                service_instance: "imu".to_owned(),
+                port: "sample".to_owned(),
+                kind: crate::artifact::PortKind::Sample,
+                input_fqn: "google.protobuf.Empty".to_owned(),
+                payload_fqn: "example.Imu".to_owned(),
+            }],
+            vec![BundleActuationBinding {
+                service_instance: "motion".to_owned(),
+                port: "actuators".to_owned(),
+                payload_fqn: "example.Actuators".to_owned(),
+                actuator_ids: vec!["motor".to_owned()],
+            }],
+        )
+        .expect("valid simulation facts")
+    }
+
+    #[test]
+    fn simulation_facts_require_explicit_provider_and_actuator_sets() {
+        let error = SimulationModelFacts::new("model-digest", 10_000_000, Vec::new(), Vec::new())
+            .expect_err("empty native facts must fail before bundle assembly");
+        assert!(
+            matches!(error, Error::SimulationInvalid { message } if message.contains("provider set"))
+        );
+    }
+
+    #[test]
+    fn simulation_facts_reject_duplicate_native_actuators() {
+        let mut facts = simulation_facts();
+        facts.actuation_bindings.push(BundleActuationBinding {
+            service_instance: "motion-aux".to_owned(),
+            port: "actuators".to_owned(),
+            payload_fqn: "example.Actuators".to_owned(),
+            actuator_ids: vec!["motor".to_owned()],
+        });
+        let error = validate_simulation_facts(&facts)
+            .expect_err("one native actuator cannot have two generated owners");
+        assert!(
+            matches!(error, Error::SimulationInvalid { message } if message.contains("mapped by more than one"))
+        );
+    }
+
+    #[test]
+    fn simulation_facts_round_trip_without_losing_explicit_bindings() {
+        let facts = simulation_facts();
+        let encoded = serde_json::to_value(&facts).expect("simulation facts JSON");
+        let decoded: SimulationModelFacts =
+            serde_json::from_value(encoded).expect("simulation facts decode");
+        assert_eq!(decoded, facts);
     }
 
     #[test]

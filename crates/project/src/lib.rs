@@ -21,11 +21,13 @@ pub use artifact::{
     OutputKind, OutputRecord, PortKind, PortSignature, RuntimeRecord, validate_connected_endpoints,
 };
 pub use bundle::{
-    BUNDLE_SCHEMA, BundleArtifact, BundleCargoInvocation, BundleComponent, BundleEnvironment,
-    BundleExecutable, BundleFile, BundleGitSource, BundleManifest, BundleModelClosure,
-    BundleNativeTool, BundlePackage, BundleProvenance, BundleResource, BundleSource,
-    BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain,
-    CompiledBundle, LocalIdentity, LocalRunPlan, LocalSimulationPlan,
+    BUNDLE_SCHEMA, BundleActuationBinding, BundleArtifact, BundleCargoInvocation, BundleComponent,
+    BundleEnvironment, BundleExecutable, BundleFile, BundleGitSource, BundleManifest,
+    BundleModelClosure, BundleNativeTool, BundlePackage, BundleProvenance, BundleResource,
+    BundleSimulation, BundleSimulationProvider, BundleSource, BundleSourceClosure,
+    BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain, CompiledBundle,
+    LocalIdentity, LocalRunPlan, LocalSimulationPlan, SimulationModelFacts,
+    SimulationProviderBinding,
 };
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, CargoSelection, LockMode};
 pub use discovery::ProjectLayout;
@@ -294,7 +296,7 @@ impl PreparedProject {
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
         let build_inputs = bundle::capture_build_inputs(self)?;
-        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs))
+        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs), None)
     }
 
     /// Builds the exact supervisor binary selected through the root Cargo
@@ -370,18 +372,31 @@ impl PreparedProject {
         Ok(LocalRunPlan { bundle, identity })
     }
 
-    /// Prepares a local simulation launch without provisioning or launching an
-    /// independent simulator application.
+    /// Prepares a local simulation launch from facts admitted by the
+    /// independent native application.
     pub fn local_simulation_plan(
         &self,
         options: &CargoOptions,
         output: impl AsRef<Path>,
         scope: impl Into<String>,
         supervisor_id: impl Into<String>,
+        facts: &SimulationModelFacts,
     ) -> Result<LocalSimulationPlan, Error> {
         let identity = LocalIdentity::new(scope, supervisor_id)?;
-        let bundle = self.build_bundle(options, output)?;
+        let bundle = self.build_simulation_bundle(options, output, facts)?;
         Ok(LocalSimulationPlan { bundle, identity })
+    }
+
+    /// Builds and publishes a bundle carrying the complete controlled
+    /// simulation contract supplied by the independent native application.
+    pub fn build_simulation_bundle(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+        facts: &SimulationModelFacts,
+    ) -> Result<CompiledBundle, Error> {
+        let build_inputs = bundle::capture_build_inputs(self)?;
+        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs), Some(facts))
     }
 
     pub(crate) fn assembly_targets(&self) -> Vec<(String, &SelectedTarget)> {
