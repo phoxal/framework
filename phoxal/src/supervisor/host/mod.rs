@@ -300,10 +300,10 @@ async fn execute(
                 Ok(()) => Err(anyhow::anyhow!("required runtime process monitor ended unexpectedly")),
                 Err(error) => {
                     let error = anyhow::anyhow!("required runtime process failed: {error:#}");
-                    if let Some(processes) = process_monitor.as_mut() {
-                        if let Err(stop_error) = processes.stop().await {
-                            tracing::warn!(error = %stop_error, "failed to stop all runtime processes after failure");
-                        }
+                    if let Some(processes) = process_monitor.as_mut()
+                        && let Err(stop_error) = processes.stop().await
+                    {
+                        tracing::warn!(error = %stop_error, "failed to stop all runtime processes after failure");
                     }
                     mark_execution_failed(&public, execution, &error).await;
                     let _ = serve_until_stop(
@@ -346,9 +346,7 @@ async fn execute(
         close,
         router_close,
     );
-    if let Err(error) = process_close {
-        return Err(error);
-    }
+    process_close?;
     match router_loss.get() {
         Some(reason) => Err(anyhow::anyhow!("{reason}")),
         None => outcome,

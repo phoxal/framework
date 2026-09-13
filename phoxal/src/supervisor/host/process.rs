@@ -143,16 +143,14 @@ impl ProcessSupervisor {
     /// resulting shutdown transition and invokes [`Self::stop`] before
     /// releasing the supervisor resources.
     pub(crate) async fn monitor(&mut self, shutdown: &CancellationToken) -> Result<()> {
-        loop {
-            tokio::select! {
-                () = shutdown.cancelled() => return Ok(()),
-                joined = self.waits.join_next() => {
-                    match joined {
-                        Some(Ok(Ok(exit))) => bail!("required runtime `{}` exited with status {}", exit.instance, exit.status),
-                        Some(Ok(Err(error))) => return Err(error),
-                        Some(Err(error)) => bail!("runtime process waiter failed: {error}"),
-                        None => bail!("all required runtime processes exited unexpectedly"),
-                    }
+        tokio::select! {
+            () = shutdown.cancelled() => Ok(()),
+            joined = self.waits.join_next() => {
+                match joined {
+                    Some(Ok(Ok(exit))) => bail!("required runtime `{}` exited with status {}", exit.instance, exit.status),
+                    Some(Ok(Err(error))) => Err(error),
+                    Some(Err(error)) => bail!("runtime process waiter failed: {error}"),
+                    None => bail!("all required runtime processes exited unexpectedly"),
                 }
             }
         }
