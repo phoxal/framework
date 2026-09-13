@@ -421,6 +421,7 @@ mod tests {
         ));
         assert_eq!(fs::read(&manifest)?, original);
 
+        FileExt::unlock(&held)?;
         drop(held);
         let transaction = ensure_required_dependencies(&layout, &CargoOptions::default())?;
         assert_eq!(transaction.commit().len(), 1);
@@ -456,6 +457,7 @@ mod tests {
         assert!(
             matches!(error, Error::ManifestPreparation { message, .. } if message.contains("another cargo phoxal command"))
         );
+        FileExt::unlock(&held)?;
         drop(held);
         Ok(())
     }
