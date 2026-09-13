@@ -17,7 +17,7 @@ pub(crate) enum BusError {
     SessionIdentityMismatch { expected: String, observed: String },
     /// A router session did not retain the execution identity requested by the
     /// supervisor.
-    #[cfg(feature = "supervisor")]
+    #[allow(dead_code, reason = "constructed by the supervisor profile")]
     ExecutionIdentityMismatch { expected: String, observed: String },
     /// A Zenoh session identity was not a valid Phoxal identity.
     ForeignSessionId { value: String, role: &'static str },
@@ -34,7 +34,6 @@ impl fmt::Display for BusError {
                 formatter,
                 "private transport session identity mismatch: expected {expected}, observed {observed}"
             ),
-            #[cfg(feature = "supervisor")]
             Self::ExecutionIdentityMismatch { expected, observed } => write!(
                 formatter,
                 "router identity mismatch: expected {expected}, observed {observed}"

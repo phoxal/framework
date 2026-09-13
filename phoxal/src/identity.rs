@@ -345,7 +345,7 @@ const ZID_HEX_LEN: usize = ZID_BYTES * 2;
 /// therefore never renders narrower than [`ZID_HEX_LEN`]. A draw that is already
 /// nonzero up there is left alone, so every one of the fifteen nonzero leading
 /// digits stays reachable.
-#[cfg(any(feature = "supervisor", test))]
+#[allow(dead_code, reason = "the supervisor profile owns execution minting")]
 const CANONICAL_TOP_NIBBLE: u128 = 1 << 124;
 
 /// Mint one canonical full-width session value.
@@ -353,7 +353,7 @@ const CANONICAL_TOP_NIBBLE: u128 = 1 << 124;
 /// Both transport identities use the same representation. Keep the random
 /// draw and the leading-nibble repair in one place so a future identity cannot
 /// accidentally drift to a different canonicalization rule.
-#[cfg(any(feature = "supervisor", test))]
+#[allow(dead_code, reason = "the supervisor profile owns execution minting")]
 fn mint_canonical_value() -> u128 {
     let mut bytes = [0_u8; ZID_BYTES];
     #[expect(
@@ -399,7 +399,7 @@ impl ExecutionId {
     /// leading digit to the odd half of the alphabet; leaving a nonzero draw
     /// alone keeps the full nonzero leading-digit range that the transport's
     /// own session ids cover.
-    #[cfg(any(feature = "supervisor", test))]
+    #[allow(dead_code, reason = "the supervisor profile owns execution minting")]
     pub(crate) fn mint() -> Self {
         ExecutionId(mint_canonical_value())
     }

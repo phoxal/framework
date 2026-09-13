@@ -19,6 +19,7 @@
 //! executables, [`registry`] joins those disjoint sets for publication policy,
 //! [`dependencies`] owns what the workspace's crates may depend on,
 //! [`feature_gate`] owns where a consumer profile may be named,
+//! [`test_module_ownership`] owns where a unit-test module may sit,
 //! [`comment_reference`] owns what a comment may name, and [`tracked_source`]
 //! owns what counts as committed source for repository-wide scans. This root
 //! owns only the workspace facts they share, and the report they are run into.
@@ -38,6 +39,7 @@ mod executable;
 mod feature_gate;
 mod framework_executable;
 mod registry;
+mod test_module_ownership;
 mod tracked_source;
 
 /// The directory holding every library crate that carries a name suffix.
@@ -211,7 +213,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 10] = [
+const RULES: [Rule; 11] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -248,6 +250,10 @@ const RULES: [Rule; 10] = [
     Rule {
         name: "feature gates live only in the framework crate root",
         check: feature_gate::feature_gates_live_only_in_the_crate_root,
+    },
+    Rule {
+        name: "unit-test modules have an explicit owner",
+        check: test_module_ownership::unit_test_modules_have_an_explicit_owner,
     },
     Rule {
         name: "comments carry no issue or decision references",

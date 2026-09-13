@@ -55,7 +55,7 @@ pub(super) fn feature_gates_live_only_in_the_crate_root(
         }
         let source = fs::read_to_string(subject.root.join(&relative))
             .with_context(|| format!("failed to read {path}"))?;
-        violations.extend(gated_lines(&source).into_iter().map(|line| {
+        violations.extend(production_gated_lines(&source).into_iter().map(|line| {
             Violation::new(format!(
                 "{path}:{line} gates code on a Cargo feature; a profile changes which modules \
                  `{PROFILE_DECLARATIONS}` declares as public, never what a module compiles"
@@ -63,6 +63,38 @@ pub(super) fn feature_gates_live_only_in_the_crate_root(
         }));
     }
     Ok(violations)
+}
+
+/// The profile gates outside a terminal `#[cfg(test)] mod tests` module.
+///
+/// Test-only compilation may combine consumer profiles to prove their
+/// interoperability without changing any shipped build. Source test modules
+/// are required to be terminal so production code cannot hide after them.
+fn production_gated_lines(source: &str) -> Vec<usize> {
+    const TEST_MODULE: &str = "#[cfg(test)]\nmod tests";
+    let Some(start) = source
+        .find(TEST_MODULE)
+        .filter(|_| has_terminal_test_module(source))
+    else {
+        return gated_lines(source);
+    };
+    gated_lines(&source[..start])
+}
+
+fn has_terminal_test_module(source: &str) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    let Some(syn::Item::Mod(module)) = file.items.last() else {
+        return false;
+    };
+    module.ident == "tests"
+        && module.attrs.iter().any(|attribute| {
+            let syn::Meta::List(meta) = &attribute.meta else {
+                return false;
+            };
+            meta.path.is_ident("cfg") && meta.tokens.to_string() == "test"
+        })
 }
 
 /// The 1-based lines of `source` that gate anything on a Cargo feature.
@@ -146,5 +178,22 @@ mod tests {
     fn the_exempt_declaration_file_is_the_crate_root() {
         assert!(PROFILE_DECLARATIONS.starts_with(LIBRARY_SOURCE));
         assert!(PROFILE_DECLARATIONS.ends_with("/lib.rs"));
+    }
+
+    #[test]
+    fn terminal_test_modules_may_combine_profiles() {
+        let source = concat!(
+            "fn production() {}\n",
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    #[cfg(feature = \"supervisor\")]\n",
+            "    fn combined_profile_fixture() {}\n",
+            "}\n",
+        );
+        assert!(production_gated_lines(source).is_empty());
+
+        let hidden_production =
+            format!("{source}#[cfg(feature = \"runtime\")]\nfn hidden() {{}}\n");
+        assert!(!production_gated_lines(&hidden_production).is_empty());
     }
 }

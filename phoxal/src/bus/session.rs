@@ -26,7 +26,6 @@ pub(crate) struct BusConfig {
 
 impl BusConfig {
     /// Configure a process joining one execution.
-    #[cfg(any(feature = "runtime", test))]
     pub(crate) fn for_participant(
         execution: ExecutionId,
         _participant: ParticipantId,
@@ -39,7 +38,7 @@ impl BusConfig {
     }
 
     /// Configure a supervisor or external owner joining one execution.
-    #[cfg(feature = "supervisor")]
+    #[allow(dead_code, reason = "used by the supervisor profile")]
     pub(crate) fn for_external(
         execution: ExecutionId,
         _label: Option<String>,
@@ -145,7 +144,7 @@ impl BusOwner {
 
     /// Discover the execution identities of routers directly reachable from
     /// one endpoint.
-    #[cfg(feature = "supervisor")]
+    #[allow(dead_code, reason = "used by the supervisor profile")]
     pub(crate) async fn probe_routers(endpoint: &str) -> Result<Vec<ExecutionId>> {
         let session = zenoh::open(client_config(endpoint)?)
             .await
@@ -308,7 +307,7 @@ impl std::fmt::Display for BusCloseReport {
 impl BusCloseReport {
     /// Whether the owner closed without a transport error.
     #[must_use]
-    #[cfg(feature = "supervisor")]
+    #[allow(dead_code, reason = "used by the supervisor profile")]
     pub(crate) fn is_clean(&self) -> bool {
         self.session_close_error.is_none() && self.worker_errors.is_empty()
     }
@@ -322,14 +321,14 @@ fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, 
 }
 
 /// Convert a Phoxal execution identity to Zenoh's session identity.
-#[cfg(feature = "supervisor")]
+#[allow(dead_code, reason = "used by the supervisor profile")]
 pub(crate) fn zenoh_id_for(execution: ExecutionId) -> Result<ZenohId> {
     ZenohId::try_from(&u128::from(execution).to_le_bytes()[..])
         .map_err(|error| BusError::Transport(format!("execution {execution}: {error}")))
 }
 
 /// Convert a router Zenoh identity to an execution identity.
-#[cfg(feature = "supervisor")]
+#[allow(dead_code, reason = "used by the supervisor profile")]
 pub(crate) fn execution_from_zid(zid: ZenohId) -> Result<ExecutionId> {
     ExecutionId::try_from(u128::from_le_bytes(zid.to_le_bytes())).map_err(|_| {
         BusError::ForeignSessionId {
@@ -373,7 +372,7 @@ pub(crate) fn apply_phoxal_transport_policy(config: &mut zenoh::Config) -> Resul
     Ok(())
 }
 
-#[cfg(feature = "supervisor")]
+#[allow(dead_code, reason = "used by the supervisor profile")]
 pub(crate) fn client_config(endpoint: &str) -> Result<zenoh::Config> {
     let mut config = zenoh::Config::default();
     apply_phoxal_transport_policy(&mut config)?;
