@@ -1,6 +1,6 @@
 # Phoxal Framework
 
-Rust workspace for the Phoxal Framework libraries, execution supervisor, and official runtime participants.
+Rust workspace for the Phoxal Framework libraries, execution supervisor, and official Runtime services and component drivers.
 
 Phoxal is pre-1.0 and evolving.
 Visit <https://phoxal.com> for the project vision and public introduction.
@@ -13,7 +13,7 @@ This repository and its source are the authority for current framework implement
 - `crates/` and `contracts/` - independently versioned public libraries, proc
   macros, service-owned contracts, project tooling, and test fixtures
 - `supervisor/` - the framework execution supervisor
-- `services/`, `components/` - official runtime packages
+- `services/`, `components/` - official Runtime service and component-driver packages
 - `simulators/mujoco/` - the independently versioned MuJoCo application kept
   outside the universal framework library
 - `tools/cargo-phoxal/` - the registry-aware project and publication command

@@ -56,17 +56,12 @@ Raising it breaks builds on older toolchains without touching any wire, so the
 change needs an explicit release for each affected package and a deliberate CI
 review.
 
-### The authoring surface is a compatibility promise
+### The Runtime authoring surface is a compatibility promise
 
-Participant authoring - the role attributes, the fragment grammar, `step`, the
-`phoxal::api` facade - is a source-level contract with every robot project that
-`cargo-semver-checks` cannot see, because proc-macro grammar is invisible to
-it.
-Its gate is the trybuild pass fixtures and the official services and components
-in this workspace: representative authored code that must keep compiling.
-Grammar evolution follows the same rule as wire contracts: additions are
-ordinary, and a change that breaks existing authored code carries the breaking
-marker on the package that owns the authoring surface.
+Runtime authoring includes the `#[phoxal::runtime]` contract, typed `Inputs` and `Outputs`, generated owner port constants, and `step`.
+It is a source-level contract with every robot project that `cargo-semver-checks` cannot see because proc-macro grammar is invisible to it.
+Its gate is the trybuild pass fixtures and the official services and components in this workspace: representative authored code that must keep compiling.
+Grammar evolution follows the same rule as wire contracts: additions are ordinary, and a change that breaks existing authored code carries the breaking marker on the package that owns the authoring surface.
 
 ## Getting started
 
