@@ -154,6 +154,7 @@ impl Project {
         let validation_options = CargoOptions {
             cargo_args: Vec::new(),
             test_args: Vec::new(),
+            selection: CargoSelection::default(),
             ..options.clone()
         };
         prepared.check(&validation_options)?;

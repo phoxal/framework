@@ -622,6 +622,10 @@ fn explicit_update_validates_the_fresh_graph_before_success()
     let options = CargoOptions {
         offline: true,
         cargo_args: vec!["--dry-run".into()],
+        selection: CargoSelection {
+            packages: vec!["fixture-robot".to_owned()],
+            ..CargoSelection::default()
+        },
         ..CargoOptions::default()
     };
     let outputs = project.update(&options)?;
@@ -631,6 +635,18 @@ fn explicit_update_validates_the_fresh_graph_before_success()
             .arguments
             .iter()
             .any(|argument| argument == "update")
+    );
+    assert!(
+        outputs[0]
+            .arguments
+            .iter()
+            .any(|argument| argument == "fixture-robot")
+    );
+    assert!(
+        !outputs[0]
+            .arguments
+            .iter()
+            .any(|argument| argument == "--package")
     );
     assert!(fixture.path().join("Cargo.lock").is_file());
     assert!(
@@ -678,6 +694,23 @@ fn update_rejects_target_selectors_before_preparation_mutation()
     assert!(matches!(
         error,
         Error::InvalidOptions { message } if message.contains("target selectors")
+    ));
+    assert_eq!(fs::read(&manifest)?, before_manifest);
+    assert!(!fixture.path().join("Cargo.lock").exists());
+
+    let error = project
+        .update(&CargoOptions {
+            offline: true,
+            selection: CargoSelection {
+                excludes: vec!["fixture-robot".to_owned()],
+                ..CargoSelection::default()
+            },
+            ..CargoOptions::default()
+        })
+        .expect_err("cargo update must reject unsupported exclude selectors");
+    assert!(matches!(
+        error,
+        Error::InvalidOptions { message } if message.contains("exclude")
     ));
     assert_eq!(fs::read(&manifest)?, before_manifest);
     assert!(!fixture.path().join("Cargo.lock").exists());

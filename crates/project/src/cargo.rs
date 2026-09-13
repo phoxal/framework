@@ -433,7 +433,10 @@ pub(crate) fn update(
         command.arg("--offline");
     }
     command.args(["--manifest-path", &manifest.display().to_string()]);
-    options.selection.append_to(&mut command);
+    if options.selection.workspace {
+        command.arg("--workspace");
+    }
+    command.args(&options.selection.packages);
     command.args(&options.cargo_args);
     run_command(command, CargoOperation::Update)
 }
@@ -442,11 +445,12 @@ pub(crate) fn update(
 /// project preparation can mutate the authored manifest or lockfile.
 pub(crate) fn validate_update_options(options: &CargoOptions) -> Result<(), Error> {
     options.validate()?;
-    if options.selection.has_update_unsupported_targets()
+    if !options.selection.excludes.is_empty()
+        || options.selection.has_update_unsupported_targets()
         || options.cargo_args.iter().any(is_update_target_argument)
     {
         return Err(Error::InvalidOptions {
-            message: "cargo phoxal update accepts only Cargo package, workspace, and exclude selectors; target selectors such as --lib, --bin, --test, and --all-targets belong to check/build/test".to_owned(),
+            message: "cargo phoxal update accepts only Cargo package specifications and --workspace; exclude and target selectors such as --lib, --bin, --test, and --all-targets are not cargo update options".to_owned(),
         });
     }
     if options.target.is_some()
