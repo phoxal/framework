@@ -982,7 +982,7 @@ impl PublicTlsCredentials {
 /// Public transport security profile.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum PublicTransportSecurity {
-    /// Plain TCP for explicitly local fixtures only.
+    /// Plain loopback TCP or a local Unix socket.
     #[default]
     Plaintext,
     /// Mutual TLS with caller-supplied certificate files.
@@ -1036,11 +1036,16 @@ fn client_config_with_security(
             if !is_local_endpoint(endpoint) || endpoint.starts_with("tls/") {
                 return Err(PublicTransportError::Malformed {
                     operation: "connect".to_owned(),
-                    detail: "plaintext public sessions are limited to local TCP fixtures"
+                    detail: "plaintext public sessions require loopback TCP or a local Unix socket"
                         .to_owned(),
                 });
             }
-            insert(&mut config, "transport/link/protocols", "[\"tcp\"]")?;
+            let protocol = if endpoint.starts_with("unixsock-stream/") {
+                "[\"unixsock-stream\"]"
+            } else {
+                "[\"tcp\"]"
+            };
+            insert(&mut config, "transport/link/protocols", protocol)?;
         }
         PublicTransportSecurity::Tls(credentials) => {
             if !endpoint.starts_with("tls/") {
@@ -1096,6 +1101,7 @@ fn is_local_endpoint(endpoint: &str) -> bool {
     endpoint.starts_with("tcp/127.0.0.1:")
         || endpoint.starts_with("tcp/localhost:")
         || endpoint.starts_with("tcp/[::1]:")
+        || endpoint.starts_with("unixsock-stream/")
 }
 
 fn tls_endpoint_name(endpoint: &str) -> Option<&str> {
@@ -4584,6 +4590,13 @@ mod tests {
                 &PublicTransportSecurity::Plaintext,
             )
             .is_err()
+        );
+        assert!(
+            client_config_with_security(
+                "unixsock-stream//tmp/phoxal-supervisor.sock",
+                &PublicTransportSecurity::Plaintext,
+            )
+            .is_ok()
         );
     }
 
