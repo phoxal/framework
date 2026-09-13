@@ -188,6 +188,23 @@ pub enum SourceError {
         /// Authored dependency key.
         key: String,
     },
+    /// The resolved package does not carry the canonical Phoxal role or
+    /// definition required by the selected service/component boundary.
+    #[error(
+        "{role} '{instance}' dependency key '{key}' resolves to package '{package}' with invalid Phoxal package metadata: {message}"
+    )]
+    InvalidPackageRole {
+        /// Graph role being resolved.
+        role: TargetRole,
+        /// Authored instance id.
+        instance: String,
+        /// Authored dependency key.
+        key: String,
+        /// Resolved Cargo package name.
+        package: String,
+        /// Canonical role or definition diagnostic.
+        message: String,
+    },
     /// The resolved package did not have the target role required by the document.
     #[error(
         "{role} '{instance}' dependency key '{key}' resolves to package '{package}', which has no {target_kind} target"

@@ -5,6 +5,7 @@ use cargo_metadata::{DependencyKind, Metadata, Package, PackageId, Target};
 
 use crate::document::{BrainSelection, RobotDocument, ServiceSelection};
 use crate::error::SourceError;
+use crate::publication::{RuntimePackageRole, validate_runtime_package};
 
 /// A role selected by `robot.yaml` and resolved through the root Cargo graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -170,6 +171,13 @@ pub fn resolve_sources(
             &component.component,
             root,
             metadata,
+        )?;
+        validate_dependency_role(
+            TargetRole::Component,
+            instance,
+            &component.component,
+            package,
+            RuntimePackageRole::Component,
         )?;
         let driver =
             resolve_component_driver(instance, component, &component.component, package, metadata)?;
@@ -388,6 +396,13 @@ fn resolve_service(
     metadata: &Metadata,
 ) -> Result<SelectedService, SourceError> {
     let package = resolve_dependency(TargetRole::Service, instance, key, root, metadata)?;
+    validate_dependency_role(
+        TargetRole::Service,
+        instance,
+        key,
+        package,
+        RuntimePackageRole::Service,
+    )?;
     let library = package
         .targets
         .iter()
@@ -428,6 +443,25 @@ fn resolve_dependency<'a>(
     metadata: &'a Metadata,
 ) -> Result<&'a Package, SourceError> {
     resolve_package_dependency(role, instance, key, root, metadata)
+}
+
+fn validate_dependency_role(
+    role: TargetRole,
+    instance: &str,
+    key: &str,
+    package: &Package,
+    expected: RuntimePackageRole,
+) -> Result<(), SourceError> {
+    let manifest = PathBuf::from(package.manifest_path.as_std_path());
+    validate_runtime_package(&manifest, &package.name, expected).map_err(|error| {
+        SourceError::InvalidPackageRole {
+            role,
+            instance: instance.to_owned(),
+            key: key.to_owned(),
+            package: package.name.to_string(),
+            message: error.to_string(),
+        }
+    })
 }
 
 fn resolve_package_dependency<'a>(

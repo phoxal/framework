@@ -24,8 +24,8 @@ pub use bundle::{
     BUNDLE_SCHEMA, BundleArtifact, BundleCargoInvocation, BundleComponent, BundleEnvironment,
     BundleExecutable, BundleFile, BundleGitSource, BundleManifest, BundleModelClosure,
     BundleNativeTool, BundlePackage, BundleProvenance, BundleResource, BundleSource,
-    BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleToolchain, CompiledBundle,
-    LocalIdentity, LocalRunPlan, LocalSimulationPlan,
+    BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain,
+    CompiledBundle, LocalIdentity, LocalRunPlan, LocalSimulationPlan,
 };
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, LockMode};
 pub use discovery::ProjectLayout;
@@ -264,17 +264,14 @@ impl PreparedProject {
     /// Builds and atomically publishes the complete selected executable bundle.
     ///
     /// The output is a source-side compiled directory containing the selected
-    /// brain, service, and component-driver binaries plus inspectable manifest
-    /// and provenance records. The selected supervisor is built through the
-    /// same graph but is launched separately by `run_local`.
+    /// brain, service, and component-driver binaries plus the exact supervisor
+    /// executable and inspectable manifest and provenance records.
     pub fn build_bundle(
         &self,
         options: &CargoOptions,
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
         let build_inputs = bundle::capture_build_inputs(self)?;
-        self.build_supervisor(options)?;
-        bundle::verify_build_inputs(self, &build_inputs)?;
         bundle::assemble_with_inputs(self, options, output, Some(&build_inputs))
     }
 
@@ -306,10 +303,8 @@ impl PreparedProject {
         options: &CargoOptions,
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
-        let build_inputs = bundle::capture_build_inputs(self)?;
-        let supervisor = self.build_supervisor(options)?;
-        bundle::verify_build_inputs(self, &build_inputs)?;
-        let bundle = bundle::assemble_with_inputs(self, options, output, Some(&build_inputs))?;
+        let bundle = self.build_bundle(options, output)?;
+        let supervisor = bundle.executable("supervisor");
         let status = Command::new(&supervisor)
             .arg(bundle.root())
             .args(["--scope", "local", "--supervisor-id", "local"])

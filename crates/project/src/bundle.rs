@@ -128,6 +128,36 @@ pub struct BundleExecutable {
     pub artifact: Option<BundleArtifact>,
 }
 
+/// Exact provenance for the supervisor executable carried by a bundle.
+///
+/// The supervisor is intentionally kept out of [`BundleManifest::executables`]
+/// because that list describes runtime participant processes.  Keeping this
+/// record in provenance lets the deployed supervisor continue to interpret
+/// the participant list without ever treating its own binary as a child.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleSupervisor {
+    /// Fixed supervisor role label.
+    pub role: String,
+    /// Fixed bundle-local supervisor instance label.
+    pub instance: String,
+    /// Cargo package identity that produced the supervisor.
+    pub package_id: String,
+    /// Cargo package name.
+    pub package: String,
+    /// Stable Cargo source identity for the package.
+    pub source: String,
+    /// Exact Cargo package version.
+    pub version: String,
+    /// Cargo binary target name.
+    pub target: String,
+    /// Bundle-relative executable path.
+    pub path: String,
+    /// Number of bytes in the copied executable.
+    pub bytes: u64,
+    /// SHA-256 digest of the copied executable.
+    pub sha256: String,
+}
+
 /// Manifest-safe native artifact contract inventory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleArtifact {
@@ -304,6 +334,12 @@ pub struct BundleProvenance {
     pub robot_manifest_sha256: String,
     /// SHA-256 of the root Cargo manifest.
     pub cargo_manifest_sha256: String,
+    /// SHA-256 of the owning workspace-root Cargo manifest.
+    ///
+    /// This remains explicit even when the robot package itself is the
+    /// workspace root, so inherited workspace package, dependency, profile,
+    /// target, and lint settings have a stable provenance field.
+    pub cargo_workspace_manifest_sha256: String,
     /// SHA-256 of the workspace-owned Cargo lock, when present.
     pub cargo_lock_sha256: Option<String>,
     /// Exact workspace-owned Cargo.lock input, when present.
@@ -316,6 +352,9 @@ pub struct BundleProvenance {
     pub source_tree: BundleSourceClosure,
     /// Compiler and invocation inputs used for the bundle.
     pub toolchain: BundleToolchain,
+    /// The exact supervisor executable copied into the bundle and launched by
+    /// local execution.
+    pub supervisor: BundleSupervisor,
     /// Model path and digest when the authored model exists.
     pub model: Option<BundleFile>,
     /// The validated model/resource closure copied into the bundle's assets.
@@ -467,16 +506,7 @@ pub(crate) fn assemble_with_inputs(
         let output = cargo::build_target(prepared, target, options)?;
         invocations.push(output.arguments.clone());
         let executable = cargo::artifact_path(&output.stdout, target)?;
-        let metadata = fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
-            path: executable.clone(),
-            source,
-        })?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(Error::ArtifactInvalid {
-                path: executable,
-                message: "Cargo reported a non-regular executable".to_owned(),
-            });
-        }
+        ensure_regular_executable(&executable, &target.target)?;
         let digest = digest_file(&executable)?;
         let instance = prepared
             .assembly_targets()
@@ -532,6 +562,16 @@ pub(crate) fn assemble_with_inputs(
     }
     executable_records.sort_by(|left, right| left.path.cmp(&right.path));
 
+    // The supervisor is part of the immutable bundle, but it is not a runtime
+    // participant.  Keep it out of manifest.executables because the deployed
+    // supervisor must never interpret its own binary as a child process.
+    let supervisor_output = cargo::build_target(prepared, &prepared.sources().supervisor, options)?;
+    invocations.push(supervisor_output.arguments.clone());
+    let supervisor_source =
+        cargo::artifact_path(&supervisor_output.stdout, &prepared.sources().supervisor)?;
+    ensure_regular_executable(&supervisor_source, "supervisor")?;
+    let supervisor_digest = digest_file(&supervisor_source)?;
+
     let contract_map = artifacts
         .iter()
         .map(|(key, (_, _, _, contract))| (key.clone(), contract.clone()))
@@ -557,6 +597,30 @@ pub(crate) fn assemble_with_inputs(
     components.sort_by(|left, right| left.instance.cmp(&right.instance));
 
     let (sources, source_closure_sha256) = source_closure(prepared)?;
+    let supervisor_source_record = sources
+        .iter()
+        .find(|source| {
+            source.package_id
+                == public_package_id(prepared, &prepared.sources().supervisor.package_id)
+        })
+        .ok_or_else(|| Error::ArtifactInvalid {
+            path: supervisor_source.clone(),
+            message: "supervisor package has no retained source provenance".to_owned(),
+        })?;
+    let supervisor_relative = format!("{BIN_DIR}/supervisor");
+    copy_executable(&supervisor_source, &staged_root.join(&supervisor_relative))?;
+    let supervisor = BundleSupervisor {
+        role: "supervisor".to_owned(),
+        instance: "supervisor".to_owned(),
+        package_id: supervisor_source_record.package_id.clone(),
+        package: prepared.sources().supervisor.package.clone(),
+        source: supervisor_source_record.source.clone(),
+        version: supervisor_source_record.version.clone(),
+        target: prepared.sources().supervisor.target.clone(),
+        path: supervisor_relative,
+        bytes: supervisor_digest.bytes,
+        sha256: supervisor_digest.sha256,
+    };
     let target = effective_target(options);
     let profile = effective_profile(options);
     let features = effective_features(options);
@@ -584,6 +648,7 @@ pub(crate) fn assemble_with_inputs(
         options,
         &manifest,
         &invocations,
+        supervisor,
     )?;
     write_json(&staged_root.join(MANIFEST_FILE), &manifest)?;
     write_json(&staged_root.join(PROVENANCE_FILE), &provenance)?;
@@ -607,8 +672,10 @@ fn provenance(
     options: &CargoOptions,
     manifest: &BundleManifest,
     invocations: &[Vec<std::ffi::OsString>],
+    supervisor: BundleSupervisor,
 ) -> Result<BundleProvenance, Error> {
     let cargo_lock = optional_file(&prepared.cargo_lock(), "Cargo.lock")?;
+    let workspace_manifest = prepared.cargo_workspace_root().join("Cargo.toml");
     let toolchain = toolchain(
         options,
         manifest,
@@ -620,12 +687,14 @@ fn provenance(
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_manifest_sha256: digest_file(prepared.layout().robot_manifest())?.sha256,
         cargo_manifest_sha256: digest_file(prepared.layout().cargo_manifest())?.sha256,
+        cargo_workspace_manifest_sha256: digest_file(&workspace_manifest)?.sha256,
         cargo_lock_sha256: cargo_lock.as_ref().map(|file| file.sha256.clone()),
         cargo_lock,
         sources,
         source_closure_sha256,
         source_tree: staged_source_tree,
         toolchain,
+        supervisor,
         model: staged_model.map(|model| model.source.clone()),
         model_closure: staged_model.map(|model| model.closure.clone()),
     })
@@ -861,6 +930,7 @@ fn external_cargo_config_files() -> Result<Vec<BundleFile>, Error> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BuildInputs {
     source: String,
+    workspace_manifest: String,
     environment: String,
 }
 
@@ -883,6 +953,11 @@ pub(crate) fn capture_build_inputs(prepared: &PreparedProject) -> Result<BuildIn
             path: prepared.cargo_workspace_root().to_owned(),
             source,
         })?;
+    let workspace_manifest = workspace_root.join("Cargo.toml");
+    let workspace_manifest_digest = digest_file(&workspace_manifest)?;
+    if workspace_manifest != prepared.layout().cargo_manifest() {
+        add_file("workspace/Cargo.toml".to_owned(), &workspace_manifest)?;
+    }
     if workspace_root.join(".cargo").is_dir() {
         for file in source_files(&workspace_root.join(".cargo"))? {
             add_file(
@@ -914,6 +989,7 @@ pub(crate) fn capture_build_inputs(prepared: &PreparedProject) -> Result<BuildIn
     let environment = environment_digest();
     Ok(BuildInputs {
         source,
+        workspace_manifest: workspace_manifest_digest.sha256,
         environment,
     })
 }
@@ -929,6 +1005,9 @@ pub(crate) fn verify_build_inputs(
     let mut differences = Vec::new();
     if current.source != expected.source {
         differences.push("source, manifest, lock, or workspace configuration");
+    }
+    if current.workspace_manifest != expected.workspace_manifest {
+        differences.push("owning workspace Cargo.toml");
     }
     if current.environment != expected.environment {
         differences.push("build environment");
@@ -2618,6 +2697,20 @@ fn digest_file(path: &Path) -> Result<FileDigest, Error> {
         sha256: format!("{:x}", hasher.finalize()),
         bytes,
     })
+}
+
+fn ensure_regular_executable(path: &Path, target: &str) -> Result<(), Error> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(Error::ArtifactInvalid {
+            path: path.to_owned(),
+            message: format!("Cargo reported a non-regular {target} executable"),
+        });
+    }
+    Ok(())
 }
 
 fn digest_bytes(bytes: &[u8]) -> FileDigest {

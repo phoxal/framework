@@ -5,12 +5,17 @@ use std::process::Command;
 use phoxal_project::{
     CargoOperation, CargoOptions, Error, LockMode, PackageSource, Project, SourceError,
 };
+use sha2::{Digest, Sha256};
 
 fn write(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, contents)
+}
+
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -87,6 +92,9 @@ path = "src/lib.rs"
 [[bin]]
 name = "counter-service"
 path = "src/main.rs"
+
+[package.metadata.phoxal]
+kind = "service"
 "#,
     )?;
     write(
@@ -108,6 +116,9 @@ name = "passive-sensor"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata.phoxal]
+kind = "component"
+
 [lib]
 path = "src/lib.rs"
 "#,
@@ -115,6 +126,10 @@ path = "src/lib.rs"
     write(
         &directory.path().join("passive-sensor/src/lib.rs"),
         "pub struct Sensor;\n",
+    )?;
+    write(
+        &directory.path().join("passive-sensor/component.yaml"),
+        "schema: phoxal/component/v0\n",
     )?;
     write(
         &directory.path().join("supervisor/Cargo.toml"),
@@ -167,6 +182,51 @@ connections:
 "#,
     )?;
     Ok(directory)
+}
+
+fn nested_workspace_fixture()
+-> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
+    let workspace = tempfile::tempdir()?;
+    write(
+        &workspace.path().join("Cargo.toml"),
+        r#"[workspace]
+members = ["robot"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+
+[patch.phoxal]
+phoxal-supervisor = { path = "robot/supervisor" }
+"#,
+    )?;
+    let source = project_fixture()?;
+    let robot = workspace.path().join("robot");
+    copy_tree(source.path(), &robot)?;
+    let manifest = robot.join("Cargo.toml");
+    let contents = fs::read_to_string(&manifest)?
+        .replace("edition = \"2024\"", "edition.workspace = true")
+        .replace(
+            "\n[patch.phoxal]\nphoxal-supervisor = { path = \"supervisor\" }\n",
+            "\n",
+        );
+    write(&manifest, &contents)?;
+    Ok((workspace, robot))
+}
+
+fn nested_workspace_race_build_script() -> String {
+    artifact_build_script(r#"{"type":"null"}"#).replace(
+        "    println!(\"cargo:rerun-if-changed=build.rs\");",
+        r##"    let workspace_manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("Cargo.toml");
+    let mut contents = std::fs::read_to_string(&workspace_manifest).expect("read workspace manifest");
+    if !contents.contains("# nested workspace race") {
+        contents.push_str("# nested workspace race\n");
+        std::fs::write(workspace_manifest, contents).expect("write workspace manifest");
+    }
+    println!("cargo:rerun-if-changed=build.rs");"##,
+    )
 }
 
 fn artifact_build_script(config_schema: &str) -> String {
@@ -234,6 +294,59 @@ fn preparation_resolves_the_root_brain_services_and_passive_component()
         "passive-sensor"
     );
     assert!(prepared.cargo_lock().ends_with("Cargo.lock"));
+    Ok(())
+}
+
+#[test]
+fn selection_rejects_a_service_with_component_role_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let manifest = fixture.path().join("counter-service/Cargo.toml");
+    let contents =
+        fs::read_to_string(&manifest)?.replace("kind = \"service\"", "kind = \"component\"");
+    write(&manifest, &contents)?;
+    write(
+        &fixture.path().join("counter-service/component.yaml"),
+        "schema: phoxal/component/v0\n",
+    )?;
+
+    let error = Project::discover(fixture.path())?
+        .prepare(&CargoOptions::default())
+        .expect_err("a component cannot provide a selected service");
+    assert!(matches!(
+        error,
+        Error::Source(SourceError::InvalidPackageRole {
+            role,
+            package,
+            message,
+            ..
+        }) if role.to_string() == "service"
+            && package == "counter-service"
+            && message.contains("component")
+    ));
+    Ok(())
+}
+
+#[test]
+fn selection_rejects_a_component_without_its_definition_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    fs::remove_file(fixture.path().join("passive-sensor/component.yaml"))?;
+
+    let error = Project::discover(fixture.path())?
+        .prepare(&CargoOptions::default())
+        .expect_err("a selected component needs a definition root");
+    assert!(matches!(
+        error,
+        Error::Source(SourceError::InvalidPackageRole {
+            role,
+            package,
+            message,
+            ..
+        }) if role.to_string() == "component"
+            && package == "passive-sensor"
+            && message.contains("no component definition")
+    ));
     Ok(())
 }
 
@@ -556,6 +669,19 @@ fn run_local_builds_the_bundle_and_launches_the_local_supervisor()
     assert_eq!(bundle.root(), output.as_path());
     assert!(bundle.executable("brain").is_file());
     assert!(bundle.executable("counter").is_file());
+    assert!(bundle.executable("supervisor").is_file());
+    assert_eq!(bundle.provenance().supervisor.instance, "supervisor");
+    assert_eq!(bundle.provenance().supervisor.role, "supervisor");
+    assert_eq!(bundle.provenance().supervisor.package, "phoxal-supervisor");
+    assert_eq!(bundle.provenance().supervisor.version, "0.68.0");
+    assert_eq!(
+        bundle.provenance().supervisor.bytes,
+        fs::metadata(bundle.executable("supervisor"))?.len()
+    );
+    assert_eq!(
+        bundle.provenance().supervisor.sha256,
+        sha256_file(&bundle.executable("supervisor"))?
+    );
     Ok(())
 }
 
@@ -681,9 +807,17 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
     );
     assert!(bundle.executable("brain").is_file());
     assert!(bundle.executable("counter").is_file());
+    assert!(bundle.executable("supervisor").is_file());
     assert!(output.join("manifest.json").is_file());
     assert!(output.join("provenance.json").is_file());
     assert!(bundle.provenance().cargo_lock_sha256.is_some());
+    assert!(
+        !bundle
+            .provenance()
+            .cargo_workspace_manifest_sha256
+            .is_empty()
+    );
+    assert_eq!(bundle.provenance().supervisor.path, "bin/supervisor");
     assert_eq!(bundle.provenance().source_tree.path, "source");
     assert!(bundle.source_root().join("Cargo.lock").is_file());
     assert!(
@@ -728,6 +862,59 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
         output_modified,
         "unchanged assembly must preserve its output timestamp"
     );
+    Ok(())
+}
+
+#[test]
+fn bundle_records_the_owning_workspace_manifest() -> Result<(), Box<dyn std::error::Error>> {
+    let (workspace, robot) = nested_workspace_fixture()?;
+    let workspace_manifest = workspace.path().join("Cargo.toml");
+    let project = Project::discover(&robot)?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let prepared = project.prepare(&options)?;
+    let output = workspace.path().join("target/phoxal/nested-bundle");
+    let bundle = prepared.build_bundle(&options, &output)?;
+
+    assert_eq!(
+        bundle.provenance().cargo_workspace_manifest_sha256,
+        sha256_file(&workspace_manifest)?
+    );
+    assert!(
+        bundle
+            .provenance()
+            .source_tree
+            .files
+            .iter()
+            .any(|file| file.path == "Cargo.toml")
+    );
+    Ok(())
+}
+
+#[test]
+fn bundle_rejects_a_workspace_manifest_changed_during_build()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (workspace, robot) = nested_workspace_fixture()?;
+    write(
+        &robot.join("build.rs"),
+        &nested_workspace_race_build_script(),
+    )?;
+    let project = Project::discover(&robot)?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let prepared = project.prepare(&options)?;
+    let output = workspace.path().join("target/phoxal/nested-race");
+    let error = prepared
+        .build_bundle(&options, &output)
+        .expect_err("a workspace manifest race must not publish a bundle");
+    assert!(
+        matches!(error, Error::BundleSourceChanged { message } if message.contains("owning workspace Cargo.toml"))
+    );
+    assert!(!output.exists());
     Ok(())
 }
 
@@ -877,6 +1064,9 @@ path = "src/lib.rs"
 [[bin]]
 name = "fixture-git-service"
 path = "src/main.rs"
+
+[package.metadata.phoxal]
+kind = "service"
 "#,
     )?;
     write(

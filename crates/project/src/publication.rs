@@ -381,6 +381,16 @@ enum PackageRole {
     Tool,
 }
 
+/// A runtime dependency role that project selection must validate against the
+/// same Cargo metadata and definition rules used by package publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimePackageRole {
+    /// A service implementation with importable library and executable.
+    Service,
+    /// A passive or Rust-backed component with a component definition root.
+    Component,
+}
+
 impl PackageRole {
     const fn publication_kind(self) -> PublicationKind {
         match self {
@@ -780,6 +790,50 @@ fn classify_package(
     Err(PublicationError::MissingPackageKind {
         package: package.to_owned(),
         path: source_root.to_owned(),
+    }
+    .into())
+}
+
+/// Validates a package selected as a runtime service or component.
+///
+/// Publication owns the canonical package-role classifier, including the
+/// `[package.metadata.phoxal]` role, target shape, and component definition
+/// root checks. Project selection calls this boundary instead of maintaining a
+/// second interpretation of package metadata.
+pub(crate) fn validate_runtime_package(
+    manifest: &Path,
+    package: &str,
+    expected: RuntimePackageRole,
+) -> Result<(), Error> {
+    let source_root =
+        manifest
+            .parent()
+            .ok_or_else(|| PublicationError::MissingPackageManifest {
+                path: manifest.to_owned(),
+            })?;
+    let manifest_value = read_manifest(manifest)?;
+    let detected = classify_package(source_root, &manifest_value, package)?;
+    let valid = match expected {
+        RuntimePackageRole::Service => detected == PackageRole::Service,
+        RuntimePackageRole::Component => {
+            matches!(
+                detected,
+                PackageRole::PassiveComponent | PackageRole::RustComponent
+            )
+        }
+    };
+    if valid {
+        return Ok(());
+    }
+    let requested = match expected {
+        RuntimePackageRole::Service => PublicationKind::Service,
+        RuntimePackageRole::Component => PublicationKind::Component,
+    };
+    Err(PublicationError::WrongPublicationKind {
+        package: package.to_owned(),
+        path: source_root.to_owned(),
+        actual: detected.to_string(),
+        requested,
     }
     .into())
 }
