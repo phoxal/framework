@@ -1,3 +1,7 @@
+mod config;
+mod outputs;
+mod runtime;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(phoxal_component_oak_d_lite::OakDLite)
+    phoxal::runtime::run(runtime::OakDLite)
 }

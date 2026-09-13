@@ -23,7 +23,7 @@ phoxal = { version = "0.68", default-features = false, features = ["port"] }
 
 The `runtime` profile is the default and provides the synchronous Runtime macros, typed inputs and outputs, runner, and required transport.
 The `session` profile provides only the public logical-session client and its Protobuf transport.
-The `supervisor` profile is used by the framework-owned `phoxal-supervisor` executable.
+The supervisor executable owns its host implementation privately and consumes the reusable `runtime` and `session` APIs.
 The `port` and `protocol` profiles provide independent descriptor and protocol contracts without a runner or host implementation.
 
 The project compiler is the only owner of authored source parsing and project validation.

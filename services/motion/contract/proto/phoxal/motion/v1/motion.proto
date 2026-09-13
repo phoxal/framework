@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package phoxal.motion.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/port.proto";
+
+message ActuatorTarget {
+  string actuator_id = 1;
+  oneof control {
+    double velocity_radps = 2;
+    double torque_nm = 3;
+  }
+}
+
+message ActuatorSetpoint {
+  repeated ActuatorTarget targets = 1;
+}
+
+message MotionIntent {
+  string owner_id = 1;
+  double linear_x_mps = 2;
+  double angular_z_radps = 3;
+}
+
+message EngageEmergency {}
+
+message ReleaseEmergency {
+  string reset_token = 1;
+}
+
+message Arm {
+  ControlMode mode = 1;
+  string owner_id = 2;
+}
+
+message Disarm {}
+
+message ApplyEmergencyRequest {
+  oneof command {
+    EngageEmergency engage = 1;
+    ReleaseEmergency release = 2;
+    Arm arm = 3;
+    Disarm disarm = 4;
+  }
+}
+
+message EmergencyAccepted {}
+
+enum EmergencyRefusalReason {
+  EMERGENCY_REFUSAL_REASON_UNSPECIFIED = 0;
+  EMERGENCY_REFUSAL_REASON_INVALID_REQUEST = 1;
+  EMERGENCY_REFUSAL_REASON_PROTECTIVE_STATE = 2;
+  EMERGENCY_REFUSAL_REASON_NOT_LATCHED = 3;
+}
+
+message EmergencyRefused {
+  EmergencyRefusalReason reason = 1;
+}
+
+message ApplyEmergencyResponse {
+  oneof decision {
+    EmergencyAccepted accepted = 1;
+    EmergencyRefused refused = 2;
+  }
+}
+
+enum ControlMode {
+  CONTROL_MODE_UNSPECIFIED = 0;
+  CONTROL_MODE_DISARMED = 1;
+  CONTROL_MODE_MANUAL = 2;
+  CONTROL_MODE_AUTONOMOUS = 3;
+}
+
+message MotionStatus {
+  ControlMode mode = 1;
+  bool emergency_latched = 2;
+  optional string selected_owner_id = 3;
+  bool protective_state_clear = 4;
+  bool stopped = 5;
+}
+
+service Motion {
+  rpc Actuators(google.protobuf.Empty) returns (stream ActuatorSetpoint) {
+    option (phoxal.port.kind) = SETPOINT;
+  }
+
+  rpc Manual(google.protobuf.Empty) returns (stream MotionIntent) {
+    option (phoxal.port.kind) = SETPOINT;
+  }
+
+  rpc Autonomous(google.protobuf.Empty) returns (stream MotionIntent) {
+    option (phoxal.port.kind) = SETPOINT;
+  }
+
+  rpc Status(google.protobuf.Empty) returns (stream MotionStatus) {
+    option (phoxal.port.kind) = STATE;
+  }
+
+  rpc Emergency(ApplyEmergencyRequest) returns (ApplyEmergencyResponse) {
+    option (phoxal.port.kind) = COMMANDS;
+  }
+}

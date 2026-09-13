@@ -22,7 +22,7 @@ description = "A robot package inside the maintained example workspace."
 bench_imu = { package = "example-bench-imu", path = "../../components/bench-imu" }
 bench_motor = { package = "example-bench-motor", path = "../../components/bench-motor" }
 counter = { package = "example-counter-service", path = "../../services/counter" }
-counter-contract = { package = "example-counter-contract", path = "../../contracts/counter" }
+counter-contract = { package = "example-counter-contract", path = "../../services/counter/contract" }
 phoxal = { path = "../../../../phoxal", version = "=0.68.0", default-features = false, features = ["runtime"] }
 phoxal-supervisor = { path = "../../../../supervisor", version = "=0.68.0" }
 

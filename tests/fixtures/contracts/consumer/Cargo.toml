@@ -1,0 +1,20 @@
+[package]
+name = "phoxal-contract-consumer-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Independent consumer of an owner-generated Phoxal contract."
+
+[[bin]]
+name = "phoxal-contract-consumer-fixture"
+path = "src/main.rs"
+
+[dependencies]
+phoxal-contract-owner-fixture = { path = "../producer", version = "0.1.0" }
+phoxal-port = { workspace = true }
+prost = { workspace = true }
+
+[lints]
+workspace = true

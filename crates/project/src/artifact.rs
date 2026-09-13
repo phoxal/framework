@@ -4,7 +4,9 @@
 //! object-file parser. It never executes an inspected binary and it does not
 //! parse Protobuf source into a second schema model.
 
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -13,7 +15,8 @@ use prost_reflect::DescriptorPool;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::document::{PortReference, RobotDocument};
+#[cfg(test)]
+use crate::document::RobotDocument;
 
 const ARTIFACT_SECTION_NAMES: [&str; 2] = [".phoxal_art", "__phoxal_art"];
 const DESCRIPTOR_SECTION_NAMES: [&str; 2] = [".phoxal_desc", "__phoxal_desc"];
@@ -132,6 +135,10 @@ pub struct InputRecord {
     pub port: Option<String>,
     /// Complete generated port identity when one is bound.
     pub signature: Option<PortSignature>,
+    /// Expected generated Protobuf request identity, when this input sends requests.
+    pub request_fqn: Option<String>,
+    /// Expected generated Protobuf publication or response identity.
+    pub response_fqn: Option<String>,
 }
 
 /// One checked runtime output binding.
@@ -528,6 +535,24 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
                 input.name
             )));
         }
+        let requires_request = matches!(
+            input.kind,
+            InputKind::Read | InputKind::Request | InputKind::Commands
+        );
+        let requires_response = input.kind != InputKind::Operation;
+        if input.request_fqn.is_some() != requires_request
+            || input.response_fqn.is_some() != requires_response
+            || input
+                .request_fqn
+                .iter()
+                .chain(input.response_fqn.iter())
+                .any(|name| name.is_empty() || !name.is_ascii())
+        {
+            return Err(Error::InvalidContract(format!(
+                "input '{}' must retain its concrete generated Protobuf message identities",
+                input.name
+            )));
+        }
         if input.port.is_some() != input.signature.is_some() {
             return Err(Error::InvalidContract(format!(
                 "input '{}' must retain port and signature together",
@@ -567,6 +592,20 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
                 output.name
             )));
         }
+        if output.port.is_some() && output.max_bytes.is_none_or(|bound| bound == 0) {
+            return Err(Error::InvalidContract(format!(
+                "served output '{}' has no positive response/publication byte bound",
+                output.name
+            )));
+        }
+        if output.kind == OutputKind::Read
+            && output.max_request_bytes.is_none_or(|bound| bound == 0)
+        {
+            return Err(Error::InvalidContract(format!(
+                "read output '{}' has no positive request byte bound",
+                output.name
+            )));
+        }
         if let Some(signature) = &output.signature {
             if output.port.as_deref() != Some(signature.name.as_str()) {
                 return Err(Error::InvalidContract(format!(
@@ -599,95 +638,9 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
 /// The validation is intentionally endpoint-first: kind and complete request /
 /// response identities are compared before any descriptor message-root
 /// filtering can remove service evidence.
-pub fn validate_connected_endpoints(
-    document: &RobotDocument,
-    contracts: &BTreeMap<String, ArtifactContract>,
-) -> Result<(), Error> {
-    for (consumer_text, sources) in &document.connections {
-        let consumer =
-            PortReference::parse(consumer_text).map_err(|error| Error::InvalidConnection {
-                consumer: consumer_text.clone(),
-                producer: String::new(),
-                message: error.to_string(),
-            })?;
-        let Some(consumer_contract) = contracts.get(&consumer.instance) else {
-            continue;
-        };
-        let input = consumer_contract
-            .runtime
-            .inputs
-            .iter()
-            .find(|input| input.name == consumer.port)
-            .ok_or_else(|| Error::InvalidConnection {
-                consumer: consumer_text.clone(),
-                producer: String::new(),
-                message: "consumer input is absent from the runtime artifact".to_owned(),
-            })?;
-        for producer_text in sources.as_slice() {
-            let producer =
-                PortReference::parse(producer_text).map_err(|error| Error::InvalidConnection {
-                    consumer: consumer_text.clone(),
-                    producer: producer_text.clone(),
-                    message: error.to_string(),
-                })?;
-            let Some(producer_contract) = contracts.get(&producer.instance) else {
-                continue;
-            };
-            let output = producer_contract
-                .runtime
-                .service_outputs
-                .iter()
-                .chain(producer_contract.runtime.transient_outputs.iter())
-                .find(|output| output.port.as_deref() == Some(producer.port.as_str()))
-                .ok_or_else(|| Error::InvalidConnection {
-                    consumer: consumer_text.clone(),
-                    producer: producer_text.clone(),
-                    message: "producer port is absent from the runtime artifact".to_owned(),
-                })?;
-            let Some(signature) = &output.signature else {
-                return Err(Error::InvalidConnection {
-                    consumer: consumer_text.clone(),
-                    producer: producer_text.clone(),
-                    message: "producer port has no complete signature".to_owned(),
-                });
-            };
-            let expected_kind = input_kind_port(input.kind);
-            if expected_kind != Some(signature.kind) {
-                return Err(Error::InvalidConnection {
-                    consumer: consumer_text.clone(),
-                    producer: producer_text.clone(),
-                    message: format!(
-                        "consumer {:?} requires {:?}, producer supplies {:?}",
-                        input.kind, expected_kind, signature.kind
-                    ),
-                });
-            }
-            if let Some(input_signature) = &input.signature
-                && input_signature != signature
-            {
-                return Err(Error::InvalidConnection {
-                    consumer: consumer_text.clone(),
-                    producer: producer_text.clone(),
-                    message: "request, response, service, or method identity differs".to_owned(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
+pub use connections::validate_connected_endpoints;
 
-fn input_kind_port(kind: InputKind) -> Option<PortKind> {
-    match kind {
-        InputKind::Latest => Some(PortKind::State),
-        InputKind::Samples => Some(PortKind::Sample),
-        InputKind::Events => Some(PortKind::Event),
-        InputKind::Setpoint => Some(PortKind::Setpoint),
-        InputKind::Stream => Some(PortKind::Stream),
-        InputKind::Commands => Some(PortKind::Commands),
-        InputKind::Read => Some(PortKind::Read),
-        InputKind::Request | InputKind::Operation => None,
-    }
-}
+mod connections;
 
 #[cfg(test)]
 mod tests {
@@ -825,6 +778,8 @@ connections:
                     max_bytes: None,
                     port: None,
                     signature: None,
+                    request_fqn: None,
+                    response_fqn: None,
                 }],
                 transient_outputs: Vec::new(),
                 service_outputs: Vec::new(),

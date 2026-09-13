@@ -165,9 +165,6 @@ pub(crate) fn validate_connections(
     prepared: &PreparedProject,
     contracts: &BTreeMap<ArtifactKey, ArtifactContract>,
 ) -> Result<(), Error> {
-    if prepared.document().connections.is_empty() {
-        return Ok(());
-    }
     let mut instance_contracts = BTreeMap::new();
     for (instance, target) in prepared.assembly_targets() {
         let key = (target.package_id.clone(), target.target.clone());

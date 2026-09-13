@@ -13,10 +13,6 @@ repository.workspace = true
 [package.metadata.phoxal]
 kind = "service"
 
-[lib]
-name = "phoxal_service_navigation"
-path = "src/lib.rs"
-
 [[bin]]
 name = "phoxal-service-navigation"
 path = "src/main.rs"

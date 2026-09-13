@@ -5,16 +5,17 @@
 //! entries in the robot's Cargo manifest, so Cargo remains the one resolver and
 //! the resulting lockfile remains inspectable by users and editors.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use fs4::{FileExt, TryLockError};
+use fs4::TryLockError;
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
 use crate::ProjectLayout;
 use crate::cargo::{CargoOptions, LockMode};
 use crate::error::Error;
+use crate::file_lock::ExclusiveFileLock;
 
 /// The official package key used by the mandatory supervisor dependency.
 pub const SUPERVISOR_DEPENDENCY_KEY: &str = "phoxal-supervisor";
@@ -47,7 +48,7 @@ struct LockSnapshot {
 /// caller observes the error.
 #[derive(Debug)]
 pub(crate) struct ManifestTransaction {
-    _lock: File,
+    _lock: ExclusiveFileLock,
     manifest: PathBuf,
     original_manifest: Vec<u8>,
     locks: Vec<LockSnapshot>,
@@ -235,7 +236,7 @@ pub(crate) fn ensure_required_dependencies(
 fn acquire_preparation_lock(
     layout: &ProjectLayout,
     manifest: &Path,
-) -> Result<(File, PathBuf), Error> {
+) -> Result<(ExclusiveFileLock, PathBuf), Error> {
     let workspace_root = cargo_workspace_root(layout, manifest)?;
     let lock_directory = workspace_root.join("target/phoxal");
     fs::create_dir_all(&lock_directory).map_err(|error| Error::ManifestPreparation {
@@ -256,8 +257,8 @@ fn acquire_preparation_lock(
                 lock_path.display()
             ),
         })?;
-    match FileExt::try_lock(&lock) {
-        Ok(()) => Ok((lock, workspace_root)),
+    match ExclusiveFileLock::try_acquire(lock) {
+        Ok(lock) => Ok((lock, workspace_root)),
         Err(TryLockError::WouldBlock) => Err(Error::ManifestPreparation {
             path: manifest.to_owned(),
             message:
@@ -396,6 +397,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn completed_preparation_releases_a_lock_even_while_a_descriptor_alias_survives()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("robot.yaml"), "robot: {}\n")?;
+        fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"robot\"\nversion = \"0.1.0\"\n",
+        )?;
+        fs::create_dir_all(directory.path().join("src"))?;
+        fs::write(directory.path().join("src/main.rs"), "fn main() {}\n")?;
+        let layout = ProjectLayout::discover(directory.path())?;
+        let transaction = ensure_required_dependencies(&layout, &CargoOptions::default())?;
+        // A concurrent process spawn can briefly inherit the same open file
+        // description. Closing our descriptor alone does not release flock.
+        let inherited = transaction._lock.clone_descriptor()?;
+        transaction.commit();
+        let next = ensure_required_dependencies(&layout, &CargoOptions::default())?;
+        next.commit();
+        drop(inherited);
+        Ok(())
+    }
+
+    #[test]
     fn concurrent_preparation_fails_before_manifest_mutation()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -417,7 +441,6 @@ mod tests {
         ));
         assert_eq!(fs::read(&manifest)?, original);
 
-        FileExt::unlock(&held)?;
         drop(held);
         let transaction = ensure_required_dependencies(&layout, &CargoOptions::default())?;
         assert_eq!(transaction.commit().len(), 1);
@@ -453,7 +476,6 @@ mod tests {
         assert!(
             matches!(error, Error::ManifestPreparation { message, .. } if message.contains("another cargo phoxal command"))
         );
-        FileExt::unlock(&held)?;
         drop(held);
         Ok(())
     }

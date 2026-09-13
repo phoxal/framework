@@ -1,8 +1,4 @@
-//! Official motion Runtime implementation.
-//!
-//! Robot brains may import this library for direct state-transition tests while
-//! the package's binary target runs the identical implementation in a process.
+//! Public messages, descriptors, and ports for the motion service.
+//! Runtime state and behavior belong to the binary.
 
-mod service;
-
-pub use service::*;
+pub use phoxal_motion::*;

@@ -10,6 +10,7 @@ mod cargo;
 mod discovery;
 mod document;
 mod error;
+mod file_lock;
 mod preparation;
 mod publication;
 mod selection;
@@ -28,7 +29,7 @@ pub use bundle::{
     BundleSimulation, BundleSimulationProvider, BundleSource, BundleSourceClosure,
     BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain, CompiledBundle,
     LocalIdentity, LocalRunPlan, LocalSimulationPlan, SimulationModelFacts,
-    SimulationProviderBinding,
+    SimulationProviderBinding, digest_source_files,
 };
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, CargoSelection, LockMode};
 pub use discovery::ProjectLayout;
@@ -121,6 +122,17 @@ impl Project {
     /// and let Cargo update the owning workspace lock.  Locked and frozen
     /// preparation refuses that addition before changing either file.
     pub fn prepare(&self, options: &CargoOptions) -> Result<PreparedProject, Error> {
+        self.prepare_with(options, |_, _, _| Ok(()))
+            .map(|(prepared, ())| prepared)
+    }
+
+    /// Stage authored inputs before resolving, allowing an explicit update to
+    /// repair a lockfile that cannot resolve the newly authored dependencies.
+    fn prepare_with<T>(
+        &self,
+        options: &CargoOptions,
+        before_resolution: impl FnOnce(&Path, &Path, Option<&Path>) -> Result<T, Error>,
+    ) -> Result<(PreparedProject, T), Error> {
         let preparation = preparation::ensure_required_dependencies(&self.layout, options)?;
         let local_source = match publication::prepare_local_project_source(&self.layout) {
             Ok(source) => source,
@@ -133,6 +145,10 @@ impl Project {
             .as_ref()
             .map_or_else(|| self.layout.root(), |source| source.cargo_workdir());
         let metadata_target = local_source.as_ref().map(|source| source.target_dir());
+        let result = match before_resolution(metadata_manifest, metadata_workdir, metadata_target) {
+            Ok(result) => result,
+            Err(error) => return rollback_preparation(preparation, error),
+        };
         let metadata = match cargo::load_metadata_at(
             metadata_manifest,
             metadata_workdir,
@@ -186,19 +202,22 @@ impl Project {
             || logical_metadata.workspace_root.as_std_path().to_owned(),
             |source| source.logical_workspace_root().to_owned(),
         );
-        Ok(PreparedProject {
-            layout: self.layout.clone(),
-            document: self.document.clone(),
-            metadata: logical_metadata,
-            cargo_metadata: metadata,
-            root_package,
-            cargo_root_package,
-            sources,
-            cargo_sources,
-            preparation_changes,
-            local_source: local_source.map(Arc::new),
-            logical_workspace_root,
-        })
+        Ok((
+            PreparedProject {
+                layout: self.layout.clone(),
+                document: self.document.clone(),
+                metadata: logical_metadata,
+                cargo_metadata: metadata,
+                root_package,
+                cargo_root_package,
+                sources,
+                cargo_sources,
+                preparation_changes,
+                local_source: local_source.map(Arc::new),
+                logical_workspace_root,
+            },
+            result,
+        ))
     }
 
     /// Runs an explicit Cargo update and validates the resulting Phoxal graph.
@@ -210,21 +229,9 @@ impl Project {
     /// Cargo arguments are not replayed into the validation builds.
     pub fn update(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
         cargo::validate_update_options(options)?;
-        let initial = self.prepare(options)?;
-        let output = cargo::update(
-            initial.cargo_manifest_path(),
-            initial.cargo_workdir(),
-            initial.cargo_target_dir(),
-            options,
-        );
-        let sync = initial.sync_staged_lock();
-        let output = match (output, sync) {
-            (Ok(output), Ok(())) => output,
-            (Err(error), Ok(())) => return Err(error),
-            (Ok(_), Err(error)) | (Err(_), Err(error)) => return Err(error),
-        };
-        drop(initial);
-        let prepared = self.prepare(options)?;
+        let (prepared, output) = self.prepare_with(options, |manifest, workdir, target| {
+            cargo::update(manifest, workdir, target, options)
+        })?;
         let validation_options = CargoOptions {
             cargo_args: Vec::new(),
             test_args: Vec::new(),

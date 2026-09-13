@@ -1,3 +1,9 @@
+mod config;
+mod drive;
+mod inputs;
+mod outputs;
+mod runtime;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(phoxal_service_motion::Motion)
+    phoxal::runtime::run(runtime::Motion)
 }

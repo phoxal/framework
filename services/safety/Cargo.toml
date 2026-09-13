@@ -13,10 +13,6 @@ repository.workspace = true
 [package.metadata.phoxal]
 kind = "service"
 
-[lib]
-name = "phoxal_service_safety"
-path = "src/lib.rs"
-
 [[bin]]
 name = "phoxal-service-safety"
 path = "src/main.rs"

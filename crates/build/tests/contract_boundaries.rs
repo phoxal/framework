@@ -1,9 +1,9 @@
 use std::process::Command;
 
-fn dependency_tree(package: &str) -> String {
+fn dependency_tree(fixture: &str) -> String {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(package)
+        .join("../../tests/fixtures")
+        .join(fixture)
         .join("Cargo.toml");
     let manifest_arg = manifest.to_string_lossy().into_owned();
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
@@ -45,14 +45,14 @@ fn assert_absent(tree: &str, forbidden: &[&str]) {
 
 #[test]
 fn contract_consumer_has_no_sdk_runtime_dependencies() {
-    let tree = dependency_tree("contract-consumer-fixture");
+    let tree = dependency_tree("contracts/consumer");
     assert!(tree.lines().any(|line| line.starts_with("phoxal-port v")));
     assert_absent(&tree, &["phoxal v", "tokio v", "zenoh v"]);
 }
 
 #[test]
 fn sdk_port_feature_has_an_isolated_dependency_closure() {
-    let tree = dependency_tree("port-consumer-fixture");
+    let tree = dependency_tree("ports/consumer");
     assert!(tree.lines().any(|line| line.starts_with("phoxal v")));
     assert!(tree.lines().any(|line| line.starts_with("phoxal-port v")));
     assert_absent(&tree, &["tokio v", "zenoh v"]);

@@ -10,6 +10,7 @@ use super::{ExecutionDuration, ExecutionTime, StepContext};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HardwareInvocation {
     context: StepContext,
+    input_boundary: u64,
     nominal_release: ExecutionTime,
     following_release: ExecutionTime,
 }
@@ -19,9 +20,10 @@ impl HardwareInvocation {
     /// boundary.  Controlled execution does not advance this hardware
     /// schedule; it reuses the same input/output adapter contract with an
     /// explicit logical timestamp and no missed releases.
-    pub(crate) const fn controlled(context: StepContext) -> Self {
+    pub(crate) const fn controlled(context: StepContext, boundary: u64) -> Self {
         Self {
             context,
+            input_boundary: boundary,
             nominal_release: context.now(),
             following_release: context.now(),
         }
@@ -31,6 +33,12 @@ impl HardwareInvocation {
     #[must_use]
     pub const fn context(self) -> StepContext {
         self.context
+    }
+
+    /// Input eligibility fence, distinct from the service invocation count.
+    #[must_use]
+    pub const fn input_boundary(self) -> u64 {
+        self.input_boundary
     }
 
     /// Newest due nominal release selected for this invocation.
@@ -108,6 +116,7 @@ impl HardwareSchedule {
         };
         Ok(HardwareInvocation {
             context: StepContext::new(now, self.period, elapsed, missed_releases, self.next_index),
+            input_boundary: self.next_index,
             nominal_release: ExecutionTime::from_nanos(nominal_nanos),
             following_release: ExecutionTime::from_nanos(following_nanos),
         })
@@ -249,5 +258,23 @@ mod tests {
             schedule.candidate(ExecutionTime::from_nanos(9)),
             Err(ScheduleError::ClockReversed)
         );
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    #[test]
+    fn controlled_input_boundary_is_independent_of_service_invocation_count() {
+        let context = StepContext::new(
+            ExecutionTime::from_nanos(20_000_000),
+            ExecutionDuration::from_nanos(20_000_000),
+            ExecutionDuration::from_nanos(20_000_000),
+            0,
+            1,
+        );
+        let invocation = HardwareInvocation::controlled(context, 10);
+        assert_eq!(invocation.input_boundary(), 10);
+        assert_eq!(invocation.context().invocation_index(), 1);
     }
 }

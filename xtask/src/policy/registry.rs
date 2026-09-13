@@ -407,7 +407,7 @@ autolib = false
             ),
             (
                 "published-internal-fixture",
-                "crates/contract-consumer-fixture",
+                "tests/fixtures/contracts/consumer",
                 "phoxal-contract-consumer-fixture",
                 "[\"phoxal\"]",
                 "[[bin]]\nname = \"phoxal-contract-consumer-fixture\"\npath = \"src/main.rs\"\n",

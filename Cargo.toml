@@ -19,15 +19,15 @@ members = [
     "crates/project",
     "crates/installation",
     "crates/mujoco",
-    "contracts/motion",
-    "contracts/navigation",
-    "contracts/kinematics",
-    "contracts/world",
-    "contracts/safety",
-    "crates/contract-owner-fixture",
-    "crates/contract-consumer-fixture",
-    "crates/hardware-driver-fixture",
-    "crates/port-consumer-fixture",
+    "services/motion/contract",
+    "services/navigation/contract",
+    "services/kinematics/contract",
+    "services/world/contract",
+    "services/safety/contract",
+    "tests/fixtures/contracts/producer",
+    "tests/fixtures/contracts/consumer",
+    "tests/fixtures/hardware/driver",
+    "tests/fixtures/ports/consumer",
     "phoxal",
     "crates/macros",
     "supervisor",
@@ -58,15 +58,15 @@ default-members = [
     "crates/project",
     "crates/installation",
     "crates/mujoco",
-    "contracts/motion",
-    "contracts/navigation",
-    "contracts/kinematics",
-    "contracts/world",
-    "contracts/safety",
-    "crates/contract-owner-fixture",
-    "crates/contract-consumer-fixture",
-    "crates/hardware-driver-fixture",
-    "crates/port-consumer-fixture",
+    "services/motion/contract",
+    "services/navigation/contract",
+    "services/kinematics/contract",
+    "services/world/contract",
+    "services/safety/contract",
+    "tests/fixtures/contracts/producer",
+    "tests/fixtures/contracts/consumer",
+    "tests/fixtures/hardware/driver",
+    "tests/fixtures/ports/consumer",
     "phoxal",
     "crates/macros",
     "supervisor",
@@ -172,11 +172,11 @@ phoxal-macros = { path = "crates/macros", version = "=0.68.0", registry = "phoxa
 phoxal-build = { path = "crates/build", version = "0.1.0", registry = "phoxal" }
 phoxal-port = { path = "crates/port", version = "0.1.0", registry = "phoxal" }
 phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "phoxal" }
-phoxal-motion = { path = "contracts/motion", version = "0.1.0", registry = "phoxal" }
-phoxal-navigation = { path = "contracts/navigation", version = "0.1.0", registry = "phoxal" }
-phoxal-kinematics = { path = "contracts/kinematics", version = "0.1.0", registry = "phoxal" }
-phoxal-world = { path = "contracts/world", version = "0.1.0", registry = "phoxal" }
-phoxal-safety = { path = "contracts/safety", version = "0.1.0", registry = "phoxal" }
+phoxal-motion = { path = "services/motion/contract", version = "0.1.0", registry = "phoxal" }
+phoxal-navigation = { path = "services/navigation/contract", version = "0.1.0", registry = "phoxal" }
+phoxal-kinematics = { path = "services/kinematics/contract", version = "0.1.0", registry = "phoxal" }
+phoxal-world = { path = "services/world/contract", version = "0.1.0", registry = "phoxal" }
+phoxal-safety = { path = "services/safety/contract", version = "0.1.0", registry = "phoxal" }
 phoxal-project = { path = "crates/project", version = "0.1.0", registry = "phoxal" }
 phoxal-installation = { path = "crates/installation", version = "0.1.0", registry = "phoxal" }
 
@@ -211,3 +211,7 @@ unimplemented = "deny"
 # builds each registry package as its own root and never reads it - so tuning it
 # would silently split the bundle between tuned project runtimes and stock
 # official ones.
+
+# Source and executable integrity checks must remain practical in debug builds.
+[profile.dev.package.sha2]
+opt-level = 3

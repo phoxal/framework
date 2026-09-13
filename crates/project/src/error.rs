@@ -122,7 +122,7 @@ pub enum ValidationError {
     },
     /// A connection key used an instance that cannot consume graph inputs.
     #[error(
-        "{field} uses '{instance}' as a consumer, but only services and brain may consume connections"
+        "{field} uses '{instance}' as a consumer, but only services, selected drivers and brain may consume connections"
     )]
     InvalidConnectionConsumer {
         /// Authored connection field.
@@ -431,12 +431,14 @@ pub enum Error {
     #[error("source selection failed: {0}")]
     Source(#[from] SourceError),
     /// Cargo command execution failed.
-    #[error("cargo {operation} failed ({status}): {stderr}")]
+    #[error("cargo {operation} failed ({status}):\n{stdout}\n{stderr}")]
     CargoCommand {
         /// Cargo subcommand.
         operation: String,
         /// Exit status rendered for diagnostics.
         status: String,
+        /// Captured standard output, including Rust test assertion failures.
+        stdout: String,
         /// Captured standard error.
         stderr: String,
     },

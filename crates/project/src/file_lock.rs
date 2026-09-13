@@ -1,0 +1,28 @@
+//! Scoped advisory locks with explicit release before closing the descriptor.
+
+use std::fs::File;
+
+use fs4::{FileExt, TryLockError};
+
+#[derive(Debug)]
+pub(crate) struct ExclusiveFileLock(File);
+
+impl ExclusiveFileLock {
+    pub(crate) fn try_acquire(file: File) -> Result<Self, TryLockError> {
+        FileExt::try_lock(&file)?;
+        Ok(Self(file))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_descriptor(&self) -> std::io::Result<File> {
+        self.0.try_clone()
+    }
+}
+
+impl Drop for ExclusiveFileLock {
+    fn drop(&mut self) {
+        // A concurrently spawned process can inherit this open file description
+        // until exec. Closing our descriptor alone would leave its lock held.
+        let _ = FileExt::unlock(&self.0);
+    }
+}

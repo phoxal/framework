@@ -3,7 +3,7 @@
 //!
 //! One artifact is one Cargo package at `{services,components}/<id>`,
 //! producing the exact target shape for its kind. Services and components each
-//! expose one reusable implementation library and one package-named binary.
+//! expose one contract library and one package-named binary with private behavior.
 //! Components also carry their `component.yaml`, canonical `model.xml`, and
 //! any locally referenced assets. Discovery reads the workspace metadata and
 //! rejects any package that claims to be an artifact without obeying the
@@ -42,7 +42,7 @@ const PHOXAL_PACKAGE_PREFIX: &str = "phoxal-";
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ArtifactKind {
     Service,
-    /// A component crate: one reusable Runtime implementation library, its
+    /// A component crate: one generated contract library, its
     /// package-named driver binary, and its authored assets (`component.yaml`,
     /// `model.xml`, and any locally referenced files) in one package.
     Component,

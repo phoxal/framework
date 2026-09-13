@@ -27,15 +27,6 @@ pub mod identity;
 #[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
 pub mod communication;
 
-/// The private Zenoh transport owner used by runtime and supervisor code.
-#[cfg(any(feature = "runtime", feature = "supervisor"))]
-#[doc(hidden)]
-pub(crate) mod bus;
-
-#[cfg(feature = "supervisor")]
-#[path = "bus/router.rs"]
-pub(crate) mod router;
-
 /// Synchronous Runtime authoring and execution.
 #[cfg(feature = "runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
@@ -48,20 +39,9 @@ pub mod session;
 
 /// Public Protobuf transport implementation shared by sessions and the
 /// supervisor host. It is not an SDK transport handle.
-#[cfg(any(feature = "session", feature = "supervisor"))]
+#[cfg(feature = "session")]
 #[doc(hidden)]
-#[path = "bus/public_session.rs"]
 pub mod communication_transport;
-
-/// Supervisor rendezvous paths and the supervisor-owned execution host.
-#[cfg(feature = "supervisor")]
-#[cfg_attr(docsrs, doc(cfg(feature = "supervisor")))]
-pub mod supervisor {
-    pub mod rendezvous;
-
-    #[doc(hidden)]
-    pub mod host;
-}
 
 /// Framework result type backed by `anyhow`.
 pub use anyhow::Result;
@@ -82,6 +62,7 @@ pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 #[doc(hidden)]
 pub mod __private {
     pub use crate::port::{PortDescriptor, PortKind};
+    pub use anyhow;
 
     pub trait StatePortValue<Value>: PortDescriptor {}
     pub trait SamplePortValue<Value>: PortDescriptor {}
@@ -171,3 +152,9 @@ pub mod __private {
         );
     }
 }
+
+#[cfg(all(test, feature = "runtime", feature = "session"))]
+mod test_router;
+
+/// Linked framework package version for executable information responses.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

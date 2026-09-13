@@ -6,3 +6,12 @@ message EncoderSample {
   optional double position_rad = 1;
   optional double velocity_radps = 2;
 }
+
+// A metric distance along the declared sensor field of view.
+// Sensor identity and original capture time belong to the sample stamp.
+message RangeSample {
+  double distance_m = 1;
+  double min_range_m = 2;
+  double max_range_m = 3;
+  bool valid = 4;
+}

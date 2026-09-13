@@ -279,13 +279,17 @@ where
             self.start(activation);
             return Ok(SubmitResult::Started);
         }
-        if self.state() == OperationState::Retiring {
-            return Err(if self.process_termination_required {
-                OperationError::ProcessTerminationRequired
-            } else {
-                OperationError::OwnerMustTerminate
-            });
+        if self.process_termination_required {
+            return Err(OperationError::ProcessTerminationRequired);
         }
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|worker| worker.timed_out_reported)
+        {
+            return Err(OperationError::OwnerMustTerminate);
+        }
+        self.mark_retiring();
         let result = if self.pending.replace(activation).is_some() {
             SubmitResult::ReplacedPending
         } else {
@@ -376,6 +380,14 @@ where
         };
         self.start(activation);
         Ok(true)
+    }
+
+    /// Withdraws local interest and drops the pending replacement.
+    /// A live worker remains charged until polling joins it or its original
+    /// retirement grace requires process termination.
+    pub fn withdraw(&mut self) {
+        self.pending = None;
+        self.mark_retiring();
     }
 
     /// Retires a live worker and reports whether it has exited and been joined.

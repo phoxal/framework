@@ -13,8 +13,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::file_lock::ExclusiveFileLock;
 use cargo_metadata::{Message, MetadataCommand};
-use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -536,7 +536,7 @@ fn provision(
             path: lock_path.clone(),
             source,
         })?;
-    FileExt::try_lock(&lock).map_err(|error| {
+    let _lock = ExclusiveFileLock::try_acquire(lock).map_err(|error| {
         simulation_error(format!(
             "cannot acquire simulator provisioning lock {}: {error}",
             lock_path.display()
@@ -731,6 +731,7 @@ fn build_registry_simulator(
         return Err(Error::CargoCommand {
             operation: "build simulator".to_owned(),
             status: status_string(output.status),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
@@ -788,6 +789,7 @@ fn generate_application_lock(manifest: &Path, options: &CargoOptions) -> Result<
         return Err(Error::CargoCommand {
             operation: "generate simulator lockfile".to_owned(),
             status: status_string(output.status),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
@@ -939,11 +941,20 @@ fn launch(
     request: &SimulationRunOptions,
 ) -> Result<SimulationRunReport, Error> {
     let supervisor_path = bundle.executable("supervisor");
-    let readiness_directory = tempfile::tempdir().map_err(|source| Error::ArtifactFile {
-        path: std::env::temp_dir(),
-        source,
-    })?;
+    // Unix socket names must fit even when the source checkout path is long.
+    // The private temporary directory is owned by this launcher and lives until cleanup.
+    let readiness_directory = tempfile::Builder::new()
+        .prefix("phoxal-sim-")
+        .tempdir_in("/tmp")
+        .map_err(|source| Error::ArtifactFile {
+            path: std::env::temp_dir(),
+            source,
+        })?;
     let readiness_path = readiness_directory.path().join("ready.json");
+    let endpoint = format!(
+        "unixsock-stream/{}",
+        readiness_directory.path().join("router.sock").display()
+    );
     let mut supervisor = Command::new(&supervisor_path)
         .arg(bundle.root())
         .args([
@@ -953,10 +964,12 @@ fn launch(
             &request.supervisor_id,
             "--ready-file",
             &readiness_path.display().to_string(),
+            "--listen",
+            &endpoint,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|source| Error::SupervisorLaunch {
             message: format!("cannot start {}: {source}", supervisor_path.display()),
@@ -976,7 +989,8 @@ fn launch(
         let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
         return Err(Error::SupervisorLaunch {
             message: format!(
-                "supervisor exited before readiness; cleanup: {}",
+                "supervisor exited before readiness for bundle {}; see supervisor diagnostics above; cleanup: {}",
+                bundle.root().display(),
                 cleanup_diagnostic(&cleanup)
             ),
         });
@@ -996,6 +1010,8 @@ fn launch(
             &request.supervisor_id,
             "--run-id",
             &request.run_id,
+            "--connect",
+            &endpoint,
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1019,7 +1035,8 @@ fn launch(
             )));
         }
     };
-    let provider_contract_verified = provider_contract_verified(&output.stdout);
+    let provider_contract_verified =
+        provider_contract_verified(&output.stdout, request.presentation);
     let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
     Ok(SimulationRunReport {
         schema: "phoxal/simulation-run/v0".to_owned(),
@@ -1048,7 +1065,7 @@ struct SimulatorTerminalEvidence {
     requested_steps: u64,
 }
 
-fn provider_contract_verified(stdout: &[u8]) -> bool {
+fn provider_contract_verified(stdout: &[u8], presentation: SimulationPresentation) -> bool {
     let Some(line) = stdout
         .split(|byte| *byte == b'\n')
         .rfind(|line| !line.is_empty())
@@ -1060,8 +1077,10 @@ fn provider_contract_verified(stdout: &[u8]) -> bool {
     };
     evidence.schema == "phoxal/simulation-run/v0"
         && evidence.provider_contract_verified
-        && evidence.outcome == "success"
-        && evidence.completed_steps == evidence.requested_steps
+        && ((evidence.outcome == "success" && evidence.completed_steps == evidence.requested_steps)
+            || (presentation == SimulationPresentation::Desktop
+                && evidence.outcome == "stopped"
+                && evidence.completed_steps <= evidence.requested_steps))
         && evidence.requested_steps > 0
 }
 
@@ -1387,11 +1406,33 @@ mod tests {
     #[test]
     fn terminal_evidence_requires_the_provider_contract_marker() {
         let complete = br#"{"schema":"phoxal/simulation-run/v0","provider_contract_verified":true,"outcome":"success","completed_steps":2,"requested_steps":2}"#;
-        assert!(provider_contract_verified(complete));
+        assert!(provider_contract_verified(
+            complete,
+            SimulationPresentation::Headless
+        ));
         let missing = br#"{"schema":"phoxal/simulation-run/v0","outcome":"success","completed_steps":2,"requested_steps":2}"#;
-        assert!(!provider_contract_verified(missing));
+        assert!(!provider_contract_verified(
+            missing,
+            SimulationPresentation::Headless
+        ));
         let incomplete = br#"{"schema":"phoxal/simulation-run/v0","provider_contract_verified":true,"outcome":"failed","completed_steps":1,"requested_steps":2}"#;
-        assert!(!provider_contract_verified(incomplete));
+        assert!(!provider_contract_verified(
+            incomplete,
+            SimulationPresentation::Headless
+        ));
+    }
+
+    #[test]
+    fn desktop_stop_is_a_successful_control_outcome_but_not_a_headless_completion() {
+        let stopped = br#"{"schema":"phoxal/simulation-run/v0","provider_contract_verified":true,"outcome":"stopped","completed_steps":0,"requested_steps":500}"#;
+        assert!(provider_contract_verified(
+            stopped,
+            SimulationPresentation::Desktop
+        ));
+        assert!(!provider_contract_verified(
+            stopped,
+            SimulationPresentation::Headless
+        ));
     }
 
     #[test]

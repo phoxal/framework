@@ -1,0 +1,32 @@
+[package]
+name = "phoxal-safety"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = ["phoxal"]
+description = "Public safety assessment service contract for Phoxal."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+include = ["build.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
+
+[package.metadata.phoxal]
+kind = "library"
+
+[dependencies]
+phoxal-robotics = { workspace = true }
+phoxal-motion = { workspace = true }
+phoxal-port = { workspace = true }
+phoxal-world = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+phoxal-robotics = { workspace = true }
+phoxal-build = { workspace = true }
+phoxal-motion = { workspace = true }
+phoxal-world = { workspace = true }
+
+[lints]
+workspace = true

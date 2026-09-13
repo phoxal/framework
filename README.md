@@ -10,10 +10,9 @@ This repository and its source are the authority for current framework implement
 ## Repository
 
 - `phoxal/` - the framework facade and runtime library
-- `crates/` and `contracts/` - independently versioned public libraries, proc
-  macros, service-owned contracts, and project tooling
+- `crates/` - reusable libraries, proc macros, and project tooling
 - `supervisor/` - the framework execution supervisor
-- `services/`, `components/` - official Runtime service and component-driver packages
+- `services/`, `components/` - official services and drivers, with their owned contracts beside private binary implementations
 - `simulators/mujoco/` - the independently versioned MuJoCo application kept
   outside the universal framework library
 - `tools/cargo-phoxal/` - the registry-aware project and publication command

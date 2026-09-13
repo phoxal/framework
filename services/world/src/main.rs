@@ -1,3 +1,8 @@
+mod config;
+mod inputs;
+mod outputs;
+mod runtime;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::runtime::run(phoxal_service_world::World)
+    phoxal::runtime::run(runtime::World)
 }

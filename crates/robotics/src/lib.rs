@@ -12,12 +12,32 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// A shared robotics value violates its public domain contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ValidationError {
+    /// Range bounds or a reported valid distance are incoherent.
+    #[error("range distance and limits must be finite, nonnegative, and coherent")]
+    InvalidRange,
     /// An encoder quantity is present but is not finite.
     #[error("encoder {field} must be finite when present")]
     NonFiniteEncoderValue {
         /// The invalid field name.
         field: &'static str,
     },
+}
+
+impl RangeSample {
+    /// Validate metric limits and require a valid return to lie within them.
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if !self.min_range_m.is_finite()
+            || !self.max_range_m.is_finite()
+            || !self.distance_m.is_finite()
+            || self.min_range_m < 0.0
+            || self.max_range_m <= self.min_range_m
+            || self.distance_m < 0.0
+            || (self.valid && !(self.min_range_m..=self.max_range_m).contains(&self.distance_m))
+        {
+            return Err(ValidationError::InvalidRange);
+        }
+        Ok(())
+    }
 }
 
 impl EncoderSample {
@@ -43,6 +63,24 @@ mod tests {
     use prost::Name;
 
     use super::{EncoderSample, FILE_DESCRIPTOR_SET, ValidationError};
+
+    #[test]
+    fn range_validity_distinguishes_no_return_from_an_out_of_range_measurement() {
+        let mut range = super::RangeSample {
+            distance_m: 1.0,
+            min_range_m: 0.1,
+            max_range_m: 4.0,
+            valid: true,
+        };
+        assert!(range.validate().is_ok());
+        range.distance_m = 5.0;
+        assert!(range.validate().is_err());
+        range.distance_m = 0.0;
+        range.valid = false;
+        assert!(range.validate().is_ok());
+        range.max_range_m = f64::NAN;
+        assert!(range.validate().is_err());
+    }
 
     #[test]
     fn optional_encoder_quantities_preserve_absence_and_zero() {

@@ -4,9 +4,21 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use mujoco_rs::prelude::MjData;
+#[cfg(all(feature = "rendering", target_os = "macos"))]
+mod cgl;
+#[cfg(all(feature = "rendering", not(target_os = "macos")))]
+mod egl;
+#[cfg(feature = "rendering")]
+mod renderer;
+#[cfg(feature = "rendering")]
+mod rendering;
+#[cfg(feature = "rendering")]
+use rendering::RendererState;
+#[cfg(feature = "rendering")]
+pub use rendering::{RenderedCamera, ViewCamera};
 
 use crate::error::{SceneError, WorkspaceError};
-use crate::model::Model;
+use crate::model::{Model, SiteHandle};
 
 const TIME_TOLERANCE: f64 = 1.0e-9;
 
@@ -148,16 +160,23 @@ pub struct SceneStep {
 pub struct Workspace {
     model: Model,
     data: MjData<std::sync::Arc<mujoco_rs::wrappers::MjModel>>,
+    #[cfg(feature = "rendering")]
+    renderer: Option<RendererState>,
     _thread_affine: PhantomData<Rc<()>>,
 }
 
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Workspace")
+        let mut debug = formatter.debug_struct("Workspace");
+        debug
             .field("model", &self.model.identity())
-            .field("time_seconds", &self.data.time())
-            .finish_non_exhaustive()
+            .field("time_seconds", &self.data.time());
+        #[cfg(feature = "rendering")]
+        debug.field(
+            "renderer",
+            &self.renderer.as_ref().map(|state| state.resolution),
+        );
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -171,6 +190,8 @@ impl Workspace {
         let workspace = Self {
             model: model.clone(),
             data,
+            #[cfg(feature = "rendering")]
+            renderer: None,
             _thread_affine: PhantomData,
         };
         workspace.ensure_finite_state()?;
@@ -238,10 +259,140 @@ impl Workspace {
         Ok(())
     }
 
+    /// Returns the native clock without copying the rest of the workspace.
+    pub(crate) fn time_seconds(&self) -> f64 {
+        self.data.time()
+    }
+
+    /// Copies the state needed to refresh a non-authoritative observation
+    /// workspace, then runs exactly one forward evaluation there.
+    pub(crate) fn copy_observation_from(
+        &mut self,
+        source: &Workspace,
+    ) -> Result<(), WorkspaceError> {
+        if self.model.identity() != source.model.identity() {
+            return Err(WorkspaceError::Native {
+                operation: "copy observation workspace",
+                message: "source and destination use different native models".to_owned(),
+            });
+        }
+        self.data.qpos_mut().copy_from_slice(source.data.qpos());
+        self.data.qvel_mut().copy_from_slice(source.data.qvel());
+        self.data.ctrl_mut().copy_from_slice(source.data.ctrl());
+        self.data.act_mut().copy_from_slice(source.data.act());
+        self.data.set_time(source.data.time());
+        self.data.forward();
+        self.ensure_finite_state()
+    }
+
     /// Steps this private workspace once.
     pub fn step(&mut self) -> Result<(), WorkspaceError> {
         self.data.step();
         self.ensure_finite_state()
+    }
+
+    /// Computes a deterministic finite-FOV range from one model-authored site.
+    ///
+    /// The site local +Z axis is the center ray, matching MuJoCo's native
+    /// rangefinder convention.  Eight additional rays are cast at the
+    /// corners and edge centers of the declared square field of view, and the
+    /// nearest hit inside the inclusive range limits is returned.  The query
+    /// mutates only MuJoCo's scratch data used by ray casting and is intended
+    /// for a non-authoritative observation workspace.
+    pub fn finite_fov_range(
+        &mut self,
+        site: SiteHandle,
+        min_range_m: f64,
+        max_range_m: f64,
+        fov_rad: f64,
+    ) -> Result<Option<f64>, WorkspaceError> {
+        if site.model_identity() != self.model.identity() {
+            return Err(WorkspaceError::Native {
+                operation: "cast finite-FOV range",
+                message: "site belongs to a different native model".to_owned(),
+            });
+        }
+        if !min_range_m.is_finite()
+            || !max_range_m.is_finite()
+            || !fov_rad.is_finite()
+            || min_range_m < 0.0
+            || max_range_m <= min_range_m
+            || fov_rad <= 0.0
+            || fov_rad >= std::f64::consts::PI
+        {
+            return Err(WorkspaceError::Native {
+                operation: "cast finite-FOV range",
+                message: "range limits and field of view must be finite and ordered".to_owned(),
+            });
+        }
+        self.ensure_finite_state()?;
+        let index = site.index();
+        let position =
+            self.data
+                .site_xpos()
+                .get(index)
+                .copied()
+                .ok_or_else(|| WorkspaceError::Native {
+                    operation: "cast finite-FOV range",
+                    message: format!("site index {index} is outside native site data"),
+                })?;
+        let matrix =
+            self.data
+                .site_xmat()
+                .get(index)
+                .copied()
+                .ok_or_else(|| WorkspaceError::Native {
+                    operation: "cast finite-FOV range",
+                    message: format!("site index {index} is outside native site orientation data"),
+                })?;
+        let half_angle = (fov_rad * 0.5).tan();
+        let mut directions = Vec::with_capacity(9);
+        for vertical in [-1.0, 0.0, 1.0] {
+            for horizontal in [-1.0, 0.0, 1.0] {
+                let local = [horizontal * half_angle, vertical * half_angle, 1.0];
+                let norm = (local[0] * local[0] + local[1] * local[1] + 1.0).sqrt();
+                let local = [local[0] / norm, local[1] / norm, local[2] / norm];
+                directions.push([
+                    matrix[0] * local[0] + matrix[1] * local[1] + matrix[2] * local[2],
+                    matrix[3] * local[0] + matrix[4] * local[1] + matrix[5] * local[2],
+                    matrix[6] * local[0] + matrix[7] * local[1] + matrix[8] * local[2],
+                ]);
+            }
+        }
+        let bodyexclude = self
+            .model
+            .site_info(site)
+            .map_err(|error| WorkspaceError::Native {
+                operation: "inspect range site",
+                message: error.to_string(),
+            })?
+            .body_index;
+        let (geometry_ids, distances) = self
+            .data
+            .try_multi_ray(
+                &position,
+                &directions,
+                None,
+                true,
+                Some(bodyexclude),
+                max_range_m,
+                None,
+            )
+            .map_err(|error| WorkspaceError::Native {
+                operation: "cast finite-FOV range",
+                message: error.to_string(),
+            })?;
+        let nearest = geometry_ids
+            .into_iter()
+            .zip(distances)
+            .filter_map(|(geometry_id, distance)| {
+                geometry_id.and_then(|_| {
+                    (distance.is_finite() && distance >= min_range_m && distance <= max_range_m)
+                        .then_some(distance)
+                })
+            })
+            .min_by(|left, right| left.total_cmp(right));
+        Ok(nearest)
     }
 
     fn ensure_finite_state(&self) -> Result<(), WorkspaceError> {
@@ -334,6 +485,7 @@ fn validate_state_values(
 /// native memory.
 pub struct Scene {
     workspace: Workspace,
+    observation_workspace: Workspace,
     quantum: PhysicsQuantum,
     boundary: u64,
     phase: ScenePhase,
@@ -357,8 +509,11 @@ impl Scene {
     pub fn new(model: Model) -> Result<Self, SceneError> {
         let quantum = PhysicsQuantum::from_seconds(model.timestep())?;
         let workspace = Workspace::new(&model)?;
+        let mut observation_workspace = Workspace::new(&model)?;
+        observation_workspace.copy_observation_from(&workspace)?;
         Ok(Self {
             workspace,
+            observation_workspace,
             quantum,
             boundary: 0,
             phase: ScenePhase::Paused,
@@ -392,7 +547,7 @@ impl Scene {
 
     /// Returns a copied state snapshot at the current boundary.
     pub fn snapshot(&self) -> Result<StateSnapshot, SceneError> {
-        let mut snapshot = self.workspace.snapshot()?;
+        let mut snapshot = self.observation_workspace.snapshot()?;
         snapshot.boundary = self.boundary;
         Ok(snapshot)
     }
@@ -405,7 +560,7 @@ impl Scene {
         if self.phase == ScenePhase::Failed {
             return Err(SceneError::Failed);
         }
-        let mut controls = self.workspace.snapshot()?.controls.into_vec();
+        let mut controls = self.observation_workspace.snapshot()?.controls.into_vec();
         if index >= controls.len() {
             return Err(SceneError::ControlIndex {
                 index,
@@ -415,6 +570,7 @@ impl Scene {
         validate_control(&self.workspace, index, value)?;
         controls[index] = value;
         self.workspace.set_controls(&controls)?;
+        self.observation_workspace.set_controls(&controls)?;
         Ok(())
     }
 
@@ -434,6 +590,7 @@ impl Scene {
             validate_control(&self.workspace, index, value)?;
         }
         self.workspace.set_controls(values)?;
+        self.observation_workspace.set_controls(values)?;
         Ok(())
     }
 
@@ -478,13 +635,7 @@ impl Scene {
             return Err(SceneError::Workspace(error));
         }
         self.boundary = end_boundary;
-        let native_time = match self.workspace.snapshot() {
-            Ok(snapshot) => snapshot.time_seconds,
-            Err(error) => {
-                self.phase = ScenePhase::Failed;
-                return Err(SceneError::Workspace(error));
-            }
-        };
+        let native_time = self.workspace.time_seconds();
         if !native_time.is_finite() {
             self.phase = ScenePhase::Failed;
             return Err(SceneError::NonFiniteTime(native_time));
@@ -497,8 +648,15 @@ impl Scene {
                 expected,
             });
         }
+        if let Err(error) = self
+            .observation_workspace
+            .copy_observation_from(&self.workspace)
+        {
+            self.phase = ScenePhase::Failed;
+            return Err(SceneError::Workspace(error));
+        }
         self.phase = ScenePhase::Paused;
-        let mut state = match self.workspace.snapshot() {
+        let mut state = match self.observation_workspace.snapshot() {
             Ok(state) => state,
             Err(error) => {
                 self.phase = ScenePhase::Failed;
@@ -532,7 +690,7 @@ impl Scene {
                 })?;
         self.phase = ScenePhase::Running;
         for _ in 0..count {
-            let controls = match self.workspace.snapshot() {
+            let controls = match self.observation_workspace.snapshot() {
                 Ok(snapshot) => snapshot.controls().to_vec(),
                 Err(error) => {
                     self.phase = ScenePhase::Failed;
@@ -545,7 +703,7 @@ impl Scene {
             }
         }
         self.phase = ScenePhase::Paused;
-        let mut state = match self.workspace.snapshot() {
+        let mut state = match self.observation_workspace.snapshot() {
             Ok(state) => state,
             Err(error) => {
                 self.phase = ScenePhase::Failed;
@@ -566,6 +724,13 @@ impl Scene {
             return Err(SceneError::Failed);
         }
         if let Err(error) = self.workspace.reset() {
+            self.phase = ScenePhase::Failed;
+            return Err(SceneError::Workspace(error));
+        }
+        if let Err(error) = self
+            .observation_workspace
+            .copy_observation_from(&self.workspace)
+        {
             self.phase = ScenePhase::Failed;
             return Err(SceneError::Workspace(error));
         }
@@ -647,6 +812,55 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[test]
+    fn finite_fov_range_samples_nearest_valid_ray_and_reports_no_hit() {
+        let model = Model::from_xml(
+            r#"
+                <mujoco model="finite-fov-range">
+                  <worldbody>
+                    <geom name="far_wall" type="box" pos="0 0 2" size="0.3 0.3 0.1"/>
+                    <geom name="near_target" type="box" pos="0.25 0 1" size="0.1 0.1 0.1"/>
+                    <body name="range_sensor">
+                      <site name="range" pos="0 0 0"/>
+                    </body>
+                  </worldbody>
+                </mujoco>
+            "#,
+        )
+        .expect("finite-FOV fixture model");
+        let site = model
+            .site("range")
+            .expect("range site lookup")
+            .expect("range site");
+        let mut workspace = Workspace::new(&model).expect("range workspace");
+
+        let nearest = workspace
+            .finite_fov_range(site, 0.0, 3.0, 0.6)
+            .expect("finite-FOV sample")
+            .expect("off-center near target is inside the sampled FOV");
+        assert!(
+            nearest > 0.8 && nearest < 1.2,
+            "near target range: {nearest}"
+        );
+
+        let far_only = workspace
+            .finite_fov_range(site, 1.5, 3.0, 0.6)
+            .expect("filtered finite-FOV sample")
+            .expect("center wall remains in range");
+        assert!(
+            far_only > 1.8 && far_only < 2.2,
+            "far wall range: {far_only}"
+        );
+
+        assert_eq!(
+            workspace
+                .finite_fov_range(site, 2.5, 3.0, 0.6)
+                .expect("no-hit finite-FOV sample"),
+            None
+        );
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
     fn native_model_resolves_relative_includes_only_from_the_closed_vfs() {
         let artifact = ClosedModel::new(
             "model.xml",
@@ -689,6 +903,10 @@ mod tests {
         assert_eq!(
             model.actuator_info(actuator).unwrap().control_range,
             Some([-1.0, 1.0])
+        );
+        assert_eq!(
+            model.actuator_info(actuator).unwrap().mode,
+            crate::ActuatorMode::Torque
         );
         let sensor = model.sensor("tip_position").unwrap().unwrap();
         assert_eq!(model.sensor_info(sensor).unwrap().dimension, 3);
@@ -745,5 +963,54 @@ mod tests {
             Err(SceneError::NonFiniteControl { .. })
         ));
         assert_eq!(scene.snapshot().unwrap().controls(), &[0.0]);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn observation_refresh_does_not_change_the_authoritative_next_state() {
+        let model = Model::from_xml(FIXTURE).unwrap();
+        let mut baseline = Scene::new(model.clone()).unwrap();
+        let mut refreshed = Scene::new(model).unwrap();
+        baseline.set_control(0, 0.5).unwrap();
+        refreshed.set_control(0, 0.5).unwrap();
+
+        // The authoritative workspaces have each completed one native step.
+        // Only the observation workspace is repeatedly refreshed below.
+        baseline.workspace.step().unwrap();
+        refreshed.workspace.step().unwrap();
+        let authoritative_before = refreshed.workspace.snapshot().unwrap();
+        for _ in 0..8 {
+            refreshed
+                .observation_workspace
+                .copy_observation_from(&refreshed.workspace)
+                .unwrap();
+            let authoritative_after = refreshed.workspace.snapshot().unwrap();
+            assert_eq!(
+                authoritative_after.time_seconds(),
+                authoritative_before.time_seconds()
+            );
+            assert_eq!(authoritative_after.qpos(), authoritative_before.qpos());
+            assert_eq!(authoritative_after.qvel(), authoritative_before.qvel());
+            assert_eq!(
+                authoritative_after.controls(),
+                authoritative_before.controls()
+            );
+        }
+
+        // A subsequent native step remains bit-for-bit equal to a scene that
+        // never evaluated the copied observation workspace.  This catches an
+        // accidental in-place forward on the authoritative warm-start data.
+        baseline.workspace.set_controls(&[0.25]).unwrap();
+        refreshed.workspace.set_controls(&[0.25]).unwrap();
+        baseline.workspace.step().unwrap();
+        refreshed.workspace.step().unwrap();
+        let baseline_after = baseline.workspace.snapshot().unwrap();
+        let refreshed_after = refreshed.workspace.snapshot().unwrap();
+        assert_eq!(
+            refreshed_after.time_seconds(),
+            baseline_after.time_seconds()
+        );
+        assert_eq!(refreshed_after.qpos(), baseline_after.qpos());
+        assert_eq!(refreshed_after.qvel(), baseline_after.qvel());
     }
 }

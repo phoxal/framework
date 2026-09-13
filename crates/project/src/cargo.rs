@@ -623,6 +623,7 @@ fn run_command(mut command: Command, operation: CargoOperation) -> Result<CargoO
         return Err(Error::CargoCommand {
             operation: operation.as_str().to_owned(),
             status: status_string(output.status),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }

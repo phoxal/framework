@@ -1,0 +1,21 @@
+[package]
+name = "example-counter-contract"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "The canonical generated contract for the Runtime example counter."
+
+[lib]
+name = "example_counter_contract"
+path = "src/lib.rs"
+
+[dependencies]
+phoxal-port = { path = "../../../../../crates/port", version = "0.1.0" }
+prost = "0.14.4"
+
+[build-dependencies]
+phoxal-build = { path = "../../../../../crates/build", version = "0.1.0" }
+
+[lints]
+workspace = true

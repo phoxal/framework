@@ -107,11 +107,12 @@ The check discovers this `robot.yaml`, resolves the root package, validates its 
 
 ### Reusable service
 
-`contracts/counter/` owns `proto/example/counter/v1/counter.proto` and uses `phoxal-build` from its build script.
+`services/counter/contract/` owns `proto/example/counter/v1/counter.proto` and uses `phoxal-build` from its build script.
 
 The service re-exports the generated `counter::STATE` descriptor and `CounterState` message from that canonical contract package.
 
-The package exposes both a library for direct brain imports and an executable for project assembly.
+The service library exports only its generated messages and ports.
+Its executable owns private configuration, input, output and runtime modules.
 
 Its direct unit test calls `initialize` and `invoke`, so it checks the same service implementation without starting a supervisor or transport.
 

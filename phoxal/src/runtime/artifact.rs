@@ -108,6 +108,11 @@ impl RecordBuilder {
 
     const fn push_quoted(&mut self, value: &str) {
         self.push_byte(b'"');
+        self.push_escaped(value);
+        self.push_byte(b'"');
+    }
+
+    const fn push_escaped(&mut self, value: &str) {
         let bytes = value.as_bytes();
         let mut index = 0;
         while index < bytes.len() {
@@ -126,7 +131,21 @@ impl RecordBuilder {
             }
             index += 1;
         }
-        self.push_byte(b'"');
+    }
+
+    const fn push_message_type(&mut self, value: Option<super::input::MessageType>) {
+        match value {
+            None => self.push_str("null"),
+            Some(value) => {
+                self.push_byte(b'"');
+                if !value.package.is_empty() {
+                    self.push_escaped(value.package);
+                    self.push_byte(b'.');
+                }
+                self.push_escaped(value.name);
+                self.push_byte(b'"');
+            }
+        }
     }
 
     const fn push_hex(&mut self, value: u8) {
@@ -247,6 +266,10 @@ impl RecordBuilder {
             }
             self.push_str(",\"signature\":");
             self.push_signature(field.port_signature);
+            self.push_str(",\"request_fqn\":");
+            self.push_message_type(field.request_type);
+            self.push_str(",\"response_fqn\":");
+            self.push_message_type(field.response_type);
             self.push_byte(b'}');
             index += 1;
         }

@@ -10,7 +10,7 @@ use phoxal_project::{
 };
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(cargo_arguments(std::env::args_os()));
     let json_diagnostics = cli.json_diagnostics();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -19,6 +19,18 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// Cargo external subcommands receive their own name as argv[1].
+fn cargo_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut arguments: Vec<_> = arguments.into_iter().collect();
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "phoxal")
+    {
+        arguments.remove(1);
+    }
+    arguments
 }
 
 fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
@@ -147,16 +159,15 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
         if !report.simulator_stdout.ends_with('\n') {
             println!();
         }
-    } else {
-        println!(
-            "{}",
-            serde_json::to_string(&report).map_err(|source| {
-                phoxal_project::Error::SimulationInvalid {
-                    message: format!("cannot encode simulation terminal report: {source}"),
-                }
-            })?
-        );
     }
+    println!(
+        "{}",
+        serde_json::to_string(&report).map_err(|source| {
+            phoxal_project::Error::SimulationInvalid {
+                message: format!("cannot encode simulation terminal report: {source}"),
+            }
+        })?
+    );
     if !report.simulator_stderr.is_empty() {
         eprint!("{}", report.simulator_stderr);
     }
@@ -704,6 +715,20 @@ impl CommonArgs {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn cargo_external_subcommand_and_direct_invocation_parse_identically() {
+        for arguments in [
+            vec!["cargo-phoxal", "phoxal", "check", "--locked"],
+            vec!["cargo-phoxal", "check", "--locked"],
+        ] {
+            let parsed = Cli::try_parse_from(super::cargo_arguments(
+                arguments.into_iter().map(OsString::from),
+            ))
+            .unwrap();
+            assert!(matches!(parsed.command, Command::Check(_)));
+        }
+    }
 
     #[test]
     fn documented_commands_parse_and_preserve_lock_policy() {

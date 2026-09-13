@@ -37,6 +37,37 @@ message Ready {
   string runtime_instance = 3;
 }
 
+// Publish initialized State only after every controlled receiver is ready.
+// This phase does not invoke Runtime::step or advance an invocation counter.
+message InitializeStateRequest {
+  string execution_id = 1;
+  string timeline_id = 2;
+}
+
+message InitializeStateResponse {
+  string execution_id = 1;
+  string timeline_id = 2;
+  string runtime_instance = 3;
+  repeated ProductReceipt required_products = 4;
+  repeated DeliveryReceipt required_deliveries = 5;
+}
+
+// Capture the accepted Read views before any runtime invokes this boundary.
+message PinReadViewsRequest {
+  string execution_id = 1;
+  string timeline_id = 2;
+  uint64 boundary = 3;
+}
+
+message PinReadViewsResponse {
+  string execution_id = 1;
+  string timeline_id = 2;
+  uint64 boundary = 3;
+  string runtime_instance = 4;
+  bool admitted = 5;
+  optional string detail = 6;
+}
+
 message Invocation {
   string execution_id = 1;
   string timeline_id = 2;
@@ -68,6 +99,8 @@ message ProductReceipt {
 }
 
 message InputReceipt {
+  // Consumer field and producer port are distinct graph identities.
+  string input = 6;
   string source = 1;
   string port = 2;
   uint64 sequence = 3;
@@ -84,7 +117,9 @@ message Actuation {
 // One output record that must be admitted by a graph receiver.  The target is
 // optional for ordinary publications: the supervisor expands that record over
 // the immutable graph fan-out.  Requests carry their exact target because the
-// generated activation already resolved it before publication.
+// generated activation already resolved it before publication. Reply targets
+// name the exact caller instance and input field; request targets name the
+// server instance, whose public port resolves to one admitted handler field.
 message DeliveryReceipt {
   string port = 1;
   string direction = 2;
@@ -102,6 +137,7 @@ message DeliveryAck {
   string timeline_id = 2;
   uint64 boundary = 3;
   string source = 4;
+  // Exact receiving instance and private field, separated by a dot.
   string target = 5;
   string port = 6;
   string direction = 7;

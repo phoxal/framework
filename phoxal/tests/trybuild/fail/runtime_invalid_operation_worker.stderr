@@ -1,10 +1,10 @@
-error[E0277]: the trait bound `Result<u16, anyhow::Error>: phoxal::runtime::input::OperationWorkerFor<phoxal::runtime::Operation<u64, u32>>` is not satisfied
+error[E0277]: the trait bound `Result<u16, phoxal::__private::anyhow::Error>: phoxal::runtime::input::OperationWorkerFor<phoxal::runtime::Operation<u64, u32>>` is not satisfied
   --> tests/trybuild/fail/runtime_invalid_operation_worker.rs:40:29
    |
 40 |     fn worker(input: u8) -> phoxal::Result<u16> {
    |                             ^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
-help: the trait `OperationWorkerFor<phoxal::runtime::Operation<u64, u32>>` is not implemented for `Result<u16, anyhow::Error>`
+help: the trait `OperationWorkerFor<phoxal::runtime::Operation<u64, u32>>` is not implemented for `Result<u16, phoxal::__private::anyhow::Error>`
       but trait `OperationWorkerFor<phoxal::runtime::Operation<u64, u16>>` is implemented for it
   --> src/runtime/input.rs
    |

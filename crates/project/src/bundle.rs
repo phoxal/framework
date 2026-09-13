@@ -121,10 +121,16 @@ pub struct BundleSimulation {
 /// One generated public observation provider required by a simulation run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleSimulationProvider {
+    /// Phase-aligned publication frequency in millionths of one hertz.
+    pub rate_microhertz: u64,
     /// Runtime service or brain instance owning the public port.
     pub service_instance: String,
     /// Generated public output port.
     pub port: String,
+    /// Protobuf service declaring the generated output.
+    pub service_fqn: String,
+    /// Protobuf method declaring the generated output.
+    pub method: String,
     /// Public observation semantic kind.
     pub kind: crate::artifact::PortKind,
     /// Request message identity from the generated port signature.
@@ -141,6 +147,8 @@ pub struct BundleSimulationProvider {
 /// simulator before bundle assembly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimulationProviderBinding {
+    /// Phase-aligned publication frequency in millionths of one hertz.
+    pub rate_microhertz: u64,
     /// Runtime driver instance owning the public port.
     pub service_instance: String,
     /// Generated public output port.
@@ -910,11 +918,40 @@ fn build_simulation_definition(
         .iter()
         .map(|binding| (binding.service_instance.clone(), binding.port.clone()))
         .collect::<BTreeSet<_>>();
-    if expected_setpoint_keys != actual_binding_keys {
+    if !actual_binding_keys.is_subset(&expected_setpoint_keys) {
         return Err(simulation_error(format!(
-            "explicit simulation actuation bindings do not cover compiled setpoints (expected {:?}, got {:?})",
+            "simulation actuation bindings contain routes outside compiled setpoints (available {:?}, got {:?})",
             expected_setpoint_keys, actual_binding_keys
         )));
+    }
+    for (consumer, sources) in &prepared.document().connections {
+        let consumer = crate::document::PortReference::parse(consumer)
+            .map_err(|error| simulation_error(error.to_string()))?;
+        if !driver_instances.contains(&consumer.instance) {
+            continue;
+        }
+        let input = contracts[&consumer.instance]
+            .runtime
+            .inputs
+            .iter()
+            .find(|input| input.name == consumer.port)
+            .ok_or_else(|| simulation_error("native driver input has no compiled contract"))?;
+        if input.kind != crate::artifact::InputKind::Setpoint {
+            return Err(simulation_error(format!(
+                "native substitution does not support driver input `{}.{}` of kind {:?}",
+                consumer.instance, consumer.port, input.kind
+            )));
+        }
+        for source in sources.as_slice() {
+            let source = crate::document::PortReference::parse(source)
+                .map_err(|error| simulation_error(error.to_string()))?;
+            if !actual_binding_keys.contains(&(source.instance, source.port)) {
+                return Err(simulation_error(format!(
+                    "native substitution does not cover driver input `{}.{}`",
+                    consumer.instance, consumer.port
+                )));
+            }
+        }
     }
     for binding in &facts.actuation_bindings {
         let contract = contracts.get(&binding.service_instance).ok_or_else(|| {
@@ -965,10 +1002,27 @@ fn build_simulation_definition(
                     provider.service_instance, provider.port
                 ))
             })?;
+            if provider.rate_microhertz == 0
+                || u128::from(provider.rate_microhertz) * u128::from(facts.quantum_ns)
+                    > 1_000_000_000_000_000
+            {
+                return Err(simulation_error(
+                    "provider rate exceeds the native quantum or is zero",
+                ));
+            }
             let (max_message_bytes, max_buffered_items) = provider_bounds(output, &provider.port)?;
+            let signature = output.signature.as_ref().ok_or_else(|| {
+                simulation_error(format!(
+                    "simulation provider {}.{} has no generated signature",
+                    provider.service_instance, provider.port
+                ))
+            })?;
             Ok(BundleSimulationProvider {
+                rate_microhertz: provider.rate_microhertz,
                 service_instance: provider.service_instance.clone(),
                 port: provider.port.clone(),
+                service_fqn: signature.service.clone(),
+                method: signature.method.clone(),
                 kind: provider.kind,
                 input_fqn: provider.input_fqn.clone(),
                 payload_fqn: provider.payload_fqn.clone(),
@@ -2716,7 +2770,13 @@ fn validate_cargo_config(root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn digest_source_files(files: &[BundleSourceFile]) -> String {
+/// Compute the canonical digest of a source closure, independent of file order.
+///
+/// Each path, content digest, and little-endian byte count is length-prefixed.
+/// Consumers must separately verify each file and reject duplicate paths.
+pub fn digest_source_files(files: &[BundleSourceFile]) -> String {
+    let mut files = files.iter().collect::<Vec<_>>();
+    files.sort_by(|left, right| left.path.cmp(&right.path));
     let mut hasher = Sha256::new();
     for file in files {
         update_digest_bytes(&mut hasher, file.path.as_bytes());
@@ -3670,6 +3730,7 @@ mod tests {
             "model-digest",
             10_000_000,
             vec![SimulationProviderBinding {
+                rate_microhertz: 100_000_000,
                 service_instance: "imu".to_owned(),
                 port: "sample".to_owned(),
                 kind: crate::artifact::PortKind::Sample,

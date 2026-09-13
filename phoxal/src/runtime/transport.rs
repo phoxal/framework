@@ -10,7 +10,7 @@
 //! functions or a payload registry.
 
 use std::any::{Any, TypeId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use prost::Message;
 
@@ -58,6 +58,12 @@ pub enum WireControl {
     Failed = 3,
     /// A correlated request was refused before target queue admission.
     Rejected = 4,
+    /// Explicit Setpoint withdrawal, distinct from an empty Protobuf value.
+    Withdraw = 5,
+    /// An immutable read endpoint already has an active hardware query.
+    Busy = 6,
+    /// A read request or response exceeded its declared encoded bound.
+    Oversized = 7,
 }
 
 impl WireControl {
@@ -68,6 +74,9 @@ impl WireControl {
             2 => Ok(Self::End),
             3 => Ok(Self::Failed),
             4 => Ok(Self::Rejected),
+            5 => Ok(Self::Withdraw),
+            6 => Ok(Self::Busy),
+            7 => Ok(Self::Oversized),
             _ => Err(TransportError::InvalidMetadata {
                 detail: format!("unknown stream control value {value}"),
             }),
@@ -90,6 +99,9 @@ pub struct RuntimeWireMetadata {
     /// Original source identity for measured/forwarded observations.
     #[prost(string, optional, tag = "3")]
     pub source: Option<String>,
+    /// Immediate graph publisher, distinct from an observation's original source.
+    #[prost(string, optional, tag = "17")]
+    pub producer: Option<String>,
     /// Original observation revision, when the source exposes one.
     #[prost(uint64, optional, tag = "4")]
     pub revision: Option<u64>,
@@ -131,9 +143,18 @@ pub struct RuntimeWireMetadata {
     /// Zero-based item index within the output port/direction cut.
     #[prost(uint32, optional, tag = "16")]
     pub(crate) item: Option<u32>,
+    /// Selected host-monotonic transfer budget for this managed request.
+    #[prost(uint64, optional, tag = "18")]
+    pub(crate) request_timeout_ms: Option<u64>,
 }
 
 impl RuntimeWireMetadata {
+    /// Immediate publisher identity, or the original source for direct observations.
+    #[must_use]
+    pub fn publisher(&self) -> Option<&str> {
+        self.producer.as_deref().or(self.source.as_deref())
+    }
+
     /// Metadata for an ordinary service-produced value.
     #[must_use]
     pub fn data(source: impl Into<String>, logical_time: ExecutionTime, sequence: u64) -> Self {
@@ -218,7 +239,7 @@ impl RuntimeWireMetadata {
         )
     }
 
-    pub(crate) fn encode_bounded(&self) -> Result<Vec<u8>, TransportError> {
+    pub fn encode_bounded(&self) -> Result<Vec<u8>, TransportError> {
         let size = self.encoded_len();
         if size > MAX_METADATA_BYTES {
             return Err(TransportError::MetadataTooLarge { bytes: size });
@@ -270,7 +291,7 @@ impl RuntimeWireMetadata {
 
     /// Attach the private identity used by the controlled-delivery
     /// acknowledgement leg.
-    pub(crate) fn with_delivery_identity(
+    pub fn with_delivery_identity(
         mut self,
         execution_id: impl Into<String>,
         timeline_id: impl Into<String>,
@@ -281,6 +302,17 @@ impl RuntimeWireMetadata {
         self.timeline_id = Some(timeline_id.into());
         self.boundary = Some(boundary);
         self.item = Some(item);
+        self.eligible_boundary
+            .get_or_insert(boundary.saturating_add(1));
+        self
+    }
+
+    /// Select the first input cut allowed to consume this record.
+    /// Captured simulation observations enter their capture boundary; service
+    /// outputs default to the following boundary through delivery identity.
+    #[must_use]
+    pub fn with_eligible_boundary(mut self, boundary: u64) -> Self {
+        self.eligible_boundary = Some(boundary);
         self
     }
 }
@@ -476,6 +508,13 @@ impl std::fmt::Debug for ChangeToken {
 }
 
 impl PreparedEndpoint {
+    fn kind(&self) -> PortKind {
+        match self {
+            Self::Signature(signature) => signature.kind,
+            Self::Binding(binding) => binding.kind,
+        }
+    }
+
     fn name(&self) -> &str {
         match self {
             Self::Signature(signature) => signature.name,
@@ -613,6 +652,36 @@ impl PreparedOutput {
         }
     }
 
+    pub(crate) fn read_refusal(
+        signature: PortSignature,
+        control: WireControl,
+        metadata: RuntimeWireMetadata,
+    ) -> Self {
+        let mut output = Self::control(signature, control, metadata);
+        output.reply = true;
+        output
+    }
+
+    pub(crate) async fn publish_async(
+        &self,
+        bus: &crate::runtime::connection::Connection,
+        instance: &str,
+    ) -> crate::Result<()> {
+        let target = self.target_instance.as_deref().unwrap_or(instance);
+        let key = bus.full_key(&self.relative_key(target));
+        let mut metadata = self.metadata.clone();
+        metadata.control = self.control as u32;
+        metadata.producer = Some(instance.to_owned());
+        let attachment = metadata.encode_bounded()?;
+        bus.session()?
+            .put(key, self.payload.clone())
+            .encoding(zenoh::bytes::Encoding::from(PROTOBUF_ENCODING.to_owned()))
+            .attachment(attachment)
+            .await
+            .map_err(|error| anyhow::anyhow!(TransportError::Transport(error.to_string())))?;
+        Ok(())
+    }
+
     /// Create an explicit setpoint withdrawal without inventing a payload.
     pub fn withdrawal(signature: PortSignature, metadata: RuntimeWireMetadata) -> Self {
         Self {
@@ -620,7 +689,7 @@ impl PreparedOutput {
             target_instance: None,
             payload: Vec::new(),
             metadata,
-            control: WireControl::Data,
+            control: WireControl::Withdraw,
             request: false,
             reply: false,
             field: None,
@@ -690,11 +759,11 @@ impl PreparedOutput {
             || matches!(
                 &self.endpoint,
                 PreparedEndpoint::Signature(signature)
-                    if signature.kind == PortKind::Setpoint
+                    if signature.kind == PortKind::Read
             )
             || matches!(
                 &self.endpoint,
-                PreparedEndpoint::Binding(binding) if binding.kind == PortKind::Setpoint
+                PreparedEndpoint::Binding(binding) if binding.kind == PortKind::Read
             )
         {
             return None;
@@ -706,12 +775,55 @@ impl PreparedOutput {
         ))
     }
 
+    /// Bind a reply to the caller admitted for this endpoint's ordinal.
+    pub(crate) fn bind_reply_caller(
+        &mut self,
+        callers: &BTreeMap<(String, u64), String>,
+    ) -> Result<(), TransportError> {
+        if !self.reply || self.metadata.ingress_sequence.is_some() {
+            return Ok(());
+        }
+        let rank = self.metadata.caller_rank.ok_or_else(|| {
+            TransportError::CommandCorrelation("reply has no caller ordinal".to_owned())
+        })?;
+        let caller = callers
+            .get(&(self.endpoint.name().to_owned(), rank))
+            .ok_or_else(|| {
+                TransportError::CommandCorrelation(
+                    "reply ordinal has no admitted caller".to_owned(),
+                )
+            })?;
+        if self
+            .metadata
+            .caller
+            .as_ref()
+            .is_some_and(|previous| previous != caller)
+        {
+            return Err(TransportError::CommandCorrelation(
+                "reply caller and ordinal disagree".to_owned(),
+            ));
+        }
+        self.metadata.caller = Some(caller.clone());
+        Ok(())
+    }
+
+    fn delivery_target(&self) -> Option<String> {
+        if self.reply {
+            self.metadata.caller.clone()
+        } else {
+            self.target_instance.clone()
+        }
+    }
+
     /// Return the exact identity of one output record for the private
     /// controlled-delivery acknowledgement leg.
     pub(crate) fn delivery_receipt(
         &self,
         item: u32,
     ) -> Option<(String, String, Option<String>, u64, u32, u64)> {
+        if self.reply && self.metadata.ingress_sequence.is_some() {
+            return None;
+        }
         let sequence = self.metadata.sequence?;
         let direction = if self.request {
             "request"
@@ -723,7 +835,7 @@ impl PreparedOutput {
         Some((
             self.endpoint.name().to_owned(),
             direction.to_owned(),
-            self.target_instance.clone(),
+            self.delivery_target(),
             sequence,
             item,
             self.payload.len() as u64,
@@ -742,7 +854,7 @@ impl PreparedOutput {
         (
             self.endpoint.name().to_owned(),
             direction.to_owned(),
-            self.target_instance.clone(),
+            self.delivery_target(),
         )
     }
 
@@ -753,13 +865,40 @@ impl PreparedOutput {
         timeline_id: &str,
         boundary: u64,
         item: u32,
-    ) {
+    ) -> Result<(), TransportError> {
+        // Sequence zero is reserved for the initialized State cut. The first
+        // invocation must have a different identity even at boundary zero.
+        self.metadata.sequence =
+            Some(
+                boundary
+                    .checked_add(1)
+                    .ok_or_else(|| TransportError::InvalidMetadata {
+                        detail: "controlled output sequence exhausted".into(),
+                    })?,
+            );
         self.metadata = self.metadata.clone().with_delivery_identity(
             execution_id.to_owned(),
             timeline_id.to_owned(),
             boundary,
             item,
         );
+        Ok(())
+    }
+
+    pub(crate) fn stamp_initialized_state(
+        &mut self,
+        execution_id: &str,
+        timeline_id: &str,
+        item: u32,
+    ) {
+        self.metadata.sequence = Some(0);
+        self.metadata = self.metadata.clone().with_delivery_identity(
+            execution_id.to_owned(),
+            timeline_id.to_owned(),
+            0,
+            item,
+        );
+        self.metadata.eligible_boundary = Some(0);
     }
 
     /// Return one actuator-facing Setpoint body and its required expiry.
@@ -783,7 +922,11 @@ impl PreparedOutput {
 
     fn relative_key(&self, instance: &str) -> String {
         let direction = if self.request {
-            "request"
+            if self.endpoint.kind() == PortKind::Read {
+                "read-request"
+            } else {
+                "request"
+            }
         } else if self.reply {
             "reply"
         } else {
@@ -792,7 +935,11 @@ impl PreparedOutput {
         port_key(instance, self.endpoint.name(), direction)
     }
 
-    fn publish(&self, bus: &crate::bus::BusHandle, instance: &str) -> crate::Result<()> {
+    fn publish(
+        &self,
+        bus: &crate::runtime::connection::Connection,
+        instance: &str,
+    ) -> crate::Result<()> {
         use zenoh::Wait;
         use zenoh::bytes::Encoding;
 
@@ -800,6 +947,7 @@ impl PreparedOutput {
         let key = bus.full_key(&self.relative_key(target));
         let mut metadata = self.metadata.clone();
         metadata.control = self.control as u32;
+        metadata.producer = Some(instance.to_owned());
         let attachment = metadata.encode_bounded()?;
         bus.session()?
             .put(key, self.payload.clone())
@@ -1264,7 +1412,7 @@ pub fn checked_add_batch_bytes(
 
 /// Publish one complete already-reserved output batch.
 pub(crate) fn publish_batch(
-    bus: &crate::bus::BusHandle,
+    bus: &crate::runtime::connection::Connection,
     instance: &str,
     outputs: &[PreparedOutput],
 ) -> crate::Result<()> {
@@ -1373,6 +1521,7 @@ pub fn reply_metadata_for_request(
             CommandIngress::External { .. } => 0,
         },
     );
+    reply.caller = request.caller.clone();
     if let CommandIngress::External { ingress_sequence } = ingress {
         reply.caller = Some("supervisor.public".to_owned());
         reply.ingress_sequence = Some(ingress_sequence);

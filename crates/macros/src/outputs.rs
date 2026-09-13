@@ -413,7 +413,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                         let worker: ::phoxal::runtime::outputs::OperationWorker =
                             ::std::boxed::Box::new(|input| {
                                 let input = *input.downcast::<#worker_input>().map_err(|_| {
-                                    ::anyhow::anyhow!("operation worker received an unexpected input type")
+                                    ::phoxal::__private::anyhow::anyhow!("operation worker received an unexpected input type")
                                 })?;
                                 let result = #self_type::#worker_method(input)?;
                                 Ok(::std::boxed::Box::new(result)
@@ -421,7 +421,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                             });
                         sink.activate(
                             stringify!(#selector),
-                            ::std::boxed::Box::new(key),
+                            ::phoxal::runtime::outputs::activation::ActivationKey::new(key),
                             ::std::boxed::Box::new(input),
                             Some(worker),
                             Some(#timeout),
@@ -429,6 +429,8 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                             Some(#cancel_grace),
                             context,
                         )?;
+                    } else {
+                        sink.deactivate(stringify!(#selector))?;
                     }
                 }
             } else {
@@ -443,7 +445,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                         let (key, request) = activation.into_parts();
                         sink.activate(
                             stringify!(#selector),
-                            ::std::boxed::Box::new(key),
+                            ::phoxal::runtime::outputs::activation::ActivationKey::new(key),
                             ::std::boxed::Box::new(request),
                             None,
                             Some(#timeout),
@@ -451,6 +453,8 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                             None,
                             context,
                         )?;
+                    } else {
+                        sink.deactivate(stringify!(#selector))?;
                     }
                 }
             };
@@ -517,17 +521,15 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 Ok(())
             }
 
-            fn serve_reads(
-                &self,
+            fn prepare_read_views(
+                self: ::std::sync::Arc<Self>,
                 state: &Self::State,
-                context: ::phoxal::runtime::StepContext,
-                requests: &mut ::std::vec::Vec<::phoxal::runtime::outputs::RuntimeReadRequest>,
-                source: &str,
-                sink: &mut dyn ::phoxal::runtime::outputs::RuntimeWorkSink,
-            ) -> ::phoxal::Result<()> {
+            ) -> ::phoxal::Result<::std::vec::Vec<::phoxal::runtime::outputs::read::ReadView>> {
+                let mut views = ::std::vec::Vec::new();
                 #(#reads)*
-                Ok(())
+                Ok(views)
             }
+
         }
 
         const _: () = {
@@ -936,7 +938,7 @@ fn output_transport(
             Ok(quote! {
                 {
                     let signature = resolve_input_port(stringify!(#selector)).ok_or_else(|| {
-                        ::anyhow::anyhow!(
+                        ::phoxal::__private::anyhow::anyhow!(
                             ::phoxal::runtime::transport::TransportError::InvalidMetadata {
                                 detail: format!(
                                     "reply selector `{}` has no generated Commands descriptor",
@@ -1004,36 +1006,27 @@ fn read_transport(
         .max_response_bytes
         .ok_or_else(|| syn::Error::new_spanned(method, "read requires max_response_bytes = ..."))?;
     Ok(quote! {
-        let mut request_index = 0_usize;
-        while request_index < requests.len() {
-            if requests[request_index].field != stringify!(#method_name) {
-                request_index += 1;
-                continue;
-            }
-            let sample = requests.swap_remove(request_index).sample;
-            let signature = (#port).signature();
-            let _request_stamp = ::phoxal::runtime::transport::observation_stamp(sample.metadata())?;
-            let request = ::phoxal::runtime::transport::decode_request::<#request>(
-                signature,
-                &sample,
-                #max_request_bytes,
-            )?;
-            let view = #project(self, state);
-            let response = self.#method_name(&view, &request);
-            let metadata = sample.metadata();
-            let output = ::phoxal::runtime::transport::PreparedOutput::reply(
-                signature,
-                &response,
-                #max_response_bytes,
-                ::phoxal::runtime::transport::reply_metadata_for_request(
-                    source,
-                    context,
-                    metadata,
-                )?,
-            )?
-            .for_field(stringify!(#method_name));
-            sink.push_read_reply(output)?;
+        {
+            let view = #project(self.as_ref(), state);
+            let service = ::std::sync::Arc::clone(&self);
+            views.push(::phoxal::runtime::outputs::read::ReadView::new(
+                stringify!(#method_name),
+                move |sample, context, source| {
+                    let signature = (#port).signature();
+                    let request = ::phoxal::runtime::transport::decode_request::<#request>(
+                        signature, sample, #max_request_bytes,
+                    )?;
+                    let response = service.#method_name(&view, &request);
+                    Ok(::phoxal::runtime::transport::PreparedOutput::reply(
+                        signature, &response, #max_response_bytes,
+                        ::phoxal::runtime::transport::reply_metadata_for_request(
+                            source, context, sample.metadata(),
+                        )?,
+                    )?.for_field(stringify!(#method_name)))
+                },
+            ));
         }
+
     })
 }
 
@@ -1515,7 +1508,8 @@ fn output_metadata(name: &Ident, role: Role, options: &Options) -> TokenStream {
         |project| quote!(Some(stringify!(#project))),
     );
     let max_items = option_tokens(options.max_items);
-    let max_bytes = option_tokens(options.max_bytes);
+    // The artifact has one response/publication byte bound for every served port.
+    let max_bytes = option_tokens(options.max_bytes.or(options.max_response_bytes));
     let max_request_bytes = option_tokens(options.max_request_bytes);
     let every_steps = option_tokens(options.every_steps);
     let valid_for_ms = option_tokens(options.valid_for_ms);

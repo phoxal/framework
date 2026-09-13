@@ -33,6 +33,15 @@ pub enum ArtifactError {
         /// UTF-8 error from the standard library.
         source: std::str::Utf8Error,
     },
+    /// An MJCF XML resource contains a malformed, unsupported, or unresolved
+    /// native resource reference.
+    #[error("XML resource {path:?} has an invalid native reference: {detail}")]
+    InvalidXmlReference {
+        /// XML resource containing the reference.
+        path: String,
+        /// Admission detail.
+        detail: String,
+    },
     /// A resource is larger than the configured per-resource limit.
     #[error("resource {name:?} is {actual} bytes, exceeding the {limit}-byte limit")]
     ResourceTooLarge {
@@ -90,6 +99,9 @@ pub enum ModelError {
         /// Native diagnostic text.
         message: String,
     },
+    /// MuJoCo rejected a fixed parent/component composition.
+    #[error("native model composition failed: {0}")]
+    Composition(String),
     /// A native timestep is not a valid positive finite quantum.
     #[error("native model timestep must be finite and positive, got {0}")]
     InvalidTimestep(f64),

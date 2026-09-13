@@ -21,13 +21,18 @@ path = "src/lib.rs"
 [[bin]]
 name = "phoxal-component-oak_d_lite"
 path = "src/main.rs"
+required-features = ["runtime"]
+
+[features]
+default = ["runtime"]
+runtime = ["dep:phoxal", "dep:anyhow", "dep:serde"]
 
 [dependencies]
-phoxal = { workspace = true, features = ["runtime"] }
-anyhow = { workspace = true }
+phoxal = { workspace = true, features = ["runtime"], optional = true }
+anyhow = { workspace = true, optional = true }
 phoxal-port = { workspace = true }
 prost = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [build-dependencies]
 phoxal-build = { workspace = true }

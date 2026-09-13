@@ -23,9 +23,10 @@ use crate::communication::session::{
     SupervisorInfoResponse, SupervisorStatusResponse,
 };
 use crate::communication::simulation::{
-    AcquireAuthorityRequest, AcquireAuthorityResponse, AdvanceRequest, AdvanceResponse,
-    ProgressRequest, ProgressResponse, ReleaseAuthorityRequest, ReleaseAuthorityResponse,
-    ResetRequest, ResetResponse,
+    AcquireAuthorityRequest, AcquireAuthorityResponse, AdmitInitialObservationsRequest,
+    AdmitInitialObservationsResponse, AdmitObservationsRequest, AdmitObservationsResponse,
+    PrepareBoundaryRequest, PrepareBoundaryResponse, ProgressRequest, ProgressResponse,
+    ReleaseAuthorityRequest, ReleaseAuthorityResponse, ResetRequest, ResetResponse, TransitionKey,
 };
 use crate::communication::{DeploymentTarget, PublicOperation};
 use crate::communication_transport::{
@@ -34,6 +35,10 @@ use crate::communication_transport::{
 };
 use crate::port::{self, PortDescriptor, PortKind, PortSignature};
 use crate::session::error::SessionError;
+
+const MAX_SIMULATION_PRODUCT_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SIMULATION_CUT_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_SIMULATION_RECEIPT_BYTE_CAP: u64 = 512 * 1024;
 
 /// Configuration for one shared client connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -482,6 +487,31 @@ impl Simulation {
             || response.model_identity != request.model_identity
             || response.quantum_ns != request.quantum_ns
             || response.correlation_id != request.correlation_id
+            || response.boundary != 0
+            || response.max_product_bytes == 0
+            || response.max_product_bytes > MAX_SIMULATION_PRODUCT_BYTES
+            || response.max_cut_bytes < response.max_product_bytes
+            || response.max_cut_bytes > MAX_SIMULATION_CUT_BYTES
+            || response.receipt_byte_cap == 0
+            || response.receipt_byte_cap > MAX_SIMULATION_CUT_BYTES
+            || response.max_product_bytes
+                != if request.max_product_bytes == 0 {
+                    MAX_SIMULATION_PRODUCT_BYTES
+                } else {
+                    request.max_product_bytes
+                }
+            || response.max_cut_bytes
+                != if request.max_cut_bytes == 0 {
+                    MAX_SIMULATION_CUT_BYTES
+                } else {
+                    request.max_cut_bytes
+                }
+            || response.receipt_byte_cap
+                != if request.receipt_byte_cap == 0 {
+                    DEFAULT_SIMULATION_RECEIPT_BYTE_CAP
+                } else {
+                    request.receipt_byte_cap
+                }
         {
             return Err(SessionError::InvalidPublicRequest {
                 detail: "simulation authority response does not match its session".to_owned(),
@@ -490,45 +520,81 @@ impl Simulation {
         Ok(response)
     }
 
-    /// Submit one current-boundary observation set and receive the complete
-    /// robot-boundary receipt from the production simulation backend.
-    pub async fn advance(
+    /// Admit the complete boundary-zero observation cut without invoking any
+    /// Runtime service.
+    pub async fn admit_initial_observations(
         &self,
-        mut request: AdvanceRequest,
-    ) -> Result<AdvanceResponse, SessionError> {
+        mut request: AdmitInitialObservationsRequest,
+    ) -> Result<AdmitInitialObservationsResponse, SessionError> {
         self.ensure_current()?;
-        request.session_id = self.inner.session_id().await?;
+        let session_id = self.inner.session_id().await?;
+        ensure_simulation_transition(&mut request.transition_key, &session_id)?;
         ensure_simulation_correlation(&mut request.correlation_id, &self.inner)?;
-        let expected =
-            request
-                .boundary
-                .checked_add(1)
-                .ok_or_else(|| SessionError::InvalidPublicRequest {
-                    detail: "simulation boundary overflows the client range".to_owned(),
-                })?;
         let response = self
             .inner
-            .simulation::<AdvanceRequest, AdvanceResponse>(
-                PublicOperation::Advance,
+            .simulation::<AdmitInitialObservationsRequest, AdmitInitialObservationsResponse>(
+                PublicOperation::AdmitInitialObservations,
                 request.clone(),
             )
             .await?;
-        if response.session_id != request.session_id
-            || response.completed_boundary != expected
-            || response.execution_id != request.execution_id
-            || response.timeline_id != request.timeline_id
-            || response.requested_boundary != request.boundary
-            || response.correlation_id != request.correlation_id
-            || response.authority_grant != request.authority_grant
-            || response.observation_receipts.iter().any(|receipt| {
-                receipt.boundary != request.boundary
-                    || receipt.correlation_id != request.correlation_id
-            })
-        {
-            return Err(SessionError::InvalidPublicRequest {
-                detail: "simulation advance response is not the requested boundary".to_owned(),
-            });
-        }
+        validate_simulation_receipt(
+            response.receipt.as_ref(),
+            request.transition_key.as_ref(),
+            &request.correlation_id,
+            crate::communication::simulation::PhaseStatus::InitialAdmitted,
+        )?;
+        Ok(response)
+    }
+
+    /// Prepare one boundary from its already admitted observation cut and
+    /// receive the immutable actuator cut for the following native step.
+    pub async fn prepare_boundary(
+        &self,
+        mut request: PrepareBoundaryRequest,
+    ) -> Result<PrepareBoundaryResponse, SessionError> {
+        self.ensure_current()?;
+        let session_id = self.inner.session_id().await?;
+        ensure_simulation_transition(&mut request.transition_key, &session_id)?;
+        ensure_simulation_correlation(&mut request.correlation_id, &self.inner)?;
+        let response = self
+            .inner
+            .simulation::<PrepareBoundaryRequest, PrepareBoundaryResponse>(
+                PublicOperation::PrepareBoundary,
+                request.clone(),
+            )
+            .await?;
+        validate_simulation_receipt(
+            response.receipt.as_ref(),
+            request.transition_key.as_ref(),
+            &request.correlation_id,
+            crate::communication::simulation::PhaseStatus::Prepared,
+        )?;
+        Ok(response)
+    }
+
+    /// Admit the complete observation cut captured after the native step.
+    /// This phase never invokes the next Runtime service wave.
+    pub async fn admit_observations(
+        &self,
+        mut request: AdmitObservationsRequest,
+    ) -> Result<AdmitObservationsResponse, SessionError> {
+        self.ensure_current()?;
+        let session_id = self.inner.session_id().await?;
+        ensure_simulation_transition(&mut request.transition_key, &session_id)?;
+        ensure_simulation_correlation(&mut request.correlation_id, &self.inner)?;
+        let response = self
+            .inner
+            .simulation::<AdmitObservationsRequest, AdmitObservationsResponse>(
+                PublicOperation::AdmitObservations,
+                request.clone(),
+            )
+            .await?;
+        validate_simulation_receipt(
+            response.receipt.as_ref(),
+            request.transition_key.as_ref(),
+            &request.correlation_id,
+            crate::communication::simulation::PhaseStatus::ObservationsAdmitted,
+        )?;
         Ok(response)
     }
 
@@ -546,7 +612,8 @@ impl Simulation {
             || response.execution_id != request.execution_id
             || response.previous_timeline_id != request.timeline_id
             || response.requested_boundary != request.completed_boundary
-            || response.authority_grant != request.authority_grant
+            || response.authority_grant.is_empty()
+            || response.authority_grant == request.authority_grant
             || response.correlation_id != request.correlation_id
         {
             return Err(SessionError::InvalidPublicRequest {
@@ -1490,6 +1557,53 @@ fn ensure_simulation_correlation(
     Ok(())
 }
 
+fn ensure_simulation_transition(
+    transition: &mut Option<TransitionKey>,
+    session_id: &[u8],
+) -> Result<(), SessionError> {
+    let transition = transition
+        .as_mut()
+        .ok_or_else(|| SessionError::InvalidPublicRequest {
+            detail: "simulation transition key is missing".to_owned(),
+        })?;
+    transition.session_id = session_id.to_vec();
+    if transition.execution_id.is_empty()
+        || transition.timeline_id.is_empty()
+        || transition.authority_grant.is_empty()
+        || transition.operation_sequence == 0
+    {
+        return Err(SessionError::InvalidPublicRequest {
+            detail: "simulation transition key is incomplete".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_simulation_receipt(
+    receipt: Option<&crate::communication::simulation::CutReceipt>,
+    transition: Option<&TransitionKey>,
+    correlation_id: &[u8],
+    expected_status: crate::communication::simulation::PhaseStatus,
+) -> Result<(), SessionError> {
+    let Some(receipt) = receipt else {
+        return Err(SessionError::InvalidPublicRequest {
+            detail: "simulation phase response omitted its receipt".to_owned(),
+        });
+    };
+    if transition.is_none()
+        || receipt.status != expected_status as i32
+        || receipt.transition_key.as_ref() != transition
+        || receipt.correlation_id != correlation_id
+        || receipt.request_digest.len() != 32
+        || receipt.membership_digest.len() != 32
+    {
+        return Err(SessionError::InvalidPublicRequest {
+            detail: "simulation phase response does not match its transition".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 const SESSION_RENEWAL_PERIOD: Duration = Duration::from_secs(10);
 
 fn spawn_renewal(supervisor: &Arc<SupervisorInner>, generation: u64) -> JoinHandle<()> {
@@ -1727,14 +1841,16 @@ impl SupervisorInner {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "supervisor")]
-    use crate::bus::session::{BusConfig, BusOwner};
-    #[cfg(feature = "supervisor")]
+    #[cfg(feature = "runtime")]
     use crate::communication::{DeploymentTarget, SupervisorAdapter};
-    #[cfg(feature = "supervisor")]
+    #[cfg(feature = "runtime")]
     use crate::communication_transport::{PrincipalPolicy, PublicSessionServer};
-    #[cfg(feature = "supervisor")]
+    #[cfg(feature = "runtime")]
     use crate::identity::ExecutionId;
+    #[cfg(feature = "runtime")]
+    use crate::runtime::connection::{
+        ConnectionConfig as RuntimeConnectionConfig, ConnectionOwner,
+    };
 
     #[test]
     fn public_descriptors_seal_external_setpoint_publishing() {
@@ -1750,13 +1866,13 @@ mod tests {
         assert_eq!(reason.detail().len(), 4096);
     }
 
-    #[cfg(feature = "supervisor")]
+    #[cfg(feature = "runtime")]
     async fn start_server(
         endpoint: &str,
         target: &DeploymentTarget,
         supervisor_version: &str,
-    ) -> (BusOwner, PublicSessionServer) {
-        let (owner, bus) = BusOwner::open(BusConfig::for_external(
+    ) -> (ConnectionOwner, PublicSessionServer) {
+        let (owner, bus) = ConnectionOwner::open(RuntimeConnectionConfig::for_external(
             ExecutionId::mint(),
             None,
             vec![endpoint.to_owned()],
@@ -1777,20 +1893,17 @@ mod tests {
         (owner, server)
     }
 
-    #[cfg(feature = "supervisor")]
-    async fn local_router() -> (String, crate::router::Router) {
+    #[cfg(feature = "runtime")]
+    async fn local_router() -> (String, zenoh::Session) {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("test port");
         let address = listener.local_addr().expect("test address");
         drop(listener);
         let endpoint = format!("tcp/{address}");
-        let router =
-            crate::router::Router::open(ExecutionId::mint(), std::slice::from_ref(&endpoint))
-                .await
-                .expect("router");
+        let router = crate::test_router::open(std::slice::from_ref(&endpoint)).await;
         (endpoint, router)
     }
 
-    #[cfg(feature = "supervisor")]
+    #[cfg(feature = "runtime")]
     #[serial_test::serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn reconnect_refreshes_info_and_invalidates_old_handles() {
@@ -1854,7 +1967,7 @@ mod tests {
         router.close().await.expect("router close");
     }
 
-    #[cfg(feature = "supervisor")]
+    #[cfg(feature = "runtime")]
     #[serial_test::serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn failed_reconnect_leaves_no_stale_or_new_info() {

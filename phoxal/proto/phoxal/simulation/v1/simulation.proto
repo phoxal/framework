@@ -9,6 +9,9 @@ message AcquireAuthorityRequest {
   repeated ProviderRequirement providers = 4;
   bytes session_id = 5;
   bytes correlation_id = 6;
+  uint64 max_product_bytes = 7;
+  uint64 max_cut_bytes = 8;
+  uint64 receipt_byte_cap = 9;
 }
 
 message ProviderRequirement {
@@ -17,6 +20,8 @@ message ProviderRequirement {
   string payload_fqn = 3;
   int32 kind = 4;
   string input_fqn = 5;
+  // Immutable source cadence in millionths of one hertz.
+  uint64 rate_microhertz = 6;
 }
 
 message AcquireAuthorityResponse {
@@ -29,50 +34,106 @@ message AcquireAuthorityResponse {
   string model_identity = 7;
   uint64 quantum_ns = 8;
   bytes correlation_id = 9;
+  uint64 max_product_bytes = 10;
+  uint64 max_cut_bytes = 11;
+  uint64 receipt_byte_cap = 12;
 }
 
-message AdvanceRequest {
-  bytes authority_grant = 1;
+message TransitionKey {
+  bytes session_id = 1;
   string execution_id = 2;
   string timeline_id = 3;
-  uint64 boundary = 4;
-  repeated Observation observations = 5;
-  bytes session_id = 6;
-  bytes correlation_id = 7;
+  bytes authority_grant = 4;
+  uint64 boundary = 5;
+  uint64 operation_sequence = 6;
+}
+
+enum ProductDisposition {
+  PRODUCT_DISPOSITION_UNSPECIFIED = 0;
+  PRODUCT_DISPOSITION_PRESENT = 1;
+  PRODUCT_DISPOSITION_EMPTY = 2;
+  PRODUCT_DISPOSITION_NOT_DUE = 3;
+}
+
+message ProductMembership {
+  string producer = 1;
+  string port = 2;
+  bytes producer_incarnation = 3;
+  uint64 sequence = 4;
+  uint64 capture_boundary = 5;
+  uint64 capture_time_ns = 6;
+  ProductDisposition disposition = 7;
+  uint64 item_count = 8;
+  uint64 encoded_bytes = 9;
+  bytes payload_digest = 10;
 }
 
 message Observation {
-  string service_instance = 1;
-  string port = 2;
-  uint64 capture_time_ns = 3;
-  bytes payload = 4;
-}
-
-message AdvanceResponse {
-  uint64 completed_boundary = 1;
-  repeated Actuation actuation = 2;
-  repeated ProductReceipt observation_receipts = 3;
-  bytes session_id = 4;
-  string execution_id = 5;
-  string timeline_id = 6;
-  uint64 requested_boundary = 7;
-  bytes correlation_id = 8;
-  bytes authority_grant = 9;
+  ProductMembership membership = 1;
+  bytes payload = 2;
 }
 
 message Actuation {
-  string service_instance = 1;
-  string port = 2;
-  bytes payload = 3;
-  uint64 valid_until_ns = 4;
+  ProductMembership membership = 1;
+  bytes payload = 2;
+  uint64 valid_until_ns = 3;
 }
 
 message ProductReceipt {
-  string service_instance = 1;
-  string port = 2;
-  uint64 sequence = 3;
-  uint64 boundary = 4;
-  bytes correlation_id = 5;
+  ProductMembership membership = 1;
+}
+
+enum PhaseStatus {
+  PHASE_STATUS_UNSPECIFIED = 0;
+  PHASE_STATUS_INITIAL_ADMITTED = 1;
+  PHASE_STATUS_PREPARED = 2;
+  PHASE_STATUS_OBSERVATIONS_ADMITTED = 3;
+  PHASE_STATUS_UNKNOWN = 4;
+  PHASE_STATUS_STALE = 5;
+  PHASE_STATUS_FAILED = 6;
+}
+
+message CutReceipt {
+  TransitionKey transition_key = 1;
+  bytes correlation_id = 2;
+  bytes request_digest = 3;
+  bytes membership_digest = 4;
+  repeated ProductMembership products = 5;
+  uint64 prepared_boundary = 6;
+  uint64 admitted_observation_boundary = 7;
+  PhaseStatus status = 8;
+}
+
+message AdmitInitialObservationsRequest {
+  TransitionKey transition_key = 1;
+  repeated Observation observations = 2;
+  bytes membership_digest = 3;
+  bytes correlation_id = 4;
+}
+
+message AdmitInitialObservationsResponse {
+  CutReceipt receipt = 1;
+}
+
+message PrepareBoundaryRequest {
+  TransitionKey transition_key = 1;
+  bytes correlation_id = 2;
+}
+
+message PrepareBoundaryResponse {
+  CutReceipt receipt = 1;
+  repeated Actuation actuation = 2;
+}
+
+message AdmitObservationsRequest {
+  TransitionKey transition_key = 1;
+  repeated Observation observations = 2;
+  bytes membership_digest = 3;
+  bytes correlation_id = 4;
+}
+
+message AdmitObservationsResponse {
+  CutReceipt receipt = 1;
 }
 
 message ResetRequest {
@@ -114,6 +175,8 @@ message ProgressRequest {
   bytes authority_grant = 1;
   bytes session_id = 2;
   bytes correlation_id = 3;
+  TransitionKey transition_key = 4;
+  PhaseStatus phase = 5;
 }
 
 message ProgressResponse {
@@ -125,4 +188,10 @@ message ProgressResponse {
   bytes session_id = 6;
   bytes authority_grant = 7;
   bytes correlation_id = 8;
+  PhaseStatus phase_status = 9;
+  uint64 prepared_boundary = 10;
+  uint64 admitted_observation_boundary = 11;
+  uint64 accepted_sequence_watermark = 12;
+  bytes request_digest = 13;
+  bytes membership_digest = 14;
 }

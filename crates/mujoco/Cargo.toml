@@ -18,6 +18,10 @@ default = []
 # The native feature is intentionally opt-in so hardware projects and the generic
 # framework can compile without a MuJoCo installation or rendering stack.
 native = ["dep:mujoco-rs"]
+# Offscreen RGB/depth capture is an application-owned capability.  It remains
+# separate from the read-only native model/physics feature so consumers that do
+# not need rendered products do not acquire a GL stack.
+rendering = ["native", "dep:cgl", "dep:glutin"]
 
 [dependencies]
 phoxal-port = { workspace = true }
@@ -28,12 +32,18 @@ thiserror = { workspace = true }
 # pin is documented and enforced by the binding release plus CI's download URL.
 mujoco-rs = { version = "=6.0.1", optional = true, default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+cgl = { version = "0.3.2", optional = true }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+glutin = { version = "0.32.3", default-features = false, features = ["egl"], optional = true }
+
 [dev-dependencies]
-phoxal-component-bno085 = { path = "../../components/bno085" }
-phoxal-component-ddsm115 = { path = "../../components/ddsm115" }
-phoxal-component-oak_d_lite = { path = "../../components/oak_d_lite" }
-phoxal-component-vl53l1x = { path = "../../components/vl53l1x" }
-phoxal-component-zed_f9p = { path = "../../components/zed_f9p" }
+phoxal-component-bno085 = { path = "../../components/bno085", default-features = false }
+phoxal-component-ddsm115 = { path = "../../components/ddsm115", default-features = false }
+phoxal-component-oak_d_lite = { path = "../../components/oak_d_lite", default-features = false }
+phoxal-component-vl53l1x = { path = "../../components/vl53l1x", default-features = false }
+phoxal-component-zed_f9p = { path = "../../components/zed_f9p", default-features = false }
 phoxal-motion = { workspace = true }
 tempfile = { workspace = true }
 

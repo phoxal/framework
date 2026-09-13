@@ -1,95 +1,14 @@
-//! `phoxal-supervisor` - the Phoxal Framework execution observer.
-//!
-//! ```text
-//! phoxal-supervisor <BUNDLE_ROOT> --scope <SCOPE> --supervisor-id <ID>
-//! ```
-//!
-//! That is the entire operator-facing command line, and deliberately so.
-//! Local orchestration additionally uses one hidden `--ready-file` handoff so
-//! it can distinguish process liveness from completed Runtime admission.
-//! There is no `run`, `start`, `attach`, `stop`, `status`, `log`, `build`,
-//! `install`, `deploy`, `doctor`, or `upgrade` subcommand; no `--drivers`,
-//! `--driver`, or simulation flag; and no execution options of any kind. The
-//! bundle root is the supervisor's complete input, and everything it needs is
-//! in the `manifest.json` inside it.
-//!
-//! `clap` parses that one operand. It is not here to advertise a surface this
-//! binary does not have - there is still nothing to choose - but because the
-//! surface *is* one operand, two deployment identity flags, and the two
-//! conventional non-executing flags, and
-//! those are exactly what clap already does correctly: `-h/--help` and
-//! `-V/--version` in their standard shape on stdout, and strict rejection of a
-//! missing operand, a second operand, or any flag this binary does not have,
-//! with the error on stderr and exit code 2. Hand-rolling that rejection buys
-//! nothing and risks getting a convention subtly wrong.
-//!
-//! The one non-executing invocation is `--version`. It exists because `phoxal`
-//! reports the framework-owned executable's package version. It is diagnostic:
-//! a client that needs the framework train this supervisor speaks asks
-//! `supervisor/connect`, the one endpoint frozen across every framework line.
-//!
-//! This process launches nothing. It runs the router the graph meets on,
-//! watches which of the robot's expected runtimes are present, retains their
-//! logs and telemetry, serves the bundle, and can reboot or power off its host.
-//! Whoever started a runtime - `phoxal` locally, systemd on a device - is what
-//! restarts or stops it.
-//!
-//! The behavior itself is `phoxal::supervisor::host`, compiled by the
-//! framework library's exact-train `supervisor` profile. This package is the
-//! executable: one operand, one subscriber, one call. Keeping it a separate
-//! package and a separate process is the point - what moved into the library
-//! is the implementation, not the boundary.
+//! Launch the execution supervisor for one immutable bundle.
 
-use std::path::PathBuf;
+mod config;
+mod rendezvous;
+mod runtime;
+mod transport;
+
 use std::process::ExitCode;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
-
-/// Observe one compiled bundle's execution.
-///
-/// `version` is spelled out rather than left to clap's `#[command(version)]`
-/// shorthand so the printed line is unambiguously this package's version, and
-/// `name` is fixed so it stays `phoxal-supervisor <version>` however the binary
-/// was invoked.
-#[derive(Debug, Parser)]
-#[command(
-    name = "phoxal-supervisor",
-    version = env!("CARGO_PKG_VERSION"),
-    about = ABOUT,
-    long_about = LONG_ABOUT,
-)]
-struct Cli {
-    /// The compiled bundle directory whose execution to observe.
-    #[arg(value_name = "BUNDLE_ROOT")]
-    bundle_root: PathBuf,
-
-    /// Deployment namespace governed by router authorization.
-    #[arg(long, value_name = "SCOPE")]
-    scope: String,
-
-    /// Stable supervisor target within the deployment namespace.
-    #[arg(long, value_name = "ID")]
-    supervisor_id: String,
-
-    /// Internal machine-readable readiness handoff for local orchestration.
-    #[arg(long, value_name = "PATH", hide = true)]
-    ready_file: Option<PathBuf>,
-}
-
-const ABOUT: &str = "phoxal-supervisor - the Phoxal Framework execution observer";
-
-const LONG_ABOUT: &str = "\
-phoxal-supervisor - the Phoxal Framework execution observer
-
-<BUNDLE_ROOT> is a compiled bundle directory: manifest.json, assets/, and bin/.
-Build one with `cargo phoxal build`. The required --scope and --supervisor-id
-select the installed public routing namespace; neither value comes from the
-bundle. The supervisor runs the router, reports which of the robot's runtimes
-are present, and retains their logs and telemetry. It launches no runtime.
-
-`--version` reports this supervisor package's own version. The framework train
-this supervisor speaks is answered by the `supervisor/connect` endpoint.";
 
 /// Multi-thread: Zenoh refuses to run on Tokio's current-thread scheduler, and
 /// the router runs in this process.
@@ -97,7 +16,7 @@ this supervisor speaks is answered by the `supervisor/connect` endpoint.";
 async fn main() -> ExitCode {
     // Parse first: help, version, and misuse all end the process without ever
     // needing a subscriber installed.
-    let cli = Cli::parse();
+    let cli = config::Cli::parse();
     let target = match phoxal::communication::DeploymentTarget::new(cli.scope, cli.supervisor_id) {
         Ok(target) => target,
         Err(error) => {
@@ -106,10 +25,11 @@ async fn main() -> ExitCode {
         }
     };
     init_tracing();
-    match phoxal::supervisor::host::run_with_readiness(
+    match runtime::run(
         &cli.bundle_root,
         target,
         cli.ready_file.as_deref(),
+        cli.listen.as_deref(),
     )
     .await
     {

@@ -125,6 +125,27 @@ fn official_models_keep_capability_targets_and_native_signal_names() {
         "accelerometer",
     );
     assert_sensor_binding(&bno085, bno085_contract::ports::GYROSCOPE, "gyroscope");
+    assert_eq!(
+        bno085
+            .sensor_info(bno085.sensor("imu_orientation").unwrap().unwrap())
+            .unwrap()
+            .kind,
+        phoxal_mujoco::SensorKind::FrameQuaternion
+    );
+    assert_eq!(
+        bno085
+            .sensor_info(bno085.sensor("accelerometer").unwrap().unwrap())
+            .unwrap()
+            .kind,
+        phoxal_mujoco::SensorKind::Accelerometer
+    );
+    assert_eq!(
+        bno085
+            .sensor_info(bno085.sensor("gyroscope").unwrap().unwrap())
+            .unwrap()
+            .kind,
+        phoxal_mujoco::SensorKind::Gyroscope
+    );
 
     let ddsm115 = Model::from_file(components.join("ddsm115/model.xml")).expect("DDSM115 model");
     assert!(ddsm115.joint("motor_joint").unwrap().is_some());
@@ -136,6 +157,13 @@ fn official_models_keep_capability_targets_and_native_signal_names() {
         );
     }
     assert_actuator_binding(&ddsm115, motion_contract::ports::ACTUATORS, "motor");
+    assert_eq!(
+        ddsm115
+            .actuator_info(ddsm115.actuator("motor").unwrap().unwrap())
+            .unwrap()
+            .mode,
+        phoxal_mujoco::ActuatorMode::Velocity
+    );
     assert_sensor_binding(
         &ddsm115,
         ddsm115_contract::ports::ENCODER,
@@ -145,6 +173,20 @@ fn official_models_keep_capability_targets_and_native_signal_names() {
         &ddsm115,
         ddsm115_contract::ports::ENCODER,
         "encoder_velocity",
+    );
+    assert_eq!(
+        ddsm115
+            .sensor_info(ddsm115.sensor("encoder_position").unwrap().unwrap())
+            .unwrap()
+            .kind,
+        phoxal_mujoco::SensorKind::JointPosition
+    );
+    assert_eq!(
+        ddsm115
+            .sensor_info(ddsm115.sensor("encoder_velocity").unwrap().unwrap())
+            .unwrap()
+            .kind,
+        phoxal_mujoco::SensorKind::JointVelocity
     );
     assert!(
         ddsm115
@@ -191,6 +233,13 @@ fn official_models_keep_capability_targets_and_native_signal_names() {
     assert!(vl53l1x.site("sensor_site").unwrap().is_some());
     assert!(vl53l1x.sensor("range").unwrap().is_some());
     assert_sensor_binding(&vl53l1x, vl53l1x_contract::ports::RANGE, "range");
+    assert_eq!(
+        vl53l1x
+            .sensor_info(vl53l1x.sensor("range").unwrap().unwrap())
+            .unwrap()
+            .kind,
+        phoxal_mujoco::SensorKind::Rangefinder
+    );
 
     let zed = Model::from_file(components.join("zed_f9p/model.xml")).expect("ZED-F9P model");
     assert!(zed.body("sensor_link").unwrap().is_some());
@@ -273,4 +322,126 @@ fn native_bindings_read_only_from_their_own_model_snapshot() {
         .snapshot()
         .expect("VL53L1X snapshot");
     assert!(imu.values(&vl53l1x_snapshot).is_err());
+}
+
+#[test]
+fn scene_owned_custom_metadata_is_read_from_the_compiled_model() {
+    let model = Model::from_xml(
+        br#"
+            <mujoco model="metadata">
+              <custom>
+                <numeric name="phoxal_georeference" data="1 2 3 4 5 6 7"/>
+                <text name="phoxal_georeference_axes" data="ENU"/>
+              </custom>
+              <worldbody/>
+            </mujoco>
+        "#,
+    )
+    .expect("custom metadata model");
+    assert_eq!(
+        model
+            .custom_numeric("phoxal_georeference")
+            .unwrap()
+            .as_deref(),
+        Some(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0][..])
+    );
+    assert_eq!(
+        model
+            .custom_text("phoxal_georeference_axes")
+            .unwrap()
+            .as_deref(),
+        Some("ENU")
+    );
+    assert!(model.custom_numeric("missing").unwrap().is_none());
+    assert!(model.custom_text("missing").unwrap().is_none());
+}
+
+fn component_facing_target(component: &str) -> Result<Model, Box<dyn std::error::Error>> {
+    use phoxal_mujoco::{ClosedModel, ComponentAttachment, ModelComposition};
+    let scene = ClosedModel::from_xml(
+        r#"<mujoco>
+      <visual><headlight ambient="1 1 1" diffuse="0 0 0"/><global offwidth="640" offheight="480"/></visual>
+      <worldbody><site name="mount"/>
+        <geom name="target" type="box" pos="2 0 0" size="0.01 2 2" rgba="1 0 0 1"/>
+        <geom name="upper_marker" type="box" pos="1.97 0 0.6" size="0.01 0.1 0.1" rgba="0 0 1 1"/>
+      </worldbody>
+    </mujoco>"#,
+    )?;
+    let component = phoxal_mujoco::ClosedModel::from_file(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../components")
+            .join(component)
+            .join("model.xml"),
+    )?;
+    Ok(ModelComposition::new(
+        scene,
+        [ComponentAttachment::new(
+            "sensor", component, "mount", "mount",
+        )?],
+    )?
+    .compile()?)
+}
+
+#[test]
+fn authored_range_sensor_faces_forward_in_the_component_mount_frame() {
+    let model = component_facing_target("vl53l1x").unwrap();
+    let binding = model
+        .bind_sensor(vl53l1x_contract::ports::RANGE, "sensor__range")
+        .unwrap();
+    let state = Scene::new(model).unwrap().snapshot().unwrap();
+    let range = binding.values(&state).unwrap()[0];
+    assert!(
+        (range - 1.99).abs() < 1e-8,
+        "the authored sensor must see the target on mount +X: {range}"
+    );
+}
+
+#[cfg(feature = "rendering")]
+#[test]
+fn authored_camera_frames_face_forward_and_preserve_the_known_target_depth() {
+    let model = component_facing_target("oak_d_lite").unwrap();
+    let snapshot = Scene::new(model.clone()).unwrap().snapshot().unwrap();
+    let left = model
+        .bind_site(oak_contract::ports::LEFT_MONO, "sensor__left_mono_site")
+        .unwrap()
+        .position(&snapshot)
+        .unwrap();
+    let right = model
+        .bind_site(oak_contract::ports::RIGHT_MONO, "sensor__right_mono_site")
+        .unwrap()
+        .position(&snapshot)
+        .unwrap();
+    assert!(
+        (left[1] - right[1] - 0.075).abs() < 1e-12,
+        "left is +Y and the authored stereo baseline is 75 mm"
+    );
+    let mut workspace = phoxal_mujoco::Workspace::new(&model).unwrap();
+    for name in ["rgb", "left_mono", "right_mono", "depth"] {
+        let camera = model.camera(&format!("sensor__{name}")).unwrap().unwrap();
+        let rendered = workspace.render_camera(camera).unwrap();
+        let [width, height] = rendered.resolution();
+        let center = (height / 2) * width + width / 2;
+        let blue_rows = rendered
+            .rgb()
+            .chunks_exact(3)
+            .enumerate()
+            .filter(|(_, pixel)| pixel[2] > pixel[0] && pixel[2] > pixel[1])
+            .map(|(index, _)| index / width)
+            .collect::<Vec<_>>();
+        assert!(!blue_rows.is_empty(), "{name} must see the upper marker");
+        assert!(
+            blue_rows.iter().all(|row| *row < height / 2),
+            "{name} image up must match mount +Z"
+        );
+        let depth = rendered.depth_m()[center];
+        assert!(
+            (depth - 1.98125).abs() < 0.002,
+            "{name} must face mount +X, depth={depth}"
+        );
+        let pixel = &rendered.rgb()[center * 3..center * 3 + 3];
+        assert!(
+            pixel[0] > pixel[1] && pixel[0] > pixel[2],
+            "{name} must see the red target: {pixel:?}"
+        );
+    }
 }

@@ -11,7 +11,7 @@ modules:
         - PACKAGE_VERSION_SUFFIX
   - path: crates/robotics/proto
   - path: phoxal/proto
-  - path: contracts/motion/proto
+  - path: services/motion/contract/proto
     lint:
       use:
         - STANDARD
@@ -20,7 +20,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: contracts/navigation/proto
+  - path: services/navigation/contract/proto
     lint:
       use:
         - STANDARD
@@ -29,7 +29,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: contracts/kinematics/proto
+  - path: services/kinematics/contract/proto
     lint:
       use:
         - STANDARD
@@ -38,7 +38,7 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: contracts/world/proto
+  - path: services/world/contract/proto
     lint:
       use:
         - STANDARD
@@ -47,7 +47,52 @@ modules:
         - RPC_REQUEST_STANDARD_NAME
         - RPC_RESPONSE_STANDARD_NAME
         - SERVICE_SUFFIX
-  - path: contracts/safety/proto
+  - path: services/safety/contract/proto
+    lint:
+      use:
+        - STANDARD
+      except:
+        - RPC_REQUEST_RESPONSE_UNIQUE
+        - RPC_REQUEST_STANDARD_NAME
+        - RPC_RESPONSE_STANDARD_NAME
+        - SERVICE_SUFFIX
+  - path: components/bno085/proto
+    lint:
+      use:
+        - STANDARD
+      except:
+        - RPC_REQUEST_RESPONSE_UNIQUE
+        - RPC_REQUEST_STANDARD_NAME
+        - RPC_RESPONSE_STANDARD_NAME
+        - SERVICE_SUFFIX
+  - path: components/ddsm115/proto
+    lint:
+      use:
+        - STANDARD
+      except:
+        - RPC_REQUEST_RESPONSE_UNIQUE
+        - RPC_REQUEST_STANDARD_NAME
+        - RPC_RESPONSE_STANDARD_NAME
+        - SERVICE_SUFFIX
+  - path: components/oak_d_lite/proto
+    lint:
+      use:
+        - STANDARD
+      except:
+        - RPC_REQUEST_RESPONSE_UNIQUE
+        - RPC_REQUEST_STANDARD_NAME
+        - RPC_RESPONSE_STANDARD_NAME
+        - SERVICE_SUFFIX
+  - path: components/vl53l1x/proto
+    lint:
+      use:
+        - STANDARD
+      except:
+        - RPC_REQUEST_RESPONSE_UNIQUE
+        - RPC_REQUEST_STANDARD_NAME
+        - RPC_RESPONSE_STANDARD_NAME
+        - SERVICE_SUFFIX
+  - path: components/zed_f9p/proto
     lint:
       use:
         - STANDARD

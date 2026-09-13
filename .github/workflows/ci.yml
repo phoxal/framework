@@ -99,48 +99,25 @@ jobs:
       github.event_name == 'pull_request' ||
       (github.event_name == 'push' &&
        !startsWith(github.event.head_commit.message, 'chore(release): release v'))
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Cache MuJoCo distribution
-        id: cache-mujoco
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/mujoco-3.12.0-linux-x86_64.tar.gz
-          key: mujoco-3.12.0-linux-x86_64-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Download MuJoCo distribution
-        if: steps.cache-mujoco.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          curl --fail --location --silent --show-error \
-            "https://github.com/google-deepmind/mujoco/releases/download/3.12.0/mujoco-3.12.0-linux-x86_64.tar.gz" \
-            --output "$RUNNER_TEMP/mujoco-3.12.0-linux-x86_64.tar.gz"
-
-      - name: Verify MuJoCo distribution
-        working-directory: ${{ runner.temp }}
-        run: |
-          set -euo pipefail
-          curl --fail --location --silent --show-error \
-            "https://github.com/google-deepmind/mujoco/releases/download/3.12.0/mujoco-3.12.0-linux-x86_64.tar.gz.sha256" \
-            --output mujoco-3.12.0-linux-x86_64.tar.gz.sha256
-          sha256sum --check mujoco-3.12.0-linux-x86_64.tar.gz.sha256
-
-      - name: Install MuJoCo environment
-        run: |
-          set -euo pipefail
-          tar -xzf "$RUNNER_TEMP/mujoco-3.12.0-linux-x86_64.tar.gz" -C "$RUNNER_TEMP"
-          echo "MUJOCO_DYNAMIC_LINK_DIR=$RUNNER_TEMP/mujoco-3.12.0/lib" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mujoco-3.12.0/lib" >> "$GITHUB_ENV"
-
-      - name: Test native model and scene foundation
-        run: cargo test -p phoxal-mujoco --features native
-
-      - name: Compile independent simulator application
-        run: cargo test --manifest-path simulators/mujoco/Cargo.toml
+      - name: Install Linux offscreen graphics
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1-mesa-dev libgl1-mesa-dri
+      - name: Install pinned MuJoCo
+        run: .github/scripts/setup_mujoco.sh "$RUNNER_TEMP/native-mujoco"
+      - name: Test native models, composition, and offscreen RGB and depth
+        run: cargo test --locked -p phoxal-mujoco --features rendering
+      - name: Check native library documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked -p phoxal-mujoco --features rendering --no-deps
 
   # Every consumer profile, built explicitly.
   #
@@ -166,7 +143,7 @@ jobs:
           set -euo pipefail
           # default: the Runtime SDK a robot project gets.
           cargo check -p phoxal
-          for profile in port protocol runtime session supervisor; do
+          for profile in port protocol runtime session; do
             cargo check -p phoxal --no-default-features --features "$profile"
           done
           # Additivity: every profile compiled together must still be one crate.
@@ -179,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo doc -p phoxal --no-deps
-          for profile in port protocol runtime session supervisor; do
+          for profile in port protocol runtime session; do
             cargo doc -p phoxal --no-default-features --features "$profile" --no-deps
           done
           cargo doc -p phoxal --all-features --no-deps

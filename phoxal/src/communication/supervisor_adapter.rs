@@ -94,8 +94,12 @@ pub enum PublicOperation {
     Subscribe,
     /// Acquire exclusive simulation authority for one execution.
     AcquireAuthority,
-    /// Advance an acquired simulation boundary.
-    Advance,
+    /// Admit the complete boundary-zero observation cut.
+    AdmitInitialObservations,
+    /// Prepare one admitted simulation boundary and select its actuator cut.
+    PrepareBoundary,
+    /// Admit the complete observation cut produced by native integration.
+    AdmitObservations,
     /// Reset an acquired simulation timeline.
     Reset,
     /// Release simulation authority.
@@ -122,7 +126,9 @@ impl PublicOperation {
             Self::Watch => "watch",
             Self::Subscribe => "subscribe",
             Self::AcquireAuthority => "acquire-authority",
-            Self::Advance => "advance",
+            Self::AdmitInitialObservations => "admit-initial-observations",
+            Self::PrepareBoundary => "prepare-boundary",
+            Self::AdmitObservations => "admit-observations",
             Self::Reset => "reset",
             Self::ReleaseAuthority => "release-authority",
             Self::Progress => "progress",
@@ -144,7 +150,9 @@ impl PublicOperation {
             "watch" => Self::Watch,
             "subscribe" => Self::Subscribe,
             "acquire-authority" => Self::AcquireAuthority,
-            "advance" => Self::Advance,
+            "admit-initial-observations" => Self::AdmitInitialObservations,
+            "prepare-boundary" => Self::PrepareBoundary,
+            "admit-observations" => Self::AdmitObservations,
             "reset" => Self::Reset,
             "release-authority" => Self::ReleaseAuthority,
             "progress" => Self::Progress,
@@ -167,7 +175,9 @@ impl PublicOperation {
             | Self::Subscribe => PublicRouteKind::Inspection,
             Self::Command => PublicRouteKind::Mutation,
             Self::AcquireAuthority
-            | Self::Advance
+            | Self::AdmitInitialObservations
+            | Self::PrepareBoundary
+            | Self::AdmitObservations
             | Self::Reset
             | Self::ReleaseAuthority
             | Self::Progress => PublicRouteKind::Simulation,
@@ -542,6 +552,7 @@ impl ServicePorts {
 /// One execution and its generated public service metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SimulationProviderDefinition {
+    rate_microhertz: u64,
     service_instance: String,
     port: String,
     kind: PortKind,
@@ -557,8 +568,10 @@ impl SimulationProviderDefinition {
         kind: PortKind,
         input_fqn: impl Into<String>,
         payload_fqn: impl Into<String>,
+        rate_microhertz: u64,
     ) -> Result<Self, SupervisorAdapterError> {
         let definition = Self {
+            rate_microhertz,
             service_instance: service_instance.into(),
             port: port.into(),
             kind,
@@ -573,10 +586,27 @@ impl SimulationProviderDefinition {
         ) || !valid_fqn(&definition.input_fqn)
             || !valid_fqn(&definition.payload_fqn)
             || definition.payload_fqn.is_empty()
+            || definition.rate_microhertz == 0
         {
             return Err(SupervisorAdapterError::InvalidSimulationDefinition);
         }
         Ok(definition)
+    }
+
+    /// Immutable publication frequency in millionths of one hertz.
+    #[must_use]
+    pub const fn rate_microhertz(&self) -> u64 {
+        self.rate_microhertz
+    }
+
+    /// Whether the source must close a capture at this logical boundary.
+    /// The containing definition validates the frequency against its quantum.
+    #[must_use]
+    pub fn due(&self, boundary: u64, quantum_ns: u64) -> bool {
+        let ticks = u128::from(self.rate_microhertz) * u128::from(quantum_ns);
+        boundary == 0
+            || u128::from(boundary) * ticks / 1_000_000_000_000_000
+                > u128::from(boundary - 1) * ticks / 1_000_000_000_000_000
     }
 
     /// Service instance containing the provider.
@@ -634,6 +664,10 @@ impl SimulationDefinition {
                 .any(|byte| byte.is_ascii_whitespace())
             || quantum_ns == 0
             || providers.is_empty()
+            || providers.iter().any(|provider| {
+                u128::from(provider.rate_microhertz) * u128::from(quantum_ns)
+                    > 1_000_000_000_000_000
+            })
         {
             return Err(SupervisorAdapterError::InvalidSimulationDefinition);
         }
@@ -2069,7 +2103,7 @@ mod tests {
         assert_eq!(parsed.operation(), PublicOperation::AcquireAuthority);
         assert!(PublicRoute::parse(
             &target,
-            "phoxal/workshop/supervisors/rover-01/session/v1/clients/simulator/simulation/advance"
+            "phoxal/workshop/supervisors/rover-01/session/v1/clients/simulator/simulation/prepare-boundary"
         )
         .is_err());
     }
@@ -2094,6 +2128,7 @@ mod tests {
                     PortKind::State,
                     "example.Request",
                     "example.Response",
+                    100_000_000,
                 )
                 .expect("provider"),
             ],

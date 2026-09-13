@@ -1,0 +1,10 @@
+<mujoco model="composition-component">
+  <worldbody>
+    <body name="mount">
+      <body name="payload">
+        <joint name="joint" type="hinge"/>
+        <geom type="box" size="0.01 0.01 0.01" density="1000"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

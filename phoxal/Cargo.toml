@@ -78,58 +78,24 @@ session = [
     "dep:zenoh",
 ]
 
-# The exact-train `phoxal-supervisor` executable, and nothing else: it compiles
-# `phoxal::supervisor::host`, the whole supervisor implementation, plus the
-# embedded Zenoh router the graph meets on.
-#
-# `zenoh/unstable` is the router's: `link_events_listener()` observes links
-# coming and going and has no stable equivalent. Pulling it in *here* rather
-# than on the workspace dependency keeps that surface out of every runtime
-# build. `libc` is deliberately absent from this list - supervisor rendezvous
-# uses it in every profile, so it is a plain
-# dependency rather than one this profile turns on.
-supervisor = [
-    "runtime",
-    "dep:clap",
-    "dep:const_format",
-    "dep:ctrlc",
-    "dep:libc",
-    "dep:serde_json",
-    "dep:sha2",
-    "dep:system_shutdown",
-    "dep:tempfile",
-    "dep:tokio",
-    "dep:tokio-util",
-    "dep:tracing",
-    "dep:tracing-subscriber",
-    "dep:zenoh",
-    "zenoh/unstable",
-]
-
 [dependencies]
 phoxal-macros = { workspace = true, optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"], optional = true }
-const_format = { workspace = true, optional = true }
 # `termination`: SIGTERM and SIGHUP alongside SIGINT, so every "stop" signal
 # reaches the supervisor's one orderly shutdown path.
-ctrlc = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
-libc = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 # The supervisor asks its own host to reboot or power off.
-system_shutdown = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
-tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "io-util", "net"], optional = true }
 # `rt`: the supervisor's one shutdown token, cancelled from the signal handler
 # and awaited by everything it owns.
 tokio-util = { workspace = true, features = ["rt"], optional = true }
 tracing = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 
 phoxal-port = { workspace = true, optional = true }
@@ -150,6 +116,8 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
+tempfile.workspace = true
+
 phoxal-project = { workspace = true }
 # The Config derive test compares the emitted schema with the independent
 # schemars oracle without making schemars a runtime dependency.
@@ -195,21 +163,6 @@ required-features = ["runtime"]
 name = "runtime_reference_examples"
 path = "tests/runtime_reference_examples.rs"
 required-features = ["runtime"]
-
-[[test]]
-name = "runtime_supervisor_e2e"
-path = "tests/runtime_supervisor_e2e.rs"
-required-features = ["runtime", "session", "supervisor"]
-
-[[bin]]
-name = "phoxal-runtime-reference"
-path = "tests/fixtures/runtime_reference.rs"
-required-features = ["runtime"]
-
-[[test]]
-name = "session_attaches_to_the_supervisor"
-path = "tests/session_attaches_to_the_supervisor.rs"
-required-features = ["session", "supervisor"]
 
 [[test]]
 name = "trybuild"

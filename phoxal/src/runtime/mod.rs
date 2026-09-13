@@ -5,8 +5,9 @@
 //! [`crate::runtime::RuntimeRunner`] owns validation, admission, scheduling, reset, and shutdown.
 
 pub mod artifact;
+pub mod connection;
 mod core;
-pub(crate) mod execution_protocol;
+pub mod execution_protocol;
 pub mod input;
 mod operation;
 pub mod outputs;

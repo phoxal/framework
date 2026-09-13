@@ -518,3 +518,24 @@ fn read_status_distinguishes_pending_and_completed_inputs() {
         ReadStatus::Completed
     );
 }
+
+#[test]
+fn compiled_input_records_retain_concrete_owner_message_names() {
+    let bytes = __PHOXAL_RUNTIME_ARTIFACT_periodic_reader.as_bytes();
+    let record: phoxal_project::RuntimeRecord = serde_json::from_slice(&bytes[12..]).unwrap();
+    let input = &record.inputs[0];
+    assert_eq!(
+        input.request_fqn.as_deref(),
+        Some("phoxal.examples.runtime.CounterReadRequest")
+    );
+    assert_eq!(
+        input.response_fqn.as_deref(),
+        Some("phoxal.examples.runtime.CounterReadResponse")
+    );
+    let counter: phoxal_project::RuntimeRecord =
+        serde_json::from_slice(&__PHOXAL_RUNTIME_ARTIFACT_counter.as_bytes()[12..]).unwrap();
+    assert_eq!(
+        counter.inputs[0].response_fqn.as_deref(),
+        Some("google.protobuf.UInt64Value")
+    );
+}

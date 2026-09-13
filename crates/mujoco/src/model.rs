@@ -1,10 +1,10 @@
 //! Immutable compiled models and model-scoped read-only handles.
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fmt;
 use std::sync::Arc;
 
-use mujoco_rs::prelude::{MjModel, MjtJoint, MjtObj};
+use mujoco_rs::prelude::{MjModel, MjtBias, MjtGain, MjtJoint, MjtObj, MjtSensor, MjtTrn};
 use mujoco_rs::wrappers::MjVfs;
 use phoxal_port::{PortDescriptor, PortKind, PortSignature};
 
@@ -50,9 +50,28 @@ impl Model {
             return Err(ModelError::InvalidTimestep(timestep));
         }
 
+        let identity = ModelIdentity(artifact.digest());
+        Self::from_compiled(artifact, model, identity)
+    }
+
+    /// Wraps a model compiled through MuJoCo's native editing API.
+    ///
+    /// The caller owns the editing/specification lifetime and must provide the
+    /// identity of the complete source selection used for the compilation.
+    /// This is crate-private because a public caller must enter through a
+    /// closed artifact or [`crate::ModelComposition`].
+    pub(crate) fn from_compiled(
+        artifact: ClosedModel,
+        model: MjModel,
+        identity: ModelIdentity,
+    ) -> Result<Self, ModelError> {
+        let timestep = model.opt().timestep;
+        if !timestep.is_finite() || timestep <= 0.0 {
+            return Err(ModelError::InvalidTimestep(timestep));
+        }
         Ok(Self {
             inner: Arc::new(model),
-            identity: ModelIdentity(artifact.digest()),
+            identity,
             artifact: Arc::new(artifact),
         })
     }
@@ -271,10 +290,18 @@ impl Model {
         } else {
             None
         };
+        let mode = ActuatorMode::from_native(
+            self.inner.actuator_trntype()[index],
+            self.inner.actuator_gaintype()[index],
+            self.inner.actuator_biastype()[index],
+            self.inner.actuator_gainprm()[index],
+            self.inner.actuator_biasprm()[index],
+        );
         Ok(ActuatorInfo {
             handle,
             control_index,
             control_range,
+            mode,
         })
     }
 
@@ -288,6 +315,7 @@ impl Model {
             handle,
             data_offset: offset,
             dimension,
+            kind: SensorKind::from_native(self.inner.sensor_type()[index]),
         })
     }
 
@@ -319,6 +347,86 @@ impl Model {
             self.inner.actuator_ctrllimited()[index]
                 .then(|| self.inner.actuator_ctrlrange()[index]),
         )
+    }
+
+    /// Returns one named MJCF custom numeric field.
+    ///
+    /// Custom metadata is part of the compiled scene model, not an external
+    /// bundle or driver configuration.  The returned values are copied so a
+    /// caller cannot retain an alias to native model storage.
+    pub fn custom_numeric(&self, name: &str) -> Result<Option<Box<[f64]>>, ModelError> {
+        let Some(index) = self.inner.name_to_id(MjtObj::mjOBJ_NUMERIC, name) else {
+            return Ok(None);
+        };
+        let address = self
+            .inner
+            .numeric_adr()
+            .get(index)
+            .copied()
+            .ok_or_else(|| invalid_metadata("numeric address", index))?;
+        let size = self
+            .inner
+            .numeric_size()
+            .get(index)
+            .copied()
+            .ok_or_else(|| invalid_metadata("numeric size", index))?;
+        if address < 0 || size < 0 {
+            return Err(invalid_metadata("numeric range", index));
+        }
+        let address = address as usize;
+        let size = size as usize;
+        let end = address
+            .checked_add(size)
+            .ok_or_else(|| invalid_metadata("numeric range", index))?;
+        let values = self
+            .inner
+            .numeric_data()
+            .get(address..end)
+            .ok_or_else(|| invalid_metadata("numeric range", index))?;
+        Ok(Some(values.to_vec().into_boxed_slice()))
+    }
+
+    /// Returns one named MJCF custom text field.
+    ///
+    /// MuJoCo stores custom text data as NUL-terminated native characters;
+    /// invalid UTF-8 is refused because scene metadata is a textual contract.
+    pub fn custom_text(&self, name: &str) -> Result<Option<String>, ModelError> {
+        let Some(index) = self.inner.name_to_id(MjtObj::mjOBJ_TEXT, name) else {
+            return Ok(None);
+        };
+        let address = self
+            .inner
+            .text_adr()
+            .get(index)
+            .copied()
+            .ok_or_else(|| invalid_metadata("text address", index))?;
+        let size = self
+            .inner
+            .text_size()
+            .get(index)
+            .copied()
+            .ok_or_else(|| invalid_metadata("text size", index))?;
+        if address < 0 || size <= 0 {
+            return Err(invalid_metadata("text range", index));
+        }
+        let address = address as usize;
+        let size = size as usize;
+        let end = address
+            .checked_add(size)
+            .ok_or_else(|| invalid_metadata("text range", index))?;
+        let values = self
+            .inner
+            .text_data()
+            .get(address..end)
+            .ok_or_else(|| invalid_metadata("text range", index))?;
+        let text = CStr::from_bytes_until_nul(
+            &values.iter().map(|value| *value as u8).collect::<Vec<_>>(),
+        )
+        .map_err(|_| invalid_metadata("text terminator", index))?
+        .to_str()
+        .map_err(|_| invalid_metadata("text UTF-8", index))?
+        .to_owned();
+        Ok(Some(text))
     }
 
     pub(crate) fn inner_arc(&self) -> Arc<MjModel> {
@@ -373,6 +481,13 @@ fn native_error(operation: &'static str, error: impl fmt::Display) -> ModelError
     ModelError::Native {
         operation,
         message: error.to_string(),
+    }
+}
+
+fn invalid_metadata(field: &'static str, index: usize) -> ModelError {
+    ModelError::Native {
+        operation: "read custom model metadata",
+        message: format!("invalid {field} for custom field index {index}"),
     }
 }
 
@@ -636,6 +751,66 @@ pub struct ActuatorInfo {
     pub control_index: usize,
     /// Optional finite control range.
     pub control_range: Option<[f64; 2]>,
+    /// Exact scalar control family recognized from the native actuator
+    /// transmission, gain, and bias fields.
+    pub mode: ActuatorMode,
+}
+
+/// Native scalar actuator semantics recognized by the read-only model API.
+///
+/// MuJoCo's generic actuator control value is otherwise ambiguous.  The
+/// reference provider may only map a wire torque or velocity target to a
+/// matching mode.  Any authored actuator that does not have one of the
+/// explicitly recognized joint transmission forms is reported as
+/// [`Self::Unsupported`] and must be configured by a narrower native adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActuatorMode {
+    /// A direct fixed-gain, no-bias joint force/torque actuator.
+    Torque,
+    /// A fixed-gain affine joint velocity servo.
+    Velocity,
+    /// An actuator whose native semantics are not one of the supported forms.
+    Unsupported,
+}
+
+impl ActuatorMode {
+    fn from_native(
+        transmission: MjtTrn,
+        gain_type: MjtGain,
+        bias_type: MjtBias,
+        gain_parameters: [f64; 10],
+        bias_parameters: [f64; 10],
+    ) -> Self {
+        if !matches!(
+            transmission,
+            MjtTrn::mjTRN_JOINT | MjtTrn::mjTRN_JOINTINPARENT
+        ) {
+            return Self::Unsupported;
+        }
+        if gain_type == MjtGain::mjGAIN_FIXED && bias_type == MjtBias::mjBIAS_NONE {
+            return Self::Torque;
+        }
+        let velocity_gain = gain_parameters[0];
+        if gain_type == MjtGain::mjGAIN_FIXED
+            && bias_type == MjtBias::mjBIAS_AFFINE
+            && velocity_gain.is_finite()
+            && velocity_gain > 0.0
+            && approximately_zero(bias_parameters[0])
+            && approximately_zero(bias_parameters[1])
+            && approximately_equal(bias_parameters[2], -velocity_gain)
+        {
+            return Self::Velocity;
+        }
+        Self::Unsupported
+    }
+}
+
+fn approximately_zero(value: f64) -> bool {
+    value.is_finite() && value.abs() <= 1.0e-12
+}
+
+fn approximately_equal(left: f64, right: f64) -> bool {
+    left.is_finite() && right.is_finite() && (left - right).abs() <= 1.0e-12
 }
 
 /// Read-only static sensor facts.
@@ -647,6 +822,45 @@ pub struct SensorInfo {
     pub data_offset: usize,
     /// Number of scalar values emitted by this sensor.
     pub dimension: usize,
+    /// Native sensor class used to validate semantic provider bindings.
+    pub kind: SensorKind,
+}
+
+/// Native sensor classes that have an explicit provider interpretation.
+///
+/// The model API retains only the classes needed by the maintained reference
+/// capabilities.  Other MuJoCo sensor classes remain representable through
+/// [`Self::Other`] and cannot be silently substituted for one of these forms.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SensorKind {
+    /// A frame quaternion, in MuJoCo `[w, x, y, z]` order.
+    FrameQuaternion,
+    /// A site accelerometer returning native specific force.
+    Accelerometer,
+    /// A site gyroscope returning native angular velocity.
+    Gyroscope,
+    /// A scalar joint position.
+    JointPosition,
+    /// A scalar joint velocity.
+    JointVelocity,
+    /// A site rangefinder measurement.
+    Rangefinder,
+    /// A native sensor without a maintained reference-provider mapping.
+    Other,
+}
+
+impl SensorKind {
+    fn from_native(kind: MjtSensor) -> Self {
+        match kind {
+            MjtSensor::mjSENS_FRAMEQUAT => Self::FrameQuaternion,
+            MjtSensor::mjSENS_ACCELEROMETER => Self::Accelerometer,
+            MjtSensor::mjSENS_GYRO => Self::Gyroscope,
+            MjtSensor::mjSENS_JOINTPOS => Self::JointPosition,
+            MjtSensor::mjSENS_JOINTVEL => Self::JointVelocity,
+            MjtSensor::mjSENS_RANGEFINDER => Self::Rangefinder,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// A generated sample port bound to a native sensor table range.

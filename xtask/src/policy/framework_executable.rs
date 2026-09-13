@@ -80,6 +80,19 @@ impl Spec {
             root,
             manifest_path,
         )?;
+        // Cargo supplies CARGO_BIN_EXE only for binary targets. The process
+        // fixture is opt-in, lives under tests, and is not a release artifact.
+        let targets = package
+            .targets
+            .iter()
+            .filter(|target| {
+                !(target.name == "supervisor-test-runtime"
+                    && target.required_features == ["test-fixtures"]
+                    && target.src_path.as_std_path()
+                        == root.join("supervisor/tests/fixtures/runtime_process.rs"))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         validate_service_targets(
             package_name,
             "the framework-owned supervisor package",
@@ -89,7 +102,7 @@ impl Spec {
                 expected_bin_source: Some(Path::new(self.bin_source_path)),
                 expected_lib_source: Some(Path::new(self.lib_source_path)),
             },
-            &package.targets,
+            &targets,
             root,
         )
     }

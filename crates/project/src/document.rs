@@ -213,6 +213,11 @@ impl RobotDocument {
                 });
             } else if consumer.instance != "brain"
                 && !self.services.contains_key(&consumer.instance)
+                && self
+                    .robot
+                    .components
+                    .get(&consumer.instance)
+                    .is_none_or(|component| component.driver.is_none())
             {
                 errors.push(ValidationError::InvalidConnectionConsumer {
                     field: format!("connections.{consumer_text}"),
@@ -312,13 +317,6 @@ pub struct RobotSection {
     /// Native robot model path, relative to the robot root.
     #[serde(default)]
     pub model: Option<PathBuf>,
-    /// Existing physical/kinematic authoring values remain opaque to this
-    /// foundation until their owning domain validators are migrated.
-    #[serde(default)]
-    pub kinematic: Option<serde_json::Value>,
-    /// Existing physical motion limits remain opaque to this foundation.
-    #[serde(default)]
-    pub motion_limits: Option<serde_json::Value>,
     /// Mounted component instances.
     #[serde(default)]
     pub components: BTreeMap<String, ComponentInstance>,
@@ -761,6 +759,39 @@ robot:
             RobotDocument::parse("robot:\n  id: rover\n  id: duplicate\n  components: {}\n")
                 .expect_err("duplicate keys must not be accepted");
         assert!(error.to_string().contains("duplicate field"));
+    }
+
+    #[test]
+    fn rejects_ignored_robot_policy_instead_of_shadowing_service_configuration() {
+        for field in ["kinematic", "motion_limits"] {
+            let error = serde_json::from_value::<RobotDocument>(serde_json::json!({
+                "robot": {"id": "rover", field: {}}, "services": {}, "connections": {}
+            }))
+            .unwrap_err();
+            assert!(error.to_string().contains(field));
+        }
+    }
+
+    #[test]
+    fn selected_driver_consumes_connections_but_passive_component_cannot() {
+        let mut document: RobotDocument = serde_json::from_value(serde_json::json!({
+            "robot": {"id": "rover", "components": {
+                "wheel": {"component": "motor", "mount_site": "wheel_mount", "driver": {}}
+            }},
+            "services": {"motion": {}},
+            "connections": {"wheel.actuator": "motion.actuators"}
+        }))
+        .unwrap();
+        document
+            .validate()
+            .expect("selected driver is an input consumer");
+        document.robot.components.get_mut("wheel").unwrap().driver = None;
+        let errors = document
+            .validate()
+            .expect_err("passive component has no runtime input");
+        assert!(errors.iter().any(|error| matches!(error,
+            ValidationError::InvalidConnectionConsumer { instance, .. } if instance == "wheel"
+        )));
     }
 
     #[test]

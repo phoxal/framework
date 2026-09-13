@@ -753,7 +753,7 @@ pub fn invoke<R: Runtime>(
 /// transitions the current execution to [`RuntimeStatus::Failed`]; callers
 /// must create a fresh owner to resume with fresh initialization.
 pub struct RuntimeOwner<R: RegisteredRuntime> {
-    service: R,
+    service: std::sync::Arc<R>,
     state: Option<R::State>,
     next_index: u64,
     last_time: Option<ExecutionTime>,
@@ -766,7 +766,7 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
     pub fn new(service: R, now: ExecutionTime, config: R::Config) -> crate::Result<Self> {
         let state = initialize(&service, now, config)?;
         Ok(Self {
-            service,
+            service: std::sync::Arc::new(service),
             state: Some(state),
             next_index: 0,
             last_time: None,
@@ -788,8 +788,12 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
 
     /// Returns a shared reference to the service implementation.
     #[must_use]
-    pub const fn service(&self) -> &R {
+    pub fn service(&self) -> &R {
         &self.service
+    }
+
+    pub(crate) fn shared_service(&self) -> std::sync::Arc<R> {
+        std::sync::Arc::clone(&self.service)
     }
 
     /// Returns the initialized state to an owner-side output adapter.
@@ -929,7 +933,7 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
     /// succeed, so a failed reset leaves the owner terminal rather than
     /// accidentally retaining a stale state/configuration pair.
     pub fn reset(&mut self, now: ExecutionTime, config: R::Config) -> crate::Result<()> {
-        let state = match initialize(&self.service, now, config) {
+        let state = match initialize(self.service.as_ref(), now, config) {
             Ok(state) => state,
             Err(error) => {
                 self.state = None;

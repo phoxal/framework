@@ -89,7 +89,7 @@ phoxal-supervisor = { path = "supervisor" }
     )?;
     write(
         &directory.path().join("build.rs"),
-        &artifact_build_script(r#"{"type":"null"}"#),
+        &artifact_build_script(r#"{"type":"null"}"#, false),
     )?;
     write(
         &directory.path().join("src/main.rs"),
@@ -120,7 +120,7 @@ kind = "service"
     )?;
     write(
         &directory.path().join("counter-service/build.rs"),
-        &artifact_build_script(service_schema),
+        &artifact_build_script(service_schema, true),
     )?;
     write(
         &directory.path().join("counter-service/src/lib.rs"),
@@ -282,7 +282,7 @@ phoxal-supervisor = { path = "robot/supervisor" }
 }
 
 fn nested_workspace_race_build_script() -> String {
-    artifact_build_script(r#"{"type":"null"}"#).replace(
+    artifact_build_script(r#"{"type":"null"}"#, false).replace(
         "    println!(\"cargo:rerun-if-changed=build.rs\");",
         r##"    let workspace_manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -296,9 +296,9 @@ fn nested_workspace_race_build_script() -> String {
     )
 }
 
-fn artifact_build_script(config_schema: &str) -> String {
-    let inputs = if config_schema.contains("\"type\":\"object\"") {
-        r#"[{"name":"input","kind":"latest","max_age_ms":null,"max_items":null,"max_bytes":null,"port":null,"signature":null}]"#
+fn artifact_build_script(config_schema: &str, with_input: bool) -> String {
+    let inputs = if with_input {
+        r#"[{"name":"input","kind":"latest","max_age_ms":null,"max_items":null,"max_bytes":null,"port":null,"signature":null,"request_fqn":null,"response_fqn":"fixture.Sample"}]"#
     } else {
         "[]"
     };
@@ -901,6 +901,88 @@ fn explicit_update_validates_the_fresh_graph_before_success()
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn update_repairs_resolution_before_metadata_including_targetless_sources()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for targetless in [false, true] {
+        let fixture = if targetless {
+            targetless_component_fixture()?
+        } else {
+            project_fixture()?
+        };
+        let wrapper_root = tempfile::tempdir()?;
+        let wrapper = wrapper_root.path().join("cargo");
+        let real_cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        // Model a graph whose existing lock cannot resolve until Cargo updates
+        // it. Forward every actual operation to Cargo, including the staged
+        // targetless graph and the subsequent contract validation builds.
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\"'\"'"));
+        write(
+            &wrapper,
+            &format!(
+                r#"#!/bin/sh
+marker={marker}
+case "$1" in
+  update) touch "$marker" ;;
+  metadata) test -f "$marker" || exit 86 ;;
+esac
+exec {cargo} "$@"
+"#,
+                marker = quote(&wrapper_root.path().join("updated").display().to_string()),
+                cargo = quote(&real_cargo)
+            ),
+        )?;
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
+        let outputs = Project::discover(fixture.path())?.update(&CargoOptions {
+            cargo_path: Some(wrapper),
+            offline: true,
+            ..CargoOptions::default()
+        })?;
+        assert_eq!(outputs.len(), 1);
+        assert!(fixture.path().join("Cargo.lock").is_file());
+        if targetless {
+            assert!(!fixture.path().join("passive-sensor/_cargo").exists());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn failed_cargo_test_preserves_the_assertion_diagnostic() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = project_fixture()?;
+    let main = fixture.path().join("src/main.rs");
+    let mut source = fs::read_to_string(&main)?;
+    source.push_str("\n#[test] fn failed_sensor_acceptance() { panic!(\"capture exceeded the freshness budget\"); }\n");
+    write(&main, &source)?;
+    let prepared = Project::discover(fixture.path())?.prepare(&CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    })?;
+    let error = prepared
+        .run(
+            CargoOperation::Test,
+            &CargoOptions {
+                offline: true,
+                ..CargoOptions::default()
+            },
+        )
+        .expect_err("the intentionally failing user test must be reported");
+    let diagnostic = error.to_string();
+    assert!(
+        diagnostic.contains("capture exceeded the freshness budget"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("failed_sensor_acceptance"),
+        "{diagnostic}"
+    );
+    Ok(())
+}
+
 #[test]
 fn update_rejects_target_selectors_before_preparation_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1161,7 +1243,7 @@ path = "src/main.rs"
     )?;
     write(
         &fixture.path().join("sensor-driver/build.rs"),
-        &artifact_build_script(r#"{"type":"object"}"#),
+        &artifact_build_script(r#"{"type":"object"}"#, false),
     )?;
     write(
         &fixture.path().join("sensor-driver/src/main.rs"),
@@ -1185,9 +1267,7 @@ robot:
         binary: sensor-driver
         config: {}
 brain: {}
-services:
-  counter:
-    implementation: counter-service
+services: {}
 connections: {}
 "#,
     )?;
@@ -1264,7 +1344,7 @@ fn selected_hardware_fixture_driver_is_resolved_without_simulation_assets()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = project_fixture()?;
     let driver_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../hardware-driver-fixture")
+        .join("../../tests/fixtures/hardware/driver")
         .canonicalize()?;
     let driver_path = relative_path(&fixture.path().canonicalize()?, &driver_path);
     let root_manifest = fixture.path().join("Cargo.toml");
@@ -1613,7 +1693,7 @@ kind = "service"
     )?;
     write(
         &package_root.join("build.rs"),
-        &artifact_build_script(r#"{"type":"object"}"#),
+        &artifact_build_script(r#"{"type":"object"}"#, true),
     )?;
     write(&package_root.join("src/lib.rs"), "pub struct GitService;\n")?;
     write(

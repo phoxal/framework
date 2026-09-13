@@ -4,9 +4,13 @@
 //! publish, start an activation, or retain a batch.  The runner owns those
 //! actions after a complete invocation has been accepted.
 
+pub mod activation;
+pub mod read;
+
 use super::StepContext;
 use super::input::TransportValue;
 use crate::port::PortSignature;
+use activation::ActivationKey;
 
 /// The output role declared by one field or method.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,14 +92,6 @@ pub struct OutputField {
 pub type OperationWorker =
     Box<dyn Fn(TransportValue) -> crate::Result<TransportValue> + Send + Sync>;
 
-/// One received request routed to a generated Read handler.
-pub struct RuntimeReadRequest {
-    /// The generated handler method name selected by the request key.
-    pub field: &'static str,
-    /// The raw bounded Protobuf sample and its delivery metadata.
-    pub sample: super::transport::WireSample,
-}
-
 /// The serialized runtime-owned side effects prepared by generated output
 /// bindings.  Implementations only stage work during candidate preparation;
 /// the runner dispatches it after the invocation and its output reservation
@@ -108,7 +104,7 @@ pub trait RuntimeWorkSink {
     fn activate(
         &mut self,
         field: &'static str,
-        key: TransportValue,
+        key: ActivationKey,
         request: TransportValue,
         worker: Option<OperationWorker>,
         timeout_ms: Option<u64>,
@@ -117,9 +113,8 @@ pub trait RuntimeWorkSink {
         context: StepContext,
     ) -> crate::Result<()>;
 
-    /// Stage a generated Read handler response for publication after the
-    /// current candidate is accepted.
-    fn push_read_reply(&mut self, output: super::transport::PreparedOutput) -> crate::Result<()>;
+    /// Retire local interest after acceptance without undoing remote effects.
+    fn deactivate(&mut self, field: &'static str) -> crate::Result<()>;
 }
 
 /// Metadata emitted for an output struct collector.
@@ -174,18 +169,13 @@ pub trait OutputBindings: super::Runtime + 'static {
         Ok(())
     }
 
-    /// Serve Read requests received before this candidate.  Read handlers run
-    /// through the generated service binding and return a prepared reply that
-    /// is published only after the candidate is accepted.
-    fn serve_reads(
-        &self,
+    /// Capture owned immutable views from initialized or candidate State.
+    /// The runner exposes these views only after acceptance.
+    fn prepare_read_views(
+        self: std::sync::Arc<Self>,
         _state: &Self::State,
-        _context: StepContext,
-        _requests: &mut Vec<RuntimeReadRequest>,
-        _source: &str,
-        _sink: &mut dyn RuntimeWorkSink,
-    ) -> crate::Result<()> {
-        Ok(())
+    ) -> crate::Result<Vec<read::ReadView>> {
+        Ok(Vec::new())
     }
 }
 

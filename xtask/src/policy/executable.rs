@@ -104,11 +104,11 @@ pub(crate) struct ServiceTargetSpec<'a> {
     pub(crate) expected_lib_source: Option<&'a Path>,
 }
 
-/// Validate the two implementation targets every official service exposes.
+/// Validate the contract and executable targets every official service exposes.
 ///
-/// A service package is both a reusable Runtime library and an executable
-/// process.  The library and binary are one implementation, so discovery
-/// requires exactly one target of each kind and pins both target names and
+/// A service library exports generated messages and ports; its executable
+/// owns private Runtime behavior. Discovery requires exactly one production
+/// target of each kind and pins both target names and
 /// source paths to the package identity.  Test, example, bench, and build
 /// targets remain allowed as development targets, just as they are for the
 /// binary-only component grammar.

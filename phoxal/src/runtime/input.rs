@@ -70,6 +70,29 @@ pub struct InputField {
     pub port: Option<&'static str>,
     /// Complete generated descriptor identity for a bound input port.
     pub port_signature: Option<PortSignature>,
+    /// Request message for a read, request, or served command.
+    pub request_type: Option<MessageType>,
+    /// Received publication or response message; local operations have none.
+    pub response_type: Option<MessageType>,
+}
+
+/// Static identity supplied by the generated Protobuf message owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessageType {
+    /// Protobuf package, without the message name.
+    pub package: &'static str,
+    /// Protobuf message name, including any containing message scope.
+    pub name: &'static str,
+}
+
+impl MessageType {
+    /// Extract the constants of an owner-generated message type.
+    pub const fn of<T: prost::Name>() -> Self {
+        Self {
+            package: T::PACKAGE,
+            name: T::NAME,
+        }
+    }
 }
 
 /// A type-level marker implemented by every supported input form.
@@ -1425,6 +1448,9 @@ pub enum ReadStatus {
 /// A typed failure of a read exchange.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ReadError {
+    /// Another hardware query already owns this read endpoint.
+    #[error("read endpoint is busy")]
+    Busy,
     /// The request was not transmitted.
     #[error("read was not sent: {0}")]
     NotSent(String),

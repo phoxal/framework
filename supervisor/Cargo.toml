@@ -25,20 +25,44 @@ name = "phoxal-supervisor"
 path = "src/main.rs"
 
 [dependencies]
-clap = { workspace = true }
-# The `supervisor` profile compiles `phoxal::supervisor::host` - the whole
-# behavior of this executable - plus the embedded Zenoh router it runs. This is
-# the only package in the workspace that enables it, and it takes the exact
-# train: the supervisor and the library it is the body of are one artifact split
-# across two packages.
-#
-# The supervisor profile includes the Runtime wire implementation used to
-# admit and coordinate child processes. It does not turn the supervisor itself
-# into a Runtime implementation. The workspace dependency carries
-# `default-features = false`, so naming `supervisor` is the whole selection.
-phoxal = { workspace = true, features = ["supervisor"] }
+phoxal = { workspace = true, features = ["runtime", "session"] }
+anyhow.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+libc.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+zenoh = { workspace = true, features = ["unstable"] }
+
+[dev-dependencies]
+phoxal-project.workspace = true
+serial_test.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+test-fixtures = []
+
+[[bin]]
+name = "supervisor-test-runtime"
+path = "tests/fixtures/runtime_process.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "runtime_process"
+path = "tests/runtime_process.rs"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "public_session"
+path = "tests/public_session.rs"
+required-features = ["test-fixtures"]

@@ -56,7 +56,7 @@ pub(crate) const FACADE: &str = "phoxal";
 /// artifact packages, so discovery must skip them rather than reject them.
 /// The list is deliberately explicit because a new public package is a
 /// release-owner decision, not an accidental consequence of placing a library
-/// under `crates/` or `contracts/`.
+/// under `crates/` or a service owner.
 ///
 /// `crates/installation` is named here before its implementation lands so the
 /// policy keeps the planned owner classified when the package is added by the
@@ -71,11 +71,11 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
     "crates/project",
     "crates/installation",
     "crates/mujoco",
-    "contracts/motion",
-    "contracts/navigation",
-    "contracts/kinematics",
-    "contracts/world",
-    "contracts/safety",
+    "services/motion/contract",
+    "services/navigation/contract",
+    "services/kinematics/contract",
+    "services/world/contract",
+    "services/safety/contract",
 ];
 
 /// Workspace-only package directories that are intentionally outside the
@@ -86,38 +86,49 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
 /// binary package so its acceptance implementation cannot accidentally become
 /// an official artifact or a release candidate.
 pub(crate) const INTERNAL_CRATE_DIRS: [&str; 4] = [
-    "crates/contract-owner-fixture",
-    "crates/contract-consumer-fixture",
-    "crates/port-consumer-fixture",
-    "crates/hardware-driver-fixture",
+    "tests/fixtures/contracts/producer",
+    "tests/fixtures/contracts/consumer",
+    "tests/fixtures/ports/consumer",
+    "tests/fixtures/hardware/driver",
 ];
 
 /// The subset of [`INTERNAL_CRATE_DIRS`] that carries a library target and is
 /// therefore checked by the library-directory completeness rule.
 pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] = [
-    "crates/contract-owner-fixture",
-    "crates/hardware-driver-fixture",
+    "tests/fixtures/contracts/producer",
+    "tests/fixtures/hardware/driver",
 ];
 
 /// The package a library crate directory must hold, or `None` for a directory
 /// that names no library crate location.
 ///
 /// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>` or
-/// `contracts/<suffix>`, except for the `phoxal/` facade.
+/// `services/<suffix>/contract`, except for the `phoxal/` facade.
 ///
 /// This is the whole reason the directory can be shortened at all. `crates/`
 /// already says `phoxal`, so repeating it in every child would be the
 /// provider spelled twice on one path.
 pub(crate) fn library_package_name(directory: &str) -> Option<String> {
+    match directory {
+        "tests/fixtures/contracts/producer" => return Some("phoxal-contract-owner-fixture".into()),
+        "tests/fixtures/hardware/driver" => return Some("phoxal-hardware-driver-fixture".into()),
+        _ => {}
+    }
     if directory == FACADE {
         return Some(FACADE.to_owned());
     }
     if directory == "supervisor" {
         return Some("phoxal-supervisor".to_owned());
     }
+    if let Some(service) = directory
+        .strip_prefix("services/")
+        .and_then(|path| path.strip_suffix("/contract"))
+    {
+        return (!service.is_empty() && !service.contains('/'))
+            .then(|| format!("{FACADE}-{service}"));
+    }
     let suffix = directory
-        .strip_prefix(LIBRARY_CRATE_ROOT)
-        .or_else(|| directory.strip_prefix("contracts"))?
+        .strip_prefix(LIBRARY_CRATE_ROOT)?
         .strip_prefix('/')?;
     // A library crate is one directory deep and no deeper: `crates/protocol/inner`
     // would be a second package hiding under the first one's name.
@@ -469,7 +480,7 @@ mod tests {
             Some("phoxal-macros")
         );
         assert_eq!(
-            library_package_name("contracts/motion").as_deref(),
+            library_package_name("services/motion/contract").as_deref(),
             Some("phoxal-motion")
         );
         // A hyphenated suffix maps through unchanged; no such crate exists
@@ -485,7 +496,7 @@ mod tests {
         assert_eq!(library_package_name("phoxal-macros"), None);
         assert_eq!(library_package_name("services/drive"), None);
         assert_eq!(library_package_name("contracts"), None);
-        assert_eq!(library_package_name("contracts/motion/inner"), None);
+        assert_eq!(library_package_name("services/motion/contract/inner"), None);
         assert_eq!(library_package_name("cratesfoo"), None);
     }
 
@@ -516,11 +527,11 @@ mod tests {
             ("crates/project", "phoxal-project"),
             ("crates/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
-            ("contracts/motion", "phoxal-motion"),
-            ("contracts/navigation", "phoxal-navigation"),
-            ("contracts/kinematics", "phoxal-kinematics"),
-            ("contracts/world", "phoxal-world"),
-            ("contracts/safety", "phoxal-safety"),
+            ("services/motion/contract", "phoxal-motion"),
+            ("services/navigation/contract", "phoxal-navigation"),
+            ("services/kinematics/contract", "phoxal-kinematics"),
+            ("services/world/contract", "phoxal-world"),
+            ("services/safety/contract", "phoxal-safety"),
         ] {
             assert_eq!(library_package_name(directory).as_deref(), Some(package));
             assert!(

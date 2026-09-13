@@ -399,8 +399,7 @@ impl ExecutionId {
     /// leading digit to the odd half of the alphabet; leaving a nonzero draw
     /// alone keeps the full nonzero leading-digit range that the transport's
     /// own session ids cover.
-    #[allow(dead_code, reason = "the supervisor profile owns execution minting")]
-    pub(crate) fn mint() -> Self {
+    pub fn mint() -> Self {
         ExecutionId(mint_canonical_value())
     }
 
