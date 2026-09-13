@@ -947,14 +947,16 @@ where
         execution_wire::ExecutionMode::Controlled => {
             run_controlled_transport(
                 &mut runner,
-                &manifest,
-                &launch,
-                &bus,
                 shutdown,
-                invoke_subscriber,
-                reset_subscriber,
-                admission.timeline_id,
-                admission.quantum_ns,
+                ControlledTransport {
+                    manifest: &manifest,
+                    launch: &launch,
+                    bus: &bus,
+                    invoke_subscriber,
+                    reset_subscriber,
+                    timeline_id: admission.timeline_id,
+                    quantum_ns: admission.quantum_ns,
+                },
             )
             .await
         }
@@ -979,13 +981,13 @@ async fn declare_execution_subscriber(
     let key = execution_protocol::key(bus, instance, leg);
     let key = OwnedKeyExpr::new(key).map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let session = bus.session()?;
-    Ok(session
+    session
         .declare_subscriber(key)
         .with(zenoh::handlers::FifoChannel::new(
             EXECUTION_CHANNEL_CAPACITY,
         ))
         .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 async fn recv_execution<M>(subscriber: &ExecutionSubscriber) -> crate::Result<M>
@@ -1029,7 +1031,7 @@ fn validate_execution_admission<R: RegisteredRuntime>(
     mode: execution_wire::ExecutionMode,
     expected_execution: &str,
 ) -> Result<(), (String, Vec<String>)> {
-    let reject = |detail: String, unsupported: Vec<String>| Err((detail.into(), unsupported));
+    let reject = |detail: String, unsupported: Vec<String>| Err((detail, unsupported));
     if request.execution_id != expected_execution || request.timeline_id.is_empty() {
         return reject(
             "execution admission requires execution and timeline identities".to_owned(),
@@ -1111,16 +1113,20 @@ fn validate_execution_admission<R: RegisteredRuntime>(
     Ok(())
 }
 
-async fn run_controlled_transport<R, Inputs, Outputs>(
-    runner: &mut RuntimeRunner<R, Inputs, Outputs>,
-    manifest: &RuntimeLaunchManifest,
-    launch: &RuntimeLaunch,
-    bus: &crate::bus::BusHandle,
-    mut shutdown: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+struct ControlledTransport<'a> {
+    manifest: &'a RuntimeLaunchManifest,
+    launch: &'a RuntimeLaunch,
+    bus: &'a crate::bus::BusHandle,
     invoke_subscriber: ExecutionSubscriber,
     reset_subscriber: ExecutionSubscriber,
-    mut timeline_id: String,
+    timeline_id: String,
     quantum_ns: u64,
+}
+
+async fn run_controlled_transport<R, Inputs, Outputs>(
+    runner: &mut RuntimeRunner<R, Inputs, Outputs>,
+    mut shutdown: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+    transport: ControlledTransport<'_>,
 ) -> crate::Result<()>
 where
     R: RegisteredRuntime,
@@ -1128,10 +1134,17 @@ where
     Inputs: InputSource<R>,
     Outputs: OutputSink<R>,
 {
+    let ControlledTransport {
+        manifest,
+        launch,
+        bus,
+        invoke_subscriber,
+        reset_subscriber,
+        mut timeline_id,
+        quantum_ns,
+    } = transport;
     let mut last_boundary = None;
     let mut accepted = BTreeMap::<u64, execution_wire::InvocationAccepted>::new();
-    let invoke_subscriber = invoke_subscriber;
-    let reset_subscriber = reset_subscriber;
     loop {
         tokio::select! {
             biased;
@@ -1793,6 +1806,18 @@ enum DeliveryAdmissionError {
     Saturated(String),
 }
 
+struct DeliveryReceiver {
+    subscriber: RuntimeSubscription,
+    queue: Arc<Mutex<DeliveryQueue>>,
+    bus: crate::bus::BusHandle,
+    expected_source: String,
+    expected_callers: BTreeSet<String>,
+    target: String,
+    port: String,
+    direction: String,
+    cancel: CancellationToken,
+}
+
 impl DeliveryIdentity {
     fn route_key(&self) -> (String, String, String, String) {
         (
@@ -1809,17 +1834,18 @@ impl DeliveryIdentity {
 /// runs independently of the runtime schedule: a healthy paused or not-due
 /// consumer still admits graph traffic, while its later freeze consumes the
 /// already admitted records.
-async fn delivery_receive_loop(
-    subscriber: RuntimeSubscription,
-    queue: Arc<Mutex<DeliveryQueue>>,
-    bus: crate::bus::BusHandle,
-    expected_source: String,
-    expected_callers: BTreeSet<String>,
-    target: String,
-    port: String,
-    direction: String,
-    cancel: CancellationToken,
-) -> crate::Result<()> {
+async fn delivery_receive_loop(receiver: DeliveryReceiver) -> crate::Result<()> {
+    let DeliveryReceiver {
+        subscriber,
+        queue,
+        bus,
+        expected_source,
+        expected_callers,
+        target,
+        port,
+        direction,
+        cancel,
+    } = receiver;
     loop {
         let sample = tokio::select! {
             biased;
@@ -1850,7 +1876,7 @@ async fn delivery_receive_loop(
         // process exit.
         if !has_controlled_identity {
             if direction == "request" && source != "supervisor" {
-                validate_controlled_request_source(&metadata, &source, &port, &expected_callers)?;
+                validate_controlled_request_source(metadata, &source, &port, &expected_callers)?;
             } else if direction != "request" && source != expected_source {
                 return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
                     detail: format!(
@@ -1867,7 +1893,7 @@ async fn delivery_receive_loop(
         }
 
         if direction == "request" {
-            validate_controlled_request_source(&metadata, &source, &port, &expected_callers)?;
+            validate_controlled_request_source(metadata, &source, &port, &expected_callers)?;
         } else if source != expected_source {
             // A sample from a different producer cannot satisfy this route.
             // Failing the worker makes the owning bus enter its fatal state;
@@ -2128,17 +2154,17 @@ impl<R> ExecutionInputAdapter<R> {
                 let worker_port = route.binding.name.clone();
                 let worker_direction = route.direction.key_direction().to_owned();
                 let worker = tokio::spawn(async move {
-                    let result = delivery_receive_loop(
+                    let result = delivery_receive_loop(DeliveryReceiver {
                         subscriber,
-                        worker_queue,
-                        worker_bus,
-                        worker_source,
-                        worker_callers,
-                        worker_target,
-                        worker_port,
-                        worker_direction,
-                        worker_cancel,
-                    )
+                        queue: worker_queue,
+                        bus: worker_bus,
+                        expected_source: worker_source,
+                        expected_callers: worker_callers,
+                        target: worker_target,
+                        port: worker_port,
+                        direction: worker_direction,
+                        cancel: worker_cancel,
+                    })
                     .await;
                     if let Err(error) = result {
                         panic!("runtime delivery receiver failed: {error:#}");

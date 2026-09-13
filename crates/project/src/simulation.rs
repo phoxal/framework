@@ -1051,8 +1051,7 @@ struct SimulatorTerminalEvidence {
 fn provider_contract_verified(stdout: &[u8]) -> bool {
     let Some(line) = stdout
         .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .next_back()
+        .rfind(|line| !line.is_empty())
     else {
         return false;
     };

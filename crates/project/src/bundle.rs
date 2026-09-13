@@ -936,11 +936,18 @@ fn build_simulation_definition(
         .providers
         .iter()
         .map(|provider| {
-            let contract = contracts
-                .get(&provider.service_instance)
-                .expect("provider contract was validated above");
-            let output = public_output(contract, &provider.port)
-                .expect("provider output was validated above");
+            let contract = contracts.get(&provider.service_instance).ok_or_else(|| {
+                simulation_error(format!(
+                    "simulation provider `{}.{}` has no compiled contract",
+                    provider.service_instance, provider.port
+                ))
+            })?;
+            let output = public_output(contract, &provider.port).ok_or_else(|| {
+                simulation_error(format!(
+                    "simulation provider `{}.{}` has no compiled output",
+                    provider.service_instance, provider.port
+                ))
+            })?;
             let (max_message_bytes, max_buffered_items) = provider_bounds(output, &provider.port)?;
             Ok(BundleSimulationProvider {
                 service_instance: provider.service_instance.clone(),
@@ -1023,7 +1030,7 @@ fn provider_bounds(
     }
     let max_buffered_items = output
         .max_items
-        .or_else(|| match output.kind {
+        .or(match output.kind {
             crate::artifact::OutputKind::State => Some(1),
             _ => None,
         })

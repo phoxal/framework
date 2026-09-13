@@ -95,7 +95,7 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
     let SimulationRunArgs {
         scene,
         headless,
-        desktop,
+        desktop: _,
         steps,
         duration,
         simulator,
@@ -107,8 +107,6 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
     } = arguments;
     let presentation = if headless {
         SimulationPresentation::Headless
-    } else if desktop {
-        SimulationPresentation::Desktop
     } else {
         SimulationPresentation::Desktop
     };

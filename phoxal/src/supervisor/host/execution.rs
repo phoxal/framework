@@ -518,16 +518,16 @@ impl RuntimeExecutionProtocol {
                     return self.fail_boundary(&mut boundary, request.boundary, error);
                 }
             };
-            if let Err(error) = wait_delivery_acknowledgements(
-                &runtime.delivery_ack,
-                &runtime.failures,
-                &self.inner.execution_id,
-                &boundary.timeline_id,
-                &runtime.instance,
-                request.boundary,
-                &deliveries,
+            if let Err(error) = wait_delivery_acknowledgements(DeliveryAckWait {
+                acknowledgements: &runtime.delivery_ack,
+                failures: &runtime.failures,
+                execution_id: &self.inner.execution_id,
+                timeline_id: &boundary.timeline_id,
+                instance: &runtime.instance,
+                boundary: request.boundary,
+                expected: &deliveries,
                 timeout,
-            )
+            })
             .await
             {
                 return self.fail_boundary(&mut boundary, request.boundary, error);
@@ -707,15 +707,16 @@ fn connection_source_values<'a>(
     }
 }
 
+type DeliveryRouteKey = (String, String, String);
+type DeliveryRoutes = BTreeMap<DeliveryRouteKey, BTreeSet<String>>;
+type RequestRoutes = BTreeSet<DeliveryRouteKey>;
+
 fn graph_delivery_routes(
     connections: &BTreeMap<String, serde_json::Value>,
     artifacts: &BTreeMap<String, ArtifactRuntime>,
-) -> Result<(
-    BTreeMap<(String, String, String), BTreeSet<String>>,
-    BTreeSet<(String, String, String)>,
-)> {
-    let mut routes = BTreeMap::<(String, String, String), BTreeSet<String>>::new();
-    let mut request_routes = BTreeSet::<(String, String, String)>::new();
+) -> Result<(DeliveryRoutes, RequestRoutes)> {
+    let mut routes = DeliveryRoutes::new();
+    let mut request_routes = RequestRoutes::new();
     for (consumer, source_values) in connections {
         let (consumer_instance, consumer_port) = consumer
             .split_once('.')
@@ -1107,16 +1108,28 @@ fn expected_deliveries(
     Ok(expected.into_iter().collect())
 }
 
-async fn wait_delivery_acknowledgements(
-    acknowledgements: &Subscriber,
-    failures: &Subscriber,
-    execution_id: &str,
-    timeline_id: &str,
-    instance: &str,
+struct DeliveryAckWait<'a> {
+    acknowledgements: &'a Subscriber,
+    failures: &'a Subscriber,
+    execution_id: &'a str,
+    timeline_id: &'a str,
+    instance: &'a str,
     boundary: u64,
-    expected: &[ExpectedDelivery],
+    expected: &'a [ExpectedDelivery],
     timeout: Duration,
-) -> Result<(), String> {
+}
+
+async fn wait_delivery_acknowledgements(wait: DeliveryAckWait<'_>) -> Result<(), String> {
+    let DeliveryAckWait {
+        acknowledgements,
+        failures,
+        execution_id,
+        timeline_id,
+        instance,
+        boundary,
+        expected,
+        timeout,
+    } = wait;
     let deadline = tokio::time::Instant::now() + timeout;
     let mut pending = expected.iter().cloned().collect::<BTreeSet<_>>();
     while !pending.is_empty() {
@@ -1382,9 +1395,7 @@ fn decode<M: Message + Default>(sample: zenoh::sample::Sample) -> Result<M> {
     if sample.encoding().to_string() != execution_protocol::PROTOBUF_ENCODING {
         bail!("private execution response used an unexpected encoding");
     }
-    Ok(execution_protocol::decode(
-        sample.payload().to_bytes().as_ref(),
-    )?)
+    execution_protocol::decode(sample.payload().to_bytes().as_ref())
 }
 
 fn decode_digest(value: &str) -> Option<Vec<u8>> {

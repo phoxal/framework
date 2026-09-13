@@ -186,13 +186,15 @@ async fn execute(
             mark_execution_failed(&public, execution, &error).await;
             return finish_run(
                 Err(error),
-                None,
-                public,
-                owner,
-                router,
-                watchdog,
-                shutdown,
-                router_loss,
+                RunResources {
+                    processes: None,
+                    public,
+                    owner,
+                    router,
+                    watchdog,
+                    shutdown,
+                    router_loss,
+                },
             )
             .await;
         }
@@ -211,13 +213,15 @@ async fn execute(
         mark_execution_failed(&public, execution, &error).await;
         return finish_run(
             Err(error),
-            None,
-            public,
-            owner,
-            router,
-            watchdog,
-            shutdown,
-            router_loss,
+            RunResources {
+                processes: None,
+                public,
+                owner,
+                router,
+                watchdog,
+                shutdown,
+                router_loss,
+            },
         )
         .await;
     }
@@ -236,13 +240,15 @@ async fn execute(
         mark_execution_failed(&public, execution, &error).await;
         return finish_run(
             Err(error),
-            None,
-            public,
-            owner,
-            router,
-            watchdog,
-            shutdown,
-            router_loss,
+            RunResources {
+                processes: None,
+                public,
+                owner,
+                router,
+                watchdog,
+                shutdown,
+                router_loss,
+            },
         )
         .await;
     }
@@ -273,13 +279,15 @@ async fn execute(
     };
     finish_run(
         outcome,
-        Some(processes),
-        public,
-        owner,
-        router,
-        watchdog,
-        shutdown,
-        router_loss,
+        RunResources {
+            processes: Some(processes),
+            public,
+            owner,
+            router,
+            watchdog,
+            shutdown,
+            router_loss,
+        },
     )
     .await
 }
@@ -387,16 +395,26 @@ async fn mark_execution_failed(
         .await;
 }
 
-async fn finish_run(
-    outcome: Result<()>,
-    mut processes: Option<ProcessSupervisor>,
+struct RunResources {
+    processes: Option<ProcessSupervisor>,
     public: PublicSessionServer,
     owner: BusOwner,
     router: self::router::EmbeddedRouter,
     watchdog: Option<tokio::task::JoinHandle<Result<()>>>,
     shutdown: CancellationToken,
     router_loss: Arc<OnceLock<String>>,
-) -> Result<()> {
+}
+
+async fn finish_run(outcome: Result<()>, resources: RunResources) -> Result<()> {
+    let RunResources {
+        mut processes,
+        public,
+        owner,
+        router,
+        watchdog,
+        shutdown,
+        router_loss,
+    } = resources;
     shutdown.cancel();
     let process_outcome = match processes.as_mut() {
         Some(processes) => processes.stop().await,

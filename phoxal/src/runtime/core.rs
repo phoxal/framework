@@ -84,6 +84,12 @@ impl ConfigSchemaValue {
     }
 }
 
+impl Default for ConfigSchemaValue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfigSchema for () {
     const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::from_str(r#"{"type":"null"}"#);
 }
