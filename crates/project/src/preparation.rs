@@ -125,7 +125,7 @@ pub(crate) fn ensure_required_dependencies(
 ) -> Result<ManifestTransaction, Error> {
     options.validate()?;
     let manifest = layout.cargo_manifest().to_owned();
-    let lock = acquire_preparation_lock(layout, &manifest)?;
+    let (lock, workspace_root) = acquire_preparation_lock(layout, &manifest)?;
     let original_manifest = fs::read(&manifest).map_err(|source| Error::ReadManifest {
         path: manifest.clone(),
         source,
@@ -168,10 +168,10 @@ pub(crate) fn ensure_required_dependencies(
         });
     }
 
-    // Capture every candidate workspace lock before the manifest changes.
-    // Cargo metadata may update any one of these paths after the write, and a
-    // failed preparation must restore the exact pre-command bytes.
-    let locks = lock_snapshots(layout.root())?;
+    // Capture the owning workspace lock before the manifest changes. Cargo
+    // metadata may update this path after the write, and a failed preparation
+    // must restore its exact pre-command bytes.
+    let locks = lock_snapshots(&workspace_root)?;
     let dependencies = match document.get_mut("dependencies") {
         Some(item) if item.is_table() => {
             item.as_table_mut()
@@ -236,8 +236,12 @@ pub(crate) fn ensure_required_dependencies(
     })
 }
 
-fn acquire_preparation_lock(layout: &ProjectLayout, manifest: &Path) -> Result<File, Error> {
-    let lock_directory = layout.root().join("target/phoxal");
+fn acquire_preparation_lock(
+    layout: &ProjectLayout,
+    manifest: &Path,
+) -> Result<(File, PathBuf), Error> {
+    let workspace_root = cargo_workspace_root(layout, manifest)?;
+    let lock_directory = workspace_root.join("target/phoxal");
     fs::create_dir_all(&lock_directory).map_err(|error| Error::ManifestPreparation {
         path: manifest.to_owned(),
         message: format!("cannot create the preparation lock directory: {error}"),
@@ -257,7 +261,7 @@ fn acquire_preparation_lock(layout: &ProjectLayout, manifest: &Path) -> Result<F
             ),
         })?;
     match FileExt::try_lock(&lock) {
-        Ok(()) => Ok(lock),
+        Ok(()) => Ok((lock, workspace_root)),
         Err(TryLockError::WouldBlock) => Err(Error::ManifestPreparation {
             path: manifest.to_owned(),
             message:
@@ -274,22 +278,58 @@ fn acquire_preparation_lock(layout: &ProjectLayout, manifest: &Path) -> Result<F
     }
 }
 
-fn lock_snapshots(root: &Path) -> Result<Vec<LockSnapshot>, Error> {
-    let mut snapshots = Vec::new();
-    let mut cursor = root;
+fn cargo_workspace_root(layout: &ProjectLayout, manifest: &Path) -> Result<PathBuf, Error> {
+    let source = fs::read_to_string(manifest).map_err(|source| Error::ReadManifest {
+        path: manifest.to_owned(),
+        source,
+    })?;
+    let document = source
+        .parse::<DocumentMut>()
+        .map_err(|error| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("Cargo.toml is not valid TOML: {error}"),
+        })?;
+
+    if let Some(workspace) = document
+        .get("package")
+        .and_then(Item::as_table)
+        .and_then(|package| package.get("workspace"))
+        .and_then(Item::as_str)
+    {
+        let package_root = manifest.parent().unwrap_or_else(|| Path::new("."));
+        return canonical_workspace_root(package_root.join(workspace), manifest);
+    }
+
+    let mut cursor = layout.root();
     loop {
-        let path = cursor.join("Cargo.lock");
-        let contents = match fs::read(&path) {
-            Ok(contents) => Some(contents),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(Error::ManifestPreparation {
-                    path,
-                    message: format!("cannot snapshot Cargo.lock before preparation: {error}"),
-                });
+        let candidate = cursor.join("Cargo.toml");
+        let candidate_document = if candidate == manifest {
+            document.clone()
+        } else {
+            match fs::read_to_string(&candidate) {
+                Ok(source) => {
+                    source
+                        .parse::<DocumentMut>()
+                        .map_err(|error| Error::ManifestPreparation {
+                            path: candidate.clone(),
+                            message: format!("Cargo.toml is not valid TOML: {error}"),
+                        })?
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+                Err(source) => {
+                    return Err(Error::ReadManifest {
+                        path: candidate,
+                        source,
+                    });
+                }
             }
         };
-        snapshots.push(LockSnapshot { contents, path });
+        if candidate_document
+            .get("workspace")
+            .is_some_and(Item::is_table)
+        {
+            return canonical_workspace_root(cursor, manifest);
+        }
         let Some(parent) = cursor.parent() else {
             break;
         };
@@ -298,7 +338,32 @@ fn lock_snapshots(root: &Path) -> Result<Vec<LockSnapshot>, Error> {
         }
         cursor = parent;
     }
-    Ok(snapshots)
+
+    canonical_workspace_root(layout.root(), manifest)
+}
+
+fn canonical_workspace_root(root: impl AsRef<Path>, manifest: &Path) -> Result<PathBuf, Error> {
+    root.as_ref()
+        .canonicalize()
+        .map_err(|error| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("cannot resolve the owning Cargo workspace: {error}"),
+        })
+}
+
+fn lock_snapshots(root: &Path) -> Result<Vec<LockSnapshot>, Error> {
+    let path = root.join("Cargo.lock");
+    let contents = match fs::read(&path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(Error::ManifestPreparation {
+                path,
+                message: format!("cannot snapshot Cargo.lock before preparation: {error}"),
+            });
+        }
+    };
+    Ok(vec![LockSnapshot { contents, path }])
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
@@ -339,11 +404,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         fs::write(directory.path().join("robot.yaml"), "robot: {}\n")?;
+        fs::create_dir_all(directory.path().join("src"))?;
+        fs::write(directory.path().join("src/main.rs"), "fn main() {}\n")?;
         let manifest = directory.path().join("Cargo.toml");
         let original = b"[package]\nname = \"robot\"\nversion = \"0.1.0\"\n";
         fs::write(&manifest, original)?;
         let layout = ProjectLayout::discover(directory.path())?;
-        let held = acquire_preparation_lock(&layout, &manifest)?;
+        let (held, _) = acquire_preparation_lock(&layout, &manifest)?;
 
         let error = ensure_required_dependencies(&layout, &CargoOptions::default())
             .expect_err("a concurrent preparation lock must be reported");
@@ -357,6 +424,39 @@ mod tests {
         drop(held);
         let transaction = ensure_required_dependencies(&layout, &CargoOptions::default())?;
         assert_eq!(transaction.commit().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn preparation_lock_is_shared_by_workspace_members() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(
+            directory.path().join("Cargo.toml"),
+            "[workspace]\nresolver = \"3\"\nmembers = [\"robot-a\", \"robot-b\"]\n",
+        )?;
+        for name in ["robot-a", "robot-b"] {
+            let root = directory.path().join(name);
+            fs::create_dir_all(&root)?;
+            fs::write(root.join("robot.yaml"), "robot: {}\n")?;
+            fs::create_dir_all(root.join("src"))?;
+            fs::write(root.join("src/main.rs"), "fn main() {}\n")?;
+            fs::write(
+                root.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+            )?;
+        }
+        let layout_a = ProjectLayout::discover(directory.path().join("robot-a"))?;
+        let layout_b = ProjectLayout::discover(directory.path().join("robot-b"))?;
+        let (held, workspace_root) =
+            acquire_preparation_lock(&layout_a, layout_a.cargo_manifest())?;
+        assert_eq!(workspace_root, directory.path().canonicalize()?);
+
+        let error = acquire_preparation_lock(&layout_b, layout_b.cargo_manifest())
+            .expect_err("workspace members must share preparation serialization");
+        assert!(
+            matches!(error, Error::ManifestPreparation { message, .. } if message.contains("another cargo phoxal command"))
+        );
+        drop(held);
         Ok(())
     }
 }
