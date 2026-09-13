@@ -3,16 +3,7 @@
 //! This crate contains generated Protobuf messages and their domain validation.
 //! It starts no runtime, transport, hardware driver, or simulator.
 
-use std::path::PathBuf;
-
 include!(concat!(env!("OUT_DIR"), "/phoxal.robotics.v1.rs"));
-
-/// Returns the packaged Protobuf include root for contract owners importing
-/// shared robotics messages during their build.
-#[must_use]
-pub fn proto_include_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
-}
 
 /// The original descriptor closure for independent language generation and inspection.
 pub const FILE_DESCRIPTOR_SET: &[u8] =

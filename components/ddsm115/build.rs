@@ -1,11 +1,11 @@
 fn main() -> Result<(), phoxal_build::Error> {
-    let includes = [
-        std::path::PathBuf::from("proto"),
-        phoxal_robotics::proto_include_dir(),
-    ];
-    phoxal_build::compile_protos_with_externs(
+    phoxal_build::compile_protos_with_dependencies(
         &["proto/phoxal/component/ddsm115/v1/ddsm115.proto"],
-        &includes,
+        &["proto"],
+        &[phoxal_build::DependencyDescriptor::new(
+            "phoxal-robotics",
+            phoxal_robotics::FILE_DESCRIPTOR_SET,
+        )],
         &[(".phoxal.robotics.v1", "::phoxal_robotics")],
     )
 }

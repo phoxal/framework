@@ -1,15 +1,8 @@
 //! Generated motion messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.motion.v1.rs"));
-
-/// Returns the packaged Protobuf include root for downstream contract owners.
-#[must_use]
-pub fn proto_include_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
-}
 
 /// Public typed ports owned by the Motion Protobuf service.
 pub use motion::ports;

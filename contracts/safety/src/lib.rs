@@ -1,7 +1,6 @@
 //! Generated safety messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.safety.v1.rs"));
 
@@ -9,12 +8,6 @@ include!(concat!(env!("OUT_DIR"), "/phoxal.safety.v1.rs"));
 pub use phoxal_motion::MotionStatus;
 /// Canonical world products consumed by the safety assessment.
 pub use phoxal_world::{WorldBelief, WorldRevision};
-
-/// Returns the packaged Protobuf include root for downstream contract owners.
-#[must_use]
-pub fn proto_include_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
-}
 
 /// Public typed ports owned by the Safety Protobuf service.
 pub use safety::ports;

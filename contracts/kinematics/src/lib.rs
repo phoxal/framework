@@ -1,19 +1,12 @@
 //! Generated kinematics messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.kinematics.v1.rs"));
 
 /// The shared encoder payload used by physical producers and this service's
 /// encoder input port.
 pub use phoxal_robotics::EncoderSample;
-
-/// Returns the packaged Protobuf include root for downstream contract owners.
-#[must_use]
-pub fn proto_include_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
-}
 
 /// Public typed ports owned by the Kinematics Protobuf service.
 pub use kinematics::ports;

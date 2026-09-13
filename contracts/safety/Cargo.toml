@@ -23,9 +23,7 @@ thiserror = { workspace = true }
 
 [build-dependencies]
 phoxal-build = { workspace = true }
-phoxal-kinematics = { workspace = true }
 phoxal-motion = { workspace = true }
-phoxal-robotics = { workspace = true }
 phoxal-world = { workspace = true }
 
 [lints]

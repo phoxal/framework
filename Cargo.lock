@@ -2630,10 +2630,8 @@ name = "phoxal-safety"
 version = "0.1.0"
 dependencies = [
  "phoxal-build",
- "phoxal-kinematics",
  "phoxal-motion",
  "phoxal-port",
- "phoxal-robotics",
  "phoxal-world",
  "prost",
  "thiserror 2.0.19",
@@ -2713,7 +2711,6 @@ dependencies = [
  "phoxal-build",
  "phoxal-kinematics",
  "phoxal-port",
- "phoxal-robotics",
  "prost",
  "thiserror 2.0.19",
 ]

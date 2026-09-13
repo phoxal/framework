@@ -3,9 +3,10 @@
 //! [`compile_protos`] supplies the shared `phoxal/port.proto` import and a
 //! pinned Protobuf compiler, emits Prost messages with type names, retains the
 //! original descriptor closure, and generates inert typed port references.
-//! [`compile_protos_with_externs`] additionally maps imported owner packages to
-//! their canonical Rust contract crates, so a service can consume one shared
-//! wire vocabulary without generating a second local type.
+//! [`compile_protos_with_dependencies`] additionally imports descriptor sets
+//! from build dependencies and maps their packages to canonical Rust contract
+//! crates, so a service can consume one shared wire vocabulary without
+//! regenerating or locating dependency-owned source files.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,7 @@ use prost_reflect::{DescriptorPool, Value};
 pub const PORT_PROTO: &str = include_str!("../proto/phoxal/port.proto");
 
 const DESCRIPTOR_FILE: &str = "phoxal-descriptors.bin";
+const DEPENDENCY_DESCRIPTOR_FILE: &str = "phoxal-dependency-descriptors.bin";
 const PORT_KIND_EXTENSION: &str = "phoxal.port.kind";
 const MAX_DESCRIPTOR_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DESCRIPTOR_FILES: usize = 1_024;
@@ -72,6 +74,17 @@ pub enum Error {
     /// The retained descriptors are invalid.
     #[error("invalid Protobuf descriptor closure: {0}")]
     Descriptor(#[from] prost_reflect::DescriptorError),
+    /// Two descriptor dependencies provide different definitions for one file
+    /// path or fully-qualified symbol.
+    #[error("conflicting Protobuf descriptor {identity} from dependencies {first} and {second}")]
+    DescriptorConflict {
+        /// Conflicting descriptor path or fully-qualified symbol.
+        identity: String,
+        /// First dependency declaring the identity.
+        first: String,
+        /// Second dependency declaring the identity.
+        second: String,
+    },
     /// The retained descriptor closure exceeded one of the build-time bounds.
     #[error("Protobuf descriptor closure exceeds {what} bound of {limit} (actual {actual})")]
     DescriptorBounds {
@@ -130,25 +143,47 @@ pub fn compile_protos(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
 ) -> Result<(), Error> {
-    compile_protos_with_externs(protos, includes, &[])
+    compile_protos_with_dependencies(protos, includes, &[], &[])
 }
 
-/// Compiles owned Protobuf files while mapping imported package names to
-/// already-generated Rust contract crates.
+/// One descriptor closure supplied by a direct Cargo build dependency.
+#[derive(Clone, Copy, Debug)]
+pub struct DependencyDescriptor<'a> {
+    /// Human-readable Cargo package name used in conflict diagnostics.
+    pub package: &'a str,
+    /// The dependency owner's original encoded `FileDescriptorSet`.
+    pub descriptors: &'a [u8],
+}
+
+impl<'a> DependencyDescriptor<'a> {
+    /// Creates one exact dependency descriptor input.
+    #[must_use]
+    pub const fn new(package: &'a str, descriptors: &'a [u8]) -> Self {
+        Self {
+            package,
+            descriptors,
+        }
+    }
+}
+
+/// Compiles owned Protobuf files using descriptor closures exported by direct
+/// build dependencies.
 ///
 /// Each tuple contains the fully-qualified Protobuf package (including its
 /// leading dot) and the Rust path Prost should use for that package. The
 /// imported descriptors remain in the owner's descriptor closure, while their
-/// messages are referenced rather than regenerated.
-pub fn compile_protos_with_externs(
+/// messages are referenced rather than regenerated. Dependency source trees
+/// are deliberately not accepted as include roots.
+pub fn compile_protos_with_dependencies(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
+    dependencies: &[DependencyDescriptor<'_>],
     extern_paths: &[(&str, &str)],
 ) -> Result<(), Error> {
     let out_dir = std::env::var_os("OUT_DIR")
         .map(PathBuf::from)
         .ok_or(Error::MissingEnvironment("OUT_DIR"))?;
-    compile_to_with_externs(protos, includes, &out_dir, extern_paths)
+    compile_to_with_dependencies(protos, includes, &out_dir, dependencies, extern_paths)
 }
 
 #[cfg(test)]
@@ -157,13 +192,14 @@ fn compile_to(
     includes: &[impl AsRef<Path>],
     out_dir: &Path,
 ) -> Result<(), Error> {
-    compile_to_with_externs(protos, includes, out_dir, &[])
+    compile_to_with_dependencies(protos, includes, out_dir, &[], &[])
 }
 
-fn compile_to_with_externs(
+fn compile_to_with_dependencies(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
     out_dir: &Path,
+    dependencies: &[DependencyDescriptor<'_>],
     extern_paths: &[(&str, &str)],
 ) -> Result<(), Error> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
@@ -185,6 +221,17 @@ fn compile_to_with_externs(
         .collect::<Result<Vec<_>, _>>()?;
     let owned_names = owned_file_names(&owned_paths, &include_roots)?;
     let descriptor_path = out_dir.join(DESCRIPTOR_FILE);
+    let dependency_descriptor_path = if dependencies.is_empty() {
+        None
+    } else {
+        let path = out_dir.join(DEPENDENCY_DESCRIPTOR_FILE);
+        let bytes = merge_dependency_descriptors(dependencies)?;
+        std::fs::write(&path, bytes).map_err(|source| Error::Path {
+            path: path.clone(),
+            source,
+        })?;
+        Some(path)
+    };
 
     let mut command = Command::new(&protoc);
     command
@@ -194,6 +241,9 @@ fn compile_to_with_externs(
             "--descriptor_set_out={}",
             descriptor_path.display()
         ));
+    if let Some(path) = &dependency_descriptor_path {
+        command.arg(format!("--descriptor_set_in={}", path.display()));
+    }
     for include in &include_roots {
         command.arg(format!("--proto_path={}", include.display()));
     }
@@ -267,6 +317,99 @@ fn compile_to_with_externs(
         include_dir().join("phoxal/port.proto").display()
     );
     Ok(())
+}
+
+fn merge_dependency_descriptors(
+    dependencies: &[DependencyDescriptor<'_>],
+) -> Result<Vec<u8>, Error> {
+    let mut known_files = HashMap::<String, (String, Vec<u8>)>::new();
+    let mut known_symbols = HashMap::<String, (String, String)>::new();
+    let mut pools = Vec::with_capacity(dependencies.len());
+
+    for dependency in dependencies {
+        if dependency.descriptors.len() > MAX_DESCRIPTOR_BYTES {
+            return Err(Error::DescriptorBounds {
+                what: "dependency encoded bytes",
+                limit: MAX_DESCRIPTOR_BYTES,
+                actual: dependency.descriptors.len(),
+            });
+        }
+        let pool = DescriptorPool::decode(dependency.descriptors)?;
+        let file_count = pool.files().count();
+        if file_count > MAX_DESCRIPTOR_FILES {
+            return Err(Error::DescriptorBounds {
+                what: "dependency file count",
+                limit: MAX_DESCRIPTOR_FILES,
+                actual: file_count,
+            });
+        }
+
+        for file in pool.files() {
+            let name = file.name().to_owned();
+            let encoded = file.encode_to_vec();
+            if let Some((first, first_encoded)) = known_files.get(&name) {
+                if first_encoded != &encoded {
+                    return Err(Error::DescriptorConflict {
+                        identity: name,
+                        first: first.clone(),
+                        second: dependency.package.to_owned(),
+                    });
+                }
+                continue;
+            }
+
+            for identity in descriptor_symbols(&pool, &name) {
+                if let Some((first, first_file)) = known_symbols.get(&identity)
+                    && first_file != &name
+                {
+                    return Err(Error::DescriptorConflict {
+                        identity,
+                        first: first.clone(),
+                        second: dependency.package.to_owned(),
+                    });
+                }
+                known_symbols.insert(identity, (dependency.package.to_owned(), name.clone()));
+            }
+            known_files.insert(name, (dependency.package.to_owned(), encoded));
+        }
+        pools.push(pool);
+    }
+
+    let mut merged = DescriptorPool::new();
+    for (dependency, pool) in dependencies.iter().zip(pools) {
+        merged
+            .decode_file_descriptor_set(pool.encode_to_vec().as_slice())
+            .map_err(|_| Error::DescriptorConflict {
+                identity: "descriptor closure".to_owned(),
+                first: "previous dependencies".to_owned(),
+                second: dependency.package.to_owned(),
+            })?;
+    }
+    Ok(merged.encode_to_vec())
+}
+
+fn descriptor_symbols(pool: &DescriptorPool, file_name: &str) -> Vec<String> {
+    let messages = pool
+        .all_messages()
+        .filter(|descriptor| descriptor.parent_file().name() == file_name)
+        .map(|descriptor| descriptor.full_name().to_owned());
+    let enums = pool
+        .all_enums()
+        .filter(|descriptor| descriptor.parent_file().name() == file_name)
+        .map(|descriptor| descriptor.full_name().to_owned());
+    let services = pool
+        .services()
+        .filter(|descriptor| descriptor.parent_file().name() == file_name)
+        .map(|descriptor| descriptor.full_name().to_owned());
+    let extensions = pool
+        .all_extensions()
+        .filter(|descriptor| descriptor.parent_file().name() == file_name)
+        .map(|descriptor| descriptor.full_name().to_owned());
+    messages
+        .chain(enums)
+        .chain(services)
+        .chain(extensions)
+        .collect()
 }
 
 fn canonical(path: &Path) -> Result<PathBuf, Error> {
@@ -630,7 +773,10 @@ mod tests {
 
     use prost_reflect::{DescriptorPool, Value};
 
-    use super::{DESCRIPTOR_FILE, Error, Kind, PORT_PROTO, compile_to, include_dir};
+    use super::{
+        DESCRIPTOR_FILE, DependencyDescriptor, Error, Kind, PORT_PROTO, compile_to,
+        compile_to_with_dependencies, include_dir, merge_dependency_descriptors,
+    };
 
     fn compile_sources(
         files: &[(&str, &str)],
@@ -789,6 +935,155 @@ mod tests {
             &Value::EnumNumber(1)
         );
         assert!(pool.get_message_by_name("google.protobuf.Empty").is_some());
+    }
+
+    #[test]
+    fn imports_dependency_descriptors_without_dependency_sources() {
+        let (dependency_source, dependency_output, dependency_result) = compile_sources(&[(
+            "example/shared/v1/payload.proto",
+            r#"
+                syntax = "proto3";
+                package example.shared.v1;
+                message SharedPayload { uint64 value = 1; }
+            "#,
+        )]);
+        dependency_result.expect("dependency descriptor generation");
+        let descriptors = fs::read(dependency_output.path().join(DESCRIPTOR_FILE))
+            .expect("dependency descriptors");
+        drop(dependency_source);
+
+        let owner_source = tempfile::tempdir().expect("owner source");
+        let owner_output = tempfile::tempdir().expect("owner output");
+        let owner_proto = owner_source.path().join("example/owner/v1/owner.proto");
+        fs::create_dir_all(owner_proto.parent().expect("owner parent")).expect("owner directory");
+        fs::write(
+            &owner_proto,
+            r#"
+                syntax = "proto3";
+                package example.owner.v1;
+                import "example/shared/v1/payload.proto";
+                message Owned { example.shared.v1.SharedPayload payload = 1; }
+            "#,
+        )
+        .expect("owner source");
+
+        compile_to_with_dependencies(
+            &[&owner_proto],
+            &[owner_source.path()],
+            owner_output.path(),
+            &[DependencyDescriptor::new("example-shared", &descriptors)],
+            &[(".example.shared.v1", "::example_shared")],
+        )
+        .expect("descriptor-only dependency import");
+
+        let generated = fs::read_to_string(owner_output.path().join("example.owner.v1.rs"))
+            .expect("generated owner binding");
+        assert!(generated.contains("::example_shared::SharedPayload"));
+        let closure = fs::read(owner_output.path().join(DESCRIPTOR_FILE)).expect("owner closure");
+        let pool = DescriptorPool::decode(closure.as_slice()).expect("owner descriptor closure");
+        assert!(
+            pool.get_message_by_name("example.shared.v1.SharedPayload")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn accepts_an_identical_transitive_descriptor_diamond() {
+        let (_left_source, left_output, left_result) = compile_sources(&[
+            (
+                "example/shared/v1/shared.proto",
+                "syntax = \"proto3\"; package example.shared.v1; message Shared {}",
+            ),
+            (
+                "example/left/v1/left.proto",
+                "syntax = \"proto3\"; package example.left.v1; import \"example/shared/v1/shared.proto\"; message Left { example.shared.v1.Shared value = 1; }",
+            ),
+        ]);
+        left_result.expect("left descriptor generation");
+        let (_right_source, right_output, right_result) = compile_sources(&[
+            (
+                "example/shared/v1/shared.proto",
+                "syntax = \"proto3\"; package example.shared.v1; message Shared {}",
+            ),
+            (
+                "example/right/v1/right.proto",
+                "syntax = \"proto3\"; package example.right.v1; import \"example/shared/v1/shared.proto\"; message Right { example.shared.v1.Shared value = 1; }",
+            ),
+        ]);
+        right_result.expect("right descriptor generation");
+        let left = fs::read(left_output.path().join(DESCRIPTOR_FILE)).expect("left descriptors");
+        let right = fs::read(right_output.path().join(DESCRIPTOR_FILE)).expect("right descriptors");
+
+        let merged = merge_dependency_descriptors(&[
+            DependencyDescriptor::new("example-left", &left),
+            DependencyDescriptor::new("example-right", &right),
+        ])
+        .expect("identical diamond");
+        let pool = DescriptorPool::decode(merged.as_slice()).expect("merged descriptor closure");
+        assert!(pool.get_message_by_name("example.left.v1.Left").is_some());
+        assert!(pool.get_message_by_name("example.right.v1.Right").is_some());
+        assert_eq!(
+            pool.files()
+                .filter(|file| file.name() == "example/shared/v1/shared.proto")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_dependency_paths_before_protoc() {
+        let (_first_source, first_output, first_result) = compile_sources(&[(
+            "example/shared/v1/shared.proto",
+            "syntax = \"proto3\"; package example.shared.v1; message Shared { uint64 value = 1; }",
+        )]);
+        first_result.expect("first descriptor generation");
+        let (_second_source, second_output, second_result) = compile_sources(&[(
+            "example/shared/v1/shared.proto",
+            "syntax = \"proto3\"; package example.shared.v1; message Shared { string value = 1; }",
+        )]);
+        second_result.expect("second descriptor generation");
+        let first = fs::read(first_output.path().join(DESCRIPTOR_FILE)).expect("first descriptors");
+        let second =
+            fs::read(second_output.path().join(DESCRIPTOR_FILE)).expect("second descriptors");
+
+        assert!(matches!(
+            merge_dependency_descriptors(&[
+                DependencyDescriptor::new("first-owner", &first),
+                DependencyDescriptor::new("second-owner", &second),
+            ]),
+            Err(Error::DescriptorConflict { identity, first, second })
+                if identity == "example/shared/v1/shared.proto"
+                    && first == "first-owner"
+                    && second == "second-owner"
+        ));
+    }
+
+    #[test]
+    fn rejects_conflicting_dependency_symbols_before_protoc() {
+        let (_first_source, first_output, first_result) = compile_sources(&[(
+            "example/first/v1/shared.proto",
+            "syntax = \"proto3\"; package example.shared.v1; message Shared {}",
+        )]);
+        first_result.expect("first descriptor generation");
+        let (_second_source, second_output, second_result) = compile_sources(&[(
+            "example/second/v1/shared.proto",
+            "syntax = \"proto3\"; package example.shared.v1; message Shared {}",
+        )]);
+        second_result.expect("second descriptor generation");
+        let first = fs::read(first_output.path().join(DESCRIPTOR_FILE)).expect("first descriptors");
+        let second =
+            fs::read(second_output.path().join(DESCRIPTOR_FILE)).expect("second descriptors");
+
+        assert!(matches!(
+            merge_dependency_descriptors(&[
+                DependencyDescriptor::new("first-owner", &first),
+                DependencyDescriptor::new("second-owner", &second),
+            ]),
+            Err(Error::DescriptorConflict { identity, first, second })
+                if identity == "example.shared.v1.Shared"
+                    && first == "first-owner"
+                    && second == "second-owner"
+        ));
     }
 
     #[test]

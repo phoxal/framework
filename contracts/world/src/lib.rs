@@ -1,18 +1,11 @@
 //! Generated world messages, typed ports, and domain validation.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.world.v1.rs"));
 
 /// The kinematics-owned odometry payload admitted at the world boundary.
 pub use phoxal_kinematics::OdometryState;
-
-/// Returns the packaged Protobuf include root for downstream contract owners.
-#[must_use]
-pub fn proto_include_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
-}
 
 /// Public typed ports owned by the World Protobuf service.
 pub use world::ports;
