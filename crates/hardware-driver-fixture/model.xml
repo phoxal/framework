@@ -1,4 +1,5 @@
 <mujoco model="phoxal-hardware-driver-fixture">
+  <compiler angle="radian" />
   <worldbody>
     <body name="mount">
       <joint name="fixture_joint" type="hinge" />
@@ -6,6 +7,15 @@
     </body>
   </worldbody>
   <actuator>
-    <motor name="fixture_motor" joint="fixture_joint" />
+    <velocity
+      name="fixture_motor"
+      joint="fixture_joint"
+      gear="1"
+      kv="1"
+      ctrllimited="true"
+      ctrlrange="-10 10"
+      forcelimited="true"
+      forcerange="-2 2"
+    />
   </actuator>
 </mujoco>
