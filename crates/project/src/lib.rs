@@ -123,13 +123,14 @@ impl Project {
             Some(package) => package,
             None => return rollback_preparation(preparation, SourceError::MissingBrain.into()),
         };
+        let preparation_changes = preparation.commit();
         Ok(PreparedProject {
             layout: self.layout.clone(),
             document: self.document.clone(),
             metadata,
             root_package,
             sources,
-            preparation,
+            preparation_changes,
         })
     }
 }
@@ -152,7 +153,7 @@ pub struct PreparedProject {
     metadata: cargo_metadata::Metadata,
     root_package: cargo_metadata::Package,
     sources: SourceSelection,
-    preparation: preparation::ManifestTransaction,
+    preparation_changes: Vec<PreparationChange>,
 }
 
 impl PreparedProject {
@@ -201,7 +202,7 @@ impl PreparedProject {
     /// Returns the automatic dependency additions made during preparation.
     #[must_use]
     pub fn preparation_changes(&self) -> &[PreparationChange] {
-        self.preparation.changes()
+        &self.preparation_changes
     }
 
     /// Runs one supported Cargo source-development operation.

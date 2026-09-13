@@ -5,10 +5,11 @@
 //! entries in the robot's Cargo manifest, so Cargo remains the one resolver and
 //! the resulting lockfile remains inspectable by users and editors.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use fs4::{FileExt, TryLockError};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
 use crate::ProjectLayout;
@@ -44,8 +45,9 @@ struct LockSnapshot {
 /// changed.  Keeping this transaction alive through source selection lets a
 /// failed addition restore both authored inputs and lock state before the
 /// caller observes the error.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ManifestTransaction {
+    _lock: File,
     manifest: PathBuf,
     original_manifest: Vec<u8>,
     locks: Vec<LockSnapshot>,
@@ -53,10 +55,9 @@ pub(crate) struct ManifestTransaction {
 }
 
 impl ManifestTransaction {
-    /// Returns the changes that ordinary preparation applied.
-    #[must_use]
-    pub(crate) fn changes(&self) -> &[PreparationChange] {
-        &self.changes
+    /// Finish a successful preparation and release its source mutation lock.
+    pub(crate) fn commit(self) -> Vec<PreparationChange> {
+        self.changes
     }
 
     /// Restores all files captured before an unsuccessful preparation.
@@ -124,6 +125,7 @@ pub(crate) fn ensure_required_dependencies(
 ) -> Result<ManifestTransaction, Error> {
     options.validate()?;
     let manifest = layout.cargo_manifest().to_owned();
+    let lock = acquire_preparation_lock(layout, &manifest)?;
     let original_manifest = fs::read(&manifest).map_err(|source| Error::ReadManifest {
         path: manifest.clone(),
         source,
@@ -145,6 +147,7 @@ pub(crate) fn ensure_required_dependencies(
         .is_some_and(|dependencies| dependencies.contains_key(SUPERVISOR_DEPENDENCY_KEY));
     if has_supervisor {
         return Ok(ManifestTransaction {
+            _lock: lock,
             manifest,
             original_manifest,
             locks: Vec::new(),
@@ -220,6 +223,7 @@ pub(crate) fn ensure_required_dependencies(
     }
 
     Ok(ManifestTransaction {
+        _lock: lock,
         manifest,
         original_manifest,
         locks,
@@ -230,6 +234,44 @@ pub(crate) fn ensure_required_dependencies(
             ),
         }],
     })
+}
+
+fn acquire_preparation_lock(layout: &ProjectLayout, manifest: &Path) -> Result<File, Error> {
+    let lock_directory = layout.root().join("target/phoxal");
+    fs::create_dir_all(&lock_directory).map_err(|error| Error::ManifestPreparation {
+        path: manifest.to_owned(),
+        message: format!("cannot create the preparation lock directory: {error}"),
+    })?;
+    let lock_path = lock_directory.join("preparation.lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!(
+                "cannot open project preparation lock {}: {error}",
+                lock_path.display()
+            ),
+        })?;
+    match FileExt::try_lock(&lock) {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => Err(Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message:
+                "another cargo phoxal command is preparing this project; retry after it finishes"
+                    .to_owned(),
+        }),
+        Err(TryLockError::Error(error)) => Err(Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!(
+                "cannot lock project preparation state {}: {error}",
+                lock_path.display()
+            ),
+        }),
+    }
 }
 
 fn lock_snapshots(root: &Path) -> Result<Vec<LockSnapshot>, Error> {
@@ -286,4 +328,35 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
         fs::File::open(parent)?.sync_all()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_preparation_fails_before_manifest_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("robot.yaml"), "robot: {}\n")?;
+        let manifest = directory.path().join("Cargo.toml");
+        let original = b"[package]\nname = \"robot\"\nversion = \"0.1.0\"\n";
+        fs::write(&manifest, original)?;
+        let layout = ProjectLayout::discover(directory.path())?;
+        let held = acquire_preparation_lock(&layout, &manifest)?;
+
+        let error = ensure_required_dependencies(&layout, &CargoOptions::default())
+            .expect_err("a concurrent preparation lock must be reported");
+        assert!(matches!(
+            error,
+            Error::ManifestPreparation { message, .. }
+                if message.contains("another cargo phoxal command")
+        ));
+        assert_eq!(fs::read(&manifest)?, original);
+
+        drop(held);
+        let transaction = ensure_required_dependencies(&layout, &CargoOptions::default())?;
+        assert_eq!(transaction.commit().len(), 1);
+        Ok(())
+    }
 }

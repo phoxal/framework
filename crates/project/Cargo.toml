@@ -17,6 +17,7 @@ kind = "library"
 base64 = { workspace = true }
 cargo_metadata = { workspace = true }
 flate2 = { workspace = true }
+fs4 = { workspace = true }
 jsonschema = { workspace = true }
 keyring = { workspace = true }
 reqwest = { workspace = true }
