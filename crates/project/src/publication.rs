@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
+use crate::ProjectLayout;
 use crate::error::{Error, PublicationError};
+use crate::preparation;
 
 /// The publication evidence document generation.
 pub const PUBLICATION_SCHEMA: &str = "phoxal/publication/v0";
@@ -1124,12 +1126,564 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
 struct CapturedSource {
     manifest: PathBuf,
     workspace_root: PathBuf,
+    /// Authored source roots and their isolated staged counterparts.
+    locations: BTreeMap<PathBuf, PathBuf>,
     /// Staged source directories outside the selected package root.
     ///
     /// These paths are excluded from a non-workspace package archive while
     /// remaining available as ordinary Cargo path dependencies during
     /// isolated packaging.
     excluded_paths: BTreeSet<PathBuf>,
+}
+
+/// A Cargo source tree prepared in an isolated shadow workspace.
+///
+/// This is used only when a local path dependency is an authored passive
+/// package without a Cargo target. The authored workspace remains the logical
+/// source of the root manifest and lockfile, while Cargo receives the staged
+/// manifest and the generated inert carriers in this temporary tree.
+#[derive(Debug)]
+pub(crate) struct LocalProjectSource {
+    _staging: tempfile::TempDir,
+    manifest: PathBuf,
+    cargo_workdir: PathBuf,
+    target_dir: PathBuf,
+    logical_workspace_root: PathBuf,
+    logical_lock: PathBuf,
+    staged_lock: PathBuf,
+    /// Staged source roots mapped back to their authored canonical roots.
+    staged_to_authored: Vec<(PathBuf, PathBuf)>,
+}
+
+impl LocalProjectSource {
+    pub(crate) fn manifest(&self) -> &Path {
+        &self.manifest
+    }
+
+    pub(crate) fn cargo_workdir(&self) -> &Path {
+        &self.cargo_workdir
+    }
+
+    pub(crate) fn target_dir(&self) -> &Path {
+        &self.target_dir
+    }
+
+    pub(crate) fn logical_workspace_root(&self) -> &Path {
+        &self.logical_workspace_root
+    }
+
+    pub(crate) fn logical_path(&self, staged: &Path) -> PathBuf {
+        self.staged_to_authored
+            .iter()
+            .find_map(|(staged_root, authored_root)| {
+                staged
+                    .strip_prefix(staged_root)
+                    .ok()
+                    .map(|relative| authored_root.join(relative))
+            })
+            .unwrap_or_else(|| staged.to_owned())
+    }
+
+    pub(crate) fn logical_package_id(&self, staged: &str) -> String {
+        self.logical_text(staged)
+    }
+
+    pub(crate) fn logical_metadata(
+        &self,
+        metadata: &cargo_metadata::Metadata,
+    ) -> Result<cargo_metadata::Metadata, Error> {
+        let mut value = serde_json::to_value(metadata).map_err(|source| Error::BundleJson {
+            path: self.logical_workspace_root.join("Cargo.toml"),
+            source,
+        })?;
+        rewrite_logical_metadata_text(&mut value, self);
+        serde_json::from_value(value).map_err(|source| Error::ArtifactInvalid {
+            path: self.logical_workspace_root.join("Cargo.toml"),
+            message: format!("cannot map staged Cargo metadata to authored paths: {source}"),
+        })
+    }
+
+    pub(crate) fn authored_source_root(&self, staged: &Path) -> PathBuf {
+        self.logical_path(staged)
+    }
+
+    fn logical_text(&self, value: &str) -> String {
+        self.staged_to_authored.iter().fold(
+            value.to_owned(),
+            |value, (staged_root, authored_root)| {
+                let staged = path_string(staged_root);
+                let authored = path_string(authored_root);
+                value.replace(&staged, &authored)
+            },
+        )
+    }
+
+    pub(crate) fn sync_lock(&self) -> Result<(), Error> {
+        let contents = match fs::read(&self.staged_lock) {
+            Ok(contents) => contents,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(Error::CargoLockRead {
+                    path: self.staged_lock.clone(),
+                    source,
+                });
+            }
+        };
+        let current = match fs::read(&self.logical_lock) {
+            Ok(contents) => Some(contents),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => None,
+            Err(source) => {
+                return Err(Error::CargoLockRead {
+                    path: self.logical_lock.clone(),
+                    source,
+                });
+            }
+        };
+        if current.as_deref() != Some(contents.as_slice()) {
+            preparation::atomic_write(&self.logical_lock, &contents).map_err(|source| {
+                Error::CargoLockWrite {
+                    path: self.logical_lock.clone(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// Prepares a local project shadow workspace when Cargo would otherwise reject
+/// one of its recognized targetless passive packages.
+pub(crate) fn prepare_local_project_source(
+    layout: &ProjectLayout,
+) -> Result<Option<LocalProjectSource>, Error> {
+    let workspace = find_workspace(layout.root(), layout.cargo_manifest())?;
+    let needs_carrier = project_requires_carrier(layout.root(), &workspace)?;
+    if !needs_carrier {
+        return Ok(None);
+    }
+
+    let staging = tempfile::tempdir().map_err(|source| PublicationError::CaptureSource {
+        path: layout.root().to_owned(),
+        source,
+    })?;
+    let staging_root =
+        staging
+            .path()
+            .canonicalize()
+            .map_err(|source| PublicationError::CaptureSource {
+                path: staging.path().to_owned(),
+                source,
+            })?;
+    let captured = capture_project_source(
+        layout.root(),
+        layout.cargo_manifest(),
+        workspace.as_ref(),
+        &staging_root,
+    )?;
+    stage_targetless_carriers(&captured)?;
+    let logical_workspace_root = workspace.as_ref().map_or_else(
+        || layout.root().to_owned(),
+        |workspace| workspace.root.clone(),
+    );
+    let logical_lock = logical_workspace_root.join("Cargo.lock");
+    let staged_lock = captured.workspace_root.join("Cargo.lock");
+    let mut staged_to_authored = captured
+        .locations
+        .iter()
+        .map(|(authored, staged)| (staged.clone(), authored.clone()))
+        .collect::<Vec<_>>();
+    staged_to_authored.sort_by(|(left, _), (right, _)| {
+        right.components().count().cmp(&left.components().count())
+    });
+    Ok(Some(LocalProjectSource {
+        _staging: staging,
+        manifest: captured.manifest,
+        cargo_workdir: captured.workspace_root.clone(),
+        target_dir: captured.workspace_root.join("target"),
+        logical_workspace_root,
+        logical_lock,
+        staged_lock,
+        staged_to_authored,
+    }))
+}
+
+fn rewrite_logical_metadata_text(value: &mut serde_json::Value, source: &LocalProjectSource) {
+    match value {
+        serde_json::Value::String(text) => *text = source.logical_text(text),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                rewrite_logical_metadata_text(value, source);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values_mut() {
+                rewrite_logical_metadata_text(value, source);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn project_requires_carrier(
+    project_root: &Path,
+    workspace: &Option<WorkspaceContext>,
+) -> Result<bool, Error> {
+    let project_root =
+        project_root
+            .canonicalize()
+            .map_err(|source| PublicationError::CaptureSource {
+                path: project_root.to_owned(),
+                source,
+            })?;
+    let package_roots = project_package_roots(&project_root, workspace)?;
+    for package_root in package_roots {
+        if package_root == project_root {
+            continue;
+        }
+        let manifest = package_root.join("Cargo.toml");
+        let value = read_manifest(&manifest)?;
+        let Some(package) = value.get("package").and_then(toml::Value::as_table) else {
+            continue;
+        };
+        let Some(name) = package.get("name").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        if !is_targetless(&package_root, &value) {
+            continue;
+        }
+        if classify_targetless(&package_root, &value, name)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn project_package_roots(
+    project_root: &Path,
+    workspace: &Option<WorkspaceContext>,
+) -> Result<Vec<PathBuf>, Error> {
+    let project_workspace_root = workspace.as_ref().map(|workspace| workspace.root.clone());
+    let mut pending = vec![project_root.to_owned()];
+    if let Some(workspace) = workspace {
+        let value = read_manifest(&workspace.manifest)?;
+        pending.extend(workspace_members(&workspace.root, &value)?);
+    }
+    let mut visited = BTreeSet::new();
+    let mut packages = Vec::new();
+    while let Some(package_root) = pending.pop() {
+        let package_root =
+            package_root
+                .canonicalize()
+                .map_err(|source| PublicationError::CaptureSource {
+                    path: package_root.clone(),
+                    source,
+                })?;
+        if !visited.insert(package_root.clone()) {
+            continue;
+        }
+        let manifest = package_root.join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let value = read_manifest(&manifest)?;
+        if value.get("package").is_some_and(toml::Value::is_table) {
+            packages.push(package_root.clone());
+        }
+
+        let package_workspace = if let Some(project_workspace_root) = &project_workspace_root
+            && package_root.starts_with(project_workspace_root)
+        {
+            workspace.clone()
+        } else {
+            find_workspace(&package_root, &manifest)?
+        };
+        let workspace_value = package_workspace
+            .as_ref()
+            .map(|workspace| read_manifest(&workspace.manifest))
+            .transpose()?;
+        let workspace_dependencies = workspace_value
+            .as_ref()
+            .and_then(|value| value.get("workspace"))
+            .and_then(toml::Value::as_table)
+            .and_then(|table| table.get("dependencies"))
+            .and_then(toml::Value::as_table);
+        let mut dependencies = Vec::new();
+        collect_dependency_tables(&value, &mut dependencies);
+        for occurrence in dependencies {
+            let dependency = &occurrence.value;
+            let effective = if dependency.as_table().is_some_and(|table| {
+                table.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+            }) {
+                workspace_dependencies.and_then(|table| table.get(&occurrence.key))
+            } else {
+                Some(dependency)
+            };
+            let Some(path) = effective
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get("path"))
+                .and_then(toml::Value::as_str)
+            else {
+                continue;
+            };
+            let base = if dependency.as_table().is_some_and(|table| {
+                table.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+            }) {
+                package_workspace
+                    .as_ref()
+                    .map_or(package_root.as_path(), |workspace| workspace.root.as_path())
+            } else {
+                package_root.as_path()
+            };
+            let dependency_root = safe_dependency_path(base, path).map_err(|_| {
+                PublicationError::UnsafeAssetPath {
+                    reference: path.to_owned(),
+                    definition: manifest.clone(),
+                    root: base.to_owned(),
+                }
+            })?;
+            if dependency_root.is_dir() && dependency_root.join("Cargo.toml").is_file() {
+                pending.push(dependency_root);
+            }
+        }
+    }
+    Ok(packages)
+}
+
+fn is_targetless(source_root: &Path, manifest: &toml::Value) -> bool {
+    let shape = target_shape(source_root, manifest);
+    !shape.library && !shape.binaries && !shape.proc_macro
+}
+
+fn classify_targetless(
+    source_root: &Path,
+    manifest: &toml::Value,
+    package: &str,
+) -> Result<Option<PackageRole>, Error> {
+    match classify_package(source_root, manifest, package) {
+        Ok(role) if matches!(role, PackageRole::PassiveComponent | PackageRole::Preset) => {
+            Ok(Some(role))
+        }
+        Ok(_) => Ok(None),
+        Err(Error::Publication(PublicationError::MissingPackageKind { .. })) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn capture_project_source(
+    package_root: &Path,
+    manifest: &Path,
+    workspace: Option<&WorkspaceContext>,
+    staging_root: &Path,
+) -> Result<CapturedSource, Error> {
+    let mut state = CaptureState::default();
+    if let Some(workspace) = workspace {
+        validate_cargo_config(&workspace.root.join(".cargo"))?;
+        copy_tree(&workspace.root, staging_root, false)?;
+        let workspace_value = read_manifest(&workspace.manifest)?;
+        let workspace_canonical =
+            workspace
+                .root
+                .canonicalize()
+                .map_err(|source| PublicationError::CaptureSource {
+                    path: workspace.root.clone(),
+                    source,
+                })?;
+        state
+            .locations
+            .insert(workspace_canonical.clone(), staging_root.to_owned());
+        for member in workspace_members(&workspace.root, &workspace_value)? {
+            let member =
+                member
+                    .canonicalize()
+                    .map_err(|source| PublicationError::CaptureSource {
+                        path: member.clone(),
+                        source,
+                    })?;
+            let relative = member
+                .strip_prefix(&workspace_canonical)
+                .map(PathBuf::from)
+                .map_err(|_| PublicationError::CaptureSource {
+                    path: member.clone(),
+                    source: io::Error::other("workspace member escaped its workspace root"),
+                })?;
+            state.locations.insert(member, staging_root.join(relative));
+        }
+        let package_canonical =
+            package_root
+                .canonicalize()
+                .map_err(|source| PublicationError::CaptureSource {
+                    path: package_root.to_owned(),
+                    source,
+                })?;
+        let staged_workspace_manifest = staging_root.join("Cargo.toml");
+        let mut staged_workspace = read_manifest(&workspace.manifest)?;
+        let excludes = staged_workspace
+            .get_mut("workspace")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| PublicationError::CaptureSource {
+                path: workspace.manifest.clone(),
+                source: io::Error::other("missing workspace table"),
+            })?
+            .entry("exclude".to_owned())
+            .or_insert_with(|| toml::Value::Array(Vec::new()))
+            .as_array_mut()
+            .ok_or_else(|| PublicationError::CaptureSource {
+                path: workspace.manifest.clone(),
+                source: io::Error::other("workspace exclude changed shape while staging"),
+            })?;
+        if !excludes
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|exclude| exclude == "_phoxal_path_dependencies")
+        {
+            excludes.push(toml::Value::String("_phoxal_path_dependencies".to_owned()));
+        }
+        let workspace_text = toml::to_string_pretty(&staged_workspace)
+            .map_err(|source| PublicationError::SerializeStagedManifest { source })?;
+        write_staged_file(&staged_workspace_manifest, workspace_text.as_bytes())?;
+
+        let mut package_roots = workspace_members(&workspace.root, &workspace_value)?;
+        if !package_roots.iter().any(|root| {
+            root.canonicalize()
+                .ok()
+                .is_some_and(|root| root == package_canonical)
+        }) {
+            package_roots.push(package_root.to_owned());
+        }
+        for original_root in package_roots {
+            let original_root =
+                original_root
+                    .canonicalize()
+                    .map_err(|source| PublicationError::CaptureSource {
+                        path: original_root.clone(),
+                        source,
+                    })?;
+            let staged_package =
+                state
+                    .locations
+                    .get(&original_root)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let relative = original_root
+                            .strip_prefix(&workspace_canonical)
+                            .unwrap_or_else(|_| Path::new("_phoxal_path_dependencies"));
+                        let staged = staging_root.join(relative);
+                        state
+                            .locations
+                            .insert(original_root.clone(), staged.clone());
+                        staged
+                    });
+            capture_path_dependencies(
+                &original_root,
+                &staged_package,
+                &workspace.root,
+                &workspace_value,
+                staging_root,
+                Some(&staged_workspace_manifest),
+                &mut state,
+            )?;
+        }
+        let staged_package = state
+            .locations
+            .get(&package_canonical)
+            .cloned()
+            .ok_or_else(|| PublicationError::CaptureSource {
+                path: package_root.to_owned(),
+                source: io::Error::other("project root has no staged workspace location"),
+            })?;
+        Ok(CapturedSource {
+            manifest: staged_package.join("Cargo.toml"),
+            workspace_root: staging_root.to_owned(),
+            locations: state.locations,
+            excluded_paths: state.excluded_paths,
+        })
+    } else {
+        validate_cargo_config(&package_root.join(".cargo"))?;
+        copy_tree(package_root, staging_root, false)?;
+        let package_canonical =
+            package_root
+                .canonicalize()
+                .map_err(|source| PublicationError::CaptureSource {
+                    path: package_root.to_owned(),
+                    source,
+                })?;
+        state
+            .locations
+            .insert(package_canonical, staging_root.to_owned());
+        capture_path_dependencies(
+            package_root,
+            staging_root,
+            package_root,
+            &toml::Value::Table(toml::map::Map::new()),
+            staging_root,
+            None,
+            &mut state,
+        )?;
+        Ok(CapturedSource {
+            manifest: staging_root.join(manifest.file_name().ok_or_else(|| {
+                PublicationError::MissingPackageManifest {
+                    path: manifest.to_owned(),
+                }
+            })?),
+            workspace_root: staging_root.to_owned(),
+            locations: state.locations,
+            excluded_paths: state.excluded_paths,
+        })
+    }
+}
+
+fn stage_targetless_carriers(captured: &CapturedSource) -> Result<(), Error> {
+    let root_manifest = captured.manifest.clone();
+    let root_package = root_manifest.parent().map(Path::to_path_buf);
+    let manifests = walk_files(&captured.workspace_root)?
+        .into_iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "Cargo.toml"))
+        .collect::<Vec<_>>();
+    for manifest in manifests {
+        if manifest == root_manifest {
+            continue;
+        }
+        let Some(source_root) = manifest.parent() else {
+            continue;
+        };
+        if root_package.as_deref() == Some(source_root) {
+            continue;
+        }
+        let value = read_manifest(&manifest)?;
+        let Some(package) = value.get("package").and_then(toml::Value::as_table) else {
+            continue;
+        };
+        let Some(package_name) = package.get("name").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        if !is_targetless(source_root, &value) {
+            continue;
+        }
+        let Some(role) = classify_targetless(source_root, &value, package_name)? else {
+            continue;
+        };
+        let selected = SelectedPackage {
+            package: package_name.to_owned(),
+            version: package
+                .get("version")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("0.0.0")
+                .to_owned(),
+            source_root: source_root.to_owned(),
+            manifest: manifest.clone(),
+            workspace: None,
+            manifest_value: value,
+            role,
+        };
+        let package_capture = CapturedSource {
+            manifest: manifest.clone(),
+            workspace_root: captured.workspace_root.clone(),
+            locations: BTreeMap::new(),
+            excluded_paths: BTreeSet::new(),
+        };
+        stage_package(&selected, &package_capture)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -1275,6 +1829,7 @@ fn capture_source(
     Ok(CapturedSource {
         manifest,
         workspace_root: staging_root.to_owned(),
+        locations: state.locations,
         excluded_paths: state.excluded_paths,
     })
 }
@@ -1565,6 +2120,11 @@ fn capture_path_dependencies(
         let (staged_dependency, next_workspace_root, next_workspace_manifest, next_staged_manifest) =
             match owner {
                 Some(owner) if owner == workspace_root => {
+                    let owner_staging_root = state
+                        .locations
+                        .get(workspace_root)
+                        .cloned()
+                        .unwrap_or_else(|| staging_root.to_owned());
                     let staged = if let Some(staged) = state.locations.get(&canonical) {
                         staged.clone()
                     } else {
@@ -1577,7 +2137,7 @@ fn capture_path_dependencies(
                                     "path dependency escapes staging workspace",
                                 ),
                             })?;
-                        let staged = staging_root.join(relative);
+                        let staged = owner_staging_root.join(relative);
                         state.locations.insert(canonical.clone(), staged.clone());
                         if !staged.exists() {
                             validate_cargo_config(&canonical.join(".cargo"))?;

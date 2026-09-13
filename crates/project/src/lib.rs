@@ -58,6 +58,7 @@ pub use submission::{DeviceAuthorization, SubmissionResult, submit_publication};
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 /// A discovered project with its authored document and root Cargo manifest.
 #[derive(Debug, Clone)]
@@ -121,30 +122,82 @@ impl Project {
     /// preparation refuses that addition before changing either file.
     pub fn prepare(&self, options: &CargoOptions) -> Result<PreparedProject, Error> {
         let preparation = preparation::ensure_required_dependencies(&self.layout, options)?;
-        let metadata = match cargo::load_metadata(self.layout.cargo_manifest(), options) {
+        let local_source = match publication::prepare_local_project_source(&self.layout) {
+            Ok(source) => source,
+            Err(error) => return rollback_preparation(preparation, error),
+        };
+        let metadata_manifest = local_source
+            .as_ref()
+            .map_or_else(|| self.layout.cargo_manifest(), |source| source.manifest());
+        let metadata_workdir = local_source
+            .as_ref()
+            .map_or_else(|| self.layout.root(), |source| source.cargo_workdir());
+        let metadata_target = local_source.as_ref().map(|source| source.target_dir());
+        let metadata = match cargo::load_metadata_at(
+            metadata_manifest,
+            metadata_workdir,
+            metadata_target,
+            options,
+        ) {
             Ok(metadata) => metadata,
             Err(error) => return rollback_preparation(preparation, error),
         };
         if let Err(error) = reject_direct_targetless_git(&metadata) {
             return rollback_preparation(preparation, error);
         }
-        let sources = match resolve_sources(&self.document, &metadata, self.layout.cargo_manifest())
-        {
+        let cargo_sources = match resolve_sources(&self.document, &metadata, metadata_manifest) {
             Ok(sources) => sources,
             Err(error) => return rollback_preparation(preparation, error.into()),
         };
-        let root_package = match metadata.root_package().cloned() {
+        let cargo_root_package = match metadata.root_package().cloned() {
             Some(package) => package,
             None => return rollback_preparation(preparation, SourceError::MissingBrain.into()),
         };
+        if let Some(source) = &local_source
+            && let Err(error) = source.sync_lock()
+        {
+            return rollback_preparation(preparation, error);
+        }
+        let (logical_metadata, root_package, sources) = if let Some(source) = &local_source {
+            let logical_metadata = match source.logical_metadata(&metadata) {
+                Ok(metadata) => metadata,
+                Err(error) => return rollback_preparation(preparation, error),
+            };
+            let root_package = match logical_metadata.root_package().cloned() {
+                Some(package) => package,
+                None => {
+                    return rollback_preparation(preparation, SourceError::MissingBrain.into());
+                }
+            };
+            (
+                logical_metadata,
+                root_package,
+                logical_source_selection(&cargo_sources, source),
+            )
+        } else {
+            (
+                metadata.clone(),
+                cargo_root_package.clone(),
+                cargo_sources.clone(),
+            )
+        };
         let preparation_changes = preparation.commit();
+        let logical_workspace_root = local_source.as_ref().map_or_else(
+            || logical_metadata.workspace_root.as_std_path().to_owned(),
+            |source| source.logical_workspace_root().to_owned(),
+        );
         Ok(PreparedProject {
             layout: self.layout.clone(),
             document: self.document.clone(),
-            metadata,
+            metadata: logical_metadata,
+            cargo_metadata: metadata,
             root_package,
+            cargo_root_package,
             sources,
+            cargo_sources,
             preparation_changes,
+            local_source: local_source.map(Arc::new),
+            logical_workspace_root,
         })
     }
 
@@ -157,8 +210,20 @@ impl Project {
     /// Cargo arguments are not replayed into the validation builds.
     pub fn update(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
         cargo::validate_update_options(options)?;
-        let _initial = self.prepare(options)?;
-        let output = cargo::update(self.layout.cargo_manifest(), self.layout.root(), options)?;
+        let initial = self.prepare(options)?;
+        let output = cargo::update(
+            initial.cargo_manifest_path(),
+            initial.cargo_workdir(),
+            initial.cargo_target_dir(),
+            options,
+        );
+        let sync = initial.sync_staged_lock();
+        let output = match (output, sync) {
+            (Ok(output), Ok(())) => output,
+            (Err(error), Ok(())) => return Err(error),
+            (Ok(_), Err(error)) | (Err(_), Err(error)) => return Err(error),
+        };
+        drop(initial);
         let prepared = self.prepare(options)?;
         let validation_options = CargoOptions {
             cargo_args: Vec::new(),
@@ -225,15 +290,106 @@ fn rollback_preparation<T>(
     }
 }
 
+fn logical_source_selection(
+    sources: &SourceSelection,
+    source: &publication::LocalProjectSource,
+) -> SourceSelection {
+    SourceSelection {
+        brain: logical_target(&sources.brain, source),
+        supervisor: logical_target(&sources.supervisor, source),
+        services: sources
+            .services
+            .iter()
+            .map(|(instance, service)| {
+                (
+                    instance.clone(),
+                    SelectedService {
+                        instance: service.instance.clone(),
+                        dependency_key: service.dependency_key.clone(),
+                        package_id: source.logical_package_id(&service.package_id),
+                        package: service.package.clone(),
+                        source: logical_package_source(&service.source, source),
+                        library: logical_target(&service.library, source),
+                        binary: logical_target(&service.binary, source),
+                    },
+                )
+            })
+            .collect(),
+        components: sources
+            .components
+            .iter()
+            .map(|(instance, component)| {
+                (
+                    instance.clone(),
+                    SelectedComponent {
+                        instance: component.instance.clone(),
+                        dependency_key: component.dependency_key.clone(),
+                        package_id: source.logical_package_id(&component.package_id),
+                        package: component.package.clone(),
+                        source: logical_package_source(&component.source, source),
+                        mount_site: component.mount_site.clone(),
+                        definition: component.definition.clone(),
+                        driver: component.driver.as_ref().map(|driver| SelectedDriver {
+                            dependency_key: driver.dependency_key.clone(),
+                            package_id: source.logical_package_id(&driver.package_id),
+                            package: driver.package.clone(),
+                            source: logical_package_source(&driver.source, source),
+                            binary: logical_target(&driver.binary, source),
+                        }),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+fn logical_target(
+    target: &SelectedTarget,
+    source: &publication::LocalProjectSource,
+) -> SelectedTarget {
+    SelectedTarget {
+        package_id: source.logical_package_id(&target.package_id),
+        package: target.package.clone(),
+        target: target.target.clone(),
+        source_path: source.logical_path(&target.source_path),
+        required_features: target.required_features.clone(),
+    }
+}
+
+fn logical_package_source(
+    package_source: &PackageSource,
+    source: &publication::LocalProjectSource,
+) -> PackageSource {
+    match package_source {
+        PackageSource::Local { manifest_path } => PackageSource::Local {
+            manifest_path: source.logical_path(manifest_path),
+        },
+        PackageSource::Git { source: value } => PackageSource::Git {
+            source: value.clone(),
+        },
+        PackageSource::Registry { source: value } => PackageSource::Registry {
+            source: value.clone(),
+        },
+        PackageSource::Other { source: value } => PackageSource::Other {
+            source: value.clone(),
+        },
+    }
+}
+
 /// A validated project and the Cargo graph used for its selected sources.
 #[derive(Debug, Clone)]
 pub struct PreparedProject {
     layout: ProjectLayout,
     document: RobotDocument,
     metadata: cargo_metadata::Metadata,
+    cargo_metadata: cargo_metadata::Metadata,
     root_package: cargo_metadata::Package,
+    cargo_root_package: cargo_metadata::Package,
     sources: SourceSelection,
+    cargo_sources: SourceSelection,
     preparation_changes: Vec<PreparationChange>,
+    local_source: Option<Arc<publication::LocalProjectSource>>,
+    logical_workspace_root: PathBuf,
 }
 
 impl PreparedProject {
@@ -255,10 +411,14 @@ impl PreparedProject {
         &self.metadata
     }
 
+    pub(crate) fn cargo_metadata(&self) -> &cargo_metadata::Metadata {
+        &self.cargo_metadata
+    }
+
     /// Returns the workspace root owning the retained Cargo.lock.
     #[must_use]
     pub fn cargo_workspace_root(&self) -> &Path {
-        self.metadata.workspace_root.as_std_path()
+        &self.logical_workspace_root
     }
 
     /// Returns the logical root Cargo.lock path.
@@ -273,10 +433,18 @@ impl PreparedProject {
         &self.root_package
     }
 
+    pub(crate) fn cargo_root_package(&self) -> &cargo_metadata::Package {
+        &self.cargo_root_package
+    }
+
     /// Returns all explicit Cargo-backed source selections.
     #[must_use]
     pub fn sources(&self) -> &SourceSelection {
         &self.sources
+    }
+
+    pub(crate) fn cargo_sources(&self) -> &SourceSelection {
+        &self.cargo_sources
     }
 
     /// Returns the automatic dependency additions made during preparation.
@@ -285,13 +453,49 @@ impl PreparedProject {
         &self.preparation_changes
     }
 
+    pub(crate) fn cargo_manifest_path(&self) -> &Path {
+        self.local_source
+            .as_ref()
+            .map_or_else(|| self.layout.cargo_manifest(), |source| source.manifest())
+    }
+
+    pub(crate) fn cargo_workdir(&self) -> &Path {
+        self.local_source
+            .as_ref()
+            .map_or_else(|| self.layout.root(), |source| source.cargo_workdir())
+    }
+
+    pub(crate) fn cargo_target_dir(&self) -> Option<&Path> {
+        self.local_source.as_ref().map(|source| source.target_dir())
+    }
+
+    pub(crate) fn authored_source_root(&self, staged: &Path) -> PathBuf {
+        self.local_source.as_ref().map_or_else(
+            || staged.to_owned(),
+            |source| source.authored_source_root(staged),
+        )
+    }
+
+    pub(crate) fn sync_staged_lock(&self) -> Result<(), Error> {
+        if let Some(source) = &self.local_source {
+            source.sync_lock()?
+        }
+        Ok(())
+    }
+
     /// Runs one supported Cargo source-development operation.
     pub fn run(
         &self,
         operation: CargoOperation,
         options: &CargoOptions,
     ) -> Result<Vec<CargoOutput>, Error> {
-        cargo::run(self, operation, options)
+        let outputs = cargo::run(self, operation, options);
+        let sync = self.sync_staged_lock();
+        match (outputs, sync) {
+            (Ok(outputs), Ok(())) => Ok(outputs),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+        }
     }
 
     /// Runs Cargo check and validates the exact compiled Runtime contracts and
@@ -321,9 +525,9 @@ impl PreparedProject {
     /// graph and returns Cargo's reported executable path.
     pub fn build_supervisor(&self, options: &CargoOptions) -> Result<PathBuf, Error> {
         let build_inputs = bundle::capture_build_inputs(self)?;
-        let output = cargo::build_target(self, &self.sources.supervisor, options)?;
+        let output = cargo::build_target(self, &self.cargo_sources.supervisor, options)?;
         bundle::verify_build_inputs(self, &build_inputs)?;
-        let executable = cargo::artifact_path(&output.stdout, &self.sources.supervisor)?;
+        let executable = cargo::artifact_path(&output.stdout, &self.cargo_sources.supervisor)?;
         let metadata =
             std::fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
                 path: executable.clone(),
@@ -418,15 +622,15 @@ impl PreparedProject {
     }
 
     pub(crate) fn assembly_targets(&self) -> Vec<(String, &SelectedTarget)> {
-        let mut targets = vec![(String::from("brain"), &self.sources.brain)];
+        let mut targets = vec![(String::from("brain"), &self.cargo_sources.brain)];
         targets.extend(
-            self.sources
+            self.cargo_sources
                 .services
                 .iter()
                 .map(|(instance, service)| (instance.clone(), &service.binary)),
         );
         targets.extend(
-            self.sources
+            self.cargo_sources
                 .components
                 .iter()
                 .filter_map(|(instance, component)| {
@@ -440,15 +644,15 @@ impl PreparedProject {
     }
 
     pub(crate) fn execution_targets(&self) -> Vec<&SelectedTarget> {
-        let mut targets = vec![&self.sources.brain];
+        let mut targets = vec![&self.cargo_sources.brain];
         targets.extend(
-            self.sources
+            self.cargo_sources
                 .services
                 .values()
                 .map(|service| &service.binary),
         );
         targets.extend(
-            self.sources
+            self.cargo_sources
                 .components
                 .values()
                 .filter_map(|component| component.driver.as_ref().map(|driver| &driver.binary)),
@@ -460,11 +664,11 @@ impl PreparedProject {
         if instance == "brain" {
             return "brain".to_owned();
         }
-        if self.sources.services.contains_key(instance) {
+        if self.cargo_sources.services.contains_key(instance) {
             return "service".to_owned();
         }
         if self
-            .sources
+            .cargo_sources
             .components
             .get(instance)
             .and_then(|component| component.driver.as_ref())

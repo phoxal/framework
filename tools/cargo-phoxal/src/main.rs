@@ -359,6 +359,8 @@ fn diagnostic_path(error: &phoxal_project::Error) -> Option<PathBuf> {
         | phoxal_project::Error::MissingInitialization { path, .. }
         | phoxal_project::Error::ManifestPreparation { path, .. }
         | phoxal_project::Error::ManifestWrite { path, .. }
+        | phoxal_project::Error::CargoLockWrite { path, .. }
+        | phoxal_project::Error::CargoLockRead { path, .. }
         | phoxal_project::Error::ManifestRestore { path, .. }
         | phoxal_project::Error::CargoMetadata { manifest: path, .. } => Some(path.clone()),
         phoxal_project::Error::ConfigurationInvalid { .. }

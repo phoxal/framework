@@ -62,15 +62,14 @@ impl ManifestTransaction {
 
     /// Restores all files captured before an unsuccessful preparation.
     pub(crate) fn rollback(&self) -> Result<(), Error> {
-        if self.changes.is_empty() {
-            return Ok(());
+        if !self.changes.is_empty() {
+            atomic_write(&self.manifest, &self.original_manifest).map_err(|source| {
+                Error::ManifestRestore {
+                    path: self.manifest.clone(),
+                    source,
+                }
+            })?;
         }
-        atomic_write(&self.manifest, &self.original_manifest).map_err(|source| {
-            Error::ManifestRestore {
-                path: self.manifest.clone(),
-                source,
-            }
-        })?;
         for snapshot in &self.locks {
             match &snapshot.contents {
                 Some(contents) => match fs::read(&snapshot.path) {
@@ -140,6 +139,7 @@ pub(crate) fn ensure_required_dependencies(
             path: manifest.clone(),
             message: format!("Cargo.toml is not valid TOML: {error}"),
         })?;
+    let locks = lock_snapshots(&workspace_root)?;
 
     let has_supervisor = document
         .get("dependencies")
@@ -150,7 +150,7 @@ pub(crate) fn ensure_required_dependencies(
             _lock: lock,
             manifest,
             original_manifest,
-            locks: Vec::new(),
+            locks,
             changes: Vec::new(),
         });
     }
@@ -168,10 +168,6 @@ pub(crate) fn ensure_required_dependencies(
         });
     }
 
-    // Capture the owning workspace lock before the manifest changes. Cargo
-    // metadata may update this path after the write, and a failed preparation
-    // must restore its exact pre-command bytes.
-    let locks = lock_snapshots(&workspace_root)?;
     let dependencies = match document.get_mut("dependencies") {
         Some(item) if item.is_table() => {
             item.as_table_mut()
@@ -366,7 +362,7 @@ fn lock_snapshots(root: &Path) -> Result<Vec<LockSnapshot>, Error> {
     Ok(vec![LockSnapshot { contents, path }])
 }
 
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
+pub(crate) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     let permissions = match fs::metadata(path) {

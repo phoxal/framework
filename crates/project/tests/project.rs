@@ -223,6 +223,34 @@ connections:
     Ok(directory)
 }
 
+fn targetless_component_fixture() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let manifest = fixture.path().join("Cargo.toml");
+    let contents = fs::read_to_string(&manifest)?.replace(
+        "[dependencies]\n",
+        "[dependencies]\nphoxal-supervisor = { path = \"supervisor\" }\n",
+    );
+    write(&manifest, &contents)?;
+
+    let component_manifest = fixture.path().join("passive-sensor/Cargo.toml");
+    write(
+        &component_manifest,
+        r#"[package]
+name = "passive-sensor"
+version = "0.1.0"
+edition = "2024"
+autolib = false
+autobins = false
+
+[package.metadata.phoxal]
+kind = "component"
+"#,
+    )?;
+    fs::remove_file(fixture.path().join("passive-sensor/src/lib.rs"))?;
+    fs::remove_dir(fixture.path().join("passive-sensor/src"))?;
+    Ok(fixture)
+}
+
 fn nested_workspace_fixture()
 -> Result<(tempfile::TempDir, std::path::PathBuf), Box<dyn std::error::Error>> {
     let workspace = tempfile::tempdir()?;
@@ -333,6 +361,181 @@ fn preparation_resolves_the_root_brain_services_and_passive_component()
         "passive-sensor"
     );
     assert!(prepared.cargo_lock().ends_with("Cargo.lock"));
+    Ok(())
+}
+
+#[test]
+fn targetless_local_component_uses_an_isolated_inert_carrier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = targetless_component_fixture()?;
+    let root_manifest = fixture.path().join("Cargo.toml");
+    let component_root = fixture.path().join("passive-sensor");
+    let component_manifest = component_root.join("Cargo.toml");
+    let component_definition = component_root.join("component.yaml");
+    let component_model = component_root.join("model.xml");
+    let before_root = fs::read(&root_manifest)?;
+    let before_component_manifest = fs::read(&component_manifest)?;
+    let before_component_definition = fs::read(&component_definition)?;
+    let before_component_model = fs::read(&component_model)?;
+
+    let prepared = Project::discover(fixture.path())?.prepare(&CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    })?;
+
+    assert_eq!(fs::read(&root_manifest)?, before_root);
+    assert_eq!(fs::read(&component_manifest)?, before_component_manifest);
+    assert_eq!(
+        fs::read(&component_definition)?,
+        before_component_definition
+    );
+    assert_eq!(fs::read(&component_model)?, before_component_model);
+    assert!(!component_root.join("_cargo/lib.rs").exists());
+    assert!(prepared.cargo_lock().is_file());
+    let package = prepared
+        .metadata()
+        .packages
+        .iter()
+        .find(|package| package.name == "passive-sensor")
+        .expect("targetless component is in Cargo metadata");
+    assert!(package.targets.iter().any(|target| {
+        target.is_lib() && target.src_path.as_std_path().ends_with("_cargo/lib.rs")
+    }));
+    assert!(prepared.sources().components["sensor"].driver.is_none());
+    Ok(())
+}
+
+#[test]
+fn targetless_local_logical_identity_is_stable_across_shadow_preparations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = targetless_component_fixture()?;
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+
+    let first = project.prepare(&options)?;
+    let first_metadata = serde_json::to_string(first.metadata())?;
+    let first_sources = first.sources().clone();
+    let first_bundle = first.build_bundle(
+        &options,
+        fixture
+            .path()
+            .join("target/phoxal/fixture-robot/identity-one"),
+    )?;
+
+    let second = project.prepare(&options)?;
+    let second_metadata = serde_json::to_string(second.metadata())?;
+    let second_bundle = second.build_bundle(
+        &options,
+        fixture
+            .path()
+            .join("target/phoxal/fixture-robot/identity-two"),
+    )?;
+
+    assert_eq!(first_metadata, second_metadata);
+    assert_eq!(first_sources, *second.sources());
+    assert_eq!(
+        first_bundle.provenance().sources,
+        second_bundle.provenance().sources
+    );
+    assert_eq!(
+        first_bundle.provenance().source_closure_sha256,
+        second_bundle.provenance().source_closure_sha256
+    );
+    assert_eq!(
+        first_bundle.provenance().source_tree,
+        second_bundle.provenance().source_tree
+    );
+    assert_eq!(
+        first_bundle.provenance().toolchain.invocations,
+        second_bundle.provenance().toolchain.invocations
+    );
+    assert!(!first_metadata.contains("_phoxal_path_dependencies"));
+    let provenance = serde_json::to_string(first_bundle.provenance())?;
+    assert!(!provenance.contains(&fixture.path().display().to_string()));
+    let passive = first_bundle
+        .provenance()
+        .sources
+        .iter()
+        .find(|source| source.package == "passive-sensor")
+        .expect("targetless component provenance");
+    assert_eq!(passive.derived_files, vec!["_cargo/lib.rs".to_owned()]);
+    assert!(
+        passive
+            .authored_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("passive-sensor"))
+    );
+    Ok(())
+}
+
+#[test]
+fn targetless_local_preparation_rolls_back_the_logical_lock_on_selection_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = targetless_component_fixture()?;
+    let root_manifest = fixture.path().join("Cargo.toml");
+    let component_root = fixture.path().join("passive-sensor");
+    let component_manifest = component_root.join("Cargo.toml");
+    let component_definition = component_root.join("component.yaml");
+    let before_root = fs::read(&root_manifest)?;
+    let before_component_manifest = fs::read(&component_manifest)?;
+    let before_component_definition = fs::read(&component_definition)?;
+    let robot = fixture.path().join("robot.yaml");
+    let robot_contents = fs::read_to_string(&robot)?.replace(
+        "implementation: counter-service",
+        "implementation: counter-servic",
+    );
+    write(&robot, &robot_contents)?;
+
+    let error = Project::discover(fixture.path())?
+        .prepare(&CargoOptions {
+            offline: true,
+            ..CargoOptions::default()
+        })
+        .expect_err("source selection failure must not publish staged lock state");
+    assert!(matches!(
+        error,
+        Error::Source(SourceError::DependencyNotDeclared { key, .. }) if key == "counter-servic"
+    ));
+    assert_eq!(fs::read(&root_manifest)?, before_root);
+    assert_eq!(fs::read(&component_manifest)?, before_component_manifest);
+    assert_eq!(
+        fs::read(&component_definition)?,
+        before_component_definition
+    );
+    assert!(!fixture.path().join("Cargo.lock").exists());
+    assert!(!component_root.join("_cargo/lib.rs").exists());
+    Ok(())
+}
+
+#[test]
+fn targetless_local_locked_mode_requires_a_real_existing_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = targetless_component_fixture()?;
+    let root_manifest = fixture.path().join("Cargo.toml");
+    let before_root = fs::read(&root_manifest)?;
+    let project = Project::discover(fixture.path())?;
+    let locked = CargoOptions {
+        lock: LockMode::Locked,
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let error = project
+        .prepare(&locked)
+        .expect_err("locked targetless preparation must not create a lock");
+    assert!(matches!(error, Error::CargoMetadata { .. }));
+    assert_eq!(fs::read(&root_manifest)?, before_root);
+    assert!(!fixture.path().join("Cargo.lock").exists());
+    assert!(!fixture.path().join("passive-sensor/_cargo/lib.rs").exists());
+
+    project.prepare(&CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    })?;
+    assert!(fixture.path().join("Cargo.lock").is_file());
+    project.prepare(&locked)?;
     Ok(())
 }
 

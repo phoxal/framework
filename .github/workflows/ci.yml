@@ -66,13 +66,14 @@ jobs:
       - name: Test the example workspace
         run: cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --workspace --all-targets
 
-      - name: Check the current-runtime example robots with cargo-phoxal
+      - name: Check the maintained example robots with cargo-phoxal
         shell: bash
         run: |
           set -euo pipefail
           for robot in \
             examples/runtime-rewrite/robots/robot-alpha \
-            examples/runtime-rewrite/robots/robot-beta; do
+            examples/runtime-rewrite/robots/robot-beta \
+            examples/runtime-rewrite/robots/workspace-robot; do
             (
               cd "$robot"
               cargo run --manifest-path ../../../../tools/cargo-phoxal/Cargo.toml -- check --locked

@@ -403,6 +403,22 @@ pub enum Error {
         /// Filesystem failure.
         source: std::io::Error,
     },
+    /// Writing Cargo's logical workspace lock after staged preparation failed.
+    #[error("cannot write prepared Cargo.lock {path}: {source}")]
+    CargoLockWrite {
+        /// Logical workspace lock path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Reading Cargo's staged workspace lock after preparation failed.
+    #[error("cannot read prepared Cargo.lock {path}: {source}")]
+    CargoLockRead {
+        /// Staged or logical workspace lock path.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
     /// Restoring a manifest after an unsuccessful automatic preparation failed.
     #[error("cannot restore Cargo manifest {path} after failed preparation: {source}")]
     ManifestRestore {

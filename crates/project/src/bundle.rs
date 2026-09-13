@@ -371,6 +371,14 @@ pub struct BundleSource {
     pub registry_checksum: Option<String>,
     /// Git provenance when this is a Git package.
     pub git: Option<BundleGitSource>,
+    /// Authored package path relative to the robot source root when this is a
+    /// local package.
+    #[serde(default)]
+    pub authored_path: Option<String>,
+    /// Files derived in an isolated carrier rather than authored by the
+    /// package, such as the inert Cargo target for a passive component.
+    #[serde(default)]
+    pub derived_files: Vec<String>,
 }
 
 /// Toolchain and invocation inputs used to create one compiled bundle.
@@ -699,10 +707,13 @@ pub(crate) fn assemble_with_inputs(
     // The supervisor is part of the immutable bundle, but it is not a runtime
     // participant.  Keep it out of manifest.executables because the deployed
     // supervisor must never interpret its own binary as a child process.
-    let supervisor_output = cargo::build_target(prepared, &prepared.sources().supervisor, options)?;
+    let supervisor_output =
+        cargo::build_target(prepared, &prepared.cargo_sources().supervisor, options)?;
     invocations.push(supervisor_output.arguments.clone());
-    let supervisor_source =
-        cargo::artifact_path(&supervisor_output.stdout, &prepared.sources().supervisor)?;
+    let supervisor_source = cargo::artifact_path(
+        &supervisor_output.stdout,
+        &prepared.cargo_sources().supervisor,
+    )?;
     ensure_regular_executable(&supervisor_source, "supervisor")?;
     let supervisor_digest = digest_file(&supervisor_source)?;
 
@@ -715,7 +726,7 @@ pub(crate) fn assemble_with_inputs(
     verify_build_inputs(prepared, &build_inputs)?;
 
     let mut components = prepared
-        .sources()
+        .cargo_sources()
         .components
         .values()
         .map(|component| {
@@ -737,7 +748,7 @@ pub(crate) fn assemble_with_inputs(
         .iter()
         .find(|source| {
             source.package_id
-                == public_package_id(prepared, &prepared.sources().supervisor.package_id)
+                == public_package_id(prepared, &prepared.cargo_sources().supervisor.package_id)
         })
         .ok_or_else(|| Error::ArtifactInvalid {
             path: supervisor_source.clone(),
@@ -749,10 +760,10 @@ pub(crate) fn assemble_with_inputs(
         role: "supervisor".to_owned(),
         instance: "supervisor".to_owned(),
         package_id: supervisor_source_record.package_id.clone(),
-        package: prepared.sources().supervisor.package.clone(),
+        package: prepared.cargo_sources().supervisor.package.clone(),
         source: supervisor_source_record.source.clone(),
         version: supervisor_source_record.version.clone(),
-        target: prepared.sources().supervisor.target.clone(),
+        target: prepared.cargo_sources().supervisor.target.clone(),
         path: supervisor_relative,
         bytes: supervisor_digest.bytes,
         sha256: supervisor_digest.sha256,
@@ -768,8 +779,8 @@ pub(crate) fn assemble_with_inputs(
         robot_id: prepared.document().robot.id.clone(),
         document: prepared.document().clone(),
         root_package: BundlePackage {
-            id: public_package_id(prepared, &prepared.root_package().id.to_string()),
-            name: prepared.root_package().name.to_string(),
+            id: public_package_id(prepared, &prepared.cargo_root_package().id.to_string()),
+            name: prepared.cargo_root_package().name.to_string(),
             source: "local".to_owned(),
         },
         target,
@@ -811,7 +822,7 @@ fn build_simulation_definition(
     validate_simulation_facts(facts)?;
 
     let driver_instances = prepared
-        .sources()
+        .cargo_sources()
         .components
         .iter()
         .filter_map(|(instance, component)| component.driver.as_ref().map(|_| instance.clone()))
@@ -1515,7 +1526,7 @@ pub(crate) fn capture_build_inputs(prepared: &PreparedProject) -> Result<BuildIn
         }
     }
     for package in prepared
-        .metadata()
+        .cargo_metadata()
         .packages
         .iter()
         .filter(|package| resolved_package_ids(prepared).contains(&package.id.to_string()))
@@ -1789,6 +1800,12 @@ fn normalize_provenance_text(value: &str, project_root: &Path) -> String {
 
 fn normalize_provenance_token(value: &str) -> String {
     let value = normalize_url_credentials(value);
+    if let Some(index) = value.find("file://") {
+        let fragment = value[index..]
+            .find(['?', '#'])
+            .map_or_else(String::new, |offset| value[index + offset..].to_owned());
+        return format!("{}file:<local-path>{fragment}", &value[..index]);
+    }
     if value.starts_with('/') || value.starts_with("\\\\") || value.as_bytes().get(1) == Some(&b':')
     {
         return "<local-path>".to_owned();
@@ -1913,7 +1930,7 @@ fn stage_source_tree(
     }
     let package_ids = resolved_package_ids(prepared);
     let local_packages = prepared
-        .metadata()
+        .cargo_metadata()
         .packages
         .iter()
         .filter(|package| package_ids.contains(&package.id.to_string()) && package.source.is_none())
@@ -2334,7 +2351,13 @@ fn rewrite_dependency_table_paths(
         } else {
             (package_root, staged_package)
         };
-        let canonical = resolve_local_dependency(base, &path)?;
+        let canonical = match resolve_local_dependency(base, &path) {
+            Ok(canonical) => canonical,
+            Err(Error::ArtifactFile { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let Some(staged_dependency) = locations.get(&canonical) else {
             continue;
         };
@@ -2431,7 +2454,7 @@ fn source_closure(prepared: &PreparedProject) -> Result<(Vec<BundleSource>, Stri
     let package_ids = resolved_package_ids(prepared);
     let checksums = lock_checksums(&prepared.cargo_lock())?;
     let mut sources = prepared
-        .metadata()
+        .cargo_metadata()
         .packages
         .iter()
         .filter(|package| package_ids.contains(&package.id.to_string()))
@@ -2451,9 +2474,9 @@ fn source_closure(prepared: &PreparedProject) -> Result<(Vec<BundleSource>, Stri
 }
 
 fn resolved_package_ids(prepared: &PreparedProject) -> BTreeSet<String> {
-    let Some(resolve) = prepared.metadata().resolve.as_ref() else {
+    let Some(resolve) = prepared.cargo_metadata().resolve.as_ref() else {
         return prepared
-            .metadata()
+            .cargo_metadata()
             .packages
             .iter()
             .map(|package| package.id.to_string())
@@ -2461,7 +2484,7 @@ fn resolved_package_ids(prepared: &PreparedProject) -> BTreeSet<String> {
     };
     let Some(root) = resolve.root.as_ref() else {
         return prepared
-            .metadata()
+            .cargo_metadata()
             .packages
             .iter()
             .map(|package| package.id.to_string())
@@ -2519,6 +2542,29 @@ fn source_record(
     let digest = digest_source_files(&files);
     let package_id = public_package_id(prepared, &package.id.to_string());
     let identity = format!("{package_id}#{digest}");
+    let (authored_path, derived_files) = if kind == BundleSourceKind::Local {
+        let authored_root = prepared.authored_source_root(&package_root);
+        let authored_path = relative_path(prepared.layout().root(), &authored_root).map_or_else(
+            || path_string(&authored_root),
+            |path| {
+                if path.as_os_str().is_empty() {
+                    ".".to_owned()
+                } else {
+                    path_string(&path)
+                }
+            },
+        );
+        let derived_files = ["_cargo/lib.rs"]
+            .into_iter()
+            .filter(|relative| {
+                package_root.join(relative).is_file() && !authored_root.join(relative).is_file()
+            })
+            .map(str::to_owned)
+            .collect();
+        (Some(authored_path), derived_files)
+    } else {
+        (None, Vec::new())
+    };
     let git = if kind == BundleSourceKind::Git {
         let source = package
             .source
@@ -2563,6 +2609,8 @@ fn source_record(
         files,
         registry_checksum,
         git,
+        authored_path,
+        derived_files,
     })
 }
 
@@ -2883,7 +2931,7 @@ fn git_status(package_root: &Path) -> Result<Vec<String>, Error> {
 
 fn public_package_id(prepared: &PreparedProject, package_id: &str) -> String {
     if let Some(package) = prepared
-        .metadata()
+        .cargo_metadata()
         .packages
         .iter()
         .find(|package| package.id.to_string() == package_id)

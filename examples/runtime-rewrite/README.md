@@ -83,7 +83,7 @@ The passive component is deliberately not a Cargo workspace member because its a
 | Minimal brain | `robots/robot-alpha/` | `cargo phoxal check --locked` from that directory |
 | Reusable service | `services/counter/` | `cargo test --workspace --all-targets` |
 | Local passive component | `components/passive-caster/` | `cargo phoxal publish component example-passive-caster --path ... --dry-run` |
-| Robot package inside a workspace | `robots/workspace-robot/` with the repeated-component model fixture | `cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --package example-mujoco-fixture-check` |
+| Robot package inside a workspace | `robots/workspace-robot/` with the repeated-component model fixture | `cargo phoxal check --locked` from that directory |
 | Two robot packages in one repository | `robots/robot-alpha/` and `robots/robot-beta/` | Run the same check from each directory |
 
 No creation or scaffolding command is required.
@@ -143,7 +143,7 @@ The component remains a data package and never becomes an implicit Runtime proce
 
 ### A robot package inside a workspace
 
-`robots/workspace-robot/` is a normal member of this example workspace beside the reusable service and contract packages.
+`robots/workspace-robot/` is a standalone nested Cargo workspace beside the reusable service and contract packages.
 
 Its root Cargo package owns the brain, the explicit service and component dependencies, the root Cargo lock, and the mandatory supervisor dependency.
 
@@ -157,16 +157,18 @@ The robot owns `model.xml` and the application scene lives at `simulation/scene.
 
 The brain imports the canonical generated contract package directly, so the project check exercises the real root Cargo graph and project preparation rather than generating robot-specific bindings.
 
-The intended complete project check from its directory is:
+The complete project check from its directory is:
 
 ```sh
 cd robots/workspace-robot
 cargo phoxal check --locked
 ```
 
-The current project compiler parses and validates the authored M2 documents, but it does not yet stage a targetless local component carrier before Cargo metadata.
+The project compiler captures a temporary shadow workspace and stages inert Cargo library carriers for the two targetless local component packages before Cargo metadata.
 
-Consequently, the command remains a documented pending gate for this fixture until targetless local source preparation is implemented.
+The authored component directories and robot manifest remain unchanged, and the nested workspace lock is the one logical lock retained by this package.
+
+The command is therefore a verified source-development gate for this fixture.
 
 The automated fixture test checks the real `phoxal-project` document types and exact model, target, signal, mount-site, and scene shape without pretending that native composition has passed.
 
@@ -185,7 +187,7 @@ cd robots/workspace-robot
 cargo phoxal check --locked
 ```
 
-This command is intentionally not reported as passing yet because Cargo rejects the two targetless local component dependencies before the project compiler can stage their inert carriers.
+The project compiler stages the two targetless local component carriers before Cargo metadata and retains the nested workspace lock at `robots/workspace-robot/Cargo.lock`.
 
 After the independent simulator application has been installed or provisioned by its owner, the fresh finite-run command is:
 
@@ -199,7 +201,7 @@ This repository CI does not run the simulation command because native MuJoCo and
 
 The maintained example currently proves the authored YAML shape through the real project document API, canonical contract imports in the compilable service/brain path, robot model and scene closure inputs, and the exact finite-run command shape.
 
-It does not yet prove targetless local carrier preparation, native repeated-component attachment, compiled target-kind admission, provider observation meaning, offscreen rendering, reset, or bundle-backed simulator execution.
+It does not yet prove native repeated-component attachment, compiled target-kind admission, provider observation meaning, offscreen rendering, reset, or bundle-backed simulator execution.
 
 ### Two robot packages in one repository
 
@@ -230,7 +232,8 @@ The local equivalent from the framework checkout is:
 cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --workspace --all-targets
 for robot in \
   examples/runtime-rewrite/robots/robot-alpha \
-  examples/runtime-rewrite/robots/robot-beta; do
+  examples/runtime-rewrite/robots/robot-beta \
+  examples/runtime-rewrite/robots/workspace-robot; do
   (cd "$robot" && cargo run --manifest-path ../../../../tools/cargo-phoxal/Cargo.toml -- check --locked)
 done
 cargo test --manifest-path examples/runtime-rewrite/Cargo.toml \
@@ -241,4 +244,4 @@ cargo run --manifest-path tools/cargo-phoxal/Cargo.toml -- \
   --dry-run
 ```
 
-The first run creates the example workspace's `Cargo.lock`; commit that lock with the example workspace so `--locked` remains meaningful for fresh checkouts.
+The outer example workspace and the nested workspace-robot `Cargo.lock` files are committed so `--locked` remains meaningful for fresh checkouts.

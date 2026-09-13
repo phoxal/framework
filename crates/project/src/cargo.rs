@@ -315,14 +315,23 @@ pub struct CargoOutput {
     pub stderr: Vec<u8>,
 }
 
-/// Invokes Cargo metadata with the same lock/offline policy as the operation.
-pub(crate) fn load_metadata(manifest: &Path, options: &CargoOptions) -> Result<Metadata, Error> {
+/// Invokes Cargo metadata from an optional isolated source tree.
+pub(crate) fn load_metadata_at(
+    manifest: &Path,
+    current_dir: &Path,
+    target_dir: Option<&Path>,
+    options: &CargoOptions,
+) -> Result<Metadata, Error> {
     options.validate()?;
     let mut command = MetadataCommand::new();
     command.cargo_path(options.cargo_program());
     command
         .manifest_path(manifest)
+        .current_dir(current_dir)
         .features(CargoOpt::SomeFeatures(options.features.clone()));
+    if let Some(target_dir) = target_dir {
+        command.env("CARGO_TARGET_DIR", target_dir);
+    }
     if options.all_features {
         command.features(CargoOpt::AllFeatures);
     }
@@ -359,14 +368,14 @@ pub(crate) fn run(
     let mut outputs = Vec::new();
     match operation {
         CargoOperation::Test => {
-            let root = &prepared.root_package;
+            let root = prepared.cargo_root_package();
             let mut command = command_for(prepared, operation, options, true, true);
             if options.selection.is_empty() {
                 command.args(["--package", root.id.to_string().as_str()]);
             }
             command.args([
                 "--manifest-path",
-                &prepared.layout.cargo_manifest().display().to_string(),
+                &prepared.cargo_manifest_path().display().to_string(),
             ]);
             command.args(["--"]);
             command.args(&options.test_args);
@@ -377,7 +386,7 @@ pub(crate) fn run(
                 let mut command = command_for(prepared, operation, options, true, true);
                 command.args([
                     "--manifest-path",
-                    &prepared.layout.cargo_manifest().display().to_string(),
+                    &prepared.cargo_manifest_path().display().to_string(),
                 ]);
                 outputs.push(run_command(command, operation)?);
                 return Ok(outputs);
@@ -386,7 +395,7 @@ pub(crate) fn run(
                 let mut command = command_for(prepared, operation, options, true, false);
                 command.args([
                     "--manifest-path",
-                    &prepared.layout.cargo_manifest().display().to_string(),
+                    &prepared.cargo_manifest_path().display().to_string(),
                 ]);
                 append_target_selection(&mut command, prepared, target);
                 outputs.push(run_command(command, operation)?);
@@ -409,7 +418,10 @@ fn command_for(
     include_selection: bool,
 ) -> Command {
     let mut command = Command::new(options.cargo_program());
-    command.current_dir(prepared.layout.root());
+    command.current_dir(prepared.cargo_workdir());
+    if let Some(target_dir) = prepared.cargo_target_dir() {
+        command.env("CARGO_TARGET_DIR", target_dir);
+    }
     command.arg(operation.as_str());
     command.args(["--config", &registry_config()]);
     options.append_common(&mut command, include_message_format, include_selection);
@@ -420,11 +432,15 @@ fn command_for(
 pub(crate) fn update(
     manifest: &Path,
     current_dir: &Path,
+    target_dir: Option<&Path>,
     options: &CargoOptions,
 ) -> Result<CargoOutput, Error> {
     validate_update_options(options)?;
     let mut command = Command::new(options.cargo_program());
     command.current_dir(current_dir);
+    if let Some(target_dir) = target_dir {
+        command.env("CARGO_TARGET_DIR", target_dir);
+    }
     command.args(["update", "--config", &registry_config()]);
     for flag in options.lock.flags() {
         command.arg(flag);
@@ -525,7 +541,7 @@ pub(crate) fn build_target(
     let mut command = command_for(prepared, CargoOperation::Build, options, false, false);
     command.args([
         "--manifest-path",
-        &prepared.layout().cargo_manifest().display().to_string(),
+        &prepared.cargo_manifest_path().display().to_string(),
     ]);
     append_target_selection(&mut command, prepared, target);
     command.args([
@@ -536,7 +552,13 @@ pub(crate) fn build_target(
             .filter(|format| format.starts_with("json"))
             .unwrap_or("json-render-diagnostics"),
     ]);
-    run_command(command, CargoOperation::Build)
+    let output = run_command(command, CargoOperation::Build);
+    let sync = prepared.sync_staged_lock();
+    match (output, sync) {
+        (Ok(output), Ok(())) => Ok(output),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+    }
 }
 
 fn append_target_selection(
@@ -550,8 +572,11 @@ fn append_target_selection(
     // those root features remain effective while `--bin` still names the
     // dependency executable. This also keeps the invocation valid for a
     // registry or Git package that is outside the robot workspace.
-    if target.package_id != prepared.root_package.id.to_string() {
-        command.args(["--package", prepared.root_package.id.to_string().as_str()]);
+    if target.package_id != prepared.cargo_root_package().id.to_string() {
+        command.args([
+            "--package",
+            prepared.cargo_root_package().id.to_string().as_str(),
+        ]);
     }
     command.args(["--package", target.package_id.as_str()]);
     command.args(["--bin", target.target.as_str()]);
