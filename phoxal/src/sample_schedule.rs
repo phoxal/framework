@@ -55,7 +55,7 @@ impl SampleSchedule {
     /// Build a schedule from the source's effective period in nanoseconds.
     ///
     /// This is used when a source's cadence is not represented by a floating
-    /// point rate, such as a Webots device whose requested millisecond period
+    /// point rate, such as a hardware device whose requested millisecond period
     /// was quantized to the world's basic time step. When that effective
     /// period is slower than the requested publish cadence, the schedule uses
     /// the source period rather than repeating one observation.

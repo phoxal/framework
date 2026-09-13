@@ -2290,8 +2290,8 @@ fn is_asset_key(key: &str) -> bool {
 fn looks_like_asset(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     [
-        ".xml", ".urdf", ".mjcf", ".mjz", ".obj", ".mtl", ".glb", ".gltf", ".stl", ".png", ".jpg",
-        ".jpeg", ".json", ".yaml", ".yml", ".bin",
+        ".xml", ".mjcf", ".mjz", ".obj", ".mtl", ".glb", ".gltf", ".stl", ".png", ".jpg", ".jpeg",
+        ".json", ".yaml", ".yml", ".bin",
     ]
     .iter()
     .any(|suffix| lower.ends_with(suffix))
