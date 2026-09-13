@@ -2,16 +2,19 @@
 
 `cargo-phoxal` is the canonical Phoxal source-development command.
 
-The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal test`, and reviewed package publication.
+The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, and reviewed package publication.
 
 Each command discovers the nearest robot project, validates explicit composition, resolves source packages through the root Cargo graph, and applies the requested Cargo lock and offline policy.
 
-cargo phoxal build assembles the selected brain and service executables into a deterministic bundle under Cargo's target directory by default, or at `--output <directory>`.
+`cargo phoxal build` assembles the selected brain, service, and component-driver executables and the mandatory supervisor through the root Cargo graph into a deterministic bundle under Cargo's target directory by default, or at `--output <directory>`.
 The bundle includes inspectable manifest and provenance records and is published atomically.
 
-Hardware and simulation process launch are intentionally not exposed by this slice.
-The hardware boundary still needs supervisor process admission over the assembled bundle and its local identity, while simulation needs the independent MuJoCo application and its native provenance.
-The library retains typed local identity/plan primitives for that integration; bundle assembly itself never claims process startup, protocol admission, domain readiness, or physical safety.
+`cargo phoxal run` independently prepares and validates the hardware bundle, then launches the selected supervisor with the isolated `local` scope and `local` supervisor identity.
+It does not launch simulation or claim domain readiness or physical safety.
+
+Ordinary preparation adds the known `phoxal-supervisor` dependency with an unconstrained first-resolution requirement when it is missing, preserving existing manifest content and letting Cargo select the newest compatible package.
+`--locked` and `--frozen` report an actionable initialization error before changing `Cargo.toml` or `Cargo.lock`.
+Every selected runtime executable must expose its exact compiled contract metadata, and authored configuration is checked against that metadata before a bundle is published.
 
 `cargo phoxal publish component <name> --dry-run` and `cargo phoxal publish service <name> --dry-run` select an exact local Cargo package and produce a verified `.crate` archive, review inventory, and SHA-256 sidecar in isolated temporary staging.
 

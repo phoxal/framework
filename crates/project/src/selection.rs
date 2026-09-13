@@ -15,6 +15,10 @@ pub enum TargetRole {
     Service,
     /// A mounted component definition.
     Component,
+    /// A component-owned executable driver.
+    Driver,
+    /// The mandatory supervisor executable.
+    Supervisor,
 }
 
 impl std::fmt::Display for TargetRole {
@@ -23,6 +27,8 @@ impl std::fmt::Display for TargetRole {
             Self::Brain => "brain",
             Self::Service => "service",
             Self::Component => "component",
+            Self::Driver => "driver",
+            Self::Supervisor => "supervisor",
         })
     }
 }
@@ -89,6 +95,24 @@ pub struct SelectedComponent {
     pub package: String,
     /// Package source and provenance class.
     pub source: PackageSource,
+    /// The component-owned driver selected by this instance, when its
+    /// authored `driver` block requests a real process.
+    pub driver: Option<SelectedDriver>,
+}
+
+/// One component-owned driver selected through a resolved Cargo dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedDriver {
+    /// Component-local or root-visible dependency key selecting the driver.
+    pub dependency_key: String,
+    /// Cargo package identity.
+    pub package_id: String,
+    /// Cargo package name.
+    pub package: String,
+    /// Package source and provenance class.
+    pub source: PackageSource,
+    /// Executable selected for this mounted component instance.
+    pub binary: SelectedTarget,
 }
 
 /// The complete Cargo-backed selection made by one validated robot document.
@@ -96,6 +120,8 @@ pub struct SelectedComponent {
 pub struct SourceSelection {
     /// The mandatory root-local brain binary.
     pub brain: SelectedTarget,
+    /// The mandatory supervisor executable resolved from the root graph.
+    pub supervisor: SelectedTarget,
     /// Explicit behavioral service selections in authored map order.
     pub services: BTreeMap<String, SelectedService>,
     /// Mounted component package selections in authored map order.
@@ -122,6 +148,7 @@ pub fn resolve_sources(
     }
 
     let brain = resolve_brain(root, document.brain.as_ref(), metadata)?;
+    let supervisor = resolve_supervisor(root, metadata)?;
     let mut services = BTreeMap::new();
     for (instance, selection) in &document.services {
         let key = selection
@@ -144,6 +171,8 @@ pub fn resolve_sources(
             root,
             metadata,
         )?;
+        let driver =
+            resolve_component_driver(instance, component, &component.component, package, metadata)?;
         components.insert(
             instance.clone(),
             SelectedComponent {
@@ -152,15 +181,141 @@ pub fn resolve_sources(
                 package_id: package.id.to_string(),
                 package: package.name.to_string(),
                 source: package_source(package),
+                driver,
             },
         );
     }
 
     Ok(SourceSelection {
         brain,
+        supervisor,
         services,
         components,
     })
+}
+
+const SUPERVISOR_DEPENDENCY_KEY: &str = "phoxal-supervisor";
+const SUPERVISOR_PACKAGE_NAME: &str = "phoxal-supervisor";
+const SUPERVISOR_BINARY_NAME: &str = "phoxal-supervisor";
+
+fn resolve_supervisor(root: &Package, metadata: &Metadata) -> Result<SelectedTarget, SourceError> {
+    let package = resolve_dependency(
+        TargetRole::Supervisor,
+        "supervisor",
+        SUPERVISOR_DEPENDENCY_KEY,
+        root,
+        metadata,
+    )
+    .map_err(|error| match error {
+        SourceError::DependencyNotDeclared { .. }
+        | SourceError::DependencyWrongKind { .. }
+        | SourceError::DependencyUnresolved { .. } => SourceError::MissingSupervisor {
+            key: SUPERVISOR_DEPENDENCY_KEY.to_owned(),
+        },
+        other => other,
+    })?;
+    if package.name != SUPERVISOR_PACKAGE_NAME {
+        return Err(SourceError::MissingSupervisor {
+            key: SUPERVISOR_DEPENDENCY_KEY.to_owned(),
+        });
+    }
+    let target = package
+        .targets
+        .iter()
+        .find(|target| target.is_bin() && target.name == SUPERVISOR_BINARY_NAME)
+        .ok_or_else(|| SourceError::MissingTarget {
+            role: TargetRole::Supervisor,
+            instance: "supervisor".to_owned(),
+            key: SUPERVISOR_DEPENDENCY_KEY.to_owned(),
+            package: package.name.to_string(),
+            target_kind: format!("binary '{SUPERVISOR_BINARY_NAME}'"),
+        })?;
+    let selected = selected_target(package, target);
+    let enabled = enabled_features(metadata, &package.id);
+    ensure_target_features(TargetRole::Supervisor, "supervisor", &selected, &enabled)?;
+    Ok(selected)
+}
+
+fn resolve_component_driver(
+    instance: &str,
+    component: &crate::document::ComponentInstance,
+    component_dependency_key: &str,
+    component_package: &Package,
+    metadata: &Metadata,
+) -> Result<Option<SelectedDriver>, SourceError> {
+    let Some(driver) = component.driver.as_ref() else {
+        return Ok(None);
+    };
+    if !driver.is_object() {
+        return Err(SourceError::DriverField {
+            instance: instance.to_owned(),
+            field: "driver".to_owned(),
+            message: "must be a mapping when present".to_owned(),
+        });
+    }
+    let dependency_key = driver_string(
+        instance,
+        driver,
+        &["dependency", "implementation", "package"],
+    )?;
+    let binary_name = driver_string(instance, driver, &["binary", "target"])?;
+    let (package, dependency_key) = match dependency_key {
+        Some(key) => (
+            resolve_package_dependency(
+                TargetRole::Driver,
+                instance,
+                &key,
+                component_package,
+                metadata,
+            )?,
+            key,
+        ),
+        None => (component_package, component_dependency_key.to_owned()),
+    };
+    let binary = select_binary(
+        TargetRole::Driver,
+        instance,
+        &dependency_key,
+        package,
+        binary_name.as_deref(),
+    )?;
+    let enabled = enabled_features(metadata, &package.id);
+    ensure_target_features(TargetRole::Driver, instance, &binary, &enabled)?;
+    Ok(Some(SelectedDriver {
+        dependency_key,
+        package_id: package.id.to_string(),
+        package: package.name.to_string(),
+        source: package_source(package),
+        binary,
+    }))
+}
+
+fn driver_string(
+    instance: &str,
+    driver: &serde_json::Value,
+    keys: &[&str],
+) -> Result<Option<String>, SourceError> {
+    let Some(object) = driver.as_object() else {
+        return Ok(None);
+    };
+    for key in keys {
+        if let Some(value) = object.get(*key) {
+            let value = value.as_str().ok_or_else(|| SourceError::DriverField {
+                instance: instance.to_owned(),
+                field: (*key).to_owned(),
+                message: "must be a string when present".to_owned(),
+            })?;
+            if value.is_empty() {
+                return Err(SourceError::DriverField {
+                    instance: instance.to_owned(),
+                    field: (*key).to_owned(),
+                    message: "must not be empty".to_owned(),
+                });
+            }
+            return Ok(Some(value.to_owned()));
+        }
+    }
+    Ok(None)
 }
 
 fn resolve_brain(
@@ -272,7 +427,17 @@ fn resolve_dependency<'a>(
     root: &'a Package,
     metadata: &'a Metadata,
 ) -> Result<&'a Package, SourceError> {
-    let matching = root
+    resolve_package_dependency(role, instance, key, root, metadata)
+}
+
+fn resolve_package_dependency<'a>(
+    role: TargetRole,
+    instance: &str,
+    key: &str,
+    owner: &'a Package,
+    metadata: &'a Metadata,
+) -> Result<&'a Package, SourceError> {
+    let matching = owner
         .dependencies
         .iter()
         .filter(|dependency| dependency_key(dependency) == key)
@@ -299,7 +464,7 @@ fn resolve_dependency<'a>(
     let root_node = metadata
         .resolve
         .as_ref()
-        .and_then(|resolve| resolve.nodes.iter().find(|node| node.id == root.id));
+        .and_then(|resolve| resolve.nodes.iter().find(|node| node.id == owner.id));
     let node_dependency = root_node.and_then(|node| {
         node.deps.iter().find(|node_dependency| {
             node_dependency.name == key

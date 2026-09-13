@@ -56,6 +56,14 @@ pub enum ValidationError {
         /// Authored map containing the identity.
         field: String,
     },
+    /// A service and component tried to use the same runtime instance id.
+    #[error(
+        "service and component composition both use instance id '{instance}'; runtime identities must be unique"
+    )]
+    InstanceCollision {
+        /// Conflicting instance identity.
+        instance: String,
+    },
     /// A service or component source key is empty.
     #[error("{field} must not be empty")]
     EmptySourceKey {
@@ -122,11 +130,26 @@ pub enum ValidationError {
         /// Specific service error.
         message: String,
     },
+    /// A component driver declaration is not a mapping or has an invalid
+    /// authored configuration value.
+    #[error("robot.components.{component}.driver: {message}")]
+    InvalidDriver {
+        /// Component instance id.
+        component: String,
+        /// Specific driver error.
+        message: String,
+    },
 }
 
 /// A source-selection failure after Cargo has resolved the project graph.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SourceError {
+    /// The mandatory supervisor package could not be resolved from the root
+    /// Cargo graph.
+    #[error(
+        "supervisor dependency key '{key}' is required by the project but is not a resolved normal dependency"
+    )]
+    MissingSupervisor { key: String },
     /// A composition key does not name a direct normal Cargo dependency.
     #[error(
         "{role} '{instance}' selects dependency key '{key}', but that key is not a normal direct dependency in Cargo.toml"
@@ -219,6 +242,16 @@ pub enum SourceError {
         /// Undefined feature names.
         features: String,
     },
+    /// A component driver selector used an invalid field value.
+    #[error("driver selection for component '{instance}' has invalid {field}: {message}")]
+    DriverField {
+        /// Mounted component instance.
+        instance: String,
+        /// Selector field.
+        field: String,
+        /// Specific field diagnostic.
+        message: String,
+    },
     /// A root-local brain could not be identified from the root package.
     #[error(
         "the robot root package has no eligible brain binary; add one binary target or set brain.binary"
@@ -310,6 +343,43 @@ pub enum Error {
         /// Cargo metadata failure.
         source: cargo_metadata::Error,
     },
+    /// An ordinary preparation would add a known required dependency, but the
+    /// requested lock policy forbids changing the authored graph.
+    #[error(
+        "project initialization is required: add normal dependency '{dependency}' to {path}, then rerun without {lock_mode}; locked preparation never mutates Cargo.toml"
+    )]
+    MissingInitialization {
+        /// Root Cargo manifest that would receive the dependency.
+        path: PathBuf,
+        /// Exact dependency key required by the tool.
+        dependency: String,
+        /// Lock policy that prevented initialization.
+        lock_mode: &'static str,
+    },
+    /// Updating the authored manifest for automatic preparation failed.
+    #[error("cannot prepare Cargo manifest {path}: {message}")]
+    ManifestPreparation {
+        /// Root Cargo manifest.
+        path: PathBuf,
+        /// Manifest edit diagnostic.
+        message: String,
+    },
+    /// Writing an automatically prepared manifest failed.
+    #[error("cannot write prepared Cargo manifest {path}: {source}")]
+    ManifestWrite {
+        /// Root Cargo manifest.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
+    /// Restoring a manifest after an unsuccessful automatic preparation failed.
+    #[error("cannot restore Cargo manifest {path} after failed preparation: {source}")]
+    ManifestRestore {
+        /// Root Cargo manifest.
+        path: PathBuf,
+        /// Filesystem failure.
+        source: std::io::Error,
+    },
     /// A selected source could not be resolved.
     #[error("source selection failed: {0}")]
     Source(#[from] SourceError),
@@ -348,6 +418,44 @@ pub enum Error {
         /// Selected Cargo target.
         target: String,
         /// Artifact-stream diagnostic.
+        message: String,
+    },
+    /// A selected execution target did not expose its compiled Runtime
+    /// contract metadata.
+    #[error(
+        "selected {role} '{instance}' package '{package}' binary '{target}' has no embedded Phoxal Runtime contract metadata"
+    )]
+    MissingArtifactContract {
+        /// Selected graph role.
+        role: String,
+        /// Runtime instance identity.
+        instance: String,
+        /// Cargo package name.
+        package: String,
+        /// Cargo binary target.
+        target: String,
+    },
+    /// A selected service configuration did not satisfy its exact compiled
+    /// Runtime::Config schema.
+    #[error(
+        "configuration for {role} '{instance}' in {field} is invalid for package '{package}': {message}"
+    )]
+    ConfigurationInvalid {
+        /// Selected graph role.
+        role: String,
+        /// Runtime instance identity.
+        instance: String,
+        /// Authored configuration path.
+        field: String,
+        /// Selected package name.
+        package: String,
+        /// Schema or instance diagnostic.
+        message: String,
+    },
+    /// Building or launching the selected supervisor failed.
+    #[error("supervisor launch failed: {message}")]
+    SupervisorLaunch {
+        /// Launch diagnostic.
         message: String,
     },
     /// A reported or authored artifact was not a safe regular file.

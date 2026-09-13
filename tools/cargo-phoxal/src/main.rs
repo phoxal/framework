@@ -39,8 +39,19 @@ fn run() -> Result<(), phoxal_project::Error> {
                     let output = arguments.output.clone();
                     let options = arguments.into_options();
                     let prepared = project.prepare(&options)?;
+                    print_preparation(&prepared);
                     let output = output.unwrap_or_else(|| prepared.default_bundle_path());
                     let bundle = prepared.build_bundle(&options, output)?;
+                    println!("compiled bundle: {}", bundle.root().display());
+                    Ok(())
+                }
+                Command::Run(arguments) => {
+                    let output = arguments.output.clone();
+                    let options = arguments.into_options();
+                    let prepared = project.prepare(&options)?;
+                    print_preparation(&prepared);
+                    let output = output.unwrap_or_else(|| prepared.default_bundle_path());
+                    let bundle = prepared.run_local(&options, output)?;
                     println!("compiled bundle: {}", bundle.root().display());
                     Ok(())
                 }
@@ -121,11 +132,26 @@ fn run_cargo(
     options: CargoOptions,
 ) -> Result<(), phoxal_project::Error> {
     let prepared = project.prepare(&options)?;
-    for output in prepared.run(operation, &options)? {
+    print_preparation(&prepared);
+    let outputs = if operation == CargoOperation::Check {
+        prepared.check(&options)?
+    } else {
+        prepared.run(operation, &options)?
+    };
+    for output in outputs {
         print_bytes(&output.stdout, false);
         print_bytes(&output.stderr, true);
     }
     Ok(())
+}
+
+fn print_preparation(prepared: &phoxal_project::PreparedProject) {
+    for change in prepared.preparation_changes() {
+        eprintln!(
+            "prepared dependency {} ({})",
+            change.dependency, change.requirement
+        );
+    }
 }
 
 fn print_bytes(bytes: &[u8], stderr: bool) {
@@ -156,6 +182,8 @@ enum Command {
     Check(CommandArgs),
     /// Prepare the project, validate composition, and build selected targets.
     Build(BuildArgs),
+    /// Prepare, build, validate, and launch the selected supervisor locally.
+    Run(BuildArgs),
     /// Prepare the project and run tests for the root robot package.
     Test(TestArgs),
     /// Prepare an authored component or service package for registry review.
@@ -348,6 +376,29 @@ mod tests {
         ])
         .expect("build command parses");
         assert!(matches!(parsed.command, Command::Build(_)));
+    }
+
+    #[test]
+    fn run_boundary_preserves_the_build_output_and_cargo_argument_surface() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "run",
+            "--output",
+            "target/run-bundle",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+            "--",
+            "--release",
+        ])
+        .expect("run command parses");
+        let arguments = match parsed.command {
+            Command::Run(arguments) => arguments,
+            _ => panic!("the run command parsed as a different variant"),
+        };
+        assert_eq!(arguments.output, Some(PathBuf::from("target/run-bundle")));
+        let options = arguments.into_options();
+        assert_eq!(options.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+        assert_eq!(options.cargo_args, [OsString::from("--release")]);
     }
 
     #[test]

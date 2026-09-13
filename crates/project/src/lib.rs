@@ -10,9 +10,11 @@ mod cargo;
 mod discovery;
 mod document;
 mod error;
+mod preparation;
 mod publication;
 mod selection;
 mod submission;
+mod validation;
 
 pub use artifact::{
     ArtifactContract, ArtifactSummary, DescriptorInfo, DescriptorSummary, InputKind, InputRecord,
@@ -32,17 +34,19 @@ pub use document::{
 pub use error::{
     DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,
 };
+pub use preparation::PreparationChange;
 pub use publication::{
     PUBLICATION_SCHEMA, PublicationFile, PublicationKind, PublicationOptions, PublicationResult,
     prepare_publication,
 };
 pub use selection::{
-    PackageSource, SelectedComponent, SelectedService, SelectedTarget, SourceSelection, TargetRole,
-    resolve_sources,
+    PackageSource, SelectedComponent, SelectedDriver, SelectedService, SelectedTarget,
+    SourceSelection, TargetRole, resolve_sources,
 };
 pub use submission::{DeviceAuthorization, SubmissionResult, submit_publication};
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// A discovered project with its authored document and root Cargo manifest.
 #[derive(Debug, Clone)]
@@ -99,22 +103,44 @@ impl Project {
         &self.document
     }
 
-    /// Prepares Cargo metadata and resolves all explicit sources without
-    /// running a compiler or mutating any authored source file directly.
+    /// Prepares the authored Cargo graph and resolves all explicit sources.
+    ///
+    /// Ordinary preparation may add the known mandatory supervisor dependency
+    /// and let Cargo update the owning workspace lock.  Locked and frozen
+    /// preparation refuses that addition before changing either file.
     pub fn prepare(&self, options: &CargoOptions) -> Result<PreparedProject, Error> {
-        let metadata = cargo::load_metadata(self.layout.cargo_manifest(), options)?;
-        let sources = resolve_sources(&self.document, &metadata, self.layout.cargo_manifest())?;
-        let root_package = metadata
-            .root_package()
-            .cloned()
-            .ok_or(SourceError::MissingBrain)?;
+        let preparation = preparation::ensure_required_dependencies(&self.layout, options)?;
+        let metadata = match cargo::load_metadata(self.layout.cargo_manifest(), options) {
+            Ok(metadata) => metadata,
+            Err(error) => return rollback_preparation(preparation, error),
+        };
+        let sources = match resolve_sources(&self.document, &metadata, self.layout.cargo_manifest())
+        {
+            Ok(sources) => sources,
+            Err(error) => return rollback_preparation(preparation, error.into()),
+        };
+        let root_package = match metadata.root_package().cloned() {
+            Some(package) => package,
+            None => return rollback_preparation(preparation, SourceError::MissingBrain.into()),
+        };
         Ok(PreparedProject {
             layout: self.layout.clone(),
             document: self.document.clone(),
             metadata,
             root_package,
             sources,
+            preparation,
         })
+    }
+}
+
+fn rollback_preparation<T>(
+    preparation: preparation::ManifestTransaction,
+    error: Error,
+) -> Result<T, Error> {
+    match preparation.rollback() {
+        Ok(()) => Err(error),
+        Err(restore) => Err(restore),
     }
 }
 
@@ -126,6 +152,7 @@ pub struct PreparedProject {
     metadata: cargo_metadata::Metadata,
     root_package: cargo_metadata::Package,
     sources: SourceSelection,
+    preparation: preparation::ManifestTransaction,
 }
 
 impl PreparedProject {
@@ -171,6 +198,12 @@ impl PreparedProject {
         &self.sources
     }
 
+    /// Returns the automatic dependency additions made during preparation.
+    #[must_use]
+    pub fn preparation_changes(&self) -> &[PreparationChange] {
+        self.preparation.changes()
+    }
+
     /// Runs one supported Cargo source-development operation.
     pub fn run(
         &self,
@@ -180,17 +213,75 @@ impl PreparedProject {
         cargo::run(self, operation, options)
     }
 
+    /// Runs Cargo check and validates the exact compiled Runtime contracts and
+    /// authored configuration for every selected execution target.
+    pub fn check(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
+        let outputs = self.run(CargoOperation::Check, options)?;
+        validation::validate_selected_contracts(self, options)?;
+        self.build_supervisor(options)?;
+        Ok(outputs)
+    }
+
     /// Builds and atomically publishes the complete selected executable bundle.
     ///
     /// The output is a source-side compiled directory containing the selected
-    /// brain and service binaries plus inspectable manifest and provenance
-    /// records. It does not install or launch the bundle.
+    /// brain, service, and component-driver binaries plus inspectable manifest
+    /// and provenance records. The selected supervisor is built through the
+    /// same graph but is launched separately by `run_local`.
     pub fn build_bundle(
         &self,
         options: &CargoOptions,
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
+        self.build_supervisor(options)?;
         bundle::assemble(self, options, output)
+    }
+
+    /// Builds the exact supervisor binary selected through the root Cargo
+    /// graph and returns Cargo's reported executable path.
+    pub fn build_supervisor(&self, options: &CargoOptions) -> Result<PathBuf, Error> {
+        let output = cargo::build_target(self, &self.sources.supervisor, options)?;
+        let executable = cargo::artifact_path(&output.stdout, &self.sources.supervisor)?;
+        let metadata =
+            std::fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
+                path: executable.clone(),
+                source,
+            })?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(Error::ArtifactInvalid {
+                path: executable,
+                message: "Cargo reported a non-regular supervisor executable".to_owned(),
+            });
+        }
+        Ok(executable)
+    }
+
+    /// Builds an immutable bundle and launches its selected supervisor in the
+    /// isolated local namespace.
+    pub fn run_local(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+    ) -> Result<CompiledBundle, Error> {
+        let supervisor = self.build_supervisor(options)?;
+        let bundle = bundle::assemble(self, options, output)?;
+        let status = Command::new(&supervisor)
+            .arg(bundle.root())
+            .args(["--scope", "local", "--supervisor-id", "local"])
+            .status()
+            .map_err(|source| Error::SupervisorLaunch {
+                message: format!("cannot start {}: {source}", supervisor.display()),
+            })?;
+        if !status.success() {
+            let status = status.code().map_or_else(
+                || "terminated by signal".to_owned(),
+                |code| code.to_string(),
+            );
+            return Err(Error::SupervisorLaunch {
+                message: format!("{} exited with status {status}", supervisor.display()),
+            });
+        }
+        Ok(bundle)
     }
 
     /// Returns the default bundle path under Cargo's target directory.
@@ -239,6 +330,17 @@ impl PreparedProject {
                 .iter()
                 .map(|(instance, service)| (instance.clone(), &service.binary)),
         );
+        targets.extend(
+            self.sources
+                .components
+                .iter()
+                .filter_map(|(instance, component)| {
+                    component
+                        .driver
+                        .as_ref()
+                        .map(|driver| (instance.clone(), &driver.binary))
+                }),
+        );
         targets
     }
 
@@ -250,7 +352,32 @@ impl PreparedProject {
                 .values()
                 .map(|service| &service.binary),
         );
+        targets.extend(
+            self.sources
+                .components
+                .values()
+                .filter_map(|component| component.driver.as_ref().map(|driver| &driver.binary)),
+        );
         targets
+    }
+
+    pub(crate) fn executable_role(&self, instance: &str) -> String {
+        if instance == "brain" {
+            return "brain".to_owned();
+        }
+        if self.sources.services.contains_key(instance) {
+            return "service".to_owned();
+        }
+        if self
+            .sources
+            .components
+            .get(instance)
+            .and_then(|component| component.driver.as_ref())
+            .is_some()
+        {
+            return "driver".to_owned();
+        }
+        "execution".to_owned()
     }
 }
 

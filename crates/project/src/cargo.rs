@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
 
-use cargo_metadata::{CargoOpt, Metadata, MetadataCommand};
+use cargo_metadata::{CargoOpt, Message, Metadata, MetadataCommand};
 
 use crate::error::Error;
 
@@ -93,11 +93,6 @@ impl CargoOptions {
         {
             return Err(Error::InvalidOptions {
                 message: "--features cannot contain an empty feature name".to_owned(),
-            });
-        }
-        if self.lock.is_offline() && self.offline {
-            return Err(Error::InvalidOptions {
-                message: "--frozen already implies --offline".to_owned(),
             });
         }
         Ok(())
@@ -228,8 +223,7 @@ pub(crate) fn run(
                     "--manifest-path",
                     &prepared.layout.cargo_manifest().display().to_string(),
                 ]);
-                command.args(["--package", target.package_id.as_str()]);
-                command.args(["--bin", target.target.as_str()]);
+                append_target_selection(&mut command, prepared, target);
                 outputs.push(run_command(command, operation)?);
             }
         }
@@ -264,8 +258,7 @@ pub(crate) fn build_target(
         "--manifest-path",
         &prepared.layout().cargo_manifest().display().to_string(),
     ]);
-    command.args(["--package", target.package_id.as_str()]);
-    command.args(["--bin", target.target.as_str()]);
+    append_target_selection(&mut command, prepared, target);
     command.args([
         "--message-format",
         options
@@ -275,6 +268,55 @@ pub(crate) fn build_target(
             .unwrap_or("json-render-diagnostics"),
     ]);
     run_command(command, CargoOperation::Build)
+}
+
+fn append_target_selection(
+    command: &mut Command,
+    prepared: &crate::PreparedProject,
+    target: &crate::SelectedTarget,
+) {
+    // Cargo only permits `--features` for the selected workspace package. A
+    // root feature may nevertheless activate an optional dependency whose
+    // binary we need to build. Select both packages through the root graph so
+    // those root features remain effective while `--bin` still names the
+    // dependency executable. This also keeps the invocation valid for a
+    // registry or Git package that is outside the robot workspace.
+    if target.package_id != prepared.root_package.id.to_string() {
+        command.args(["--package", prepared.root_package.id.to_string().as_str()]);
+    }
+    command.args(["--package", target.package_id.as_str()]);
+    command.args(["--bin", target.target.as_str()]);
+}
+
+/// Extracts one selected executable from Cargo's JSON compiler-artifact stream.
+pub(crate) fn artifact_path(
+    stdout: &[u8],
+    target: &crate::SelectedTarget,
+) -> Result<std::path::PathBuf, Error> {
+    let mut executable = None;
+    for line in stdout.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let message =
+            serde_json::from_slice::<Message>(line).map_err(|error| Error::ArtifactCapture {
+                package: target.package.clone(),
+                target: target.target.clone(),
+                message: format!("invalid Cargo JSON message: {error}"),
+            })?;
+        if let Message::CompilerArtifact(artifact) = message
+            && artifact.package_id.to_string() == target.package_id
+            && artifact.target.name == target.target
+            && artifact.target.is_bin()
+        {
+            executable = artifact.executable.map(|path| path.into_std_path_buf());
+        }
+    }
+    executable.ok_or_else(|| Error::ArtifactCapture {
+        package: target.package.clone(),
+        target: target.target.clone(),
+        message: "no compiler-artifact executable matched the selected package".to_owned(),
+    })
 }
 
 fn run_command(mut command: Command, operation: CargoOperation) -> Result<CargoOutput, Error> {

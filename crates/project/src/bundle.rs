@@ -11,13 +11,13 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
-use cargo_metadata::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::artifact::{self, ArtifactContract, ArtifactSummary};
+use crate::artifact::{self, ArtifactSummary};
 use crate::cargo;
-use crate::selection::{PackageSource, SelectedTarget};
+use crate::selection::PackageSource;
+use crate::validation;
 use crate::{CargoOptions, Error, PreparedProject, RobotDocument};
 
 /// The compiled project-bundle schema emitted by this source compiler.
@@ -98,7 +98,7 @@ pub struct BundlePackage {
 /// One executable copied into bin/ in the compiled bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleExecutable {
-    /// brain or service.
+    /// brain, service, or component driver.
     pub role: String,
     /// Runtime instance identity used as the bundle filename.
     pub instance: String,
@@ -213,15 +213,6 @@ struct StagedResource {
     bytes: Vec<u8>,
 }
 
-type ArtifactKey = (String, String);
-type BuiltArtifact = (
-    SelectedTarget,
-    PathBuf,
-    FileDigest,
-    Option<ArtifactContract>,
-);
-type BuiltArtifacts = BTreeMap<ArtifactKey, BuiltArtifact>;
-
 /// A local identity used by the explicit run and simulation boundaries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalIdentity {
@@ -313,7 +304,7 @@ pub(crate) fn assemble(
             continue;
         }
         let output = cargo::build_target(prepared, target, options)?;
-        let executable = cargo_artifact(&output.stdout, target)?;
+        let executable = cargo::artifact_path(&output.stdout, target)?;
         let metadata = fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
             path: executable.clone(),
             source,
@@ -325,16 +316,30 @@ pub(crate) fn assemble(
             });
         }
         let digest = digest_file(&executable)?;
-        let contract = match artifact::inspect_file(&executable) {
-            Ok(contract) => Some(contract),
-            Err(artifact::Error::MissingRecord) => None,
-            Err(error) => {
-                return Err(Error::ArtifactInvalid {
-                    path: executable,
+        let instance = prepared
+            .assembly_targets()
+            .into_iter()
+            .find(|(_, selected)| {
+                selected.package_id == target.package_id && selected.target == target.target
+            })
+            .map(|(instance, _)| instance)
+            .unwrap_or_else(|| target.target.clone());
+        let role = prepared.executable_role(&instance);
+        let contract = artifact::inspect_file(&executable).map_err(|error| {
+            if matches!(error, artifact::Error::MissingRecord) {
+                Error::MissingArtifactContract {
+                    role: role.clone(),
+                    instance: instance.clone(),
+                    package: target.package.clone(),
+                    target: target.target.clone(),
+                }
+            } else {
+                Error::ArtifactInvalid {
+                    path: executable.clone(),
                     message: error.to_string(),
-                });
+                }
             }
-        };
+        })?;
         artifacts.insert(key, (target.clone(), executable, digest, contract));
     }
 
@@ -352,11 +357,7 @@ pub(crate) fn assemble(
         let destination = staged_root.join(&relative);
         copy_executable(source, &destination)?;
         executable_records.push(BundleExecutable {
-            role: if instance == "brain" {
-                "brain".to_owned()
-            } else {
-                "service".to_owned()
-            },
+            role: prepared.executable_role(&instance),
             instance: instance.clone(),
             package_id: built_target.package_id.clone(),
             package: built_target.package.clone(),
@@ -364,12 +365,17 @@ pub(crate) fn assemble(
             path: relative,
             bytes: digest.bytes,
             sha256: digest.sha256.clone(),
-            artifact: contract.as_ref().map(|value| value.summary().into()),
+            artifact: Some(contract.summary().into()),
         });
     }
     executable_records.sort_by(|left, right| left.path.cmp(&right.path));
 
-    validate_bundle_connections(prepared, &artifacts)?;
+    let contract_map = artifacts
+        .iter()
+        .map(|(key, (_, _, _, contract))| (key.clone(), contract.clone()))
+        .collect::<BTreeMap<_, _>>();
+    validation::validate_configurations(prepared, &contract_map)?;
+    validation::validate_connections(prepared, &contract_map)?;
 
     let mut components = prepared
         .sources()
@@ -693,28 +699,6 @@ fn invalid_model(root: &Path, relative: &Path, message: impl Into<String>) -> Er
     }
 }
 
-fn validate_bundle_connections(
-    prepared: &PreparedProject,
-    artifacts: &BuiltArtifacts,
-) -> Result<(), Error> {
-    let mut contracts = BTreeMap::new();
-    for (instance, target) in prepared.assembly_targets() {
-        let key = (target.package_id.clone(), target.target.clone());
-        if let Some(Some(contract)) = artifacts.get(&key).map(|entry| entry.3.as_ref()) {
-            contracts.insert(instance, contract.clone());
-        }
-    }
-    if contracts.is_empty() || prepared.document().connections.is_empty() {
-        return Ok(());
-    }
-    artifact::validate_connected_endpoints(prepared.document(), &contracts).map_err(|error| {
-        Error::ArtifactInvalid {
-            path: prepared.layout().robot_manifest().to_owned(),
-            message: error.to_string(),
-        }
-    })
-}
-
 fn optional_digest(path: &Path) -> Result<Option<String>, Error> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(Some(digest_file(path)?.sha256)),
@@ -728,33 +712,6 @@ fn optional_digest(path: &Path) -> Result<Option<String>, Error> {
             source,
         }),
     }
-}
-
-fn cargo_artifact(stdout: &[u8], target: &SelectedTarget) -> Result<PathBuf, Error> {
-    let mut executable = None;
-    for line in stdout.split(|byte| *byte == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let message =
-            serde_json::from_slice::<Message>(line).map_err(|error| Error::ArtifactCapture {
-                package: target.package.clone(),
-                target: target.target.clone(),
-                message: format!("invalid Cargo JSON message: {error}"),
-            })?;
-        if let Message::CompilerArtifact(artifact) = message
-            && artifact.package_id.to_string() == target.package_id
-            && artifact.target.name == target.target
-            && artifact.target.is_bin()
-        {
-            executable = artifact.executable.map(|path| path.into_std_path_buf());
-        }
-    }
-    executable.ok_or_else(|| Error::ArtifactCapture {
-        package: target.package.clone(),
-        target: target.target.clone(),
-        message: "no compiler-artifact executable matched the selected package".to_owned(),
-    })
 }
 
 #[derive(Debug, Clone)]

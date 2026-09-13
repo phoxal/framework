@@ -84,6 +84,11 @@ impl RobotDocument {
 
         for (instance, component) in &self.robot.components {
             validate_identifier(&format!("robot.components.{instance}"), instance, errors);
+            if self.services.contains_key(instance) {
+                errors.push(ValidationError::InstanceCollision {
+                    instance: instance.clone(),
+                });
+            }
             if instance == "brain" {
                 errors.push(ValidationError::ReservedBrainId {
                     field: "robot.components".to_owned(),
@@ -110,6 +115,22 @@ impl RobotDocument {
                     &format!("robot.components.{instance}.config"),
                     errors,
                 );
+            }
+            if let Some(driver) = &component.driver {
+                let Some(driver) = driver.as_object() else {
+                    errors.push(ValidationError::InvalidDriver {
+                        component: instance.clone(),
+                        message: "must be a mapping when present".to_owned(),
+                    });
+                    continue;
+                };
+                if let Some(config) = driver.get("config") {
+                    validate_config_value(
+                        config,
+                        &format!("robot.components.{instance}.driver.config"),
+                        errors,
+                    );
+                }
             }
         }
     }
