@@ -2383,6 +2383,7 @@ dependencies = [
  "phoxal-fixture",
  "phoxal-macros",
  "phoxal-port",
+ "phoxal-project",
  "prost",
  "rmp-serde",
  "schemars 1.2.1",

@@ -184,6 +184,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 # thing both can reach; a versionless one is stripped on publish. It depends on
 # this crate in turn, which is a dev-dependency cycle Cargo permits.
 phoxal-fixture = { workspace = true }
+phoxal-project = { workspace = true }
 # `tests/bus_frozen_wire_protocol.rs` reads the resolved `zenoh-protocol` out of
 # the graph Cargo actually compiles, and
 # `tests/authoring_workspace_build_requirements.rs` reads every workspace
