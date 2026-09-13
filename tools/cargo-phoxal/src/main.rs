@@ -257,6 +257,7 @@ fn diagnostic_path(error: &phoxal_project::Error) -> Option<PathBuf> {
         | phoxal_project::Error::InvalidOptions { .. }
         | phoxal_project::Error::ArtifactCapture { .. }
         | phoxal_project::Error::MissingArtifactContract { .. }
+        | phoxal_project::Error::SimulationInvalid { .. }
         | phoxal_project::Error::BundleSourceChanged { .. }
         | phoxal_project::Error::SupervisorLaunch { .. }
         | phoxal_project::Error::ArtifactInvalid { .. }
