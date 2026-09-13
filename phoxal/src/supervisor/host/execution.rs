@@ -69,6 +69,18 @@ struct RuntimeInstance {
     accepted: Subscriber,
     failures: Subscriber,
     reset_response: Subscriber,
+    delivery_ack: Subscriber,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ExpectedDelivery {
+    source: String,
+    target: String,
+    port: String,
+    direction: String,
+    sequence: u64,
+    item: u32,
+    bytes: u64,
 }
 
 struct BoundaryState {
@@ -84,6 +96,10 @@ struct ProtocolInner {
     execution_id: String,
     state: ExecutionState,
     instances: Vec<RuntimeInstance>,
+    artifacts: BTreeMap<String, ArtifactRuntime>,
+    connections: BTreeMap<String, serde_json::Value>,
+    delivery_routes: BTreeMap<(String, String, String), BTreeSet<String>>,
+    request_routes: BTreeSet<(String, String, String)>,
     boundary: Mutex<BoundaryState>,
     failed: CancellationToken,
 }
@@ -112,6 +128,7 @@ impl RuntimeExecutionProtocol {
         state: ExecutionState,
     ) -> Result<Self> {
         let mut instances = Vec::new();
+        let mut artifacts = BTreeMap::<String, ArtifactRuntime>::new();
         for executable in source.executables() {
             let instance = executable.instance().to_owned();
             let digest = decode_digest(executable.sha256())
@@ -121,6 +138,7 @@ impl RuntimeExecutionProtocol {
                 .with_context(|| format!("runtime `{instance}` has no artifact contract"))?;
             let artifact: ArtifactSummary = serde_json::from_value(artifact.clone())
                 .with_context(|| format!("runtime `{instance}` artifact contract is invalid"))?;
+            artifacts.insert(instance.clone(), artifact.runtime.clone());
             let period_ms = artifact
                 .runtime
                 .period_ms
@@ -144,19 +162,27 @@ impl RuntimeExecutionProtocol {
                 .map(|input| input.port.clone().unwrap_or_else(|| input.name.clone()))
                 .collect::<BTreeSet<_>>();
             let input_sources = input_sources(source, &instance, &input_ports)?;
-            let product_ports = artifact
+            let mut product_ports = artifact
                 .runtime
                 .transient_outputs
                 .iter()
                 .chain(artifact.runtime.service_outputs.iter())
-                .filter(|output| {
-                    matches!(
-                        output.kind.as_str(),
-                        "state" | "sample" | "event" | "stream" | "read"
-                    )
-                })
                 .map(|output| output.port.clone().unwrap_or_else(|| output.name.clone()))
                 .collect::<BTreeSet<_>>();
+            // A Commands reply is emitted through the target command input's
+            // descriptor even though the reply output record has no public
+            // `port` field.  Keep that exact endpoint admissible for the
+            // compact product summary when a reply is actually produced.
+            for input in &artifact.runtime.inputs {
+                if input.kind == "commands"
+                    && artifact.runtime.service_outputs.iter().any(|output| {
+                        output.kind == "reply"
+                            && output.input.as_deref() == Some(input.name.as_str())
+                    })
+                {
+                    product_ports.insert(input.port.clone().unwrap_or_else(|| input.name.clone()));
+                }
+            }
             let actuation_ports = artifact
                 .runtime
                 .transient_outputs
@@ -184,6 +210,7 @@ impl RuntimeExecutionProtocol {
             let accepted = declare(&bus, &instance, "accepted").await?;
             let failures = declare(&bus, &instance, "failure").await?;
             let reset_response = declare(&bus, &instance, "reset-response").await?;
+            let delivery_ack = declare(&bus, &instance, "delivery-ack").await?;
             instances.push(RuntimeInstance {
                 instance,
                 digest,
@@ -199,14 +226,21 @@ impl RuntimeExecutionProtocol {
                 accepted,
                 failures,
                 reset_response,
+                delivery_ack,
             });
         }
+        let (delivery_routes, request_routes) =
+            graph_delivery_routes(source.connections(), &artifacts)?;
         Ok(Self {
             inner: Arc::new(ProtocolInner {
                 execution_id: bus.execution().to_string(),
                 bus,
                 state: state.clone(),
                 instances,
+                artifacts,
+                connections: source.connections().clone(),
+                delivery_routes,
+                request_routes,
                 boundary: Mutex::new(BoundaryState {
                     mode: RuntimeExecutionMode::Hardware,
                     quantum_ns: 0,
@@ -231,6 +265,14 @@ impl RuntimeExecutionProtocol {
         }
         if matches!(mode, RuntimeExecutionMode::Hardware) && quantum_ns != 0 {
             bail!("hardware execution cannot carry a simulation quantum");
+        }
+        if matches!(mode, RuntimeExecutionMode::Controlled) {
+            validate_controlled_capacity(
+                &self.inner.instances,
+                &self.inner.artifacts,
+                &self.inner.connections,
+                quantum_ns,
+            )?;
         }
         for runtime in &self.inner.instances {
             if matches!(mode, RuntimeExecutionMode::Controlled)
@@ -314,7 +356,11 @@ impl RuntimeExecutionProtocol {
             artifact_digest: runtime.digest.clone(),
             required_contracts: vec![wire::ContractRequirement {
                 protocol: "phoxal.execution.v1".to_owned(),
-                capabilities: vec!["invocation".to_owned(), "reset".to_owned()],
+                capabilities: vec![
+                    "invocation".to_owned(),
+                    "reset".to_owned(),
+                    "delivery-ack".to_owned(),
+                ],
             }],
             mode: mode.wire() as i32,
             quantum_ns,
@@ -454,6 +500,31 @@ impl RuntimeExecutionProtocol {
                     return self.fail_boundary(&mut boundary, request.boundary, error);
                 }
             };
+            let deliveries = match expected_deliveries(
+                runtime,
+                &accepted,
+                &self.inner.delivery_routes,
+                &self.inner.request_routes,
+            ) {
+                Ok(deliveries) => deliveries,
+                Err(error) => {
+                    return self.fail_boundary(&mut boundary, request.boundary, error);
+                }
+            };
+            if let Err(error) = wait_delivery_acknowledgements(
+                &runtime.delivery_ack,
+                &runtime.failures,
+                &self.inner.execution_id,
+                &boundary.timeline_id,
+                &runtime.instance,
+                request.boundary,
+                &deliveries,
+                timeout,
+            )
+            .await
+            {
+                return self.fail_boundary(&mut boundary, request.boundary, error);
+            }
             actuations.extend(accepted_actuations.into_iter().map(|actuation| {
                 crate::communication::simulation::Actuation {
                     service_instance: runtime.instance.clone(),
@@ -463,11 +534,6 @@ impl RuntimeExecutionProtocol {
                 }
             }));
         }
-        // Input receipts prove what each due runtime froze, but they do not
-        // prove receiver queue admission for a provider or graph product.
-        // That requires a separate route acknowledgement leg and is kept out
-        // of this protocol until the receiver can acknowledge the exact
-        // source/port/sequence/boundary without coupling it to due selection.
         let response = AdvanceResponse {
             completed_boundary: target,
             actuation: actuations,
@@ -614,6 +680,206 @@ fn input_sources(
     Ok(providers)
 }
 
+fn connection_source_values<'a>(
+    consumer: &str,
+    value: &'a serde_json::Value,
+) -> Result<Vec<&'a str>> {
+    match value {
+        serde_json::Value::String(source) => Ok(vec![source.as_str()]),
+        serde_json::Value::Array(sources) => sources
+            .iter()
+            .map(|source| {
+                source.as_str().with_context(|| {
+                    format!("connection `{consumer}` contains a non-string source")
+                })
+            })
+            .collect(),
+        _ => bail!("connection `{consumer}` must contain a source or source list"),
+    }
+}
+
+fn graph_delivery_routes(
+    connections: &BTreeMap<String, serde_json::Value>,
+    artifacts: &BTreeMap<String, ArtifactRuntime>,
+) -> Result<(
+    BTreeMap<(String, String, String), BTreeSet<String>>,
+    BTreeSet<(String, String, String)>,
+)> {
+    let mut routes = BTreeMap::<(String, String, String), BTreeSet<String>>::new();
+    let mut request_routes = BTreeSet::<(String, String, String)>::new();
+    for (consumer, source_values) in connections {
+        let (consumer_instance, consumer_port) = consumer
+            .split_once('.')
+            .with_context(|| format!("connection consumer `{consumer}` has no port separator"))?;
+        if consumer_instance.is_empty() || consumer_port.is_empty() {
+            bail!("connection consumer `{consumer}` has an empty instance or port");
+        }
+        let consumer_artifact = artifacts
+            .get(consumer_instance)
+            .with_context(|| format!("connection consumer `{consumer}` has no runtime artifact"))?;
+        let input = consumer_artifact
+            .inputs
+            .iter()
+            .find(|input| {
+                input.name == consumer_port || input.port.as_deref() == Some(consumer_port)
+            });
+        let kind = input.map(|input| input.kind.as_str()).unwrap_or_default();
+        for source in connection_source_values(consumer, source_values)? {
+            let (source_instance, source_port) = source
+                .split_once('.')
+                .with_context(|| format!("connection source `{source}` has no port separator"))?;
+            if source_instance.is_empty() || source_port.is_empty() {
+                bail!("connection source `{source}` has an empty instance or port");
+            }
+            match kind {
+                "commands" => {
+                    request_routes.insert((
+                        consumer_instance.to_owned(),
+                        source_instance.to_owned(),
+                        source_port.to_owned(),
+                    ));
+                }
+                "read" | "request" => {
+                    routes
+                        .entry((
+                            source_instance.to_owned(),
+                            source_port.to_owned(),
+                            "reply".to_owned(),
+                        ))
+                        .or_default()
+                        .insert(consumer_instance.to_owned());
+                }
+                _ => {
+                    routes
+                        .entry((
+                            source_instance.to_owned(),
+                            source_port.to_owned(),
+                            "publish".to_owned(),
+                        ))
+                        .or_default()
+                        .insert(consumer_instance.to_owned());
+                }
+            }
+        }
+    }
+    Ok((routes, request_routes))
+}
+
+fn validate_controlled_capacity(
+    instances: &[RuntimeInstance],
+    artifacts: &BTreeMap<String, ArtifactRuntime>,
+    connections: &BTreeMap<String, serde_json::Value>,
+    quantum_ns: u64,
+) -> Result<()> {
+    let periods = instances
+        .iter()
+        .map(|runtime| (runtime.instance.as_str(), runtime.period_ns))
+        .collect::<BTreeMap<_, _>>();
+    for (consumer, source_values) in connections {
+        let (consumer_instance, consumer_port) = consumer
+            .split_once('.')
+            .with_context(|| format!("connection consumer `{consumer}` has no port separator"))?;
+        let consumer_artifact = artifacts
+            .get(consumer_instance)
+            .with_context(|| format!("connection consumer `{consumer}` has no runtime artifact"))?;
+        let Some(input) = consumer_artifact.inputs.iter().find(|input| {
+            input.name == consumer_port || input.port.as_deref() == Some(consumer_port)
+        }) else {
+            // The source compiler may retain a connection for an operation
+            // field, which has no receiver queue reservation.
+            continue;
+        };
+        if matches!(input.kind.as_str(), "operation" | "") {
+            continue;
+        }
+        let consumer_period = *periods
+            .get(consumer_instance)
+            .with_context(|| format!("consumer `{consumer_instance}` has no admitted period"))?;
+        let consumer_stride = consumer_period
+            .checked_div(quantum_ns)
+            .filter(|stride| *stride > 0)
+            .with_context(|| format!("consumer `{consumer_instance}` period is not quantum-aligned"))?;
+        let replaceable = matches!(input.kind.as_str(), "latest" | "setpoint");
+        let mut required_items = 0_u64;
+        let mut required_bytes = 0_u64;
+        for source in connection_source_values(consumer, source_values)? {
+            let (source_instance, source_port) = source
+                .split_once('.')
+                .with_context(|| format!("connection source `{source}` has no port separator"))?;
+            let source_period = *periods
+                .get(source_instance)
+                .with_context(|| format!("source `{source_instance}` has no admitted period"))?;
+            let source_stride = source_period
+                .checked_div(quantum_ns)
+                .filter(|stride| *stride > 0)
+                .with_context(|| format!("source `{source_instance}` period is not quantum-aligned"))?;
+            let source_artifact = artifacts
+                .get(source_instance)
+                .with_context(|| format!("source `{source}` has no runtime artifact"))?;
+            let source_input = source_artifact.inputs.iter().find(|candidate| {
+                candidate.port.as_deref() == Some(source_port)
+                    && candidate.kind == "commands"
+            });
+            let source_output = source_artifact
+                .transient_outputs
+                .iter()
+                .chain(source_artifact.service_outputs.iter())
+                .find(|output| output.port.as_deref() == Some(source_port));
+            let (batch_items, batch_bytes, every_steps, bootstrap) = if let Some(input) = source_input
+            {
+                // A Commands endpoint is a receiver queue on the target
+                // runtime.  Each connected caller can contribute at most one
+                // activation per due invocation, bounded by the target input.
+                (
+                    input.max_items.unwrap_or(1),
+                    input.max_bytes.unwrap_or(1),
+                    1,
+                    false,
+                )
+            } else if let Some(output) = source_output {
+                (
+                    output.max_items.unwrap_or(1),
+                    output.max_bytes.or(output.max_request_bytes).unwrap_or(1),
+                    output.every_steps.unwrap_or(1),
+                    output.bootstrap,
+                )
+            } else {
+                (1, 1, 1, false)
+            };
+            if every_steps == 0 {
+                bail!("output `{source}` has a zero every_steps cadence");
+            }
+            let source_invocations = consumer_stride
+                .checked_add(source_stride.saturating_sub(1))
+                .and_then(|value| value.checked_div(source_stride))
+                .unwrap_or(u64::MAX)
+                .max(1);
+            let emitted_batches = source_invocations
+                .checked_add(every_steps.saturating_sub(1))
+                .and_then(|value| value.checked_div(every_steps))
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::from(bootstrap));
+            let route_items = batch_items.saturating_mul(emitted_batches);
+            let route_bytes = batch_bytes.saturating_mul(emitted_batches);
+            if replaceable {
+                required_items = required_items.max(route_items.min(1));
+                required_bytes = required_bytes.max(route_bytes.min(batch_bytes));
+            } else {
+                required_items = required_items.saturating_add(route_items);
+                required_bytes = required_bytes.saturating_add(route_bytes);
+            }
+        }
+        let available_items = input.max_items.unwrap_or(required_items.max(1));
+        let available_bytes = input.max_bytes.unwrap_or(required_bytes.max(1));
+        if required_items > available_items || required_bytes > available_bytes {
+            bail!(
+                "controlled receiver `{consumer}` capacity is insufficient: requires {required_items} items/{required_bytes} bytes but reserves {available_items} items/{available_bytes} bytes"
+            );
+        }
+    }
+    Ok(())
+}
+
 impl RuntimeBoundaryHook for RuntimeExecutionProtocol {
     fn acquire(
         &self,
@@ -737,6 +1003,209 @@ async fn recv_reset(subscriber: &Subscriber) -> Result<wire::ResetExecutionRespo
     decode(subscriber.recv_async().await.map_err(|error| anyhow::anyhow!(error.to_string()))?)
 }
 
+fn expected_deliveries(
+    runtime: &RuntimeInstance,
+    accepted: &wire::InvocationAccepted,
+    delivery_routes: &BTreeMap<(String, String, String), BTreeSet<String>>,
+    request_routes: &BTreeSet<(String, String, String)>,
+) -> Result<Vec<ExpectedDelivery>, String> {
+    if accepted.required_deliveries.len() > MAX_PRODUCT_RECEIPTS {
+        return Err("runtime delivery receipt set is too large".to_owned());
+    }
+    let mut expected = BTreeSet::new();
+    for receipt in &accepted.required_deliveries {
+        if receipt.port.is_empty()
+            || receipt.direction.is_empty()
+            || receipt.direction == "completion"
+        {
+            return Err("runtime delivery receipt has an invalid port or direction".to_owned());
+        }
+        let targets = match receipt.direction.as_str() {
+            "request" => {
+                let target = receipt
+                    .target
+                    .as_deref()
+                    .filter(|target| !target.is_empty())
+                    .ok_or_else(|| {
+                        "runtime request delivery receipt is missing its target".to_owned()
+                    })?;
+                if !request_routes.contains(&(
+                    runtime.instance.clone(),
+                    target.to_owned(),
+                    receipt.port.clone(),
+                )) {
+                    return Err(
+                        "runtime request delivery receipt is not in the admitted graph".to_owned(),
+                    );
+                }
+                vec![target.to_owned()]
+            }
+            "publish" | "reply" => {
+                let key = (
+                    runtime.instance.clone(),
+                    receipt.port.clone(),
+                    receipt.direction.clone(),
+                );
+                let Some(graph_targets) = delivery_routes.get(&key) else {
+                    // An output with no graph receiver is not a required
+                    // delivery obligation for this execution.
+                    continue;
+                };
+                if let Some(target) = receipt.target.as_deref() {
+                    if target.is_empty() || !graph_targets.contains(target) {
+                        return Err(
+                            "runtime delivery receipt names a target outside the admitted graph"
+                                .to_owned(),
+                        );
+                    }
+                    vec![target.to_owned()]
+                } else {
+                    graph_targets.iter().cloned().collect()
+                }
+            }
+            _ => return Err("runtime delivery receipt has an unknown direction".to_owned()),
+        };
+        for target in targets {
+            let delivery = ExpectedDelivery {
+                source: runtime.instance.clone(),
+                target,
+                port: receipt.port.clone(),
+                direction: receipt.direction.clone(),
+                sequence: receipt.sequence,
+                item: receipt.item,
+                bytes: receipt.bytes,
+            };
+            if !expected.insert(delivery) {
+                return Err("runtime returned duplicate delivery receipt identity".to_owned());
+            }
+        }
+    }
+    Ok(expected.into_iter().collect())
+}
+
+async fn wait_delivery_acknowledgements(
+    acknowledgements: &Subscriber,
+    failures: &Subscriber,
+    execution_id: &str,
+    timeline_id: &str,
+    instance: &str,
+    boundary: u64,
+    expected: &[ExpectedDelivery],
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut pending = expected.iter().cloned().collect::<BTreeSet<_>>();
+    while !pending.is_empty() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "runtime `{instance}` delivery acknowledgement timed out at boundary {boundary}"
+            ));
+        }
+        let delivery = tokio::time::timeout(
+            remaining,
+            recv_delivery_ack(
+                acknowledgements,
+                failures,
+                execution_id,
+                timeline_id,
+                instance,
+                boundary,
+                &pending,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "runtime `{instance}` delivery acknowledgement timed out at boundary {boundary}"
+            )
+        })??;
+        pending.remove(&delivery);
+    }
+    Ok(())
+}
+
+async fn recv_delivery_ack(
+    acknowledgements: &Subscriber,
+    failures: &Subscriber,
+    execution_id: &str,
+    timeline_id: &str,
+    instance: &str,
+    boundary: u64,
+    pending: &BTreeSet<ExpectedDelivery>,
+) -> Result<ExpectedDelivery, String> {
+    loop {
+        tokio::select! {
+            result = acknowledgements.recv_async() => {
+                let acknowledgement: wire::DeliveryAck = decode(
+                    result.map_err(|error| error.to_string())?
+                ).map_err(|error: anyhow::Error| error.to_string())?;
+                let Some(candidate) = delivery_ack_candidate(
+                    &acknowledgement,
+                    execution_id,
+                    timeline_id,
+                    instance,
+                    boundary,
+                    pending,
+                ) else {
+                    // This is a duplicate acknowledgement for a delivery
+                    // already removed from the pending set, or a stale
+                    // identity from another accepted cut.
+                    continue;
+                };
+                if acknowledgement.admitted {
+                    return Ok(candidate);
+                }
+                return Err(acknowledgement.detail.unwrap_or_else(|| {
+                    format!(
+                        "receiver `{}` refused delivery admission for `{}`",
+                        candidate.target, candidate.port
+                    )
+                }));
+            }
+            result = failures.recv_async() => {
+                let failure: wire::RuntimeFailure = decode(
+                    result.map_err(|error| error.to_string())?
+                ).map_err(|error: anyhow::Error| error.to_string())?;
+                if failure.execution_id == execution_id
+                    && failure.timeline_id == timeline_id
+                    && failure.runtime_instance == instance
+                    && failure.boundary == boundary
+                {
+                    return Err(failure.reason);
+                }
+            }
+        }
+    }
+}
+
+fn delivery_ack_candidate(
+    acknowledgement: &wire::DeliveryAck,
+    execution_id: &str,
+    timeline_id: &str,
+    instance: &str,
+    boundary: u64,
+    pending: &BTreeSet<ExpectedDelivery>,
+) -> Option<ExpectedDelivery> {
+    if acknowledgement.execution_id != execution_id
+        || acknowledgement.timeline_id != timeline_id
+        || acknowledgement.boundary != boundary
+        || acknowledgement.source != instance
+    {
+        return None;
+    }
+    let candidate = ExpectedDelivery {
+        source: acknowledgement.source.clone(),
+        target: acknowledgement.target.clone(),
+        port: acknowledgement.port.clone(),
+        direction: acknowledgement.direction.clone(),
+        sequence: acknowledgement.sequence,
+        item: acknowledgement.item,
+        bytes: acknowledgement.bytes,
+    };
+    pending.get(&candidate).cloned()
+}
+
 async fn recv_acceptance(
     accepted: &Subscriber,
     failures: &Subscriber,
@@ -780,16 +1249,12 @@ fn validate_products(
     let mut seen = BTreeSet::new();
     for receipt in &accepted.required_products {
         if receipt.port.is_empty()
-            || receipt.items == 0
+            || (receipt.items == 0 && receipt.bytes != 0)
             || !product_ports.contains(&receipt.port)
             || !seen.insert(receipt.port.as_str())
         {
             return Err("runtime product receipt is malformed or not in the admitted graph".to_owned());
         }
-    }
-    let expected = product_ports.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    if seen != expected {
-        return Err("runtime did not return the complete admitted product receipt set".to_owned());
     }
     Ok(())
 }
@@ -834,7 +1299,7 @@ fn validate_input_receipts(
     for receipt in &accepted.required_inputs {
         if receipt.source.is_empty()
             || receipt.port.is_empty()
-            || receipt.items == 0
+            || (receipt.items == 0 && receipt.bytes != 0)
             || !runtime.input_ports.contains(&receipt.port)
             || !runtime
                 .input_sources
@@ -912,12 +1377,12 @@ fn parse_timeline_id(value: &str) -> Result<crate::identity::TimelineId, String>
         .ok_or_else(|| "timeline identity cannot be zero".to_owned())
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 struct ArtifactSummary {
     runtime: ArtifactRuntime,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 struct ArtifactRuntime {
     #[serde(default)]
     period_ms: Option<u64>,
@@ -931,14 +1396,20 @@ struct ArtifactRuntime {
     service_outputs: Vec<ArtifactOutput>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 struct ArtifactInput {
     name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    max_items: Option<u64>,
+    #[serde(default)]
+    max_bytes: Option<u64>,
     #[serde(default)]
     port: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 struct ArtifactOutput {
     name: String,
     #[serde(default)]
@@ -946,7 +1417,17 @@ struct ArtifactOutput {
     #[serde(default)]
     port: Option<String>,
     #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    max_items: Option<u64>,
+    #[serde(default)]
     max_bytes: Option<u64>,
+    #[serde(default)]
+    max_request_bytes: Option<u64>,
+    #[serde(default)]
+    every_steps: Option<u64>,
+    #[serde(default)]
+    bootstrap: bool,
 }
 
 #[cfg(test)]
@@ -956,12 +1437,74 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::bus::{BusConfig, BusOwner};
+    use crate::bus::{BusConfig, BusHandle, BusOwner};
     use crate::communication::simulation::{AdvanceRequest, ResetRequest};
     use crate::identity::{ExecutionId, ParticipantId, TimelineId};
     use crate::participant::metadata::ParticipantKind;
+    use crate::runtime::ExecutionTime;
+    use crate::runtime::transport::{RuntimeWireMetadata, PROTOBUF_ENCODING, port_key};
     use crate::supervisor::host::presence::Presence;
     use crate::supervisor::host::bundle::{SourceBundle, SourceExecutable, SourceManifest};
+
+    async fn send_test_acceptance(bus: &BusHandle, invocation: &wire::Invocation, output: bool) {
+        super::send(
+            bus,
+            &invocation.runtime_instance,
+            "accepted",
+            &wire::InvocationAccepted {
+                execution_id: invocation.execution_id.clone(),
+                timeline_id: invocation.timeline_id.clone(),
+                runtime_instance: invocation.runtime_instance.clone(),
+                boundary: invocation.boundary,
+                required_products: if output {
+                    vec![wire::ProductReceipt {
+                        port: "value".to_owned(),
+                        sequence: 1,
+                        items: 1,
+                        bytes: 1,
+                    }]
+                } else {
+                    Vec::new()
+                },
+                required_inputs: Vec::new(),
+                actuations: Vec::new(),
+                required_deliveries: if output {
+                    vec![wire::DeliveryReceipt {
+                        port: "value".to_owned(),
+                        direction: "publish".to_owned(),
+                        target: String::new(),
+                        sequence: 1,
+                        item: 0,
+                        bytes: 1,
+                    }]
+                } else {
+                    Vec::new()
+                },
+            },
+        )
+        .await
+        .expect("invocation acceptance publishes");
+    }
+
+    async fn publish_test_value(bus: &BusHandle, execution_id: &str, timeline_id: &str) {
+        let metadata = RuntimeWireMetadata::data(
+            "producer",
+            ExecutionTime::from_nanos(1_000_000),
+            1,
+        )
+        .with_delivery_identity(execution_id, timeline_id, 1, 0);
+        let attachment = metadata.encode_bounded().expect("delivery metadata encodes");
+        bus.session()
+            .expect("producer session")
+            .put(
+                bus.full_key(&port_key("producer", "value", "publish")),
+                vec![42_u8],
+            )
+            .encoding(Encoding::from(PROTOBUF_ENCODING.to_owned()))
+            .attachment(attachment)
+            .await
+            .expect("controlled value publishes");
+    }
 
     #[test]
     fn digest_decoding_is_strict_and_binary() {
@@ -978,6 +1521,411 @@ mod tests {
         assert!(20_u64.is_multiple_of(period));
         assert!(!10_u64.is_multiple_of(period));
         assert!(quantum > 0);
+    }
+
+    #[test]
+    fn delivery_ack_candidates_remove_out_of_order_items_without_loss() {
+        let make = |item| ExpectedDelivery {
+            source: "producer".to_owned(),
+            target: "consumer".to_owned(),
+            port: "value".to_owned(),
+            direction: "publish".to_owned(),
+            sequence: 9,
+            item,
+            bytes: 4,
+        };
+        let mut pending = BTreeSet::from([make(0), make(1), make(2)]);
+        for item in [2_u32, 0, 1] {
+            let acknowledgement = wire::DeliveryAck {
+                execution_id: "execution".to_owned(),
+                timeline_id: "timeline".to_owned(),
+                boundary: 7,
+                source: "producer".to_owned(),
+                target: "consumer".to_owned(),
+                port: "value".to_owned(),
+                direction: "publish".to_owned(),
+                sequence: 9,
+                item,
+                bytes: 4,
+                admitted: true,
+                detail: None,
+            };
+            let candidate = delivery_ack_candidate(
+                &acknowledgement,
+                "execution",
+                "timeline",
+                "producer",
+                7,
+                &pending,
+            )
+            .expect("out-of-order acknowledgement matches pending identity");
+            assert!(pending.remove(&candidate));
+        }
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn empty_product_and_input_batches_complete_without_new_data() {
+        let accepted = wire::InvocationAccepted {
+            execution_id: "execution".to_owned(),
+            timeline_id: "timeline".to_owned(),
+            runtime_instance: "runtime".to_owned(),
+            boundary: 4,
+            required_products: vec![wire::ProductReceipt {
+                port: "optional".to_owned(),
+                sequence: 0,
+                items: 0,
+                bytes: 0,
+            }],
+            required_inputs: Vec::new(),
+            actuations: Vec::new(),
+            required_deliveries: Vec::new(),
+        };
+        let product_ports = BTreeSet::from(["optional".to_owned()]);
+        assert!(validate_products(&accepted, &product_ports).is_ok());
+        assert!(validate_products(
+            &wire::InvocationAccepted {
+                required_products: vec![wire::ProductReceipt {
+                    port: "optional".to_owned(),
+                    sequence: 0,
+                    items: 0,
+                    bytes: 1,
+                }],
+                ..accepted.clone()
+            },
+            &product_ports,
+        )
+        .is_err());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn local_router_delivery_ack_completes_before_slow_receiver_due() {
+        let temporary = tempfile::tempdir().expect("router temporary directory");
+        let socket = temporary.path().join("router.sock");
+        let endpoint = format!("unixsock-stream/{}", socket.display());
+        let execution = ExecutionId::mint();
+        let router = super::super::router::start_embedded_router(
+            execution,
+            endpoint.clone(),
+            Arc::new(|_| {}),
+        )
+        .await
+        .expect("local router starts");
+        let (supervisor_owner, supervisor_bus) = BusOwner::open(BusConfig::for_external(
+            execution,
+            None,
+            vec![endpoint.clone()],
+        ))
+        .await
+        .expect("supervisor bus opens");
+        let (producer_owner, producer_bus) = BusOwner::open(BusConfig::for_participant(
+            execution,
+            ParticipantId::new("producer").expect("producer identity"),
+            vec![endpoint.clone()],
+        ))
+        .await
+        .expect("producer bus opens");
+        let (consumer_owner, consumer_bus) = BusOwner::open(BusConfig::for_participant(
+            execution,
+            ParticipantId::new("consumer").expect("consumer identity"),
+            vec![endpoint],
+        ))
+        .await
+        .expect("consumer bus opens");
+        let source = SourceBundle::for_test_with_connections(
+            Path::new("."),
+            SourceManifest::for_test(
+                "controlled-delivery-fixture",
+                vec![
+                    SourceExecutable::for_test_with_artifact(
+                        "producer",
+                        serde_json::json!({
+                            "runtime": {
+                                "schema": "phoxal/artifact/v0",
+                                "record": "runtime",
+                                "period_ms": 1,
+                                "timeout_ms": 500,
+                                "inputs": [],
+                                "transient_outputs": [],
+                                "service_outputs": [
+                                    {"name": "value", "kind": "state", "port": "value", "max_items": 1, "max_bytes": 1}
+                                ]
+                            },
+                            "descriptors": []
+                        }),
+                    ),
+                    SourceExecutable::for_test_with_artifact(
+                        "consumer",
+                        serde_json::json!({
+                            "runtime": {
+                                "schema": "phoxal/artifact/v0",
+                                "record": "runtime",
+                                "period_ms": 2,
+                                "timeout_ms": 500,
+                                "inputs": [
+                                    {"name": "value", "kind": "latest", "port": "value", "max_items": 1, "max_bytes": 1}
+                                ],
+                                "transient_outputs": [],
+                                "service_outputs": []
+                            },
+                            "descriptors": []
+                        }),
+                    ),
+                ],
+            ),
+            BTreeMap::from([(
+                "consumer.value".to_owned(),
+                serde_json::json!("producer.value"),
+            )]),
+        );
+        let state = ExecutionState::new(
+            Presence::for_entries(vec![
+                ("producer".to_owned(), ParticipantKind::Brain),
+                ("consumer".to_owned(), ParticipantKind::Service),
+            ])
+            .expect("presence graph"),
+        )
+        .expect("execution state");
+        let protocol = RuntimeExecutionProtocol::open(
+            supervisor_bus.clone(),
+            &source,
+            state.clone(),
+        )
+        .await
+        .expect("protocol opens");
+        let producer_admit = super::declare(&producer_bus, "producer", "admit")
+            .await
+            .expect("producer admission subscriber");
+        let producer_invoke = super::declare(&producer_bus, "producer", "invoke")
+            .await
+            .expect("producer invocation subscriber");
+        let consumer_admit = super::declare(&consumer_bus, "consumer", "admit")
+            .await
+            .expect("consumer admission subscriber");
+        let consumer_invoke = super::declare(&consumer_bus, "consumer", "invoke")
+            .await
+            .expect("consumer invocation subscriber");
+        let value_subscriber = consumer_bus
+            .session()
+            .expect("consumer value session")
+            .declare_subscriber(
+                OwnedKeyExpr::new(consumer_bus.full_key(&port_key(
+                    "producer",
+                    "value",
+                    "publish",
+                )))
+                .expect("consumer value key"),
+            )
+            .with(zenoh::handlers::FifoChannel::new(4))
+            .await
+            .expect("consumer value subscriber");
+
+        let producer_actor_bus = producer_bus.clone();
+        let producer_actor = tokio::spawn(async move {
+            let admission_sample = tokio::time::timeout(
+                Duration::from_secs(2),
+                producer_admit.recv_async(),
+            )
+            .await
+            .expect("producer admission arrives")
+            .expect("producer admission subscriber remains open");
+            let admission: wire::AdmitExecutionRequest =
+                super::decode(admission_sample).expect("producer admission decodes");
+            assert!(admission.required_contracts[0]
+                .capabilities
+                .iter()
+                .any(|capability| capability == "delivery-ack"));
+            super::send(
+                &producer_actor_bus,
+                "producer",
+                "admit-response",
+                &wire::AdmitExecutionResponse {
+                    admitted: true,
+                    unsupported_contracts: Vec::new(),
+                    detail: None,
+                },
+            )
+            .await
+            .expect("producer admission response publishes");
+            super::send(
+                &producer_actor_bus,
+                "producer",
+                "ready",
+                &wire::Ready {
+                    execution_id: admission.execution_id.clone(),
+                    timeline_id: admission.timeline_id.clone(),
+                    runtime_instance: "producer".to_owned(),
+                },
+            )
+            .await
+            .expect("producer Ready publishes");
+            for boundary in 0..=2_u64 {
+                let invocation_sample = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    producer_invoke.recv_async(),
+                )
+                .await
+                .expect("producer invocation arrives")
+                .expect("producer invocation subscriber remains open");
+                let invocation: wire::Invocation =
+                    super::decode(invocation_sample).expect("producer invocation decodes");
+                assert_eq!(invocation.boundary, boundary);
+                if boundary == 1 {
+                    publish_test_value(
+                        &producer_actor_bus,
+                        &invocation.execution_id,
+                        &invocation.timeline_id,
+                    )
+                    .await;
+                }
+                send_test_acceptance(&producer_actor_bus, &invocation, boundary == 1).await;
+            }
+        });
+
+        let consumer_actor_bus = consumer_bus.clone();
+        let consumer_actor = tokio::spawn(async move {
+            let admission_sample = tokio::time::timeout(
+                Duration::from_secs(2),
+                consumer_admit.recv_async(),
+            )
+            .await
+            .expect("consumer admission arrives")
+            .expect("consumer admission subscriber remains open");
+            let admission: wire::AdmitExecutionRequest =
+                super::decode(admission_sample).expect("consumer admission decodes");
+            super::send(
+                &consumer_actor_bus,
+                "consumer",
+                "admit-response",
+                &wire::AdmitExecutionResponse {
+                    admitted: true,
+                    unsupported_contracts: Vec::new(),
+                    detail: None,
+                },
+            )
+            .await
+            .expect("consumer admission response publishes");
+            super::send(
+                &consumer_actor_bus,
+                "consumer",
+                "ready",
+                &wire::Ready {
+                    execution_id: admission.execution_id.clone(),
+                    timeline_id: admission.timeline_id.clone(),
+                    runtime_instance: "consumer".to_owned(),
+                },
+            )
+            .await
+            .expect("consumer Ready publishes");
+            let mut retained_values = Vec::new();
+            loop {
+                tokio::select! {
+                    invocation_sample = consumer_invoke.recv_async() => {
+                        let invocation: wire::Invocation = super::decode(
+                            invocation_sample.expect("consumer invocation subscriber remains open")
+                        ).expect("consumer invocation decodes");
+                        match invocation.boundary {
+                            0 => send_test_acceptance(&consumer_actor_bus, &invocation, false).await,
+                            2 => {
+                                loop {
+                                    match value_subscriber.try_recv() {
+                                        Ok(Some(sample)) => retained_values.push(
+                                            crate::runtime::transport::WireSample::from_zenoh(sample)
+                                                .expect("retained value decodes")
+                                        ),
+                                        Ok(None) => break,
+                                        Err(error) => panic!("consumer value subscriber failed: {error}"),
+                                    }
+                                }
+                                assert_eq!(retained_values.len(), 1, "slow consumer sees one value at its due invocation");
+                                let value = &retained_values[0];
+                                assert_eq!(value.payload(), [42]);
+                                assert_eq!(value.metadata().boundary, Some(1));
+                                assert_eq!(value.metadata().item, Some(0));
+                                assert_eq!(value.metadata().sequence, Some(1));
+                                send_test_acceptance(&consumer_actor_bus, &invocation, false).await;
+                                break;
+                            }
+                            boundary => panic!("unexpected consumer invocation boundary {boundary}"),
+                        }
+                    }
+                    sample = value_subscriber.recv_async() => {
+                        let value = crate::runtime::transport::WireSample::from_zenoh(
+                            sample.expect("consumer value subscriber remains open")
+                        ).expect("controlled value decodes");
+                        assert_eq!(value.payload(), [42]);
+                        assert_eq!(value.metadata().boundary, Some(1));
+                        assert_eq!(value.metadata().item, Some(0));
+                        assert_eq!(value.metadata().sequence, Some(1));
+                        retained_values.push(value);
+                        super::send(
+                            &consumer_actor_bus,
+                            "producer",
+                            "delivery-ack",
+                            &wire::DeliveryAck {
+                                execution_id: admission.execution_id.clone(),
+                                timeline_id: admission.timeline_id.clone(),
+                                boundary: 1,
+                                source: "producer".to_owned(),
+                                target: "consumer".to_owned(),
+                                port: "value".to_owned(),
+                                direction: "publish".to_owned(),
+                                sequence: 1,
+                                item: 0,
+                                bytes: 1,
+                                admitted: true,
+                                detail: None,
+                            },
+                        )
+                        .await
+                        .expect("delivery acknowledgement publishes");
+                    }
+                }
+            }
+        });
+
+        let timeline = state.time_domain().timeline.to_string();
+        protocol
+            .admit_all(RuntimeExecutionMode::Controlled, 1_000_000, &timeline)
+            .await
+            .expect("controlled admission and Ready complete");
+        let mut context = PublicSimulationContext {
+            principal: "simulator".to_owned(),
+            session_id: vec![1],
+            authority_grant: vec![2],
+            correlation_id: vec![3],
+            execution_id: execution.to_string(),
+            timeline_id: timeline.clone(),
+            completed_boundary: 0,
+            model_identity: "unused".to_owned(),
+            quantum_ns: 1_000_000,
+        };
+        let mut request = AdvanceRequest {
+            authority_grant: vec![2],
+            execution_id: execution.to_string(),
+            timeline_id: timeline,
+            boundary: 0,
+            observations: Vec::new(),
+            session_id: vec![1],
+            correlation_id: vec![3],
+        };
+        for boundary in 0..=2_u64 {
+            context.completed_boundary = boundary;
+            request.boundary = boundary;
+            let response = protocol
+                .advance(context.clone(), request.clone(), Vec::new())
+                .await
+                .expect("controlled boundary completes");
+            assert_eq!(response.completed_boundary, boundary + 1);
+        }
+        assert_eq!(state.runtime_boundary(), 3);
+        producer_actor.await.expect("producer actor completes");
+        consumer_actor.await.expect("consumer actor completes");
+        consumer_owner.close().await;
+        producer_owner.close().await;
+        supervisor_owner.close().await;
+        router.close().await.expect("router closes");
     }
 
     #[serial_test::serial]
@@ -1118,6 +2066,7 @@ mod tests {
                         payload: vec![7],
                         valid_until_ns: 1_000_001,
                     }],
+                    required_deliveries: Vec::new(),
                 },
             )
             .await

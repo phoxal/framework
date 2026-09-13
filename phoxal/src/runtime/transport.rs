@@ -119,6 +119,18 @@ pub struct RuntimeWireMetadata {
     /// Supervisor ingress sequence for an external command.
     #[prost(uint64, optional, tag = "12")]
     pub ingress_sequence: Option<u64>,
+    /// Execution identity for a required controlled-delivery record.
+    #[prost(string, optional, tag = "13")]
+    pub(crate) execution_id: Option<String>,
+    /// Timeline identity for a required controlled-delivery record.
+    #[prost(string, optional, tag = "14")]
+    pub(crate) timeline_id: Option<String>,
+    /// Controlled boundary at which this record was produced.
+    #[prost(uint64, optional, tag = "15")]
+    pub(crate) boundary: Option<u64>,
+    /// Zero-based item index within the output port/direction cut.
+    #[prost(uint32, optional, tag = "16")]
+    pub(crate) item: Option<u32>,
 }
 
 impl RuntimeWireMetadata {
@@ -253,6 +265,22 @@ impl RuntimeWireMetadata {
     #[must_use]
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());
+        self
+    }
+
+    /// Attach the private identity used by the controlled-delivery
+    /// acknowledgement leg.
+    pub(crate) fn with_delivery_identity(
+        mut self,
+        execution_id: impl Into<String>,
+        timeline_id: impl Into<String>,
+        boundary: u64,
+        item: u32,
+    ) -> Self {
+        self.execution_id = Some(execution_id.into());
+        self.timeline_id = Some(timeline_id.into());
+        self.boundary = Some(boundary);
+        self.item = Some(item);
         self
     }
 }
@@ -676,6 +704,62 @@ impl PreparedOutput {
             self.metadata.sequence?,
             self.payload.len() as u64,
         ))
+    }
+
+    /// Return the exact identity of one output record for the private
+    /// controlled-delivery acknowledgement leg.
+    pub(crate) fn delivery_receipt(
+        &self,
+        item: u32,
+    ) -> Option<(String, String, Option<String>, u64, u32, u64)> {
+        let sequence = self.metadata.sequence?;
+        let direction = if self.request {
+            "request"
+        } else if self.reply {
+            "reply"
+        } else {
+            "publish"
+        };
+        Some((
+            self.endpoint.name().to_owned(),
+            direction.to_owned(),
+            self.target_instance.clone(),
+            sequence,
+            item,
+            self.payload.len() as u64,
+        ))
+    }
+
+    /// Return the route identity used while assigning per-port item numbers.
+    pub(crate) fn delivery_route(&self) -> (String, String, Option<String>) {
+        let direction = if self.request {
+            "request"
+        } else if self.reply {
+            "reply"
+        } else {
+            "publish"
+        };
+        (
+            self.endpoint.name().to_owned(),
+            direction.to_owned(),
+            self.target_instance.clone(),
+        )
+    }
+
+    /// Stamp a prepared record with one controlled invocation identity.
+    pub(crate) fn stamp_delivery_identity(
+        &mut self,
+        execution_id: &str,
+        timeline_id: &str,
+        boundary: u64,
+        item: u32,
+    ) {
+        self.metadata = self.metadata.clone().with_delivery_identity(
+            execution_id.to_owned(),
+            timeline_id.to_owned(),
+            boundary,
+            item,
+        );
     }
 
     /// Return one actuator-facing Setpoint body and its required expiry.

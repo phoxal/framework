@@ -52,6 +52,11 @@ message InvocationAccepted {
   repeated ProductReceipt required_products = 5;
   repeated InputReceipt required_inputs = 6;
   repeated Actuation actuations = 7;
+  // Exact graph records emitted by this accepted invocation.  ProductReceipt
+  // remains the compact per-port summary used by the supervisor; these
+  // records let it wait for every receiver admission without guessing item
+  // identity from an aggregate count.
+  repeated DeliveryReceipt required_deliveries = 8;
 }
 
 message ProductReceipt {
@@ -73,6 +78,37 @@ message Actuation {
   string port = 1;
   bytes payload = 2;
   uint64 valid_until_ns = 3;
+}
+
+// One output record that must be admitted by a graph receiver.  The target is
+// optional for ordinary publications: the supervisor expands that record over
+// the immutable graph fan-out.  Requests carry their exact target because the
+// generated activation already resolved it before publication.
+message DeliveryReceipt {
+  string port = 1;
+  string direction = 2;
+  string target = 3;
+  uint64 sequence = 4;
+  uint32 item = 5;
+  uint64 bytes = 6;
+}
+
+// Receiver-owned acknowledgement for one exact graph record.  This message
+// is carried on a private execution leg and is never part of a public port
+// or session contract.
+message DeliveryAck {
+  string execution_id = 1;
+  string timeline_id = 2;
+  uint64 boundary = 3;
+  string source = 4;
+  string target = 5;
+  string port = 6;
+  string direction = 7;
+  uint64 sequence = 8;
+  uint32 item = 9;
+  uint64 bytes = 10;
+  bool admitted = 11;
+  optional string detail = 12;
 }
 
 message ResetExecutionRequest {

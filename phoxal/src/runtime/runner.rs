@@ -7,11 +7,12 @@
 //! implementations because only a contract owner knows how to encode its
 //! generated payloads.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,7 @@ use clap::Parser;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
 use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 
@@ -50,6 +52,28 @@ pub struct RuntimeProductReceipt {
     /// Number of records represented by this receipt.
     pub items: u32,
     /// Total encoded body bytes represented by this receipt.
+    pub bytes: u64,
+}
+
+/// One exact output record emitted by a controlled invocation.
+///
+/// The supervisor expands ordinary publications over the graph fan-out.  A
+/// request already carries its resolved target, while replies are resolved by
+/// the originating graph connection at the supervisor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct RuntimeDeliveryReceipt {
+    /// Runtime-owned output port identity.
+    pub port: String,
+    /// Private Runtime port direction (`publish`, `request`, or `reply`).
+    pub direction: String,
+    /// Resolved target for a request, when the output carried one.
+    pub target: Option<String>,
+    /// Producer sequence carried by the output metadata.
+    pub sequence: u64,
+    /// Zero-based item identity within this port/direction cut.
+    pub item: u32,
+    /// Exact encoded body byte count.
     pub bytes: u64,
 }
 
@@ -608,6 +632,13 @@ pub trait InputSource<R: RegisteredRuntime> {
         Vec::new()
     }
 
+    /// Update the receiver queue's active controlled timeline.  The queue
+    /// fence is changed before a reset clears retained samples, so an old
+    /// sample cannot cross into a fresh timeline while a worker is unwinding.
+    fn set_timeline(&mut self, _timeline_id: &str) -> crate::Result<()> {
+        Ok(())
+    }
+
     /// Stop subscriptions, pending requests, and managed operation workers.
     fn stop(&mut self) -> crate::Result<()> {
         Ok(())
@@ -661,11 +692,23 @@ where
         accepted: AcceptedInvocation<R::Outputs, Self::Reservation>,
     ) -> crate::Result<()>;
 
+    /// Stamp records from a controlled invocation before they are published.
+    /// Direct sinks remain transport-free through the default implementation.
+    fn prepare_delivery(&mut self, _boundary: u64, _timeline_id: &str) -> crate::Result<()> {
+        Ok(())
+    }
+
     /// Take the receipts produced by the most recently published batch.
     ///
     /// A transport adapter may aggregate several records for one output port.
     /// The default keeps direct in-process sinks free of transport concerns.
     fn take_product_receipts(&mut self) -> Vec<RuntimeProductReceipt> {
+        Vec::new()
+    }
+
+    /// Take exact graph records emitted by the most recently published
+    /// controlled invocation.
+    fn take_delivery_receipts(&mut self) -> Vec<RuntimeDeliveryReceipt> {
         Vec::new()
     }
 
@@ -882,6 +925,12 @@ where
             return Err(error.into());
         }
     };
+    if matches!(execution_mode, execution_wire::ExecutionMode::Controlled) {
+        if let Err(error) = runner.set_controlled_timeline(&admission.timeline_id) {
+            let _ = owner.close().await;
+            return Err(error);
+        }
+    }
     publish_execution(
         &bus,
         &launch.instance_id,
@@ -1017,7 +1066,7 @@ fn validate_execution_admission<R: RegisteredRuntime>(
         );
     }
     let mut unsupported_contracts = Vec::new();
-    let exact_capabilities = BTreeSet::from(["invocation", "reset"]);
+    let exact_capabilities = BTreeSet::from(["invocation", "reset", "delivery-ack"]);
     if request.required_contracts.len() != 1 {
         unsupported_contracts.extend(
             request
@@ -1044,7 +1093,7 @@ fn validate_execution_admission<R: RegisteredRuntime>(
                 .map(|capability| format!("phoxal.execution.v1/{capability}")),
         );
         return reject(
-            "execution admission requires the exact invocation and reset capabilities".to_owned(),
+            "execution admission requires the exact invocation, reset, and delivery-ack capabilities".to_owned(),
             unsupported_contracts,
         );
     }
@@ -1121,7 +1170,10 @@ where
                     continue;
                 }
                 let config = manifest.decode_config::<R>()?;
-                match runner.reset(ExecutionTime::default(), config) {
+                match runner
+                    .set_controlled_timeline(&request.next_timeline_id)
+                    .and_then(|()| runner.reset(ExecutionTime::default(), config))
+                {
                     Ok(()) => {
                         timeline_id = request.next_timeline_id;
                         last_boundary = None;
@@ -1232,7 +1284,7 @@ where
                     continue;
                 }
                 let now = ExecutionTime::from_nanos(request.logical_time_ns);
-                let outcome = match runner.invoke_controlled(request.boundary, now) {
+                let outcome = match runner.invoke_controlled(request.boundary, now, &timeline_id) {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         let detail = format!("controlled invocation failed: {error:#}");
@@ -1280,6 +1332,18 @@ where
                             port: actuation.port,
                             payload: actuation.payload,
                             valid_until_ns: actuation.valid_until_ns,
+                        })
+                        .collect(),
+                    required_deliveries: outcome
+                        .required_deliveries
+                        .into_iter()
+                        .map(|delivery| execution_wire::DeliveryReceipt {
+                            port: delivery.port,
+                            direction: delivery.direction,
+                            target: delivery.target.unwrap_or_default(),
+                            sequence: delivery.sequence,
+                            item: delivery.item,
+                            bytes: delivery.bytes,
                         })
                         .collect(),
                 };
@@ -1438,7 +1502,518 @@ struct BoundSubscription {
     direction: InputDirection,
     max_items: u64,
     max_bytes: u64,
+    /// The direct subscriber remains available to the in-process test path.
+    /// Process-bound subscriptions are drained by `delivery_receive_loop`
+    /// into the receiver-owned bounded queue below.
+    subscriber: Option<RuntimeSubscription>,
+    delivery: Option<DeliverySubscription>,
+}
+
+/// One receiver-owned queue and its cancellation fence.
+///
+/// The queue is separate from Zenoh's subscriber handler.  A record is
+/// acknowledged only after this queue has admitted it, so producer-side
+/// publication completion cannot be mistaken for receiver admission.
+struct DeliverySubscription {
+    queue: Arc<Mutex<DeliveryQueue>>,
+    cancel: CancellationToken,
+    expected: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DeliveryIdentity {
+    execution_id: String,
+    timeline_id: String,
+    boundary: u64,
+    source: String,
+    target: String,
+    port: String,
+    direction: String,
+    sequence: u64,
+    item: u32,
+    bytes: u64,
+}
+
+struct DeliveryQueue {
+    items: VecDeque<WireSample>,
+    bytes: u64,
+    max_items: u64,
+    max_bytes: u64,
+    input_kind: super::input::InputKind,
+    timeline_id: Option<String>,
+    /// One high-water mark per immutable source route.  Controlled records
+    /// are ordered by boundary first, then producer sequence and item.  This
+    /// gives duplicate delivery idempotence without retaining every identity
+    /// for the lifetime of a long-running runtime.
+    high_watermarks: BTreeMap<(String, String, String, String), DeliveryIdentity>,
+}
+
+impl DeliveryQueue {
+    fn new(max_items: u64, max_bytes: u64, input_kind: super::input::InputKind) -> Self {
+        Self {
+            items: VecDeque::new(),
+            bytes: 0,
+            max_items,
+            max_bytes,
+            input_kind,
+            timeline_id: None,
+            high_watermarks: BTreeMap::new(),
+        }
+    }
+
+    fn set_timeline(&mut self, timeline_id: &str) {
+        match self.timeline_id.as_deref() {
+            None => {
+                self.timeline_id = Some(timeline_id.to_owned());
+                self.retain_timeline(timeline_id);
+            }
+            Some(current) if current != timeline_id => {
+                self.items.clear();
+                self.bytes = 0;
+                self.high_watermarks.clear();
+                self.timeline_id = Some(timeline_id.to_owned());
+            }
+            Some(_) => {}
+        }
+    }
+
+    fn retain_timeline(&mut self, timeline_id: &str) {
+        let mut bytes = 0_u64;
+        self.items.retain(|sample| {
+            let metadata = sample.metadata();
+            let controlled = metadata.execution_id.is_some()
+                || metadata.timeline_id.is_some()
+                || metadata.boundary.is_some()
+                || metadata.item.is_some();
+            let keep = !controlled || metadata.timeline_id.as_deref() == Some(timeline_id);
+            if keep {
+                bytes = bytes.saturating_add(sample.payload().len() as u64);
+            }
+            keep
+        });
+        self.bytes = bytes;
+        self.high_watermarks
+            .retain(|_, identity| identity.timeline_id == timeline_id);
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+        self.bytes = 0;
+        self.high_watermarks.clear();
+    }
+
+    fn accepts_timeline(&self, timeline_id: &str) -> bool {
+        self.timeline_id
+            .as_deref()
+            .is_some_and(|current| current == timeline_id)
+    }
+
+    fn identity(
+        &self,
+        sample: &WireSample,
+        target: &str,
+        port: &str,
+        direction: &str,
+    ) -> Result<DeliveryIdentity, TransportError> {
+        let metadata = sample.metadata();
+        Ok(DeliveryIdentity {
+            execution_id: metadata.execution_id.clone().ok_or_else(|| {
+                TransportError::InvalidMetadata {
+                    detail: "required delivery is missing execution identity".to_owned(),
+                }
+            })?,
+            timeline_id: metadata.timeline_id.clone().ok_or_else(|| {
+                TransportError::InvalidMetadata {
+                    detail: "required delivery is missing timeline identity".to_owned(),
+                }
+            })?,
+            boundary: metadata
+                .boundary
+                .ok_or_else(|| TransportError::InvalidMetadata {
+                    detail: "required delivery is missing boundary identity".to_owned(),
+                })?,
+            source: metadata
+                .source
+                .clone()
+                .ok_or_else(|| TransportError::InvalidMetadata {
+                    detail: "required delivery is missing source identity".to_owned(),
+                })?,
+            target: target.to_owned(),
+            port: port.to_owned(),
+            direction: direction.to_owned(),
+            sequence: metadata
+                .sequence
+                .ok_or_else(|| TransportError::InvalidMetadata {
+                    detail: "required delivery is missing sequence identity".to_owned(),
+                })?,
+            item: metadata
+                .item
+                .ok_or_else(|| TransportError::InvalidMetadata {
+                    detail: "required delivery is missing item identity".to_owned(),
+                })?,
+            bytes: sample.payload().len() as u64,
+        })
+    }
+
+    fn admit(
+        &mut self,
+        sample: WireSample,
+        target: &str,
+        port: &str,
+        direction: &str,
+    ) -> Result<(DeliveryIdentity, bool), DeliveryAdmissionError> {
+        let identity = self
+            .identity(&sample, target, port, direction)
+            .map_err(DeliveryAdmissionError::Malformed)?;
+        let bytes = identity.bytes;
+        let route = identity.route_key();
+        if let Some(previous) = self.high_watermarks.get(&route) {
+            let order = (identity.boundary, identity.sequence, identity.item).cmp(&(
+                previous.boundary,
+                previous.sequence,
+                previous.item,
+            ));
+            if order.is_le() {
+                if order == std::cmp::Ordering::Equal && previous.bytes != identity.bytes {
+                    return Err(DeliveryAdmissionError::Malformed(
+                        TransportError::InvalidMetadata {
+                            detail: "delivery identity was reused with different payload bytes"
+                                .to_owned(),
+                        },
+                    ));
+                }
+                // Duplicate or stale delivery is idempotently acknowledged,
+                // but it must never be exposed to the generated decoder.
+                return Ok((identity, false));
+            }
+        }
+        let is_replaceable = matches!(
+            self.input_kind,
+            super::input::InputKind::Latest | super::input::InputKind::Setpoint
+        );
+        if !is_replaceable && self.items.len() as u64 >= self.max_items {
+            return Err(DeliveryAdmissionError::Saturated(format!(
+                "receiver queue item capacity {} is exhausted",
+                self.max_items
+            )));
+        }
+        let next_bytes = if is_replaceable {
+            bytes
+        } else {
+            self.bytes.checked_add(bytes).ok_or_else(|| {
+                DeliveryAdmissionError::Saturated("receiver queue byte count overflowed".to_owned())
+            })?
+        };
+        if next_bytes > self.max_bytes {
+            return Err(DeliveryAdmissionError::Saturated(format!(
+                "receiver queue byte capacity {} is exhausted",
+                self.max_bytes
+            )));
+        }
+        if is_replaceable {
+            self.items.clear();
+            self.bytes = 0;
+        }
+        self.bytes = next_bytes;
+        self.items.push_back(sample);
+        self.high_watermarks.insert(route, identity.clone());
+        Ok((identity, true))
+    }
+
+    /// Admit a normal hardware or public-ingress record.  These records do
+    /// not carry controlled execution identity and therefore have no private
+    /// acknowledgement leg, but they still enter the same receiver-owned
+    /// bounded queue and obey replacement/accumulation semantics.
+    fn admit_untracked(&mut self, sample: WireSample) -> Result<(), DeliveryAdmissionError> {
+        let bytes = sample.payload().len() as u64;
+        let is_replaceable = matches!(
+            self.input_kind,
+            super::input::InputKind::Latest | super::input::InputKind::Setpoint
+        );
+        if !is_replaceable && self.items.len() as u64 >= self.max_items {
+            return Err(DeliveryAdmissionError::Saturated(format!(
+                "receiver queue item capacity {} is exhausted",
+                self.max_items
+            )));
+        }
+        let next_bytes = if is_replaceable {
+            bytes
+        } else {
+            self.bytes.checked_add(bytes).ok_or_else(|| {
+                DeliveryAdmissionError::Saturated("receiver queue byte count overflowed".to_owned())
+            })?
+        };
+        if next_bytes > self.max_bytes {
+            return Err(DeliveryAdmissionError::Saturated(format!(
+                "receiver queue byte capacity {} is exhausted",
+                self.max_bytes
+            )));
+        }
+        if is_replaceable {
+            self.items.clear();
+        }
+        self.bytes = next_bytes;
+        self.items.push_back(sample);
+        Ok(())
+    }
+
+    fn drain(&mut self) -> Vec<WireSample> {
+        self.bytes = 0;
+        self.items.drain(..).collect()
+    }
+}
+
+/// Compute one receiver-owned reservation for a complete input field.  A
+/// fan-in field has one aggregate budget, not one budget per producer route.
+/// Latest and Setpoint inputs replace their retained value, while all other
+/// input forms accumulate records until the next invocation freezes them.
+fn aggregate_delivery_capacity(
+    field: &super::transport::InputTransportField,
+    routes: &[ResolvedInputRoute],
+) -> (u64, u64) {
+    let replaceable = matches!(
+        field.kind,
+        super::input::InputKind::Latest | super::input::InputKind::Setpoint
+    );
+    let max_items = field.max_items.unwrap_or_else(|| {
+        if replaceable {
+            1
+        } else {
+            routes
+                .iter()
+                .map(|route| route.max_items)
+                .fold(0_u64, u64::saturating_add)
+                .max(1)
+        }
+    });
+    let max_bytes = field.max_bytes.unwrap_or_else(|| {
+        if replaceable {
+            routes
+                .iter()
+                .map(|route| route.max_bytes)
+                .max()
+                .unwrap_or(1)
+        } else {
+            routes
+                .iter()
+                .map(|route| route.max_bytes)
+                .fold(0_u64, u64::saturating_add)
+                .max(1)
+        }
+    });
+    (max_items.max(1), max_bytes.max(1))
+}
+
+#[derive(Debug)]
+enum DeliveryAdmissionError {
+    Malformed(TransportError),
+    Saturated(String),
+}
+
+impl DeliveryIdentity {
+    fn route_key(&self) -> (String, String, String, String) {
+        (
+            self.source.clone(),
+            self.target.clone(),
+            self.port.clone(),
+            self.direction.clone(),
+        )
+    }
+}
+
+/// Drain one Zenoh port subscription into the receiver-owned queue and
+/// acknowledge only after queue admission succeeds.  This task intentionally
+/// runs independently of the runtime schedule: a healthy paused or not-due
+/// consumer still admits graph traffic, while its later freeze consumes the
+/// already admitted records.
+async fn delivery_receive_loop(
     subscriber: RuntimeSubscription,
+    queue: Arc<Mutex<DeliveryQueue>>,
+    bus: crate::bus::BusHandle,
+    expected_source: String,
+    expected_callers: BTreeSet<String>,
+    target: String,
+    port: String,
+    direction: String,
+    cancel: CancellationToken,
+) -> crate::Result<()> {
+    loop {
+        let sample = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            result = subscriber.recv_async() => result.map_err(|error| {
+                anyhow::anyhow!(TransportError::Transport(error.to_string()))
+            })?,
+        };
+        let wire = WireSample::from_zenoh(sample)?;
+        let metadata = wire.metadata();
+        let source = metadata
+            .source
+            .as_deref()
+            .filter(|source| !source.is_empty())
+            .unwrap_or(&expected_source)
+            .to_owned();
+
+        let has_controlled_identity = metadata.execution_id.is_some()
+            || metadata.timeline_id.is_some()
+            || metadata.boundary.is_some()
+            || metadata.item.is_some();
+
+        // Unstamped hardware traffic and authenticated supervisor ingress use
+        // the normal input path.  They have no source runtime waiting for a
+        // private controlled-delivery acknowledgement, but remain bounded by
+        // the receiver-owned queue.  Optional traffic is dropped on local
+        // saturation rather than turning a healthy legacy flow into a fatal
+        // process exit.
+        if !has_controlled_identity {
+            if direction == "request" && source != "supervisor" {
+                validate_controlled_request_source(&metadata, &source, &port, &expected_callers)?;
+            } else if direction != "request" && source != expected_source {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!(
+                        "runtime delivery source `{source}` does not match `{expected_source}`"
+                    ),
+                }));
+            }
+            let mut queue = match queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = queue.admit_untracked(wire);
+            continue;
+        }
+
+        if direction == "request" {
+            validate_controlled_request_source(&metadata, &source, &port, &expected_callers)?;
+        } else if source != expected_source {
+            // A sample from a different producer cannot satisfy this route.
+            // Failing the worker makes the owning bus enter its fatal state;
+            // the supervisor then reports a bounded required-delivery failure
+            // instead of accepting an identity-spoofed record.
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!(
+                    "runtime delivery source `{source}` does not match `{expected_source}`"
+                ),
+            }));
+        }
+
+        let identity = {
+            let queue = match queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            queue.identity(&wire, &target, &port, &direction)
+        }?;
+        if identity.execution_id != bus.execution().to_string() {
+            publish_delivery_ack(
+                &bus,
+                &identity,
+                false,
+                Some("delivery belongs to another execution".to_owned()),
+            )
+            .await?;
+            continue;
+        }
+        let timeline_matches = {
+            let queue = match queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            queue.accepts_timeline(&identity.timeline_id)
+        };
+        if !timeline_matches {
+            publish_delivery_ack(
+                &bus,
+                &identity,
+                false,
+                Some("delivery belongs to a retired timeline".to_owned()),
+            )
+            .await?;
+            continue;
+        }
+
+        let result = {
+            let mut queue = match queue.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            queue.admit(wire, &target, &port, &direction)
+        };
+        match result {
+            Ok((identity, _inserted)) => {
+                publish_delivery_ack(&bus, &identity, true, None).await?;
+            }
+            Err(DeliveryAdmissionError::Saturated(detail)) => {
+                publish_delivery_ack(&bus, &identity, false, Some(detail)).await?;
+            }
+            Err(DeliveryAdmissionError::Malformed(error)) => {
+                return Err(anyhow::anyhow!(error));
+            }
+        }
+    }
+}
+
+fn validate_controlled_request_source(
+    metadata: &super::transport::RuntimeWireMetadata,
+    source: &str,
+    port: &str,
+    expected_callers: &BTreeSet<String>,
+) -> crate::Result<()> {
+    if source == "supervisor" {
+        return Ok(());
+    }
+    let caller = metadata
+        .caller
+        .as_deref()
+        .filter(|caller| !caller.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                "request delivery to `{port}` is missing caller identity"
+            )))
+        })?;
+    let (caller_instance, _caller_field) = parse_graph_endpoint(caller).map_err(|error| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+            "request delivery caller `{caller}` is invalid: {error}"
+        )))
+    })?;
+    if caller_instance != source || !expected_callers.contains(caller) {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!("request delivery source `{source}` is not an admitted caller for `{port}`")
+        )));
+    }
+    Ok(())
+}
+
+async fn publish_delivery_ack(
+    bus: &crate::bus::BusHandle,
+    identity: &DeliveryIdentity,
+    admitted: bool,
+    detail: Option<String>,
+) -> crate::Result<()> {
+    let ack = execution_wire::DeliveryAck {
+        execution_id: identity.execution_id.clone(),
+        timeline_id: identity.timeline_id.clone(),
+        boundary: identity.boundary,
+        source: identity.source.clone(),
+        target: identity.target.clone(),
+        port: identity.port.clone(),
+        direction: identity.direction.clone(),
+        sequence: identity.sequence,
+        item: identity.item,
+        bytes: identity.bytes,
+        admitted,
+        detail,
+    };
+    let key = execution_protocol::key(bus, &identity.source, "delivery-ack");
+    let payload = execution_protocol::encode(&ack)?;
+    bus.session()?
+        .put(key, payload)
+        .encoding(Encoding::from(
+            execution_protocol::PROTOBUF_ENCODING.to_owned(),
+        ))
+        .await
+        .map_err(|error| anyhow::anyhow!(TransportError::Transport(error.to_string())))?;
+    Ok(())
 }
 
 struct CollectedInput {
@@ -1511,8 +2086,19 @@ impl<R> ExecutionInputAdapter<R> {
         let fields = <R::Inputs as TransportInputSet>::transport_fields();
         let session = bus.session()?;
         let mut subscriptions = Vec::new();
+        let command_ranks = manifest.command_ranks(&manifest.instance_id)?;
         for field in fields {
-            for route in manifest.input_routes(field)? {
+            let routes = manifest.input_routes(field)?;
+            if routes.is_empty() {
+                continue;
+            }
+            let (queue_max_items, queue_max_bytes) = aggregate_delivery_capacity(field, &routes);
+            let queue = Arc::new(Mutex::new(DeliveryQueue::new(
+                queue_max_items,
+                queue_max_bytes,
+                field.kind,
+            )));
+            for route in routes {
                 let key = bus.full_key(&transport::port_key(
                     &route.source_instance,
                     &route.source_port,
@@ -1539,17 +2125,76 @@ impl<R> ExecutionInputAdapter<R> {
                     .map_err(|error| {
                         anyhow::anyhow!(TransportError::Transport(error.to_string()))
                     })?;
+                let cancel = CancellationToken::new();
+                let expected = Arc::new(AtomicBool::new(false));
+                let worker_queue = Arc::clone(&queue);
+                let worker_cancel = cancel.clone();
+                let worker_expected = Arc::clone(&expected);
+                let worker_bus = bus.clone();
+                let worker_source = route.source_instance.clone();
+                let worker_callers = if route.direction == InputDirection::Request {
+                    command_ranks
+                        .iter()
+                        .filter(|((port, _caller), _rank)| port == &route.binding.name)
+                        .map(|((_port, caller), _rank)| caller.clone())
+                        .collect()
+                } else {
+                    BTreeSet::new()
+                };
+                let worker_target = manifest.instance_id.clone();
+                let worker_port = route.binding.name.clone();
+                let worker_direction = route.direction.key_direction().to_owned();
+                let worker = tokio::spawn(async move {
+                    let result = delivery_receive_loop(
+                        subscriber,
+                        worker_queue,
+                        worker_bus,
+                        worker_source,
+                        worker_callers,
+                        worker_target,
+                        worker_port,
+                        worker_direction,
+                        worker_cancel,
+                    )
+                    .await;
+                    if let Err(error) = result {
+                        panic!("runtime delivery receiver failed: {error:#}");
+                    }
+                    // A normal return is expected only after the owner has
+                    // fenced this worker during stop or reset.
+                    if !worker_expected.load(Ordering::Acquire) {
+                        panic!("runtime delivery receiver exited without cancellation");
+                    }
+                });
+                if let Err(worker) = bus.register_named_worker(
+                    format!(
+                        "delivery-receiver-{}-{}",
+                        route.source_instance, route.binding.name
+                    ),
+                    Arc::clone(&expected),
+                    worker,
+                ) {
+                    worker.abort();
+                    return Err(anyhow::anyhow!(TransportError::Transport(
+                        "runtime delivery receiver could not be registered".to_owned(),
+                    )));
+                }
                 subscriptions.push(BoundSubscription {
                     field: route.field,
                     binding: route.binding,
                     direction: route.direction,
-                    max_items: route.max_items,
-                    max_bytes: route.max_bytes,
-                    subscriber,
+                    max_items: queue_max_items,
+                    max_bytes: queue_max_bytes,
+                    subscriber: None,
+                    delivery: Some(DeliverySubscription {
+                        queue: Arc::clone(&queue),
+                        cancel,
+                        expected,
+                    }),
                 });
             }
         }
-        self.command_ranks = manifest.command_ranks(&manifest.instance_id)?;
+        self.command_ranks = command_ranks;
         self.bus = Some(bus);
         self.subscriptions = subscriptions;
         Ok(())
@@ -1599,7 +2244,8 @@ impl<R> ExecutionInputAdapter<R> {
                 direction,
                 max_items,
                 max_bytes,
-                subscriber,
+                subscriber: Some(subscriber),
+                delivery: None,
             });
         }
         self.bus = Some(bus);
@@ -1948,18 +2594,32 @@ where
         }
         let mut batches: Vec<CollectedInput> = Vec::new();
         for subscription in &self.subscriptions {
-            let mut samples = Vec::new();
-            loop {
-                match subscription.subscriber.try_recv() {
-                    Ok(Some(sample)) => samples.push(WireSample::from_zenoh(sample)?),
-                    Ok(None) => break,
-                    Err(error) => {
-                        return Err(anyhow::anyhow!(TransportError::Transport(
-                            error.to_string(),
-                        )));
+            let samples = if let Some(delivery) = &subscription.delivery {
+                let mut queue = match delivery.queue.lock() {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                queue.drain()
+            } else {
+                let mut samples = Vec::new();
+                let Some(subscriber) = &subscription.subscriber else {
+                    return Err(anyhow::anyhow!(TransportError::Transport(
+                        "runtime input subscription has no receiver".to_owned(),
+                    )));
+                };
+                loop {
+                    match subscriber.try_recv() {
+                        Ok(Some(sample)) => samples.push(WireSample::from_zenoh(sample)?),
+                        Ok(None) => break,
+                        Err(error) => {
+                            return Err(anyhow::anyhow!(TransportError::Transport(
+                                error.to_string(),
+                            )));
+                        }
                     }
                 }
-            }
+                samples
+            };
             for sample in &samples {
                 if sample.metadata().wire_control()? != transport::WireControl::Data {
                     continue;
@@ -2308,8 +2968,37 @@ where
         std::mem::take(&mut self.last_input_receipts)
     }
 
+    fn set_timeline(&mut self, timeline_id: &str) -> crate::Result<()> {
+        if timeline_id.is_empty() {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: "runtime delivery timeline cannot be empty".to_owned(),
+            }));
+        }
+        for subscription in &self.subscriptions {
+            if let Some(delivery) = &subscription.delivery {
+                let mut queue = match delivery.queue.lock() {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                queue.set_timeline(timeline_id);
+            }
+        }
+        Ok(())
+    }
+
     fn stop(&mut self) -> crate::Result<()> {
         self.stopped = true;
+        for subscription in &self.subscriptions {
+            if let Some(delivery) = &subscription.delivery {
+                delivery.expected.store(true, Ordering::Release);
+                delivery.cancel.cancel();
+                if let Ok(mut queue) = delivery.queue.lock() {
+                    queue.clear();
+                } else if let Err(poisoned) = delivery.queue.lock() {
+                    poisoned.into_inner().clear();
+                }
+            }
+        }
         self.subscriptions.clear();
         self.command_high_watermarks.clear();
         self.external_ingress_high_watermarks.clear();
@@ -2328,6 +3017,15 @@ where
         self.future_commands.clear();
         self.stream_terminal.clear();
         self.last_input_receipts.clear();
+        for subscription in &self.subscriptions {
+            if let Some(delivery) = &subscription.delivery {
+                let mut queue = match delivery.queue.lock() {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                queue.clear();
+            }
+        }
         if self.bus.is_none() || self.subscriptions.is_empty() {
             return Err(anyhow::anyhow!(TransportError::Transport(
                 "Runtime input subscriptions are not bound after reset".to_owned(),
@@ -2380,7 +3078,9 @@ struct ExecutionOutputAdapter<R> {
     external_read_high_watermarks: BTreeMap<&'static str, u64>,
     next_command_id: u64,
     last_product_receipts: Vec<RuntimeProductReceipt>,
+    last_delivery_receipts: Vec<RuntimeDeliveryReceipt>,
     last_actuations: Vec<RuntimeActuation>,
+    delivery_context: Option<(u64, String)>,
     stopped: bool,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -2406,7 +3106,9 @@ impl<R> ExecutionOutputAdapter<R> {
             external_read_high_watermarks: BTreeMap::new(),
             next_command_id: 1,
             last_product_receipts: Vec::new(),
+            last_delivery_receipts: Vec::new(),
             last_actuations: Vec::new(),
+            delivery_context: None,
             stopped: false,
             _runtime: PhantomData,
         }
@@ -3327,6 +4029,17 @@ where
         Ok(())
     }
 
+    fn prepare_delivery(&mut self, boundary: u64, timeline_id: &str) -> crate::Result<()> {
+        self.ensure_open()?;
+        if timeline_id.is_empty() {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: "controlled delivery timeline cannot be empty".to_owned(),
+            }));
+        }
+        self.delivery_context = Some((boundary, timeline_id.to_owned()));
+        Ok(())
+    }
+
     fn prepare_state(
         &mut self,
         service: &R,
@@ -3403,13 +4116,34 @@ where
             .bus
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!(crate::bus::BusError::Closed))?;
-        transport::publish_batch(
-            bus,
-            self.instance.as_deref().unwrap_or_default(),
-            &reservation.records,
-        )?;
+        let mut records = reservation.records;
+        self.last_delivery_receipts.clear();
+        if let Some((boundary, timeline_id)) = self.delivery_context.take() {
+            let execution_id = bus.execution().to_string();
+            let mut item_indices = BTreeMap::<(String, String, Option<String>), u32>::new();
+            for record in &mut records {
+                let key = record.delivery_route();
+                let item = item_indices.entry(key).or_insert(0);
+                let item_index = *item;
+                *item = item_index.saturating_add(1);
+                record.stamp_delivery_identity(&execution_id, &timeline_id, boundary, item_index);
+                if let Some((port, direction, target, sequence, item, bytes)) =
+                    record.delivery_receipt(item_index)
+                {
+                    self.last_delivery_receipts.push(RuntimeDeliveryReceipt {
+                        port,
+                        direction,
+                        target,
+                        sequence,
+                        item,
+                        bytes,
+                    });
+                }
+            }
+        }
+        transport::publish_batch(bus, self.instance.as_deref().unwrap_or_default(), &records)?;
         let mut receipts = BTreeMap::<String, RuntimeProductReceipt>::new();
-        for record in &reservation.records {
+        for record in &records {
             let Some((port, sequence, bytes)) = record.product_receipt() else {
                 continue;
             };
@@ -3426,8 +4160,7 @@ where
             entry.bytes = entry.bytes.saturating_add(bytes);
         }
         self.last_product_receipts = receipts.into_values().collect();
-        self.last_actuations = reservation
-            .records
+        self.last_actuations = records
             .iter()
             .filter_map(PreparedOutput::actuation)
             .map(|(port, payload, valid_until_ns)| RuntimeActuation {
@@ -3443,6 +4176,10 @@ where
         std::mem::take(&mut self.last_product_receipts)
     }
 
+    fn take_delivery_receipts(&mut self) -> Vec<RuntimeDeliveryReceipt> {
+        std::mem::take(&mut self.last_delivery_receipts)
+    }
+
     fn take_actuations(&mut self) -> Vec<RuntimeActuation> {
         std::mem::take(&mut self.last_actuations)
     }
@@ -3456,7 +4193,9 @@ where
         self.next_refresh_steps.clear();
         self.last_state_values.clear();
         self.last_product_receipts.clear();
+        self.last_delivery_receipts.clear();
         self.last_actuations.clear();
+        self.delivery_context = None;
         self.external_read_high_watermarks.clear();
         self.read_subscriptions.clear();
         let mut first_error = None;
@@ -3570,6 +4309,8 @@ pub(crate) struct ControlledInvocationOutcome {
     pub(crate) invocation_index: u64,
     /// Products published after complete local acceptance.
     pub(crate) required_products: Vec<RuntimeProductReceipt>,
+    /// Exact output records whose graph receivers must acknowledge admission.
+    pub(crate) required_deliveries: Vec<RuntimeDeliveryReceipt>,
     /// Input records frozen before this invocation was accepted.
     pub(crate) required_inputs: Vec<RuntimeInputReceipt>,
     /// Typed actuator-facing setpoints published by this invocation.
@@ -3692,6 +4433,7 @@ where
         &mut self,
         boundary: u64,
         now: ExecutionTime,
+        timeline_id: &str,
     ) -> crate::Result<ControlledInvocationOutcome> {
         if self.stopped {
             return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
@@ -3735,6 +4477,9 @@ where
             return self.fail_controlled(anyhow::anyhow!(super::InvocationError::DeadlineExceeded));
         }
         let invocation_index = accepted.invocation().index();
+        if let Err(error) = catch_adapter(|| self.outputs.prepare_delivery(boundary, timeline_id)) {
+            return self.fail_controlled(error);
+        }
         if let Err(error) = catch_adapter(|| self.outputs.publish(accepted)) {
             return self.fail_controlled(error);
         }
@@ -3742,6 +4487,7 @@ where
             return self.fail_controlled(anyhow::anyhow!(super::InvocationError::DeadlineExceeded));
         }
         let required_products = self.outputs.take_product_receipts();
+        let required_deliveries = self.outputs.take_delivery_receipts();
         let required_inputs = self.inputs.take_input_receipts();
         let actuations = self.outputs.take_actuations();
         self.controlled_previous = Some(now);
@@ -3749,9 +4495,15 @@ where
             boundary,
             invocation_index,
             required_products,
+            required_deliveries,
             required_inputs,
             actuations,
         })
+    }
+
+    /// Fence receiver queues to a newly admitted controlled timeline.
+    pub(crate) fn set_controlled_timeline(&mut self, timeline_id: &str) -> crate::Result<()> {
+        self.inputs.set_timeline(timeline_id)
     }
 
     /// Drive the process until a host stop or a terminal lifecycle error.
@@ -4401,6 +5153,105 @@ mod tests {
 
     impl Config for TestConfig {
         const SCHEMA_JSON: &'static str = "{}";
+    }
+
+    fn controlled_sample(
+        source: &str,
+        execution_id: &str,
+        timeline_id: &str,
+        boundary: u64,
+        item: u32,
+        bytes: usize,
+    ) -> WireSample {
+        let metadata = RuntimeWireMetadata::data(source, ExecutionTime::default(), boundary)
+            .with_delivery_identity(execution_id, timeline_id, boundary, item);
+        WireSample::from_parts(vec![0; bytes], metadata, "runtime/test")
+    }
+
+    #[test]
+    fn receiver_queue_keeps_unstamped_hardware_and_supervisor_ingress() {
+        let mut queue = DeliveryQueue::new(4, 64, super::super::input::InputKind::Samples);
+        let hardware = WireSample::from_parts(
+            vec![1, 2],
+            RuntimeWireMetadata::data("sensor", ExecutionTime::default(), 1),
+            "runtime/sensor/ports/value/publish",
+        );
+        let external = WireSample::from_parts(
+            vec![3],
+            RuntimeWireMetadata::external_request(ExecutionTime::default(), 7, 0, 1),
+            "runtime/target/ports/commands/request",
+        );
+        queue.admit_untracked(hardware).expect("hardware admission");
+        queue.admit_untracked(external).expect("external admission");
+        assert_eq!(queue.drain().len(), 2);
+    }
+
+    #[test]
+    fn receiver_queue_dedupe_is_a_bounded_high_watermark() {
+        let mut queue = DeliveryQueue::new(20_001, 20_001, super::super::input::InputKind::Samples);
+        queue.set_timeline("timeline");
+        for boundary in 0..20_000 {
+            let (_, inserted) = queue
+                .admit(
+                    controlled_sample("producer", "execution", "timeline", boundary, 0, 1),
+                    "consumer",
+                    "value",
+                    "publish",
+                )
+                .expect("controlled delivery admission");
+            assert!(inserted);
+        }
+        assert_eq!(queue.high_watermarks.len(), 1);
+        let (_, inserted) = queue
+            .admit(
+                controlled_sample("producer", "execution", "timeline", 19_999, 0, 1),
+                "consumer",
+                "value",
+                "publish",
+            )
+            .expect("duplicate admission is idempotent");
+        assert!(!inserted);
+        assert_eq!(queue.items.len(), 20_000);
+    }
+
+    #[test]
+    fn receiver_queue_fan_in_uses_one_aggregate_bound() {
+        let mut queue = DeliveryQueue::new(2, 2, super::super::input::InputKind::Samples);
+        for (source, boundary) in [("left", 0), ("right", 0)] {
+            queue
+                .admit(
+                    controlled_sample(source, "execution", "timeline", boundary, 0, 1),
+                    "consumer",
+                    "value",
+                    "publish",
+                )
+                .expect("fan-in item fits aggregate queue");
+        }
+        let saturated = queue.admit(
+            controlled_sample("left", "execution", "timeline", 1, 0, 1),
+            "consumer",
+            "value",
+            "publish",
+        );
+        assert!(matches!(
+            saturated,
+            Err(DeliveryAdmissionError::Saturated(_))
+        ));
+    }
+
+    #[test]
+    fn receiver_queue_rejects_stale_timeline_after_reset_fence() {
+        let mut queue = DeliveryQueue::new(4, 4, super::super::input::InputKind::Samples);
+        queue.set_timeline("timeline-1");
+        let current = controlled_sample("producer", "execution", "timeline-1", 0, 0, 1);
+        let identity = queue
+            .identity(&current, "consumer", "value", "publish")
+            .expect("identity decodes");
+        assert!(queue.accepts_timeline(&identity.timeline_id));
+        queue.set_timeline("timeline-2");
+        assert!(!queue.accepts_timeline(&identity.timeline_id));
+        assert!(queue.items.is_empty());
+        assert!(queue.high_watermarks.is_empty());
     }
 
     #[derive(Default)]

@@ -328,6 +328,16 @@ impl SourceBundle {
             manifest,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_connections(
+        root: &Path,
+        mut manifest: SourceManifest,
+        connections: BTreeMap<String, serde_json::Value>,
+    ) -> Self {
+        manifest.document.connections = connections;
+        Self::for_test(root, manifest)
+    }
 }
 
 #[cfg(test)]
