@@ -285,12 +285,14 @@ autolib = false
             let directory = manifest.parent().context("spec manifest has no parent")?;
             fs::create_dir_all(directory.join("src"))?;
             fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
+            fs::write(directory.join("src/lib.rs"), "//! supervisor library\n")?;
             fs::write(
                 manifest,
                 format!(
-                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[lib]\nname = \"{}\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
                     spec.package_name(),
-                    spec.package_name()
+                    spec.lib_name(),
+                    spec.bin_name()
                 ),
             )?;
         }
@@ -345,7 +347,7 @@ autolib = false
 
     #[test]
     fn framework_executable_lookalikes_cannot_enter_the_registry() {
-        let valid_target = "[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n";
+        let valid_target = "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n";
         let cases = [
             (
                 "wrong-package",
@@ -360,7 +362,7 @@ autolib = false
                 "supervisor",
                 "phoxal-supervisor",
                 "[\"phoxal\"]",
-                "[[bin]]\nname = \"supervisor\"\npath = \"src/main.rs\"\n",
+                "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"supervisor\"\npath = \"src/main.rs\"\n",
                 "only binary target is 'supervisor'; expected 'phoxal-supervisor'",
             ),
             (
@@ -368,16 +370,16 @@ autolib = false
                 "supervisor",
                 "phoxal-supervisor",
                 "[\"phoxal\"]",
-                "[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/other.rs\"\n",
+                "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/other.rs\"\n",
                 "binary source is supervisor/src/other.rs; expected supervisor/src/main.rs",
             ),
             (
-                "library-target",
+                "wrong-library-name",
                 "supervisor",
                 "phoxal-supervisor",
                 "[\"phoxal\"]",
-                "[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n",
-                "target 'phoxal_supervisor' has library kind 'lib'",
+                "[lib]\nname = \"supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n",
+                "only library target is 'supervisor'; expected 'phoxal_supervisor'",
             ),
             (
                 "wrong-registry",

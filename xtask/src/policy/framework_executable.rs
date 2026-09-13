@@ -7,7 +7,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use super::artifact::ArtifactKind;
-use super::executable::{PHOXAL_PROVIDER, validate_executable_targets, validate_registry_publish};
+use super::executable::{
+    PHOXAL_PROVIDER, ServiceTargetSpec, validate_registry_publish, validate_service_targets,
+};
 use super::{Subject, Violation};
 
 /// One permitted framework-owned executable package.
@@ -20,7 +22,9 @@ pub struct Spec {
     package_name: &'static str,
     manifest_path: &'static str,
     bin_name: &'static str,
-    source_path: &'static str,
+    bin_source_path: &'static str,
+    lib_name: &'static str,
+    lib_source_path: &'static str,
     forbidden_dependencies: &'static [&'static str],
 }
 
@@ -31,6 +35,16 @@ impl Spec {
 
     pub const fn manifest_path(self) -> &'static str {
         self.manifest_path
+    }
+
+    #[cfg(test)]
+    pub const fn bin_name(self) -> &'static str {
+        self.bin_name
+    }
+
+    #[cfg(test)]
+    pub const fn lib_name(self) -> &'static str {
+        self.lib_name
     }
 
     /// Dependencies that would move authoring or parsing policy into this
@@ -66,11 +80,15 @@ impl Spec {
             root,
             manifest_path,
         )?;
-        validate_executable_targets(
+        validate_service_targets(
             package_name,
-            "the framework-owned root executable",
-            self.bin_name,
-            Some(Path::new(self.source_path)),
+            "the framework-owned supervisor package",
+            ServiceTargetSpec {
+                expected_bin: self.bin_name,
+                expected_lib: self.lib_name,
+                expected_bin_source: Some(Path::new(self.bin_source_path)),
+                expected_lib_source: Some(Path::new(self.lib_source_path)),
+            },
             &package.targets,
             root,
         )
@@ -83,7 +101,9 @@ pub const SPECS: [Spec; 1] = [Spec {
     package_name: "phoxal-supervisor",
     manifest_path: "supervisor/Cargo.toml",
     bin_name: "phoxal-supervisor",
-    source_path: "supervisor/src/main.rs",
+    bin_source_path: "supervisor/src/main.rs",
+    lib_name: "phoxal_supervisor",
+    lib_source_path: "supervisor/src/lib.rs",
     forbidden_dependencies: &[
         // The supervisor is built from the one framework library, never from
         // its former CLI owner.

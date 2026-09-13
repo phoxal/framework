@@ -835,12 +835,14 @@ mod tests {
             members.push(directory.strip_prefix(root)?.display().to_string());
             fs::create_dir_all(directory.join("src"))?;
             fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
+            fs::write(directory.join("src/lib.rs"), "//! supervisor library\n")?;
             fs::write(
                 manifest,
                 format!(
-                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[lib]\nname = \"{}\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
                     spec.package_name(),
-                    spec.package_name(),
+                    spec.lib_name(),
+                    spec.bin_name(),
                 ),
             )?;
         }
@@ -893,12 +895,12 @@ mod tests {
             ),
             (
                 "wrong-name",
-                "[[bin]]\nname = \"wrong-name\"\npath = \"src/main.rs\"\n",
+                "[lib]\nname = \"phoxal_component_test\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"wrong-name\"\npath = \"src/main.rs\"\n",
                 "its only binary target is 'wrong-name'; expected 'phoxal-component-test'",
             ),
             (
                 "multiple-bins",
-                "[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n\n[[bin]]\nname = \"second\"\npath = \"src/main.rs\"\n",
+                "[lib]\nname = \"phoxal_component_test\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n\n[[bin]]\nname = \"second\"\npath = \"src/main.rs\"\n",
                 "has 2 binary targets; expected exactly one",
             ),
         ];
@@ -1036,7 +1038,7 @@ path = "src/example.rs"
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "phoxal-component-test is an official component package but target 'future-target' has unsupported target kind 'future'; expected bin, test, bench, example, or custom-build"
+            "phoxal-component-test is an official component package but target 'future-target' has unsupported target kind 'future'; expected lib, bin, test, bench, example, or custom-build"
         );
         Ok(())
     }

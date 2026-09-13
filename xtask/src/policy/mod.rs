@@ -67,8 +67,9 @@ pub(crate) const FACADE: &str = "phoxal";
 /// `crates/installation` is named here before its implementation lands so the
 /// policy keeps the planned owner classified when the package is added by the
 /// project-tooling cutover.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 13] = [
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
     "phoxal",
+    "supervisor",
     "crates/macros",
     "crates/build",
     "crates/port",
@@ -114,6 +115,9 @@ pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] =
 pub(crate) fn library_package_name(directory: &str) -> Option<String> {
     if directory == FACADE {
         return Some(FACADE.to_owned());
+    }
+    if directory == "supervisor" {
+        return Some("phoxal-supervisor".to_owned());
     }
     let suffix = directory
         .strip_prefix(LIBRARY_CRATE_ROOT)
@@ -485,6 +489,10 @@ mod tests {
     fn a_library_crate_directory_names_exactly_one_package() {
         assert_eq!(library_package_name("phoxal").as_deref(), Some("phoxal"));
         assert_eq!(
+            library_package_name("supervisor").as_deref(),
+            Some("phoxal-supervisor")
+        );
+        assert_eq!(
             library_package_name("crates/macros").as_deref(),
             Some("phoxal-macros")
         );
@@ -533,6 +541,7 @@ mod tests {
     fn every_public_owner_has_a_stable_registry_package_identity() {
         for (directory, package) in [
             ("phoxal", "phoxal"),
+            ("supervisor", "phoxal-supervisor"),
             ("crates/macros", "phoxal-macros"),
             ("crates/build", "phoxal-build"),
             ("crates/port", "phoxal-port"),
