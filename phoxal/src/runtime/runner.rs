@@ -4563,7 +4563,7 @@ mod tests {
             let now = ExecutionTime::from_nanos(index * 10_000_000);
             assert!(matches!(
                 runner.poll(now),
-                Ok(PollOutcome::Accepted { invocation_index }) if invocation_index == index as u64
+                Ok(PollOutcome::Accepted { invocation_index }) if invocation_index == index
             ));
             if index < 17 {
                 assert!(

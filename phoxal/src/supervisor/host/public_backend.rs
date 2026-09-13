@@ -759,6 +759,11 @@ fn runtime_record(
         WireControl::Gap => RecordKind::Gap,
         WireControl::End => RecordKind::End,
         WireControl::Failed => RecordKind::Failed,
+        WireControl::Rejected => {
+            return Err(PublicBackendError::Transport(
+                "Runtime publication used request-only rejection control".to_owned(),
+            ));
+        }
     };
     let payload = if control == WireControl::Data {
         wire.payload().to_vec()
