@@ -769,9 +769,13 @@ fn nested_type(rust_type: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write as _;
     use std::path::PathBuf;
+    use std::process::{Command, Stdio};
 
-    use prost_reflect::{DescriptorPool, Value};
+    use prost::Message as _;
+    use prost_reflect::{DescriptorPool, DynamicMessage, Value};
+    use prost_types::FileDescriptorSet;
 
     use super::{
         DESCRIPTOR_FILE, DependencyDescriptor, Error, Kind, PORT_PROTO, compile_to,
@@ -984,6 +988,102 @@ mod tests {
         assert!(
             pool.get_message_by_name("example.shared.v1.SharedPayload")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn imports_dependency_descriptors_without_source_locations() {
+        let (_dependency_source, dependency_output, dependency_result) =
+            compile_sources(&[("example/shared/v1/payload.proto", SHARED_PAYLOAD)]);
+        dependency_result.expect("dependency descriptor generation");
+        let descriptors = fs::read(dependency_output.path().join(DESCRIPTOR_FILE))
+            .expect("dependency descriptors");
+        let mut stripped = FileDescriptorSet::decode(descriptors.as_slice())
+            .expect("dependency descriptor set decodes");
+        for file in &mut stripped.file {
+            file.source_code_info = None;
+        }
+        let stripped = stripped.encode_to_vec();
+
+        let owner_source = tempfile::tempdir().expect("owner source");
+        let owner_output = tempfile::tempdir().expect("owner output");
+        let owner_proto = owner_source.path().join("example/owner/v1/owner.proto");
+        fs::create_dir_all(owner_proto.parent().expect("owner parent")).expect("owner directory");
+        fs::write(
+            &owner_proto,
+            r#"
+                syntax = "proto3";
+                package example.owner.v1;
+                import "example/shared/v1/payload.proto";
+                message Owned { example.shared.v1.SharedPayload payload = 1; }
+            "#,
+        )
+        .expect("owner source");
+
+        compile_to_with_dependencies(
+            &[&owner_proto],
+            &[owner_source.path()],
+            owner_output.path(),
+            &[DependencyDescriptor::new("example-shared", &stripped)],
+            &[(".example.shared.v1", "::example_shared")],
+        )
+        .expect("source-location-free dependency import");
+
+        let closure = fs::read(owner_output.path().join(DESCRIPTOR_FILE)).expect("owner closure");
+        let pool = DescriptorPool::decode(closure.as_slice()).expect("owner descriptor closure");
+        assert!(
+            pool.get_message_by_name("example.shared.v1.SharedPayload")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn exchanges_an_owned_message_with_an_independent_python_peer() {
+        let (_source, output, result) =
+            compile_sources(&[("example/shared/v1/payload.proto", SHARED_PAYLOAD)]);
+        result.expect("contract generation");
+        let descriptors = fs::read(output.path().join(DESCRIPTOR_FILE)).expect("descriptors");
+        let pool = DescriptorPool::decode(descriptors.as_slice()).expect("descriptor closure");
+        let descriptor = pool
+            .get_message_by_name("example.shared.v1.SharedPayload")
+            .expect("owned message descriptor");
+        let mut request = DynamicMessage::new(descriptor.clone());
+        request
+            .try_set_field_by_name("value", Value::U64(150))
+            .expect("fixture value");
+
+        let script = r#"
+import sys
+
+payload = sys.stdin.buffer.read()
+if payload != bytes((0x08, 0x96, 0x01)):
+    raise SystemExit(f"unexpected protobuf payload: {payload.hex()}")
+sys.stdout.buffer.write(bytes((0x08, 0xAC, 0x02)))
+"#;
+        let mut peer = Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("independent Python peer starts");
+        peer.stdin
+            .as_mut()
+            .expect("Python stdin")
+            .write_all(&request.encode_to_vec())
+            .expect("Rust request reaches Python");
+        drop(peer.stdin.take());
+        let reply = peer.wait_with_output().expect("Python peer completes");
+        assert!(reply.status.success(), "Python peer rejected the request");
+
+        let reply = DynamicMessage::decode(descriptor, reply.stdout.as_slice())
+            .expect("Python reply decodes in Rust");
+        assert_eq!(
+            reply
+                .get_field_by_name("value")
+                .expect("reply value")
+                .as_ref(),
+            &Value::U64(300)
         );
     }
 
