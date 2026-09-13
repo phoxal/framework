@@ -60,23 +60,6 @@ impl Bundle {
         }
     }
 
-    pub(crate) fn services(&self) -> Vec<String> {
-        match self {
-            Self::Legacy(bundle) => bundle
-                .robot()
-                .services()
-                .map(|(id, _)| id.as_str().to_owned())
-                .collect(),
-            Self::Source(bundle) => bundle
-                .manifest
-                .executables
-                .iter()
-                .filter(|entry| entry.role == "service")
-                .map(|entry| entry.instance.clone())
-                .collect(),
-        }
-    }
-
     pub(crate) fn expected_processes(&self) -> Vec<(String, ParticipantKind)> {
         match self {
             Self::Legacy(bundle) => {
@@ -136,6 +119,15 @@ impl SourceBundle {
 
     pub(crate) fn executables(&self) -> impl Iterator<Item = &SourceExecutable> {
         self.manifest.executables.iter()
+    }
+
+    /// Return the exact artifact summary retained for one executable.
+    pub(crate) fn artifact(&self, instance: &str) -> Option<&serde_json::Value> {
+        self.manifest
+            .executables
+            .iter()
+            .find(|executable| executable.instance == instance)
+            .and_then(|executable| executable.artifact.as_ref())
     }
 
 }
@@ -295,6 +287,29 @@ impl SourceExecutable {
             artifact: None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_artifact(
+        instance: impl Into<String>,
+        artifact: serde_json::Value,
+    ) -> Self {
+        let instance = instance.into();
+        Self {
+            role: if instance == "brain" {
+                "brain".to_owned()
+            } else {
+                "service".to_owned()
+            },
+            instance,
+            package_id: "fixture".to_owned(),
+            package: "fixture".to_owned(),
+            target: "fixture".to_owned(),
+            path: "bin/fixture".to_owned(),
+            bytes: 1,
+            sha256: "0".repeat(64),
+            artifact: Some(artifact),
+        }
+    }
 }
 
 impl SourceBundle {
@@ -338,6 +353,7 @@ impl SourceManifest {
             components: Vec::new(),
         }
     }
+
 }
 
 fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle> {

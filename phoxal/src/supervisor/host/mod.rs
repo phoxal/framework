@@ -33,6 +33,7 @@ pub(crate) mod bundle;
 pub(crate) mod lock;
 pub(crate) mod presence;
 pub(crate) mod process;
+pub(crate) mod public_backend;
 pub(crate) mod router;
 pub(crate) mod serve;
 pub(crate) mod signal;
@@ -47,8 +48,8 @@ use crate::bus::{
     BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
     ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
 };
-use crate::communication::{DeploymentTarget, ExecutionDefinition, ServicePorts, SupervisorAdapter};
-use crate::communication::session::{ExecutionState as PublicExecutionState, ExecutionSummary};
+use crate::communication::{DeploymentTarget, SupervisorAdapter};
+use crate::communication::session::ExecutionState as PublicExecutionState;
 use crate::communication_transport::{PrincipalPolicy, PublicSessionServer, PublicTransportLimits};
 use crate::identity::ExecutionId;
 use crate::supervisor::api::connect::PRESENCE_KEY;
@@ -59,6 +60,10 @@ use presence::Presence;
 use state::ExecutionState;
 use bundle::Bundle;
 use process::ProcessSupervisor;
+use public_backend::{
+    NoControlledRuntimeBoundary, NoExternalIngress, RuntimePublicBackend, RuntimePublicSurface,
+    RuntimeSimulationBridge,
+};
 
 const SUPERVISOR_LABEL: &str = "phoxal-supervisor";
 
@@ -374,10 +379,11 @@ fn finish_after_transport_close(
 
 /// Start the public session surface on the supervisor's own Zenoh session.
 ///
-/// The adapter is deliberately populated only with service identities here.
-/// A service port is advertised only after generated owner metadata and a
-/// concrete runtime binding exist, so an empty record is preferable to
-/// claiming an endpoint the runner cannot serve.
+/// Source bundles carry the generated artifact summaries that define every
+/// public port, bound, and message identity.  The host installs those exact
+/// records and wires the session server to the same Runtime bus used by the
+/// launched graph.  Legacy observer bundles retain their control-only
+/// surface, because they have no typed artifact contract to advertise.
 async fn start_public_session(
     bus: &BusHandle,
     target: &DeploymentTarget,
@@ -385,33 +391,39 @@ async fn start_public_session(
     state: &ExecutionState,
     execution: ExecutionId,
 ) -> Result<PublicSessionServer> {
+    let surface = RuntimePublicSurface::from_bundle(runtime)?;
     let mut adapter = SupervisorAdapter::with_defaults(
         target.clone(),
         env!("CARGO_PKG_VERSION"),
         crate::version::FrameworkVersion::CURRENT_SPELLING,
     )?;
-    let services = runtime
-        .services()
-        .into_iter()
-        .map(|instance| ServicePorts::new(instance, Vec::new()))
-        .collect::<Result<Vec<_>, _>>()?;
     let timeline = state.time_domain().timeline.to_string();
-    adapter.install_execution(ExecutionDefinition::new(
-        ExecutionSummary {
-            execution_id: execution.to_string(),
-            timeline_id: timeline,
-            state: PublicExecutionState::Preparing as i32,
-        },
-        services,
+    adapter.install_execution(surface.execution(
+        execution.to_string(),
+        timeline,
+        PublicExecutionState::Preparing as i32,
     )?)?;
     adapter.set_status(
         crate::communication::session::SupervisorState::Preparing,
         Some("runtime processes are being admitted".to_owned()),
     )?;
     let session = bus.session()?.clone();
-    Ok(PublicSessionServer::start(
+    let backend = Arc::new(RuntimePublicBackend::new(
+        bus.clone(),
+        &surface,
+        Arc::new(NoExternalIngress),
+    ));
+    let simulation_backend = Arc::new(RuntimeSimulationBridge::new(
+        bus.clone(),
+        &surface,
+        None,
+        Arc::new(NoControlledRuntimeBoundary),
+    ));
+    Ok(PublicSessionServer::start_with_backends(
         session,
         adapter,
+        backend,
+        simulation_backend,
         PrincipalPolicy::Any,
         PublicTransportLimits::default(),
     )
