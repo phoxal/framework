@@ -23,7 +23,7 @@ name = "phoxal-component-ddsm115"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["participant"] }
+phoxal = { workspace = true, features = ["runtime"] }
 anyhow = { workspace = true }
 phoxal-motion = { workspace = true }
 phoxal-port = { workspace = true }

@@ -236,13 +236,13 @@ mod execution;
 pub mod participant;
 #[cfg(feature = "legacy-runtime")]
 #[cfg(all(
-    feature = "participant",
+    feature = "runtime",
     not(any(feature = "session", feature = "supervisor", feature = "authoring"))
 ))]
 mod participant;
 #[cfg(feature = "legacy-runtime")]
 #[cfg(not(any(
-    feature = "participant",
+    feature = "runtime",
     feature = "session",
     feature = "supervisor",
     feature = "authoring"
@@ -328,7 +328,6 @@ pub mod version;
 #[cfg(all(
     feature = "legacy-runtime",
     any(
-        feature = "participant",
         feature = "session",
         feature = "simulator",
         feature = "supervisor",
@@ -343,7 +342,6 @@ pub mod runtime;
 #[cfg(all(
     feature = "legacy-runtime",
     not(any(
-        feature = "participant",
         feature = "session",
         feature = "simulator",
         feature = "supervisor",
@@ -463,7 +461,7 @@ supervisor_boundary!(
     mod supervisor;
 );
 
-#[cfg(all(feature = "legacy-runtime", feature = "session"))]
+#[cfg(feature = "session")]
 #[cfg_attr(docsrs, doc(cfg(feature = "session")))]
 pub mod session;
 
@@ -490,16 +488,16 @@ pub mod __bus_test_support;
 
 #[cfg(all(
     feature = "legacy-runtime",
-    any(feature = "participant", feature = "session", feature = "simulator")
+    any(feature = "runtime", feature = "session", feature = "simulator")
 ))]
 #[cfg_attr(
     docsrs,
-    doc(cfg(any(feature = "participant", feature = "session", feature = "simulator")))
+    doc(cfg(any(feature = "runtime", feature = "session", feature = "simulator")))
 )]
 pub mod api;
 #[cfg(all(
     feature = "legacy-runtime",
-    not(any(feature = "participant", feature = "session", feature = "simulator"))
+    not(any(feature = "runtime", feature = "session", feature = "simulator"))
 ))]
 #[allow(
     dead_code,
@@ -532,87 +530,86 @@ pub use phoxal_port as port;
 #[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
 pub mod communication;
 
-// The public session transport is compiled only when both the Protobuf
-// protocol and the legacy-runtime dependency closure are present. Keeping
-// this declaration at the crate root preserves the protocol-only dependency
-// boundary while letting the session and supervisor owners share one adapter.
-#[cfg(all(feature = "legacy-runtime", feature = "protocol"))]
+// The public session transport belongs to the session and supervisor profiles.
+// It is intentionally independent from the private participant bus so an
+// attaching client does not inherit the runtime runner's dependency closure.
+#[cfg(any(feature = "session", feature = "supervisor"))]
 #[doc(hidden)]
 #[path = "bus/public_session.rs"]
 pub mod communication_transport;
 
 /// Derive a participant config's compile-time JSON Schema from a `Config`
 /// struct.
-#[cfg(any(feature = "participant", feature = "runtime"))]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::Config;
 
 /// Register a synchronous Runtime implementation with cadence and deadlines.
-#[cfg(any(feature = "participant", feature = "runtime"))]
+#[cfg(feature = "runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::runtime;
 
 /// Link a participant state struct to its `Config`/`Api` types as a checked
 /// service.
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::service;
 
 /// Link a participant state struct to its `Config`/`Api` types as a component
 /// driver, and optionally declare the one connection kind it accepts.
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::driver;
 
 /// Declare the one mandatory root brain, the robot project's composition root.
 ///
 /// Fixed identity `brain` and `Config = ()`; otherwise exactly the checked
 /// service surface.
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::brain;
 
 /// Attach a cadence to `Participant::step`.
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::step;
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
 /// This is the default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use participant::runner::run;
 
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use crate::bundle::ParticipantAssets as ParticipantAssetResolver;
 #[cfg(feature = "legacy-runtime")]
 pub use crate::model::AssetId;
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use participant::api::Participant;
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use participant::context::{QueryContext, ResetContext, SetupContext, StepContext};
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use participant::managed::ManagedTaskPolicy;
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 
 /// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub mod tokio {
     #[doc(inline)]
     pub use crate::participant::runner::run_async as run;
 }
 
 /// Everything a participant author imports with `use phoxal::prelude::*;`.
-#[cfg(feature = "participant")]
-#[cfg_attr(docsrs, doc(cfg(feature = "participant")))]
+#[cfg(feature = "runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{

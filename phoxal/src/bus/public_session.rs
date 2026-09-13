@@ -829,6 +829,10 @@ impl PublicSessionServer {
     }
 
     /// Update the supervisor status while retaining the public surface.
+    #[allow(
+        dead_code,
+        reason = "the session profile owns the public client while the supervisor profile owns server status publication"
+    )]
     pub(crate) async fn set_status(
         &self,
         state: SupervisorState,
@@ -845,6 +849,10 @@ impl PublicSessionServer {
     }
 
     /// Update the execution lifecycle after a process graph transition.
+    #[allow(
+        dead_code,
+        reason = "the session profile owns the public client while the supervisor profile owns execution-state publication"
+    )]
     pub(crate) async fn set_execution_state(
         &self,
         execution_id: &str,
@@ -982,6 +990,26 @@ pub enum PublicTransportSecurity {
 }
 
 /// Configure a Zenoh client from an explicit public security profile.
+fn public_client_config(endpoint: &str) -> Result<zenoh::Config, PublicTransportError> {
+    let mut config = zenoh::Config::default();
+    for (key, value) in [
+        ("transport/link/tx/lease", "3000"),
+        ("transport/link/tx/keep_alive", "4"),
+        ("scouting/multicast/enabled", "false"),
+        ("mode", "\"client\""),
+    ] {
+        config
+            .insert_json5(key, value)
+            .map_err(|error| PublicTransportError::Transport(error.to_string()))?;
+    }
+    let endpoints = serde_json::to_string(std::slice::from_ref(&endpoint))
+        .map_err(|error| PublicTransportError::Transport(error.to_string()))?;
+    config
+        .insert_json5("connect/endpoints", &endpoints)
+        .map_err(|error| PublicTransportError::Transport(error.to_string()))?;
+    Ok(config)
+}
+
 fn client_config_with_security(
     endpoint: &str,
     security: &PublicTransportSecurity,
@@ -992,8 +1020,7 @@ fn client_config_with_security(
             detail: "router endpoint is empty".to_owned(),
         });
     }
-    let mut config = crate::bus::session::client_config(endpoint)
-        .map_err(|error| PublicTransportError::Transport(error.to_string()))?;
+    let mut config = public_client_config(endpoint)?;
     let insert = |config: &mut zenoh::Config, key: &str, value: &str| {
         config
             .insert_json5(key, value)

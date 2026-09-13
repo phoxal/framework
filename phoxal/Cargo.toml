@@ -31,7 +31,7 @@ path = "src/lib.rs"
 # this crate's source is `src/lib.rs`, and `cargo xtask policy` rejects it
 # anywhere else.
 [features]
-default = ["participant"]
+default = ["runtime"]
 
 # The contract descriptor family is deliberately available without selecting a
 # runner, transport, host, or authoring profile.
@@ -79,15 +79,19 @@ legacy-runtime = [
 # the transport-owned runner is migrated in a later slice.
 runtime = ["legacy-runtime"]
 
-# Ordinary robot services, drivers, and the root brain: the robot `api`, the
-# role attributes, the runner, the prelude, and the typed handles they build.
-participant = ["legacy-runtime"]
-
 # The CLI, Operator, and any other application attaching to a running
-# execution: `phoxal::session`, the runtime and supervisor contract families,
-# the participant launch encoder, and the embedded participant metadata reader.
-# Visibility only - a session build compiles nothing a participant build lacks.
-session = ["legacy-runtime", "protocol"]
+# execution. The public session owns its Protobuf-over-Zenoh transport and typed
+# client only; it does not pull in the participant runner or its internal bus.
+session = [
+    "port",
+    "protocol",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tracing",
+    "dep:zenoh",
+]
 
 # Webots, Isaac Sim, or another external world adapter: `phoxal::simulator`,
 # the runtime contract family, the bundle reader, and `model::simulation`.
@@ -119,7 +123,7 @@ authoring = ["legacy-runtime"]
 # A downstream crate enables it as a **dev**-dependency feature, because a
 # participant crate's tests are a separate compilation unit that cannot enable
 # this crate's `cfg(test)`.
-test-harness = ["participant"]
+test-harness = ["runtime"]
 
 [dependencies]
 phoxal-macros = { workspace = true, optional = true }
@@ -221,6 +225,11 @@ path = "tests/runtime_serialized_smoke.rs"
 required-features = ["test-harness", "session"]
 
 [[test]]
+name = "consumer_policy"
+path = "tests/consumer_policy.rs"
+required-features = ["port"]
+
+[[test]]
 name = "api"
 path = "tests/api.rs"
 required-features = ["session"]
@@ -245,7 +254,7 @@ required-features = ["session", "supervisor", "authoring"]
 [[test]]
 name = "runtime_supervisor_e2e"
 path = "tests/runtime_supervisor_e2e.rs"
-required-features = ["participant", "supervisor", "test-harness"]
+required-features = ["runtime", "supervisor", "test-harness"]
 
 [[test]]
 name = "authoring_compile"
@@ -270,24 +279,24 @@ required-features = ["authoring"]
 [[example]]
 name = "runtime_control_loop"
 path = "examples/runtime_control_loop.rs"
-required-features = ["participant"]
+required-features = ["runtime"]
 
 [[example]]
 name = "runtime_query_server"
 path = "examples/runtime_query_server.rs"
-required-features = ["participant"]
+required-features = ["runtime"]
 
 [[example]]
 name = "runtime_serialized_queries"
 path = "examples/runtime_serialized_queries.rs"
-required-features = ["participant"]
+required-features = ["runtime"]
 
 [[example]]
 name = "runtime_async_entrypoint"
 path = "examples/runtime_async_entrypoint.rs"
-required-features = ["participant"]
+required-features = ["runtime"]
 
 [[bin]]
 name = "phoxal-runtime-reference"
 path = "tests/fixtures/runtime_reference.rs"
-required-features = ["participant"]
+required-features = ["runtime"]

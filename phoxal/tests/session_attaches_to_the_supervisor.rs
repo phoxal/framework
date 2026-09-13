@@ -4,19 +4,17 @@
 //! the whole attachment SDK; each is proven by its own unit tests, and neither
 //! can see whether the other agrees with it. This test runs both: the
 //! supervisor opens its embedded router over the fixture bundle, and a session
-//! completes the frozen `supervisor/connect` bootstrap against it, reads the
-//! manifest back, and closes.
+//! completes the frozen `supervisor/connect` bootstrap against it and closes.
 //!
 //! Everything it asserts is a fact one process learned from the other, which is
-//! what makes it worth a whole execution: the framework train, the robot
-//! identity out of `manifest.json`, and the baseline snapshot a late joiner
-//! needs before it applies updates.
+//! what makes it worth a whole execution: the framework train and the
+//! supervisor identity returned by the public session bootstrap.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::time::Duration;
 
-use phoxal::session::{ConnectOptions, Session};
+use phoxal::session::{Connection, ConnectionConfig, connect};
 use phoxal::supervisor::rendezvous::RuntimeRendezvous;
 use phoxal::version::FrameworkVersion;
 
@@ -26,7 +24,7 @@ use phoxal::version::FrameworkVersion;
 const STARTUP: Duration = Duration::from_secs(20);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_session_attaches_to_a_live_supervisor_and_reads_the_running_robot() {
+async fn a_session_attaches_to_a_live_supervisor() {
     let bundle = phoxal_fixture::staged_bundle();
     let root = bundle
         .path()
@@ -49,37 +47,35 @@ async fn a_session_attaches_to_a_live_supervisor_and_reads_the_running_robot() {
     });
 
     let endpoint = format!("unixsock-stream/{}", socket.display());
-    let session = tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &supervisor))
+    let connection = tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &supervisor))
         .await
         .expect("the supervisor binds its socket");
-
-    let connected = session.connected().clone();
+    let supervisor_session = connection
+        .supervisor("local")
+        .await
+        .expect("the supervisor accepts the public session");
+    let info = supervisor_session
+        .info()
+        .await
+        .expect("the supervisor info answers");
     assert_eq!(
-        connected.framework,
-        FrameworkVersion::CURRENT,
+        info.framework_version,
+        FrameworkVersion::CURRENT.to_string(),
         "both halves of one train report the same version"
     );
     assert_eq!(
-        connected.robot.as_str(),
-        "rgbd-imu-diff-drive",
-        "the identity comes from the manifest the supervisor is running"
+        info.supervisor_version,
+        env!("CARGO_PKG_VERSION"),
+        "the supervisor reports its package version"
     );
-
-    let handle = session.handle();
-    let manifest = handle.manifest().await.expect("the manifest answers");
-    assert_eq!(
-        manifest.into_robot().id().as_str(),
-        connected.robot.as_str(),
-        "`supervisor/info` hands back the same robot the bootstrap named"
-    );
-    let snapshot = handle
-        .snapshot()
-        .expect("a session installs the baseline snapshot before it returns");
-    snapshot
-        .validate()
-        .expect("the baseline snapshot is internally consistent");
-
-    session.close().await.expect("the session closes cleanly");
+    supervisor_session
+        .close()
+        .await
+        .expect("the supervisor session closes cleanly");
+    connection
+        .close()
+        .await
+        .expect("the connection closes cleanly");
     supervisor.abort();
     let _ = supervisor.await;
 }
@@ -92,14 +88,16 @@ async fn a_session_attaches_to_a_live_supervisor_and_reads_the_running_robot() {
 async fn connect_when_bound(
     endpoint: &str,
     supervisor: &tokio::task::JoinHandle<phoxal::Result<()>>,
-) -> Session {
+) -> Connection {
     loop {
         assert!(
             !supervisor.is_finished(),
             "the supervisor exited before it was reachable at {endpoint}"
         );
-        match Session::connect(&ConnectOptions::new(endpoint, "session-attach-test")).await {
-            Ok(session) => return session,
+        let config = ConnectionConfig::new(endpoint, "local", "session-attach-test")
+            .expect("the session config is valid");
+        match connect(config).await {
+            Ok(connection) => return connection,
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }

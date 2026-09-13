@@ -975,6 +975,10 @@ impl SupervisorAdapter {
 
     /// Replace one execution's lifecycle projection without changing its
     /// identity, timeline, or admitted public service metadata.
+    #[allow(
+        dead_code,
+        reason = "the public session client profile validates the adapter without hosting execution state"
+    )]
     pub(crate) fn set_execution_state(
         &mut self,
         execution_id: &str,

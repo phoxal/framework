@@ -23,7 +23,7 @@ name = "phoxal-component-oak_d_lite"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["participant"] }
+phoxal = { workspace = true, features = ["runtime"] }
 anyhow = { workspace = true }
 phoxal-port = { workspace = true }
 prost = { workspace = true }

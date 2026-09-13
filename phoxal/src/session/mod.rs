@@ -35,7 +35,7 @@
 //! retains the first structured cause. Retry, reconnect, endpoint selection,
 //! and broader timeout budgets remain decisions for the application.
 
-mod connection;
+#[path = "public_error.rs"]
 mod error;
 mod public;
 
@@ -45,11 +45,7 @@ pub use crate::communication_transport::{
     PublicSimulationContext, PublicSubscription, PublicTlsCredentials, PublicTransportError,
     PublicTransportLimits, PublicTransportSecurity, SupervisorWatch,
 };
-pub use crate::world::{
-    WorldDiagnosticsSubscription, WorldSessionClient, WorldSessionWireError, WorldStateSubscription,
-};
-pub use connection::{ConnectOptions, ConnectedExecution, Session, SessionHandle};
-pub use error::{CloseError, CompatibilityRefusal, ConnectError, DisconnectReason, SessionError};
+pub use error::SessionError;
 pub use public::{
     CommandHandle, CommandOutcome, Connection, ConnectionConfig, EventHandle, EventSubscription,
     Execution, Management, ReadHandle, ReadOutcome, SampleHandle, SampleSubscription, Service,

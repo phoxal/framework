@@ -23,7 +23,7 @@ name = "phoxal-component-zed_f9p"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["participant"] }
+phoxal = { workspace = true, features = ["runtime"] }
 anyhow = { workspace = true }
 phoxal-port = { workspace = true }
 prost = { workspace = true }
