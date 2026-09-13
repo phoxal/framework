@@ -112,7 +112,6 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
     let mut metadata = Vec::new();
     let mut checks = Vec::new();
     let mut transport = Vec::new();
-    let mut transport_registrations = Vec::new();
     for field in fields.iter_mut() {
         let Some(field_name) = field.ident.clone() else {
             return Err(syn::Error::new_spanned(
@@ -191,15 +190,6 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
             &payload,
             field,
         )?);
-        if role.served()
-            && let Some(port) = options.port.as_ref()
-        {
-            transport_registrations.push(quote! {
-                ::phoxal::runtime::transport::register_response_codec::<#payload>(
-                    (#port).signature(),
-                );
-            });
-        }
     }
 
     Ok(quote! {
@@ -219,9 +209,6 @@ fn expand_output_struct(output: &mut ItemStruct) -> syn::Result<TokenStream> {
                 Ok(records)
             }
 
-            fn register_transport_codecs() {
-                #(#transport_registrations)*
-            }
         }
 
         const _: () = {
@@ -249,7 +236,6 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
     let mut transport = Vec::new();
     let mut work = Vec::new();
     let mut reads = Vec::new();
-    let mut transport_registrations = Vec::new();
 
     // Resolve operation selectors before expanding activation methods.  The
     // authoring surface permits the worker method to appear after its
@@ -334,12 +320,6 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 }
             });
             transport.push(projection_transport(method, role, &options)?);
-            let payload = projection_payload_type(&return_type, role);
-            transport_registrations.push(quote! {
-                ::phoxal::runtime::transport::register_response_codec::<#payload>(
-                    (#port).signature(),
-                );
-            });
         } else if role == Role::Setpoint {
             validate_projection_signature(method, "setpoint")?;
             let return_type = normalize_borrowed(&return_type(&method.sig.output, method)?);
@@ -356,12 +336,6 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 }
             });
             transport.push(projection_transport(method, role, &options)?);
-            let payload = projection_payload_type(&return_type, role);
-            transport_registrations.push(quote! {
-                ::phoxal::runtime::transport::register_response_codec::<#payload>(
-                    (#port).signature(),
-                );
-            });
         } else if role == Role::Read {
             validate_read_signature(method)?;
             let request = method_argument_type(method, 1)?;
@@ -379,11 +353,6 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 }
             });
             reads.push(read_transport(method, &options, &request)?);
-            transport_registrations.push(quote! {
-                ::phoxal::runtime::transport::register_exchange_codecs::<#request, #response>(
-                    (#port).signature(),
-                );
-            });
         } else if role == Role::Activate {
             validate_activation_signature(method)?;
             let selector = options.selector.as_ref().ok_or_else(|| {
@@ -470,12 +439,6 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 let refresh = options
                     .refresh_every_steps
                     .map_or_else(|| quote!(None), |value| quote!(Some(#value)));
-                let request_codec = quote! {
-                    ::phoxal::runtime::input::activation_request_codec::<
-                        <<#self_type as ::phoxal::runtime::Runtime>::Inputs as
-                            ::phoxal::runtime::input::InputFieldBinding<{#field_id}>>::Form
-                    >()
-                };
                 quote! {
                     if let Some(activation) = self.#method_name(state) {
                         let (key, request) = activation.into_parts();
@@ -484,7 +447,7 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                             ::std::boxed::Box::new(key),
                             ::std::boxed::Box::new(request),
                             None,
-                            #request_codec,
+                            None,
                             Some(#timeout),
                             #refresh,
                             None,
@@ -544,10 +507,6 @@ fn expand_output_impl(implementation: &mut ItemImpl) -> syn::Result<TokenStream>
                 let mut records = ::std::vec::Vec::new();
                 #(#transport)*
                 Ok(records)
-            }
-
-            fn register_transport_codecs() {
-                #(#transport_registrations)*
             }
 
             fn prepare_work(
@@ -994,12 +953,10 @@ fn output_transport(
                             signature,
                             reply.response() as &dyn ::core::any::Any,
                             #max_bytes,
-                            ::phoxal::runtime::transport::reply_metadata(
+                            ::phoxal::runtime::transport::reply_metadata_for_order(
                                 source,
                                 context,
-                                reply.id().sequence(),
-                                reply.order().eligible_boundary(),
-                                reply.order().caller_rank(),
+                                reply.order(),
                             ),
                         )?.for_field(stringify!(#field_name));
                         encoded_bytes = ::phoxal::runtime::transport::checked_add_batch_bytes(
@@ -1072,26 +1029,15 @@ fn read_transport(
             let view = #project(self, state);
             let response = self.#method_name(&view, &request);
             let metadata = sample.metadata();
-            let command_id = metadata.command_id.ok_or_else(|| ::anyhow::anyhow!(
-                ::phoxal::runtime::transport::TransportError::CommandCorrelation(
-                    "read request is missing command id".to_owned(),
-                )
-            ))?;
-            let eligible_boundary = metadata
-                .eligible_boundary
-                .unwrap_or_else(|| context.invocation_index().saturating_add(1));
-            let caller_rank = metadata.caller_rank.unwrap_or_default();
             let output = ::phoxal::runtime::transport::PreparedOutput::reply(
                 signature,
                 &response as &dyn ::core::any::Any,
                 #max_response_bytes,
-                ::phoxal::runtime::transport::reply_metadata(
+                ::phoxal::runtime::transport::reply_metadata_for_request(
                     source,
                     context,
-                    command_id,
-                    eligible_boundary,
-                    caller_rank,
-                ),
+                    metadata,
+                )?,
             )?
             .for_field(stringify!(#method_name));
             sink.push_read_reply(output)?;
@@ -1116,6 +1062,7 @@ fn projection_transport(
     let sequence = quote!(context.invocation_index());
     let field = quote!(stringify!(#method_name));
     let signature = quote!((#port).signature());
+    let on_change = options.on_change;
     match role {
         Role::State => {
             if let Some(_payload) = wrapped_type(&unreferenced, "Sample") {
@@ -1133,6 +1080,11 @@ fn projection_transport(
                                 #sequence,
                             ),
                         )?.for_field(#field);
+                        let prepared = if #on_change {
+                            prepared.with_change_token(sample.payload(), Some(sample.stamp()))
+                        } else {
+                            prepared
+                        };
                         records.push(prepared);
                     }
                 })
@@ -1142,6 +1094,11 @@ fn projection_transport(
                     quote!(value as &dyn ::core::any::Any)
                 } else {
                     quote!(&value as &dyn ::core::any::Any)
+                };
+                let change_value = if matches!(return_ty, Type::Reference(_)) {
+                    quote!(value)
+                } else {
+                    quote!(&value)
                 };
                 Ok(quote! {
                     {
@@ -1157,6 +1114,11 @@ fn projection_transport(
                                 #sequence,
                             ),
                         )?.for_field(#field);
+                        let prepared = if #on_change {
+                            prepared.with_change_token(#change_value, None)
+                        } else {
+                            prepared
+                        };
                         records.push(prepared);
                     }
                 })
@@ -1209,21 +1171,6 @@ fn projection_transport(
         }
         _ => Ok(quote! {}),
     }
-}
-
-fn projection_payload_type(return_ty: &Type, role: Role) -> Type {
-    let mut ty = normalize_borrowed(return_ty);
-    if role == Role::State
-        && let Some(inner) = wrapped_type(&ty, "Sample")
-    {
-        ty = normalize_borrowed(&inner);
-    }
-    if role == Role::Setpoint
-        && let Some(inner) = option_inner(&ty)
-    {
-        ty = normalize_borrowed(&inner);
-    }
-    ty
 }
 
 fn strip_reference(ty: &Type) -> Type {

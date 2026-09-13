@@ -30,7 +30,7 @@ use super::outputs::{
     OperationWorker, OutputBindings, OutputSet, RuntimeReadRequest, RuntimeWorkSink,
 };
 use super::schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
-use super::transport::{self, PreparedOutput, TransportError, WireSample};
+use super::transport::{self, ChangeToken, PreparedOutput, TransportError, WireSample};
 use super::{ExecutionTime, RuntimeStatus};
 
 /// The strict process arguments supplied to one Runtime binary.
@@ -565,6 +565,16 @@ where
         Ok(())
     }
 
+    /// Publish initialized state projections before the first invocation.
+    fn bootstrap(
+        &mut self,
+        _service: &R,
+        _state: &R::State,
+        _now: ExecutionTime,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
+
     /// Admit transport completions and requests without blocking the compute
     /// owner.  The default keeps direct in-process sinks transport-free.
     fn poll(&mut self) -> crate::Result<()> {
@@ -650,7 +660,7 @@ where
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    tokio_runtime.block_on(run_transport_async(service))
+    enforce_process_boundary(tokio_runtime.block_on(run_transport_async(service)))
 }
 
 async fn run_transport_async<R>(service: R) -> crate::Result<()>
@@ -768,6 +778,7 @@ where
 /// invisible source of invented defaults.
 const MAX_EXPIRED_CORRELATIONS: usize = 4096;
 const MAX_COMMAND_HIGH_WATERMARKS: usize = 4096;
+const MAX_EXTERNAL_COMMANDS_PER_CUT: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExchangeKind {
@@ -803,15 +814,39 @@ enum ExchangeCompletion {
 
 type ExchangeCompletionQueue = Arc<Mutex<Vec<ExchangeCompletion>>>;
 
+fn not_sent_completion(
+    field: &'static str,
+    key: TransportValue,
+    kind: ExchangeKind,
+    reason: impl Into<String>,
+) -> ExchangeCompletion {
+    let reason = reason.into();
+    match kind {
+        ExchangeKind::Read => ExchangeCompletion::Read {
+            field,
+            key,
+            result: Err(ReadError::NotSent(reason)),
+        },
+        ExchangeKind::Request => ExchangeCompletion::Request {
+            field,
+            key,
+            result: Err(RequestError::NotSent(reason)),
+        },
+    }
+}
+
 struct ExecutionInputAdapter<R> {
     bus: Option<crate::bus::BusHandle>,
     subscriptions: Vec<BoundSubscription>,
     command_high_watermarks: BTreeMap<(String, String, String), u64>,
+    external_ingress_high_watermarks: BTreeMap<String, u64>,
+    future_commands: BTreeMap<&'static str, Vec<WireSample>>,
     command_ranks: BTreeMap<(String, String), u64>,
     correlations: Option<CorrelationMap>,
     expired_correlations: Option<ExpiredCorrelationSet>,
     operation_completions: Option<OperationQueue>,
     exchange_completions: Option<ExchangeCompletionQueue>,
+    stream_terminal: BTreeSet<&'static str>,
     stopped: bool,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -846,6 +881,8 @@ struct ErasedManagedOperation {
 struct ReadSubscription {
     field: &'static str,
     binding: super::transport::PortBinding,
+    signature: crate::port::PortSignature,
+    max_request_bytes: u64,
     allowed_callers: BTreeMap<String, u64>,
     subscriber: RuntimeSubscription,
 }
@@ -856,11 +893,14 @@ impl<R> ExecutionInputAdapter<R> {
             bus: None,
             subscriptions: Vec::new(),
             command_high_watermarks: BTreeMap::new(),
+            external_ingress_high_watermarks: BTreeMap::new(),
+            future_commands: BTreeMap::new(),
             command_ranks: BTreeMap::new(),
             correlations: None,
             expired_correlations: None,
             operation_completions: None,
             exchange_completions: None,
+            stream_terminal: BTreeSet::new(),
             stopped: false,
             _runtime: PhantomData,
         }
@@ -999,6 +1039,203 @@ impl<R> ExecutionInputAdapter<R> {
             Err(anyhow::anyhow!(crate::bus::BusError::Closed))
         }
     }
+
+    fn validate_stream_lifecycle(
+        &self,
+        field: &'static str,
+        samples: &[WireSample],
+    ) -> crate::Result<bool> {
+        if self.stream_terminal.contains(field) {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!("stream input `{field}` received data after terminal control"),
+            }));
+        }
+        let mut terminal = false;
+        for sample in samples {
+            let control = sample.metadata().wire_control()?;
+            if terminal {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!(
+                        "stream input `{field}` received {:?} after a terminal control",
+                        control
+                    ),
+                }));
+            }
+            if matches!(
+                control,
+                super::transport::WireControl::End | super::transport::WireControl::Failed
+            ) {
+                terminal = true;
+            }
+        }
+        Ok(terminal)
+    }
+
+    fn validate_command_record(
+        &self,
+        batch: &CollectedInput,
+        sample: &WireSample,
+    ) -> crate::Result<(transport::CommandIngress, String, String, u64)>
+    where
+        R: RegisteredRuntime,
+        R::Inputs: TransportInputSet,
+    {
+        if sample.metadata().wire_control()? != transport::WireControl::Data {
+            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                "command request used a stream control record".to_owned(),
+            )));
+        }
+        let metadata = sample.metadata();
+        let id = metadata.command_id.ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(
+                "correlated Runtime record is missing command_id".to_owned(),
+            ))
+        })?;
+        let _eligible_boundary = metadata.eligible_boundary.ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(
+                "correlated Runtime record is missing eligible_boundary".to_owned(),
+            ))
+        })?;
+        let source = metadata
+            .source
+            .clone()
+            .filter(|source| !source.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(TransportError::CommandCorrelation(
+                    "correlated Runtime record is missing source".to_owned(),
+                ))
+            })?;
+        let caller = metadata
+            .caller
+            .clone()
+            .filter(|caller| !caller.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(TransportError::CommandCorrelation(
+                    "correlated Runtime record is missing caller identity".to_owned(),
+                ))
+            })?;
+        let ingress = transport::command_ingress(metadata)?;
+        match ingress {
+            transport::CommandIngress::Controlled { caller_rank } => {
+                let (caller_instance, _caller_field) =
+                    parse_graph_endpoint(&caller).map_err(|error| {
+                        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                            "invalid caller identity `{caller}`: {error}"
+                        )))
+                    })?;
+                if caller_instance != source {
+                    return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                        format!("caller `{caller}` does not match source `{source}`"),
+                    )));
+                }
+                if let Some(expected) = self
+                    .command_ranks
+                    .get(&(batch.binding.name.clone(), caller.clone()))
+                    && *expected != caller_rank
+                {
+                    return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                        format!(
+                            "source `{source}` used caller rank {caller_rank}, expected {expected}"
+                        ),
+                    )));
+                } else if !self.command_ranks.is_empty()
+                    && !self
+                        .command_ranks
+                        .contains_key(&(batch.binding.name.clone(), caller.clone()))
+                {
+                    return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                        format!(
+                            "caller `{caller}` is not connected to Commands port `{}`",
+                            batch.binding.name
+                        ),
+                    )));
+                }
+            }
+            transport::CommandIngress::External { .. } => {
+                if source != "supervisor" || caller != "supervisor.public" {
+                    return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                        "external command identity is not supervisor-owned".to_owned(),
+                    )));
+                }
+            }
+        }
+        let signature = <R::Inputs as TransportInputSet>::transport_fields()
+            .iter()
+            .find(|field| field.name == batch.field)
+            .and_then(|field| field.signature)
+            .ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!(
+                        "Commands input `{}` has no generated descriptor",
+                        batch.field
+                    ),
+                })
+            })?;
+        transport::validate_binding_identity(&batch.binding, signature)?;
+        let _ = transport::decode_request_value(signature, sample, batch.max_bytes)?;
+        Ok((ingress, source, caller, id))
+    }
+
+    fn validate_future_command_admission(&self, batch: &CollectedInput) -> crate::Result<()>
+    where
+        R: RegisteredRuntime,
+        R::Inputs: TransportInputSet,
+    {
+        let mut identities = BTreeSet::new();
+        let mut external_sequences = BTreeSet::new();
+        if let Some(retained) = self.future_commands.get(batch.field) {
+            for sample in retained {
+                let metadata = sample.metadata();
+                let id = metadata.command_id.ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::CommandCorrelation(
+                        "retained command is missing command_id".to_owned(),
+                    ))
+                })?;
+                let source = metadata.source.as_deref().unwrap_or_default();
+                let caller = metadata.caller.as_deref().unwrap_or_default();
+                if !identities.insert((source.to_owned(), caller.to_owned(), id)) {
+                    return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                        format!("duplicate retained command id {id} from caller `{caller}`"),
+                    )));
+                }
+                if let transport::CommandIngress::External { ingress_sequence } =
+                    transport::command_ingress(metadata)?
+                {
+                    external_sequences.insert(ingress_sequence);
+                }
+            }
+        }
+        for sample in &batch.samples {
+            let (ingress, source, caller, id) = self.validate_command_record(batch, sample)?;
+            if !identities.insert((source.clone(), caller.clone(), id)) {
+                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                    format!("duplicate command id {id} from caller `{caller}`"),
+                )));
+            }
+            let key = (batch.field.to_owned(), source.clone(), caller.clone());
+            if self
+                .command_high_watermarks
+                .get(&key)
+                .is_some_and(|previous| id <= *previous)
+            {
+                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                    format!("stale or replayed correlation id {id}"),
+                )));
+            }
+            if let transport::CommandIngress::External { ingress_sequence } = ingress
+                && (self
+                    .external_ingress_high_watermarks
+                    .get(batch.field)
+                    .is_some_and(|previous| ingress_sequence <= *previous)
+                    || !external_sequences.insert(ingress_sequence))
+            {
+                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                    format!("stale or replayed external ingress sequence {ingress_sequence}"),
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<R> TransportKeyLookup for ExecutionInputAdapter<R> {
@@ -1078,6 +1315,10 @@ where
         }
         self.ensure_open()?;
         let mut inputs = R::Inputs::empty();
+        <R::Inputs as TransportInputSet>::expire_transport_fields_at(
+            &mut inputs,
+            _candidate.context().now(),
+        )?;
         if let Some(queue) = &self.operation_completions {
             let completions = {
                 let mut queue = match queue.lock() {
@@ -1138,7 +1379,14 @@ where
                     }
                 }
             }
-            if samples.is_empty() {
+            let has_retained_commands = subscription.binding.kind
+                == crate::port::PortKind::Commands
+                && subscription.direction == InputDirection::Request
+                && self
+                    .future_commands
+                    .get(subscription.field)
+                    .is_some_and(|retained| !retained.is_empty());
+            if samples.is_empty() && !has_retained_commands {
                 continue;
             }
             if let Some(batch) = batches
@@ -1167,7 +1415,82 @@ where
                 });
             }
         }
-        for batch in batches {
+        let current_boundary = _candidate.context().invocation_index();
+        let mut future_updates = BTreeMap::new();
+        for mut batch in batches {
+            if batch.binding.kind == crate::port::PortKind::Commands
+                && batch.direction == InputDirection::Request
+            {
+                self.validate_future_command_admission(&batch)?;
+                let retained_before = self
+                    .future_commands
+                    .get(&batch.field)
+                    .cloned()
+                    .unwrap_or_default();
+                let pending_count = retained_before
+                    .len()
+                    .checked_add(batch.samples.len())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(TransportError::BatchTooLarge {
+                            port: batch.binding.name.clone(),
+                            what: "future command count",
+                            actual: u64::MAX,
+                            maximum: batch.max_items,
+                        })
+                    })?;
+                let pending_bytes = retained_before
+                    .iter()
+                    .chain(batch.samples.iter())
+                    .try_fold(0_u64, |total, sample| {
+                        total.checked_add(sample.payload().len() as u64)
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(TransportError::BatchTooLarge {
+                            port: batch.binding.name.clone(),
+                            what: "future command encoded bytes",
+                            actual: u64::MAX,
+                            maximum: batch.max_bytes,
+                        })
+                    })?;
+                if pending_count as u64 > batch.max_items {
+                    return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                        port: batch.binding.name.clone(),
+                        what: "future command capacity",
+                        actual: pending_count as u64,
+                        maximum: batch.max_items,
+                    }));
+                }
+                if pending_bytes > batch.max_bytes {
+                    return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                        port: batch.binding.name.clone(),
+                        what: "future command encoded bytes",
+                        actual: pending_bytes,
+                        maximum: batch.max_bytes,
+                    }));
+                }
+                let mut pending = retained_before;
+                pending.extend(batch.samples);
+                let mut selected = Vec::with_capacity(pending.len());
+                let mut retained = Vec::new();
+                for sample in pending {
+                    let eligible_boundary =
+                        sample.metadata().eligible_boundary.ok_or_else(|| {
+                            anyhow::anyhow!(TransportError::CommandCorrelation(
+                                "correlated Runtime record is missing eligible_boundary".to_owned(),
+                            ))
+                        })?;
+                    if eligible_boundary > current_boundary {
+                        retained.push(sample);
+                    } else {
+                        selected.push(sample);
+                    }
+                }
+                future_updates.insert(batch.field, retained);
+                batch.samples = selected;
+                if batch.samples.is_empty() {
+                    continue;
+                }
+            }
             if batch.samples.len() as u64 > batch.max_items {
                 return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
                     port: batch.binding.name.clone(),
@@ -1198,10 +1521,16 @@ where
                     maximum: batch.max_bytes,
                 }));
             }
+            let stream_terminal = if batch.binding.kind == crate::port::PortKind::Stream {
+                Some(self.validate_stream_lifecycle(batch.field, &batch.samples)?)
+            } else {
+                None
+            };
             let command_marks = if batch.binding.kind == crate::port::PortKind::Commands
                 && batch.direction == InputDirection::Request
             {
                 let mut marks = Vec::with_capacity(batch.samples.len());
+                let mut external_marks = Vec::new();
                 let mut batch_seen = BTreeSet::new();
                 for sample in &batch.samples {
                     let metadata = sample.metadata();
@@ -1219,11 +1548,6 @@ where
                                 "correlated Runtime record is missing source".to_owned(),
                             ))
                         })?;
-                    let caller_rank = metadata.caller_rank.ok_or_else(|| {
-                        anyhow::anyhow!(TransportError::CommandCorrelation(
-                            "correlated Runtime record is missing caller_rank".to_owned(),
-                        ))
-                    })?;
                     let caller = metadata
                         .caller
                         .clone()
@@ -1233,38 +1557,72 @@ where
                                 "correlated Runtime record is missing caller identity".to_owned(),
                             ))
                         })?;
-                    let (caller_instance, _caller_field) =
-                        parse_graph_endpoint(&caller).map_err(|error| {
-                            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
-                                "invalid caller identity `{caller}`: {error}"
-                            ),))
-                        })?;
-                    if caller_instance != source {
-                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-                            format!("caller `{caller}` does not match source `{source}`"),
-                        )));
-                    }
-                    if let Some(expected) = self
-                        .command_ranks
-                        .get(&(batch.binding.name.clone(), caller.clone()))
-                        && *expected != caller_rank
-                    {
-                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-                            format!(
-                                "source `{source}` used caller rank {caller_rank}, expected {expected}"
-                            ),
-                        )));
-                    } else if !self.command_ranks.is_empty()
-                        && !self
-                            .command_ranks
-                            .contains_key(&(batch.binding.name.clone(), caller.clone()))
-                    {
-                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
-                            format!(
-                                "caller `{caller}` is not connected to Commands port `{}`",
-                                batch.binding.name
-                            ),
-                        )));
+                    match transport::command_ingress(metadata)? {
+                        transport::CommandIngress::Controlled { caller_rank } => {
+                            let (caller_instance, _caller_field) = parse_graph_endpoint(&caller)
+                                .map_err(|error| {
+                                    anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                                        "invalid caller identity `{caller}`: {error}"
+                                    ),))
+                                })?;
+                            if caller_instance != source {
+                                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                                    format!("caller `{caller}` does not match source `{source}"),
+                                )));
+                            }
+                            if let Some(expected) = self
+                                .command_ranks
+                                .get(&(batch.binding.name.clone(), caller.clone()))
+                                && *expected != caller_rank
+                            {
+                                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                                    format!(
+                                        "source `{source}` used caller rank {caller_rank}, expected {expected}"
+                                    ),
+                                )));
+                            } else if !self.command_ranks.is_empty()
+                                && !self
+                                    .command_ranks
+                                    .contains_key(&(batch.binding.name.clone(), caller.clone()))
+                            {
+                                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                                    format!(
+                                        "caller `{caller}` is not connected to Commands port `{}`",
+                                        batch.binding.name
+                                    ),
+                                )));
+                            }
+                        }
+                        transport::CommandIngress::External { ingress_sequence } => {
+                            if source != "supervisor" || caller != "supervisor.public" {
+                                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                                    "external command identity is not supervisor-owned".to_owned(),
+                                )));
+                            }
+                            if external_marks.len() >= MAX_EXTERNAL_COMMANDS_PER_CUT {
+                                return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                                    port: batch.binding.name.clone(),
+                                    what: "external command count",
+                                    actual: external_marks.len() as u64 + 1,
+                                    maximum: MAX_EXTERNAL_COMMANDS_PER_CUT as u64,
+                                }));
+                            }
+                            if self
+                                .external_ingress_high_watermarks
+                                .get(batch.field)
+                                .is_some_and(|previous| ingress_sequence <= *previous)
+                                || external_marks.iter().any(|(field, previous)| {
+                                    field == batch.field && ingress_sequence <= *previous
+                                })
+                            {
+                                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                                    format!(
+                                        "stale or replayed external ingress sequence {ingress_sequence}"
+                                    ),
+                                )));
+                            }
+                            external_marks.push((batch.field.to_owned(), ingress_sequence));
+                        }
                     }
                     let key = (batch.field.to_owned(), source, caller);
                     if !batch_seen.insert((key.clone(), id)) {
@@ -1286,18 +1644,19 @@ where
                     }
                     marks.push((key, id));
                 }
-                Some(marks)
+                Some((marks, external_marks))
             } else {
                 None
             };
-            <R::Inputs as TransportInputSet>::decode_transport_field_with_keys(
+            <R::Inputs as TransportInputSet>::decode_transport_field_with_keys_at(
                 &mut inputs,
                 batch.field,
                 Some(&batch.binding),
                 batch.samples,
+                _candidate.context().now(),
                 self,
             )?;
-            if let Some(marks) = command_marks {
+            if let Some((marks, external_marks)) = command_marks {
                 if self.command_high_watermarks.len()
                     + marks
                         .iter()
@@ -1315,6 +1674,20 @@ where
                 for (key, id) in marks {
                     self.command_high_watermarks.insert(key, id);
                 }
+                for (field, ingress_sequence) in external_marks {
+                    self.external_ingress_high_watermarks
+                        .insert(field, ingress_sequence);
+                }
+            }
+            if stream_terminal == Some(true) {
+                self.stream_terminal.insert(batch.field);
+            }
+        }
+        for (field, retained) in future_updates {
+            if retained.is_empty() {
+                self.future_commands.remove(&field);
+            } else {
+                self.future_commands.insert(field, retained);
             }
         }
         Ok(inputs)
@@ -1324,6 +1697,9 @@ where
         self.stopped = true;
         self.subscriptions.clear();
         self.command_high_watermarks.clear();
+        self.external_ingress_high_watermarks.clear();
+        self.future_commands.clear();
+        self.stream_terminal.clear();
         self.command_ranks.clear();
         self.bus = None;
         Ok(())
@@ -1332,6 +1708,9 @@ where
     fn reset(&mut self) -> crate::Result<()> {
         self.stopped = false;
         self.command_high_watermarks.clear();
+        self.external_ingress_high_watermarks.clear();
+        self.future_commands.clear();
+        self.stream_terminal.clear();
         if self.bus.is_none() || self.subscriptions.is_empty() {
             return Err(anyhow::anyhow!(TransportError::Transport(
                 "Runtime input subscriptions are not bound after reset".to_owned(),
@@ -1361,6 +1740,7 @@ struct StagedActivation {
     command_id: Option<u64>,
     correlation_kind: Option<ExchangeKind>,
     expected_source: Option<String>,
+    local_completion: Option<ExchangeCompletion>,
 }
 
 /// The execution-scoped output side of the runtime process boundary.
@@ -1379,6 +1759,8 @@ struct ExecutionOutputAdapter<R> {
     operation_completions: Option<OperationQueue>,
     exchange_completions: Option<ExchangeCompletionQueue>,
     next_refresh_steps: BTreeMap<&'static str, u64>,
+    last_state_values: BTreeMap<&'static str, ChangeToken>,
+    external_read_high_watermarks: BTreeMap<&'static str, u64>,
     next_command_id: u64,
     stopped: bool,
     _runtime: PhantomData<fn() -> R>,
@@ -1401,6 +1783,8 @@ impl<R> ExecutionOutputAdapter<R> {
             operation_completions: None,
             exchange_completions: None,
             next_refresh_steps: BTreeMap::new(),
+            last_state_values: BTreeMap::new(),
+            external_read_high_watermarks: BTreeMap::new(),
             next_command_id: 1,
             stopped: false,
             _runtime: PhantomData,
@@ -1419,6 +1803,75 @@ impl<R> ExecutionOutputAdapter<R> {
         self.operation_completions = Some(operation_completions);
         self.exchange_completions = Some(exchange_completions);
         self
+    }
+
+    fn filter_state_projections(
+        &mut self,
+        context: super::StepContext,
+        bootstrap: bool,
+    ) -> crate::Result<()>
+    where
+        R: OutputBindings,
+    {
+        let mut retained = Vec::with_capacity(self.projections.len());
+        for output in std::mem::take(&mut self.projections) {
+            let Some(field) = output.field() else {
+                retained.push(output);
+                continue;
+            };
+            let Some(metadata) = <R as OutputBindings>::FIELDS
+                .iter()
+                .find(|candidate| candidate.name == field)
+            else {
+                retained.push(output);
+                continue;
+            };
+            if metadata.kind != super::outputs::OutputKind::State {
+                if !bootstrap {
+                    retained.push(output);
+                }
+                continue;
+            }
+            if bootstrap {
+                if !metadata.bootstrap {
+                    continue;
+                }
+            } else {
+                let every = metadata.every_steps.unwrap_or(1);
+                if every == 0 {
+                    return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!("state output `{field}` has zero every_steps cadence"),
+                    }));
+                }
+                let accepted_number = context
+                    .invocation_index()
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!(ScheduleError::InvocationOverflow))?;
+                if accepted_number % every != 0 {
+                    continue;
+                }
+            }
+            if metadata.on_change {
+                let token = output.change_token().ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!(
+                            "state output `{field}` enabled on_change without a semantic token"
+                        ),
+                    })
+                })?;
+                if self
+                    .last_state_values
+                    .get(field)
+                    .is_some_and(|previous| previous == token)
+                {
+                    continue;
+                }
+                self.last_state_values.insert(field, token.clone());
+            }
+            retained.push(output);
+        }
+        self.projections = retained;
+        Ok(())
     }
 
     async fn bind(
@@ -1477,6 +1930,8 @@ impl<R> ExecutionOutputAdapter<R> {
             read_subscriptions.push(ReadSubscription {
                 field: field.name,
                 binding: super::transport::PortBinding::from_signature(signature),
+                signature,
+                max_request_bytes,
                 allowed_callers,
                 subscriber,
             });
@@ -1581,6 +2036,28 @@ impl<R> ExecutionOutputAdapter<R> {
         Ok(id)
     }
 
+    fn queue_exchange_completion(&self, completion: ExchangeCompletion) -> crate::Result<()> {
+        let queue = self.exchange_completions.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::Transport(
+                "exchange completion queue is not bound".to_owned(),
+            ))
+        })?;
+        let mut queue = match queue.lock() {
+            Ok(queue) => queue,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if queue.len() >= MAX_EXPIRED_CORRELATIONS {
+            return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                port: "runtime".to_owned(),
+                what: "exchange completion count",
+                actual: queue.len() as u64 + 1,
+                maximum: MAX_EXPIRED_CORRELATIONS as u64,
+            }));
+        }
+        queue.push(completion);
+        Ok(())
+    }
+
     fn expire_correlations(&mut self) -> crate::Result<()> {
         let Some(correlations) = &self.correlations else {
             return Ok(());
@@ -1647,7 +2124,9 @@ impl<R> ExecutionOutputAdapter<R> {
                 ExchangeKind::Request => completion_queue.push(ExchangeCompletion::Request {
                     field: pending.field,
                     key: pending.key,
-                    result: Err(RequestError::Timeout),
+                    result: Err(RequestError::OutcomeUnknown(
+                        "request transfer deadline elapsed after admission".to_owned(),
+                    )),
                 }),
             }
         }
@@ -1655,39 +2134,68 @@ impl<R> ExecutionOutputAdapter<R> {
     }
 
     fn poll_reads(&mut self) -> crate::Result<()> {
-        for subscription in &mut self.read_subscriptions {
+        for subscription_index in 0..self.read_subscriptions.len() {
             loop {
-                match subscription.subscriber.try_recv() {
-                    Ok(Some(sample)) => {
-                        let sample = WireSample::from_zenoh(sample)?;
-                        validate_read_request_metadata(
-                            &subscription.binding,
-                            &subscription.allowed_callers,
-                            &sample,
-                        )?;
-                        if self
-                            .pending_reads
-                            .iter()
-                            .any(|request| request.field == subscription.field)
-                        {
-                            return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
-                                port: subscription.binding.name.clone(),
-                                what: "outstanding read requests",
-                                actual: 2,
-                                maximum: 1,
-                            }));
-                        }
-                        self.pending_reads.push(RuntimeReadRequest {
-                            field: subscription.field,
-                            sample,
-                        });
-                    }
+                let sample = match self.read_subscriptions[subscription_index]
+                    .subscriber
+                    .try_recv()
+                {
+                    Ok(Some(sample)) => WireSample::from_zenoh(sample)?,
                     Ok(None) => break,
                     Err(error) => {
                         return Err(anyhow::anyhow!(TransportError::Transport(
                             error.to_string(),
                         )));
                     }
+                };
+                let subscription = &self.read_subscriptions[subscription_index];
+                let ingress = validate_read_request_metadata(
+                    &subscription.binding,
+                    &subscription.allowed_callers,
+                    &sample,
+                )?;
+                if sample.payload().len() as u64 > subscription.max_request_bytes {
+                    return Err(anyhow::anyhow!(TransportError::BodyTooLarge {
+                        port: subscription.binding.name.clone(),
+                        bytes: sample.payload().len(),
+                        maximum: subscription.max_request_bytes,
+                    }));
+                }
+                let _ = transport::decode_request_value(
+                    subscription.signature,
+                    &sample,
+                    subscription.max_request_bytes,
+                )?;
+                if self
+                    .pending_reads
+                    .iter()
+                    .any(|request| request.field == subscription.field)
+                {
+                    return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                        port: subscription.binding.name.clone(),
+                        what: "outstanding read requests",
+                        actual: 2,
+                        maximum: 1,
+                    }));
+                }
+                let field = subscription.field;
+                if let transport::CommandIngress::External { ingress_sequence } = ingress
+                    && self
+                        .external_read_high_watermarks
+                        .get(field)
+                        .is_some_and(|previous| ingress_sequence <= *previous)
+                {
+                    return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                        format!(
+                            "stale or replayed external Read ingress sequence {ingress_sequence}"
+                        ),
+                    )));
+                }
+                self.pending_reads
+                    .push(RuntimeReadRequest { field, sample });
+                if let transport::CommandIngress::External { ingress_sequence } = ingress {
+                    self.external_read_high_watermarks
+                        .insert(field, ingress_sequence);
                 }
             }
         }
@@ -1705,7 +2213,7 @@ impl<R> ExecutionOutputAdapter<R> {
             if let Some(completion) = operation
                 .operation
                 .poll()
-                .map_err(|error| anyhow::anyhow!(error))?
+                .map_err(|error| operation_error(field, error))?
             {
                 let (id, outcome) = completion.into_parts();
                 let key = operation.keys.remove(&id).ok_or_else(|| {
@@ -1737,7 +2245,7 @@ impl<R> ExecutionOutputAdapter<R> {
                 operation
                     .operation
                     .start_pending()
-                    .map_err(|error| anyhow::anyhow!(error))?;
+                    .map_err(|error| operation_error(field, error))?;
                 operation.pending_key = None;
             }
         }
@@ -1754,6 +2262,10 @@ impl<R> ExecutionOutputAdapter<R> {
     fn dispatch_activations(&mut self, activations: Vec<StagedActivation>) -> crate::Result<()> {
         for activation in activations {
             let field = activation.field;
+            if let Some(completion) = activation.local_completion {
+                self.queue_exchange_completion(completion)?;
+                continue;
+            }
             if let Some(worker) = activation.worker {
                 let operation_completions =
                     self.operation_completions.clone().ok_or_else(|| {
@@ -1801,7 +2313,7 @@ impl<R> ExecutionOutputAdapter<R> {
                 match operation
                     .operation
                     .submit(super::Activation::new(id, input))
-                    .map_err(|error| anyhow::anyhow!(error))?
+                    .map_err(|error| operation_error(field, error))?
                 {
                     super::operation::SubmitResult::Started => {}
                     super::operation::SubmitResult::Pending => {
@@ -1923,6 +2435,10 @@ where
         cancel_grace_ms: Option<u64>,
         context: super::StepContext,
     ) -> crate::Result<()> {
+        // The generated consumer owns this codec.  The argument is retained
+        // in the erased sink ABI for transport-free fixtures, but a process
+        // boundary must never consult a process-local type registry.
+        let _ = request_codec;
         if self.stopped {
             return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
         }
@@ -1954,6 +2470,7 @@ where
                 command_id: None,
                 correlation_kind: None,
                 expected_source: None,
+                local_completion: None,
             });
             return Ok(());
         }
@@ -1998,18 +2515,46 @@ where
                 }));
             }
         }
-        let request_codec = request_codec.ok_or_else(|| {
-            anyhow::anyhow!(TransportError::MissingCodec {
-                port: route.binding.name.clone(),
-                direction: "request",
-            })
-        })?;
+        let kind = if route.binding.kind == crate::port::PortKind::Read {
+            ExchangeKind::Read
+        } else {
+            ExchangeKind::Request
+        };
         let max_bytes = route.request_max_bytes.ok_or_else(|| {
             anyhow::anyhow!(TransportError::InvalidMetadata {
                 detail: format!("remote activation `{field}` has no request-byte bound"),
             })
         })?;
         let command_id = self.next_command_id()?;
+        let request_codec = match <R::Inputs as TransportInputSet>::request_codec(field) {
+            Some(codec) => codec,
+            None => {
+                self.staged.push(StagedActivation {
+                    field,
+                    key: None,
+                    request: None,
+                    worker: None,
+                    request_output: None,
+                    timeout_ms: Some(timeout_ms),
+                    refresh_every_steps,
+                    invocation_index: Some(context.invocation_index()),
+                    cancel_grace_ms: None,
+                    command_id: None,
+                    correlation_kind: None,
+                    expected_source: None,
+                    local_completion: Some(not_sent_completion(
+                        field,
+                        key,
+                        kind,
+                        format!(
+                            "generated request codec for `{}` is unavailable before transmission",
+                            route.binding.name
+                        ),
+                    )),
+                });
+                return Ok(());
+            }
+        };
         let correlations = self.correlations.as_ref().ok_or_else(|| {
             anyhow::anyhow!(TransportError::Transport(
                 "activation correlation table is not bound".to_owned(),
@@ -2061,12 +2606,29 @@ where
                 Ok(output) => output
                     .for_field(field)
                     .for_instance(route.source_instance.clone()),
-                Err(error) => return Err(anyhow::anyhow!(error)),
-            };
-            let kind = if route.binding.kind == crate::port::PortKind::Read {
-                ExchangeKind::Read
-            } else {
-                ExchangeKind::Request
+                Err(error) => {
+                    self.staged.push(StagedActivation {
+                        field,
+                        key: None,
+                        request: None,
+                        worker: None,
+                        request_output: None,
+                        timeout_ms: Some(timeout_ms),
+                        refresh_every_steps,
+                        invocation_index: Some(context.invocation_index()),
+                        cancel_grace_ms: None,
+                        command_id: None,
+                        correlation_kind: None,
+                        expected_source: None,
+                        local_completion: Some(not_sent_completion(
+                            field,
+                            key,
+                            kind,
+                            error.to_string(),
+                        )),
+                    });
+                    return Ok(());
+                }
             };
             self.staged.push(StagedActivation {
                 field,
@@ -2081,6 +2643,7 @@ where
                 command_id: Some(command_id),
                 correlation_kind: Some(kind),
                 expected_source: Some(route.source_instance),
+                local_completion: None,
             });
         }
         Ok(())
@@ -2170,6 +2733,38 @@ where
             &resolve_input_port,
             &source,
         )?);
+        self.filter_state_projections(*context, false)?;
+        Ok(())
+    }
+
+    fn bootstrap(
+        &mut self,
+        service: &R,
+        state: &R::State,
+        now: ExecutionTime,
+    ) -> crate::Result<()> {
+        // Transport-free direct runners have no publication side effect.
+        if self.bus.is_none() {
+            return Ok(());
+        }
+        self.ensure_open()?;
+        self.projections.clear();
+        let context = super::StepContext::first(now, R::SPEC.period);
+        let source = self.instance.as_deref().unwrap_or_default().to_owned();
+        let resolve_input_port = |field: &str| transport::input_port_signature::<R::Inputs>(field);
+        self.projections.extend(service.encode_transport(
+            state,
+            context,
+            &resolve_input_port,
+            &source,
+        )?);
+        self.filter_state_projections(context, true)?;
+        let bus = self
+            .bus
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(crate::bus::BusError::Closed))?;
+        transport::publish_batch(bus, &source, &self.projections)?;
+        self.projections.clear();
         Ok(())
     }
 
@@ -2202,6 +2797,8 @@ where
         self.pending_reads.clear();
         self.staged.clear();
         self.next_refresh_steps.clear();
+        self.last_state_values.clear();
+        self.external_read_high_watermarks.clear();
         self.read_subscriptions.clear();
         let mut first_error = None;
         for operation in self.operations.values_mut() {
@@ -2248,6 +2845,8 @@ where
         self.pending_reads.clear();
         self.staged.clear();
         self.next_refresh_steps.clear();
+        self.last_state_values.clear();
+        self.external_read_high_watermarks.clear();
         self.next_command_id = 1;
         for operation in self.operations.values_mut() {
             operation
@@ -2337,6 +2936,10 @@ where
         }
         let schedule = HardwareSchedule::new(now, R::SPEC.period)
             .map_err(|error| anyhow::anyhow!(RunnerError::Schedule(error)))?;
+        let mut outputs = outputs;
+        if let Some(state) = owner.state_ref() {
+            outputs.bootstrap(owner.service(), state, now)?;
+        }
         Ok(Self {
             owner,
             schedule,
@@ -2443,6 +3046,14 @@ where
             self.cleanup_after_failure();
             return Err(error);
         }
+        if let Some(state) = self.owner.state_ref()
+            && let Err(error) = self.outputs.bootstrap(self.owner.service(), state, now)
+        {
+            self.owner.fail();
+            self.stopped = true;
+            self.cleanup_after_failure();
+            return Err(error);
+        }
         self.schedule = HardwareSchedule::new(now, R::SPEC.period)
             .map_err(|error| anyhow::anyhow!(RunnerError::Schedule(error)))
             .inspect_err(|_error| {
@@ -2538,6 +3149,61 @@ pub enum RunnerError {
         /// Explicit supervisor endpoint.
         connect: String,
     },
+    /// A local operation outlived its cancellation grace.  The runtime has
+    /// stopped admitting work and the supervisor must terminate this process
+    /// before it can replace the operation owner.
+    #[error("operation `{field}` requires supervisor process termination: {detail}")]
+    ProcessTerminationRequired {
+        /// Generated operation/input field.
+        field: &'static str,
+        /// Operation lifecycle detail.
+        detail: String,
+    },
+}
+
+fn operation_error(field: &'static str, error: super::operation::OperationError) -> anyhow::Error {
+    match error {
+        super::operation::OperationError::ProcessTerminationRequired => {
+            anyhow::anyhow!(RunnerError::ProcessTerminationRequired {
+                field,
+                detail: "operation worker did not exit within cancel grace".to_owned(),
+            })
+        }
+        error => anyhow::anyhow!(error),
+    }
+}
+
+fn enforce_process_boundary(result: crate::Result<()>) -> crate::Result<()> {
+    if requires_process_termination(&result) {
+        terminate_process_boundary();
+    }
+    result
+}
+
+fn requires_process_termination(result: &crate::Result<()>) -> bool {
+    result.as_ref().is_err_and(|error| {
+        error.chain().any(|cause| {
+            cause.downcast_ref::<RunnerError>().is_some_and(|error| {
+                matches!(error, RunnerError::ProcessTerminationRequired { .. })
+            })
+        })
+    })
+}
+
+#[cold]
+fn terminate_process_boundary() -> ! {
+    std::process::abort()
+}
+
+#[cfg(test)]
+fn enforce_process_boundary_with(
+    result: crate::Result<()>,
+    terminate: impl FnOnce(),
+) -> crate::Result<()> {
+    if requires_process_termination(&result) {
+        terminate();
+    }
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -2730,8 +3396,16 @@ fn validate_read_request_metadata(
     binding: &super::transport::PortBinding,
     allowed_callers: &BTreeMap<String, u64>,
     sample: &WireSample,
-) -> crate::Result<()> {
+) -> crate::Result<transport::CommandIngress> {
     let metadata = sample.metadata();
+    if metadata.wire_control()? != transport::WireControl::Data {
+        return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+            detail: format!(
+                "Read request on `{}` used a stream control record",
+                binding.name
+            ),
+        }));
+    }
     let command_id = metadata.command_id.ok_or_else(|| {
         anyhow::anyhow!(TransportError::CommandCorrelation(
             "read request is missing command_id".to_owned(),
@@ -2742,11 +3416,6 @@ fn validate_read_request_metadata(
             format!("read request {command_id} is missing eligible_boundary"),
         )));
     }
-    let caller_rank = metadata.caller_rank.ok_or_else(|| {
-        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
-            "read request {command_id} is missing caller_rank"
-        )))
-    })?;
     let caller = metadata
         .caller
         .as_deref()
@@ -2765,6 +3434,18 @@ fn validate_read_request_metadata(
                 "read request {command_id} is missing source"
             )))
         })?;
+    let ingress = transport::command_ingress(metadata)?;
+    if let transport::CommandIngress::External { .. } = ingress {
+        if source != "supervisor" || caller != "supervisor.public" {
+            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                format!("external Read request {command_id} is not supervisor-owned"),
+            )));
+        }
+        return Ok(ingress);
+    }
+    let transport::CommandIngress::Controlled { caller_rank } = ingress else {
+        unreachable!("external Read requests return above");
+    };
     let (caller_instance, _) = parse_graph_endpoint(caller).map_err(|error| {
         anyhow::anyhow!(TransportError::CommandCorrelation(format!(
             "read request {command_id} has invalid caller `{caller}`: {error}"
@@ -2788,7 +3469,7 @@ fn validate_read_request_metadata(
             )
         )));
     }
-    Ok(())
+    Ok(ingress)
 }
 
 #[derive(Clone, Debug)]
@@ -3066,6 +3747,32 @@ mod tests {
             self.stopped = true;
             Ok(())
         }
+    }
+
+    #[test]
+    fn process_termination_boundary_cannot_return_a_terminal_operation_error() {
+        let terminated = Arc::new(AtomicBool::new(false));
+        let termination_flag = Arc::clone(&terminated);
+        let error = anyhow::anyhow!(RunnerError::ProcessTerminationRequired {
+            field: "operation",
+            detail: "worker remained live".to_owned(),
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = enforce_process_boundary_with(Err(error), || {
+                termination_flag.store(true, Ordering::SeqCst);
+                panic!("test process terminator")
+            });
+        }));
+        assert!(result.is_err());
+        assert!(terminated.load(Ordering::SeqCst));
+
+        let ordinary = anyhow::anyhow!("ordinary runtime failure");
+        assert!(
+            enforce_process_boundary_with(Err(ordinary), || {
+                panic!("ordinary failures must remain returnable")
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -3348,21 +4055,7 @@ mod tests {
                 }
                 let request: TransportRequest =
                     crate::runtime::transport::decode_request(TRANSPORT_PORT, &sample)?;
-                let metadata = sample.metadata();
-                let id = crate::runtime::CommandId::new(
-                    metadata
-                        .command_id
-                        .ok_or_else(|| anyhow::anyhow!("missing command id"))?,
-                );
-                let order = crate::runtime::CommandOrder::new(
-                    metadata
-                        .eligible_boundary
-                        .ok_or_else(|| anyhow::anyhow!("missing eligible boundary"))?,
-                    metadata
-                        .caller_rank
-                        .ok_or_else(|| anyhow::anyhow!("missing caller rank"))?,
-                    id,
-                );
+                let order = crate::runtime::transport::command_order(sample.metadata())?;
                 items.push(crate::runtime::Command::with_order(order, request));
             }
             self.commands = crate::runtime::Commands::bounded(
@@ -3510,12 +4203,10 @@ mod tests {
                     TRANSPORT_PORT,
                     reply.response() as &dyn Any,
                     1024,
-                    crate::runtime::transport::reply_metadata(
+                    crate::runtime::transport::reply_metadata_for_order(
                         source,
                         context,
-                        reply.id().sequence(),
-                        reply.order().eligible_boundary(),
-                        reply.order().caller_rank(),
+                        reply.order(),
                     ),
                 )?;
                 bytes = crate::runtime::transport::checked_add_batch_bytes(
@@ -3568,6 +4259,159 @@ mod tests {
 
     impl crate::runtime::outputs::OutputBindings for TransportRuntime {
         const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+    }
+
+    static CADENCE_FIELDS: &[crate::runtime::outputs::OutputField] =
+        &[crate::runtime::outputs::OutputField {
+            name: "status",
+            kind: crate::runtime::outputs::OutputKind::State,
+            port: Some(TRANSPORT_PORT.name),
+            port_signature: Some(TRANSPORT_PORT),
+            input: None,
+            project: None,
+            max_items: None,
+            max_bytes: Some(1024),
+            max_request_bytes: None,
+            every_steps: Some(5),
+            on_change: false,
+            bootstrap: true,
+            valid_for_ms: None,
+            timeout_ms: None,
+            cancel_grace_ms: None,
+        }];
+
+    struct CadenceRuntime;
+
+    impl Runtime for CadenceRuntime {
+        type Config = TestConfig;
+        type State = u64;
+        type Inputs = TestInputs;
+        type Outputs = TestOutputs;
+
+        fn init(&self, _ctx: &InitContext, config: Self::Config) -> crate::Result<Self::State> {
+            Ok(config.value)
+        }
+
+        fn step(
+            &self,
+            _ctx: &StepContext,
+            state: Self::State,
+            _inputs: &Self::Inputs,
+        ) -> crate::Result<(Self::State, Self::Outputs)> {
+            Ok((state + 1, TestOutputs { value: state + 1 }))
+        }
+    }
+
+    impl crate::runtime::outputs::OutputBindings for CadenceRuntime {
+        const FIELDS: &'static [crate::runtime::outputs::OutputField] = CADENCE_FIELDS;
+    }
+
+    #[test]
+    fn bootstrap_and_every_steps_use_one_based_acceptance_cadence() {
+        let mut adapter = ExecutionOutputAdapter::<CadenceRuntime>::unbound();
+        let output = || {
+            crate::runtime::transport::PreparedOutput::response(
+                TRANSPORT_PORT,
+                &TransportResponse { value: 1 } as &dyn Any,
+                1024,
+                crate::runtime::transport::RuntimeWireMetadata::data(
+                    "cadence",
+                    ExecutionTime::default(),
+                    1,
+                ),
+            )
+            .expect("cadence output encodes")
+            .for_field("status")
+        };
+
+        adapter.projections.push(output());
+        adapter
+            .filter_state_projections(
+                StepContext::first(ExecutionTime::default(), ExecutionDuration::from_millis(10)),
+                true,
+            )
+            .expect("bootstrap filters");
+        assert_eq!(adapter.projections.len(), 1, "bootstrap is published first");
+        adapter.projections.clear();
+
+        for index in 0..10 {
+            adapter.projections.push(output());
+            adapter
+                .filter_state_projections(
+                    StepContext::new(
+                        ExecutionTime::from_nanos((index + 1) * 10_000_000),
+                        ExecutionDuration::from_millis(10),
+                        ExecutionDuration::from_millis(10),
+                        0,
+                        index,
+                    ),
+                    false,
+                )
+                .expect("cadence filters");
+            let due = matches!(index, 4 | 9);
+            assert_eq!(
+                adapter.projections.len(),
+                usize::from(due),
+                "accepted invocation {index} cadence"
+            );
+            adapter.projections.clear();
+        }
+    }
+
+    #[test]
+    fn future_commands_validate_before_retention_and_reject_replays() {
+        fn sample(metadata: crate::runtime::transport::RuntimeWireMetadata) -> WireSample {
+            let mut payload = Vec::new();
+            TransportRequest { value: 7 }
+                .encode(&mut payload)
+                .expect("request encodes");
+            WireSample::from_parts(
+                payload,
+                metadata,
+                "runtime/target/ports/transport-commands/request",
+            )
+        }
+
+        fn batch(sample: WireSample) -> CollectedInput {
+            CollectedInput {
+                field: "commands",
+                binding: crate::runtime::transport::PortBinding::from_signature(TRANSPORT_PORT),
+                direction: InputDirection::Request,
+                max_items: 4,
+                max_bytes: 1024,
+                samples: vec![sample],
+            }
+        }
+
+        let mut adapter = ExecutionInputAdapter::<TransportRuntime>::unbound();
+        let mut malformed = crate::runtime::transport::RuntimeWireMetadata::external_command(
+            ExecutionTime::default(),
+            1,
+            100,
+            1,
+        );
+        malformed.eligible_boundary = None;
+        let error = adapter
+            .validate_future_command_admission(&batch(sample(malformed)))
+            .expect_err("future records validate before retention");
+        assert!(error.to_string().contains("eligible_boundary"));
+        assert!(adapter.future_commands.is_empty());
+
+        let valid = sample(
+            crate::runtime::transport::RuntimeWireMetadata::external_command(
+                ExecutionTime::default(),
+                2,
+                100,
+                2,
+            ),
+        );
+        adapter
+            .future_commands
+            .insert("commands", vec![valid.clone()]);
+        let error = adapter
+            .validate_future_command_admission(&batch(valid))
+            .expect_err("replayed retained future records are rejected");
+        assert!(error.to_string().contains("duplicate command id"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3635,11 +4479,36 @@ mod tests {
                 .wait()
                 .expect("request publishes");
         };
+        let publish_external_request =
+            |request: TransportRequest,
+             command_id: u64,
+             eligible_boundary: u64,
+             ingress_sequence: u64| {
+                let mut payload = Vec::new();
+                request.encode(&mut payload).expect("request encodes");
+                let metadata = crate::runtime::transport::RuntimeWireMetadata::external_command(
+                    ExecutionTime::from_nanos(10),
+                    command_id,
+                    eligible_boundary,
+                    ingress_sequence,
+                )
+                .encode_bounded()
+                .expect("metadata encodes");
+                session
+                    .put(input_key.clone(), payload)
+                    .encoding(Encoding::from(
+                        crate::runtime::transport::PROTOBUF_ENCODING.to_owned(),
+                    ))
+                    .attachment(metadata)
+                    .wait()
+                    .expect("external request publishes");
+            };
         // Publish the higher-ranked caller first.  The frozen input cut must
         // still use the authoritative boundary/rank merge key, not Zenoh
         // arrival order.
-        publish_request(TransportRequest { value: 50 }, "caller-b", 100, 7, 2);
-        publish_request(TransportRequest { value: 41 }, "caller-a", 99, 7, 3);
+        publish_request(TransportRequest { value: 50 }, "caller-b", 100, 0, 2);
+        publish_request(TransportRequest { value: 41 }, "caller-a", 99, 0, 3);
+        publish_external_request(TransportRequest { value: 60 }, 101, 0, 3);
 
         let mut runner = RuntimeRunner::new(
             TransportRuntime,
@@ -3658,7 +4527,7 @@ mod tests {
         ));
 
         let mut received = Vec::new();
-        for expected in [(100, 2, 51), (99, 3, 42)] {
+        for expected in [(100, 2, 51), (99, 3, 42), (101, 0, 61)] {
             let sample = tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
                 .await
                 .expect("reply arrives")
@@ -3674,15 +4543,50 @@ mod tests {
                 .expect("response type");
             assert_eq!(response.value, expected.2);
             assert_eq!(wire.metadata().command_id, Some(expected.0));
-            assert_eq!(wire.metadata().eligible_boundary, Some(7));
-            assert_eq!(wire.metadata().caller_rank, Some(expected.1));
+            assert_eq!(wire.metadata().eligible_boundary, Some(0));
+            if expected.0 == 101 {
+                assert_eq!(wire.metadata().caller, Some("supervisor.public".to_owned()));
+                assert_eq!(wire.metadata().ingress_sequence, Some(3));
+                assert_eq!(wire.metadata().caller_rank, None);
+            } else {
+                assert_eq!(wire.metadata().caller_rank, Some(expected.1));
+            }
             received.push(wire);
         }
-        assert_eq!(received.len(), 2);
+        assert_eq!(received.len(), 3);
+
+        // A request for a later eligible boundary remains retained without
+        // entering the earlier frozen cuts, then becomes visible exactly at
+        // its boundary.
+        publish_external_request(TransportRequest { value: 70 }, 102, 17, 4);
+        for index in 1..=17 {
+            let now = ExecutionTime::from_nanos(index * 10_000_000);
+            assert!(matches!(
+                runner.poll(now),
+                Ok(PollOutcome::Accepted { invocation_index }) if invocation_index == index as u64
+            ));
+            if index < 17 {
+                assert!(
+                    replies
+                        .try_recv()
+                        .expect("reply receive succeeds")
+                        .is_none()
+                );
+            }
+        }
+        let future_reply = tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
+            .await
+            .expect("future reply arrives")
+            .expect("future reply receive succeeds");
+        let future_wire = crate::runtime::transport::WireSample::from_zenoh(future_reply)
+            .expect("future reply has typed metadata");
+        assert_eq!(future_wire.metadata().command_id, Some(102));
+        assert_eq!(future_wire.metadata().eligible_boundary, Some(17));
+        assert_eq!(future_wire.metadata().ingress_sequence, Some(4));
 
         // A late replay from the already admitted command must fail before a
         // second service step and must not produce a duplicate reply.
-        publish_request(TransportRequest { value: 999 }, "caller-a", 99, 7, 3);
+        publish_request(TransportRequest { value: 999 }, "caller-a", 99, 0, 3);
         assert!(runner.poll(ExecutionTime::from_nanos(10_000_000)).is_err());
         assert_eq!(runner.status(), RuntimeStatus::Failed);
         assert!(
@@ -3898,12 +4802,11 @@ mod tests {
             .map_err(|_| crate::port::CodecError::Decode)
     }
 
-    const READ_PORT: crate::port::PortSignature =
-        crate::port::PortSignature::with_descriptor_and_codec(
+    const READ_PORT: crate::port::Read<ReadRequest, ReadResponse> =
+        crate::port::Read::with_codec_signature(
             "read",
             "phoxal.runtime.test.Reader",
             "Current",
-            crate::port::PortKind::Read,
             "phoxal.runtime.test.ReadRequest",
             "phoxal.runtime.test.ReadResponse",
             &[],
@@ -3914,6 +4817,53 @@ mod tests {
                 Some(decode_read_response),
             ),
         );
+
+    struct PublicReadRuntime;
+
+    impl Runtime for PublicReadRuntime {
+        type Config = ();
+        type State = u32;
+        type Inputs = ReadClientInputs;
+        type Outputs = ();
+
+        fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+            Ok(41)
+        }
+
+        fn step(
+            &self,
+            _ctx: &StepContext,
+            state: Self::State,
+            _inputs: &Self::Inputs,
+        ) -> crate::Result<(Self::State, Self::Outputs)> {
+            Ok((state, ()))
+        }
+    }
+
+    impl RegisteredRuntime for PublicReadRuntime {
+        const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 100, 100);
+
+        fn __retain_artifact_metadata() {}
+    }
+
+    #[crate::runtime::outputs]
+    impl PublicReadRuntime {
+        fn view(&self, state: &u32) -> u32 {
+            *state
+        }
+
+        #[crate::runtime::outputs::read(
+            port = READ_PORT,
+            project = Self::view,
+            max_request_bytes = 64,
+            max_response_bytes = 64,
+        )]
+        fn inspect(&self, view: &u32, request: &ReadRequest) -> ReadResponse {
+            ReadResponse {
+                value: view.saturating_add(request.value),
+            }
+        }
+    }
 
     #[crate::runtime::inputs]
     struct ReadClientInputs {
@@ -3974,7 +4924,6 @@ mod tests {
         use zenoh::bytes::Encoding;
         use zenoh::key_expr::OwnedKeyExpr;
 
-        crate::runtime::transport::register_exchange_codecs::<ReadRequest, ReadResponse>(READ_PORT);
         let (owner, bus) =
             crate::bus::session::BusOwner::open(crate::bus::BusConfig::for_participant(
                 crate::identity::ExecutionId::mint(),
@@ -3984,12 +4933,12 @@ mod tests {
             .await
             .expect("test bus opens");
         let signature = SourcePortSignature {
-            name: READ_PORT.name.to_owned(),
-            service: READ_PORT.service.to_owned(),
-            method: READ_PORT.method.to_owned(),
-            kind: READ_PORT.kind.as_str().to_owned(),
-            request: READ_PORT.request.to_owned(),
-            response: READ_PORT.response.to_owned(),
+            name: READ_PORT.signature().name.to_owned(),
+            service: READ_PORT.signature().service.to_owned(),
+            method: READ_PORT.signature().method.to_owned(),
+            kind: READ_PORT.signature().kind.as_str().to_owned(),
+            request: READ_PORT.signature().request.to_owned(),
+            response: READ_PORT.signature().response.to_owned(),
         };
         let mut connections = BTreeMap::new();
         connections.insert(
@@ -4046,7 +4995,7 @@ mod tests {
         let session = bus.session().expect("session is open");
         let request_key = bus.full_key(&crate::runtime::transport::port_key(
             "reader",
-            READ_PORT.name,
+            READ_PORT.name(),
             "request",
         ));
         let requests = session
@@ -4077,6 +5026,7 @@ mod tests {
             .expect("read request receive succeeds");
         let wire = crate::runtime::transport::WireSample::from_zenoh(request)?;
         let request = READ_PORT
+            .signature()
             .codec()
             .expect("read codec")
             .decode_request(wire.payload())
@@ -4101,7 +5051,7 @@ mod tests {
         .expect("reply metadata");
         let response_key = bus.full_key(&crate::runtime::transport::port_key(
             "reader",
-            READ_PORT.name,
+            READ_PORT.name(),
             "reply",
         ));
         session
@@ -4115,6 +5065,105 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let _ = runner.poll(ExecutionTime::from_nanos(2_000_000))?;
         assert_eq!(*response.lock().expect("read response lock"), Some(42));
+        runner.stop()?;
+        owner.close().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> {
+        use zenoh::Wait;
+        use zenoh::bytes::Encoding;
+        use zenoh::key_expr::OwnedKeyExpr;
+
+        let (owner, bus) =
+            crate::bus::session::BusOwner::open(crate::bus::BusConfig::for_participant(
+                crate::identity::ExecutionId::mint(),
+                crate::identity::ParticipantId::new("public-reader").expect("participant id"),
+                Vec::new(),
+            ))
+            .await
+            .expect("test bus opens");
+        let manifest = RuntimeLaunchManifest {
+            root: PathBuf::from("."),
+            robot_id: "public-read-test".to_owned(),
+            instance_id: "public-reader".to_owned(),
+            executable: PathBuf::from("public-read-test"),
+            config: Value::Object(serde_json::Map::new()),
+            connections: BTreeMap::new(),
+            artifacts: BTreeMap::new(),
+        };
+        let mut input = ExecutionInputAdapter::<PublicReadRuntime>::unbound();
+        input.bind_direct(bus.clone(), "public-reader").await?;
+        let mut output = ExecutionOutputAdapter::<PublicReadRuntime>::unbound();
+        output.bind(bus.clone(), "public-reader", &manifest).await?;
+
+        let session = bus.session().expect("session is open");
+        let reply_key = bus.full_key(&crate::runtime::transport::port_key(
+            "public-reader",
+            READ_PORT.name(),
+            "reply",
+        ));
+        let replies = session
+            .declare_subscriber(OwnedKeyExpr::new(reply_key).expect("reply key"))
+            .with(zenoh::handlers::FifoChannel::new(2))
+            .await
+            .expect("reply subscriber");
+        let request_key = bus.full_key(&crate::runtime::transport::port_key(
+            "public-reader",
+            READ_PORT.name(),
+            "request",
+        ));
+        let mut request_payload = Vec::new();
+        ReadRequest { value: 1 }.encode(&mut request_payload)?;
+        let request_metadata = crate::runtime::transport::RuntimeWireMetadata::external_request(
+            ExecutionTime::default(),
+            7,
+            0,
+            12,
+        )
+        .encode_bounded()
+        .expect("external read metadata");
+        session
+            .put(request_key, request_payload)
+            .encoding(Encoding::from(
+                crate::runtime::transport::PROTOBUF_ENCODING.to_owned(),
+            ))
+            .attachment(request_metadata)
+            .wait()
+            .expect("external read publishes");
+
+        let mut runner = RuntimeRunner::new(
+            PublicReadRuntime,
+            ExecutionTime::default(),
+            (),
+            input,
+            output,
+        )?;
+        assert!(matches!(
+            runner.poll(ExecutionTime::default()),
+            Ok(PollOutcome::Accepted {
+                invocation_index: 0
+            })
+        ));
+        let reply = tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
+            .await
+            .expect("public read reply arrives")
+            .expect("public read reply receive succeeds");
+        let wire = crate::runtime::transport::WireSample::from_zenoh(reply)?;
+        let response = READ_PORT
+            .signature()
+            .codec()
+            .expect("read codec")
+            .decode_response(wire.payload())
+            .expect("response decodes")
+            .downcast::<ReadResponse>()
+            .expect("response type");
+        assert_eq!(response.value, 42);
+        assert_eq!(wire.metadata().source.as_deref(), Some("public-reader"));
+        assert_eq!(wire.metadata().caller.as_deref(), Some("supervisor.public"));
+        assert_eq!(wire.metadata().caller_rank, None);
+        assert_eq!(wire.metadata().ingress_sequence, Some(12));
         runner.stop()?;
         owner.close().await;
         Ok(())

@@ -9,8 +9,7 @@
 //! handwritten payload catalogue or falls back to the legacy MessagePack bus.
 
 use std::any::{Any, TypeId};
-use std::collections::{BTreeSet, HashMap};
-use std::sync::{Mutex, OnceLock};
+use std::collections::BTreeSet;
 
 use prost::Message;
 
@@ -25,50 +24,6 @@ use crate::port::{CodecError, PortCodec, PortKind, PortSignature};
 pub trait ProstPayload: Message + prost::Name + Default + Send + Sync + 'static {}
 
 impl<T> ProstPayload for T where T: Message + prost::Name + Default + Send + Sync + 'static {}
-
-static REGISTERED_CODECS: OnceLock<Mutex<HashMap<TypeId, PortCodec>>> = OnceLock::new();
-
-fn codec_registry() -> &'static Mutex<HashMap<TypeId, PortCodec>> {
-    REGISTERED_CODECS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Register the erased request and response functions carried by one
-/// generated descriptor.  The generic types are used only as stable `TypeId`
-/// keys, so direct non-Prost fixtures remain compilable and simply have no
-/// runtime codec until a generated descriptor is registered.
-pub fn register_exchange_codecs<Request: 'static, Response: 'static>(signature: PortSignature) {
-    let Some(codec) = signature.codec() else {
-        return;
-    };
-    let mut registry = match codec_registry().lock() {
-        Ok(registry) => registry,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    registry.insert(TypeId::of::<Request>(), codec.request_only());
-    registry.insert(TypeId::of::<Response>(), codec.response_only());
-}
-
-/// Register one generated publication response codec.
-pub fn register_response_codec<Response: 'static>(signature: PortSignature) {
-    let Some(codec) = signature.codec() else {
-        return;
-    };
-    let mut registry = match codec_registry().lock() {
-        Ok(registry) => registry,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    registry.insert(TypeId::of::<Response>(), codec.response_only());
-}
-
-/// Look up a generated request codec for one erased activation body.
-#[must_use]
-pub fn registered_codec<T: 'static>() -> Option<PortCodec> {
-    let registry = match codec_registry().lock() {
-        Ok(registry) => registry,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    registry.get(&TypeId::of::<T>()).copied()
-}
 
 /// Encode one generated Prost message through the erased descriptor codec
 /// shape used by [`PortSignature`].
@@ -107,6 +62,8 @@ pub enum WireControl {
     End = 2,
     /// The source reached a terminal failure.
     Failed = 3,
+    /// A correlated request was refused before target queue admission.
+    Rejected = 4,
 }
 
 impl WireControl {
@@ -116,6 +73,7 @@ impl WireControl {
             1 => Ok(Self::Gap),
             2 => Ok(Self::End),
             3 => Ok(Self::Failed),
+            4 => Ok(Self::Rejected),
             _ => Err(TransportError::InvalidMetadata {
                 detail: format!("unknown stream control value {value}"),
             }),
@@ -161,6 +119,12 @@ pub struct RuntimeWireMetadata {
     /// form `{runtime-instance}.{input-field}`.
     #[prost(string, optional, tag = "10")]
     pub caller: Option<String>,
+    /// Target refusal or source failure detail, when supplied.
+    #[prost(string, optional, tag = "11")]
+    pub reason: Option<String>,
+    /// Supervisor ingress sequence for an external command.
+    #[prost(uint64, optional, tag = "12")]
+    pub ingress_sequence: Option<u64>,
 }
 
 impl RuntimeWireMetadata {
@@ -207,6 +171,47 @@ impl RuntimeWireMetadata {
         }
     }
 
+    /// Metadata for a supervisor-owned external command ingress.
+    ///
+    /// External commands share the target Commands request key with authored
+    /// graph callers, but use a reserved authenticated identity and their own
+    /// monotonic ingress sequence.  The target sorts them after every
+    /// controlled caller at the same eligible boundary.
+    #[must_use]
+    pub fn external_request(
+        logical_time: ExecutionTime,
+        command_id: u64,
+        eligible_boundary: u64,
+        ingress_sequence: u64,
+    ) -> Self {
+        Self {
+            sequence: Some(command_id),
+            logical_time_nanos: Some(logical_time.as_nanos()),
+            source: Some("supervisor".to_owned()),
+            command_id: Some(command_id),
+            eligible_boundary: Some(eligible_boundary),
+            caller: Some("supervisor.public".to_owned()),
+            ingress_sequence: Some(ingress_sequence),
+            ..Self::default()
+        }
+    }
+
+    /// Metadata for a supervisor-owned external Commands ingress.
+    #[must_use]
+    pub fn external_command(
+        logical_time: ExecutionTime,
+        command_id: u64,
+        eligible_boundary: u64,
+        ingress_sequence: u64,
+    ) -> Self {
+        Self::external_request(
+            logical_time,
+            command_id,
+            eligible_boundary,
+            ingress_sequence,
+        )
+    }
+
     pub(crate) fn encode_bounded(&self) -> Result<Vec<u8>, TransportError> {
         let size = self.encoded_len();
         if size > MAX_METADATA_BYTES {
@@ -247,6 +252,13 @@ impl RuntimeWireMetadata {
     #[must_use]
     pub fn with_caller(mut self, caller: impl Into<String>) -> Self {
         self.caller = Some(caller.into());
+        self
+    }
+
+    /// Adds an authenticated target refusal reason to correlated metadata.
+    #[must_use]
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
         self
     }
 }
@@ -297,6 +309,19 @@ impl PortBinding {
 }
 
 impl WireSample {
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        payload: Vec<u8>,
+        metadata: RuntimeWireMetadata,
+        key: impl Into<String>,
+    ) -> Self {
+        Self {
+            payload,
+            metadata,
+            key: key.into(),
+        }
+    }
+
     /// Converts one Zenoh sample after validating encoding, attachment, and
     /// bounded metadata.  The payload remains the exact generated message body.
     pub fn from_zenoh(sample: zenoh::sample::Sample) -> Result<Self, TransportError> {
@@ -344,6 +369,90 @@ enum PreparedEndpoint {
     Binding(PortBinding),
 }
 
+/// A type-erased semantic value used by `on_change` output gating.
+///
+/// The value is cloned and compared through the generated Rust payload type.
+/// This intentionally compares message fields, not the bytes produced by a
+/// particular Protobuf encoder.
+pub struct ChangeToken {
+    value: Box<dyn Any + Send + Sync>,
+    type_id: TypeId,
+    clone_value: fn(&dyn Any) -> Box<dyn Any + Send + Sync>,
+    equal_value: fn(&dyn Any, &dyn Any) -> bool,
+    stamp: Option<ObservationStamp>,
+}
+
+impl ChangeToken {
+    /// Captures a semantic payload and optional observation stamp.
+    pub fn new<T>(value: &T, stamp: Option<&ObservationStamp>) -> Self
+    where
+        T: Clone + PartialEq + Send + Sync + 'static,
+    {
+        Self {
+            value: Box::new(value.clone()),
+            type_id: TypeId::of::<T>(),
+            clone_value: clone_change_value::<T>,
+            equal_value: equal_change_value::<T>,
+            stamp: stamp.cloned(),
+        }
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "ChangeToken stores the matching TypeId and clone function together"
+)]
+fn clone_change_value<T>(value: &dyn Any) -> Box<dyn Any + Send + Sync>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    Box::new(
+        value
+            .downcast_ref::<T>()
+            .expect("change token type id matches")
+            .clone(),
+    )
+}
+
+fn equal_change_value<T>(left: &dyn Any, right: &dyn Any) -> bool
+where
+    T: PartialEq + 'static,
+{
+    left.downcast_ref::<T>() == right.downcast_ref::<T>()
+}
+
+impl Clone for ChangeToken {
+    fn clone(&self) -> Self {
+        Self {
+            value: (self.clone_value)(&*self.value),
+            type_id: self.type_id,
+            clone_value: self.clone_value,
+            equal_value: self.equal_value,
+            stamp: self.stamp.clone(),
+        }
+    }
+}
+
+impl PartialEq for ChangeToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_id == other.type_id
+            && self.stamp == other.stamp
+            && (self.equal_value)(&*self.value, &*other.value)
+    }
+}
+
+impl Eq for ChangeToken {}
+
+impl std::fmt::Debug for ChangeToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChangeToken")
+            .field("type_id", &self.type_id)
+            .field("stamp", &self.stamp)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PreparedEndpoint {
     fn name(&self) -> &str {
         match self {
@@ -364,6 +473,7 @@ pub struct PreparedOutput {
     request: bool,
     reply: bool,
     field: Option<&'static str>,
+    change_token: Option<ChangeToken>,
 }
 
 impl PreparedOutput {
@@ -384,6 +494,7 @@ impl PreparedOutput {
             request: false,
             reply: false,
             field: None,
+            change_token: None,
         })
     }
 
@@ -404,6 +515,7 @@ impl PreparedOutput {
             request: false,
             reply: true,
             field: None,
+            change_token: None,
         })
     }
 
@@ -442,6 +554,7 @@ impl PreparedOutput {
             request: true,
             reply: false,
             field: None,
+            change_token: None,
         })
     }
 
@@ -476,6 +589,7 @@ impl PreparedOutput {
             request: true,
             reply: false,
             field: None,
+            change_token: None,
         })
     }
 
@@ -494,6 +608,7 @@ impl PreparedOutput {
             request: false,
             reply: false,
             field: None,
+            change_token: None,
         }
     }
 
@@ -508,6 +623,7 @@ impl PreparedOutput {
             request: false,
             reply: false,
             field: None,
+            change_token: None,
         }
     }
 
@@ -516,6 +632,22 @@ impl PreparedOutput {
     pub fn for_field(mut self, field: &'static str) -> Self {
         self.field = Some(field);
         self
+    }
+
+    /// Attach a typed semantic comparison value for `on_change` gating.
+    #[must_use]
+    pub fn with_change_token<T>(mut self, value: &T, stamp: Option<&ObservationStamp>) -> Self
+    where
+        T: Clone + PartialEq + Send + Sync + 'static,
+    {
+        self.change_token = Some(ChangeToken::new(value, stamp));
+        self
+    }
+
+    /// Returns the semantic comparison value, when one was attached.
+    #[must_use]
+    pub fn change_token(&self) -> Option<&ChangeToken> {
+        self.change_token.as_ref()
     }
 
     /// Route a graph-resolved request to its selected producer instance.
@@ -849,7 +981,6 @@ pub fn sort_command_samples(samples: &mut [WireSample]) -> Result<(), TransportE
         let metadata = &sample.metadata;
         if metadata.command_id.is_none()
             || metadata.eligible_boundary.is_none()
-            || metadata.caller_rank.is_none()
             || metadata.source.as_deref().is_none_or(str::is_empty)
             || metadata.caller.as_deref().is_none_or(str::is_empty)
         {
@@ -858,6 +989,7 @@ pub fn sort_command_samples(samples: &mut [WireSample]) -> Result<(), TransportE
                     .to_owned(),
             ));
         }
+        let _ = command_ingress(metadata)?;
         // The caller/source identity and command id are the stable replay key.
         // The rank is validated separately and is deliberately not part of
         // identity, so a malformed replay cannot evade duplicate detection by
@@ -877,13 +1009,97 @@ pub fn sort_command_samples(samples: &mut [WireSample]) -> Result<(), TransportE
     }
     samples.sort_by_key(|sample| {
         let metadata = &sample.metadata;
+        let ingress = command_ingress(metadata).unwrap_or({
+            // Every sample was validated immediately above.  Invalid records
+            // are sorted after valid records defensively if this invariant is
+            // ever changed without updating that validation.
+            CommandIngress::External {
+                ingress_sequence: u64::MAX,
+            }
+        });
+        let (category, order, tie_breaker) = match ingress {
+            CommandIngress::Controlled { caller_rank } => (0_u8, caller_rank, 0_u64),
+            CommandIngress::External { ingress_sequence } => (1_u8, 0_u64, ingress_sequence),
+        };
         (
             metadata.eligible_boundary.unwrap_or_default(),
-            metadata.caller_rank.unwrap_or_default(),
+            category,
+            order,
+            tie_breaker,
             metadata.command_id.unwrap_or_default(),
         )
     });
     Ok(())
+}
+
+/// The two authenticated command-ingress categories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandIngress {
+    /// A caller selected by the compiled authored graph.
+    Controlled { caller_rank: u64 },
+    /// A supervisor-owned public ingress with a target-local sequence.
+    External { ingress_sequence: u64 },
+}
+
+/// Validate and classify command metadata before queue admission.
+pub fn command_ingress(metadata: &RuntimeWireMetadata) -> Result<CommandIngress, TransportError> {
+    let source = metadata.source.as_deref().unwrap_or_default();
+    let caller = metadata.caller.as_deref().unwrap_or_default();
+    let reserved_source = source == "supervisor";
+    let reserved_caller = caller == "supervisor.public";
+    if reserved_source || reserved_caller {
+        if !(reserved_source && reserved_caller) {
+            return Err(TransportError::CommandCorrelation(
+                "external command must use source `supervisor` and caller `supervisor.public`"
+                    .to_owned(),
+            ));
+        }
+        if metadata.caller_rank.is_some() {
+            return Err(TransportError::CommandCorrelation(
+                "external command must not carry caller_rank".to_owned(),
+            ));
+        }
+        let ingress_sequence = metadata.ingress_sequence.ok_or_else(|| {
+            TransportError::CommandCorrelation(
+                "external command is missing ingress_sequence".to_owned(),
+            )
+        })?;
+        return Ok(CommandIngress::External { ingress_sequence });
+    }
+    if metadata.ingress_sequence.is_some() {
+        return Err(TransportError::CommandCorrelation(
+            "ingress_sequence is reserved for supervisor external commands".to_owned(),
+        ));
+    }
+    let caller_rank = metadata.caller_rank.ok_or_else(|| {
+        TransportError::CommandCorrelation("controlled command is missing caller_rank".to_owned())
+    })?;
+    Ok(CommandIngress::Controlled { caller_rank })
+}
+
+/// Convert validated command metadata into the public input ordering key.
+pub fn command_order(
+    metadata: &RuntimeWireMetadata,
+) -> Result<super::input::CommandOrder, TransportError> {
+    let eligible_boundary = metadata.eligible_boundary.ok_or_else(|| {
+        TransportError::CommandCorrelation("missing eligible_boundary".to_owned())
+    })?;
+    let command_id = metadata
+        .command_id
+        .ok_or_else(|| TransportError::CommandCorrelation("missing command_id".to_owned()))?;
+    let sequence = super::input::CommandId::new(command_id);
+    match command_ingress(metadata)? {
+        CommandIngress::Controlled { caller_rank } => Ok(super::input::CommandOrder::new(
+            eligible_boundary,
+            caller_rank,
+            sequence,
+        )),
+        CommandIngress::External { ingress_sequence } => Ok(super::input::CommandOrder::external(
+            eligible_boundary,
+            ingress_sequence,
+            sequence,
+        )),
+    }
 }
 
 /// Returns an execution-scoped relative key for one Runtime port direction.
@@ -1035,6 +1251,63 @@ pub fn reply_metadata(
     )
 }
 
+/// Build metadata for a reply while retaining supervisor external ingress
+/// identity when the originating command came through the public boundary.
+#[must_use]
+pub fn reply_metadata_for_order(
+    source: &str,
+    context: StepContext,
+    order: super::input::CommandOrder,
+) -> RuntimeWireMetadata {
+    let mut metadata = reply_metadata(
+        source,
+        context,
+        order.sequence().sequence(),
+        order.eligible_boundary(),
+        order.caller_rank(),
+    );
+    if let Some(ingress_sequence) = order.ingress_sequence() {
+        metadata.caller = Some("supervisor.public".to_owned());
+        metadata.ingress_sequence = Some(ingress_sequence);
+        metadata.caller_rank = None;
+    }
+    metadata
+}
+
+/// Build metadata for a Read reply while retaining the caller's ingress
+/// category and sequence.  Public Read requests use the same authenticated
+/// supervisor ticket as external Commands, but do not participate in command
+/// ordering at a target invocation boundary.
+pub fn reply_metadata_for_request(
+    source: &str,
+    context: StepContext,
+    request: &RuntimeWireMetadata,
+) -> Result<RuntimeWireMetadata, TransportError> {
+    let command_id = request
+        .command_id
+        .ok_or_else(|| TransportError::CommandCorrelation("missing command_id".to_owned()))?;
+    let eligible_boundary = request.eligible_boundary.ok_or_else(|| {
+        TransportError::CommandCorrelation("missing eligible_boundary".to_owned())
+    })?;
+    let ingress = command_ingress(request)?;
+    let mut reply = reply_metadata(
+        source,
+        context,
+        command_id,
+        eligible_boundary,
+        match ingress {
+            CommandIngress::Controlled { caller_rank } => caller_rank,
+            CommandIngress::External { .. } => 0,
+        },
+    );
+    if let CommandIngress::External { ingress_sequence } = ingress {
+        reply.caller = Some("supervisor.public".to_owned());
+        reply.ingress_sequence = Some(ingress_sequence);
+        reply.caller_rank = None;
+    }
+    Ok(reply)
+}
+
 /// Build metadata for a graph-resolved request activation.  The caller
 /// identity is carried separately from the source instance so a target can
 /// validate a canonical rank even when one source has multiple request fields
@@ -1062,4 +1335,73 @@ pub fn request_metadata(
 #[must_use]
 pub const fn descriptor_codec(signature: PortSignature) -> Option<PortCodec> {
     signature.codec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(metadata: RuntimeWireMetadata) -> WireSample {
+        WireSample {
+            payload: Vec::new(),
+            metadata,
+            key: "runtime/target/ports/commands/request".to_owned(),
+        }
+    }
+
+    #[test]
+    fn external_ingress_is_authenticated_and_sorted_after_controlled_callers() {
+        let external = RuntimeWireMetadata::external_command(ExecutionTime::default(), 20, 7, 3);
+        let controlled = RuntimeWireMetadata::command("caller", ExecutionTime::default(), 19, 7, 4)
+            .with_caller("caller.request");
+        let earlier_controlled =
+            RuntimeWireMetadata::command("caller-a", ExecutionTime::default(), 18, 7, 1)
+                .with_caller("caller-a.request");
+        let mut samples = vec![
+            sample(external),
+            sample(controlled),
+            sample(earlier_controlled),
+        ];
+
+        sort_command_samples(&mut samples).expect("command metadata is valid");
+        assert_eq!(
+            samples[0].metadata.caller.as_deref(),
+            Some("caller-a.request")
+        );
+        assert_eq!(
+            samples[1].metadata.caller.as_deref(),
+            Some("caller.request")
+        );
+        assert_eq!(
+            samples[2].metadata.caller.as_deref(),
+            Some("supervisor.public")
+        );
+        assert_eq!(
+            command_order(samples[2].metadata()).expect("external order"),
+            super::super::input::CommandOrder::external(
+                7,
+                3,
+                super::super::input::CommandId::new(20),
+            )
+        );
+    }
+
+    #[test]
+    fn external_ingress_rejects_missing_or_mixed_reserved_identity() {
+        let mut missing_sequence =
+            RuntimeWireMetadata::external_command(ExecutionTime::default(), 1, 0, 2);
+        missing_sequence.ingress_sequence = None;
+        assert!(command_ingress(&missing_sequence).is_err());
+
+        let mixed = RuntimeWireMetadata::command("supervisor", ExecutionTime::default(), 1, 0, 0)
+            .with_caller("supervisor.public");
+        assert!(command_ingress(&mixed).is_err());
+
+        let controlled_with_external_sequence =
+            RuntimeWireMetadata::command("caller", ExecutionTime::default(), 1, 0, 0)
+                .with_caller("caller.request");
+        let mut controlled_with_external_sequence = controlled_with_external_sequence;
+        controlled_with_external_sequence.ingress_sequence = Some(1);
+        assert!(command_ingress(&controlled_with_external_sequence).is_err());
+    }
 }

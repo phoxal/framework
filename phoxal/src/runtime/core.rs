@@ -672,6 +672,16 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
         &self.service
     }
 
+    /// Returns the initialized state to an owner-side output adapter.
+    ///
+    /// This remains crate-visible so transport can publish an authored
+    /// bootstrap projection without exposing mutable runtime state as part of
+    /// the public service API.
+    #[doc(hidden)]
+    pub(crate) fn state_ref(&self) -> Option<&R::State> {
+        self.state.as_ref()
+    }
+
     /// Runs and accepts one serialized invocation.
     ///
     /// The candidate state and outputs are prepared together.  State and the

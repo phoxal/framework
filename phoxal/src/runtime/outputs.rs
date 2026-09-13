@@ -128,9 +128,6 @@ pub trait OutputSet: 'static {
     /// Declared transient fields in source order.
     const FIELDS: &'static [OutputField];
 
-    /// Registers generated descriptor codecs used by local activations.
-    fn register_transport_codecs() {}
-
     /// Encode the complete fresh output value using its generated port
     /// descriptors.  The runner calls this during output reservation, before
     /// it commits the invocation's state or schedule advancement.
@@ -152,9 +149,6 @@ impl OutputSet for () {
 pub trait OutputBindings: super::Runtime + 'static {
     /// Declared projection, read, activation, and worker methods.
     const FIELDS: &'static [OutputField];
-
-    /// Registers generated descriptor codecs used by local activations.
-    fn register_transport_codecs() {}
 
     /// Encode state and setpoint projections after the next state has been
     /// computed but before the owner commits the invocation's output

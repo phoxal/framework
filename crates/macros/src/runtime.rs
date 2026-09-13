@@ -70,11 +70,6 @@ pub fn expand_runtime(attr: TokenStream, item: TokenStream) -> syn::Result<Token
             #[doc(hidden)]
             fn __retain_artifact_metadata() {
                 ::std::hint::black_box(&#artifact_static);
-                <<Self as ::phoxal::runtime::Runtime>::Inputs as
-                    ::phoxal::runtime::input::InputSet>::register_transport_codecs();
-                <<Self as ::phoxal::runtime::Runtime>::Outputs as
-                    ::phoxal::runtime::outputs::OutputSet>::register_transport_codecs();
-                <Self as ::phoxal::runtime::outputs::OutputBindings>::register_transport_codecs();
                 for field in <Self::Inputs as ::phoxal::runtime::input::InputSet>::FIELDS {
                     if let Some(signature) = field.port_signature {
                         ::std::hint::black_box(signature.descriptor_set());

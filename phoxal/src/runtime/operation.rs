@@ -110,6 +110,17 @@ pub enum OperationError {
     /// The operation cannot be replaced until its owner exits and is joined.
     #[error("operation owner is still live and must be terminated before replacement")]
     OwnerMustTerminate,
+    /// The authored retirement grace elapsed without a confirmed worker exit.
+    ///
+    /// The runtime process has crossed its non-overlap boundary and must
+    /// terminate before replacement or reset.  The transport entrypoint
+    /// enforces this outcome by irreversibly terminating the process; direct
+    /// test adapters can inspect the typed error before applying their test
+    /// boundary.
+    #[error(
+        "operation owner did not exit within cancel grace; supervisor must terminate the process"
+    )]
+    ProcessTerminationRequired,
     /// The operation was asked to retire while already idle.
     #[error("operation has no live worker")]
     NoWorker,
@@ -190,6 +201,7 @@ where
     worker: std::sync::Arc<Worker>,
     live: Option<LiveWorker<Key, Response>>,
     pending: Option<Activation<Key, Input>>,
+    process_termination_required: bool,
 }
 
 struct LiveWorker<Key, Response> {
@@ -231,6 +243,7 @@ where
             worker: std::sync::Arc::new(worker),
             live: None,
             pending: None,
+            process_termination_required: false,
         }
     }
 
@@ -250,6 +263,12 @@ where
         self.pending.is_some()
     }
 
+    /// Reports that supervisor-owned process termination is now required.
+    #[must_use]
+    pub const fn process_termination_required(&self) -> bool {
+        self.process_termination_required
+    }
+
     /// Submits an owned activation.  A live worker can have only one pending
     /// replacement; a newer replacement supersedes the older pending input.
     pub fn submit(
@@ -261,7 +280,11 @@ where
             return Ok(SubmitResult::Started);
         }
         if self.state() == OperationState::Retiring {
-            return Err(OperationError::OwnerMustTerminate);
+            return Err(if self.process_termination_required {
+                OperationError::ProcessTerminationRequired
+            } else {
+                OperationError::OwnerMustTerminate
+            });
         }
         let result = if self.pending.replace(activation).is_some() {
             SubmitResult::ReplacedPending
@@ -327,7 +350,8 @@ where
                     .retiring_since
                     .is_some_and(|retired| retired.elapsed() >= self.policy.cancel_grace)
                 {
-                    return Err(OperationError::OwnerMustTerminate);
+                    self.process_termination_required = true;
+                    return Err(OperationError::ProcessTerminationRequired);
                 }
                 Ok(None)
             }
@@ -341,7 +365,11 @@ where
     /// Starts the pending latest replacement after the live worker has exited.
     pub fn start_pending(&mut self) -> Result<bool, OperationError> {
         if self.live.is_some() {
-            return Err(OperationError::OwnerMustTerminate);
+            return Err(if self.process_termination_required {
+                OperationError::ProcessTerminationRequired
+            } else {
+                OperationError::OwnerMustTerminate
+            });
         }
         let Some(activation) = self.pending.take() else {
             return Ok(false);
@@ -376,7 +404,8 @@ where
                 .retiring_since
                 .is_some_and(|start| start.elapsed() >= self.policy.cancel_grace)
         }) {
-            return Err(OperationError::OwnerMustTerminate);
+            self.process_termination_required = true;
+            return Err(OperationError::ProcessTerminationRequired);
         }
         Ok(false)
     }
@@ -402,7 +431,16 @@ where
             }
             Ok(())
         } else if self.live.is_some() {
-            Err(OperationError::OwnerMustTerminate)
+            if self.live.as_ref().is_some_and(|worker| {
+                worker
+                    .retiring_since
+                    .is_some_and(|start| start.elapsed() >= self.policy.cancel_grace)
+            }) {
+                self.process_termination_required = true;
+                Err(OperationError::ProcessTerminationRequired)
+            } else {
+                Err(OperationError::OwnerMustTerminate)
+            }
         } else {
             Ok(())
         }
@@ -450,6 +488,13 @@ where
         // retirement grace; this final join closes the ownership boundary for
         // error paths and test fixtures as well.
         self.pending = None;
+        if self.process_termination_required {
+            // The supervisor owns the process boundary now.  Joining here
+            // would block shutdown on an unresponsive worker and contradict
+            // the explicit ProcessTerminationRequired outcome.
+            self.live = None;
+            return;
+        }
         if let Some(mut worker) = self.live.take()
             && let Some(handle) = worker.handle.take()
         {
@@ -553,5 +598,34 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(operation.poll().expect("idle poll").is_none());
+    }
+
+    #[test]
+    fn an_unresponsive_worker_exposes_the_supervisor_boundary() {
+        let policy = OperationPolicy::new(Duration::from_millis(1), Duration::from_millis(1))
+            .expect("valid policy");
+        let mut operation = ManagedOperation::new(policy, |_input: u64| {
+            std::thread::sleep(Duration::from_millis(50));
+            Ok(7_u64)
+        });
+        operation
+            .submit(Activation::new(OperationKey::new(1), 0))
+            .expect("start");
+        let timeout = loop {
+            if let Some(completion) = operation.poll().expect("poll") {
+                break completion;
+            }
+            std::thread::yield_now();
+        };
+        assert!(matches!(timeout.outcome(), OperationOutcome::TimedOut));
+        let error = loop {
+            match operation.poll() {
+                Err(error) => break error,
+                Ok(None) => std::thread::yield_now(),
+                Ok(Some(_)) => panic!("a timed-out worker produced a second outcome"),
+            }
+        };
+        assert_eq!(error, super::OperationError::ProcessTerminationRequired);
+        assert!(operation.process_termination_required());
     }
 }

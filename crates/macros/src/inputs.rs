@@ -42,8 +42,8 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut checks = Vec::new();
     let mut bindings = Vec::new();
     let mut transport_fields = Vec::new();
-    let mut transport_registrations = Vec::new();
     let mut transport_decoders = Vec::new();
+    let mut generated_request_codecs = Vec::new();
     let mut generated_transport_fields = Vec::new();
     let mut generated_transport_decoders = Vec::new();
     let mut generated_transport_bounds = Vec::new();
@@ -52,6 +52,8 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut transport_params = Vec::new();
     let mut transport_types = Vec::new();
     let mut sink_latest = Vec::new();
+    let mut sink_clear_latest = Vec::new();
+    let mut expire_latest = Vec::new();
     let mut sink_samples = Vec::new();
     let mut sink_events = Vec::new();
     let mut sink_setpoints = Vec::new();
@@ -146,11 +148,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                     request_codec: (#port).signature().codec(),
                 }
             });
-            transport_registrations.push(quote! {
-                ::phoxal::runtime::transport::register_exchange_codecs::<#request, #response>(
-                    (#port).signature(),
-                );
-            });
             transport_decoders.push(quote! {
                 stringify!(#field_name) => {
                     ::phoxal::runtime::transport::sort_command_samples(&mut samples)?;
@@ -184,34 +181,8 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                             &sample,
                         )
                         .map_err(|error| ::anyhow::anyhow!(error))?;
-                        let metadata = sample.metadata();
-                        let command_id = metadata.command_id.ok_or_else(|| {
-                            ::anyhow::anyhow!(
-                                ::phoxal::runtime::transport::TransportError::CommandCorrelation(
-                                    "missing command id".to_owned(),
-                                )
-                            )
-                        })?;
-                        let eligible_boundary = metadata.eligible_boundary.ok_or_else(|| {
-                            ::anyhow::anyhow!(
-                                ::phoxal::runtime::transport::TransportError::CommandCorrelation(
-                                    "missing eligible boundary".to_owned(),
-                                )
-                            )
-                        })?;
-                        let caller_rank = metadata.caller_rank.ok_or_else(|| {
-                            ::anyhow::anyhow!(
-                                ::phoxal::runtime::transport::TransportError::CommandCorrelation(
-                                    "missing caller rank".to_owned(),
-                                )
-                            )
-                        })?;
-                        let id = ::phoxal::runtime::CommandId::new(command_id);
-                        let order = ::phoxal::runtime::CommandOrder::new(
-                            eligible_boundary,
-                            caller_rank,
-                            id,
-                        );
+                        let order = ::phoxal::runtime::transport::command_order(sample.metadata())
+                            .map_err(|error| ::anyhow::anyhow!(error))?;
                         items.push(::phoxal::runtime::Command::with_order(order, request));
                     }
                     self.#field_name = ::phoxal::runtime::Commands::bounded(
@@ -282,8 +253,34 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
         )?;
         generated_transport_decoders.push(generated.decoder);
         generated_transport_bounds.extend(generated.bounds);
+        if !generated.request_codec.is_empty() {
+            generated_request_codecs.push(generated.request_codec);
+        }
 
         let sink = expand_transport_sink(kind, &field_name, &ty, &options, field)?;
+        if kind == InputKind::Latest {
+            sink_clear_latest.push(quote! {
+                stringify!(#field_name) => {
+                    self.#field_name = ::phoxal::runtime::Latest::unavailable();
+                    Ok(())
+                }
+            });
+            if let Some(max_age_ms) = options.max_age_ms {
+                expire_latest.push(quote! {
+                    if inputs.#field_name.value().is_some()
+                        && !inputs.#field_name.is_fresh_at(
+                            now,
+                            Some(#max_age_ms),
+                        )
+                    {
+                        ::phoxal::runtime::input::TransportInputSink::clear_latest(
+                            inputs,
+                            stringify!(#field_name),
+                        )?;
+                    }
+                });
+            }
+        }
         match kind {
             InputKind::Latest => sink_latest.push(sink.latest),
             InputKind::Samples => sink_samples.push(sink.samples),
@@ -321,9 +318,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 }
             }
 
-            fn register_transport_codecs() {
-                #(#transport_registrations)*
-            }
         }
 
         #[allow(non_camel_case_types)]
@@ -357,7 +351,23 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 inputs: &mut #name,
                 field: &str,
                 binding: Option<&::phoxal::runtime::transport::PortBinding>,
+                samples: ::std::vec::Vec<::phoxal::runtime::transport::WireSample>,
+            ) -> ::phoxal::Result<()> {
+                Self::decode_at(
+                    inputs,
+                    field,
+                    binding,
+                    samples,
+                    ::phoxal::runtime::ExecutionTime::default(),
+                )
+            }
+
+            fn decode_at(
+                inputs: &mut #name,
+                field: &str,
+                binding: Option<&::phoxal::runtime::transport::PortBinding>,
                 mut samples: ::std::vec::Vec<::phoxal::runtime::transport::WireSample>,
+                now: ::phoxal::runtime::ExecutionTime,
             ) -> ::phoxal::Result<()> {
                 let mut keys: ::core::option::Option<&mut dyn ::phoxal::runtime::input::TransportKeyLookup> = None;
                 match field {
@@ -374,8 +384,26 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                 inputs: &mut #name,
                 field: &str,
                 binding: Option<&::phoxal::runtime::transport::PortBinding>,
+                samples: ::std::vec::Vec<::phoxal::runtime::transport::WireSample>,
+                keys: &mut dyn ::phoxal::runtime::input::TransportKeyLookup,
+            ) -> ::phoxal::Result<()> {
+                Self::decode_with_keys_at(
+                    inputs,
+                    field,
+                    binding,
+                    samples,
+                    keys,
+                    ::phoxal::runtime::ExecutionTime::default(),
+                )
+            }
+
+            fn decode_with_keys_at(
+                inputs: &mut #name,
+                field: &str,
+                binding: Option<&::phoxal::runtime::transport::PortBinding>,
                 mut samples: ::std::vec::Vec<::phoxal::runtime::transport::WireSample>,
                 keys: &mut dyn ::phoxal::runtime::input::TransportKeyLookup,
+                now: ::phoxal::runtime::ExecutionTime,
             ) -> ::phoxal::Result<()> {
                 let mut keys = Some(keys);
                 match field {
@@ -386,6 +414,21 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                         }
                     )),
                 }
+            }
+
+            fn request_codec(field: &str) -> Option<::phoxal::port::PortCodec> {
+                match field {
+                    #(#generated_request_codecs,)*
+                    _ => None,
+                }
+            }
+
+            fn expire_at(
+                inputs: &mut #name,
+                now: ::phoxal::runtime::ExecutionTime,
+            ) -> ::phoxal::Result<()> {
+                #(#expire_latest)*
+                Ok(())
             }
         }
 
@@ -398,6 +441,15 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             ) -> ::phoxal::Result<()> {
                 match field {
                     #(#sink_latest,)*
+                    _ => Err(::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                        detail: format!("input field `{field}` is not a latest value"),
+                    })),
+                }
+            }
+
+            fn clear_latest(&mut self, field: &str) -> ::phoxal::Result<()> {
+                match field {
+                    #(#sink_clear_latest,)*
                     _ => Err(::anyhow::anyhow!(::phoxal::runtime::transport::TransportError::InvalidMetadata {
                         detail: format!("input field `{field}` is not a latest value"),
                     })),
@@ -617,6 +669,7 @@ fn input_kind(ty: &Type) -> syn::Result<InputKind> {
 struct TransportDecoder {
     decoder: TokenStream,
     bounds: Vec<TokenStream>,
+    request_codec: TokenStream,
 }
 
 fn fresh_param(params: &mut Vec<Ident>) -> Ident {
@@ -637,7 +690,9 @@ fn expand_transport_decoder(
     item: &Field,
 ) -> syn::Result<TransportDecoder> {
     let field_text = quote!(stringify!(#field_name));
+    let max_age = option_tokens(options.max_age_ms);
     let mut bounds = Vec::new();
+    let mut request_codec = TokenStream::new();
     let decoder = match kind {
         InputKind::Latest => {
             let payload_type = generic_type(ty, 1, item)?;
@@ -667,6 +722,20 @@ fn expand_transport_decoder(
                         }
                     ))?;
                     let stamp = ::phoxal::runtime::transport::observation_stamp(sample.metadata())?;
+                    if let Some(max_age_ms) = #max_age {
+                        let Some(age) = now.checked_duration_since(stamp.capture_time()) else {
+                            return ::phoxal::runtime::input::TransportInputSink::clear_latest(
+                                inputs,
+                                #field_text,
+                            );
+                        };
+                        if age.as_millis() > max_age_ms {
+                            return ::phoxal::runtime::input::TransportInputSink::clear_latest(
+                                inputs,
+                                #field_text,
+                            );
+                        }
+                    }
                     let value = ::phoxal::runtime::transport::decode_message::<#payload>(
                         binding,
                         &sample,
@@ -945,7 +1014,17 @@ fn expand_transport_decoder(
                                 items.push(::phoxal::runtime::input::TransportStreamItem::End),
                             ::phoxal::runtime::transport::WireControl::Failed =>
                                 items.push(::phoxal::runtime::input::TransportStreamItem::Failed(
-                                    "source stream failed".to_owned(),
+                                    sample
+                                        .metadata()
+                                        .reason
+                                        .clone()
+                                        .unwrap_or_else(|| "source stream failed".to_owned()),
+                                )),
+                            ::phoxal::runtime::transport::WireControl::Rejected =>
+                                return Err(::anyhow::anyhow!(
+                                    ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                                        detail: format!("stream field `{}` received a request rejection", #field_text),
+                                    }
                                 )),
                         }
                     }
@@ -1001,28 +1080,10 @@ fn expand_transport_decoder(
                             (#port).signature(),
                             &sample,
                         ).map_err(|error| ::anyhow::anyhow!(error))?;
-                        let metadata = sample.metadata();
-                        let command_id = metadata.command_id.ok_or_else(|| ::anyhow::anyhow!(
-                            ::phoxal::runtime::transport::TransportError::CommandCorrelation(
-                                "missing command id".to_owned(),
-                            )
-                        ))?;
-                        let eligible_boundary = metadata.eligible_boundary.ok_or_else(|| ::anyhow::anyhow!(
-                            ::phoxal::runtime::transport::TransportError::CommandCorrelation(
-                                "missing eligible boundary".to_owned(),
-                            )
-                        ))?;
-                        let caller_rank = metadata.caller_rank.ok_or_else(|| ::anyhow::anyhow!(
-                            ::phoxal::runtime::transport::TransportError::CommandCorrelation(
-                                "missing caller rank".to_owned(),
-                            )
-                        ))?;
+                        let order = ::phoxal::runtime::transport::command_order(sample.metadata())
+                            .map_err(|error| ::anyhow::anyhow!(error))?;
                         items.push(::phoxal::runtime::input::TransportCommand {
-                            order: ::phoxal::runtime::CommandOrder::new(
-                                eligible_boundary,
-                                caller_rank,
-                                ::phoxal::runtime::CommandId::new(command_id),
-                            ),
+                            order,
                             request: ::std::boxed::Box::new(request) as ::phoxal::runtime::input::TransportValue,
                         });
                     }
@@ -1046,6 +1107,14 @@ fn expand_transport_decoder(
             })?;
             bounds.push(prost_bound(&request));
             bounds.push(prost_bound(&response));
+            request_codec = quote! {
+                #field_text => Some(::phoxal::port::PortCodec::new(
+                    Some(::phoxal::runtime::transport::encode_prost::<#request>),
+                    Some(::phoxal::runtime::transport::decode_prost::<#request>),
+                    None,
+                    None,
+                ))
+            };
             bounds.push(quote! {
                 #key: ::core::convert::From<u64> + ::core::marker::Send + 'static,
             });
@@ -1094,6 +1163,14 @@ fn expand_transport_decoder(
                             )?) as ::phoxal::runtime::input::TransportValue),
                         ::phoxal::runtime::transport::WireControl::Failed =>
                             Err(::phoxal::runtime::ReadError::Transport("read provider failed".to_owned())),
+                        ::phoxal::runtime::transport::WireControl::Rejected =>
+                            Err(::phoxal::runtime::ReadError::Unavailable(
+                                sample
+                                    .metadata()
+                                    .reason
+                                    .clone()
+                                    .unwrap_or_else(|| "read request rejected before admission".to_owned()),
+                            )),
                         control => return Err(::anyhow::anyhow!(
                             ::phoxal::runtime::transport::TransportError::InvalidMetadata {
                                 detail: format!("read completion used {:?} control", control),
@@ -1132,6 +1209,14 @@ fn expand_transport_decoder(
             })?;
             bounds.push(prost_bound(&request));
             bounds.push(prost_bound(&response));
+            request_codec = quote! {
+                #field_text => Some(::phoxal::port::PortCodec::new(
+                    Some(::phoxal::runtime::transport::encode_prost::<#request>),
+                    Some(::phoxal::runtime::transport::decode_prost::<#request>),
+                    None,
+                    None,
+                ))
+            };
             bounds.push(quote! {
                 #key: ::core::convert::From<u64> + ::core::marker::Send + 'static,
             });
@@ -1179,7 +1264,21 @@ fn expand_transport_decoder(
                                 #max_bytes,
                             )?) as ::phoxal::runtime::input::TransportValue),
                         ::phoxal::runtime::transport::WireControl::Failed =>
-                            Err(::phoxal::runtime::RequestError::OutcomeUnknown("request provider failed".to_owned())),
+                            Err(::phoxal::runtime::RequestError::OutcomeUnknown(
+                                sample
+                                    .metadata()
+                                    .reason
+                                    .clone()
+                                    .unwrap_or_else(|| "request provider failed".to_owned()),
+                            )),
+                        ::phoxal::runtime::transport::WireControl::Rejected =>
+                            Err(::phoxal::runtime::RequestError::RejectedBeforeAdmission(
+                                sample
+                                    .metadata()
+                                    .reason
+                                    .clone()
+                                    .unwrap_or_else(|| "request rejected before admission".to_owned()),
+                            )),
                         control => return Err(::anyhow::anyhow!(
                             ::phoxal::runtime::transport::TransportError::InvalidMetadata {
                                 detail: format!("request completion used {:?} control", control),
@@ -1219,7 +1318,11 @@ fn expand_transport_decoder(
         }
     };
 
-    Ok(TransportDecoder { decoder, bounds })
+    Ok(TransportDecoder {
+        decoder,
+        bounds,
+        request_codec,
+    })
 }
 
 struct TransportSink {
