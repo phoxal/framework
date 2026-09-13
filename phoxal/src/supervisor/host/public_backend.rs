@@ -12,7 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use prost::Message;
@@ -41,11 +41,13 @@ use crate::runtime::transport::{
 };
 
 use super::bundle::{Bundle, SourceBundle};
+use super::state::ExecutionState;
 
 const PUBLIC_INGRESS_INSTANCE: &str = "supervisor";
 const PUBLIC_INGRESS_FIELD: &str = "public";
 const MAX_RUNTIME_SUBSCRIBER_ITEMS: usize = 4_096;
 const MAX_RUNTIME_METADATA_BYTES: usize = 1_024;
+#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
 const MAX_RETAINED_ADVANCES: usize = 256;
 
 /// The exact runtime-facing facts for one admitted public port.
@@ -69,6 +71,8 @@ pub(crate) struct ExternalIngressTicket {
     pub(crate) eligible_boundary: u64,
     /// Monotonic order of external requests at that boundary.
     pub(crate) ingress_sequence: u64,
+    /// Host-monotonic logical timestamp captured at admission.
+    pub(crate) logical_time: ExecutionTime,
 }
 
 /// Runtime-owned admission of an external public call.
@@ -86,27 +90,15 @@ pub(crate) trait RuntimeExternalIngress: Send + Sync {
         caller: &RuntimeIngressIdentity,
         contract: &RuntimePortContract,
     ) -> Result<ExternalIngressTicket, PublicBackendError>;
-}
 
-/// Explicit absence of the Runtime external-admission seam.
-///
-/// This is used only while the selected Runtime has no implementation of the
-/// external boundary contract.  It refuses before Zenoh admission rather than
-/// inventing boundary zero or silently dropping ingress sequencing.
-#[derive(Debug, Default)]
-pub(crate) struct NoExternalIngress;
-
-impl RuntimeExternalIngress for NoExternalIngress {
-    fn admit(
+    /// Release a reservation after a definitive target response or a local
+    /// failure proved that the request was never transmitted.
+    fn release(
         &self,
-        target_instance: &str,
-        target_port: &str,
-        _caller: &RuntimeIngressIdentity,
-        _contract: &RuntimePortContract,
-    ) -> Result<ExternalIngressTicket, PublicBackendError> {
-        Err(PublicBackendError::RejectedBeforeAdmission(format!(
-            "Runtime `{target_instance}.{target_port}` has no external ingress admission hook"
-        )))
+        _target_instance: &str,
+        _target_port: &str,
+        _ticket: ExternalIngressTicket,
+    ) {
     }
 }
 
@@ -130,6 +122,159 @@ impl Default for RuntimeIngressIdentity {
     }
 }
 
+/// Supervisor-owned ordering and reservation authority for one execution.
+///
+/// The coordinator is shared by public data operations, so every external
+/// ticket is assigned from one locked sequence and the current boundary
+/// observed by the supervisor state. The host clock supplies the metadata
+/// timestamp, while the runtime boundary remains the source of eligibility
+/// and is never guessed from a process-local request counter.
+pub(crate) struct RuntimeExecutionCoordinator {
+    state: ExecutionState,
+    origin: Instant,
+    ingress: Arc<Mutex<IngressState>>,
+}
+
+#[derive(Debug)]
+struct IngressState {
+    next_sequence: u64,
+    reservations: BTreeMap<(String, String), usize>,
+}
+
+const MAX_EXTERNAL_INGRESS_PER_PORT: usize = 64;
+
+impl std::fmt::Debug for RuntimeExecutionCoordinator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeExecutionCoordinator")
+            .field("boundary", &self.current_boundary())
+            .field("origin", &self.origin)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RuntimeExecutionCoordinator {
+    pub(crate) fn new(state: ExecutionState) -> Self {
+        Self {
+            state,
+            origin: Instant::now(),
+            ingress: Arc::new(Mutex::new(IngressState {
+                next_sequence: 1,
+                reservations: BTreeMap::new(),
+            })),
+        }
+    }
+
+    /// Current completed boundary used for external eligibility.
+    pub(crate) fn current_boundary(&self) -> u64 {
+        self.state.runtime_boundary()
+    }
+
+    fn host_time(&self) -> ExecutionTime {
+        ExecutionTime::from(self.origin.elapsed())
+    }
+
+    fn validate_external_identity(
+        &self,
+        caller: &RuntimeIngressIdentity,
+    ) -> Result<(), PublicBackendError> {
+        if caller.source != PUBLIC_INGRESS_INSTANCE
+            || caller.caller != format!("{PUBLIC_INGRESS_INSTANCE}.{PUBLIC_INGRESS_FIELD}")
+        {
+            return Err(PublicBackendError::RejectedBeforeAdmission(
+                "external Runtime ingress identity is not supervisor-owned".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn admission_capacity(contract: &RuntimePortContract) -> usize {
+        usize::try_from(contract.metadata.max_buffered_items)
+            .unwrap_or(usize::MAX)
+            .clamp(1, MAX_EXTERNAL_INGRESS_PER_PORT)
+    }
+
+    fn release_reservation(
+        &self,
+        target_instance: &str,
+        target_port: &str,
+        _ticket: ExternalIngressTicket,
+    ) {
+        let mut ingress = lock_unpoisoned(&self.ingress);
+        let key = (target_instance.to_owned(), target_port.to_owned());
+        if let Some(reservations) = ingress.reservations.get_mut(&key) {
+            *reservations = reservations.saturating_sub(1);
+            if *reservations == 0 {
+                ingress.reservations.remove(&key);
+            }
+        }
+    }
+}
+
+impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
+    fn admit(
+        &self,
+        target_instance: &str,
+        target_port: &str,
+        caller: &RuntimeIngressIdentity,
+        contract: &RuntimePortContract,
+    ) -> Result<ExternalIngressTicket, PublicBackendError> {
+        self.validate_external_identity(caller)?;
+        if self.state.snapshot().lifecycle != crate::supervisor::api::execution::Lifecycle::Ready {
+            return Err(PublicBackendError::RejectedBeforeAdmission(
+                "runtime graph is not Ready for external ingress".to_owned(),
+            ));
+        }
+        if !matches!(
+            PortKind::try_from(contract.metadata.kind),
+            Ok(PortKind::Read | PortKind::Commands)
+        ) {
+            return Err(PublicBackendError::RejectedBeforeAdmission(
+                "external ingress requires a Read or Commands port".to_owned(),
+            ));
+        }
+        let key = (target_instance.to_owned(), target_port.to_owned());
+        let mut ingress = lock_unpoisoned(&self.ingress);
+        let capacity = Self::admission_capacity(contract);
+        let reservations = ingress.reservations.get(&key).copied().unwrap_or_default();
+        if reservations >= capacity {
+            return Err(PublicBackendError::RejectedBeforeAdmission(
+                "external Runtime ingress capacity is exhausted".to_owned(),
+            ));
+        }
+        let eligible_boundary = self
+            .current_boundary()
+            .checked_add(1)
+            .ok_or_else(|| {
+                PublicBackendError::RejectedBeforeAdmission(
+                    "Runtime eligible boundary is exhausted".to_owned(),
+                )
+            })?;
+        let ingress_sequence = ingress.next_sequence;
+        let next_sequence = ingress_sequence.checked_add(1).ok_or_else(|| {
+            PublicBackendError::RejectedBeforeAdmission(
+                "Runtime external ingress sequence is exhausted".to_owned(),
+            )
+        })?;
+        ingress.next_sequence = next_sequence;
+        *ingress.reservations.entry(key).or_default() = reservations.saturating_add(1);
+        Ok(ExternalIngressTicket {
+            eligible_boundary,
+            ingress_sequence,
+            logical_time: self.host_time(),
+        })
+    }
+
+    fn release(
+        &self,
+        target_instance: &str,
+        target_port: &str,
+        ticket: ExternalIngressTicket,
+    ) {
+        self.release_reservation(target_instance, target_port, ticket);
+    }
+}
+
 /// The generated public inventory and runtime bridge for one bundle.
 #[derive(Clone)]
 pub(crate) struct RuntimePublicSurface {
@@ -139,6 +284,8 @@ pub(crate) struct RuntimePublicSurface {
     pub(crate) ports: Arc<BTreeMap<(String, String), RuntimePortContract>>,
     /// Explicit supervisor external caller identity.
     pub(crate) ingress: RuntimeIngressIdentity,
+    /// Immutable simulation authority contract, when the bundle carries one.
+    pub(crate) simulation: Option<SimulationDefinition>,
 }
 
 impl std::fmt::Debug for RuntimePublicSurface {
@@ -148,6 +295,7 @@ impl std::fmt::Debug for RuntimePublicSurface {
             .field("services", &self.services.len())
             .field("ports", &self.ports.len())
             .field("ingress", &self.ingress)
+            .field("simulation", &self.simulation)
             .finish()
     }
 }
@@ -162,6 +310,7 @@ impl RuntimePublicSurface {
                 services: Vec::new(),
                 ports: Arc::new(BTreeMap::new()),
                 ingress: RuntimeIngressIdentity::default(),
+                simulation: None,
             });
         };
         Self::from_source(source)
@@ -344,6 +493,7 @@ impl RuntimePublicSurface {
             services,
             ports: Arc::new(ports),
             ingress,
+            simulation: None,
         })
     }
 
@@ -354,7 +504,7 @@ impl RuntimePublicSurface {
         timeline_id: String,
         state: i32,
     ) -> Result<ExecutionDefinition> {
-        ExecutionDefinition::new(
+        let execution = ExecutionDefinition::new(
             crate::communication::session::ExecutionSummary {
                 execution_id,
                 timeline_id,
@@ -362,7 +512,13 @@ impl RuntimePublicSurface {
             },
             self.services.clone(),
         )
-        .map_err(Into::into)
+        .map_err(anyhow::Error::from)?;
+        match &self.simulation {
+            Some(simulation) => execution
+                .with_simulation(simulation.clone())
+                .map_err(Into::into),
+            None => Ok(execution),
+        }
     }
 }
 
@@ -515,51 +671,65 @@ impl RuntimePublicBackend {
             contract,
         )?;
         if ticket.ingress_sequence == 0 {
+            self.external_ingress.release(&key.0, &key.1, ticket);
             return Err(PublicBackendError::RejectedBeforeAdmission(
                 "Runtime external ingress sequence must be positive".to_owned(),
             ));
         }
         let command_id = self.next_command.fetch_add(1, Ordering::Relaxed);
         if command_id == 0 {
+            self.external_ingress.release(&key.0, &key.1, ticket);
             return Err(PublicBackendError::RejectedBeforeAdmission(
                 "public Runtime command correlation exhausted".to_owned(),
             ));
         }
-        // This temporary call shape is the only base-branch gap.  Once the
-        // Runtime external-admission API lands, replace it with
-        // `RuntimeWireMetadata::external_command(logical_time, command_id,
-        // ticket.eligible_boundary, ticket.ingress_sequence)`, which carries
-        // no controlled caller rank and preserves the coordinator sequence.
-        let metadata = RuntimeWireMetadata::command(
-            self.ingress.source.clone(),
-            ExecutionTime::from_nanos(0),
+        let metadata = RuntimeWireMetadata::external_command(
+            ticket.logical_time,
             command_id,
             ticket.eligible_boundary,
-            0,
-        )
-        .with_caller(self.ingress.caller.clone());
-        // `sequence` is the Runtime wire's producer sequence.  For an
-        // external request the supervisor is that producer, so retain the
-        // coordinator's ingress sequence separately from command_id.
-        let metadata = RuntimeWireMetadata {
-            sequence: Some(ticket.ingress_sequence),
-            ..metadata
+            ticket.ingress_sequence,
+        );
+        let attachment = match encode_runtime_metadata(&metadata) {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                self.external_ingress
+                    .release(&key.0, &key.1, ticket);
+                return Ok(PublicBackendOutcome::NotSent(error.to_string()));
+            }
         };
-        let attachment = encode_runtime_metadata(&metadata)?;
-        let session = self
-            .bus
-            .session()
-            .map_err(|error| PublicBackendError::Transport(error.to_string()))?;
+        let session = match self.bus.session() {
+            Ok(session) => session,
+            Err(error) => {
+                self.external_ingress
+                    .release(&key.0, &key.1, ticket);
+                return Ok(PublicBackendOutcome::NotSent(error.to_string()));
+            }
+        };
         let reply_key = self
             .bus
             .full_key(&port_key(&binding.service_instance, &binding.metadata.name, "reply"));
-        let subscriber = session
-            .declare_subscriber(OwnedKeyExpr::new(reply_key.clone()).map_err(|error| {
-                PublicBackendError::Transport(format!("invalid Runtime reply key: {error}"))
-            })?)
+        let reply_key_expr = match OwnedKeyExpr::new(reply_key.clone()) {
+            Ok(key) => key,
+            Err(error) => {
+                self.external_ingress
+                    .release(&key.0, &key.1, ticket);
+                return Ok(PublicBackendOutcome::NotSent(format!(
+                    "invalid Runtime reply key: {error}"
+                )));
+            }
+        };
+        let subscriber = match session
+            .declare_subscriber(reply_key_expr)
             .with(zenoh::handlers::FifoChannel::new(8))
             .await
-            .map_err(|error| PublicBackendError::Transport(error.to_string()))?;
+        {
+            Ok(subscriber) => subscriber,
+            Err(error) => {
+                self.external_ingress
+                    .release(&key.0, &key.1, ticket);
+                return Ok(PublicBackendOutcome::NotSent(error.to_string()));
+            }
+        };
         let request_key = self
             .bus
             .full_key(&port_key(&binding.service_instance, &binding.metadata.name, "request"));
@@ -600,19 +770,35 @@ impl RuntimePublicBackend {
             if wire.key() != reply_key
                 || wire.metadata().source.as_deref() != Some(&key.0)
                 || wire.metadata().eligible_boundary != Some(ticket.eligible_boundary)
+                || wire.metadata().caller.as_deref() != Some(self.ingress.caller.as_str())
+                || wire.metadata().ingress_sequence != Some(ticket.ingress_sequence)
             {
                 return Ok(PublicBackendOutcome::OutcomeUnknown(
                     "Runtime reply identity did not match the admitted target".to_owned(),
                 ));
             }
-            if !matches!(wire.metadata().wire_control(), Ok(WireControl::Data))
-                || wire.payload().len() as u64 > contract.response_max_bytes
-            {
-                return Ok(PublicBackendOutcome::OutcomeUnknown(
-                    "Runtime reply violated its compiled transport contract".to_owned(),
-                ));
+            match wire.metadata().wire_control() {
+                Ok(WireControl::Rejected) => {
+                    self.external_ingress
+                        .release(&key.0, &key.1, ticket);
+                    return Ok(PublicBackendOutcome::RejectedBeforeAdmission(
+                        wire.metadata()
+                            .reason
+                            .clone()
+                            .unwrap_or_else(|| "Runtime rejected the request before queue admission".to_owned()),
+                    ));
+                }
+                Ok(WireControl::Data) if wire.payload().len() as u64 <= contract.response_max_bytes => {
+                    self.external_ingress
+                        .release(&key.0, &key.1, ticket);
+                    return Ok(PublicBackendOutcome::Received(wire.payload().to_vec()));
+                }
+                _ => {
+                    return Ok(PublicBackendOutcome::OutcomeUnknown(
+                        "Runtime reply violated its compiled transport contract".to_owned(),
+                    ));
+                }
             }
-            return Ok(PublicBackendOutcome::Received(wire.payload().to_vec()));
         }
     }
 }
@@ -816,6 +1002,7 @@ fn encode_runtime_metadata(metadata: &RuntimeWireMetadata) -> Result<Vec<u8>, Pu
 /// admission.  This hook is the only authority allowed to advance a runtime
 /// boundary.  Keeping it explicit prevents a public bridge from claiming
 /// completion after merely publishing sensor bytes.
+#[allow(dead_code, reason = "implemented by the deferred runtime-owned simulation backend")]
 pub(crate) trait RuntimeBoundaryHook: Send + Sync {
     fn acquire(
         &self,
@@ -845,61 +1032,10 @@ pub(crate) trait RuntimeBoundaryHook: Send + Sync {
     ) -> BoundaryFuture<ProgressResponse>;
 }
 
+#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
 type BoundaryFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
-/// Explicit boundary absence used by hardware-only supervisors.
-#[derive(Debug, Default)]
-pub(crate) struct NoControlledRuntimeBoundary;
-
-impl RuntimeBoundaryHook for NoControlledRuntimeBoundary {
-    fn acquire(
-        &self,
-        _context: PublicSimulationContext,
-        _request: AcquireAuthorityRequest,
-    ) -> BoundaryFuture<()> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn advance(
-        &self,
-        _context: PublicSimulationContext,
-        _request: AdvanceRequest,
-    ) -> BoundaryFuture<AdvanceResponse> {
-        Box::pin(async {
-            Err("the selected Runtime has no controlled boundary hook".to_owned())
-        })
-    }
-
-    fn reset(
-        &self,
-        _context: PublicSimulationContext,
-        _request: ResetRequest,
-        _next_timeline_id: String,
-    ) -> BoundaryFuture<()> {
-        Box::pin(async {
-            Err("the selected Runtime has no controlled boundary hook".to_owned())
-        })
-    }
-
-    fn release(
-        &self,
-        _context: PublicSimulationContext,
-        _request: ReleaseAuthorityRequest,
-    ) -> BoundaryFuture<()> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn progress(
-        &self,
-        _context: PublicSimulationContext,
-        _request: ProgressRequest,
-    ) -> BoundaryFuture<ProgressResponse> {
-        Box::pin(async {
-            Err("the selected Runtime has no controlled boundary hook".to_owned())
-        })
-    }
-}
-
+#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct AdvanceIdentity {
     session_id: Vec<u8>,
@@ -909,6 +1045,7 @@ struct AdvanceIdentity {
     correlation_id: Vec<u8>,
 }
 
+#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
 struct PendingAdvance {
     digest: [u8; 32],
     result: watch::Receiver<Option<Result<AdvanceResponse, PublicBackendError>>>,
@@ -917,6 +1054,7 @@ struct PendingAdvance {
 /// Concrete simulation bridge which validates the immutable bundle contract,
 /// forwards observations to Runtime publication ports, and delegates exactly
 /// one admitted boundary to [`RuntimeBoundaryHook`].
+#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
 pub(crate) struct RuntimeSimulationBridge {
     bus: BusHandle,
     ports: Arc<BTreeMap<(String, String), RuntimePortContract>>,
@@ -926,6 +1064,7 @@ pub(crate) struct RuntimeSimulationBridge {
     advances: Arc<Mutex<BTreeMap<AdvanceIdentity, PendingAdvance>>>,
 }
 
+#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
 impl std::fmt::Debug for RuntimeSimulationBridge {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -936,6 +1075,7 @@ impl std::fmt::Debug for RuntimeSimulationBridge {
     }
 }
 
+#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
 impl RuntimeSimulationBridge {
     pub(crate) fn new(
         bus: BusHandle,
@@ -1142,6 +1282,7 @@ impl RuntimeSimulationBridge {
     }
 }
 
+#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
 impl PublicSimulationBackend for RuntimeSimulationBridge {
     fn acquire(
         &self,
@@ -1162,6 +1303,38 @@ impl PublicSimulationBackend for RuntimeSimulationBridge {
             {
                 return Err(PublicBackendError::RejectedBeforeAdmission(
                     "simulation authority does not match the immutable bundle definition"
+                        .to_owned(),
+                ));
+            }
+            let expected = definition
+                .providers()
+                .iter()
+                .map(|provider| {
+                    (
+                        provider.service_instance().to_owned(),
+                        provider.port().to_owned(),
+                        provider.kind() as i32,
+                        provider.input_fqn().to_owned(),
+                        provider.payload_fqn().to_owned(),
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            let observed = request
+                .providers
+                .iter()
+                .map(|provider| {
+                    (
+                        provider.service_instance.clone(),
+                        provider.port.clone(),
+                        provider.kind,
+                        provider.input_fqn.clone(),
+                        provider.payload_fqn.clone(),
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            if observed != expected {
+                return Err(PublicBackendError::RejectedBeforeAdmission(
+                    "simulation provider requirements do not match the immutable bundle definition"
                         .to_owned(),
                 ));
             }
@@ -1237,6 +1410,7 @@ impl PublicSimulationBackend for RuntimeSimulationBridge {
     }
 }
 
+#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
 impl RuntimeSimulationBridge {
     fn clone_for_async(&self) -> Self {
         Self {
@@ -1325,6 +1499,40 @@ mod tests {
 
     use super::*;
 
+    fn ready_state() -> ExecutionState {
+        let state = ExecutionState::new(
+            super::super::presence::Presence::for_entries([(
+                "brain".to_owned(),
+                crate::participant::metadata::ParticipantKind::Brain,
+            )])
+            .expect("presence graph"),
+        )
+        .expect("execution state");
+        state.record_presence(
+            &crate::identity::ParticipantId::new("brain").expect("brain identity"),
+            crate::identity::ProducerId::try_from((1_u128 << 124) | 1)
+                .expect("producer identity"),
+            true,
+        );
+        state
+    }
+
+    fn external_contract(kind: PortKind, max_buffered_items: u32) -> RuntimePortContract {
+        let metadata = PortMetadata {
+            name: "operation".to_owned(),
+            kind: kind as i32,
+            input_fqn: "fixture.Request".to_owned(),
+            output_fqn: "fixture.Response".to_owned(),
+            max_message_bytes: 128,
+            max_buffered_items,
+        };
+        RuntimePortContract {
+            metadata,
+            request_max_bytes: 128,
+            response_max_bytes: 128,
+        }
+    }
+
     #[test]
     fn metadata_kind_mapping_is_explicit() {
         assert_eq!(output_kind("state"), Some(PortKind::State));
@@ -1339,6 +1547,34 @@ mod tests {
             ..RuntimeWireMetadata::default()
         };
         assert!(encode_runtime_metadata(&metadata).is_err());
+    }
+
+    #[test]
+    fn external_coordinator_uses_ready_boundary_sequence_and_bounded_capacity() {
+        let coordinator = RuntimeExecutionCoordinator::new(ready_state());
+        let contract = external_contract(PortKind::Commands, 2);
+        let caller = RuntimeIngressIdentity::default();
+        let first = coordinator
+            .admit("service", "operation", &caller, &contract)
+            .expect("first external ticket");
+        let second = coordinator
+            .admit("service", "operation", &caller, &contract)
+            .expect("second external ticket");
+        assert_eq!(first.eligible_boundary, 1);
+        assert_eq!(second.eligible_boundary, 1);
+        assert_eq!(first.ingress_sequence, 1);
+        assert_eq!(second.ingress_sequence, 2);
+        assert!(first.logical_time <= second.logical_time);
+        assert!(matches!(
+            coordinator.admit("service", "operation", &caller, &contract),
+            Err(PublicBackendError::RejectedBeforeAdmission(detail))
+                if detail.contains("capacity")
+        ));
+        RuntimeExternalIngress::release(&coordinator, "service", "operation", first);
+        let third = coordinator
+            .admit("service", "operation", &caller, &contract)
+            .expect("released capacity is reusable");
+        assert_eq!(third.ingress_sequence, 3);
     }
 
     #[test]
@@ -1489,16 +1725,19 @@ mod tests {
                 contract,
             )])),
             ingress: RuntimeIngressIdentity::default(),
+            simulation: None,
         };
         let external = Arc::new(TestExternalIngress {
             tickets: Mutex::new(VecDeque::from([
                 ExternalIngressTicket {
                     eligible_boundary: 17,
                     ingress_sequence: 42,
+                    logical_time: ExecutionTime::from_nanos(123),
                 },
                 ExternalIngressTicket {
                     eligible_boundary: 17,
                     ingress_sequence: 43,
+                    logical_time: ExecutionTime::from_nanos(124),
                 },
             ])),
             seen: Mutex::new(Vec::new()),
@@ -1520,7 +1759,7 @@ mod tests {
                     .expect("request sample");
                 let wire = WireSample::from_zenoh(sample).expect("request metadata");
                 assert_eq!(wire.metadata().eligible_boundary, Some(17));
-                assert_eq!(wire.metadata().sequence, Some(expected_sequence));
+                assert_eq!(wire.metadata().ingress_sequence, Some(expected_sequence));
                 assert_eq!(wire.metadata().caller.as_deref(), Some("supervisor.public"));
                 let mut response_metadata = wire.metadata().clone();
                 response_metadata.source = Some("service".to_owned());
@@ -1577,6 +1816,95 @@ mod tests {
                 ),
             ]
         );
+        owner.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_read_uses_the_same_supervisor_ticket_and_reply_correlation() {
+        let (owner, bus) = crate::bus::BusOwner::open(crate::bus::BusConfig::for_external(
+            crate::identity::ExecutionId::mint(),
+            None,
+            Vec::new(),
+        ))
+        .await
+        .expect("test bus opens");
+        let metadata = PortMetadata {
+            name: "read".to_owned(),
+            kind: PortKind::Read as i32,
+            input_fqn: "fixture.Request".to_owned(),
+            output_fqn: "fixture.Response".to_owned(),
+            max_message_bytes: 256,
+            max_buffered_items: 1,
+        };
+        let surface = RuntimePublicSurface {
+            services: Vec::new(),
+            ports: Arc::new(BTreeMap::from([(
+                ("provider".to_owned(), "read".to_owned()),
+                RuntimePortContract {
+                    metadata: metadata.clone(),
+                    request_max_bytes: 128,
+                    response_max_bytes: 256,
+                },
+            )])),
+            ingress: RuntimeIngressIdentity::default(),
+            simulation: None,
+        };
+        let external = Arc::new(TestExternalIngress {
+            tickets: Mutex::new(VecDeque::from([ExternalIngressTicket {
+                eligible_boundary: 9,
+                ingress_sequence: 7,
+                logical_time: ExecutionTime::from_nanos(1234),
+            }])),
+            seen: Mutex::new(Vec::new()),
+        });
+        let backend = RuntimePublicBackend::new(bus.clone(), &surface, external);
+        let session = bus.session().expect("bus session");
+        let request_key = bus.full_key(&port_key("provider", "read", "request"));
+        let reply_key = bus.full_key(&port_key("provider", "read", "reply"));
+        let request_subscriber = session
+            .declare_subscriber(OwnedKeyExpr::new(request_key).expect("request key"))
+            .with(zenoh::handlers::FifoChannel::new(2))
+            .await
+            .expect("request subscriber");
+        let responder = tokio::spawn(async move {
+            let sample = request_subscriber
+                .recv_async()
+                .await
+                .expect("read request sample");
+            let wire = WireSample::from_zenoh(sample).expect("read request metadata");
+            assert_eq!(wire.metadata().logical_time_nanos, Some(1234));
+            assert_eq!(wire.metadata().eligible_boundary, Some(9));
+            assert_eq!(wire.metadata().ingress_sequence, Some(7));
+            assert_eq!(wire.metadata().caller_rank, None);
+            assert_eq!(wire.metadata().caller.as_deref(), Some("supervisor.public"));
+            let mut reply_metadata = wire.metadata().clone();
+            reply_metadata.source = Some("provider".to_owned());
+            session
+                .put(reply_key, vec![8, 9])
+                .encoding(Encoding::from(PROTOBUF_ENCODING.to_owned()))
+                .attachment(encode_runtime_metadata(&reply_metadata).expect("reply metadata"))
+                .await
+                .expect("read reply");
+        });
+        let binding = PublicBindingContext {
+            session_id: vec![1],
+            binding_id: vec![2],
+            execution_id: "execution".to_owned(),
+            timeline_id: "timeline".to_owned(),
+            service_instance: "provider".to_owned(),
+            metadata,
+        };
+        let result = backend
+            .call_inner(
+                PublicOperation::Read,
+                binding,
+                vec![4],
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("read call");
+        assert_eq!(result, PublicBackendOutcome::Received(vec![8, 9]));
+        responder.await.expect("responder completes");
         owner.close().await;
     }
 
@@ -1677,6 +2005,7 @@ mod tests {
                 contract,
             )])),
             ingress: RuntimeIngressIdentity::default(),
+            simulation: None,
         };
         let definition = SimulationDefinition::new(
             "model-digest",

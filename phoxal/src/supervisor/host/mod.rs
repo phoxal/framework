@@ -61,8 +61,7 @@ use state::ExecutionState;
 use bundle::Bundle;
 use process::ProcessSupervisor;
 use public_backend::{
-    NoControlledRuntimeBoundary, NoExternalIngress, RuntimePublicBackend, RuntimePublicSurface,
-    RuntimeSimulationBridge,
+    RuntimeExecutionCoordinator, RuntimePublicBackend, RuntimePublicSurface,
 };
 
 const SUPERVISOR_LABEL: &str = "phoxal-supervisor";
@@ -390,6 +389,7 @@ async fn start_public_session(
     execution: ExecutionId,
 ) -> Result<PublicSessionServer> {
     let surface = RuntimePublicSurface::from_bundle(runtime)?;
+    let coordinator = Arc::new(RuntimeExecutionCoordinator::new(state.clone()));
     let mut adapter = SupervisorAdapter::with_defaults(
         target.clone(),
         env!("CARGO_PKG_VERSION"),
@@ -409,19 +409,17 @@ async fn start_public_session(
     let backend = Arc::new(RuntimePublicBackend::new(
         bus.clone(),
         &surface,
-        Arc::new(NoExternalIngress),
+        coordinator.clone(),
     ));
-    let simulation_backend = Arc::new(RuntimeSimulationBridge::new(
-        bus.clone(),
-        &surface,
-        None,
-        Arc::new(NoControlledRuntimeBoundary),
-    ));
-    Ok(PublicSessionServer::start_with_backends(
+    // Controlled simulation remains refused until the runtime execution
+    // coordinator can dispatch and observe a complete robot boundary. The
+    // public data backend is real and independently available for hardware
+    // executions; the session server's explicit unavailable simulation
+    // backend prevents a local counter from masquerading as progress.
+    Ok(PublicSessionServer::start_with_backend(
         session,
         adapter,
         backend,
-        simulation_backend,
         PrincipalPolicy::Any,
         PublicTransportLimits::default(),
     )

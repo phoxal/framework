@@ -48,6 +48,7 @@ struct Data {
     presence: Presence,
     stopping: bool,
     time_domain: TimeDomain,
+    runtime_boundary: u64,
     attachment_revision: u64,
     attachment: Option<SimulationAttachmentState>,
     attachment_failure: Option<SimulationEndReason>,
@@ -76,6 +77,7 @@ impl ExecutionState {
                 timeline: TimelineId::mint(),
                 mode: TimeMode::Monotonic,
             },
+            runtime_boundary: 0,
             attachment_revision: 0,
             attachment: None,
             attachment_failure: None,
@@ -123,6 +125,18 @@ impl ExecutionState {
     /// The supervisor's current execution time authority.
     pub(crate) fn time_domain(&self) -> TimeDomain {
         *self.inner.time_domain.borrow()
+    }
+
+    /// The last runtime boundary reported by the execution coordinator.
+    ///
+    /// This is separate from the public execution snapshot revision and the
+    /// time-domain revision. The runtime boundary is the ordering source for
+    /// supervisor-owned external ingress. A real boundary coordinator must
+    /// update this value only after the complete required robot cut; this host
+    /// slice currently starts at the initial boundary and does not claim
+    /// controlled progress.
+    pub(crate) fn runtime_boundary(&self) -> u64 {
+        self.lock().runtime_boundary
     }
 
     /// Whether the delegated controller still owns any expected Ready row.
@@ -274,9 +288,11 @@ mod tests {
                 .iter()
                 .all(|process| process.state == ProcessState::Absent)
         );
-        let domain = state().time_domain();
+        let state = state();
+        let domain = state.time_domain();
         assert_eq!(domain.revision, 0);
         assert_eq!(domain.mode, TimeMode::Monotonic);
+        assert_eq!(state.runtime_boundary(), 0);
     }
 
     /// A Ready lease reaches the published snapshot at a higher revision, and
