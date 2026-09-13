@@ -39,11 +39,6 @@ pub struct ZedF9pOutputs {
 }
 
 /// The ZED-F9P hardware component driver.
-#[phoxal::driver(
-    config = ZedF9pConfig,
-    state = ZedF9pState,
-    connection = usb
-)]
 pub struct ZedF9p;
 
 #[phoxal::runtime::outputs]

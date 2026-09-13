@@ -165,6 +165,3 @@ pub mod __private {
         );
     }
 }
-
-/// The `runtime` contract family.
-pub mod api;

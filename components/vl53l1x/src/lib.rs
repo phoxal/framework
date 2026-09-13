@@ -39,11 +39,6 @@ pub struct Vl53l1xOutputs {
 }
 
 /// The VL53L1X hardware component driver.
-#[phoxal::driver(
-    config = Vl53l1xConfig,
-    state = Vl53l1xState,
-    connection = i2c
-)]
 pub struct Vl53l1x;
 
 #[phoxal::runtime::outputs]

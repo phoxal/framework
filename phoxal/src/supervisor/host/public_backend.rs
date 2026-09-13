@@ -23,10 +23,6 @@ use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::bus::BusHandle;
-use crate::communication::{
-    ExecutionDefinition, PublicOperation, ServicePorts, SimulationDefinition,
-    SimulationProviderDefinition,
-};
 use crate::communication::session::{
     PortKind, PortMetadata, RecordKind, SubscriptionRecord, SubscriptionRequest,
 };
@@ -34,14 +30,18 @@ use crate::communication::simulation::{
     AcquireAuthorityRequest, AdvanceRequest, AdvanceResponse, ProgressRequest, ProgressResponse,
     ReleaseAuthorityRequest, ResetRequest,
 };
+use crate::communication::{
+    ExecutionDefinition, PublicOperation, ServicePorts, SimulationDefinition,
+    SimulationProviderDefinition,
+};
 use crate::communication_transport::{
     PublicBackendError, PublicBackendOutcome, PublicBackendSubscription, PublicBindingContext,
     PublicSessionBackend, PublicSimulationBackend, PublicSimulationContext,
 };
-use crate::runtime::{ExecutionTime, ObservationStamp};
 use crate::runtime::transport::{
     PROTOBUF_ENCODING, RuntimeWireMetadata, WireControl, WireSample, port_key,
 };
+use crate::runtime::{ExecutionTime, ObservationStamp};
 
 use super::bundle::{Bundle, SourceBundle, SourceSimulation};
 use super::state::ExecutionState;
@@ -50,7 +50,10 @@ const PUBLIC_INGRESS_INSTANCE: &str = "supervisor";
 const PUBLIC_INGRESS_FIELD: &str = "public";
 const MAX_RUNTIME_SUBSCRIBER_ITEMS: usize = 4_096;
 const MAX_RUNTIME_METADATA_BYTES: usize = 1_024;
-#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
+#[allow(
+    dead_code,
+    reason = "used by the deferred runtime-owned simulation backend"
+)]
 const MAX_RETAINED_ADVANCES: usize = 256;
 
 /// The exact runtime-facing facts for one admitted public port.
@@ -96,13 +99,7 @@ pub(crate) trait RuntimeExternalIngress: Send + Sync {
 
     /// Release a reservation after a definitive target response or a local
     /// failure proved that the request was never transmitted.
-    fn release(
-        &self,
-        _target_instance: &str,
-        _target_port: &str,
-        _ticket: ExternalIngressTicket,
-    ) {
-    }
+    fn release(&self, _target_instance: &str, _target_port: &str, _ticket: ExternalIngressTicket) {}
 }
 
 /// The source/caller identity used for supervisor-originated Runtime ingress.
@@ -223,7 +220,7 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
         contract: &RuntimePortContract,
     ) -> Result<ExternalIngressTicket, PublicBackendError> {
         self.validate_external_identity(caller)?;
-        if self.state.snapshot().lifecycle != crate::supervisor::api::execution::Lifecycle::Ready {
+        if !self.state.is_ready() {
             return Err(PublicBackendError::RejectedBeforeAdmission(
                 "runtime graph is not Ready for external ingress".to_owned(),
             ));
@@ -245,14 +242,11 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
                 "external Runtime ingress capacity is exhausted".to_owned(),
             ));
         }
-        let eligible_boundary = self
-            .current_boundary()
-            .checked_add(1)
-            .ok_or_else(|| {
-                PublicBackendError::RejectedBeforeAdmission(
-                    "Runtime eligible boundary is exhausted".to_owned(),
-                )
-            })?;
+        let eligible_boundary = self.current_boundary().checked_add(1).ok_or_else(|| {
+            PublicBackendError::RejectedBeforeAdmission(
+                "Runtime eligible boundary is exhausted".to_owned(),
+            )
+        })?;
         let ingress_sequence = ingress.next_sequence;
         let next_sequence = ingress_sequence.checked_add(1).ok_or_else(|| {
             PublicBackendError::RejectedBeforeAdmission(
@@ -260,7 +254,7 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
             )
         })?;
         ingress.next_sequence = next_sequence;
-        *ingress.reservations.entry(key).or_default() = reservations.saturating_add(1);
+        *ingress.reservations.entry(key).or_default() += 1;
         Ok(ExternalIngressTicket {
             eligible_boundary,
             ingress_sequence,
@@ -268,12 +262,7 @@ impl RuntimeExternalIngress for RuntimeExecutionCoordinator {
         })
     }
 
-    fn release(
-        &self,
-        target_instance: &str,
-        target_port: &str,
-        ticket: ExternalIngressTicket,
-    ) {
+    fn release(&self, target_instance: &str, target_port: &str, ticket: ExternalIngressTicket) {
         self.release_reservation(target_instance, target_port, ticket);
     }
 }
@@ -308,14 +297,7 @@ impl RuntimePublicSurface {
     /// summaries.  No public metadata is synthesized from implementation
     /// names or from an empty service placeholder.
     pub(crate) fn from_bundle(bundle: &Bundle) -> Result<Self> {
-        let Bundle::Source(source) = bundle else {
-            return Ok(Self {
-                services: Vec::new(),
-                ports: Arc::new(BTreeMap::new()),
-                ingress: RuntimeIngressIdentity::default(),
-                simulation: None,
-            });
-        };
+        let Bundle::Source(source) = bundle;
         Self::from_source(source)
     }
 
@@ -355,10 +337,16 @@ impl RuntimePublicSurface {
                     );
                 };
                 let kind = output_kind(&output.kind).with_context(|| {
-                    format!("Runtime output `{instance}.{}` has an invalid public kind", output.name)
+                    format!(
+                        "Runtime output `{instance}.{}` has an invalid public kind",
+                        output.name
+                    )
                 })?;
                 if kind == PortKind::Commands {
-                    bail!("Runtime output `{instance}.{}` cannot serve Commands", output.name);
+                    bail!(
+                        "Runtime output `{instance}.{}` cannot serve Commands",
+                        output.name
+                    );
                 }
                 validate_signature(signature, port, kind)?;
                 let response_max_bytes = positive_bound(
@@ -393,12 +381,7 @@ impl RuntimePublicSurface {
                     request_max_bytes: output.max_request_bytes.unwrap_or(response_max_bytes),
                     response_max_bytes,
                 };
-                insert_runtime_port(
-                    &mut runtime_ports,
-                    &mut service_ports,
-                    port,
-                    contract,
-                )?;
+                insert_runtime_port(&mut runtime_ports, &mut service_ports, port, contract)?;
             }
 
             for input in &artifact.runtime.inputs {
@@ -412,9 +395,7 @@ impl RuntimePublicSurface {
                     )
                 })?;
                 let signature = input.signature.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Commands input `{instance}.{port}` has no generated signature"
-                    )
+                    anyhow::anyhow!("Commands input `{instance}.{port}` has no generated signature")
                 })?;
                 validate_signature(signature, port, PortKind::Commands)?;
                 let request_max_bytes = positive_bound(
@@ -433,20 +414,17 @@ impl RuntimePublicSurface {
                     .service_outputs
                     .iter()
                     .filter(|output| {
-                        output.kind == "reply" && output.input.as_deref() == Some(input.name.as_str())
+                        output.kind == "reply"
+                            && output.input.as_deref() == Some(input.name.as_str())
                     })
                     .collect::<Vec<_>>();
                 let reply = match reply.as_slice() {
                     [reply] => reply,
                     [] => {
-                        bail!(
-                            "Commands input `{instance}.{port}` has no generated reply bound"
-                        );
+                        bail!("Commands input `{instance}.{port}` has no generated reply bound");
                     }
                     _ => {
-                        bail!(
-                            "Commands input `{instance}.{port}` has multiple generated replies"
-                        );
+                        bail!("Commands input `{instance}.{port}` has multiple generated replies");
                     }
                 };
                 let response_max_bytes = positive_bound(
@@ -469,12 +447,7 @@ impl RuntimePublicSurface {
                     request_max_bytes,
                     response_max_bytes,
                 };
-                insert_runtime_port(
-                    &mut runtime_ports,
-                    &mut service_ports,
-                    port,
-                    contract,
-                )?;
+                insert_runtime_port(&mut runtime_ports, &mut service_ports, port, contract)?;
             }
 
             service_ports.sort_by(|left, right| left.name.cmp(&right.name));
@@ -509,7 +482,9 @@ impl RuntimePublicSurface {
             .transpose()?;
         let mut services = service_ports_by_instance
             .into_iter()
-            .map(|(instance, ports)| ServicePorts::new(instance, ports).map_err(anyhow::Error::from))
+            .map(|(instance, ports)| {
+                ServicePorts::new(instance, ports).map_err(anyhow::Error::from)
+            })
             .collect::<Result<Vec<_>>>()?;
         services.sort_by(|left, right| left.instance().cmp(right.instance()));
         Ok(Self {
@@ -667,7 +642,10 @@ fn insert_runtime_port(
     port: &str,
     contract: RuntimePortContract,
 ) -> Result<()> {
-    if runtime_ports.insert(port.to_owned(), contract.clone()).is_some() {
+    if runtime_ports
+        .insert(port.to_owned(), contract.clone())
+        .is_some()
+    {
         bail!("compiled Runtime graph serves duplicate public port `{port}`");
     }
     service_ports.push(contract.metadata);
@@ -689,7 +667,10 @@ fn output_kind(value: &str) -> Option<PortKind> {
 fn singular_public_item_bound(kind: PortKind) -> Option<u64> {
     match kind {
         PortKind::State | PortKind::Setpoint | PortKind::Read => Some(1),
-        PortKind::Sample | PortKind::Event | PortKind::Stream | PortKind::Commands
+        PortKind::Sample
+        | PortKind::Event
+        | PortKind::Stream
+        | PortKind::Commands
         | PortKind::Unspecified => None,
     }
 }
@@ -712,9 +693,7 @@ fn validate_signature(signature: &ArtifactSignature, port: &str, expected: PortK
         || signature.service.is_empty()
         || signature.method.is_empty()
     {
-        bail!(
-            "generated Runtime signature for `{port}` does not match its compiled public kind"
-        );
+        bail!("generated Runtime signature for `{port}` does not match its compiled public kind");
     }
     if signature.request.is_empty() || signature.response.is_empty() {
         bail!("generated Runtime signature for `{port}` has an empty message identity");
@@ -777,7 +756,10 @@ impl RuntimePublicBackend {
         payload: Vec<u8>,
         timeout: Duration,
     ) -> Result<PublicBackendOutcome, PublicBackendError> {
-        let key = (binding.service_instance.clone(), binding.metadata.name.clone());
+        let key = (
+            binding.service_instance.clone(),
+            binding.metadata.name.clone(),
+        );
         let contract = self.ports.get(&key).ok_or_else(|| {
             PublicBackendError::RejectedBeforeAdmission(format!(
                 "public Runtime port `{}.{}` is not present in the admitted bundle",
@@ -803,12 +785,9 @@ impl RuntimePublicBackend {
                 "public Runtime request exceeds its compiled request-byte bound".to_owned(),
             ));
         }
-        let ticket = self.external_ingress.admit(
-            &key.0,
-            &key.1,
-            &self.ingress,
-            contract,
-        )?;
+        let ticket = self
+            .external_ingress
+            .admit(&key.0, &key.1, &self.ingress, contract)?;
         if ticket.ingress_sequence == 0 {
             self.external_ingress.release(&key.0, &key.1, ticket);
             return Err(PublicBackendError::RejectedBeforeAdmission(
@@ -831,27 +810,26 @@ impl RuntimePublicBackend {
         let attachment = match encode_runtime_metadata(&metadata) {
             Ok(attachment) => attachment,
             Err(error) => {
-                self.external_ingress
-                    .release(&key.0, &key.1, ticket);
+                self.external_ingress.release(&key.0, &key.1, ticket);
                 return Ok(PublicBackendOutcome::NotSent(error.to_string()));
             }
         };
         let session = match self.bus.session() {
             Ok(session) => session,
             Err(error) => {
-                self.external_ingress
-                    .release(&key.0, &key.1, ticket);
+                self.external_ingress.release(&key.0, &key.1, ticket);
                 return Ok(PublicBackendOutcome::NotSent(error.to_string()));
             }
         };
-        let reply_key = self
-            .bus
-            .full_key(&port_key(&binding.service_instance, &binding.metadata.name, "reply"));
+        let reply_key = self.bus.full_key(&port_key(
+            &binding.service_instance,
+            &binding.metadata.name,
+            "reply",
+        ));
         let reply_key_expr = match OwnedKeyExpr::new(reply_key.clone()) {
             Ok(key) => key,
             Err(error) => {
-                self.external_ingress
-                    .release(&key.0, &key.1, ticket);
+                self.external_ingress.release(&key.0, &key.1, ticket);
                 return Ok(PublicBackendOutcome::NotSent(format!(
                     "invalid Runtime reply key: {error}"
                 )));
@@ -864,14 +842,15 @@ impl RuntimePublicBackend {
         {
             Ok(subscriber) => subscriber,
             Err(error) => {
-                self.external_ingress
-                    .release(&key.0, &key.1, ticket);
+                self.external_ingress.release(&key.0, &key.1, ticket);
                 return Ok(PublicBackendOutcome::NotSent(error.to_string()));
             }
         };
-        let request_key = self
-            .bus
-            .full_key(&port_key(&binding.service_instance, &binding.metadata.name, "request"));
+        let request_key = self.bus.full_key(&port_key(
+            &binding.service_instance,
+            &binding.metadata.name,
+            "request",
+        ));
         if let Err(error) = session
             .put(request_key, payload)
             .encoding(Encoding::from(PROTOBUF_ENCODING.to_owned()))
@@ -884,7 +863,9 @@ impl RuntimePublicBackend {
         }
         let deadline = tokio::time::Instant::now()
             .checked_add(timeout.max(Duration::from_millis(1)))
-            .ok_or_else(|| PublicBackendError::Transport("Runtime deadline overflowed".to_owned()))?;
+            .ok_or_else(|| {
+                PublicBackendError::Transport("Runtime deadline overflowed".to_owned())
+            })?;
         loop {
             let sample = match tokio::time::timeout_at(deadline, subscriber.recv_async()).await {
                 Ok(Ok(sample)) => sample,
@@ -918,18 +899,17 @@ impl RuntimePublicBackend {
             }
             match wire.metadata().wire_control() {
                 Ok(WireControl::Rejected) => {
-                    self.external_ingress
-                        .release(&key.0, &key.1, ticket);
+                    self.external_ingress.release(&key.0, &key.1, ticket);
                     return Ok(PublicBackendOutcome::RejectedBeforeAdmission(
-                        wire.metadata()
-                            .reason
-                            .clone()
-                            .unwrap_or_else(|| "Runtime rejected the request before queue admission".to_owned()),
+                        wire.metadata().reason.clone().unwrap_or_else(|| {
+                            "Runtime rejected the request before queue admission".to_owned()
+                        }),
                     ));
                 }
-                Ok(WireControl::Data) if wire.payload().len() as u64 <= contract.response_max_bytes => {
-                    self.external_ingress
-                        .release(&key.0, &key.1, ticket);
+                Ok(WireControl::Data)
+                    if wire.payload().len() as u64 <= contract.response_max_bytes =>
+                {
+                    self.external_ingress.release(&key.0, &key.1, ticket);
                     return Ok(PublicBackendOutcome::Received(wire.payload().to_vec()));
                 }
                 _ => {
@@ -949,9 +929,14 @@ impl PublicSessionBackend for RuntimePublicBackend {
         binding: PublicBindingContext,
         payload: Vec<u8>,
         timeout: Duration,
-    ) -> Pin<Box<dyn Future<Output = Result<PublicBackendOutcome, PublicBackendError>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<PublicBackendOutcome, PublicBackendError>> + Send>>
+    {
         let backend = self.clone();
-        Box::pin(async move { backend.call_inner(operation, binding, payload, timeout).await })
+        Box::pin(async move {
+            backend
+                .call_inner(operation, binding, payload, timeout)
+                .await
+        })
     }
 
     fn subscribe(
@@ -977,7 +962,10 @@ impl PublicSessionBackend for RuntimePublicBackend {
                 ));
             }
         };
-        let key = (binding.service_instance.clone(), binding.metadata.name.clone());
+        let key = (
+            binding.service_instance.clone(),
+            binding.metadata.name.clone(),
+        );
         let contract = self.ports.get(&key).ok_or_else(|| {
             PublicBackendError::RejectedBeforeAdmission(
                 "public Runtime subscription port is absent from the bundle".to_owned(),
@@ -994,7 +982,9 @@ impl PublicSessionBackend for RuntimePublicBackend {
         let binding = binding.clone();
         let contract = contract.clone();
         let spawn = tokio::runtime::Handle::try_current().map_err(|_| {
-            PublicBackendError::Transport("public Runtime subscription has no async runtime".to_owned())
+            PublicBackendError::Transport(
+                "public Runtime subscription has no async runtime".to_owned(),
+            )
         })?;
         spawn.spawn(async move {
             let session = match bus.session() {
@@ -1041,11 +1031,7 @@ impl PublicSessionBackend for RuntimePublicBackend {
                         return;
                     }
                 };
-                let record = match runtime_record(
-                    sample,
-                    &contract,
-                    &request,
-                ) {
+                let record = match runtime_record(sample, &contract, &request) {
                     Ok(record) => record,
                     Err(error) => {
                         let _ = sender.send(Err(error)).await;
@@ -1141,7 +1127,10 @@ fn encode_runtime_metadata(metadata: &RuntimeWireMetadata) -> Result<Vec<u8>, Pu
 /// admission.  This hook is the only authority allowed to advance a runtime
 /// boundary.  Keeping it explicit prevents a public bridge from claiming
 /// completion after merely publishing sensor bytes.
-#[allow(dead_code, reason = "implemented by the deferred runtime-owned simulation backend")]
+#[allow(
+    dead_code,
+    reason = "implemented by the deferred runtime-owned simulation backend"
+)]
 pub(crate) trait RuntimeBoundaryHook: Send + Sync {
     fn acquire(
         &self,
@@ -1172,10 +1161,16 @@ pub(crate) trait RuntimeBoundaryHook: Send + Sync {
     ) -> BoundaryFuture<ProgressResponse>;
 }
 
-#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
+#[allow(
+    dead_code,
+    reason = "used by the deferred runtime-owned simulation backend"
+)]
 type BoundaryFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
-#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
+#[allow(
+    dead_code,
+    reason = "used by the deferred runtime-owned simulation backend"
+)]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct AdvanceIdentity {
     session_id: Vec<u8>,
@@ -1185,7 +1180,10 @@ struct AdvanceIdentity {
     correlation_id: Vec<u8>,
 }
 
-#[allow(dead_code, reason = "used by the deferred runtime-owned simulation backend")]
+#[allow(
+    dead_code,
+    reason = "used by the deferred runtime-owned simulation backend"
+)]
 struct PendingAdvance {
     digest: [u8; 32],
     result: watch::Receiver<Option<Result<AdvanceResponse, PublicBackendError>>>,
@@ -1194,7 +1192,10 @@ struct PendingAdvance {
 /// Concrete simulation bridge which validates the immutable bundle contract,
 /// forwards observations to Runtime publication ports, and delegates exactly
 /// one admitted boundary to [`RuntimeBoundaryHook`].
-#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
+#[allow(
+    dead_code,
+    reason = "reserved until the runtime boundary transport exists"
+)]
 pub(crate) struct RuntimeSimulationBridge {
     bus: BusHandle,
     ports: Arc<BTreeMap<(String, String), RuntimePortContract>>,
@@ -1204,7 +1205,10 @@ pub(crate) struct RuntimeSimulationBridge {
     advances: Arc<Mutex<BTreeMap<AdvanceIdentity, PendingAdvance>>>,
 }
 
-#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
+#[allow(
+    dead_code,
+    reason = "reserved until the runtime boundary transport exists"
+)]
 impl std::fmt::Debug for RuntimeSimulationBridge {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1215,7 +1219,10 @@ impl std::fmt::Debug for RuntimeSimulationBridge {
     }
 }
 
-#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
+#[allow(
+    dead_code,
+    reason = "reserved until the runtime boundary transport exists"
+)]
 impl RuntimeSimulationBridge {
     pub(crate) fn new(
         bus: BusHandle,
@@ -1233,7 +1240,10 @@ impl RuntimeSimulationBridge {
         }
     }
 
-    fn ensure_definition(&self, context: &PublicSimulationContext) -> Result<&SimulationDefinition, PublicBackendError> {
+    fn ensure_definition(
+        &self,
+        context: &PublicSimulationContext,
+    ) -> Result<&SimulationDefinition, PublicBackendError> {
         let definition = self.definition.as_ref().ok_or_else(|| {
             PublicBackendError::RejectedBeforeAdmission(
                 "the admitted bundle has no immutable simulation definition".to_owned(),
@@ -1283,7 +1293,10 @@ impl RuntimeSimulationBridge {
                 })?;
             let contract = self
                 .ports
-                .get(&(observation.service_instance.clone(), observation.port.clone()))
+                .get(&(
+                    observation.service_instance.clone(),
+                    observation.port.clone(),
+                ))
                 .ok_or_else(|| {
                     PublicBackendError::RejectedBeforeAdmission(
                         "simulation provider is absent from the compiled Runtime graph".to_owned(),
@@ -1433,7 +1446,10 @@ impl RuntimeSimulationBridge {
     }
 }
 
-#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
+#[allow(
+    dead_code,
+    reason = "reserved until the runtime boundary transport exists"
+)]
 impl PublicSimulationBackend for RuntimeSimulationBridge {
     fn acquire(
         &self,
@@ -1561,7 +1577,10 @@ impl PublicSimulationBackend for RuntimeSimulationBridge {
     }
 }
 
-#[allow(dead_code, reason = "reserved until the runtime boundary transport exists")]
+#[allow(
+    dead_code,
+    reason = "reserved until the runtime boundary transport exists"
+)]
 impl RuntimeSimulationBridge {
     fn clone_for_async(&self) -> Self {
         Self {
@@ -1651,20 +1670,8 @@ mod tests {
     use super::*;
 
     fn ready_state() -> ExecutionState {
-        let state = ExecutionState::new(
-            super::super::presence::Presence::for_entries([(
-                "brain".to_owned(),
-                crate::participant::metadata::ParticipantKind::Brain,
-            )])
-            .expect("presence graph"),
-        )
-        .expect("execution state");
-        state.record_presence(
-            &crate::identity::ParticipantId::new("brain").expect("brain identity"),
-            crate::identity::ProducerId::try_from((1_u128 << 124) | 1)
-                .expect("producer identity"),
-            true,
-        );
+        let state = ExecutionState::new();
+        state.mark_ready();
         state
     }
 
@@ -1738,10 +1745,7 @@ mod tests {
         let definition = simulation_definition(&source).expect("public simulation definition");
 
         assert_eq!(service_ports["imu"][0].name, "sample");
-        assert_eq!(
-            definition.providers()[0].payload_fqn(),
-            "fixture.Imu"
-        );
+        assert_eq!(definition.providers()[0].payload_fqn(), "fixture.Imu");
         assert_eq!(definition.model_identity(), "model-digest");
         assert_eq!(definition.quantum_ns(), 10_000_000);
     }
@@ -1969,7 +1973,8 @@ mod tests {
                 assert_eq!(wire.metadata().caller.as_deref(), Some("supervisor.public"));
                 let mut response_metadata = wire.metadata().clone();
                 response_metadata.source = Some("service".to_owned());
-                let attachment = encode_runtime_metadata(&response_metadata).expect("reply metadata");
+                let attachment =
+                    encode_runtime_metadata(&response_metadata).expect("reply metadata");
                 session
                     .put(reply_key.clone(), vec![expected_sequence as u8])
                     .encoding(Encoding::from(PROTOBUF_ENCODING.to_owned()))
@@ -2144,13 +2149,13 @@ mod tests {
                     observation_receipts: request
                         .observations
                         .iter()
-                        .map(|observation| {
-                            crate::communication::simulation::ProductReceipt {
+                        .map(
+                            |observation| crate::communication::simulation::ProductReceipt {
                                 service_instance: observation.service_instance.clone(),
                                 port: observation.port.clone(),
                                 ..Default::default()
-                            }
-                        })
+                            },
+                        )
                         .collect(),
                     ..Default::default()
                 })
@@ -2217,26 +2222,24 @@ mod tests {
         let definition = SimulationDefinition::new(
             "model-digest",
             1_000,
-            vec![crate::communication::SimulationProviderDefinition::new(
-                "sensor",
-                "state",
-                PortKind::State,
-                "google.protobuf.Empty",
-                "example.Payload",
-            )
-            .expect("provider")],
+            vec![
+                crate::communication::SimulationProviderDefinition::new(
+                    "sensor",
+                    "state",
+                    PortKind::State,
+                    "google.protobuf.Empty",
+                    "example.Payload",
+                )
+                .expect("provider"),
+            ],
         )
         .expect("simulation definition");
         let boundary = Arc::new(DelayedBoundary {
             calls: AtomicUsize::new(0),
             release: Arc::new(Notify::new()),
         });
-        let bridge = RuntimeSimulationBridge::new(
-            bus,
-            &surface,
-            Some(definition),
-            boundary.clone(),
-        );
+        let bridge =
+            RuntimeSimulationBridge::new(bus, &surface, Some(definition), boundary.clone());
         let context = PublicSimulationContext {
             principal: "simulator".to_owned(),
             session_id: vec![1],
@@ -2267,7 +2270,10 @@ mod tests {
             bridge.advance(context.clone(), request.clone()),
         )
         .await;
-        assert!(first.is_err(), "the first caller must observe an uncertain timeout");
+        assert!(
+            first.is_err(),
+            "the first caller must observe an uncertain timeout"
+        );
         for _ in 0..100 {
             if boundary.calls.load(Ordering::SeqCst) == 1 {
                 break;

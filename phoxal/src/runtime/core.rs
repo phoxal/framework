@@ -13,20 +13,134 @@ use super::outputs::{OutputBindings, OutputSet};
 /// Configuration accepted by a [`Runtime`].
 ///
 /// Configuration is deserialized once at the owning boundary and then passed
-/// by value to [`Runtime::init`].  The blanket implementation keeps the
-/// existing `#[derive(phoxal::Config)]` schema machinery available while the
-/// runtime authoring surface is introduced.
+/// by value to [`Runtime::init`].
 pub trait Config: serde::de::DeserializeOwned + Send + 'static {
     /// The JSON Schema for the admitted configuration value.
     const SCHEMA_JSON: &'static str;
 }
 
+/// Const-composable schema emitted by [`crate::Config`].
+#[doc(hidden)]
+pub trait ConfigSchema {
+    #[doc(hidden)]
+    const __SCHEMA: ConfigSchemaValue;
+
+    /// A complete schema or subschema for this value.
+    const SCHEMA_JSON: &'static str = Self::__SCHEMA.as_str();
+}
+
 impl<T> Config for T
 where
-    T: crate::participant::config::ParticipantConfig,
+    T: ConfigSchema + serde::de::DeserializeOwned + Send + 'static,
 {
-    const SCHEMA_JSON: &'static str = T::SCHEMA_JSON;
+    const SCHEMA_JSON: &'static str = <T as ConfigSchema>::SCHEMA_JSON;
 }
+
+/// Fixed-capacity const-evaluation string used to compose nested config
+/// schemas without allocating in a downstream crate.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct ConfigSchemaValue {
+    bytes: [u8; 65_536],
+    len: usize,
+}
+
+impl ConfigSchemaValue {
+    /// Create an empty schema fragment.
+    pub const fn new() -> Self {
+        Self {
+            bytes: [0; 65_536],
+            len: 0,
+        }
+    }
+
+    /// Create a schema fragment from a string literal.
+    pub const fn from_str(value: &str) -> Self {
+        Self::new().push_str(value)
+    }
+
+    /// Append a string fragment.
+    #[must_use]
+    pub const fn push_str(mut self, value: &str) -> Self {
+        let value = value.as_bytes();
+        assert!(
+            self.len + value.len() <= self.bytes.len(),
+            "phoxal: const config schema exceeds 64 KiB"
+        );
+        let mut index = 0;
+        while index < value.len() {
+            self.bytes[self.len + index] = value[index];
+            index += 1;
+        }
+        self.len += value.len();
+        self
+    }
+
+    /// Expose the used UTF-8 prefix.
+    pub const fn as_str(&self) -> &str {
+        let (used, _) = self.bytes.split_at(self.len);
+        // Every byte originated in a Rust `&str`.
+        unsafe { core::str::from_utf8_unchecked(used) }
+    }
+}
+
+impl ConfigSchema for () {
+    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::from_str(r#"{"type":"null"}"#);
+}
+
+impl<T: ConfigSchema> ConfigSchema for Option<T> {
+    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+        .push_str(r#"{"anyOf":["#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str(r#",{"type":"null"}]}"#);
+}
+
+impl<T: ConfigSchema> ConfigSchema for Vec<T> {
+    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+        .push_str(r#"{"type":"array","items":"#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str("}");
+}
+
+impl<T: ConfigSchema> ConfigSchema for std::collections::BTreeMap<String, T> {
+    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+        .push_str(r#"{"type":"object","additionalProperties":"#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str("}");
+}
+
+impl<T: ConfigSchema> ConfigSchema for std::collections::HashMap<String, T> {
+    const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::new()
+        .push_str(r#"{"type":"object","additionalProperties":"#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str("}");
+}
+
+macro_rules! primitive_config_schema {
+    ($ty:ty => $schema:literal) => {
+        impl ConfigSchema for $ty {
+            const __SCHEMA: ConfigSchemaValue = ConfigSchemaValue::from_str($schema);
+        }
+    };
+}
+
+primitive_config_schema!(bool => r#"{"type":"boolean"}"#);
+primitive_config_schema!(String => r#"{"type":"string"}"#);
+primitive_config_schema!(char => r#"{"type":"string","minLength":1,"maxLength":1}"#);
+primitive_config_schema!(i8 => r#"{"type":"integer","format":"int8"}"#);
+primitive_config_schema!(i16 => r#"{"type":"integer","format":"int16"}"#);
+primitive_config_schema!(i32 => r#"{"type":"integer","format":"int32"}"#);
+primitive_config_schema!(i64 => r#"{"type":"integer","format":"int64"}"#);
+primitive_config_schema!(i128 => r#"{"type":"integer"}"#);
+primitive_config_schema!(isize => r#"{"type":"integer"}"#);
+primitive_config_schema!(u8 => r#"{"type":"integer","format":"uint8","minimum":0,"maximum":255}"#);
+primitive_config_schema!(u16 => r#"{"type":"integer","format":"uint16","minimum":0,"maximum":65535}"#);
+primitive_config_schema!(u32 => r#"{"type":"integer","format":"uint32","minimum":0}"#);
+primitive_config_schema!(u64 => r#"{"type":"integer","format":"uint64","minimum":0}"#);
+primitive_config_schema!(u128 => r#"{"type":"integer","minimum":0}"#);
+primitive_config_schema!(usize => r#"{"type":"integer","minimum":0}"#);
+primitive_config_schema!(f32 => r#"{"type":"number","format":"float"}"#);
+primitive_config_schema!(f64 => r#"{"type":"number","format":"double"}"#);
 
 /// A monotonic instant in the execution's logical time domain.
 ///

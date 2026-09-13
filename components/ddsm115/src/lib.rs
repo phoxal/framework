@@ -50,11 +50,6 @@ pub struct Ddsm115Outputs {
 }
 
 /// The DDSM115 hardware component driver.
-#[phoxal::driver(
-    config = Ddsm115Config,
-    state = Ddsm115State,
-    connection = serial
-)]
 pub struct Ddsm115;
 
 #[phoxal::runtime::outputs]

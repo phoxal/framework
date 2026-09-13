@@ -45,6 +45,7 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut transport_decoders = Vec::new();
     let mut generated_transport_fields = Vec::new();
     let mut generated_transport_decoders = Vec::new();
+    let mut generated_transport_encoders = Vec::new();
     let mut generated_transport_bounds = Vec::new();
     let marker_name = format_ident!("__phoxal_transport_{}", name);
     let binding_fn = format_ident!("__phoxal_require_binding_{}", name);
@@ -233,6 +234,9 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             field,
         )?;
         generated_transport_decoders.push(generated.decoder);
+        if !generated.encoder.is_empty() {
+            generated_transport_encoders.push(generated.encoder);
+        }
         generated_transport_bounds.extend(generated.bounds);
 
         let sink = expand_transport_sink(kind, &field_name, &ty, &options, field)?;
@@ -353,6 +357,20 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
                     _ => Err(::anyhow::anyhow!(
                         ::phoxal::runtime::transport::TransportError::InvalidMetadata {
                             detail: format!("input field `{field}` has no generated transport binding"),
+                        }
+                    )),
+                }
+            }
+
+            fn encode_request(
+                field: &str,
+                request: &dyn ::core::any::Any,
+            ) -> ::phoxal::Result<::std::vec::Vec<u8>> {
+                match field {
+                    #(#generated_transport_encoders,)*
+                    _ => Err(::anyhow::anyhow!(
+                        ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                            detail: format!("input field `{field}` has no generated request encoder"),
                         }
                     )),
                 }
@@ -639,6 +657,7 @@ fn input_kind(ty: &Type) -> syn::Result<InputKind> {
 
 struct TransportDecoder {
     decoder: TokenStream,
+    encoder: TokenStream,
     bounds: Vec<TokenStream>,
 }
 
@@ -1048,6 +1067,7 @@ fn expand_transport_decoder(
                         let request: #request = ::phoxal::runtime::transport::decode_request(
                             (#port).signature(),
                             &sample,
+                            #max_bytes,
                         ).map_err(|error| ::anyhow::anyhow!(error))?;
                         let order = ::phoxal::runtime::transport::command_order(sample.metadata())
                             .map_err(|error| ::anyhow::anyhow!(error))?;
@@ -1271,7 +1291,40 @@ fn expand_transport_decoder(
         }
     };
 
-    Ok(TransportDecoder { decoder, bounds })
+    let encoder = match kind {
+        InputKind::Read | InputKind::Request => {
+            let (_, request, _) = generic_types3(ty, item)?;
+            quote! {
+                #field_text => {
+                    let request = request.downcast_ref::<#request>().ok_or_else(|| {
+                        ::anyhow::anyhow!(
+                            ::phoxal::runtime::transport::TransportError::InvalidMetadata {
+                                detail: format!(
+                                    "input field `{}` received a value of the wrong generated Rust type",
+                                    #field_text,
+                                ),
+                            }
+                        )
+                    })?;
+                    ::phoxal::runtime::transport::encode_prost(request).map_err(|error| {
+                        ::anyhow::anyhow!(
+                            ::phoxal::runtime::transport::TransportError::PayloadEncode {
+                                port: #field_text.to_owned(),
+                                detail: error.to_string(),
+                            }
+                        )
+                    })
+                }
+            }
+        }
+        _ => TokenStream::new(),
+    };
+
+    Ok(TransportDecoder {
+        decoder,
+        encoder,
+        bounds,
+    })
 }
 
 struct TransportSink {

@@ -37,6 +37,7 @@ use super::outputs::{
 use super::schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 use super::transport::{self, ChangeToken, PreparedOutput, TransportError, WireSample};
 use super::{ExecutionTime, RuntimeStatus, StepContext};
+use crate::identity::{ExecutionId, ParticipantId};
 
 /// One required output product accepted and published by a runtime boundary.
 ///
@@ -116,9 +117,10 @@ pub struct RuntimeActuation {
 
 /// The strict process arguments supplied to one Runtime binary.
 ///
-/// The bundle root and instance identity are explicit so a process can never
-/// select a sibling instance by package or executable name.  The connection is
-/// also explicit; no environment fallback or source-tree lookup is permitted.
+/// The bundle root, instance identity, and execution identity are explicit so
+/// a process can never select a sibling instance or previous execution by
+/// package, executable name, or endpoint discovery. The connection is also
+/// explicit; no environment fallback or source-tree lookup is permitted.
 #[derive(Clone, Debug, Eq, PartialEq, Parser)]
 #[command(
     name = "phoxal-runtime",
@@ -132,6 +134,9 @@ pub struct RuntimeLaunch {
     /// Runtime instance identity selected by the bundle graph.
     #[arg(long = "instance-id", value_name = "ID", value_parser = parse_identifier)]
     pub instance_id: String,
+    /// Supervisor-selected execution identity for this process.
+    #[arg(long = "execution-id", value_name = "ID", value_parser = parse_execution_id)]
+    pub execution_id: ExecutionId,
     /// Supervisor rendezvous endpoint.
     #[arg(
         long = "connect",
@@ -801,16 +806,15 @@ where
     let launch = RuntimeLaunch::parse()?;
     let manifest = RuntimeLaunchManifest::open(&launch.bundle_root, &launch.instance_id)?;
     let config = manifest.decode_config::<R>()?;
-    let participant = crate::identity::ParticipantId::new(launch.instance_id.clone())
+    let participant = ParticipantId::new(launch.instance_id.clone())
         .map_err(|error| anyhow::anyhow!("invalid runtime participant id: {error}"))?;
-    let shutdown = crate::participant::runner::signal::shutdown_signal()?;
-    tokio::pin!(shutdown);
-
-    let execution = tokio::select! {
-        biased;
-        _ = &mut shutdown => return Ok(()),
-        result = crate::execution::resolve_execution(&launch.connect) => result?,
+    let shutdown = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "runtime could not install its Ctrl-C listener");
+        }
     };
+    tokio::pin!(shutdown);
+    let execution = launch.execution_id;
 
     let correlations = Arc::new(Mutex::new(BTreeMap::new()));
     let expired_correlations = Arc::new(Mutex::new(BTreeSet::new()));
@@ -911,26 +915,6 @@ where
     };
     publish_execution(&bus, &launch.instance_id, "admit-response", &response).await?;
 
-    let ready = match tokio::select! {
-        biased;
-        _ = &mut shutdown => {
-            let _ = owner.close().await;
-            return Ok(());
-        }
-        result = owner.declare_participant_ready() => result,
-    } {
-        Ok(ready) => ready,
-        Err(error) => {
-            let _ = owner.close().await;
-            return Err(error.into());
-        }
-    };
-    if matches!(execution_mode, execution_wire::ExecutionMode::Controlled) {
-        if let Err(error) = runner.set_controlled_timeline(&admission.timeline_id) {
-            let _ = owner.close().await;
-            return Err(error);
-        }
-    }
     publish_execution(
         &bus,
         &launch.instance_id,
@@ -977,7 +961,6 @@ where
     };
 
     let stop_result = runner.stop();
-    drop(ready);
     let _close_report = owner.close().await;
     result.and(stop_result)
 }
@@ -2397,7 +2380,7 @@ impl<R> ExecutionInputAdapter<R> {
                 })
             })?;
         transport::validate_binding_identity(&batch.binding, signature)?;
-        let _ = transport::decode_request_value(signature, sample, batch.max_bytes)?;
+        transport::validate_request(signature, sample, batch.max_bytes)?;
         Ok((ingress, source, caller, id))
     }
 
@@ -3484,7 +3467,7 @@ impl<R> ExecutionOutputAdapter<R> {
                         maximum: subscription.max_request_bytes,
                     }));
                 }
-                let _ = transport::decode_request_value(
+                transport::validate_request(
                     subscription.signature,
                     &sample,
                     subscription.max_request_bytes,
@@ -3752,16 +3735,11 @@ where
         key: TransportValue,
         request: TransportValue,
         worker: Option<OperationWorker>,
-        request_codec: Option<crate::port::PortCodec>,
         timeout_ms: Option<u64>,
         refresh_every_steps: Option<u64>,
         cancel_grace_ms: Option<u64>,
         context: super::StepContext,
     ) -> crate::Result<()> {
-        // The generated consumer owns this codec.  The argument is retained
-        // in the erased sink ABI for transport-free fixtures, but a process
-        // boundary must never consult a process-local type registry.
-        let _ = request_codec;
         if self.stopped {
             return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
         }
@@ -3849,35 +3827,33 @@ where
             })
         })?;
         let command_id = self.next_command_id()?;
-        let request_codec = match <R::Inputs as TransportInputSet>::request_codec(field) {
-            Some(codec) => codec,
-            None => {
-                self.staged.push(StagedActivation {
-                    field,
-                    key: None,
-                    request: None,
-                    worker: None,
-                    request_output: None,
-                    timeout_ms: Some(timeout_ms),
-                    refresh_every_steps,
-                    invocation_index: Some(context.invocation_index()),
-                    cancel_grace_ms: None,
-                    command_id: None,
-                    correlation_kind: None,
-                    expected_source: None,
-                    local_completion: Some(not_sent_completion(
+        let request_payload =
+            match <R::Inputs as TransportInputSet>::encode_request(field, &*request) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.staged.push(StagedActivation {
                         field,
-                        key,
-                        kind,
-                        format!(
-                            "generated request codec for `{}` is unavailable before transmission",
-                            route.binding.name
-                        ),
-                    )),
-                });
-                return Ok(());
-            }
-        };
+                        key: None,
+                        request: None,
+                        worker: None,
+                        request_output: None,
+                        timeout_ms: Some(timeout_ms),
+                        refresh_every_steps,
+                        invocation_index: Some(context.invocation_index()),
+                        cancel_grace_ms: None,
+                        command_id: None,
+                        correlation_kind: None,
+                        expected_source: None,
+                        local_completion: Some(not_sent_completion(
+                            field,
+                            key,
+                            kind,
+                            error.to_string(),
+                        )),
+                    });
+                    return Ok(());
+                }
+            };
         let correlations = self.correlations.as_ref().ok_or_else(|| {
             anyhow::anyhow!(TransportError::Transport(
                 "activation correlation table is not bound".to_owned(),
@@ -3921,8 +3897,7 @@ where
             );
             let output = match PreparedOutput::request_binding(
                 route.binding.clone(),
-                request_codec,
-                &*request,
+                request_payload,
                 max_bytes,
                 metadata,
             ) {
@@ -5118,6 +5093,10 @@ fn parse_identifier(value: &str) -> Result<String, String> {
     }
 }
 
+fn parse_execution_id(value: &str) -> Result<ExecutionId, String> {
+    ExecutionId::parse(value).map_err(|error| error.to_string())
+}
+
 fn parse_endpoint(value: &str) -> Result<String, String> {
     if value.is_empty()
         || value.trim() != value
@@ -5131,7 +5110,6 @@ fn parse_endpoint(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::any::Any;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -5141,6 +5119,7 @@ mod tests {
     use prost::Message;
 
     use super::*;
+    use crate::runtime::transport::RuntimeWireMetadata;
     use crate::runtime::{
         ExecutionDuration, InitContext, ObservationStamp, ReadError, RequestError, Runtime,
         RuntimeSpec, StepContext,
@@ -5401,11 +5380,17 @@ mod tests {
             "/tmp/bundle",
             "--instance-id",
             "motion",
+            "--execution-id",
+            "10000000000000000000000000000001",
             "--connect",
             "tcp/127.0.0.1:7447",
         ])
         .expect("launch parses");
         assert_eq!(parsed.instance_id, "motion");
+        assert_eq!(
+            parsed.execution_id.to_string(),
+            "10000000000000000000000000000001"
+        );
         assert!(RuntimeLaunch::try_parse_from(["runtime", "--bundle-root", "/tmp"]).is_err());
     }
 
@@ -5561,66 +5546,47 @@ mod tests {
         value: u32,
     }
 
+    impl prost::Name for TransportRequest {
+        const NAME: &'static str = "TransportRequest";
+        const PACKAGE: &'static str = "phoxal.runtime.test";
+
+        fn full_name() -> String {
+            "phoxal.runtime.test.TransportRequest".to_owned()
+        }
+
+        fn type_url() -> String {
+            "/phoxal.runtime.test.TransportRequest".to_owned()
+        }
+    }
+
     #[derive(Clone, PartialEq, Message)]
     struct TransportResponse {
         #[prost(uint32, tag = "1")]
         value: u32,
     }
 
-    fn encode_transport_request(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
-        let value = value
-            .downcast_ref::<TransportRequest>()
-            .ok_or(crate::port::CodecError::TypeMismatch)?;
-        let mut bytes = Vec::with_capacity(value.encoded_len());
-        value
-            .encode(&mut bytes)
-            .map_err(|_| crate::port::CodecError::Encode)?;
-        Ok(bytes)
+    impl prost::Name for TransportResponse {
+        const NAME: &'static str = "TransportResponse";
+        const PACKAGE: &'static str = "phoxal.runtime.test";
+
+        fn full_name() -> String {
+            "phoxal.runtime.test.TransportResponse".to_owned()
+        }
+
+        fn type_url() -> String {
+            "/phoxal.runtime.test.TransportResponse".to_owned()
+        }
     }
 
-    fn decode_transport_request(
-        bytes: &[u8],
-    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
-        TransportRequest::decode(bytes)
-            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
-            .map_err(|_| crate::port::CodecError::Decode)
-    }
-
-    fn encode_transport_response(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
-        let value = value
-            .downcast_ref::<TransportResponse>()
-            .ok_or(crate::port::CodecError::TypeMismatch)?;
-        let mut bytes = Vec::with_capacity(value.encoded_len());
-        value
-            .encode(&mut bytes)
-            .map_err(|_| crate::port::CodecError::Encode)?;
-        Ok(bytes)
-    }
-
-    fn decode_transport_response(
-        bytes: &[u8],
-    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
-        TransportResponse::decode(bytes)
-            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
-            .map_err(|_| crate::port::CodecError::Decode)
-    }
-
-    const TRANSPORT_PORT: crate::port::PortSignature =
-        crate::port::PortSignature::with_descriptor_and_codec(
-            "transport-commands",
-            "phoxal.runtime.test",
-            "Transport",
-            crate::port::PortKind::Commands,
-            "phoxal.runtime.test.TransportRequest",
-            "phoxal.runtime.test.TransportResponse",
-            &[],
-            crate::port::PortCodec::new(
-                Some(encode_transport_request),
-                Some(decode_transport_request),
-                Some(encode_transport_response),
-                Some(decode_transport_response),
-            ),
-        );
+    const TRANSPORT_PORT: crate::port::PortSignature = crate::port::PortSignature::with_descriptor(
+        "transport-commands",
+        "phoxal.runtime.test",
+        "Transport",
+        crate::port::PortKind::Commands,
+        "phoxal.runtime.test.TransportRequest",
+        "phoxal.runtime.test.TransportResponse",
+        &[],
+    );
 
     struct TransportInputs {
         commands: crate::runtime::Commands<TransportRequest, TransportResponse>,
@@ -5636,7 +5602,6 @@ mod tests {
                 max_age_ms: None,
                 max_items: Some(4),
                 max_bytes: Some(1024),
-                request_codec: TRANSPORT_PORT.codec(),
             }];
 
         fn decode_transport_field(
@@ -5672,7 +5637,7 @@ mod tests {
                     ));
                 }
                 let request: TransportRequest =
-                    crate::runtime::transport::decode_request(TRANSPORT_PORT, &sample)?;
+                    crate::runtime::transport::decode_request(TRANSPORT_PORT, &sample, 1024)?;
                 let order = crate::runtime::transport::command_order(sample.metadata())?;
                 items.push(crate::runtime::Command::with_order(order, request));
             }
@@ -5819,7 +5784,7 @@ mod tests {
             for reply in &self.replies {
                 let record = crate::runtime::transport::PreparedOutput::reply(
                     TRANSPORT_PORT,
-                    reply.response() as &dyn Any,
+                    reply.response(),
                     1024,
                     crate::runtime::transport::reply_metadata_for_order(
                         source,
@@ -5930,7 +5895,7 @@ mod tests {
         let output = || {
             crate::runtime::transport::PreparedOutput::response(
                 TRANSPORT_PORT,
-                &TransportResponse { value: 1 } as &dyn Any,
+                &TransportResponse { value: 1 },
                 1024,
                 crate::runtime::transport::RuntimeWireMetadata::data(
                     "cadence",
@@ -6152,13 +6117,7 @@ mod tests {
                 .expect("reply receive succeeds");
             let wire = crate::runtime::transport::WireSample::from_zenoh(sample)
                 .expect("reply has typed transport metadata");
-            let response = TRANSPORT_PORT
-                .codec()
-                .expect("response codec")
-                .decode_response(wire.payload())
-                .expect("response decodes")
-                .downcast::<TransportResponse>()
-                .expect("response type");
+            let response = TransportResponse::decode(wire.payload()).expect("response decodes");
             assert_eq!(response.value, expected.2);
             assert_eq!(wire.metadata().command_id, Some(expected.0));
             assert_eq!(wire.metadata().eligible_boundary, Some(0));
@@ -6382,58 +6341,14 @@ mod tests {
         }
     }
 
-    fn encode_read_request(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
-        let value = value
-            .downcast_ref::<ReadRequest>()
-            .ok_or(crate::port::CodecError::TypeMismatch)?;
-        let mut bytes = Vec::with_capacity(value.encoded_len());
-        value
-            .encode(&mut bytes)
-            .map_err(|_| crate::port::CodecError::Encode)?;
-        Ok(bytes)
-    }
-
-    fn decode_read_request(
-        bytes: &[u8],
-    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
-        ReadRequest::decode(bytes)
-            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
-            .map_err(|_| crate::port::CodecError::Decode)
-    }
-
-    fn encode_read_response(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
-        let value = value
-            .downcast_ref::<ReadResponse>()
-            .ok_or(crate::port::CodecError::TypeMismatch)?;
-        let mut bytes = Vec::with_capacity(value.encoded_len());
-        value
-            .encode(&mut bytes)
-            .map_err(|_| crate::port::CodecError::Encode)?;
-        Ok(bytes)
-    }
-
-    fn decode_read_response(
-        bytes: &[u8],
-    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
-        ReadResponse::decode(bytes)
-            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
-            .map_err(|_| crate::port::CodecError::Decode)
-    }
-
     const READ_PORT: crate::port::Read<ReadRequest, ReadResponse> =
-        crate::port::Read::with_codec_signature(
+        crate::port::Read::with_signature(
             "read",
             "phoxal.runtime.test.Reader",
             "Current",
             "phoxal.runtime.test.ReadRequest",
             "phoxal.runtime.test.ReadResponse",
             &[],
-            crate::port::PortCodec::new(
-                Some(encode_read_request),
-                Some(decode_read_request),
-                Some(encode_read_response),
-                Some(decode_read_response),
-            ),
         );
 
     struct PublicReadRuntime;
@@ -6647,18 +6562,10 @@ mod tests {
             .expect("read request arrives")
             .expect("read request receive succeeds");
         let wire = crate::runtime::transport::WireSample::from_zenoh(request)?;
-        let request = READ_PORT
-            .signature()
-            .codec()
-            .expect("read codec")
-            .decode_request(wire.payload())
-            .expect("request decodes")
-            .downcast::<ReadRequest>()
-            .expect("request type");
+        let request = ReadRequest::decode(wire.payload()).expect("request decodes");
         assert_eq!(request.value, 41);
         let metadata = wire.metadata();
-        let mut payload = Vec::new();
-        ReadResponse { value: 42 }.encode(&mut payload)?;
+        let payload = crate::runtime::transport::encode_prost(&ReadResponse { value: 42 })?;
         let reply_metadata = crate::runtime::transport::reply_metadata(
             "reader",
             StepContext::first(
@@ -6774,14 +6681,7 @@ mod tests {
             .expect("public read reply arrives")
             .expect("public read reply receive succeeds");
         let wire = crate::runtime::transport::WireSample::from_zenoh(reply)?;
-        let response = READ_PORT
-            .signature()
-            .codec()
-            .expect("read codec")
-            .decode_response(wire.payload())
-            .expect("response decodes")
-            .downcast::<ReadResponse>()
-            .expect("response type");
+        let response = ReadResponse::decode(wire.payload()).expect("response decodes");
         assert_eq!(response.value, 42);
         assert_eq!(wire.metadata().source.as_deref(), Some("public-reader"));
         assert_eq!(wire.metadata().caller.as_deref(), Some("supervisor.public"));
@@ -6811,41 +6711,15 @@ mod tests {
         }
     }
 
-    fn encode_typed_state(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
-        let value = value
-            .downcast_ref::<TypedState>()
-            .ok_or(crate::port::CodecError::TypeMismatch)?;
-        let mut payload = Vec::with_capacity(value.encoded_len());
-        value
-            .encode(&mut payload)
-            .map_err(|_| crate::port::CodecError::Encode)?;
-        Ok(payload)
-    }
-
-    fn decode_typed_state(
-        payload: &[u8],
-    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
-        TypedState::decode(payload)
-            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
-            .map_err(|_| crate::port::CodecError::Decode)
-    }
-
-    const SOURCE_STATE: crate::port::PortSignature =
-        crate::port::PortSignature::with_descriptor_and_codec(
-            "state",
-            "phoxal.runtime.test",
-            "State",
-            crate::port::PortKind::State,
-            "google.protobuf.Empty",
-            "phoxal.runtime.test.TypedState",
-            &[],
-            crate::port::PortCodec::new(
-                None,
-                None,
-                Some(encode_typed_state),
-                Some(decode_typed_state),
-            ),
-        );
+    const SOURCE_STATE: crate::port::PortSignature = crate::port::PortSignature::with_descriptor(
+        "state",
+        "phoxal.runtime.test",
+        "State",
+        crate::port::PortKind::State,
+        "google.protobuf.Empty",
+        "phoxal.runtime.test.TypedState",
+        &[],
+    );
 
     #[crate::runtime::inputs]
     struct TypedStateInputs {
@@ -6955,7 +6829,7 @@ mod tests {
 
         let prepared = PreparedOutput::response(
             SOURCE_STATE,
-            &TypedState { value: 42 } as &dyn Any,
+            &TypedState { value: 42 },
             64,
             crate::runtime::transport::publication_metadata(
                 "producer",

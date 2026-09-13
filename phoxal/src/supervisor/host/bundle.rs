@@ -3,9 +3,7 @@
 //!
 //! Opening a source bundle admits `manifest.json`, validates its exact
 //! executable records, and stops before launching anything. The supervisor
-//! later launches only that admitted graph. The legacy observer bundle remains
-//! available for existing observer fixtures while the typed runtime transport
-//! is completed.
+//! later launches only that admitted graph.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,10 +13,6 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-
-use crate::bundle::RuntimeBundle;
-use crate::model::manifest::ManifestDocument;
-use crate::participant::metadata::ParticipantKind;
 
 /// The bundle directory's name inside a deployment release. The supervisor is
 /// handed a bundle root and knows nothing about releases, but it does have to
@@ -32,8 +26,6 @@ const PROJECT_RELEASE_SUFFIX: [&str; 2] = [".phoxal", "release"];
 /// Read the bundle at `root`.
 #[derive(Debug)]
 pub(crate) enum Bundle {
-    /// The pre-runtime bundle retained for existing observer fixtures.
-    Legacy(RuntimeBundle),
     /// The source compiler's executable bundle, which this supervisor owns.
     Source(SourceBundle),
 }
@@ -41,66 +33,19 @@ pub(crate) enum Bundle {
 impl Bundle {
     pub(crate) fn root(&self) -> &Path {
         match self {
-            Self::Legacy(bundle) => bundle.root(),
             Self::Source(bundle) => bundle.root(),
-        }
-    }
-
-    pub(crate) fn legacy_manifest(&self) -> Option<ManifestDocument> {
-        match self {
-            Self::Legacy(bundle) => Some(bundle.manifest().clone()),
-            Self::Source(_) => None,
         }
     }
 
     pub(crate) fn robot_id(&self) -> &str {
         match self {
-            Self::Legacy(bundle) => bundle.robot_id().as_str(),
             Self::Source(bundle) => &bundle.manifest.robot_id,
-        }
-    }
-
-    pub(crate) fn expected_processes(&self) -> Vec<(String, ParticipantKind)> {
-        match self {
-            Self::Legacy(bundle) => {
-                let mut processes = vec![("brain".to_owned(), ParticipantKind::Brain)];
-                processes.extend(
-                    bundle
-                        .robot()
-                        .services()
-                        .map(|(id, _)| (id.as_str().to_owned(), ParticipantKind::Service)),
-                );
-                processes.extend(bundle.robot().components().filter_map(|component| {
-                    component
-                        .instance()
-                        .driver()
-                        .map(|_| (component.id().as_str().to_owned(), ParticipantKind::Driver))
-                }));
-                processes
-            }
-            Self::Source(bundle) => bundle
-                .manifest
-                .executables
-                .iter()
-                .map(|entry| {
-                    (
-                        entry.instance.clone(),
-                        match entry.role.as_str() {
-                            "brain" => ParticipantKind::Brain,
-                            "service" => ParticipantKind::Service,
-                            "driver" => ParticipantKind::Driver,
-                            _ => ParticipantKind::Service,
-                        },
-                    )
-                })
-                .collect(),
         }
     }
 
     pub(crate) fn source(&self) -> Option<&SourceBundle> {
         match self {
             Self::Source(bundle) => Some(bundle),
-            Self::Legacy(_) => None,
         }
     }
 }
@@ -133,15 +78,13 @@ impl SourceBundle {
     pub(crate) fn connections(&self) -> &BTreeMap<String, serde_json::Value> {
         &self.manifest.document.connections
     }
-
     /// Return the immutable simulation contract carried by this source bundle.
     pub(crate) fn simulation(&self) -> Option<&SourceSimulation> {
         self.manifest.simulation.as_ref()
     }
-
 }
 
-/// Open either the legacy observer fixture or a source-side `bundle/v0`.
+/// Open a source-side `bundle/v0`.
 pub(crate) fn open(root: &Path) -> Result<Bundle> {
     let root = root.canonicalize().with_context(|| {
         format!(
@@ -150,21 +93,23 @@ pub(crate) fn open(root: &Path) -> Result<Bundle> {
         )
     })?;
     if !root.is_dir() {
-        bail!("compiled bundle root is not a directory: {}", root.display());
+        bail!(
+            "compiled bundle root is not a directory: {}",
+            root.display()
+        );
     }
-    let manifest_path = root.join(crate::bundle::MANIFEST_FILE);
+    let manifest_path = root.join(MANIFEST_FILE);
     let bytes = bounded_file(&manifest_path, MAX_MANIFEST_BYTES)?;
-    if let Ok(manifest) = serde_json::from_slice::<SourceManifest>(&bytes)
-        && manifest.schema == SOURCE_SCHEMA
-    {
-        return Ok(Bundle::Source(admit_source(root, manifest)?));
+    let manifest = serde_json::from_slice::<SourceManifest>(&bytes)
+        .with_context(|| format!("{} is not a supported compiled bundle", root.display()))?;
+    if manifest.schema != SOURCE_SCHEMA {
+        bail!("unsupported bundle schema `{}`", manifest.schema);
     }
-    RuntimeBundle::open(&root)
-        .map(Bundle::Legacy)
-        .with_context(|| format!("{} is not a supported compiled bundle", root.display()))
+    Ok(Bundle::Source(admit_source(root, manifest)?))
 }
 
 const SOURCE_SCHEMA: &str = "phoxal/bundle/v0";
+const MANIFEST_FILE: &str = "manifest.json";
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -381,7 +326,10 @@ impl SourceBundle {
 
 #[cfg(test)]
 impl SourceManifest {
-    pub(crate) fn for_test(robot_id: impl Into<String>, executables: Vec<SourceExecutable>) -> Self {
+    pub(crate) fn for_test(
+        robot_id: impl Into<String>,
+        executables: Vec<SourceExecutable>,
+    ) -> Self {
         Self {
             schema: SOURCE_SCHEMA.to_owned(),
             robot_id: robot_id.into(),
@@ -411,7 +359,6 @@ impl SourceManifest {
             simulation: None,
         }
     }
-
 }
 
 fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle> {
@@ -436,7 +383,10 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
         }
         validate_segment(&executable.instance, "executable instance")?;
         if !seen.insert(executable.instance.as_str()) {
-            bail!("source bundle contains duplicate executable instance `{}`", executable.instance);
+            bail!(
+                "source bundle contains duplicate executable instance `{}`",
+                executable.instance
+            );
         }
         if executable.role == "brain" {
             if executable.instance != "brain" || has_brain {
@@ -487,17 +437,25 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
         }
         let relative = safe_relative_path(&executable.path)?;
         let path = root.join(relative);
-        let metadata = fs::symlink_metadata(&path).with_context(|| {
-            format!("source bundle executable is missing: {}", path.display())
-        })?;
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("source bundle executable is missing: {}", path.display()))?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
-            bail!("source bundle executable is not a regular file: {}", path.display());
+            bail!(
+                "source bundle executable is not a regular file: {}",
+                path.display()
+            );
         }
         let canonical = path.canonicalize().with_context(|| {
-            format!("cannot resolve source bundle executable: {}", path.display())
+            format!(
+                "cannot resolve source bundle executable: {}",
+                path.display()
+            )
         })?;
         if !canonical.starts_with(&root) {
-            bail!("source bundle executable escapes its root: {}", path.display());
+            bail!(
+                "source bundle executable escapes its root: {}",
+                path.display()
+            );
         }
         verify_digest(&canonical, executable)?;
     }
@@ -509,7 +467,11 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
         if service == "brain" {
             bail!("source bundle services cannot contain `brain`");
         }
-        if definition.config.as_ref().is_some_and(serde_json::Value::is_null) {
+        if definition
+            .config
+            .as_ref()
+            .is_some_and(serde_json::Value::is_null)
+        {
             bail!("service `{service}` has an explicit null configuration");
         }
         if !seen.contains(service.as_str()) {
@@ -523,7 +485,11 @@ fn validate_simulation_executables(
     simulation: Option<&SourceSimulation>,
     executables: &[SourceExecutable],
 ) -> Result<()> {
-    if simulation.is_some() && executables.iter().any(|executable| executable.role == "driver") {
+    if simulation.is_some()
+        && executables
+            .iter()
+            .any(|executable| executable.role == "driver")
+    {
         bail!("controlled simulation bundles must exclude physical driver executables");
     }
     Ok(())
@@ -564,7 +530,10 @@ fn validate_source_simulation(
         .collect::<std::collections::BTreeSet<_>>();
     let mut providers = std::collections::BTreeSet::new();
     for provider in &simulation.providers {
-        validate_segment(&provider.service_instance, "simulation provider service instance")?;
+        validate_segment(
+            &provider.service_instance,
+            "simulation provider service instance",
+        )?;
         validate_segment(&provider.port, "simulation provider port")?;
         if !physical_driver_instances.contains(provider.service_instance.as_str()) {
             bail!(
@@ -573,7 +542,10 @@ fn validate_source_simulation(
                 provider.port
             );
         }
-        if !matches!(provider.kind.as_str(), "state" | "sample" | "event" | "stream") {
+        if !matches!(
+            provider.kind.as_str(),
+            "state" | "sample" | "event" | "stream"
+        ) {
             bail!(
                 "simulation provider `{}.{}` has unsupported kind `{}`",
                 provider.service_instance,
@@ -609,7 +581,10 @@ fn validate_source_simulation(
     let mut bindings = std::collections::BTreeSet::new();
     let mut actuators = std::collections::BTreeSet::new();
     for binding in &simulation.actuation_bindings {
-        validate_segment(&binding.service_instance, "simulation actuation service instance")?;
+        validate_segment(
+            &binding.service_instance,
+            "simulation actuation service instance",
+        )?;
         validate_segment(&binding.port, "simulation actuation port")?;
         if binding.payload_fqn.is_empty() || binding.actuator_ids.is_empty() {
             bail!(
@@ -684,11 +659,7 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
         {
             bail!("service `{service}` has an empty implementation key");
         }
-        if definition
-            .binary
-            .as_deref()
-            .is_some_and(str::is_empty)
-        {
+        if definition.binary.as_deref().is_some_and(str::is_empty) {
             bail!("service `{service}` has an empty binary target");
         }
     }
@@ -735,7 +706,10 @@ fn bounded_file(path: &Path, maximum: usize) -> Result<Vec<u8>> {
     let link_metadata = fs::symlink_metadata(path)
         .with_context(|| format!("cannot inspect bundle manifest {}", path.display()))?;
     if link_metadata.file_type().is_symlink() {
-        bail!("bundle manifest must not be a symbolic link: {}", path.display());
+        bail!(
+            "bundle manifest must not be a symbolic link: {}",
+            path.display()
+        );
     }
     let file = fs::File::open(path)
         .with_context(|| format!("cannot read bundle manifest {}", path.display()))?;
@@ -768,7 +742,10 @@ fn safe_relative_path(value: &str) -> Result<PathBuf> {
     if path.as_os_str().is_empty()
         || path.is_absolute()
         || path.components().any(|component| {
-            matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
         })
     {
         bail!("executable path `{value}` is not bundle-relative");
@@ -925,9 +902,7 @@ mod tests {
             .expect("source bundle manifest");
 
         let bundle = open(directory.path()).expect("source bundle admission");
-        let Bundle::Source(bundle) = bundle else {
-            panic!("the phoxal/bundle/v0 manifest must select source admission");
-        };
+        let Bundle::Source(bundle) = bundle;
         assert_eq!(bundle.manifest.robot_id, "fixture");
         assert_eq!(
             bundle

@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use phoxal::__private::ParticipantConfig;
+use phoxal::runtime::Config;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -105,7 +105,7 @@ fn schema_validation_and_serde_deserialization_agree() {
     ]);
 }
 
-fn assert_oracle<T: ParticipantConfig + JsonSchema>() {
+fn assert_oracle<T: Config + JsonSchema>() {
     let actual: Value = serde_json::from_str(T::SCHEMA_JSON).expect("derive emits valid JSON");
     let oracle = serde_json::to_value(schemars::schema_for!(T)).expect("serialize oracle schema");
     assert_eq!(
@@ -115,7 +115,7 @@ fn assert_oracle<T: ParticipantConfig + JsonSchema>() {
     );
 }
 
-fn assert_schema_and_serde_agree<T: ParticipantConfig + DeserializeOwned>(values: &[Value]) {
+fn assert_schema_and_serde_agree<T: Config + DeserializeOwned>(values: &[Value]) {
     let schema: Value = serde_json::from_str(T::SCHEMA_JSON).expect("derive emits valid JSON");
     let validator = jsonschema::validator_for(&schema).expect("derive emits a valid schema");
     for value in values {

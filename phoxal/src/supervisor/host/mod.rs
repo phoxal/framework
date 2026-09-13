@@ -1,42 +1,17 @@
-//! Own one compiled bundle's execution and answer questions about it.
+//! Supervisor-owned source-bundle execution host.
 //!
-//! The supervisor reads `manifest.json`, runs the embedded router every
-//! participant dials, launches the exact admitted executable graph, watches
-//! participant Ready leases, retains logs and telemetry, serves the bundle,
-//! and can reboot or power off its host. Required child processes remain
-//! owned by this foreground task until they are reaped.
-//!
-//! Only four things end the run, and every one of them means this process can
-//! no longer do its job: the manifest is unreadable, the router cannot bind,
-//! the router disappears under it, or the control plane dies. A runtime being
-//! absent after the graph became ready is an execution failure: the child
-//! graph is stopped, status and logs remain available, and a fresh execution
-//! requires an explicit new supervisor start. The supervisor itself remains
-//! alive until an operator asks it to stop, so failure evidence is not lost
-//! with the required children.
-//!
-//! # This is an implementation, not an SDK
-//!
-//! The whole module tree is compiled only by the `supervisor` profile, which
-//! the exact-train `phoxal-supervisor` package enables and nothing else does.
-//! That package is a `main.rs` over [`run`]: it parses one operand, installs a
-//! subscriber, and calls in here. Everything a client has to agree with this
-//! process about is [`crate::supervisor::api`] and
-//! [`crate::supervisor::rendezvous`], which are ordinary contracts.
-//!
-//! Because the implementation lives in the same crate as the transport it
-//! owns, `BusOwner`, `BusConfig` and the embedded router are crate-private
-//! rather than a public seam: there is nothing here for another process to
-//! build against.
+//! The host admits one immutable source bundle, starts the embedded router,
+//! launches its recorded Runtime processes, and serves the public session on
+//! the same execution transport. Runtime admission is the readiness proof.
+//! There is no legacy observer, MessagePack control plane, or second serving
+//! path.
 
 pub(crate) mod bundle;
 pub(crate) mod execution;
 pub(crate) mod lock;
-pub(crate) mod presence;
 pub(crate) mod process;
 pub(crate) mod public_backend;
 pub(crate) mod router;
-pub(crate) mod serve;
 pub(crate) mod signal;
 pub(crate) mod state;
 pub(crate) mod systemd;
@@ -44,40 +19,23 @@ pub(crate) mod systemd;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use anyhow::{Context, Result, bail};
-use crate::bus::{
-    BusCloseReport, BusConfig, BusHandle, BusOwner, ParticipantReadyEvent,
-    ParticipantReadyObserver, ParticipantReadyStatus, SourceLabel,
-};
-use crate::communication::{DeploymentTarget, SupervisorAdapter};
+use crate::bus::{BusConfig, BusHandle, BusOwner};
 use crate::communication::session::ExecutionState as PublicExecutionState;
+use crate::communication::{DeploymentTarget, SupervisorAdapter};
 use crate::communication_transport::{PrincipalPolicy, PublicSessionServer, PublicTransportLimits};
 use crate::identity::ExecutionId;
-use crate::supervisor::api::connect::PRESENCE_KEY;
 use crate::supervisor::rendezvous::RuntimeRendezvous;
+use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
 
-use presence::Presence;
-use state::ExecutionState;
 use bundle::Bundle;
-use process::ProcessSupervisor;
 use execution::{RuntimeExecutionMode, RuntimeExecutionProtocol};
-use public_backend::{
-    RuntimeExecutionCoordinator, RuntimePublicBackend, RuntimePublicSurface,
-};
+use process::ProcessSupervisor;
+use public_backend::{RuntimeExecutionCoordinator, RuntimePublicBackend, RuntimePublicSurface};
+use state::{ExecutionState, TimeMode};
 
-const SUPERVISOR_LABEL: &str = "phoxal-supervisor";
-
-/// Observe one compiled bundle's execution until it ends.
-///
-/// `requested_root` is a bundle directory: `manifest.json`, `assets/`, `bin/`.
-/// This is the whole entry point of the `phoxal-supervisor` executable.
-///
-/// # Errors
-///
-/// Returns an error when the bundle cannot be opened, the supervisor lock is
-/// already held, the embedded router cannot bind or disappears under the run,
-/// or the control plane ends unexpectedly.
+/// Execute one compiled source bundle until the supervisor or its required
+/// Runtime graph stops.
 pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> {
     let canonical = requested_root.canonicalize().with_context(|| {
         format!(
@@ -97,12 +55,8 @@ pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> 
         "phoxal-supervisor starting"
     );
 
-    let state = ExecutionState::new(Presence::for_entries(runtime.expected_processes())?)?;
-
+    let state = ExecutionState::new();
     let shutdown = CancellationToken::new();
-    // Installed before the router is opened, so a signal arriving mid-startup
-    // cancels the same token an ordinary stop does. One execution per process,
-    // so the handler is never uninstalled.
     signal::cancel_on_termination(shutdown.clone())?;
     let outcome = execute(runtime, &paths, &state, target, shutdown.clone()).await;
     shutdown.cancel();
@@ -117,10 +71,10 @@ async fn execute(
     shutdown: CancellationToken,
 ) -> Result<()> {
     let execution = ExecutionId::mint();
+    let source = runtime
+        .source()
+        .ok_or_else(|| anyhow::anyhow!("compiled bundle has no source execution graph"))?;
     let endpoint = router_endpoint(&paths.checked_supervisor_socket()?);
-    // The loss reason is recorded rather than published: by the time it is
-    // known the fabric every client reaches this process through is already
-    // gone, so the only place left to report it is this process's own exit.
     let router_loss: Arc<OnceLock<String>> = Arc::default();
     let router_lost = {
         let router_loss = Arc::clone(&router_loss);
@@ -134,360 +88,173 @@ async fn execute(
         .await
         .context("the embedded router did not start")?;
 
-    let label = match SourceLabel::new(SUPERVISOR_LABEL) {
-        Ok(label) => label,
-        Err(error) => return Err(abort_router_startup(router, None, error.into()).await),
-    };
     let (owner, bus) = match BusOwner::open(BusConfig::for_external(
         execution,
-        Some(label),
+        None,
         vec![endpoint.clone()],
     ))
     .await
     {
         Ok(opened) => opened,
         Err(error) => {
-            let error = anyhow::anyhow!("failed to open supervisor bus: {error}");
-            return Err(abort_router_startup(router, None, error).await);
+            return Err(abort_router_startup(
+                router,
+                anyhow::anyhow!("failed to open supervisor bus: {error}"),
+            )
+            .await);
         }
     };
     if let Err(error) = verify_router_identity(&bus, execution, &endpoint).await {
-        return Err(abort_router_startup(router, Some(owner), error).await);
+        let _ = owner.close().await;
+        let _ = router.close().await;
+        return Err(error);
     }
-    // The one token that answers "is this supervisor still here" to a client
-    // that can no longer be told anything.
-    let identity = match owner.declare_liveliness_key(PRESENCE_KEY).await {
-        Ok(identity) => identity,
-        Err(error) => return Err(abort_router_startup(router, Some(owner), error.into()).await),
-    };
-    tracing::info!(%execution, endpoint = %endpoint, "supervisor control plane is up");
 
     let surface = match RuntimePublicSurface::from_bundle(&runtime) {
         Ok(surface) => surface,
-        Err(error) => return Err(abort_router_startup(router, Some(owner), error).await),
-    };
-    if surface.simulation.is_some()
-        && state.time_domain().mode
-            != crate::supervisor::api::time_domain::TimeMode::Simulated
-    {
-        if let Err(error) = state.replace_time_domain(
-            crate::supervisor::api::time_domain::TimeMode::Simulated,
-        ) {
-            return Err(abort_router_startup(router, Some(owner), error.into()).await);
+        Err(error) => {
+            let _ = owner.close().await;
+            let _ = router.close().await;
+            return Err(error);
         }
-    }
-    let protocol = match runtime.source() {
-        Some(source) => match RuntimeExecutionProtocol::open(bus.clone(), source, state.clone()).await {
-            Ok(protocol) => Some(Arc::new(protocol)),
-            Err(error) => return Err(abort_router_startup(router, Some(owner), error).await),
-        },
-        None => None,
     };
+    if surface.simulation.is_some() && state.time_domain().mode != TimeMode::Simulated {
+        state
+            .replace_time_domain(TimeMode::Simulated)
+            .map_err(anyhow::Error::msg)?;
+    }
+    let protocol = Arc::new(
+        RuntimeExecutionProtocol::open(bus.clone(), source, state.clone())
+            .await
+            .context("failed to open Runtime execution protocol")?,
+    );
     let public = match start_public_session(
         &bus,
         &target,
         &surface,
         state,
         execution,
-        protocol.clone(),
+        Arc::clone(&protocol),
     )
-    .await {
+    .await
+    {
         Ok(public) => public,
-        Err(error) => return Err(abort_router_startup(router, Some(owner), error).await),
-    };
-
-    // Declared before the control plane starts serving, so a participant that
-    // was already up is seen through the observer's history rather than missed.
-    let readiness = match observe_participants(&bus, state).await {
-        Ok(readiness) => readiness,
         Err(error) => {
-            return finish_startup_error(error, public, identity, owner, router).await;
+            let _ = owner.close().await;
+            let _ = router.close().await;
+            return Err(error);
         }
     };
-    // Readiness is the router being up and reachable, which is exactly what
-    // this point is. It is deliberately not the graph being complete: systemd
-    // orders the runtime units after this one, so a supervisor that withheld
-    // READY until they were present would be waiting on units waiting on it.
     let watchdog = match notify_systemd(shutdown.clone()) {
         Ok(watchdog) => watchdog,
         Err(error) => {
-            drop(readiness);
-            return finish_startup_error(error, public, identity, owner, router).await;
+            let _ = public.close().await;
+            let _ = owner.close().await;
+            let _ = router.close().await;
+            return Err(error);
         }
     };
 
-    if shutdown.is_cancelled() {
-        drop(readiness);
-        drop(identity);
-        return finish_startup_stop(public, owner, router, watchdog).await;
-    }
-    let mut processes = match runtime.source() {
-        Some(source) => match ProcessSupervisor::launch(source, &endpoint).await {
-            Ok(processes) => Some(processes),
-            Err(error) => {
-                let error = anyhow::anyhow!(
-                    "failed to launch the source bundle runtime graph: {error:#}"
-                );
-                mark_execution_failed(&public, execution, &error).await;
-                let serve_result = serve_until_stop(
-                    &bus,
-                    state,
-                    runtime.root(),
-                    runtime.legacy_manifest(),
-                    shutdown.clone(),
-                )
-                .await;
-                return finish_failed_execution(
-                    error,
-                    serve_result,
-                    public,
-                    owner,
-                    router,
-                    watchdog,
-                    shutdown.clone(),
-                )
-                .await;
-            }
-        },
-        None => None,
-    };
-    if let Some(protocol) = protocol.as_ref() {
-        let (mode, quantum_ns) = match surface.simulation.as_ref() {
-            Some(definition) => (RuntimeExecutionMode::Controlled, definition.quantum_ns()),
-            None => (RuntimeExecutionMode::Hardware, 0),
-        };
-        if let Err(error) = protocol
-            .admit_all(mode, quantum_ns, &state.time_domain().timeline.to_string())
-            .await
-        {
-            let error = anyhow::anyhow!("runtime execution admission failed: {error:#}");
-            if let Some(processes) = processes.as_mut() {
-                let _ = processes.stop().await;
-            }
+    let mut processes = match ProcessSupervisor::launch(source, execution, &endpoint).await {
+        Ok(processes) => processes,
+        Err(error) => {
+            let error = anyhow::anyhow!("failed to launch the Runtime graph: {error:#}");
             mark_execution_failed(&public, execution, &error).await;
-            let serve_result = serve_until_stop(
-                &bus,
-                state,
-                runtime.root(),
-                runtime.legacy_manifest(),
-                shutdown.clone(),
-            )
-            .await;
-            return finish_failed_execution(
-                error,
-                serve_result,
+            return finish_run(
+                Err(error),
+                None,
                 public,
                 owner,
                 router,
                 watchdog,
-                shutdown.clone(),
+                shutdown,
+                router_loss,
             )
             .await;
         }
-    }
-    let process_readiness = if let Some(processes) = processes.as_mut() {
-        processes.wait_ready(state, &shutdown).await
-    } else {
-        Ok(())
     };
-    if let Err(error) = process_readiness {
-        let intentional_stop = shutdown.is_cancelled();
-        if let Some(processes) = processes.as_mut() {
-            let _ = processes.stop().await;
-        }
-        if intentional_stop {
-            drop(readiness);
-            drop(identity);
-            return finish_startup_stop(public, owner, router, watchdog).await;
-        }
+
+    let (mode, quantum_ns) = match surface.simulation.as_ref() {
+        Some(definition) => (RuntimeExecutionMode::Controlled, definition.quantum_ns()),
+        None => (RuntimeExecutionMode::Hardware, 0),
+    };
+    if let Err(error) = protocol
+        .admit_all(mode, quantum_ns, &state.time_domain().timeline.to_string())
+        .await
+    {
+        let error = anyhow::anyhow!("Runtime execution admission failed: {error:#}");
+        let _ = processes.stop().await;
         mark_execution_failed(&public, execution, &error).await;
-        let serve_result = serve_until_stop(
-            &bus,
-            state,
-            runtime.root(),
-            runtime.legacy_manifest(),
-            shutdown.clone(),
-        )
-        .await;
-        return finish_failed_execution(
-            error,
-            serve_result,
+        return finish_run(
+            Err(error),
+            None,
             public,
             owner,
             router,
             watchdog,
-            shutdown.clone(),
+            shutdown,
+            router_loss,
         )
         .await;
     }
-    if runtime.source().is_some() {
-        if let Err(error) = public
-            .set_status(
-                crate::communication::session::SupervisorState::Ready,
-                None,
-            )
-            .await
-        {
-            tracing::warn!(error = %error, "failed to publish supervisor Ready status");
-        }
-        if let Err(error) = public
-            .set_execution_state(&execution.to_string(), PublicExecutionState::Ready)
-            .await
-        {
-            tracing::warn!(error = %error, "failed to publish execution Ready state");
-        }
-    }
-    let serve_bundle_root = runtime.root().to_path_buf();
-    let serve_manifest = runtime.legacy_manifest();
-    let mut process_monitor = processes;
+    state.mark_ready();
+    let _ = public
+        .set_status(crate::communication::session::SupervisorState::Ready, None)
+        .await;
+    let _ = public
+        .set_execution_state(&execution.to_string(), PublicExecutionState::Ready)
+        .await;
+
     let outcome = tokio::select! {
         failure = async {
-            match protocol.as_ref() {
-                Some(protocol) => {
-                    protocol.wait_failed().await;
-                    protocol.failure_reason().await
-                }
-                None => std::future::pending().await,
-            }
-        }, if protocol.is_some() => {
+            protocol.wait_failed().await;
+            protocol.failure_reason().await
+        }, if matches!(mode, RuntimeExecutionMode::Controlled) => {
             let error = anyhow::anyhow!(
-                "controlled runtime boundary failed: {}",
+                "controlled Runtime boundary failed: {}",
                 failure.unwrap_or_else(|| "unspecified boundary failure".to_owned())
             );
-            if let Some(processes) = process_monitor.as_mut()
-                && let Err(stop_error) = processes.stop().await
-            {
-                tracing::warn!(error = %stop_error, "failed to stop all runtime processes after boundary failure");
-            }
             mark_execution_failed(&public, execution, &error).await;
-            let _ = serve_until_stop(
-                &bus,
-                state,
-                &serve_bundle_root,
-                serve_manifest.clone(),
-                shutdown.clone(),
-            )
-            .await;
             Err(error)
-        },
-        result = serve::serve(
-            bus.clone(),
-            state.clone(),
-            serve_bundle_root.clone(),
-            serve_manifest.clone(),
-            shutdown.clone(),
-        ) => match result {
-            Ok(()) if !shutdown.is_cancelled() => Err(anyhow::anyhow!(
-                "the supervisor control plane ended unexpectedly"
-            )),
-            other => other,
-        },
-        result = async {
-            match process_monitor.as_mut() {
-                Some(processes) => processes.monitor(&shutdown).await,
-                None => std::future::pending().await,
-            }
-        }, if process_monitor.is_some() => {
+        }
+        () = shutdown.cancelled() => Ok(()),
+        result = processes.monitor(&shutdown) => {
             match result {
-                Ok(()) if shutdown.is_cancelled() => Ok(()),
-                Ok(()) => Err(anyhow::anyhow!("required runtime process monitor ended unexpectedly")),
+                Ok(()) => Ok(()),
                 Err(error) => {
-                    let error = anyhow::anyhow!("required runtime process failed: {error:#}");
-                    if let Some(processes) = process_monitor.as_mut()
-                        && let Err(stop_error) = processes.stop().await
-                    {
-                        tracing::warn!(error = %stop_error, "failed to stop all runtime processes after failure");
-                    }
+                    let error = anyhow::anyhow!("required Runtime process failed: {error:#}");
                     mark_execution_failed(&public, execution, &error).await;
-                    let _ = serve_until_stop(
-                        &bus,
-                        state,
-                        &serve_bundle_root,
-                        serve_manifest.clone(),
-                        shutdown.clone(),
-                    )
-                    .await;
                     Err(error)
                 }
             }
         }
     };
-    shutdown.cancel();
-
-    let process_close = match process_monitor.as_mut() {
-        Some(processes) => processes.stop().await,
-        None => Ok(()),
-    };
-
-    let public_outcome = public.close().await.map_err(anyhow::Error::from);
-
-    let watchdog_outcome = match watchdog {
-        Some(task) => task
-            .await
-            .context("the systemd watchdog task panicked")
-            .and_then(std::convert::identity),
-        None => Ok(()),
-    };
-    drop(readiness);
-    drop(identity);
-    let close = owner.close().await;
-    let router_close = router.close().await;
-    let outcome = finish_after_transport_close(
+    finish_run(
         outcome,
-        watchdog_outcome,
-        public_outcome,
-        close,
-        router_close,
-    );
-    process_close?;
-    match router_loss.get() {
-        Some(reason) => Err(anyhow::anyhow!("{reason}")),
-        None => outcome,
-    }
+        Some(processes),
+        public,
+        owner,
+        router,
+        watchdog,
+        shutdown,
+        router_loss,
+    )
+    .await
 }
 
-/// Preserve the run's result across the terminal transport cleanup.
-///
-/// Closing the supervisor's session and embedded router is bounded,
-/// best-effort cleanup on the exit path. Its evidence stays diagnostic: it
-/// cannot turn a completed run into a failed one. Failures raised while the
-/// supervisor was still serving remain fatal.
-fn finish_after_transport_close(
-    outcome: Result<()>,
-    watchdog: Result<()>,
-    public: Result<()>,
-    close: BusCloseReport,
-    router_close: Result<()>,
-) -> Result<()> {
-    if !close.is_clean() {
-        tracing::warn!(%close, "supervisor bus did not close cleanly");
-    }
-    if let Err(error) = router_close {
-        tracing::warn!(error = %error, "embedded router did not close cleanly");
-    }
-    outcome.and(watchdog).and(public)
-}
-
-/// Start the public session surface on the supervisor's own Zenoh session.
-///
-/// Source bundles carry the generated artifact summaries that define every
-/// public port, bound, and message identity.  The host installs those exact
-/// records and wires the session server to the same Runtime bus used by the
-/// launched graph.  Legacy observer bundles retain their control-only
-/// surface, because they have no typed artifact contract to advertise.
 async fn start_public_session(
     bus: &BusHandle,
     target: &DeploymentTarget,
     surface: &RuntimePublicSurface,
     state: &ExecutionState,
     execution: ExecutionId,
-    protocol: Option<Arc<RuntimeExecutionProtocol>>,
+    protocol: Arc<RuntimeExecutionProtocol>,
 ) -> Result<PublicSessionServer> {
     let coordinator = Arc::new(RuntimeExecutionCoordinator::new(state.clone()));
     let mut adapter = SupervisorAdapter::with_defaults(
         target.clone(),
         env!("CARGO_PKG_VERSION"),
-        crate::version::FrameworkVersion::CURRENT_SPELLING,
+        env!("CARGO_PKG_VERSION"),
     )?;
     let timeline = state.time_domain().timeline.to_string();
     adapter.install_execution(surface.execution(
@@ -497,16 +264,12 @@ async fn start_public_session(
     )?)?;
     adapter.set_status(
         crate::communication::session::SupervisorState::Preparing,
-        Some("runtime processes are being admitted".to_owned()),
+        Some("Runtime processes are being admitted".to_owned()),
     )?;
     let session = bus.session()?.clone();
-    let backend = Arc::new(RuntimePublicBackend::new(
-        bus.clone(),
-        surface,
-        coordinator.clone(),
-    ));
-    match (surface.simulation.clone(), protocol) {
-        (Some(definition), Some(protocol)) => Ok(PublicSessionServer::start_with_backends(
+    let backend = Arc::new(RuntimePublicBackend::new(bus.clone(), surface, coordinator));
+    match surface.simulation.clone() {
+        Some(definition) => Ok(PublicSessionServer::start_with_backends(
             session,
             adapter,
             backend,
@@ -520,7 +283,7 @@ async fn start_public_session(
             PublicTransportLimits::default(),
         )
         .await?),
-        _ => Ok(PublicSessionServer::start_with_backend(
+        None => Ok(PublicSessionServer::start_with_backend(
             session,
             adapter,
             backend,
@@ -531,95 +294,40 @@ async fn start_public_session(
     }
 }
 
-async fn serve_until_stop(
-    bus: &BusHandle,
-    state: &ExecutionState,
-    bundle_root: &Path,
-    manifest: Option<crate::model::manifest::ManifestDocument>,
-    shutdown: CancellationToken,
-) -> Result<()> {
-    serve::serve(
-        bus.clone(),
-        state.clone(),
-        bundle_root.to_path_buf(),
-        manifest,
-        shutdown,
-    )
-    .await
-}
-
 async fn mark_execution_failed(
     public: &PublicSessionServer,
     execution: ExecutionId,
     error: &anyhow::Error,
 ) {
     let detail = format!("{error:#}");
-    if let Err(status_error) = public
+    let _ = public
         .set_status(
             crate::communication::session::SupervisorState::Failed,
             Some(detail),
         )
-        .await
-    {
-        tracing::warn!(error = %status_error, "failed to publish supervisor Failed status");
-    }
-    if let Err(state_error) = public
+        .await;
+    let _ = public
         .set_execution_state(&execution.to_string(), PublicExecutionState::Failed)
-        .await
-    {
-        tracing::warn!(error = %state_error, "failed to publish execution Failed state");
-    }
-    tracing::error!(execution = %execution, error = %error, "required runtime graph failed");
+        .await;
 }
 
-async fn finish_startup_stop(
-    public: PublicSessionServer,
-    owner: BusOwner,
-    router: self::router::EmbeddedRouter,
-    watchdog: Option<tokio::task::JoinHandle<Result<()>>>,
-) -> Result<()> {
-    let public = public.close().await.map_err(anyhow::Error::from);
-    let watchdog = match watchdog {
-        Some(task) => task
-            .await
-            .context("the systemd watchdog task panicked")
-            .and_then(std::convert::identity),
-        None => Ok(()),
-    };
-    let close = owner.close().await;
-    let router = router.close().await;
-    finish_after_transport_close(Ok(()), watchdog, public, close, router)
-}
-
-async fn finish_startup_error(
-    failure: anyhow::Error,
-    public: PublicSessionServer,
-    identity: crate::bus::KeyLivelinessToken,
-    owner: BusOwner,
-    router: self::router::EmbeddedRouter,
-) -> Result<()> {
-    drop(identity);
-    let public = public.close().await.map_err(anyhow::Error::from);
-    let close = owner.close().await;
-    let router = router.close().await;
-    finish_after_transport_close(Err(failure), Ok(()), public, close, router)
-}
-
-async fn finish_failed_execution(
-    failure: anyhow::Error,
-    served: Result<()>,
+async fn finish_run(
+    outcome: Result<()>,
+    mut processes: Option<ProcessSupervisor>,
     public: PublicSessionServer,
     owner: BusOwner,
     router: self::router::EmbeddedRouter,
     watchdog: Option<tokio::task::JoinHandle<Result<()>>>,
     shutdown: CancellationToken,
+    router_loss: Arc<OnceLock<String>>,
 ) -> Result<()> {
-    if let Err(error) = served {
-        tracing::warn!(error = %error, "failed execution could not keep its diagnostic surface alive");
-    }
     shutdown.cancel();
-    let public = public.close().await.map_err(anyhow::Error::from);
-    let watchdog = match watchdog {
+    let process_outcome = match processes.as_mut() {
+        Some(processes) => processes.stop().await,
+        None => Ok(()),
+    };
+    let public_outcome = public.close().await.map_err(anyhow::Error::from);
+    let watchdog_outcome = match watchdog {
         Some(task) => task
             .await
             .context("the systemd watchdog task panicked")
@@ -627,49 +335,31 @@ async fn finish_failed_execution(
         None => Ok(()),
     };
     let close = owner.close().await;
-    let router = router.close().await;
-    let cleanup = finish_after_transport_close(Ok(()), watchdog, public, close, router);
-    if let Err(error) = cleanup {
-        tracing::warn!(error = %error, "failed execution cleanup was not fully clean");
+    if !close.is_clean() {
+        tracing::warn!(%close, "supervisor bus did not close cleanly");
     }
-    Err(failure)
+    if let Err(error) = router.close().await {
+        tracing::warn!(error = %error, "embedded router did not close cleanly");
+    }
+    process_outcome?;
+    outcome.and(watchdog_outcome).and(public_outcome)?;
+    if let Some(reason) = router_loss.get() {
+        bail!("{reason}");
+    }
+    Ok(())
 }
 
 async fn abort_router_startup(
     router: self::router::EmbeddedRouter,
-    owner: Option<BusOwner>,
     error: anyhow::Error,
 ) -> anyhow::Error {
-    if let Some(owner) = owner {
-        let close = owner.close().await;
-        if !close.is_clean() {
-            tracing::warn!(%close, "supervisor bus did not close cleanly after startup failed");
-        }
-    }
     if let Err(close_error) = router.close().await {
-        tracing::warn!(error = %close_error, "embedded router did not close cleanly after startup failed");
+        tracing::warn!(error = %close_error, "embedded router did not close after startup failure");
     }
     error
 }
 
-async fn observe_participants(
-    bus: &BusHandle,
-    state: &ExecutionState,
-) -> Result<ParticipantReadyObserver> {
-    let state = state.clone();
-    Ok(bus
-        .observe_participant_ready(move |event: ParticipantReadyEvent| {
-            state.record_presence(
-                event.participant(),
-                event.producer(),
-                event.status == ParticipantReadyStatus::Ready,
-            );
-        })
-        .await?)
-}
-
-/// Tell systemd the supervisor is up, and keep the watchdog fed until the run
-/// ends. A run outside systemd has no notify socket and nothing to do here.
+/// Tell systemd the supervisor is up, and keep its watchdog fed until stop.
 fn notify_systemd(
     shutdown: CancellationToken,
 ) -> Result<Option<tokio::task::JoinHandle<Result<()>>>> {
@@ -717,56 +407,4 @@ async fn verify_router_identity(
         "supervisor bus execution mismatch"
     );
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bus::BusCloseTimeout;
-
-    use super::*;
-
-    fn timed_out() -> BusCloseReport {
-        BusCloseReport {
-            timed_out: vec![BusCloseTimeout::Session],
-            ..BusCloseReport::default()
-        }
-    }
-
-    #[test]
-    fn terminal_transport_cleanup_does_not_fail_a_completed_run() {
-        finish_after_transport_close(
-            Ok(()),
-            Ok(()),
-            Ok(()),
-            timed_out(),
-            Err(anyhow::anyhow!("router close failed")),
-        )
-        .expect("terminal transport cleanup is diagnostic");
-    }
-
-    #[test]
-    fn transport_cleanup_does_not_mask_a_serving_failure() {
-        let error = finish_after_transport_close(
-            Err(anyhow::anyhow!("the supervisor control plane failed")),
-            Ok(()),
-            Ok(()),
-            timed_out(),
-            Err(anyhow::anyhow!("router close failed")),
-        )
-        .expect_err("the serving failure remains authoritative");
-        assert_eq!(error.to_string(), "the supervisor control plane failed");
-    }
-
-    #[test]
-    fn transport_cleanup_does_not_mask_a_watchdog_failure() {
-        let error = finish_after_transport_close(
-            Ok(()),
-            Err(anyhow::anyhow!("the watchdog notification failed")),
-            Ok(()),
-            timed_out(),
-            Err(anyhow::anyhow!("router close failed")),
-        )
-        .expect_err("the watchdog failure remains authoritative");
-        assert_eq!(error.to_string(), "the watchdog notification failed");
-    }
 }

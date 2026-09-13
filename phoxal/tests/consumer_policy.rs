@@ -96,6 +96,7 @@ fn session_profile_is_public_client_only() {
 }
 
 #[test]
+#[cfg(feature = "runtime")]
 fn runtime_profile_retains_runner_dependencies() {
     let tree = direct_tree("runtime");
     assert_direct_packages(&tree, &["phoxal-macros", "clap", "tokio", "zenoh"], &[]);

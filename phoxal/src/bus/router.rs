@@ -61,8 +61,8 @@ impl Router {
         if observed != execution {
             let _ = session.close().await;
             return Err(BusError::ExecutionIdentityMismatch {
-                expected: execution,
-                observed,
+                expected: execution.to_string(),
+                observed: observed.to_string(),
             });
         }
         Ok(Router { session })

@@ -138,6 +138,21 @@ pub trait TransportInputSet: InputSnapshot {
         samples: Vec<super::transport::WireSample>,
     ) -> crate::Result<()>;
 
+    /// Encode one generated Read or Request activation from its erased
+    /// process-local value into the exact Prost body selected by the input
+    /// declaration.
+    ///
+    /// A transport runner may only call this for a graph-resolved exchange.
+    /// The default is an explicit refusal for transport-free input sets.
+    fn encode_request(field: &str, request: &dyn Any) -> crate::Result<Vec<u8>> {
+        let _ = request;
+        Err(anyhow::anyhow!(
+            super::transport::TransportError::InvalidMetadata {
+                detail: format!("input field `{field}` has no generated request encoder"),
+            }
+        ))
+    }
+
     /// Admit one transport batch while resolving managed activation keys from
     /// the execution-local correlation table.
     fn decode_transport_field_with_keys(
@@ -190,6 +205,16 @@ pub trait GeneratedTransportDecoder<Inputs>: 'static {
         binding: Option<&super::transport::PortBinding>,
         samples: Vec<super::transport::WireSample>,
     ) -> crate::Result<()>;
+
+    /// Encode one generated Read or Request activation from an erased value.
+    fn encode_request(field: &str, request: &dyn Any) -> crate::Result<Vec<u8>> {
+        let _ = request;
+        Err(anyhow::anyhow!(
+            super::transport::TransportError::InvalidMetadata {
+                detail: format!("input field `{field}` has no generated request encoder"),
+            }
+        ))
+    }
 
     /// Decode with the host-freeze time available for age-bounded snapshots.
     fn decode_at(
@@ -268,6 +293,10 @@ where
         samples: Vec<super::transport::WireSample>,
     ) -> crate::Result<()> {
         <T::Transport as GeneratedTransportDecoder<T>>::decode(self, field, binding, samples)
+    }
+
+    fn encode_request(field: &str, request: &dyn Any) -> crate::Result<Vec<u8>> {
+        <T::Transport as GeneratedTransportDecoder<T>>::encode_request(field, request)
     }
 
     fn decode_transport_field_with_keys(

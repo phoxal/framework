@@ -57,11 +57,6 @@ pub struct Bno085Outputs {
 }
 
 /// The BNO085 hardware component driver.
-#[phoxal::driver(
-    config = Bno085Config,
-    state = Bno085State,
-    connection = i2c
-)]
 pub struct Bno085;
 
 #[phoxal::runtime::outputs]

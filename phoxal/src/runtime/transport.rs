@@ -904,6 +904,24 @@ pub fn decode_request<T: ProstPayload>(
     sample: &WireSample,
     max_bytes: u64,
 ) -> Result<T, TransportError> {
+    validate_request(signature, sample, max_bytes)?;
+    T::decode(sample.payload()).map_err(|error| TransportError::PayloadDecode {
+        port: signature.name.to_owned(),
+        detail: error.to_string(),
+    })
+}
+
+/// Validate the transport-level envelope of a generated request before its
+/// concrete Prost type is decoded by the generated input or output binding.
+///
+/// The process runner only has an erased request at some admission points, so
+/// it can validate size and lifecycle metadata here without restoring a
+/// process-wide payload codec registry.
+pub fn validate_request(
+    signature: PortSignature,
+    sample: &WireSample,
+    max_bytes: u64,
+) -> Result<(), TransportError> {
     if sample.payload().len() as u64 > max_bytes {
         return Err(TransportError::BodyTooLarge {
             port: signature.name.to_owned(),
@@ -916,10 +934,7 @@ pub fn decode_request<T: ProstPayload>(
             detail: "command request used a stream control record".to_owned(),
         });
     }
-    T::decode(sample.payload()).map_err(|error| TransportError::PayloadDecode {
-        port: signature.name.to_owned(),
-        detail: error.to_string(),
-    })
+    Ok(())
 }
 
 /// Decode one generated Prost message body after checking the exact source
@@ -1248,7 +1263,7 @@ pub fn checked_add_batch_bytes(
 }
 
 /// Publish one complete already-reserved output batch.
-pub fn publish_batch(
+pub(crate) fn publish_batch(
     bus: &crate::bus::BusHandle,
     instance: &str,
     outputs: &[PreparedOutput],

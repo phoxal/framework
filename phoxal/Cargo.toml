@@ -4,6 +4,7 @@ version = "0.68.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+autotests = false
 publish = ["phoxal"]
 description = "Phoxal - production-oriented autonomous robot framework: the one framework library, holding the runtime engine, the api contract tree, the typed bus, the canonical model, and the bundle."
 documentation.workspace = true
@@ -39,45 +40,29 @@ port = ["dep:phoxal-port"]
 
 # Framework-owned public protocol messages and pure admission state.
 # This layer has no scheduler, transport, simulator, or project dependency.
-protocol = ["port", "dep:getrandom", "dep:prost", "dep:thiserror"]
-
-# The pre-rewrite implementation remains one coherent private compilation
-# boundary while the new contract surface is introduced. Every existing
-# profile enables it, so this feature only changes dependency isolation for
-# `port`-only consumers and does not change legacy profile behavior.
-legacy-runtime = [
+protocol = [
     "port",
-    "dep:prost",
-    "dep:phoxal-macros",
-    "dep:clap",
-    "dep:const_format",
-    "dep:ctrlc",
     "dep:getrandom",
-    "dep:libc",
-    "dep:rmp-serde",
-    "dep:schemars",
+    "dep:prost",
     "dep:serde",
     "dep:serde_bytes",
-    "dep:serde_json",
-    "dep:sha2",
-    "dep:serde_yaml",
-    "dep:system_shutdown",
     "dep:thiserror",
-    "dep:tempfile",
-    "dep:tokio",
-    "dep:tokio-util",
-    "dep:toml",
-    "dep:tracing",
-    "dep:tracing-subscriber",
-    "dep:urdf-rs",
-    "dep:zenoh",
 ]
 
 # Synchronous Runtime authoring, typed input/output forms, and bounded managed
-# operations.  The initial integration keeps the legacy dependency boundary
-# enabled so existing framework contract families continue to compile while
-# the transport-owned runner is migrated in a later slice.
-runtime = ["legacy-runtime"]
+# operations.
+runtime = [
+    "protocol",
+    "dep:clap",
+    "dep:phoxal-macros",
+    "dep:getrandom",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tracing",
+    "dep:zenoh",
+]
 
 # The CLI, Operator, and any other application attaching to a running
 # execution. The public session owns its Protobuf-over-Zenoh transport and typed
@@ -93,11 +78,6 @@ session = [
     "dep:zenoh",
 ]
 
-# Webots, Isaac Sim, or another external world adapter: `phoxal::simulator`,
-# the runtime contract family, the bundle reader, and `model::simulation`.
-# Visibility only, for the same reason as `session`.
-simulator = ["legacy-runtime", "protocol"]
-
 # The exact-train `phoxal-supervisor` executable, and nothing else: it compiles
 # `phoxal::supervisor::host`, the whole supervisor implementation, plus the
 # embedded Zenoh router the graph meets on.
@@ -108,22 +88,42 @@ simulator = ["legacy-runtime", "protocol"]
 # build. `libc` is deliberately absent from this list - `bus::time` and
 # `supervisor::rendezvous` need it in every profile, so it is a plain
 # dependency rather than one this profile turns on.
-supervisor = ["legacy-runtime", "protocol", "zenoh/unstable"]
+supervisor = [
+    "protocol",
+    "dep:clap",
+    "dep:const_format",
+    "dep:ctrlc",
+    "dep:libc",
+    "dep:serde_json",
+    "dep:sha2",
+    "dep:system_shutdown",
+    "dep:tempfile",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:zenoh",
+    "zenoh/unstable",
+]
 
 # The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
 # URDF, their JSON Schemas, and the project compiler. Off by default: a launched
 # participant reads the compiled `manifest.json` and never an authored document,
 # so its readers - and the YAML/TOML/URDF parsers under them - have no place in
 # a robot binary.
-authoring = ["legacy-runtime"]
-
-# Explicit participant test support: the in-process harness, the deterministic
-# `TestClock`, and the clock-injection seam, which exist only so tests can drive
-# a participant on a caller-owned bus. Off in every shipped participant binary.
-# A downstream crate enables it as a **dev**-dependency feature, because a
-# participant crate's tests are a separate compilation unit that cannot enable
-# this crate's `cfg(test)`.
-test-harness = ["runtime"]
+authoring = [
+    "dep:phoxal-macros",
+    "dep:schemars",
+    "dep:serde",
+    "dep:serde_bytes",
+    "dep:serde_json",
+    "dep:serde_yaml",
+    "dep:sha2",
+    "dep:tempfile",
+    "dep:toml",
+    "dep:tracing",
+    "dep:urdf-rs",
+]
 
 [dependencies]
 phoxal-macros = { workspace = true, optional = true }
@@ -135,7 +135,6 @@ const_format = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
-rmp-serde = { workspace = true, optional = true }
 # Not optional, and not a `cfg_attr` gate inside the model: a feature that
 # changes what a canonical type derives is a second shape of the same type, and
 # the authored-source layer points editor schemas at the one canonical
@@ -172,37 +171,19 @@ phoxal-build.workspace = true
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
 
-# docs.rs builds every profile, so `phoxal::session`, `phoxal::simulator` and
-# `phoxal::authoring` have published documentation and every host item carries
-# an "available on crate feature …" badge. The crate root still reads
-# participant-first: ordering, not omission, is what makes the default consumer
-# the first one a reader meets.
+# docs.rs builds every profile, so `phoxal::session` and `phoxal::authoring`
+# have published documentation and every host item carries an "available on
+# crate feature …" badge.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
-# The tests load the workspace fixture robot as a finalized bundle. Staging it
-# is a crate rather than a test helper because both a unit test in `src/` and
-# an integration test in `tests/` need it, and a dev-dependency is the only
-# thing both can reach; a versionless one is stripped on publish. It depends on
-# this crate in turn, which is a dev-dependency cycle Cargo permits.
-phoxal-fixture = { workspace = true }
 phoxal-project = { workspace = true }
-# `tests/bus_frozen_wire_protocol.rs` reads the resolved `zenoh-protocol` out of
-# the graph Cargo actually compiles, and
 # `tests/authoring_workspace_build_requirements.rs` reads every workspace
 # manifest through this crate's own build-requirement reader.
 cargo_metadata = { workspace = true }
 jsonschema = { workspace = true }
-# Reads the built-artifact linker section back out in
-# `tests/participant_metadata.rs` - the one honest way to prove the ELF
-# `--gc-sections` defeat (`phoxal-macros`' `link_section_attrs`/
-# `Participant::__retain_embedded_metadata`) actually holds through a real link,
-# not just at the source level. Version pinned to match `phoxal-cli`'s own
-# object-file reader (`crates/core/src/check/participant_metadata.rs`), the only
-# other place in either repository that parses this section.
-object = "0.36"
 serial_test = { workspace = true }
 sha2 = { workspace = true }
 trybuild = { workspace = true }
@@ -220,31 +201,49 @@ workspace = true
 # therefore declare the profile that publishes it; `cargo test -p phoxal
 # --all-features` is what runs the whole set.
 [[test]]
-name = "runtime_serialized_smoke"
-path = "tests/runtime_serialized_smoke.rs"
-required-features = ["test-harness", "session"]
-
-[[test]]
 name = "consumer_policy"
 path = "tests/consumer_policy.rs"
 required-features = ["port"]
 
 [[test]]
-name = "wire_key_composition"
-path = "tests/wire_key_composition.rs"
-required-features = ["test-harness", "session"]
+name = "config_derive"
+path = "tests/config_derive.rs"
+required-features = ["runtime"]
 
-# The one test that runs two host profiles against each other: the supervisor
-# implementation and the attachment SDK, over a real execution.
 [[test]]
-name = "session_attaches_to_the_supervisor"
-path = "tests/session_attaches_to_the_supervisor.rs"
-required-features = ["session", "supervisor", "authoring"]
+name = "runtime_authoring"
+path = "tests/runtime_authoring.rs"
+required-features = ["runtime"]
+
+[[test]]
+name = "runtime_forms"
+path = "tests/runtime_forms.rs"
+required-features = ["runtime"]
+
+[[test]]
+name = "runtime_reference_examples"
+path = "tests/runtime_reference_examples.rs"
+required-features = ["runtime"]
 
 [[test]]
 name = "runtime_supervisor_e2e"
 path = "tests/runtime_supervisor_e2e.rs"
-required-features = ["runtime", "supervisor", "test-harness"]
+required-features = ["runtime", "supervisor"]
+
+[[bin]]
+name = "phoxal-runtime-reference"
+path = "tests/fixtures/runtime_reference.rs"
+required-features = ["runtime"]
+
+[[test]]
+name = "session_attaches_to_the_supervisor"
+path = "tests/session_attaches_to_the_supervisor.rs"
+required-features = ["session", "supervisor"]
+
+[[test]]
+name = "trybuild"
+path = "tests/trybuild.rs"
+required-features = ["runtime"]
 
 [[test]]
 name = "authoring_compile"
@@ -265,28 +264,3 @@ required-features = ["authoring"]
 name = "authoring_workspace_build_requirements"
 path = "tests/authoring_workspace_build_requirements.rs"
 required-features = ["authoring"]
-
-[[example]]
-name = "runtime_control_loop"
-path = "examples/runtime_control_loop.rs"
-required-features = ["runtime"]
-
-[[example]]
-name = "runtime_query_server"
-path = "examples/runtime_query_server.rs"
-required-features = ["runtime"]
-
-[[example]]
-name = "runtime_serialized_queries"
-path = "examples/runtime_serialized_queries.rs"
-required-features = ["runtime"]
-
-[[example]]
-name = "runtime_async_entrypoint"
-path = "examples/runtime_async_entrypoint.rs"
-required-features = ["runtime"]
-
-[[bin]]
-name = "phoxal-runtime-reference"
-path = "tests/fixtures/runtime_reference.rs"
-required-features = ["runtime"]

@@ -83,11 +83,6 @@ pub struct OakDLiteOutputs {
 }
 
 /// The OAK-D Lite hardware component driver.
-#[phoxal::driver(
-    config = OakDLiteConfig,
-    state = OakDLiteState,
-    connection = usb
-)]
 pub struct OakDLite;
 
 #[phoxal::runtime::outputs]
