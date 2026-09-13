@@ -32,8 +32,9 @@ clap = { workspace = true }
 # train: the supervisor and the library it is the body of are one artifact split
 # across two packages.
 #
-# No participant profile: this process is not a participant, and nothing here
-# authors on that surface. The workspace dependency carries
+# The supervisor profile includes the Runtime wire implementation used to
+# admit and coordinate child processes. It does not turn the supervisor itself
+# into a Runtime implementation. The workspace dependency carries
 # `default-features = false`, so naming `supervisor` is the whole selection.
 phoxal = { workspace = true, features = ["supervisor"] }
 tokio = { workspace = true, features = ["full"] }

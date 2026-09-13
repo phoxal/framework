@@ -4,7 +4,9 @@
 //! phoxal-supervisor <BUNDLE_ROOT> --scope <SCOPE> --supervisor-id <ID>
 //! ```
 //!
-//! That is the entire command line, and deliberately so.
+//! That is the entire operator-facing command line, and deliberately so.
+//! Local orchestration additionally uses one hidden `--ready-file` handoff so
+//! it can distinguish process liveness from completed Runtime admission.
 //! There is no `run`, `start`, `attach`, `stop`, `status`, `log`, `build`,
 //! `install`, `deploy`, `doctor`, or `upgrade` subcommand; no `--drivers`,
 //! `--driver`, or simulation flag; and no execution options of any kind. The
@@ -69,6 +71,10 @@ struct Cli {
     /// Stable supervisor target within the deployment namespace.
     #[arg(long, value_name = "ID")]
     supervisor_id: String,
+
+    /// Internal machine-readable readiness handoff for local orchestration.
+    #[arg(long, value_name = "PATH", hide = true)]
+    ready_file: Option<PathBuf>,
 }
 
 const ABOUT: &str = "phoxal-supervisor - the Phoxal Framework execution observer";
@@ -100,7 +106,13 @@ async fn main() -> ExitCode {
         }
     };
     init_tracing();
-    match phoxal::supervisor::host::run(&cli.bundle_root, target).await {
+    match phoxal::supervisor::host::run_with_readiness(
+        &cli.bundle_root,
+        target,
+        cli.ready_file.as_deref(),
+    )
+    .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // Stderr is the supervisor's diagnostic channel under systemd,

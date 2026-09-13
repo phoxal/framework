@@ -20,6 +20,7 @@ flate2 = { workspace = true }
 fs4 = { workspace = true }
 jsonschema = { workspace = true }
 keyring = { workspace = true }
+libc = { workspace = true }
 reqwest = { workspace = true }
 object = { workspace = true }
 prost-reflect = { workspace = true }

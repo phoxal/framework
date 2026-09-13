@@ -16,7 +16,9 @@ pub(crate) mod signal;
 pub(crate) mod state;
 pub(crate) mod systemd;
 
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use crate::bus::{BusConfig, BusHandle, BusOwner};
@@ -37,6 +39,19 @@ use state::{ExecutionState, TimeMode};
 /// Execute one compiled source bundle until the supervisor or its required
 /// Runtime graph stops.
 pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> {
+    run_with_readiness(requested_root, target, None).await
+}
+
+/// Execute one compiled source bundle and publish readiness atomically.
+///
+/// The optional file is an internal local-orchestration handoff. It becomes
+/// visible only after every required Runtime has completed admission and the
+/// public execution status is Ready.
+pub async fn run_with_readiness(
+    requested_root: &Path,
+    target: DeploymentTarget,
+    ready_file: Option<&Path>,
+) -> Result<()> {
     let canonical = requested_root.canonicalize().with_context(|| {
         format!(
             "failed to canonicalize bundle root {}",
@@ -58,7 +73,15 @@ pub async fn run(requested_root: &Path, target: DeploymentTarget) -> Result<()> 
     let state = ExecutionState::new();
     let shutdown = CancellationToken::new();
     signal::cancel_on_termination(shutdown.clone())?;
-    let outcome = execute(runtime, &paths, &state, target, shutdown.clone()).await;
+    let outcome = execute(
+        runtime,
+        &paths,
+        &state,
+        target,
+        ready_file.map(Path::to_owned),
+        shutdown.clone(),
+    )
+    .await;
     shutdown.cancel();
     outcome
 }
@@ -68,6 +91,7 @@ async fn execute(
     paths: &RuntimeRendezvous,
     state: &ExecutionState,
     target: DeploymentTarget,
+    ready_file: Option<PathBuf>,
     shutdown: CancellationToken,
 ) -> Result<()> {
     let execution = ExecutionId::mint();
@@ -204,6 +228,24 @@ async fn execute(
     let _ = public
         .set_execution_state(&execution.to_string(), PublicExecutionState::Ready)
         .await;
+    if let Some(path) = ready_file.as_deref()
+        && let Err(error) = publish_readiness(path, execution)
+    {
+        let error = anyhow::anyhow!("failed to publish supervisor readiness: {error:#}");
+        let _ = processes.stop().await;
+        mark_execution_failed(&public, execution, &error).await;
+        return finish_run(
+            Err(error),
+            None,
+            public,
+            owner,
+            router,
+            watchdog,
+            shutdown,
+            router_loss,
+        )
+        .await;
+    }
 
     let outcome = tokio::select! {
         failure = async {
@@ -240,6 +282,40 @@ async fn execute(
         router_loss,
     )
     .await
+}
+
+fn publish_readiness(path: &Path, execution: ExecutionId) -> Result<()> {
+    if path.exists() {
+        bail!("readiness path {} already exists", path.display());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("readiness path {} has no parent", path.display()))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("phoxal-ready"),
+        std::process::id()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .with_context(|| format!("failed to create {}", temporary.display()))?;
+    let body =
+        format!("{{\"schema\":\"phoxal/supervisor-ready/v0\",\"execution\":\"{execution}\"}}\n");
+    file.write_all(body.as_bytes())
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("failed to write {}", temporary.display()))?;
+    fs::rename(&temporary, path).with_context(|| {
+        format!(
+            "failed to publish readiness from {} to {}",
+            temporary.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 async fn start_public_session(
@@ -407,4 +483,22 @@ async fn verify_router_identity(
         "supervisor bus execution mismatch"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readiness_is_published_once_after_admission() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("ready.json");
+        let execution = ExecutionId::mint();
+        publish_readiness(&path, execution)?;
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        assert_eq!(value["schema"], "phoxal/supervisor-ready/v0");
+        assert_eq!(value["execution"], execution.to_string());
+        assert!(publish_readiness(&path, execution).is_err());
+        Ok(())
+    }
 }

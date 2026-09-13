@@ -89,7 +89,7 @@ session = [
 # `supervisor::rendezvous` need it in every profile, so it is a plain
 # dependency rather than one this profile turns on.
 supervisor = [
-    "protocol",
+    "runtime",
     "dep:clap",
     "dep:const_format",
     "dep:ctrlc",

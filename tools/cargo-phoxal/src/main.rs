@@ -384,7 +384,6 @@ fn diagnostic_path(error: &phoxal_project::Error) -> Option<PathBuf> {
         | phoxal_project::Error::BundlePublish { .. }
         | phoxal_project::Error::BundleCleanup { .. }
         | phoxal_project::Error::InvalidExecutionIdentity { .. }
-        | phoxal_project::Error::SimulationInvalid { .. }
         | phoxal_project::Error::Publication(_) => None,
     }
 }

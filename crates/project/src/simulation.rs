@@ -39,7 +39,6 @@ const BUILD_ROOT: &str = "build";
 const ARTIFACT_ROOT: &str = "artifacts";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
-const READINESS_SETTLE: Duration = Duration::from_millis(100);
 const PROCESS_POLL: Duration = Duration::from_millis(25);
 
 /// The presentation selected for a finite simulation run.
@@ -940,6 +939,11 @@ fn launch(
     request: &SimulationRunOptions,
 ) -> Result<SimulationRunReport, Error> {
     let supervisor_path = bundle.executable("supervisor");
+    let readiness_directory = tempfile::tempdir().map_err(|source| Error::ArtifactFile {
+        path: std::env::temp_dir(),
+        source,
+    })?;
+    let readiness_path = readiness_directory.path().join("ready.json");
     let mut supervisor = Command::new(&supervisor_path)
         .arg(bundle.root())
         .args([
@@ -947,6 +951,8 @@ fn launch(
             &request.scope,
             "--supervisor-id",
             &request.supervisor_id,
+            "--ready-file",
+            &readiness_path.display().to_string(),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -955,7 +961,17 @@ fn launch(
         .map_err(|source| Error::SupervisorLaunch {
             message: format!("cannot start {}: {source}", supervisor_path.display()),
         })?;
-    let supervisor_ready = wait_process_ready(&mut supervisor, request.startup_timeout)?;
+    let supervisor_ready =
+        match wait_process_ready(&mut supervisor, &readiness_path, request.startup_timeout) {
+            Ok(ready) => ready,
+            Err(error) => {
+                let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
+                return Err(simulation_error(format!(
+                    "{error}; cleanup: {}",
+                    cleanup_diagnostic(&cleanup)
+                )));
+            }
+        };
     if !supervisor_ready {
         let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
         return Err(Error::SupervisorLaunch {
@@ -992,14 +1008,17 @@ fn launch(
             simulator_command.args(["--duration", &duration.to_string()]);
         }
     }
-    let output = simulator_command
-        .output()
-        .map_err(|source| Error::SimulationInvalid {
-            message: format!(
-                "cannot start simulator {}: {source}",
-                simulator.summary.executable.display()
-            ),
-        })?;
+    let output = match simulator_command.output() {
+        Ok(output) => output,
+        Err(source) => {
+            let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
+            return Err(simulation_error(format!(
+                "cannot start simulator {}: {source}; cleanup: {}",
+                simulator.summary.executable.display(),
+                cleanup_diagnostic(&cleanup)
+            )));
+        }
+    };
     let provider_contract_verified = provider_contract_verified(&output.stdout);
     let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
     Ok(SimulationRunReport {
@@ -1047,18 +1066,44 @@ fn provider_contract_verified(stdout: &[u8]) -> bool {
         && evidence.requested_steps > 0
 }
 
-fn wait_process_ready(child: &mut Child, timeout: Duration) -> Result<bool, Error> {
-    // The current supervisor executable has no machine-readable readiness
-    // endpoint.  Keep the process-level fallback bounded and short so a
-    // healthy process is not mistaken for a fifteen-second startup delay.
-    // A supervisor that exits during this settle interval is still rejected.
-    let deadline = Instant::now() + READINESS_SETTLE.min(timeout);
+#[derive(Deserialize)]
+struct SupervisorReadiness {
+    schema: String,
+    execution: String,
+}
+
+fn wait_process_ready(
+    child: &mut Child,
+    readiness_path: &Path,
+    timeout: Duration,
+) -> Result<bool, Error> {
+    let deadline = Instant::now() + timeout;
     loop {
+        if readiness_path.is_file() {
+            let bytes = fs::read(readiness_path).map_err(|source| Error::ArtifactFile {
+                path: readiness_path.to_owned(),
+                source,
+            })?;
+            let readiness: SupervisorReadiness =
+                serde_json::from_slice(&bytes).map_err(|source| {
+                    simulation_error(format!(
+                        "supervisor readiness {} is invalid: {source}",
+                        readiness_path.display()
+                    ))
+                })?;
+            if readiness.schema != "phoxal/supervisor-ready/v0" || readiness.execution.is_empty() {
+                return Err(simulation_error(format!(
+                    "supervisor readiness {} has an unsupported or incomplete contract",
+                    readiness_path.display()
+                )));
+            }
+            return Ok(true);
+        }
         match child.try_wait().map_err(|source| Error::SupervisorLaunch {
             message: format!("cannot inspect supervisor readiness: {source}"),
         })? {
             Some(_) => return Ok(false),
-            None if Instant::now() >= deadline => return Ok(true),
+            None if Instant::now() >= deadline => return Ok(false),
             None => thread::sleep(PROCESS_POLL),
         }
     }
@@ -1082,11 +1127,25 @@ fn cleanup_process(child: &mut Child, timeout: Duration) -> SimulationCleanup {
             return result;
         }
     }
+    #[cfg(unix)]
+    {
+        // The supervisor owns a termination handler that performs orderly
+        // Runtime, session, bus, and router shutdown.
+        if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) } != 0 {
+            result.error = Some(format!(
+                "cannot request orderly supervisor stop: {}",
+                std::io::Error::last_os_error()
+            ));
+            return result;
+        }
+    }
+    #[cfg(not(unix))]
     if let Err(error) = child.kill() {
         result.error = Some(format!("cannot stop supervisor: {error}"));
         return result;
+    } else {
+        result.supervisor_killed = true;
     }
-    result.supervisor_killed = true;
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
@@ -1096,8 +1155,24 @@ fn cleanup_process(child: &mut Child, timeout: Duration) -> SimulationCleanup {
             }
             Ok(None) if Instant::now() < deadline => thread::sleep(PROCESS_POLL),
             Ok(None) => {
-                result.error = Some("supervisor did not exit after bounded cleanup".to_owned());
-                return result;
+                if let Err(error) = child.kill() {
+                    result.error = Some(format!(
+                        "supervisor did not exit after orderly stop and forced kill failed: {error}"
+                    ));
+                    return result;
+                }
+                result.supervisor_killed = true;
+                return match child.wait() {
+                    Ok(_) => {
+                        result.supervisor_exited = true;
+                        result
+                    }
+                    Err(error) => {
+                        result.error =
+                            Some(format!("cannot reap supervisor after forced kill: {error}"));
+                        result
+                    }
+                };
             }
             Err(error) => {
                 result.error = Some(format!("cannot reap supervisor after kill: {error}"));
@@ -1426,5 +1501,29 @@ mod tests {
             "phoxal-simulator-mujoco",
         );
         assert_eq!(path.ok(), Some(PathBuf::from("/tmp/simulator")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_requires_the_machine_contract_and_cleanup_is_orderly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let readiness = directory.path().join("ready.json");
+        fs::write(
+            &readiness,
+            br#"{"schema":"phoxal/supervisor-ready/v0","execution":"execution-1"}"#,
+        )?;
+        let mut child = Command::new("sleep").arg("10").spawn()?;
+        assert!(wait_process_ready(
+            &mut child,
+            &readiness,
+            Duration::from_secs(1)
+        )?);
+        let cleanup = cleanup_process(&mut child, Duration::from_secs(1));
+        assert!(cleanup.supervisor_stop_requested);
+        assert!(cleanup.supervisor_exited);
+        assert!(!cleanup.supervisor_killed);
+        assert!(cleanup.error.is_none());
+        Ok(())
     }
 }
