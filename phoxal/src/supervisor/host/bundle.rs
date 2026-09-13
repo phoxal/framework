@@ -130,6 +130,10 @@ impl SourceBundle {
             .and_then(|executable| executable.artifact.as_ref())
     }
 
+    pub(crate) fn connections(&self) -> &BTreeMap<String, serde_json::Value> {
+        &self.manifest.document.connections
+    }
+
 }
 
 /// Open either the legacy observer fixture or a source-side `bundle/v0`.
@@ -261,6 +265,10 @@ impl SourceExecutable {
 
     pub(crate) fn instance(&self) -> &str {
         &self.instance
+    }
+
+    pub(crate) fn sha256(&self) -> &str {
+        &self.sha256
     }
 
     #[cfg(test)]

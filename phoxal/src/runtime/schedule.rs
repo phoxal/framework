@@ -15,6 +15,18 @@ pub struct HardwareInvocation {
 }
 
 impl HardwareInvocation {
+    /// Build an invocation candidate supplied by a supervisor-controlled
+    /// boundary.  Controlled execution does not advance this hardware
+    /// schedule; it reuses the same input/output adapter contract with an
+    /// explicit logical timestamp and no missed releases.
+    pub(crate) const fn controlled(context: StepContext) -> Self {
+        Self {
+            context,
+            nominal_release: context.now(),
+            following_release: context.now(),
+        }
+    }
+
     /// Runtime facts for the frozen input cut.
     #[must_use]
     pub const fn context(self) -> StepContext {

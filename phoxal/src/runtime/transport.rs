@@ -653,6 +653,50 @@ impl PreparedOutput {
         self.payload.len()
     }
 
+    /// Return the bounded receipt facts for an ordinary published product.
+    /// Requests are transport work rather than products, and stream controls
+    /// carry lifecycle evidence without a product body.
+    pub(crate) fn product_receipt(&self) -> Option<(String, u64, u64)> {
+        if self.request
+            || self.control != WireControl::Data
+            || matches!(
+                &self.endpoint,
+                PreparedEndpoint::Signature(signature)
+                    if signature.kind == PortKind::Setpoint
+            )
+            || matches!(
+                &self.endpoint,
+                PreparedEndpoint::Binding(binding) if binding.kind == PortKind::Setpoint
+            )
+        {
+            return None;
+        }
+        Some((
+            self.endpoint.name().to_owned(),
+            self.metadata.sequence?,
+            self.payload.len() as u64,
+        ))
+    }
+
+    /// Return one actuator-facing Setpoint body and its required expiry.
+    pub(crate) fn actuation(&self) -> Option<(String, Vec<u8>, u64)> {
+        if self.request || self.control != WireControl::Data {
+            return None;
+        }
+        let setpoint = match &self.endpoint {
+            PreparedEndpoint::Signature(signature) => signature.kind == PortKind::Setpoint,
+            PreparedEndpoint::Binding(binding) => binding.kind == PortKind::Setpoint,
+        };
+        if !setpoint {
+            return None;
+        }
+        Some((
+            self.endpoint.name().to_owned(),
+            self.payload.clone(),
+            self.metadata.expires_at_nanos?,
+        ))
+    }
+
     fn relative_key(&self, instance: &str) -> String {
         let direction = if self.request {
             "request"

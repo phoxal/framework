@@ -127,16 +127,40 @@ impl ExecutionState {
         *self.inner.time_domain.borrow()
     }
 
-    /// The last runtime boundary reported by the execution coordinator.
+    /// The last complete runtime boundary committed by the execution
+    /// coordinator.
     ///
     /// This is separate from the public execution snapshot revision and the
     /// time-domain revision. The runtime boundary is the ordering source for
-    /// supervisor-owned external ingress. A real boundary coordinator must
-    /// update this value only after the complete required robot cut; this host
-    /// slice currently starts at the initial boundary and does not claim
-    /// controlled progress.
+    /// supervisor-owned external ingress and advances only after the complete
+    /// required runtime cut has been accepted.
     pub(crate) fn runtime_boundary(&self) -> u64 {
         self.lock().runtime_boundary
+    }
+
+    /// Commit exactly one complete controlled runtime boundary.
+    ///
+    /// The caller must have collected every required runtime/provider receipt
+    /// before invoking this method.  Keeping the prefix check here prevents a
+    /// second host path from publishing a fabricated jump in progress.
+    pub(crate) fn complete_runtime_boundary(&self, boundary: u64) -> Result<(), String> {
+        let mut data = self.lock();
+        let expected = data
+            .runtime_boundary
+            .checked_add(1)
+            .ok_or_else(|| "runtime boundary is exhausted".to_owned())?;
+        if boundary != expected {
+            return Err(format!(
+                "runtime boundary {boundary} is out of order; expected {expected}"
+            ));
+        }
+        data.runtime_boundary = boundary;
+        Ok(())
+    }
+
+    /// Fence controlled progress when a reset installs a fresh timeline.
+    pub(crate) fn reset_runtime_boundary(&self) {
+        self.lock().runtime_boundary = 0;
     }
 
     /// Whether the delegated controller still owns any expected Ready row.
@@ -180,6 +204,16 @@ impl ExecutionState {
         &self,
         mode: TimeMode,
     ) -> Result<TimeDomain, TimeDomainReplacementError> {
+        self.replace_time_domain_with(mode, TimelineId::mint())
+    }
+
+    /// Replace the current execution history with a caller-selected fresh
+    /// timeline after a protocol peer has agreed on the same identity.
+    pub(crate) fn replace_time_domain_with(
+        &self,
+        mode: TimeMode,
+        timeline: TimelineId,
+    ) -> Result<TimeDomain, TimeDomainReplacementError> {
         let mut data = self.lock();
         // Reserve capacity while holding the revision lock. This makes a full
         // stream a visible lifecycle fault rather than a state change whose
@@ -198,7 +232,7 @@ impl ExecutionState {
                 .revision
                 .checked_add(1)
                 .ok_or(TimeDomainReplacementError::RevisionExhausted)?,
-            timeline: TimelineId::mint(),
+            timeline,
             mode,
         };
         data.time_domain = domain;

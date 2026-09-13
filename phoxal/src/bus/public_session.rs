@@ -3530,11 +3530,7 @@ async fn reset_simulation(
         ));
     }
     drop(adapter_guard);
-    let mut next_id_bytes = [0_u8; 16];
-    getrandom::fill(&mut next_id_bytes).map_err(|_| {
-        PublicTransportError::Transport("cannot obtain simulation timeline entropy".to_owned())
-    })?;
-    let next_timeline_id = format!("timeline-{}", hex_bytes(&next_id_bytes));
+    let next_timeline_id = crate::identity::TimelineId::mint().to_string();
     let context = PublicSimulationContext {
         principal: current.principal.clone(),
         session_id: current.session_id.clone(),

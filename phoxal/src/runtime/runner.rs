@@ -19,8 +19,11 @@ use clap::Parser;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use zenoh::bytes::Encoding;
+use zenoh::key_expr::OwnedKeyExpr;
 
 use super::core::{AcceptedInvocation, Config, OutputAdmission, RegisteredRuntime, RuntimeOwner};
+use super::execution_protocol::{self, wire as execution_wire};
 use super::input::{
     InputSet, InputSnapshot, OperationCompletionRecord, OperationInputError, ReadError,
     RequestError, TransportInputSet, TransportKeyLookup, TransportValue,
@@ -31,7 +34,61 @@ use super::outputs::{
 };
 use super::schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 use super::transport::{self, ChangeToken, PreparedOutput, TransportError, WireSample};
-use super::{ExecutionTime, RuntimeStatus};
+use super::{ExecutionTime, RuntimeStatus, StepContext};
+
+/// One required output product accepted and published by a runtime boundary.
+///
+/// The supervisor uses these receipts to distinguish a complete output cut
+/// from a runtime that only returned an invocation acknowledgment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct RuntimeProductReceipt {
+    /// Runtime-owned output port identity.
+    pub port: String,
+    /// Producer sequence carried by the output metadata.
+    pub sequence: u64,
+    /// Number of records represented by this receipt.
+    pub items: u32,
+    /// Total encoded body bytes represented by this receipt.
+    pub bytes: u64,
+}
+
+/// One input cut receipt returned by a runtime after it froze transport data.
+///
+/// The source and sequence tie the receipt to the observation publication
+/// that the supervisor admitted before issuing the invocation.  This is
+/// intentionally separate from an output product receipt because a runtime
+/// may also freeze authored graph traffic in the same input cut.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct RuntimeInputReceipt {
+    /// Source identity carried by the input publication metadata.
+    pub source: String,
+    /// Input port identity.
+    pub port: String,
+    /// Producer sequence carried by the input metadata.
+    pub sequence: u64,
+    /// Number of frozen records represented by this receipt.
+    pub items: u32,
+    /// Total encoded body bytes represented by this receipt.
+    pub bytes: u64,
+}
+
+/// One typed setpoint cut returned by a runtime after acceptance.
+///
+/// Setpoint outputs are the framework's actuator-facing cut.  The supervisor
+/// carries the exact generated payload and expiry to the simulation owner;
+/// it never invents a default action when a runtime omits one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub struct RuntimeActuation {
+    /// Runtime-owned actuator port identity.
+    pub port: String,
+    /// Encoded generated Protobuf setpoint body.
+    pub payload: Vec<u8>,
+    /// Simulated time at which this setpoint expires.
+    pub valid_until_ns: u64,
+}
 
 /// The strict process arguments supplied to one Runtime binary.
 ///
@@ -75,6 +132,7 @@ pub struct RuntimeLaunchManifest {
     robot_id: String,
     instance_id: String,
     executable: PathBuf,
+    executable_sha256: String,
     config: Value,
     connections: BTreeMap<String, Vec<String>>,
     artifacts: BTreeMap<String, SourceRuntimeRecord>,
@@ -133,6 +191,7 @@ impl RuntimeLaunchManifest {
                     instance: instance_id.to_owned(),
                 })
             })?;
+        let executable_sha256 = executable.sha256.clone();
         let relative = safe_relative_path(&executable.path)?;
         let executable_path = root.join(relative);
         let path_metadata = fs::symlink_metadata(&executable_path).map_err(|source| {
@@ -214,6 +273,7 @@ impl RuntimeLaunchManifest {
             robot_id: manifest.robot_id,
             instance_id: instance_id.to_owned(),
             executable: canonical_executable,
+            executable_sha256,
             config,
             connections,
             artifacts,
@@ -242,6 +302,12 @@ impl RuntimeLaunchManifest {
     #[must_use]
     pub fn executable(&self) -> &Path {
         &self.executable
+    }
+
+    /// The verified SHA-256 digest recorded for the selected executable.
+    #[must_use]
+    pub fn executable_sha256(&self) -> &str {
+        &self.executable_sha256
     }
 
     /// Owned authored configuration value for typed decoding.
@@ -534,6 +600,14 @@ pub trait InputSource<R: RegisteredRuntime> {
     /// Freeze and return the complete input snapshot for one candidate.
     fn freeze(&mut self, candidate: &HardwareInvocation) -> crate::Result<R::Inputs>;
 
+    /// Take receipts for the transport records frozen by the last candidate.
+    ///
+    /// Direct in-process inputs have no distributed publication to prove and
+    /// therefore return no receipts by default.
+    fn take_input_receipts(&mut self) -> Vec<RuntimeInputReceipt> {
+        Vec::new()
+    }
+
     /// Stop subscriptions, pending requests, and managed operation workers.
     fn stop(&mut self) -> crate::Result<()> {
         Ok(())
@@ -586,6 +660,19 @@ where
         &mut self,
         accepted: AcceptedInvocation<R::Outputs, Self::Reservation>,
     ) -> crate::Result<()>;
+
+    /// Take the receipts produced by the most recently published batch.
+    ///
+    /// A transport adapter may aggregate several records for one output port.
+    /// The default keeps direct in-process sinks free of transport concerns.
+    fn take_product_receipts(&mut self) -> Vec<RuntimeProductReceipt> {
+        Vec::new()
+    }
+
+    /// Take the accepted actuator-facing setpoint cut from the last publish.
+    fn take_actuations(&mut self) -> Vec<RuntimeActuation> {
+        Vec::new()
+    }
 
     /// Stop publishers and wait for managed operation cleanup.
     fn stop(&mut self) -> crate::Result<()> {
@@ -734,6 +821,53 @@ where
             }
         };
 
+    let admit_subscriber = declare_execution_subscriber(&bus, &launch.instance_id, "admit").await?;
+    let invoke_subscriber =
+        declare_execution_subscriber(&bus, &launch.instance_id, "invoke").await?;
+    let reset_subscriber = declare_execution_subscriber(&bus, &launch.instance_id, "reset").await?;
+    let admission = tokio::select! {
+        biased;
+        _ = &mut shutdown => {
+            let _ = owner.close().await;
+            return Ok(());
+        }
+        result = recv_execution::<execution_wire::AdmitExecutionRequest>(&admit_subscriber) => result?,
+    };
+    let execution_mode = match execution_wire::ExecutionMode::try_from(admission.mode) {
+        Ok(mode) => mode,
+        Err(_) => {
+            let response = execution_wire::AdmitExecutionResponse {
+                admitted: false,
+                unsupported_contracts: Vec::new(),
+                detail: Some("unknown execution scheduling mode".to_owned()),
+            };
+            let _ = publish_execution(&bus, &launch.instance_id, "admit-response", &response).await;
+            let _ = owner.close().await;
+            return Err(anyhow::anyhow!("unknown execution scheduling mode"));
+        }
+    };
+    if let Err((detail, unsupported_contracts)) = validate_execution_admission::<R>(
+        &manifest,
+        &admission,
+        execution_mode,
+        &execution.to_string(),
+    ) {
+        let response = execution_wire::AdmitExecutionResponse {
+            admitted: false,
+            unsupported_contracts,
+            detail: Some(detail.clone()),
+        };
+        let _ = publish_execution(&bus, &launch.instance_id, "admit-response", &response).await;
+        let _ = owner.close().await;
+        return Err(anyhow::anyhow!("runtime admission refused: {detail}"));
+    }
+    let response = execution_wire::AdmitExecutionResponse {
+        admitted: true,
+        unsupported_contracts: Vec::new(),
+        detail: None,
+    };
+    publish_execution(&bus, &launch.instance_id, "admit-response", &response).await?;
+
     let ready = match tokio::select! {
         biased;
         _ = &mut shutdown => {
@@ -748,19 +882,48 @@ where
             return Err(error.into());
         }
     };
+    publish_execution(
+        &bus,
+        &launch.instance_id,
+        "ready",
+        &execution_wire::Ready {
+            execution_id: execution.to_string(),
+            timeline_id: admission.timeline_id.clone(),
+            runtime_instance: launch.instance_id.clone(),
+        },
+    )
+    .await?;
 
-    let mut ticker = tokio::time::interval(R::SPEC.period.as_duration());
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut clock = SystemClock::new();
-    let result = loop {
-        tokio::select! {
-            biased;
-            _ = &mut shutdown => break Ok(()),
-            _ = ticker.tick() => match runner.poll(clock.now()) {
-                Ok(PollOutcome::NotDue { .. } | PollOutcome::Accepted { .. }) => {}
-                Ok(PollOutcome::Stopped) => break Ok(()),
-                Err(error) => break Err(error),
-            },
+    let result = match execution_mode {
+        execution_wire::ExecutionMode::Hardware => {
+            let mut ticker = tokio::time::interval(R::SPEC.period.as_duration());
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut clock = SystemClock::new();
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut shutdown => break Ok(()),
+                    _ = ticker.tick() => match runner.poll(clock.now()) {
+                        Ok(PollOutcome::NotDue { .. } | PollOutcome::Accepted { .. }) => {}
+                        Ok(PollOutcome::Stopped) => break Ok(()),
+                        Err(error) => break Err(error),
+                    },
+                }
+            }
+        }
+        execution_wire::ExecutionMode::Controlled => {
+            run_controlled_transport(
+                &mut runner,
+                &manifest,
+                &launch,
+                &bus,
+                shutdown,
+                invoke_subscriber,
+                reset_subscriber,
+                admission.timeline_id,
+                admission.quantum_ns,
+            )
+            .await
         }
     };
 
@@ -768,6 +931,420 @@ where
     drop(ready);
     let _close_report = owner.close().await;
     result.and(stop_result)
+}
+
+type ExecutionSubscriber =
+    zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
+
+const EXECUTION_CHANNEL_CAPACITY: usize = 64;
+const MAX_RETAINED_CONTROLLED_INVOCATIONS: usize = 256;
+
+async fn declare_execution_subscriber(
+    bus: &crate::bus::BusHandle,
+    instance: &str,
+    leg: &str,
+) -> crate::Result<ExecutionSubscriber> {
+    let key = execution_protocol::key(bus, instance, leg);
+    let key = OwnedKeyExpr::new(key).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let session = bus.session()?;
+    Ok(session
+        .declare_subscriber(key)
+        .with(zenoh::handlers::FifoChannel::new(
+            EXECUTION_CHANNEL_CAPACITY,
+        ))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?)
+}
+
+async fn recv_execution<M>(subscriber: &ExecutionSubscriber) -> crate::Result<M>
+where
+    M: prost::Message + Default,
+{
+    let sample = subscriber
+        .recv_async()
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    if !execution_protocol::has_encoding(&sample) {
+        return Err(anyhow::anyhow!(
+            "private execution message used an unexpected encoding"
+        ));
+    }
+    execution_protocol::decode(sample.payload().to_bytes().as_ref())
+}
+
+async fn publish_execution<M: prost::Message>(
+    bus: &crate::bus::BusHandle,
+    instance: &str,
+    leg: &str,
+    message: &M,
+) -> crate::Result<()> {
+    let key = execution_protocol::key(bus, instance, leg);
+    let payload = execution_protocol::encode(message)?;
+    let session = bus.session()?;
+    session
+        .put(key, payload)
+        .encoding(Encoding::from(
+            execution_protocol::PROTOBUF_ENCODING.to_owned(),
+        ))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(())
+}
+
+fn validate_execution_admission<R: RegisteredRuntime>(
+    manifest: &RuntimeLaunchManifest,
+    request: &execution_wire::AdmitExecutionRequest,
+    mode: execution_wire::ExecutionMode,
+    expected_execution: &str,
+) -> Result<(), (String, Vec<String>)> {
+    let reject = |detail: String, unsupported: Vec<String>| Err((detail.into(), unsupported));
+    if request.execution_id != expected_execution || request.timeline_id.is_empty() {
+        return reject(
+            "execution admission requires execution and timeline identities".to_owned(),
+            Vec::new(),
+        );
+    }
+    let Some(expected_digest) = decode_digest(manifest.executable_sha256()) else {
+        return reject(
+            "runtime executable digest is not a 32-byte hexadecimal value".to_owned(),
+            Vec::new(),
+        );
+    };
+    if request.artifact_digest != expected_digest {
+        return reject(
+            "runtime executable digest does not match the admitted artifact".to_owned(),
+            Vec::new(),
+        );
+    }
+    let mut unsupported_contracts = Vec::new();
+    let exact_capabilities = BTreeSet::from(["invocation", "reset"]);
+    if request.required_contracts.len() != 1 {
+        unsupported_contracts.extend(
+            request
+                .required_contracts
+                .iter()
+                .map(|contract| contract.protocol.clone()),
+        );
+        return reject(
+            "execution admission requires exactly one supported contract requirement".to_owned(),
+            unsupported_contracts,
+        );
+    }
+    let requirement = &request.required_contracts[0];
+    let capabilities = requirement
+        .capabilities
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if requirement.protocol != "phoxal.execution.v1" || capabilities != exact_capabilities {
+        unsupported_contracts.push(requirement.protocol.clone());
+        unsupported_contracts.extend(
+            capabilities
+                .difference(&exact_capabilities)
+                .map(|capability| format!("phoxal.execution.v1/{capability}")),
+        );
+        return reject(
+            "execution admission requires the exact invocation and reset capabilities".to_owned(),
+            unsupported_contracts,
+        );
+    }
+    match mode {
+        execution_wire::ExecutionMode::Hardware => {
+            if request.quantum_ns != 0 {
+                return reject(
+                    "hardware execution must not carry a simulation quantum".to_owned(),
+                    Vec::new(),
+                );
+            }
+        }
+        execution_wire::ExecutionMode::Controlled => {
+            if request.quantum_ns == 0 {
+                return reject(
+                    "controlled execution requires a positive quantum".to_owned(),
+                    Vec::new(),
+                );
+            }
+            if !R::SPEC.period.as_nanos().is_multiple_of(request.quantum_ns) {
+                return reject(
+                    format!(
+                        "runtime period {} ns is not an exact multiple of controlled quantum {} ns",
+                        R::SPEC.period.as_nanos(),
+                        request.quantum_ns
+                    ),
+                    Vec::new(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_controlled_transport<R, Inputs, Outputs>(
+    runner: &mut RuntimeRunner<R, Inputs, Outputs>,
+    manifest: &RuntimeLaunchManifest,
+    launch: &RuntimeLaunch,
+    bus: &crate::bus::BusHandle,
+    mut shutdown: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+    invoke_subscriber: ExecutionSubscriber,
+    reset_subscriber: ExecutionSubscriber,
+    mut timeline_id: String,
+    quantum_ns: u64,
+) -> crate::Result<()>
+where
+    R: RegisteredRuntime,
+    R::Inputs: InputSnapshot,
+    Inputs: InputSource<R>,
+    Outputs: OutputSink<R>,
+{
+    let mut last_boundary = None;
+    let mut accepted = BTreeMap::<u64, execution_wire::InvocationAccepted>::new();
+    let invoke_subscriber = invoke_subscriber;
+    let reset_subscriber = reset_subscriber;
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.as_mut() => break Ok(()),
+            reset = reset_subscriber.recv_async() => {
+                let sample = reset.map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                let request = decode_execution_sample::<execution_wire::ResetExecutionRequest>(&sample)?;
+                let valid = request.execution_id == bus.execution().to_string()
+                    && request.retired_timeline_id == timeline_id
+                    && request.next_timeline_id != timeline_id
+                    && !request.next_timeline_id.is_empty()
+                    && last_boundary.is_none_or(|boundary| request.completed_boundary >= boundary);
+                if !valid {
+                    let response = execution_wire::ResetExecutionResponse {
+                        accepted: false,
+                        detail: Some("reset execution, timeline, or completed boundary is stale".to_owned()),
+                    };
+                    publish_execution(bus, &launch.instance_id, "reset-response", &response).await?;
+                    continue;
+                }
+                let config = manifest.decode_config::<R>()?;
+                match runner.reset(ExecutionTime::default(), config) {
+                    Ok(()) => {
+                        timeline_id = request.next_timeline_id;
+                        last_boundary = None;
+                        accepted.clear();
+                        let response = execution_wire::ResetExecutionResponse {
+                            accepted: true,
+                            detail: None,
+                        };
+                        publish_execution(bus, &launch.instance_id, "reset-response", &response).await?;
+                    }
+                    Err(error) => {
+                        let detail = format!("runtime reset failed: {error:#}");
+                        let response = execution_wire::ResetExecutionResponse {
+                            accepted: false,
+                            detail: Some(detail.clone()),
+                        };
+                        publish_execution(bus, &launch.instance_id, "reset-response", &response).await?;
+                        let failure = execution_wire::RuntimeFailure {
+                            execution_id: bus.execution().to_string(),
+                            timeline_id: timeline_id.clone(),
+                            runtime_instance: launch.instance_id.clone(),
+                            boundary: request.completed_boundary,
+                            reason: detail,
+                        };
+                        publish_execution(bus, &launch.instance_id, "failure", &failure).await?;
+                        break Err(error);
+                    }
+                }
+            }
+            invocation = invoke_subscriber.recv_async() => {
+                let sample = invocation.map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                let request = decode_execution_sample::<execution_wire::Invocation>(&sample)?;
+                if request.execution_id != bus.execution().to_string()
+                    || request.runtime_instance != launch.instance_id
+                    || request.timeline_id != timeline_id
+                {
+                    send_runtime_failure(
+                        bus,
+                        launch,
+                        &timeline_id,
+                        request.boundary,
+                        "invocation execution, timeline, or runtime identity is stale",
+                    ).await?;
+                    continue;
+                }
+                let expected_logical_time = request
+                    .boundary
+                    .checked_mul(quantum_ns)
+                    .ok_or_else(|| anyhow::anyhow!("controlled invocation time overflow"))?;
+                if request.logical_time_ns != expected_logical_time {
+                    send_runtime_failure(
+                        bus,
+                        launch,
+                        &timeline_id,
+                        request.boundary,
+                        "invocation logical time does not match its boundary and quantum",
+                    )
+                    .await?;
+                    continue;
+                }
+                if let Some(previous) = last_boundary {
+                    if request.boundary < previous {
+                        send_runtime_failure(
+                            bus,
+                            launch,
+                            &timeline_id,
+                            request.boundary,
+                            "late invocation was rejected after a newer boundary completed",
+                        ).await?;
+                        continue;
+                    }
+                    if request.boundary == previous {
+                        if let Some(response) = accepted.get(&request.boundary) {
+                            publish_execution(bus, &launch.instance_id, "accepted", response).await?;
+                        } else {
+                            send_runtime_failure(
+                                bus,
+                                launch,
+                                &timeline_id,
+                                request.boundary,
+                                "duplicate invocation has no retained acceptance receipt",
+                            ).await?;
+                        }
+                        continue;
+                    }
+                    let expected = next_due_boundary(previous, R::SPEC.period.as_nanos(), quantum_ns)
+                        .ok_or_else(|| anyhow::anyhow!("controlled invocation boundary overflow"))?;
+                    if request.boundary != expected {
+                        send_runtime_failure(
+                            bus,
+                            launch,
+                            &timeline_id,
+                            request.boundary,
+                            "invocation skipped a required due boundary",
+                        )
+                        .await?;
+                        continue;
+                    }
+                } else if request.boundary != 0 {
+                    send_runtime_failure(
+                        bus,
+                        launch,
+                        &timeline_id,
+                        request.boundary,
+                        "the first controlled invocation must be boundary zero",
+                    )
+                    .await?;
+                    continue;
+                }
+                let now = ExecutionTime::from_nanos(request.logical_time_ns);
+                let outcome = match runner.invoke_controlled(request.boundary, now) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        let detail = format!("controlled invocation failed: {error:#}");
+                        let failure = execution_wire::RuntimeFailure {
+                            execution_id: bus.execution().to_string(),
+                            timeline_id: timeline_id.clone(),
+                            runtime_instance: launch.instance_id.clone(),
+                            boundary: request.boundary,
+                            reason: detail,
+                        };
+                        publish_execution(bus, &launch.instance_id, "failure", &failure).await?;
+                        break Err(error);
+                    }
+                };
+                let response = execution_wire::InvocationAccepted {
+                    execution_id: request.execution_id,
+                    timeline_id: request.timeline_id,
+                    runtime_instance: request.runtime_instance,
+                    boundary: outcome.boundary,
+                    required_products: outcome
+                        .required_products
+                        .into_iter()
+                        .map(|receipt| execution_wire::ProductReceipt {
+                            port: receipt.port,
+                            sequence: receipt.sequence,
+                            items: receipt.items,
+                            bytes: receipt.bytes,
+                        })
+                        .collect(),
+                    required_inputs: outcome
+                        .required_inputs
+                        .into_iter()
+                        .map(|receipt| execution_wire::InputReceipt {
+                            source: receipt.source,
+                            port: receipt.port,
+                            sequence: receipt.sequence,
+                            items: receipt.items,
+                            bytes: receipt.bytes,
+                        })
+                        .collect(),
+                    actuations: outcome
+                        .actuations
+                        .into_iter()
+                        .map(|actuation| execution_wire::Actuation {
+                            port: actuation.port,
+                            payload: actuation.payload,
+                            valid_until_ns: actuation.valid_until_ns,
+                        })
+                        .collect(),
+                };
+                publish_execution(bus, &launch.instance_id, "accepted", &response).await?;
+                last_boundary = Some(request.boundary);
+                accepted.insert(request.boundary, response);
+                while accepted.len() > MAX_RETAINED_CONTROLLED_INVOCATIONS {
+                    let Some(oldest) = accepted.keys().next().copied() else {
+                        break;
+                    };
+                    accepted.remove(&oldest);
+                }
+            }
+        }
+    }
+}
+
+fn next_due_boundary(previous: u64, period_ns: u64, quantum_ns: u64) -> Option<u64> {
+    if period_ns == 0 || quantum_ns == 0 || !period_ns.is_multiple_of(quantum_ns) {
+        return None;
+    }
+    previous.checked_add(period_ns / quantum_ns)
+}
+
+fn decode_execution_sample<M>(sample: &zenoh::sample::Sample) -> crate::Result<M>
+where
+    M: prost::Message + Default,
+{
+    if !execution_protocol::has_encoding(sample) {
+        return Err(anyhow::anyhow!(
+            "private execution message used an unexpected encoding"
+        ));
+    }
+    execution_protocol::decode(sample.payload().to_bytes().as_ref())
+}
+
+async fn send_runtime_failure(
+    bus: &crate::bus::BusHandle,
+    launch: &RuntimeLaunch,
+    timeline_id: &str,
+    boundary: u64,
+    reason: &str,
+) -> crate::Result<()> {
+    let failure = execution_wire::RuntimeFailure {
+        execution_id: bus.execution().to_string(),
+        timeline_id: timeline_id.to_owned(),
+        runtime_instance: launch.instance_id.clone(),
+        boundary,
+        reason: reason.to_owned(),
+    };
+    publish_execution(bus, &launch.instance_id, "failure", &failure).await
+}
+
+fn decode_digest(value: &str) -> Option<Vec<u8>> {
+    if value.len() != 64 || !value.is_ascii() {
+        return None;
+    }
+    let mut digest = Vec::with_capacity(32);
+    let bytes = value.as_bytes();
+    for pair in bytes.chunks_exact(2) {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        digest.push(((high << 4) | low) as u8);
+    }
+    Some(digest)
 }
 
 /// The execution-scoped input side of the runtime process boundary.
@@ -847,6 +1424,7 @@ struct ExecutionInputAdapter<R> {
     operation_completions: Option<OperationQueue>,
     exchange_completions: Option<ExchangeCompletionQueue>,
     stream_terminal: BTreeSet<&'static str>,
+    last_input_receipts: Vec<RuntimeInputReceipt>,
     stopped: bool,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -901,6 +1479,7 @@ impl<R> ExecutionInputAdapter<R> {
             operation_completions: None,
             exchange_completions: None,
             stream_terminal: BTreeSet::new(),
+            last_input_receipts: Vec::new(),
             stopped: false,
             _runtime: PhantomData,
         }
@@ -1314,6 +1893,8 @@ where
             return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
         }
         self.ensure_open()?;
+        self.last_input_receipts.clear();
+        let mut input_receipts = BTreeMap::<(String, String), RuntimeInputReceipt>::new();
         let mut inputs = R::Inputs::empty();
         <R::Inputs as TransportInputSet>::expire_transport_fields_at(
             &mut inputs,
@@ -1378,6 +1959,35 @@ where
                         )));
                     }
                 }
+            }
+            for sample in &samples {
+                if sample.metadata().wire_control()? != transport::WireControl::Data {
+                    continue;
+                }
+                let Some(sequence) = sample.metadata().sequence else {
+                    continue;
+                };
+                let Some(source) = sample
+                    .metadata()
+                    .source
+                    .as_deref()
+                    .filter(|source| !source.is_empty())
+                else {
+                    continue;
+                };
+                let key = (source.to_owned(), subscription.binding.name.clone());
+                let receipt = input_receipts
+                    .entry(key)
+                    .or_insert_with(|| RuntimeInputReceipt {
+                        source: source.to_owned(),
+                        port: subscription.binding.name.clone(),
+                        sequence,
+                        items: 0,
+                        bytes: 0,
+                    });
+                receipt.sequence = sequence;
+                receipt.items = receipt.items.saturating_add(1);
+                receipt.bytes = receipt.bytes.saturating_add(sample.payload().len() as u64);
             }
             let has_retained_commands = subscription.binding.kind
                 == crate::port::PortKind::Commands
@@ -1690,7 +2300,12 @@ where
                 self.future_commands.insert(field, retained);
             }
         }
+        self.last_input_receipts = input_receipts.into_values().collect();
         Ok(inputs)
+    }
+
+    fn take_input_receipts(&mut self) -> Vec<RuntimeInputReceipt> {
+        std::mem::take(&mut self.last_input_receipts)
     }
 
     fn stop(&mut self) -> crate::Result<()> {
@@ -1700,6 +2315,7 @@ where
         self.external_ingress_high_watermarks.clear();
         self.future_commands.clear();
         self.stream_terminal.clear();
+        self.last_input_receipts.clear();
         self.command_ranks.clear();
         self.bus = None;
         Ok(())
@@ -1711,6 +2327,7 @@ where
         self.external_ingress_high_watermarks.clear();
         self.future_commands.clear();
         self.stream_terminal.clear();
+        self.last_input_receipts.clear();
         if self.bus.is_none() || self.subscriptions.is_empty() {
             return Err(anyhow::anyhow!(TransportError::Transport(
                 "Runtime input subscriptions are not bound after reset".to_owned(),
@@ -1762,6 +2379,8 @@ struct ExecutionOutputAdapter<R> {
     last_state_values: BTreeMap<&'static str, ChangeToken>,
     external_read_high_watermarks: BTreeMap<&'static str, u64>,
     next_command_id: u64,
+    last_product_receipts: Vec<RuntimeProductReceipt>,
+    last_actuations: Vec<RuntimeActuation>,
     stopped: bool,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -1786,6 +2405,8 @@ impl<R> ExecutionOutputAdapter<R> {
             last_state_values: BTreeMap::new(),
             external_read_high_watermarks: BTreeMap::new(),
             next_command_id: 1,
+            last_product_receipts: Vec::new(),
+            last_actuations: Vec::new(),
             stopped: false,
             _runtime: PhantomData,
         }
@@ -2787,7 +3408,43 @@ where
             self.instance.as_deref().unwrap_or_default(),
             &reservation.records,
         )?;
+        let mut receipts = BTreeMap::<String, RuntimeProductReceipt>::new();
+        for record in &reservation.records {
+            let Some((port, sequence, bytes)) = record.product_receipt() else {
+                continue;
+            };
+            let entry = receipts
+                .entry(port.clone())
+                .or_insert(RuntimeProductReceipt {
+                    port,
+                    sequence,
+                    items: 0,
+                    bytes: 0,
+                });
+            entry.sequence = sequence;
+            entry.items = entry.items.saturating_add(1);
+            entry.bytes = entry.bytes.saturating_add(bytes);
+        }
+        self.last_product_receipts = receipts.into_values().collect();
+        self.last_actuations = reservation
+            .records
+            .iter()
+            .filter_map(PreparedOutput::actuation)
+            .map(|(port, payload, valid_until_ns)| RuntimeActuation {
+                port,
+                payload,
+                valid_until_ns,
+            })
+            .collect();
         self.dispatch_activations(reservation.activations)
+    }
+
+    fn take_product_receipts(&mut self) -> Vec<RuntimeProductReceipt> {
+        std::mem::take(&mut self.last_product_receipts)
+    }
+
+    fn take_actuations(&mut self) -> Vec<RuntimeActuation> {
+        std::mem::take(&mut self.last_actuations)
     }
 
     fn stop(&mut self) -> crate::Result<()> {
@@ -2798,6 +3455,8 @@ where
         self.staged.clear();
         self.next_refresh_steps.clear();
         self.last_state_values.clear();
+        self.last_product_receipts.clear();
+        self.last_actuations.clear();
         self.external_read_high_watermarks.clear();
         self.read_subscriptions.clear();
         let mut first_error = None;
@@ -2848,6 +3507,8 @@ where
         self.last_state_values.clear();
         self.external_read_high_watermarks.clear();
         self.next_command_id = 1;
+        self.last_product_receipts.clear();
+        self.last_actuations.clear();
         for operation in self.operations.values_mut() {
             operation
                 .operation
@@ -2900,6 +3561,21 @@ pub enum PollOutcome {
     Stopped,
 }
 
+/// Result of one supervisor-controlled invocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ControlledInvocationOutcome {
+    /// Boundary selected by the supervisor.
+    pub(crate) boundary: u64,
+    /// Zero-based invocation index owned by this runtime.
+    pub(crate) invocation_index: u64,
+    /// Products published after complete local acceptance.
+    pub(crate) required_products: Vec<RuntimeProductReceipt>,
+    /// Input records frozen before this invocation was accepted.
+    pub(crate) required_inputs: Vec<RuntimeInputReceipt>,
+    /// Typed actuator-facing setpoints published by this invocation.
+    pub(crate) actuations: Vec<RuntimeActuation>,
+}
+
 /// A complete hardware runtime owner and its transport adapters.
 pub struct RuntimeRunner<R, Inputs, Outputs>
 where
@@ -2912,6 +3588,7 @@ where
     inputs: Inputs,
     outputs: Outputs,
     stopped: bool,
+    controlled_previous: Option<ExecutionTime>,
 }
 
 impl<R, Inputs, Outputs> RuntimeRunner<R, Inputs, Outputs>
@@ -2946,6 +3623,7 @@ where
             inputs,
             outputs,
             stopped: false,
+            controlled_previous: None,
         })
     }
 
@@ -3002,6 +3680,78 @@ where
             return self.fail(anyhow::anyhow!(RunnerError::Schedule(error)));
         }
         Ok(PollOutcome::Accepted { invocation_index })
+    }
+
+    /// Execute one supervisor-controlled boundary.
+    ///
+    /// This path deliberately does not consult or advance [`HardwareSchedule`].
+    /// A simulation supervisor owns the boundary sequence, while this runner
+    /// retains the same single-freeze, single-invocation, reserve, and publish
+    /// ordering as hardware execution.
+    pub(crate) fn invoke_controlled(
+        &mut self,
+        boundary: u64,
+        now: ExecutionTime,
+    ) -> crate::Result<ControlledInvocationOutcome> {
+        if self.stopped {
+            return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
+        }
+        let context = StepContext::from_previous(
+            now,
+            R::SPEC.period,
+            self.controlled_previous,
+            0,
+            self.owner.next_invocation().index(),
+        );
+        let candidate = HardwareInvocation::controlled(context);
+        let started = Instant::now();
+        if let Err(error) = catch_adapter(|| self.outputs.poll()) {
+            return self.fail_controlled(error);
+        }
+        let inputs = match catch_adapter(|| self.inputs.freeze(&candidate)) {
+            Ok(inputs) => inputs,
+            Err(error) => return self.fail_controlled(error),
+        };
+        if started.elapsed() > R::SPEC.timeout.as_duration() {
+            return self.fail_controlled(anyhow::anyhow!(super::InvocationError::DeadlineExceeded));
+        }
+        if let Err(error) = catch_adapter(|| self.outputs.prepare(&candidate.context())) {
+            return self.fail_controlled(error);
+        }
+        let accepted = {
+            let owner = &mut self.owner;
+            let outputs = &mut self.outputs;
+            match owner.accept_with_hook(
+                &candidate.context(),
+                &inputs,
+                outputs,
+                |service, state, context, outputs| outputs.prepare_state(service, state, context),
+            ) {
+                Ok(accepted) => accepted,
+                Err(error) => return self.fail_controlled(error),
+            }
+        };
+        if started.elapsed() > R::SPEC.timeout.as_duration() {
+            return self.fail_controlled(anyhow::anyhow!(super::InvocationError::DeadlineExceeded));
+        }
+        let invocation_index = accepted.invocation().index();
+        if let Err(error) = catch_adapter(|| self.outputs.publish(accepted)) {
+            return self.fail_controlled(error);
+        }
+        if started.elapsed() > R::SPEC.timeout.as_duration() {
+            return self.fail_controlled(anyhow::anyhow!(super::InvocationError::DeadlineExceeded));
+        }
+        let required_products = self.outputs.take_product_receipts();
+        let required_inputs = self.inputs.take_input_receipts();
+        let actuations = self.outputs.take_actuations();
+        self.controlled_previous = Some(now);
+        Ok(ControlledInvocationOutcome {
+            boundary,
+            invocation_index,
+            required_products,
+            required_inputs,
+            actuations,
+        })
     }
 
     /// Drive the process until a host stop or a terminal lifecycle error.
@@ -3061,6 +3811,7 @@ where
                 self.stopped = true;
                 self.cleanup_after_failure();
             })?;
+        self.controlled_previous = None;
         self.stopped = false;
         Ok(())
     }
@@ -3078,6 +3829,16 @@ where
     }
 
     fn fail(&mut self, error: anyhow::Error) -> crate::Result<PollOutcome> {
+        self.owner.fail();
+        self.stopped = true;
+        self.cleanup_after_failure();
+        Err(error)
+    }
+
+    fn fail_controlled(
+        &mut self,
+        error: anyhow::Error,
+    ) -> crate::Result<ControlledInvocationOutcome> {
         self.owner.fail();
         self.stopped = true;
         self.cleanup_after_failure();
@@ -3261,6 +4022,12 @@ struct SourceArtifact {
 
 #[derive(Clone, Debug, Deserialize, Default, Eq, PartialEq)]
 struct SourceRuntimeRecord {
+    #[serde(default)]
+    period_ms: Option<u64>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    init_timeout_ms: Option<u64>,
     #[serde(default)]
     inputs: Vec<SourceInputRecord>,
     #[serde(default)]
@@ -4949,6 +5716,9 @@ mod tests {
         artifacts.insert(
             "reader".to_owned(),
             SourceRuntimeRecord {
+                period_ms: Some(1),
+                timeout_ms: Some(100),
+                init_timeout_ms: Some(100),
                 inputs: Vec::new(),
                 transient_outputs: Vec::new(),
                 service_outputs: vec![SourceOutputRecord {
@@ -4968,6 +5738,7 @@ mod tests {
             robot_id: "typed-read-test".to_owned(),
             instance_id: "read-client".to_owned(),
             executable: PathBuf::from("typed-read-test"),
+            executable_sha256: "00".repeat(32),
             config: Value::Object(serde_json::Map::new()),
             connections,
             artifacts,
@@ -5089,6 +5860,7 @@ mod tests {
             robot_id: "public-read-test".to_owned(),
             instance_id: "public-reader".to_owned(),
             executable: PathBuf::from("public-read-test"),
+            executable_sha256: "00".repeat(32),
             config: Value::Object(serde_json::Map::new()),
             connections: BTreeMap::new(),
             artifacts: BTreeMap::new(),
@@ -5295,6 +6067,9 @@ mod tests {
         artifacts.insert(
             "producer".to_owned(),
             SourceRuntimeRecord {
+                period_ms: Some(10),
+                timeout_ms: Some(100),
+                init_timeout_ms: Some(100),
                 inputs: Vec::new(),
                 transient_outputs: Vec::new(),
                 service_outputs: vec![SourceOutputRecord {
@@ -5314,6 +6089,7 @@ mod tests {
             robot_id: "typed-test".to_owned(),
             instance_id: "consumer".to_owned(),
             executable: PathBuf::from("typed-test"),
+            executable_sha256: "00".repeat(32),
             config: Value::Object(serde_json::Map::new()),
             connections,
             artifacts,

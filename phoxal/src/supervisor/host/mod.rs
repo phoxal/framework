@@ -30,6 +30,7 @@
 //! build against.
 
 pub(crate) mod bundle;
+pub(crate) mod execution;
 pub(crate) mod lock;
 pub(crate) mod presence;
 pub(crate) mod process;
@@ -60,6 +61,7 @@ use presence::Presence;
 use state::ExecutionState;
 use bundle::Bundle;
 use process::ProcessSupervisor;
+use execution::{RuntimeExecutionMode, RuntimeExecutionProtocol};
 use public_backend::{
     RuntimeExecutionCoordinator, RuntimePublicBackend, RuntimePublicSurface,
 };
@@ -160,7 +162,36 @@ async fn execute(
     };
     tracing::info!(%execution, endpoint = %endpoint, "supervisor control plane is up");
 
-    let public = match start_public_session(&bus, &target, &runtime, state, execution).await {
+    let surface = match RuntimePublicSurface::from_bundle(&runtime) {
+        Ok(surface) => surface,
+        Err(error) => return Err(abort_router_startup(router, Some(owner), error).await),
+    };
+    if surface.simulation.is_some()
+        && state.time_domain().mode
+            != crate::supervisor::api::time_domain::TimeMode::Simulated
+    {
+        if let Err(error) = state.replace_time_domain(
+            crate::supervisor::api::time_domain::TimeMode::Simulated,
+        ) {
+            return Err(abort_router_startup(router, Some(owner), error.into()).await);
+        }
+    }
+    let protocol = match runtime.source() {
+        Some(source) => match RuntimeExecutionProtocol::open(bus.clone(), source, state.clone()).await {
+            Ok(protocol) => Some(Arc::new(protocol)),
+            Err(error) => return Err(abort_router_startup(router, Some(owner), error).await),
+        },
+        None => None,
+    };
+    let public = match start_public_session(
+        &bus,
+        &target,
+        &surface,
+        state,
+        execution,
+        protocol.clone(),
+    )
+    .await {
         Ok(public) => public,
         Err(error) => return Err(abort_router_startup(router, Some(owner), error).await),
     };
@@ -220,6 +251,40 @@ async fn execute(
         },
         None => None,
     };
+    if let Some(protocol) = protocol.as_ref() {
+        let (mode, quantum_ns) = match surface.simulation.as_ref() {
+            Some(definition) => (RuntimeExecutionMode::Controlled, definition.quantum_ns()),
+            None => (RuntimeExecutionMode::Hardware, 0),
+        };
+        if let Err(error) = protocol
+            .admit_all(mode, quantum_ns, &state.time_domain().timeline.to_string())
+            .await
+        {
+            let error = anyhow::anyhow!("runtime execution admission failed: {error:#}");
+            if let Some(processes) = processes.as_mut() {
+                let _ = processes.stop().await;
+            }
+            mark_execution_failed(&public, execution, &error).await;
+            let serve_result = serve_until_stop(
+                &bus,
+                state,
+                runtime.root(),
+                runtime.legacy_manifest(),
+                shutdown.clone(),
+            )
+            .await;
+            return finish_failed_execution(
+                error,
+                serve_result,
+                public,
+                owner,
+                router,
+                watchdog,
+                shutdown.clone(),
+            )
+            .await;
+        }
+    }
     let process_readiness = if let Some(processes) = processes.as_mut() {
         processes.wait_ready(state, &shutdown).await
     } else {
@@ -276,6 +341,35 @@ async fn execute(
     let serve_manifest = runtime.legacy_manifest();
     let mut process_monitor = processes;
     let outcome = tokio::select! {
+        failure = async {
+            match protocol.as_ref() {
+                Some(protocol) => {
+                    protocol.wait_failed().await;
+                    protocol.failure_reason().await
+                }
+                None => std::future::pending().await,
+            }
+        }, if protocol.is_some() => {
+            let error = anyhow::anyhow!(
+                "controlled runtime boundary failed: {}",
+                failure.unwrap_or_else(|| "unspecified boundary failure".to_owned())
+            );
+            if let Some(processes) = process_monitor.as_mut()
+                && let Err(stop_error) = processes.stop().await
+            {
+                tracing::warn!(error = %stop_error, "failed to stop all runtime processes after boundary failure");
+            }
+            mark_execution_failed(&public, execution, &error).await;
+            let _ = serve_until_stop(
+                &bus,
+                state,
+                &serve_bundle_root,
+                serve_manifest.clone(),
+                shutdown.clone(),
+            )
+            .await;
+            Err(error)
+        },
         result = serve::serve(
             bus.clone(),
             state.clone(),
@@ -384,11 +478,11 @@ fn finish_after_transport_close(
 async fn start_public_session(
     bus: &BusHandle,
     target: &DeploymentTarget,
-    runtime: &Bundle,
+    surface: &RuntimePublicSurface,
     state: &ExecutionState,
     execution: ExecutionId,
+    protocol: Option<Arc<RuntimeExecutionProtocol>>,
 ) -> Result<PublicSessionServer> {
-    let surface = RuntimePublicSurface::from_bundle(runtime)?;
     let coordinator = Arc::new(RuntimeExecutionCoordinator::new(state.clone()));
     let mut adapter = SupervisorAdapter::with_defaults(
         target.clone(),
@@ -408,22 +502,33 @@ async fn start_public_session(
     let session = bus.session()?.clone();
     let backend = Arc::new(RuntimePublicBackend::new(
         bus.clone(),
-        &surface,
+        surface,
         coordinator.clone(),
     ));
-    // Controlled simulation remains refused until the runtime execution
-    // coordinator can dispatch and observe a complete robot boundary. The
-    // public data backend is real and independently available for hardware
-    // executions; the session server's explicit unavailable simulation
-    // backend prevents a local counter from masquerading as progress.
-    Ok(PublicSessionServer::start_with_backend(
-        session,
-        adapter,
-        backend,
-        PrincipalPolicy::Any,
-        PublicTransportLimits::default(),
-    )
-    .await?)
+    match (surface.simulation.clone(), protocol) {
+        (Some(definition), Some(protocol)) => Ok(PublicSessionServer::start_with_backends(
+            session,
+            adapter,
+            backend,
+            Arc::new(public_backend::RuntimeSimulationBridge::new(
+                bus.clone(),
+                surface,
+                Some(definition),
+                protocol,
+            )),
+            PrincipalPolicy::Any,
+            PublicTransportLimits::default(),
+        )
+        .await?),
+        _ => Ok(PublicSessionServer::start_with_backend(
+            session,
+            adapter,
+            backend,
+            PrincipalPolicy::Any,
+            PublicTransportLimits::default(),
+        )
+        .await?),
+    }
 }
 
 async fn serve_until_stop(

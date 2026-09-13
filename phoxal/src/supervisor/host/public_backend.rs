@@ -1013,6 +1013,7 @@ pub(crate) trait RuntimeBoundaryHook: Send + Sync {
         &self,
         context: PublicSimulationContext,
         request: AdvanceRequest,
+        published_observations: Vec<crate::communication::simulation::ProductReceipt>,
     ) -> BoundaryFuture<AdvanceResponse>;
     fn reset(
         &self,
@@ -1169,11 +1170,15 @@ impl RuntimeSimulationBridge {
         Ok(())
     }
 
-    async fn publish_observations(&self, request: &AdvanceRequest) -> Result<(), PublicBackendError> {
+    async fn publish_observations(
+        &self,
+        request: &AdvanceRequest,
+    ) -> Result<Vec<crate::communication::simulation::ProductReceipt>, PublicBackendError> {
         let session = self
             .bus
             .session()
             .map_err(|error| PublicBackendError::Transport(error.to_string()))?;
+        let mut receipts = Vec::with_capacity(request.observations.len());
         for observation in &request.observations {
             let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
             if sequence == 0 {
@@ -1182,7 +1187,7 @@ impl RuntimeSimulationBridge {
                 ));
             }
             let stamp = ObservationStamp::new(
-                "simulation",
+                observation.service_instance.clone(),
                 ExecutionTime::from_nanos(observation.capture_time_ns),
                 None,
             );
@@ -1199,8 +1204,15 @@ impl RuntimeSimulationBridge {
                 .attachment(attachment)
                 .await
                 .map_err(|error| PublicBackendError::Transport(error.to_string()))?;
+            receipts.push(crate::communication::simulation::ProductReceipt {
+                service_instance: observation.service_instance.clone(),
+                port: observation.port.clone(),
+                sequence,
+                boundary: request.boundary,
+                correlation_id: request.correlation_id.clone(),
+            });
         }
-        Ok(())
+        Ok(receipts)
     }
 
     async fn advance_inner(
@@ -1258,10 +1270,10 @@ impl RuntimeSimulationBridge {
             let bridge = Arc::clone(&self);
             tokio::spawn(async move {
                 let operation = async {
-                    bridge.publish_observations(&request).await?;
+                    let published_observations = bridge.publish_observations(&request).await?;
                     bridge
                         .boundary
-                        .advance(context, request)
+                        .advance(context, request, published_observations)
                         .await
                         .map_err(PublicBackendError::Transport)
                 }
@@ -1927,6 +1939,7 @@ mod tests {
             &self,
             context: PublicSimulationContext,
             request: AdvanceRequest,
+            _published_observations: Vec<crate::communication::simulation::ProductReceipt>,
         ) -> BoundaryFuture<AdvanceResponse> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let release = Arc::clone(&self.release);

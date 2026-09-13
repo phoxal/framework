@@ -7,11 +7,21 @@ message ContractRequirement {
   repeated string capabilities = 2;
 }
 
+// The supervisor selects one scheduling owner for the complete execution.
+// Hardware runtimes retain their host-monotonic cadence; controlled runtimes
+// wait for an explicit Invocation at each due boundary.
+enum ExecutionMode {
+  HARDWARE = 0;
+  CONTROLLED = 1;
+}
+
 message AdmitExecutionRequest {
   string execution_id = 1;
   string timeline_id = 2;
   bytes artifact_digest = 3;
   repeated ContractRequirement required_contracts = 4;
+  ExecutionMode mode = 5;
+  uint64 quantum_ns = 6;
 }
 
 message AdmitExecutionResponse {
@@ -40,6 +50,8 @@ message InvocationAccepted {
   string runtime_instance = 3;
   uint64 boundary = 4;
   repeated ProductReceipt required_products = 5;
+  repeated InputReceipt required_inputs = 6;
+  repeated Actuation actuations = 7;
 }
 
 message ProductReceipt {
@@ -47,6 +59,20 @@ message ProductReceipt {
   uint64 sequence = 2;
   uint32 items = 3;
   uint64 bytes = 4;
+}
+
+message InputReceipt {
+  string source = 1;
+  string port = 2;
+  uint64 sequence = 3;
+  uint32 items = 4;
+  uint64 bytes = 5;
+}
+
+message Actuation {
+  string port = 1;
+  bytes payload = 2;
+  uint64 valid_until_ns = 3;
 }
 
 message ResetExecutionRequest {
