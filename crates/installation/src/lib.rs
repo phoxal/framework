@@ -27,7 +27,13 @@ use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use tar::{Archive, Builder, EntryType, Header};
 
+mod operations;
 mod service;
+pub use operations::{
+    DEFAULT_LOG_LINES, DEFAULT_MAX_LOG_BYTES, DeploymentOperations, DeploymentStatus, LogQuery,
+    OperationsError, ProcessState, ServiceControl, ServiceControlError, ServiceLogs, ServiceStatus,
+    SystemdService,
+};
 pub use service::{
     DeploymentIdentity, IdentityUpdate, SERVICE_UNIT_FILE, ServiceConfigError,
     configure_systemd_service, read_systemd_identity, render_systemd_service,
@@ -230,6 +236,13 @@ impl Installation {
         Ok(Self { root, limits })
     }
 
+    /// Installation root containing immutable releases, the active link, and
+    /// generated host service configuration.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Verify and install an archive under its digest without activating it.
     ///
     /// Identical repeated installation is idempotent.
@@ -322,6 +335,26 @@ impl Installation {
     /// Returns the same failures as [`Self::activate`].
     pub fn rollback(&self, id: &ReleaseId) -> Result<Activation, InstallationError> {
         self.activate(id)
+    }
+
+    /// Remove the active selection after a failed first activation.
+    ///
+    /// This only removes the selector symlink and never deletes an immutable
+    /// release.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed active-target or filesystem error.
+    pub fn deactivate(&self) -> Result<Option<ReleaseId>, InstallationError> {
+        let active = self.root.join(ACTIVE_LINK);
+        let previous = self.active_id()?;
+        if previous.is_some() {
+            fs::remove_file(&active).map_err(|source| InstallationError::Deactivate {
+                path: active,
+                source,
+            })?;
+        }
+        Ok(previous)
     }
 
     /// Resolve the currently active immutable release identity.
@@ -963,6 +996,13 @@ pub enum InstallationError {
     Activate {
         path: PathBuf,
         target: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    /// The active release selector could not be removed.
+    #[error("failed to deactivate active release link {}: {source}", path.display())]
+    Deactivate {
+        path: PathBuf,
         #[source]
         source: io::Error,
     },
