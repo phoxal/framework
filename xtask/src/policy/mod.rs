@@ -82,18 +82,22 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
 /// published registry graph.
 ///
 /// The contract fixtures include one library-plus-binary owner fixture and two
-/// binary-only consumers. They all need an explicit exclusion so adding a
-/// fixture cannot accidentally make it an official artifact or a release
-/// candidate.
-pub(crate) const INTERNAL_CRATE_DIRS: [&str; 3] = [
+/// binary-only consumers. The hardware driver fixture is also a library-plus-
+/// binary package so its acceptance implementation cannot accidentally become
+/// an official artifact or a release candidate.
+pub(crate) const INTERNAL_CRATE_DIRS: [&str; 4] = [
     "crates/contract-owner-fixture",
     "crates/contract-consumer-fixture",
     "crates/port-consumer-fixture",
+    "crates/hardware-driver-fixture",
 ];
 
 /// The subset of [`INTERNAL_CRATE_DIRS`] that carries a library target and is
 /// therefore checked by the library-directory completeness rule.
-pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 1] = ["crates/contract-owner-fixture"];
+pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] = [
+    "crates/contract-owner-fixture",
+    "crates/hardware-driver-fixture",
+];
 
 /// The package a library crate directory must hold, or `None` for a directory
 /// that names no library crate location.

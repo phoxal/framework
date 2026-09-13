@@ -2491,6 +2491,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-hardware-driver-fixture"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-build",
+ "phoxal-port",
+ "prost",
+ "serde",
+]
+
+[[package]]
 name = "phoxal-installation"
 version = "0.1.0"
 dependencies = [

@@ -260,21 +260,33 @@ impl RuntimeLaunchManifest {
 
         let config = if instance_id == "brain" {
             Value::Object(serde_json::Map::new())
-        } else {
-            manifest
-                .document
-                .services
-                .get(instance_id)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(RunnerError::BundleInvalid {
-                        message: format!(
-                            "executable `{instance_id}` has no matching services entry"
-                        ),
-                    })
-                })?
+        } else if let Some(service) = manifest.document.services.get(instance_id) {
+            service
                 .config
                 .clone()
                 .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+        } else if let Some(component) = manifest.document.robot.components.get(instance_id) {
+            let driver = component
+                .driver
+                .as_ref()
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "executable `{instance_id}` has no configured component driver binding"
+                        ),
+                    })
+                })?;
+            driver
+                .get("config")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+        } else {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "executable `{instance_id}` has no matching service or component driver entry"
+                ),
+            }));
         };
         if config.is_null() {
             return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
@@ -4750,9 +4762,23 @@ struct SourceBundleManifest {
 #[derive(Debug, Deserialize, Default)]
 struct SourceDocument {
     #[serde(default)]
+    robot: SourceRobot,
+    #[serde(default)]
     services: BTreeMap<String, SourceService>,
     #[serde(default)]
     connections: BTreeMap<String, SourceConnectionSources>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SourceRobot {
+    #[serde(default)]
+    components: BTreeMap<String, SourceComponent>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SourceComponent {
+    #[serde(default)]
+    driver: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -5159,7 +5185,7 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use prost::Message;
 
@@ -5389,6 +5415,60 @@ mod tests {
             self.stopped = true;
             Ok(())
         }
+    }
+
+    #[test]
+    fn launch_manifest_reads_component_driver_configuration() {
+        let temporary = std::env::temp_dir().join(format!(
+            "phoxal-driver-manifest-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temporary).expect("temporary driver bundle");
+        let executable = temporary.join("bin/sensor");
+        std::fs::create_dir_all(executable.parent().expect("driver parent")).expect("bin");
+        let bytes = b"driver-fixture";
+        std::fs::write(&executable, bytes).expect("driver executable");
+        let manifest = serde_json::json!({
+            "schema": "phoxal/bundle/v0",
+            "robot_id": "driver-fixture",
+            "document": {
+                "robot": {
+                    "id": "driver-fixture",
+                    "components": {
+                        "sensor": {
+                            "component": "hardware-driver-fixture",
+                            "mount_site": "sensor_mount",
+                            "driver": {"config": {"value": 42}}
+                        }
+                    }
+                },
+                "services": {},
+                "connections": {}
+            },
+            "executables": [{
+                "instance": "sensor",
+                "path": "bin/sensor",
+                "bytes": bytes.len(),
+                "sha256": format!("{:x}", Sha256::digest(bytes))
+            }]
+        });
+        std::fs::write(
+            temporary.join("manifest.json"),
+            serde_json::to_vec(&manifest).expect("manifest serializes"),
+        )
+        .expect("manifest writes");
+
+        let launch = RuntimeLaunchManifest::open(&temporary, "sensor")
+            .expect("component driver bundle opens");
+        let config: TestConfig = launch
+            .decode_config::<TestRuntime>()
+            .expect("component driver config decodes");
+        assert_eq!(config.value, 42);
+        std::fs::remove_dir_all(temporary).expect("temporary driver bundle removes");
     }
 
     #[test]

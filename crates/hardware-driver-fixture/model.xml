@@ -1,0 +1,11 @@
+<mujoco model="phoxal-hardware-driver-fixture">
+  <worldbody>
+    <body name="mount">
+      <joint name="fixture_joint" type="hinge" />
+      <geom name="fixture_link" type="box" size="0.02 0.02 0.02" />
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="fixture_motor" joint="fixture_joint" />
+  </actuator>
+</mujoco>

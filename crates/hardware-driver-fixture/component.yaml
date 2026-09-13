@@ -1,0 +1,19 @@
+schema: phoxal/component/v0
+model:
+  file: model.xml
+  root_body: mount
+capabilities:
+  observation:
+    kind: encoder
+    publish_rate_hz: 50.0
+    target:
+      kind: joint
+      id: fixture_joint
+  actuator:
+    kind: motor
+    command: velocity
+    max_velocity_radps: 10.0
+    target:
+      kind: actuator
+      id: fixture_motor
+    joint: fixture_joint

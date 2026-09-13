@@ -1,0 +1,40 @@
+[package]
+name = "phoxal-hardware-driver-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Production-shaped Runtime fixture for hardware driver acceptance."
+include = [
+    "build.rs",
+    "src/**",
+    "proto/**",
+    "Cargo.toml",
+    "component.yaml",
+    "model.xml",
+]
+
+[package.metadata.phoxal]
+kind = "component"
+
+[lib]
+name = "phoxal_hardware_driver_fixture"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phoxal-hardware-driver-fixture"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["runtime"] }
+phoxal-port = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+
+[build-dependencies]
+phoxal-build = { workspace = true }
+
+[lints]
+workspace = true

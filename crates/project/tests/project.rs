@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::Command;
 
 use phoxal_project::{
@@ -41,6 +41,26 @@ fn copy_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
         copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
     }
     Ok(())
+}
+
+fn relative_path(from: &Path, to: &Path) -> std::path::PathBuf {
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = std::path::PathBuf::new();
+    for component in &from[common..] {
+        if matches!(component, Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &to[common..] {
+        relative.push(component.as_os_str());
+    }
+    relative
 }
 
 fn project_fixture() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
@@ -985,6 +1005,105 @@ connections: {}
     let output = fixture.path().join("target/phoxal/fixture-robot/driver");
     let bundle = prepared.build_bundle(&options, &output)?;
     assert!(bundle.executable("sensor").is_file());
+    Ok(())
+}
+
+#[test]
+fn missing_configured_component_driver_is_rejected_before_startup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    write(
+        &fixture.path().join("robot.yaml"),
+        r#"schema: phoxal/robot/v0
+robot:
+  id: fixture-robot
+  components:
+    sensor:
+      component: passive-sensor
+      mount_site: sensor_mount
+      driver:
+        dependency: missing-driver
+        binary: missing-driver
+        config: {}
+brain: {}
+services:
+  counter:
+    implementation: counter-service
+connections: {}
+"#,
+    )?;
+    let project = Project::discover(fixture.path())?;
+    let manifest = fixture.path().join("Cargo.toml");
+    let before_manifest = fs::read(&manifest)?;
+    let error = project
+        .prepare(&CargoOptions::default())
+        .expect_err("a configured driver must resolve from the component owner");
+    assert!(matches!(
+        error,
+        Error::Source(SourceError::DependencyNotDeclared {
+            role,
+            instance,
+            key,
+        }) if role == phoxal_project::TargetRole::Driver
+            && instance == "sensor"
+            && key == "missing-driver"
+    ));
+    assert_eq!(fs::read(&manifest)?, before_manifest);
+    assert!(
+        !fixture.path().join("Cargo.lock").exists(),
+        "failed driver selection must not publish a lockfile"
+    );
+    Ok(())
+}
+
+#[test]
+fn selected_hardware_fixture_driver_is_resolved_without_simulation_assets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let driver_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../hardware-driver-fixture")
+        .canonicalize()?;
+    let driver_path = relative_path(&fixture.path().canonicalize()?, &driver_path);
+    let root_manifest = fixture.path().join("Cargo.toml");
+    let root_source = fs::read_to_string(&root_manifest)?.replace(
+        "[dependencies]\n",
+        &format!(
+            "[dependencies]\nhardware-driver-fixture = {{ package = \"phoxal-hardware-driver-fixture\", path = \"{}\" }}\n",
+            driver_path.display()
+        ),
+    );
+    write(&root_manifest, &root_source)?;
+    write(
+        &fixture.path().join("robot.yaml"),
+        r#"schema: phoxal/robot/v0
+robot:
+  id: fixture-robot
+  components:
+    sensor:
+      component: hardware-driver-fixture
+      mount_site: fixture_joint
+      driver:
+        binary: phoxal-hardware-driver-fixture
+        config:
+          device_id: fixture-0
+brain: {}
+services: {}
+connections: {}
+"#,
+    )?;
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let prepared = project.prepare(&options)?;
+    let driver = prepared.sources().components["sensor"]
+        .driver
+        .as_ref()
+        .expect("selected component driver");
+    assert_eq!(driver.package, "phoxal-hardware-driver-fixture");
+    assert_eq!(driver.binary.target, "phoxal-hardware-driver-fixture");
+    assert!(prepared.document().robot.model.is_none());
     Ok(())
 }
 
