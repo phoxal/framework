@@ -1,0 +1,12 @@
+[package]
+name = "example-bench-imu"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "A driver-free accelerometer component for the maintained MuJoCo authoring fixture."
+autolib = false
+autobins = false
+
+[package.metadata.phoxal]
+kind = "component"

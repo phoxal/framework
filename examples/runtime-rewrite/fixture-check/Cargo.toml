@@ -1,0 +1,13 @@
+[package]
+name = "example-mujoco-fixture-check"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "Authoring-shape checks for the maintained MuJoCo fixture."
+
+[dependencies]
+phoxal-project = { path = "../../../crates/project", version = "0.1.0" }
+
+[lints]
+workspace = true

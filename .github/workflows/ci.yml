@@ -55,6 +55,40 @@ jobs:
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
     secrets: inherit
 
+  examples:
+    name: maintained examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Test the example workspace
+        run: cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --workspace --all-targets
+
+      - name: Check the current-runtime example robots with cargo-phoxal
+        shell: bash
+        run: |
+          set -euo pipefail
+          for robot in \
+            examples/runtime-rewrite/robots/robot-alpha \
+            examples/runtime-rewrite/robots/robot-beta; do
+            (
+              cd "$robot"
+              cargo run --manifest-path ../../../../tools/cargo-phoxal/Cargo.toml -- check --locked
+            )
+          done
+
+      - name: Check the MuJoCo authoring fixture shape
+        run: cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --package example-mujoco-fixture-check
+
+      - name: Validate the local passive component
+        run: >-
+          cargo run --manifest-path tools/cargo-phoxal/Cargo.toml --
+          publish component example-passive-caster
+          --path examples/runtime-rewrite/components/passive-caster
+          --dry-run
+
   # MuJoCo is an explicit native boundary owned by the independent simulator.
   # Keep it out of the ordinary workspace job, which must remain usable for
   # hardware-only and generic runtime consumers without a native installation.

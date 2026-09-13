@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+
+[workspace.lints.rust]
+unused = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[package]
+name = "example-workspace-robot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "A robot package inside the maintained example workspace."
+
+[dependencies]
+bench_imu = { package = "example-bench-imu", path = "../../components/bench-imu" }
+bench_motor = { package = "example-bench-motor", path = "../../components/bench-motor" }
+counter = { package = "example-counter-service", path = "../../services/counter" }
+counter-contract = { package = "example-counter-contract", path = "../../contracts/counter" }
+phoxal = { path = "../../../../phoxal", version = "=0.68.0", default-features = false, features = ["runtime"] }
+phoxal-supervisor = { path = "../../../../supervisor", version = "=0.68.0" }
+
+[lints]
+workspace = true

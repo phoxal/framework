@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = [
+    "contracts/counter",
+    "fixture-check",
+    "services/counter",
+    "robots/robot-alpha",
+    "robots/robot-beta",
+]
+
+[workspace.lints.rust]
+unused = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"

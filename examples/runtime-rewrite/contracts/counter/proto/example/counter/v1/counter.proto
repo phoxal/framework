@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package example.counter.v1;
+
+import "google/protobuf/empty.proto";
+import "phoxal/port.proto";
+
+message CounterState {
+  uint64 value = 1;
+}
+
+service Counter {
+  rpc State(google.protobuf.Empty) returns (stream CounterState) {
+    option (phoxal.port.kind) = STATE;
+  }
+}

@@ -1,0 +1,26 @@
+[package]
+name = "example-counter-service"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "A small service-owned Runtime example."
+
+[package.metadata.phoxal]
+kind = "service"
+
+[lib]
+name = "example_counter_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "example-counter-service"
+path = "src/main.rs"
+
+[dependencies]
+counter-contract = { package = "example-counter-contract", path = "../../contracts/counter" }
+phoxal = { path = "../../../../phoxal", version = "=0.68.0", default-features = false, features = ["runtime"] }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[lints]
+workspace = true

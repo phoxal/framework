@@ -21,6 +21,10 @@ This repository and its source are the authority for current framework implement
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
 
+## Maintained examples
+
+The complete Runtime rewrite examples and fresh-machine setup recipe are in [examples/runtime-rewrite](examples/runtime-rewrite/README.md).
+
 ## Releases
 
 Every published library, contract, executable, and simulator package owns an
