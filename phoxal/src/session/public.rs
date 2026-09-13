@@ -250,13 +250,11 @@ impl Connection {
         let target = DeploymentTarget::new(&self.inner.scope, supervisor_id.as_ref())
             .map_err(PublicTransportError::Bootstrap)?;
         let connection = self.inner.transport.open(target.clone()).await?;
-        let info = connection.info().clone();
         let session_id = connection.session_id().to_vec();
         let supervisor = Arc::new(SupervisorInner {
             transport: self.inner.transport.clone(),
             target,
             session: Mutex::new(Some(connection)),
-            info,
             session_id: Mutex::new(session_id),
             generation: AtomicU64::new(1),
             correlation: AtomicU64::new(1),
@@ -308,7 +306,6 @@ struct SupervisorInner {
     transport: Arc<PublicSessionTransport>,
     target: DeploymentTarget,
     session: Mutex<Option<PublicSessionConnection>>,
-    info: SupervisorInfoResponse,
     session_id: Mutex<Vec<u8>>,
     generation: AtomicU64,
     correlation: AtomicU64,
@@ -333,10 +330,15 @@ impl Supervisor {
         &self.inner.target
     }
 
-    /// Information fetched during exact session opening.
-    #[must_use]
-    pub fn info(&self) -> SupervisorInfoResponse {
-        self.inner.info.clone()
+    /// Information fetched during exact opening of the current logical
+    /// session.
+    ///
+    /// Information is owned by the active transport connection, not by this
+    /// reconnectable facade.  A reconnect therefore exposes the new session's
+    /// initial response, while a closed or lost session cannot return a stale
+    /// cached value.
+    pub async fn info(&self) -> Result<SupervisorInfoResponse, SessionError> {
+        self.inner.info().await
     }
 
     /// Management/status handles remain usable independently of execution
@@ -401,30 +403,27 @@ impl Supervisor {
         }
         self.inner.stop_renewal().await;
         self.inner.cancel_lifecycle().await;
+
+        // A reconnect is a replacement boundary, not a best-effort refresh of
+        // the old session.  Retire the old session before opening its
+        // replacement so a failed open cannot leave a handle that appears
+        // current while the supervisor is unavailable.
+        let old = self.inner.session.lock().await.take();
+        self.inner.session_id.lock().await.clear();
+        if old.is_some() {
+            self.inner.generation.fetch_add(1, Ordering::AcqRel);
+        }
         let connection = match self.inner.transport.open(self.inner.target.clone()).await {
             Ok(connection) => connection,
             Err(error) => {
-                let active = self.inner.session.lock().await.is_some();
-                if active && !self.inner.closed.load(Ordering::Acquire) {
-                    let generation = self.inner.generation.load(Ordering::Acquire);
-                    self.inner.replace_lifecycle().await;
-                    self.inner
-                        .renewal
-                        .lock()
-                        .await
-                        .replace(spawn_renewal(&self.inner, generation));
+                if let Some(old) = old {
+                    let _ = old.close().await;
                 }
                 return Err(error.into());
             }
         };
         let session_id = connection.session_id().to_vec();
-        let old = {
-            let mut slot = self.inner.session.lock().await;
-            slot.replace(connection)
-        };
-        if let Some(old) = old {
-            let _ = old.close().await;
-        }
+        self.inner.session.lock().await.replace(connection);
         *self.inner.session_id.lock().await = session_id;
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
         self.inner.correlation.store(1, Ordering::Release);
@@ -434,6 +433,9 @@ impl Supervisor {
             .lock()
             .await
             .replace(spawn_renewal(&self.inner, generation));
+        if let Some(old) = old {
+            let _ = old.close().await;
+        }
         Ok(())
     }
 
@@ -1533,6 +1535,7 @@ fn spawn_renewal(supervisor: &Arc<SupervisorInner>, generation: u64) -> JoinHand
                 {
                     inner.cancel_lifecycle().await;
                     let old = inner.session.lock().await.take();
+                    inner.session_id.lock().await.clear();
                     if let Some(old) = old {
                         let _ = old.close().await;
                     }
@@ -1544,13 +1547,35 @@ fn spawn_renewal(supervisor: &Arc<SupervisorInner>, generation: u64) -> JoinHand
 }
 
 impl SupervisorInner {
-    async fn session_id(&self) -> Result<Vec<u8>, SessionError> {
+    async fn info(&self) -> Result<SupervisorInfoResponse, SessionError> {
+        let guard = self.session.lock().await;
         if self.closed.load(Ordering::Acquire) {
             return Err(SessionError::StaleHandle {
                 resource: "supervisor",
             });
         }
-        Ok(self.session_id.lock().await.clone())
+        guard
+            .as_ref()
+            .map(|connection| connection.info().clone())
+            .ok_or(SessionError::StaleHandle {
+                resource: "supervisor",
+            })
+    }
+
+    async fn session_id(&self) -> Result<Vec<u8>, SessionError> {
+        let session = self.session.lock().await;
+        if self.closed.load(Ordering::Acquire) || session.is_none() {
+            return Err(SessionError::StaleHandle {
+                resource: "supervisor",
+            });
+        }
+        let session_id = self.session_id.lock().await.clone();
+        if session_id.is_empty() {
+            return Err(SessionError::StaleHandle {
+                resource: "supervisor",
+            });
+        }
+        Ok(session_id)
     }
 
     fn ensure_generation(
@@ -1689,6 +1714,7 @@ impl SupervisorInner {
         self.cancel_lifecycle().await;
         self.stop_renewal().await;
         let old = self.session.lock().await.take();
+        self.session_id.lock().await.clear();
         if let Some(connection) = old {
             connection.close().await.map(|_| ()).map_err(Into::into)
         } else {
@@ -1700,6 +1726,15 @@ impl SupervisorInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "supervisor")]
+    use crate::bus::session::{BusConfig, BusOwner};
+    #[cfg(feature = "supervisor")]
+    use crate::communication::{DeploymentTarget, SupervisorAdapter};
+    #[cfg(feature = "supervisor")]
+    use crate::communication_transport::{PrincipalPolicy, PublicSessionServer};
+    #[cfg(feature = "supervisor")]
+    use crate::identity::ExecutionId;
 
     #[test]
     fn public_descriptors_seal_external_setpoint_publishing() {
@@ -1713,5 +1748,148 @@ mod tests {
     fn outcome_reasons_are_bounded() {
         let reason = OutcomeReason::new("x".repeat(5000));
         assert_eq!(reason.detail().len(), 4096);
+    }
+
+    #[cfg(feature = "supervisor")]
+    async fn start_server(
+        endpoint: &str,
+        target: &DeploymentTarget,
+        supervisor_version: &str,
+    ) -> (BusOwner, PublicSessionServer) {
+        let (owner, bus) = BusOwner::open(BusConfig::for_external(
+            ExecutionId::mint(),
+            None,
+            vec![endpoint.to_owned()],
+        ))
+        .await
+        .expect("supervisor bus");
+        let adapter =
+            SupervisorAdapter::with_defaults(target.clone(), supervisor_version, "framework-test")
+                .expect("supervisor adapter");
+        let server = PublicSessionServer::start(
+            bus.session().expect("supervisor session").clone(),
+            adapter,
+            PrincipalPolicy::only(["operator-a"]),
+            PublicTransportLimits::default(),
+        )
+        .await
+        .expect("public session server");
+        (owner, server)
+    }
+
+    #[cfg(feature = "supervisor")]
+    async fn local_router() -> (String, crate::router::Router) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("test port");
+        let address = listener.local_addr().expect("test address");
+        drop(listener);
+        let endpoint = format!("tcp/{address}");
+        let router =
+            crate::router::Router::open(ExecutionId::mint(), std::slice::from_ref(&endpoint))
+                .await
+                .expect("router");
+        (endpoint, router)
+    }
+
+    #[cfg(feature = "supervisor")]
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reconnect_refreshes_info_and_invalidates_old_handles() {
+        let (endpoint, router) = local_router().await;
+        let target = DeploymentTarget::new("workshop", "rover").expect("target");
+        let (owner_a, server_a) = start_server(&endpoint, &target, "supervisor-a").await;
+        let client = connect(
+            ConnectionConfig::new(&endpoint, "workshop", "operator-a").expect("client config"),
+        )
+        .await
+        .expect("client connection");
+        let supervisor = client
+            .supervisor("rover")
+            .await
+            .expect("supervisor session");
+        let old_simulation = supervisor.simulation();
+        assert_eq!(
+            supervisor
+                .info()
+                .await
+                .expect("initial info")
+                .supervisor_version,
+            "supervisor-a"
+        );
+
+        server_a.close().await.expect("stop first public server");
+        let _ = owner_a.close().await;
+        let (owner_b, server_b) = start_server(&endpoint, &target, "supervisor-b").await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        supervisor
+            .reconnect()
+            .await
+            .expect("reconnect to replacement");
+        assert_eq!(
+            supervisor
+                .info()
+                .await
+                .expect("replacement info")
+                .supervisor_version,
+            "supervisor-b"
+        );
+        assert!(matches!(
+            old_simulation.progress(ProgressRequest::default()).await,
+            Err(SessionError::StaleHandle {
+                resource: "simulation"
+            })
+        ));
+
+        supervisor.close().await.expect("close supervisor session");
+        assert!(matches!(
+            supervisor.info().await,
+            Err(SessionError::StaleHandle {
+                resource: "supervisor"
+            })
+        ));
+
+        let _ = client.close().await;
+        server_b.close().await.expect("stop replacement server");
+        let _ = owner_b.close().await;
+        router.close().await.expect("router close");
+    }
+
+    #[cfg(feature = "supervisor")]
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn failed_reconnect_leaves_no_stale_or_new_info() {
+        let (endpoint, router) = local_router().await;
+        let target = DeploymentTarget::new("workshop", "rover").expect("target");
+        let (owner, server) = start_server(&endpoint, &target, "supervisor-a").await;
+        let client = connect(
+            ConnectionConfig::new(&endpoint, "workshop", "operator-a").expect("client config"),
+        )
+        .await
+        .expect("client connection");
+        let supervisor = client
+            .supervisor("rover")
+            .await
+            .expect("supervisor session");
+        assert_eq!(
+            supervisor
+                .info()
+                .await
+                .expect("initial info")
+                .supervisor_version,
+            "supervisor-a"
+        );
+
+        server.close().await.expect("stop public server");
+        let _ = owner.close().await;
+        assert!(supervisor.reconnect().await.is_err());
+        assert!(matches!(
+            supervisor.info().await,
+            Err(SessionError::StaleHandle {
+                resource: "supervisor"
+            })
+        ));
+
+        let _ = client.close().await;
+        router.close().await.expect("router close");
     }
 }
