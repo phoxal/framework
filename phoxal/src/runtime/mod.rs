@@ -10,6 +10,8 @@ mod operation;
 pub mod outputs;
 pub mod runner;
 mod schedule;
+#[doc(hidden)]
+pub mod transport;
 
 // The collector attributes live in the runtime namespace so authors can use
 // the exact `#[phoxal::runtime::inputs]` and `#[phoxal::runtime::input(...)]`
@@ -36,9 +38,9 @@ pub use schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
 
 pub use input::{
     Activation, Capacity, CapacityError, Command, CommandId, CommandOrder, CommandOrderError,
-    Commands, Events, InputSnapshot, Latest, Operation, OperationInputError, Read, ReadCompletion,
-    ReadError, ReadStatus, ReadSuccess, Reply, Request, RequestCompletion, RequestError, Samples,
-    Setpoint, Stream, StreamFailure, StreamItem,
+    Commands, Events, InputSet, InputSnapshot, Latest, Operation, OperationInputError, Read,
+    ReadCompletion, ReadError, ReadStatus, ReadSuccess, Reply, Request, RequestCompletion,
+    RequestError, Samples, Setpoint, Stream, StreamFailure, StreamItem, TransportInputSet,
 };
 
 /// The common descriptor checks emitted by the runtime authoring macros.

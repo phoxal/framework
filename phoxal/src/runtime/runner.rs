@@ -7,11 +7,12 @@
 //! implementations because only a contract owner knows how to encode its
 //! generated payloads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -20,9 +21,16 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::core::{AcceptedInvocation, Config, OutputAdmission, RegisteredRuntime, RuntimeOwner};
-use super::input::{InputSet, InputSnapshot};
-use super::outputs::{OutputBindings, OutputSet};
+use super::input::{
+    InputSet, InputSnapshot, OperationCompletionRecord, OperationInputError, ReadError,
+    RequestError, TransportInputSet, TransportKeyLookup, TransportValue,
+};
+use super::operation::{ManagedOperation, OperationOutcome, OperationPolicy};
+use super::outputs::{
+    OperationWorker, OutputBindings, OutputSet, RuntimeReadRequest, RuntimeWorkSink,
+};
 use super::schedule::{HardwareInvocation, HardwareSchedule, ScheduleError};
+use super::transport::{self, PreparedOutput, TransportError, WireSample};
 use super::{ExecutionTime, RuntimeStatus};
 
 /// The strict process arguments supplied to one Runtime binary.
@@ -68,6 +76,8 @@ pub struct RuntimeLaunchManifest {
     instance_id: String,
     executable: PathBuf,
     config: Value,
+    connections: BTreeMap<String, Vec<String>>,
+    artifacts: BTreeMap<String, SourceRuntimeRecord>,
 }
 
 impl RuntimeLaunchManifest {
@@ -183,12 +193,30 @@ impl RuntimeLaunchManifest {
                 message: format!("configuration for `{instance_id}` is explicit null"),
             }));
         }
+        let connections = manifest
+            .document
+            .connections
+            .iter()
+            .map(|(consumer, sources)| (consumer.clone(), sources.as_slice().to_vec()))
+            .collect();
+        let artifacts = manifest
+            .executables
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .artifact
+                    .as_ref()
+                    .map(|artifact| (entry.instance.clone(), artifact.runtime.clone()))
+            })
+            .collect();
         Ok(Self {
             root,
             robot_id: manifest.robot_id,
             instance_id: instance_id.to_owned(),
             executable: canonical_executable,
             config,
+            connections,
+            artifacts,
         })
     }
 
@@ -222,6 +250,279 @@ impl RuntimeLaunchManifest {
         &self.config
     }
 
+    /// Resolve the canonical caller ordinal for every Commands port in this
+    /// target's authored graph.  The ordinal is an exact lexical position of
+    /// `{caller-instance}.{request-field}`, not a hash, so a carried rank is
+    /// independently checkable by the receiving runtime.
+    fn command_ranks(
+        &self,
+        target_instance: &str,
+    ) -> crate::Result<BTreeMap<(String, String), u64>> {
+        let mut callers: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
+        for (consumer, sources) in &self.connections {
+            let (caller_instance, request_field) =
+                parse_graph_endpoint(consumer).map_err(|error| {
+                    anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!("connection consumer `{consumer}` is invalid: {error}"),
+                    })
+                })?;
+            for source in sources {
+                let (source_instance, source_port) =
+                    parse_graph_endpoint(source).map_err(|error| {
+                        anyhow::anyhow!(RunnerError::BundleInvalid {
+                            message: format!("connection source `{source}` is invalid: {error}"),
+                        })
+                    })?;
+                if source_instance == target_instance {
+                    callers
+                        .entry(source_port)
+                        .or_default()
+                        .insert((caller_instance.clone(), request_field.clone()));
+                }
+            }
+        }
+        let mut ranks = BTreeMap::new();
+        for (port, callers) in callers {
+            for (rank, (caller_instance, request_field)) in callers.into_iter().enumerate() {
+                ranks.insert(
+                    (port.clone(), format!("{caller_instance}.{request_field}")),
+                    rank as u64,
+                );
+            }
+        }
+        Ok(ranks)
+    }
+
+    fn caller_rank_for(
+        &self,
+        target_instance: &str,
+        target_port: &str,
+        caller_identity: &str,
+    ) -> crate::Result<u64> {
+        self.command_ranks(target_instance)?
+            .remove(&(target_port.to_owned(), caller_identity.to_owned()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!(
+                        "caller `{caller_identity}` is not connected to `{target_instance}.{target_port}`"
+                    ),
+                })
+            })
+    }
+
+    /// Resolve one generated input field through the immutable graph and
+    /// artifact records retained in this bundle.
+    fn input_routes(
+        &self,
+        field: &super::transport::InputTransportField,
+    ) -> crate::Result<Vec<ResolvedInputRoute>> {
+        let Some(signature) = field.signature else {
+            if field.kind == super::input::InputKind::Operation {
+                return Ok(Vec::new());
+            }
+            let consumer = format!("{}.{}", self.instance_id, field.name);
+            let sources = self.connections.get(&consumer).ok_or_else(|| {
+                anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!(
+                        "input `{consumer}` has no authored connection in the source bundle"
+                    ),
+                })
+            })?;
+            if sources.is_empty() {
+                return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!("input `{consumer}` has an empty authored connection"),
+                }));
+            }
+            let direction = InputDirection::for_kind(field.kind)?;
+            let expected_kind = direction.expected_kind(field.kind);
+            let mut routes = Vec::with_capacity(sources.len());
+            let mut first_binding = None;
+            for source in sources {
+                let (source_instance, source_port) =
+                    parse_graph_endpoint(source).map_err(|message| {
+                        anyhow::anyhow!(RunnerError::BundleInvalid {
+                            message: format!(
+                                "connection `{consumer} <- {source}` is invalid: {message}"
+                            ),
+                        })
+                    })?;
+                let runtime = self.artifacts.get(&source_instance).ok_or_else(|| {
+                    anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "connection `{consumer} <- {source}` has no admitted producer artifact"
+                        ),
+                    })
+                })?;
+                let (binding, source_max_bytes, source_max_items, source_request_max_bytes) =
+                    if expected_kind == crate::port::PortKind::Commands
+                        && direction == InputDirection::Reply
+                    {
+                        let input = runtime
+                        .inputs
+                        .iter()
+                        .find(|candidate| candidate.port.as_deref() == Some(source_port.as_str()))
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(RunnerError::BundleInvalid {
+                                message: format!(
+                                    "connection `{consumer} <- {source}` has no Commands input port"
+                                ),
+                            })
+                        })?;
+                        let binding = input.signature.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(RunnerError::BundleInvalid {
+                            message: format!(
+                                "connection `{consumer} <- {source}` Commands input has no signature"
+                            ),
+                        })
+                    })?;
+                        let reply = runtime
+                        .service_outputs
+                        .iter()
+                        .find(|candidate| {
+                            candidate.kind == "reply"
+                                && candidate.input.as_deref() == Some(input.name.as_str())
+                        })
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(RunnerError::BundleInvalid {
+                                message: format!(
+                                    "connection `{consumer} <- {source}` Commands target has no reply binding"
+                                ),
+                            })
+                        })?;
+                        (
+                            SourcePortSignature::to_binding(binding)?,
+                            reply.max_bytes,
+                            reply.max_items,
+                            input.max_bytes,
+                        )
+                    } else {
+                        let output = runtime
+                        .service_outputs
+                        .iter()
+                        .chain(runtime.transient_outputs.iter())
+                        .find(|candidate| candidate.port.as_deref() == Some(source_port.as_str()))
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(RunnerError::BundleInvalid {
+                                message: format!(
+                                    "connection `{consumer} <- {source}` has no served output port"
+                                ),
+                            })
+                        })?;
+                        let binding = output.signature.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!(RunnerError::BundleInvalid {
+                                message: format!(
+                                    "connection `{consumer} <- {source}` output has no signature"
+                                ),
+                            })
+                        })?;
+                        (
+                            SourcePortSignature::to_binding(binding)?,
+                            output.max_bytes,
+                            output.max_items,
+                            output.max_request_bytes,
+                        )
+                    };
+                if binding.kind != expected_kind {
+                    return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "connection `{consumer} <- {source}` expects `{}` but source provides `{}`",
+                            expected_kind.as_str(),
+                            binding.kind.as_str()
+                        ),
+                    }));
+                }
+                if let Some(previous) = &first_binding
+                    && previous != &binding
+                {
+                    return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "connection `{consumer}` has source signatures that do not match"
+                        ),
+                    }));
+                }
+                first_binding = Some(binding.clone());
+                let max_bytes = field.max_bytes.or(source_max_bytes).ok_or_else(|| {
+                    anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "connection `{consumer} <- {source}` has no bounded encoded-byte limit"
+                        ),
+                    })
+                })?;
+                let max_items = field.max_items.or(source_max_items).unwrap_or(1);
+                let request_max_bytes = if direction == InputDirection::Reply {
+                    Some(source_request_max_bytes.ok_or_else(|| {
+                        anyhow::anyhow!(RunnerError::BundleInvalid {
+                            message: format!(
+                                "connection `{consumer} <- {source}` has no bounded request-byte limit"
+                            ),
+                        })
+                    })?)
+                } else {
+                    None
+                };
+                if max_items == 0 || max_bytes == 0 {
+                    return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                        message: format!(
+                            "connection `{consumer} <- {source}` has a zero transport bound"
+                        ),
+                    }));
+                }
+                let (caller_identity, caller_rank) = if direction == InputDirection::Reply {
+                    let caller_identity = format!("{}.{}", self.instance_id, field.name);
+                    let caller_rank =
+                        self.caller_rank_for(&source_instance, &source_port, &caller_identity)?;
+                    (Some(caller_identity), Some(caller_rank))
+                } else {
+                    (None, None)
+                };
+                routes.push(ResolvedInputRoute {
+                    field: field.name,
+                    binding,
+                    source_instance,
+                    source_port,
+                    direction,
+                    max_items,
+                    max_bytes,
+                    request_max_bytes,
+                    caller_identity,
+                    caller_rank,
+                });
+            }
+            return Ok(routes);
+        };
+        if field.kind != super::input::InputKind::Commands {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!(
+                    "input `{}` carries an explicit descriptor but is not a Commands listener",
+                    field.name
+                ),
+            }));
+        }
+        let max_items = field.max_items.unwrap_or(1);
+        let max_bytes = field.max_bytes.ok_or_else(|| {
+            anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!("Commands input `{}` has no byte bound", field.name),
+            })
+        })?;
+        if max_items == 0 || max_bytes == 0 {
+            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                message: format!("Commands input `{}` has a zero transport bound", field.name),
+            }));
+        }
+        Ok(vec![ResolvedInputRoute {
+            field: field.name,
+            binding: super::transport::PortBinding::from_signature(signature),
+            source_instance: self.instance_id.clone(),
+            source_port: signature.name.to_owned(),
+            direction: InputDirection::Request,
+            max_items,
+            max_bytes,
+            request_max_bytes: Some(max_bytes),
+            caller_identity: None,
+            caller_rank: None,
+        }])
+    }
+
     /// Decode the selected configuration into the exact runtime type.
     pub fn decode_config<R: RegisteredRuntime>(&self) -> crate::Result<R::Config> {
         decode_config(self.config.clone())
@@ -245,11 +546,35 @@ pub trait InputSource<R: RegisteredRuntime> {
 }
 
 /// A sink that reserves and publishes one complete accepted output batch.
-pub trait OutputSink<Outputs>: OutputAdmission<Outputs> {
+pub trait OutputSink<R>: OutputAdmission<R::Outputs>
+where
+    R: RegisteredRuntime,
+{
+    /// Prepare invocation-scoped output data before state acceptance.
+    fn prepare(&mut self, _context: &super::StepContext) -> crate::Result<()> {
+        Ok(())
+    }
+
+    /// Prepare state and setpoint projections from the candidate next state.
+    fn prepare_state(
+        &mut self,
+        _service: &R,
+        _state: &R::State,
+        _context: &super::StepContext,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
+
+    /// Admit transport completions and requests without blocking the compute
+    /// owner.  The default keeps direct in-process sinks transport-free.
+    fn poll(&mut self) -> crate::Result<()> {
+        Ok(())
+    }
+
     /// Publish an already-reserved complete invocation.
     fn publish(
         &mut self,
-        accepted: AcceptedInvocation<Outputs, Self::Reservation>,
+        accepted: AcceptedInvocation<R::Outputs, Self::Reservation>,
     ) -> crate::Result<()>;
 
     /// Stop publishers and wait for managed operation cleanup.
@@ -313,16 +638,13 @@ impl RuntimeClock for SystemClock {
 /// The process owns exactly one bus session and one serialized runner.  The
 /// session is opened only for the execution id resolved from the explicit
 /// rendezvous endpoint, and the Ready lease is held for the whole time the
-/// runner is live.  The first transport adapter is intentionally narrow: an
-/// empty generated input/output surface is a complete, useful runtime (for
-/// example a composition root), while a typed field is refused until its
-/// generated Protobuf codec and endpoint binding are available.  Refusing the
-/// latter is important because silently dropping a declared field would make
-/// the runtime appear healthy while violating its contract.
+/// runner is live.  Generated Commands input fields and transient Protobuf
+/// output fields use their descriptor-owned codecs.  Unsupported fields fail
+/// explicitly rather than becoming invented defaults or silent drops.
 pub(crate) fn run_transport<R>(service: R) -> crate::Result<()>
 where
     R: RegisteredRuntime,
-    R::Inputs: InputSnapshot,
+    R::Inputs: TransportInputSet + super::input::TransportInputSink,
 {
     R::__retain_artifact_metadata();
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -334,10 +656,9 @@ where
 async fn run_transport_async<R>(service: R) -> crate::Result<()>
 where
     R: RegisteredRuntime,
-    R::Inputs: InputSnapshot,
+    R::Inputs: TransportInputSet + super::input::TransportInputSink,
 {
     let launch = RuntimeLaunch::parse()?;
-    validate_empty_transport_surface::<R>(&launch)?;
     let manifest = RuntimeLaunchManifest::open(&launch.bundle_root, &launch.instance_id)?;
     let config = manifest.decode_config::<R>()?;
     let participant = crate::identity::ParticipantId::new(launch.instance_id.clone())
@@ -351,13 +672,26 @@ where
         result = crate::execution::resolve_execution(&launch.connect) => result?,
     };
 
+    let correlations = Arc::new(Mutex::new(BTreeMap::new()));
+    let expired_correlations = Arc::new(Mutex::new(BTreeSet::new()));
+    let operation_completions = Arc::new(Mutex::new(Vec::new()));
+    let exchange_completions = Arc::new(Mutex::new(Vec::new()));
+    let input = ExecutionInputAdapter::<R>::unbound().with_shared_state(
+        Arc::clone(&correlations),
+        Arc::clone(&expired_correlations),
+        Arc::clone(&operation_completions),
+        Arc::clone(&exchange_completions),
+    );
+    let output = ExecutionOutputAdapter::<R>::unbound().with_shared_state(
+        correlations,
+        expired_correlations,
+        operation_completions,
+        exchange_completions,
+    );
+
     // Runtime initialization is local and serialized before transport Ready
     // is declared.  The adapters retain the execution-scoped handle and
     // therefore cannot accidentally read or publish another execution root.
-    let input = ExecutionInputAdapter::unbound();
-    let output = ExecutionOutputAdapter::unbound();
-    let mut runner = RuntimeRunner::new(service, ExecutionTime::default(), config, input, output)?;
-
     let (owner, bus) = tokio::select! {
         biased;
         _ = &mut shutdown => return Ok(()),
@@ -367,6 +701,29 @@ where
             vec![launch.connect.clone()],
         )) => result?,
     };
+    let mut input = input;
+    let mut output = output;
+    if let Err(error) = input.bind(bus.clone(), &manifest).await {
+        let _ = owner.close().await;
+        return Err(error);
+    }
+    if let Err(error) = output
+        .bind(bus.clone(), &launch.instance_id, &manifest)
+        .await
+    {
+        let _ = owner.close().await;
+        return Err(error);
+    }
+
+    let mut runner =
+        match RuntimeRunner::new(service, ExecutionTime::default(), config, input, output) {
+            Ok(runner) => runner,
+            Err(error) => {
+                let _ = owner.close().await;
+                return Err(error);
+            }
+        };
+
     let ready = match tokio::select! {
         biased;
         _ = &mut shutdown => {
@@ -381,9 +738,6 @@ where
             return Err(error.into());
         }
     };
-
-    runner.inputs_mut().bind(bus.clone());
-    runner.outputs_mut().bind(bus);
 
     let mut ticker = tokio::time::interval(R::SPEC.period.as_duration());
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -406,48 +760,232 @@ where
     result.and(stop_result)
 }
 
-fn validate_empty_transport_surface<R: RegisteredRuntime>(
-    launch: &RuntimeLaunch,
-) -> crate::Result<()>
-where
-    R::Inputs: InputSet,
-    R::Outputs: OutputSet,
-{
-    if !<R::Inputs as InputSet>::FIELDS.is_empty()
-        || !<R::Outputs as OutputSet>::FIELDS.is_empty()
-        || !<R as OutputBindings>::FIELDS.is_empty()
-    {
-        return Err(anyhow::anyhow!(RunnerError::TypedBindingsUnavailable {
-            instance: launch.instance_id.clone(),
-            connect: launch.connect.clone(),
-        }));
-    }
-    Ok(())
-}
-
 /// The execution-scoped input side of the runtime process boundary.
 ///
 /// The empty implementation still owns the live bus handle once the process
 /// has joined its execution.  It is useful for runtimes with no input fields
 /// and, importantly, makes bus closure a runtime failure rather than an
 /// invisible source of invented defaults.
+const MAX_EXPIRED_CORRELATIONS: usize = 4096;
+const MAX_COMMAND_HIGH_WATERMARKS: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExchangeKind {
+    Read,
+    Request,
+}
+
+struct PendingCorrelation {
+    field: &'static str,
+    key: TransportValue,
+    kind: ExchangeKind,
+    deadline: Instant,
+    expected_source: String,
+}
+
+type CorrelationKey = (String, u64);
+type CorrelationMap = Arc<Mutex<BTreeMap<CorrelationKey, PendingCorrelation>>>;
+type ExpiredCorrelationSet = Arc<Mutex<BTreeSet<CorrelationKey>>>;
+type OperationQueue = Arc<Mutex<Vec<OperationCompletionRecord>>>;
+
+enum ExchangeCompletion {
+    Read {
+        field: &'static str,
+        key: TransportValue,
+        result: Result<TransportValue, ReadError>,
+    },
+    Request {
+        field: &'static str,
+        key: TransportValue,
+        result: Result<TransportValue, RequestError>,
+    },
+}
+
+type ExchangeCompletionQueue = Arc<Mutex<Vec<ExchangeCompletion>>>;
+
 struct ExecutionInputAdapter<R> {
     bus: Option<crate::bus::BusHandle>,
+    subscriptions: Vec<BoundSubscription>,
+    command_high_watermarks: BTreeMap<(String, String, String), u64>,
+    command_ranks: BTreeMap<(String, String), u64>,
+    correlations: Option<CorrelationMap>,
+    expired_correlations: Option<ExpiredCorrelationSet>,
+    operation_completions: Option<OperationQueue>,
+    exchange_completions: Option<ExchangeCompletionQueue>,
     stopped: bool,
     _runtime: PhantomData<fn() -> R>,
+}
+
+type RuntimeSubscription =
+    zenoh::pubsub::Subscriber<zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>>;
+
+struct BoundSubscription {
+    field: &'static str,
+    binding: super::transport::PortBinding,
+    direction: InputDirection,
+    max_items: u64,
+    max_bytes: u64,
+    subscriber: RuntimeSubscription,
+}
+
+struct CollectedInput {
+    field: &'static str,
+    binding: super::transport::PortBinding,
+    direction: InputDirection,
+    max_items: u64,
+    max_bytes: u64,
+    samples: Vec<WireSample>,
+}
+
+struct ErasedManagedOperation {
+    operation: ManagedOperation<u64, TransportValue, TransportValue, OperationWorker>,
+    keys: BTreeMap<u64, TransportValue>,
+    pending_key: Option<u64>,
+}
+
+struct ReadSubscription {
+    field: &'static str,
+    binding: super::transport::PortBinding,
+    allowed_callers: BTreeMap<String, u64>,
+    subscriber: RuntimeSubscription,
 }
 
 impl<R> ExecutionInputAdapter<R> {
     fn unbound() -> Self {
         Self {
             bus: None,
+            subscriptions: Vec::new(),
+            command_high_watermarks: BTreeMap::new(),
+            command_ranks: BTreeMap::new(),
+            correlations: None,
+            expired_correlations: None,
+            operation_completions: None,
+            exchange_completions: None,
             stopped: false,
             _runtime: PhantomData,
         }
     }
 
-    fn bind(&mut self, bus: crate::bus::BusHandle) {
+    fn with_shared_state(
+        mut self,
+        correlations: CorrelationMap,
+        expired_correlations: ExpiredCorrelationSet,
+        operation_completions: OperationQueue,
+        exchange_completions: ExchangeCompletionQueue,
+    ) -> Self {
+        self.correlations = Some(correlations);
+        self.expired_correlations = Some(expired_correlations);
+        self.operation_completions = Some(operation_completions);
+        self.exchange_completions = Some(exchange_completions);
+        self
+    }
+
+    async fn bind(
+        &mut self,
+        bus: crate::bus::BusHandle,
+        manifest: &RuntimeLaunchManifest,
+    ) -> crate::Result<()>
+    where
+        R: RegisteredRuntime,
+        R::Inputs: TransportInputSet,
+    {
+        let fields = <R::Inputs as TransportInputSet>::transport_fields();
+        let session = bus.session()?;
+        let mut subscriptions = Vec::new();
+        for field in fields {
+            for route in manifest.input_routes(field)? {
+                let key = bus.full_key(&transport::port_key(
+                    &route.source_instance,
+                    &route.source_port,
+                    route.direction.key_direction(),
+                ));
+                let key_expr =
+                    zenoh::key_expr::OwnedKeyExpr::new(key.clone()).map_err(|error| {
+                        anyhow::anyhow!(TransportError::Transport(format!(
+                            "invalid generated Runtime input key `{key}`: {error}"
+                        )))
+                    })?;
+                let capacity = usize::try_from(route.max_items).map_err(|_| {
+                    anyhow::anyhow!(TransportError::BatchTooLarge {
+                        port: route.binding.name.clone(),
+                        what: "item count",
+                        actual: route.max_items,
+                        maximum: usize::MAX as u64,
+                    })
+                })?;
+                let subscriber = session
+                    .declare_subscriber(key_expr)
+                    .with(zenoh::handlers::FifoChannel::new(capacity))
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(TransportError::Transport(error.to_string()))
+                    })?;
+                subscriptions.push(BoundSubscription {
+                    field: route.field,
+                    binding: route.binding,
+                    direction: route.direction,
+                    max_items: route.max_items,
+                    max_bytes: route.max_bytes,
+                    subscriber,
+                });
+            }
+        }
+        self.command_ranks = manifest.command_ranks(&manifest.instance_id)?;
         self.bus = Some(bus);
+        self.subscriptions = subscriptions;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn bind_direct(&mut self, bus: crate::bus::BusHandle, instance: &str) -> crate::Result<()>
+    where
+        R: RegisteredRuntime,
+        R::Inputs: TransportInputSet,
+    {
+        let session = bus.session()?;
+        let mut subscriptions = Vec::new();
+        for field in <R::Inputs as TransportInputSet>::transport_fields() {
+            let Some(signature) = field.signature else {
+                continue;
+            };
+            let direction = InputDirection::for_kind(field.kind)?;
+            let max_items = field.max_items.unwrap_or(1);
+            let max_bytes = field.max_bytes.unwrap_or(u64::MAX);
+            let key = bus.full_key(&transport::port_key(
+                instance,
+                signature.name,
+                direction.key_direction(),
+            ));
+            let key_expr = zenoh::key_expr::OwnedKeyExpr::new(key.clone()).map_err(|error| {
+                anyhow::anyhow!(TransportError::Transport(format!(
+                    "invalid generated Runtime input key `{key}`: {error}"
+                )))
+            })?;
+            let capacity = usize::try_from(max_items).map_err(|_| {
+                anyhow::anyhow!(TransportError::BatchTooLarge {
+                    port: signature.name.to_owned(),
+                    what: "item count",
+                    actual: max_items,
+                    maximum: usize::MAX as u64,
+                })
+            })?;
+            let subscriber = session
+                .declare_subscriber(key_expr)
+                .with(zenoh::handlers::FifoChannel::new(capacity))
+                .await
+                .map_err(|error| anyhow::anyhow!(TransportError::Transport(error.to_string())))?;
+            subscriptions.push(BoundSubscription {
+                field: field.name,
+                binding: super::transport::PortBinding::from_signature(signature),
+                direction,
+                max_items,
+                max_bytes,
+                subscriber,
+            });
+        }
+        self.bus = Some(bus);
+        self.subscriptions = subscriptions;
+        Ok(())
     }
 
     fn ensure_open(&self) -> crate::Result<()> {
@@ -460,51 +998,565 @@ impl<R> ExecutionInputAdapter<R> {
         } else {
             Err(anyhow::anyhow!(crate::bus::BusError::Closed))
         }
+    }
+}
+
+impl<R> TransportKeyLookup for ExecutionInputAdapter<R> {
+    fn take_key(&mut self, field: &str, command_id: u64) -> Option<TransportValue> {
+        let map = self.correlations.as_ref()?;
+        let mut map = match map.lock() {
+            Ok(map) => map,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        map.remove(&(field.to_owned(), command_id))
+            .map(|pending| pending.key)
+    }
+
+    fn validate_reply(
+        &mut self,
+        field: &str,
+        command_id: u64,
+        sample: &WireSample,
+    ) -> crate::Result<()> {
+        let source = sample
+            .metadata()
+            .source
+            .as_deref()
+            .filter(|source| !source.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(TransportError::CommandCorrelation(
+                    "correlated reply is missing source".to_owned(),
+                ))
+            })?;
+        let correlations = self.correlations.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::Transport(
+                "activation correlation table is not bound".to_owned(),
+            ))
+        })?;
+        let correlations = match correlations.lock() {
+            Ok(correlations) => correlations,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let pending = correlations
+            .get(&(field.to_owned(), command_id))
+            .ok_or_else(|| {
+                anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                    "stale or unknown reply correlation id {command_id}"
+                )))
+            })?;
+        if pending.expected_source != source {
+            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                format!(
+                    "reply correlation id {command_id} came from `{source}`, expected `{}`",
+                    pending.expected_source
+                ),
+            )));
+        }
+        Ok(())
+    }
+
+    fn is_expired(&mut self, field: &str, command_id: u64) -> bool {
+        let Some(expired) = &self.expired_correlations else {
+            return false;
+        };
+        let expired = match expired.lock() {
+            Ok(expired) => expired,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        expired.contains(&(field.to_owned(), command_id))
     }
 }
 
 impl<R> InputSource<R> for ExecutionInputAdapter<R>
 where
     R: RegisteredRuntime,
-    R::Inputs: InputSnapshot,
+    R::Inputs: TransportInputSet + super::input::TransportInputSink,
 {
     fn freeze(&mut self, _candidate: &HardwareInvocation) -> crate::Result<R::Inputs> {
         if self.stopped {
             return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
         }
         self.ensure_open()?;
-        Ok(R::Inputs::empty())
+        let mut inputs = R::Inputs::empty();
+        if let Some(queue) = &self.operation_completions {
+            let completions = {
+                let mut queue = match queue.lock() {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                std::mem::take(&mut *queue)
+            };
+            for completion in completions {
+                <R::Inputs as super::input::TransportInputSink>::set_operation(
+                    &mut inputs,
+                    completion.field,
+                    completion.key,
+                    completion.result,
+                )?;
+            }
+        }
+        if let Some(queue) = &self.exchange_completions {
+            let completions = {
+                let mut queue = match queue.lock() {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                std::mem::take(&mut *queue)
+            };
+            for completion in completions {
+                match completion {
+                    ExchangeCompletion::Read { field, key, result } => {
+                        <R::Inputs as super::input::TransportInputSink>::set_read(
+                            &mut inputs,
+                            field,
+                            key,
+                            result,
+                        )?
+                    }
+                    ExchangeCompletion::Request { field, key, result } => {
+                        <R::Inputs as super::input::TransportInputSink>::set_request(
+                            &mut inputs,
+                            field,
+                            key,
+                            result,
+                        )?
+                    }
+                }
+            }
+        }
+        let mut batches: Vec<CollectedInput> = Vec::new();
+        for subscription in &self.subscriptions {
+            let mut samples = Vec::new();
+            loop {
+                match subscription.subscriber.try_recv() {
+                    Ok(Some(sample)) => samples.push(WireSample::from_zenoh(sample)?),
+                    Ok(None) => break,
+                    Err(error) => {
+                        return Err(anyhow::anyhow!(TransportError::Transport(
+                            error.to_string(),
+                        )));
+                    }
+                }
+            }
+            if samples.is_empty() {
+                continue;
+            }
+            if let Some(batch) = batches
+                .iter_mut()
+                .find(|batch| batch.field == subscription.field)
+            {
+                if batch.binding != subscription.binding
+                    || batch.direction != subscription.direction
+                {
+                    return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!(
+                            "input field `{}` received conflicting source bindings",
+                            subscription.field
+                        ),
+                    }));
+                }
+                batch.samples.extend(samples);
+            } else {
+                batches.push(CollectedInput {
+                    field: subscription.field,
+                    binding: subscription.binding.clone(),
+                    direction: subscription.direction,
+                    max_items: subscription.max_items,
+                    max_bytes: subscription.max_bytes,
+                    samples,
+                });
+            }
+        }
+        for batch in batches {
+            if batch.samples.len() as u64 > batch.max_items {
+                return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                    port: batch.binding.name.clone(),
+                    what: "item count",
+                    actual: batch.samples.len() as u64,
+                    maximum: batch.max_items,
+                }));
+            }
+            let encoded_bytes = batch
+                .samples
+                .iter()
+                .try_fold(0_u64, |total, sample| {
+                    total.checked_add(sample.payload().len() as u64)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::BatchTooLarge {
+                        port: batch.binding.name.clone(),
+                        what: "encoded bytes",
+                        actual: u64::MAX,
+                        maximum: batch.max_bytes,
+                    })
+                })?;
+            if encoded_bytes > batch.max_bytes {
+                return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                    port: batch.binding.name.clone(),
+                    what: "encoded bytes",
+                    actual: encoded_bytes,
+                    maximum: batch.max_bytes,
+                }));
+            }
+            let command_marks = if batch.binding.kind == crate::port::PortKind::Commands
+                && batch.direction == InputDirection::Request
+            {
+                let mut marks = Vec::with_capacity(batch.samples.len());
+                let mut batch_seen = BTreeSet::new();
+                for sample in &batch.samples {
+                    let metadata = sample.metadata();
+                    let id = metadata.command_id.ok_or_else(|| {
+                        anyhow::anyhow!(TransportError::CommandCorrelation(
+                            "correlated Runtime record is missing command_id".to_owned(),
+                        ))
+                    })?;
+                    let source = metadata
+                        .source
+                        .clone()
+                        .filter(|source| !source.is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(TransportError::CommandCorrelation(
+                                "correlated Runtime record is missing source".to_owned(),
+                            ))
+                        })?;
+                    let caller_rank = metadata.caller_rank.ok_or_else(|| {
+                        anyhow::anyhow!(TransportError::CommandCorrelation(
+                            "correlated Runtime record is missing caller_rank".to_owned(),
+                        ))
+                    })?;
+                    let caller = metadata
+                        .caller
+                        .clone()
+                        .filter(|caller| !caller.is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(TransportError::CommandCorrelation(
+                                "correlated Runtime record is missing caller identity".to_owned(),
+                            ))
+                        })?;
+                    let (caller_instance, _caller_field) =
+                        parse_graph_endpoint(&caller).map_err(|error| {
+                            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                                "invalid caller identity `{caller}`: {error}"
+                            ),))
+                        })?;
+                    if caller_instance != source {
+                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                            format!("caller `{caller}` does not match source `{source}`"),
+                        )));
+                    }
+                    if let Some(expected) = self
+                        .command_ranks
+                        .get(&(batch.binding.name.clone(), caller.clone()))
+                        && *expected != caller_rank
+                    {
+                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                            format!(
+                                "source `{source}` used caller rank {caller_rank}, expected {expected}"
+                            ),
+                        )));
+                    } else if !self.command_ranks.is_empty()
+                        && !self
+                            .command_ranks
+                            .contains_key(&(batch.binding.name.clone(), caller.clone()))
+                    {
+                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                            format!(
+                                "caller `{caller}` is not connected to Commands port `{}`",
+                                batch.binding.name
+                            ),
+                        )));
+                    }
+                    let key = (batch.field.to_owned(), source, caller);
+                    if !batch_seen.insert((key.clone(), id)) {
+                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                            format!("duplicate correlation id {id} in one input cut"),
+                        )));
+                    }
+                    if self
+                        .command_high_watermarks
+                        .get(&key)
+                        .is_some_and(|previous| id <= *previous)
+                        || marks
+                            .iter()
+                            .any(|(candidate, previous)| candidate == &key && id <= *previous)
+                    {
+                        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                            format!("stale or replayed correlation id {id}"),
+                        )));
+                    }
+                    marks.push((key, id));
+                }
+                Some(marks)
+            } else {
+                None
+            };
+            <R::Inputs as TransportInputSet>::decode_transport_field_with_keys(
+                &mut inputs,
+                batch.field,
+                Some(&batch.binding),
+                batch.samples,
+                self,
+            )?;
+            if let Some(marks) = command_marks {
+                if self.command_high_watermarks.len()
+                    + marks
+                        .iter()
+                        .filter(|(key, _)| !self.command_high_watermarks.contains_key(key))
+                        .count()
+                    > MAX_COMMAND_HIGH_WATERMARKS
+                {
+                    return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                        port: batch.binding.name.clone(),
+                        what: "command caller count",
+                        actual: (self.command_high_watermarks.len() + marks.len()) as u64,
+                        maximum: MAX_COMMAND_HIGH_WATERMARKS as u64,
+                    }));
+                }
+                for (key, id) in marks {
+                    self.command_high_watermarks.insert(key, id);
+                }
+            }
+        }
+        Ok(inputs)
     }
 
     fn stop(&mut self) -> crate::Result<()> {
         self.stopped = true;
+        self.subscriptions.clear();
+        self.command_high_watermarks.clear();
+        self.command_ranks.clear();
+        self.bus = None;
         Ok(())
     }
 
     fn reset(&mut self) -> crate::Result<()> {
         self.stopped = false;
+        self.command_high_watermarks.clear();
+        if self.bus.is_none() || self.subscriptions.is_empty() {
+            return Err(anyhow::anyhow!(TransportError::Transport(
+                "Runtime input subscriptions are not bound after reset".to_owned(),
+            )));
+        }
         Ok(())
     }
 }
 
-/// The execution-scoped output side of the runtime process boundary.
-struct ExecutionOutputAdapter<Outputs> {
-    bus: Option<crate::bus::BusHandle>,
-    stopped: bool,
-    _outputs: PhantomData<fn() -> Outputs>,
+/// One output reservation owns both encoded records and the staged side
+/// effects that are dispatched only after the invocation has been accepted.
+struct OutputReservation {
+    records: Vec<PreparedOutput>,
+    activations: Vec<StagedActivation>,
 }
 
-impl<Outputs> ExecutionOutputAdapter<Outputs> {
+struct StagedActivation {
+    field: &'static str,
+    key: Option<TransportValue>,
+    request: Option<TransportValue>,
+    worker: Option<OperationWorker>,
+    request_output: Option<PreparedOutput>,
+    timeout_ms: Option<u64>,
+    refresh_every_steps: Option<u64>,
+    invocation_index: Option<u64>,
+    cancel_grace_ms: Option<u64>,
+    command_id: Option<u64>,
+    correlation_kind: Option<ExchangeKind>,
+    expected_source: Option<String>,
+}
+
+/// The execution-scoped output side of the runtime process boundary.
+struct ExecutionOutputAdapter<R> {
+    bus: Option<crate::bus::BusHandle>,
+    instance: Option<String>,
+    context: Option<super::StepContext>,
+    projections: Vec<PreparedOutput>,
+    read_subscriptions: Vec<ReadSubscription>,
+    pending_reads: Vec<RuntimeReadRequest>,
+    activation_routes: BTreeMap<&'static str, ResolvedInputRoute>,
+    staged: Vec<StagedActivation>,
+    operations: BTreeMap<&'static str, ErasedManagedOperation>,
+    correlations: Option<CorrelationMap>,
+    expired_correlations: Option<ExpiredCorrelationSet>,
+    operation_completions: Option<OperationQueue>,
+    exchange_completions: Option<ExchangeCompletionQueue>,
+    next_refresh_steps: BTreeMap<&'static str, u64>,
+    next_command_id: u64,
+    stopped: bool,
+    _runtime: PhantomData<fn() -> R>,
+}
+
+impl<R> ExecutionOutputAdapter<R> {
     fn unbound() -> Self {
         Self {
             bus: None,
+            instance: None,
+            context: None,
+            projections: Vec::new(),
+            read_subscriptions: Vec::new(),
+            pending_reads: Vec::new(),
+            activation_routes: BTreeMap::new(),
+            staged: Vec::new(),
+            operations: BTreeMap::new(),
+            correlations: None,
+            expired_correlations: None,
+            operation_completions: None,
+            exchange_completions: None,
+            next_refresh_steps: BTreeMap::new(),
+            next_command_id: 1,
             stopped: false,
-            _outputs: PhantomData,
+            _runtime: PhantomData,
         }
     }
 
-    fn bind(&mut self, bus: crate::bus::BusHandle) {
+    fn with_shared_state(
+        mut self,
+        correlations: CorrelationMap,
+        expired_correlations: ExpiredCorrelationSet,
+        operation_completions: OperationQueue,
+        exchange_completions: ExchangeCompletionQueue,
+    ) -> Self {
+        self.correlations = Some(correlations);
+        self.expired_correlations = Some(expired_correlations);
+        self.operation_completions = Some(operation_completions);
+        self.exchange_completions = Some(exchange_completions);
+        self
+    }
+
+    async fn bind(
+        &mut self,
+        bus: crate::bus::BusHandle,
+        instance: &str,
+        manifest: &RuntimeLaunchManifest,
+    ) -> crate::Result<()>
+    where
+        R: RegisteredRuntime,
+        R::Inputs: TransportInputSet,
+        R::Outputs: OutputSet,
+    {
+        let session = bus.session()?;
+        let mut read_subscriptions = Vec::new();
+        for field in <R as OutputBindings>::FIELDS {
+            if field.kind != super::outputs::OutputKind::Read {
+                continue;
+            }
+            let signature = field.port_signature.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("read output `{}` has no generated descriptor", field.name),
+                })
+            })?;
+            let max_request_bytes = field.max_request_bytes.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("read output `{}` has no request bound", field.name),
+                })
+            })?;
+            if max_request_bytes == 0 {
+                return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                    port: signature.name.to_owned(),
+                    what: "request bytes",
+                    actual: 0,
+                    maximum: max_request_bytes,
+                }));
+            }
+            let key = bus.full_key(&transport::port_key(instance, signature.name, "request"));
+            let key_expr = zenoh::key_expr::OwnedKeyExpr::new(key.clone()).map_err(|error| {
+                anyhow::anyhow!(TransportError::Transport(format!(
+                    "invalid generated Runtime read key `{key}`: {error}"
+                )))
+            })?;
+            let subscriber = session
+                .declare_subscriber(key_expr)
+                .with(zenoh::handlers::FifoChannel::new(2))
+                .await
+                .map_err(|error| anyhow::anyhow!(TransportError::Transport(error.to_string())))?;
+            let allowed_callers = manifest
+                .command_ranks(instance)?
+                .into_iter()
+                .filter_map(|((port, caller), rank)| {
+                    (port == signature.name).then_some((caller, rank))
+                })
+                .collect();
+            read_subscriptions.push(ReadSubscription {
+                field: field.name,
+                binding: super::transport::PortBinding::from_signature(signature),
+                allowed_callers,
+                subscriber,
+            });
+        }
+
+        let mut activation_routes = BTreeMap::new();
+        for field in <R as OutputBindings>::FIELDS {
+            if field.kind != super::outputs::OutputKind::Activate {
+                continue;
+            }
+            let input_name = field.input.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("activation output `{}` has no input selector", field.name),
+                })
+            })?;
+            let input = <R::Inputs as TransportInputSet>::transport_fields()
+                .iter()
+                .find(|candidate| candidate.name == input_name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!(
+                            "activation output `{}` selects unknown input `{input_name}`",
+                            field.name
+                        ),
+                    })
+                })?;
+            if input.kind == super::input::InputKind::Operation {
+                continue;
+            }
+            let routes = manifest.input_routes(input)?;
+            if routes.len() != 1 {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!(
+                        "activation input `{input_name}` requires exactly one connected source"
+                    ),
+                }));
+            }
+            let Some(route) = routes.into_iter().next() else {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!(
+                        "activation input `{input_name}` requires exactly one connected source"
+                    ),
+                }));
+            };
+            if route.direction != InputDirection::Reply {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!(
+                        "activation input `{input_name}` is not a Read or Request completion"
+                    ),
+                }));
+            }
+            if route.request_max_bytes.is_none() {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("activation input `{input_name}` has no request-byte bound"),
+                }));
+            }
+            if route.caller_identity.is_none() || route.caller_rank.is_none() {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!(
+                        "activation input `{input_name}` has no graph-resolved caller ordinal"
+                    ),
+                }));
+            }
+            if activation_routes.insert(input_name, route).is_some() {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("input `{input_name}` has multiple activation bindings"),
+                }));
+            }
+        }
         self.bus = Some(bus);
+        self.instance = Some(instance.to_owned());
+        self.read_subscriptions = read_subscriptions;
+        self.activation_routes = activation_routes;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn bind_direct(&mut self, bus: crate::bus::BusHandle, instance: &str) {
+        self.bus = Some(bus);
+        self.instance = Some(instance.to_owned());
     }
 
     fn ensure_open(&self) -> crate::Result<()> {
@@ -518,37 +1570,722 @@ impl<Outputs> ExecutionOutputAdapter<Outputs> {
             Err(anyhow::anyhow!(crate::bus::BusError::Closed))
         }
     }
+
+    fn next_command_id(&mut self) -> crate::Result<u64> {
+        let id = self.next_command_id;
+        self.next_command_id = self.next_command_id.checked_add(1).ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(
+                "runtime command id space exhausted".to_owned(),
+            ))
+        })?;
+        Ok(id)
+    }
+
+    fn expire_correlations(&mut self) -> crate::Result<()> {
+        let Some(correlations) = &self.correlations else {
+            return Ok(());
+        };
+        let expired_set = self.expired_correlations.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::Transport(
+                "expired correlation table is not bound".to_owned(),
+            ))
+        })?;
+        let completion_queue = self.exchange_completions.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::Transport(
+                "exchange completion queue is not bound".to_owned(),
+            ))
+        })?;
+        let now = Instant::now();
+        let retired = {
+            let mut correlations = match correlations.lock() {
+                Ok(correlations) => correlations,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let current = std::mem::take(&mut *correlations);
+            let mut retained = BTreeMap::new();
+            let mut retired = Vec::new();
+            for (identity, pending) in current {
+                if pending.deadline <= now {
+                    retired.push((identity, pending));
+                } else {
+                    retained.insert(identity, pending);
+                }
+            }
+            *correlations = retained;
+            retired
+        };
+        if retired.is_empty() {
+            return Ok(());
+        }
+        let mut expired_set = match expired_set.lock() {
+            Ok(expired_set) => expired_set,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let mut completion_queue = match completion_queue.lock() {
+            Ok(completion_queue) => completion_queue,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for (identity, pending) in retired {
+            if completion_queue.len() >= MAX_EXPIRED_CORRELATIONS {
+                return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                    port: "runtime".to_owned(),
+                    what: "exchange completion count",
+                    actual: completion_queue.len() as u64 + 1,
+                    maximum: MAX_EXPIRED_CORRELATIONS as u64,
+                }));
+            }
+            expired_set.insert(identity.clone());
+            while expired_set.len() > MAX_EXPIRED_CORRELATIONS {
+                let _ = expired_set.pop_first();
+            }
+            match pending.kind {
+                ExchangeKind::Read => completion_queue.push(ExchangeCompletion::Read {
+                    field: pending.field,
+                    key: pending.key,
+                    result: Err(ReadError::Timeout),
+                }),
+                ExchangeKind::Request => completion_queue.push(ExchangeCompletion::Request {
+                    field: pending.field,
+                    key: pending.key,
+                    result: Err(RequestError::Timeout),
+                }),
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_reads(&mut self) -> crate::Result<()> {
+        for subscription in &mut self.read_subscriptions {
+            loop {
+                match subscription.subscriber.try_recv() {
+                    Ok(Some(sample)) => {
+                        let sample = WireSample::from_zenoh(sample)?;
+                        validate_read_request_metadata(
+                            &subscription.binding,
+                            &subscription.allowed_callers,
+                            &sample,
+                        )?;
+                        if self
+                            .pending_reads
+                            .iter()
+                            .any(|request| request.field == subscription.field)
+                        {
+                            return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                                port: subscription.binding.name.clone(),
+                                what: "outstanding read requests",
+                                actual: 2,
+                                maximum: 1,
+                            }));
+                        }
+                        self.pending_reads.push(RuntimeReadRequest {
+                            field: subscription.field,
+                            sample,
+                        });
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        return Err(anyhow::anyhow!(TransportError::Transport(
+                            error.to_string(),
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_operations(&mut self) -> crate::Result<()> {
+        let fields = self.operations.keys().copied().collect::<Vec<_>>();
+        for field in fields {
+            let Some(operation) = self.operations.get_mut(field) else {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("operation `{field}` disappeared during polling"),
+                }));
+            };
+            if let Some(completion) = operation
+                .operation
+                .poll()
+                .map_err(|error| anyhow::anyhow!(error))?
+            {
+                let (id, outcome) = completion.into_parts();
+                let key = operation.keys.remove(&id).ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                        "operation `{field}` completed with unknown internal id {id}"
+                    )))
+                })?;
+                let result = match outcome {
+                    OperationOutcome::Completed(Ok(value)) => Ok(value),
+                    OperationOutcome::Completed(Err(error)) => {
+                        Err(OperationInputError::Failed(error.to_string()))
+                    }
+                    OperationOutcome::TimedOut => Err(OperationInputError::Timeout),
+                };
+                let queue = self.operation_completions.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::Transport(
+                        "operation completion queue is not bound".to_owned(),
+                    ))
+                })?;
+                let mut queue = match queue.lock() {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                queue.push(OperationCompletionRecord { field, key, result });
+            }
+            if operation.operation.state() == super::operation::OperationState::Idle
+                && operation.operation.has_pending()
+            {
+                operation
+                    .operation
+                    .start_pending()
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                operation.pending_key = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_transport(&mut self) -> crate::Result<()> {
+        self.ensure_open()?;
+        self.expire_correlations()?;
+        self.poll_reads()?;
+        self.poll_operations()
+    }
+
+    fn dispatch_activations(&mut self, activations: Vec<StagedActivation>) -> crate::Result<()> {
+        for activation in activations {
+            let field = activation.field;
+            if let Some(worker) = activation.worker {
+                let operation_completions =
+                    self.operation_completions.clone().ok_or_else(|| {
+                        anyhow::anyhow!(TransportError::Transport(
+                            "operation completion queue is not bound".to_owned(),
+                        ))
+                    })?;
+                let key = activation.key.ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!("operation `{field}` activation has no key"),
+                    })
+                })?;
+                let input = activation.request.ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!("operation `{field}` activation has no input"),
+                    })
+                })?;
+                let timeout_ms = activation.timeout_ms.ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!("operation `{field}` activation has no timeout"),
+                    })
+                })?;
+                let cancel_grace_ms = activation.cancel_grace_ms.ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!("operation `{field}` activation has no cancel grace"),
+                    })
+                })?;
+                if timeout_ms == 0 || cancel_grace_ms == 0 {
+                    return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                        detail: format!("operation `{field}` has zero lifecycle bound"),
+                    }));
+                }
+                let policy = OperationPolicy::from_millis(timeout_ms, cancel_grace_ms)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                let id = self.next_command_id()?;
+                let operation =
+                    self.operations
+                        .entry(field)
+                        .or_insert_with(|| ErasedManagedOperation {
+                            operation: ManagedOperation::new(policy, worker),
+                            keys: BTreeMap::new(),
+                            pending_key: None,
+                        });
+                operation.keys.insert(id, key);
+                match operation
+                    .operation
+                    .submit(super::Activation::new(id, input))
+                    .map_err(|error| anyhow::anyhow!(error))?
+                {
+                    super::operation::SubmitResult::Started => {}
+                    super::operation::SubmitResult::Pending => {
+                        operation.pending_key = Some(id);
+                    }
+                    super::operation::SubmitResult::ReplacedPending => {
+                        if let Some(previous) = operation.pending_key.replace(id) {
+                            let previous_key = operation.keys.remove(&previous).ok_or_else(|| {
+                                anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                                    "operation `{field}` replaced unknown pending activation {previous}"
+                                )))
+                            })?;
+                            let mut queue = match operation_completions.lock() {
+                                Ok(queue) => queue,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            if queue.len() >= MAX_EXPIRED_CORRELATIONS {
+                                return Err(anyhow::anyhow!(TransportError::BatchTooLarge {
+                                    port: "runtime".to_owned(),
+                                    what: "operation completion count",
+                                    actual: queue.len() as u64 + 1,
+                                    maximum: MAX_EXPIRED_CORRELATIONS as u64,
+                                }));
+                            }
+                            queue.push(OperationCompletionRecord {
+                                field,
+                                key: previous_key,
+                                result: Err(OperationInputError::Stale),
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let command_id = activation.command_id.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                    "remote activation `{field}` has no command id"
+                )))
+            })?;
+            let kind = activation.correlation_kind.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                    "remote activation `{field}` has no exchange kind"
+                )))
+            })?;
+            let timeout_ms = activation.timeout_ms.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("remote activation `{field}` has no timeout"),
+                })
+            })?;
+            let key = activation.key.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("remote activation `{field}` has no key"),
+                })
+            })?;
+            let expected_source = activation.expected_source.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("remote activation `{field}` has no target source"),
+                })
+            })?;
+            let correlations = self.correlations.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::Transport(
+                    "activation correlation table is not bound".to_owned(),
+                ))
+            })?;
+            let deadline = Instant::now()
+                .checked_add(Duration::from_millis(timeout_ms))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::CommandCorrelation(
+                        "runtime transfer deadline overflowed".to_owned(),
+                    ))
+                })?;
+            let mut correlations = match correlations.lock() {
+                Ok(correlations) => correlations,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if correlations.keys().any(|(candidate, _)| candidate == field) {
+                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                    format!("activation `{field}` acquired a duplicate outstanding correlation")
+                )));
+            }
+            correlations.insert(
+                (field.to_owned(), command_id),
+                PendingCorrelation {
+                    field,
+                    key,
+                    kind,
+                    deadline,
+                    expected_source,
+                },
+            );
+            drop(correlations);
+            if let (Some(every), Some(invocation_index)) =
+                (activation.refresh_every_steps, activation.invocation_index)
+            {
+                self.next_refresh_steps
+                    .insert(field, invocation_index.saturating_add(every));
+            }
+        }
+        Ok(())
+    }
 }
 
-impl<Outputs> OutputAdmission<Outputs> for ExecutionOutputAdapter<Outputs> {
-    type Reservation = ();
+impl<R> RuntimeWorkSink for ExecutionOutputAdapter<R>
+where
+    R: RegisteredRuntime,
+    R::Inputs: InputSet + TransportInputSet,
+    R::Outputs: OutputSet,
+{
+    fn activate(
+        &mut self,
+        field: &'static str,
+        key: TransportValue,
+        request: TransportValue,
+        worker: Option<OperationWorker>,
+        request_codec: Option<crate::port::PortCodec>,
+        timeout_ms: Option<u64>,
+        refresh_every_steps: Option<u64>,
+        cancel_grace_ms: Option<u64>,
+        context: super::StepContext,
+    ) -> crate::Result<()> {
+        if self.stopped {
+            return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
+        }
+        if self
+            .staged
+            .iter()
+            .any(|activation| activation.field == field)
+        {
+            return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                format!("input `{field}` has more than one activation in one candidate")
+            )));
+        }
+        if let Some(worker) = worker {
+            if timeout_ms.is_none() || cancel_grace_ms.is_none() || refresh_every_steps.is_some() {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("local operation `{field}` has invalid activation policy"),
+                }));
+            }
+            self.staged.push(StagedActivation {
+                field,
+                key: Some(key),
+                request: Some(request),
+                worker: Some(worker),
+                request_output: None,
+                timeout_ms,
+                refresh_every_steps: None,
+                invocation_index: None,
+                cancel_grace_ms,
+                command_id: None,
+                correlation_kind: None,
+                expected_source: None,
+            });
+            return Ok(());
+        }
 
-    fn reserve(&mut self, _outputs: &Outputs) -> crate::Result<Self::Reservation> {
+        let route = self.activation_routes.get(field).cloned().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!("activation input `{field}` has no graph-resolved route"),
+            })
+        })?;
+        let timeout_ms = timeout_ms.ok_or_else(|| {
+            anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!("remote activation `{field}` has no timeout"),
+            })
+        })?;
+        if timeout_ms == 0
+            || (refresh_every_steps.is_some() && route.binding.kind != crate::port::PortKind::Read)
+        {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!("remote activation `{field}` has invalid timeout/refresh policy"),
+            }));
+        }
+        if cancel_grace_ms.is_some() {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!("remote activation `{field}` has local operation retirement data"),
+            }));
+        }
+        if let Some(every) = refresh_every_steps {
+            let current = context.invocation_index();
+            if self
+                .next_refresh_steps
+                .get(field)
+                .is_some_and(|next| current < *next)
+            {
+                // Refresh opportunities are counted from accepted invocation
+                // boundaries.  A healthy paused/busy residence consumes no
+                // transfer timeout and does not create catch-up requests.
+                return Ok(());
+            }
+            if every == 0 {
+                return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("remote Read activation `{field}` has zero refresh period"),
+                }));
+            }
+        }
+        let request_codec = request_codec.ok_or_else(|| {
+            anyhow::anyhow!(TransportError::MissingCodec {
+                port: route.binding.name.clone(),
+                direction: "request",
+            })
+        })?;
+        let max_bytes = route.request_max_bytes.ok_or_else(|| {
+            anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!("remote activation `{field}` has no request-byte bound"),
+            })
+        })?;
+        let command_id = self.next_command_id()?;
+        let correlations = self.correlations.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::Transport(
+                "activation correlation table is not bound".to_owned(),
+            ))
+        })?;
+        {
+            let correlations = match correlations.lock() {
+                Ok(correlations) => correlations,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if correlations.keys().any(|(candidate, _)| candidate == field) {
+                if refresh_every_steps.is_some() {
+                    return Ok(());
+                }
+                return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+                    format!("activation `{field}` already has an outstanding completion")
+                )));
+            }
+            let source = self.instance.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::Transport(
+                    "activation transport is not bound".to_owned(),
+                ))
+            })?;
+            let caller_identity = route.caller_identity.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("remote activation `{field}` has no graph caller identity"),
+                })
+            })?;
+            let caller_rank = route.caller_rank.ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("remote activation `{field}` has no graph caller rank"),
+                })
+            })?;
+            let metadata = transport::request_metadata(
+                source,
+                caller_identity,
+                context,
+                command_id,
+                context.invocation_index().saturating_add(1),
+                caller_rank,
+            );
+            let output = match PreparedOutput::request_binding(
+                route.binding.clone(),
+                request_codec,
+                &*request,
+                max_bytes,
+                metadata,
+            ) {
+                Ok(output) => output
+                    .for_field(field)
+                    .for_instance(route.source_instance.clone()),
+                Err(error) => return Err(anyhow::anyhow!(error)),
+            };
+            let kind = if route.binding.kind == crate::port::PortKind::Read {
+                ExchangeKind::Read
+            } else {
+                ExchangeKind::Request
+            };
+            self.staged.push(StagedActivation {
+                field,
+                key: Some(key),
+                request: None,
+                worker: None,
+                request_output: Some(output),
+                timeout_ms: Some(timeout_ms),
+                refresh_every_steps,
+                invocation_index: Some(context.invocation_index()),
+                cancel_grace_ms: None,
+                command_id: Some(command_id),
+                correlation_kind: Some(kind),
+                expected_source: Some(route.source_instance),
+            });
+        }
+        Ok(())
+    }
+
+    fn push_read_reply(&mut self, output: PreparedOutput) -> crate::Result<()> {
+        self.projections.push(output);
+        Ok(())
+    }
+}
+
+impl<R> OutputAdmission<R::Outputs> for ExecutionOutputAdapter<R>
+where
+    R: RegisteredRuntime,
+    R::Inputs: InputSet + TransportInputSet,
+    R::Outputs: OutputSet,
+{
+    type Reservation = OutputReservation;
+
+    fn reserve(&mut self, outputs: &R::Outputs) -> crate::Result<Self::Reservation> {
         if self.stopped {
             return Err(anyhow::anyhow!(crate::bus::BusError::Closed));
         }
         self.ensure_open()?;
-        Ok(())
+        let context = self.context.take().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: "output reservation has no invocation context".to_owned(),
+            })
+        })?;
+        let resolve_input_port = |field: &str| transport::input_port_signature::<R::Inputs>(field);
+        let transient = outputs.encode_transport(
+            context,
+            &resolve_input_port,
+            self.instance.as_deref().unwrap_or_default(),
+        )?;
+        let mut records = std::mem::take(&mut self.projections);
+        records.extend(transient);
+        let mut activations = std::mem::take(&mut self.staged);
+        for activation in &mut activations {
+            if let Some(request) = activation.request_output.take() {
+                records.push(request);
+            }
+        }
+        Ok(OutputReservation {
+            records,
+            activations,
+        })
     }
 }
 
-impl<Outputs> OutputSink<Outputs> for ExecutionOutputAdapter<Outputs> {
-    fn publish(
+impl<R> OutputSink<R> for ExecutionOutputAdapter<R>
+where
+    R: RegisteredRuntime,
+    R::Inputs: InputSet + TransportInputSet,
+    R::Outputs: OutputSet,
+{
+    fn prepare(&mut self, context: &super::StepContext) -> crate::Result<()> {
+        self.ensure_open()?;
+        self.context = Some(*context);
+        Ok(())
+    }
+
+    fn prepare_state(
         &mut self,
-        accepted: AcceptedInvocation<Outputs, Self::Reservation>,
+        service: &R,
+        state: &R::State,
+        context: &super::StepContext,
     ) -> crate::Result<()> {
         self.ensure_open()?;
-        let _ = accepted.into_parts();
+        self.projections.clear();
+        let source = self.instance.as_deref().unwrap_or_default().to_owned();
+        let mut requests = std::mem::take(&mut self.pending_reads);
+        service.serve_reads(state, *context, &mut requests, &source, self)?;
+        if !requests.is_empty() {
+            return Err(anyhow::anyhow!(TransportError::InvalidMetadata {
+                detail: format!(
+                    "{} read request(s) had no generated handler in the selected runtime",
+                    requests.len()
+                ),
+            }));
+        }
+        service.prepare_work(state, *context, self)?;
+        let resolve_input_port = |field: &str| transport::input_port_signature::<R::Inputs>(field);
+        self.projections.extend(service.encode_transport(
+            state,
+            *context,
+            &resolve_input_port,
+            &source,
+        )?);
         Ok(())
+    }
+
+    fn poll(&mut self) -> crate::Result<()> {
+        self.poll_transport()
+    }
+
+    fn publish(
+        &mut self,
+        accepted: AcceptedInvocation<R::Outputs, Self::Reservation>,
+    ) -> crate::Result<()> {
+        self.ensure_open()?;
+        let (_invocation, _context, _outputs, reservation) = accepted.into_parts();
+        let bus = self
+            .bus
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(crate::bus::BusError::Closed))?;
+        transport::publish_batch(
+            bus,
+            self.instance.as_deref().unwrap_or_default(),
+            &reservation.records,
+        )?;
+        self.dispatch_activations(reservation.activations)
     }
 
     fn stop(&mut self) -> crate::Result<()> {
         self.stopped = true;
-        Ok(())
+        self.context = None;
+        self.projections.clear();
+        self.pending_reads.clear();
+        self.staged.clear();
+        self.next_refresh_steps.clear();
+        self.read_subscriptions.clear();
+        let mut first_error = None;
+        for operation in self.operations.values_mut() {
+            if let Err(error) = operation.operation.reset() {
+                first_error.get_or_insert(anyhow::anyhow!(error));
+            }
+            operation.keys.clear();
+            operation.pending_key = None;
+        }
+        self.operations.clear();
+        if let Some(correlations) = &self.correlations {
+            match correlations.lock() {
+                Ok(mut correlations) => correlations.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        if let Some(expired) = &self.expired_correlations {
+            match expired.lock() {
+                Ok(mut expired) => expired.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        if let Some(queue) = &self.operation_completions {
+            match queue.lock() {
+                Ok(mut queue) => queue.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        if let Some(queue) = &self.exchange_completions {
+            match queue.lock() {
+                Ok(mut queue) => queue.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        self.bus = None;
+        self.instance = None;
+        first_error.map_or(Ok(()), Err)
     }
 
     fn reset(&mut self) -> crate::Result<()> {
         self.stopped = false;
+        self.context = None;
+        self.projections.clear();
+        self.pending_reads.clear();
+        self.staged.clear();
+        self.next_refresh_steps.clear();
+        self.next_command_id = 1;
+        for operation in self.operations.values_mut() {
+            operation
+                .operation
+                .reset()
+                .map_err(|error| anyhow::anyhow!(error))?;
+            operation.keys.clear();
+            operation.pending_key = None;
+        }
+        if let Some(correlations) = &self.correlations {
+            match correlations.lock() {
+                Ok(mut correlations) => correlations.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        if let Some(expired) = &self.expired_correlations {
+            match expired.lock() {
+                Ok(mut expired) => expired.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        if let Some(queue) = &self.operation_completions {
+            match queue.lock() {
+                Ok(mut queue) => queue.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        if let Some(queue) = &self.exchange_completions {
+            match queue.lock() {
+                Ok(mut queue) => queue.clear(),
+                Err(poisoned) => poisoned.into_inner().clear(),
+            }
+        }
+        if self.bus.is_none() || self.instance.is_none() {
+            return Err(anyhow::anyhow!(TransportError::Transport(
+                "Runtime output transport is not bound after reset".to_owned(),
+            )));
+        }
         Ok(())
     }
 }
@@ -569,7 +2306,7 @@ pub struct RuntimeRunner<R, Inputs, Outputs>
 where
     R: RegisteredRuntime,
     Inputs: InputSource<R>,
-    Outputs: OutputSink<R::Outputs>,
+    Outputs: OutputSink<R>,
 {
     owner: RuntimeOwner<R>,
     schedule: HardwareSchedule,
@@ -583,7 +2320,7 @@ where
     R: RegisteredRuntime,
     R::Inputs: InputSnapshot,
     Inputs: InputSource<R>,
-    Outputs: OutputSink<R::Outputs>,
+    Outputs: OutputSink<R>,
 {
     /// Initialize one owner, validate its specification, and bind adapters.
     pub fn new(
@@ -614,6 +2351,9 @@ where
         if self.stopped {
             return Ok(PollOutcome::Stopped);
         }
+        if let Err(error) = catch_adapter(|| self.outputs.poll()) {
+            return self.fail(error);
+        }
         let candidate = match self.schedule.candidate(now) {
             Ok(candidate) => candidate,
             Err(ScheduleError::NotDue { next_release }) => {
@@ -629,14 +2369,22 @@ where
         if started.elapsed() > R::SPEC.timeout.as_duration() {
             return self.fail(anyhow::anyhow!(super::InvocationError::DeadlineExceeded));
         }
-        let accepted =
-            match self
-                .owner
-                .accept_with(&candidate.context(), &inputs, &mut self.outputs)
-            {
+        if let Err(error) = catch_adapter(|| self.outputs.prepare(&candidate.context())) {
+            return self.fail(error);
+        }
+        let accepted = {
+            let owner = &mut self.owner;
+            let outputs = &mut self.outputs;
+            match owner.accept_with_hook(
+                &candidate.context(),
+                &inputs,
+                outputs,
+                |service, state, context, outputs| outputs.prepare_state(service, state, context),
+            ) {
                 Ok(accepted) => accepted,
                 Err(error) => return self.fail(error),
-            };
+            }
+        };
         if started.elapsed() > R::SPEC.timeout.as_duration() {
             return self.fail(anyhow::anyhow!(super::InvocationError::DeadlineExceeded));
         }
@@ -697,24 +2445,13 @@ where
         }
         self.schedule = HardwareSchedule::new(now, R::SPEC.period)
             .map_err(|error| anyhow::anyhow!(RunnerError::Schedule(error)))
-            .map_err(|error| {
+            .inspect_err(|_error| {
                 self.owner.fail();
                 self.stopped = true;
                 self.cleanup_after_failure();
-                error
             })?;
         self.stopped = false;
         Ok(())
-    }
-
-    /// Borrow the input adapter for process-boundary binding or inspection.
-    pub(crate) fn inputs_mut(&mut self) -> &mut Inputs {
-        &mut self.inputs
-    }
-
-    /// Borrow the output adapter for process-boundary binding or inspection.
-    pub(crate) fn outputs_mut(&mut self) -> &mut Outputs {
-        &mut self.outputs
     }
 
     /// Runtime lifecycle status.
@@ -815,6 +2552,24 @@ struct SourceBundleManifest {
 struct SourceDocument {
     #[serde(default)]
     services: BTreeMap<String, SourceService>,
+    #[serde(default)]
+    connections: BTreeMap<String, SourceConnectionSources>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SourceConnectionSources {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl SourceConnectionSources {
+    fn as_slice(&self) -> &[String] {
+        match self {
+            Self::One(source) => std::slice::from_ref(source),
+            Self::Many(sources) => sources,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -829,6 +2584,237 @@ struct SourceExecutable {
     path: String,
     bytes: u64,
     sha256: String,
+    #[serde(default)]
+    artifact: Option<SourceArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct SourceArtifact {
+    runtime: SourceRuntimeRecord,
+}
+
+#[derive(Clone, Debug, Deserialize, Default, Eq, PartialEq)]
+struct SourceRuntimeRecord {
+    #[serde(default)]
+    inputs: Vec<SourceInputRecord>,
+    #[serde(default)]
+    transient_outputs: Vec<SourceOutputRecord>,
+    #[serde(default)]
+    service_outputs: Vec<SourceOutputRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct SourceInputRecord {
+    name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    max_items: Option<u64>,
+    #[serde(default)]
+    max_bytes: Option<u64>,
+    #[serde(default)]
+    port: Option<String>,
+    #[serde(default)]
+    signature: Option<SourcePortSignature>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct SourceOutputRecord {
+    name: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    port: Option<String>,
+    #[serde(default)]
+    signature: Option<SourcePortSignature>,
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    max_items: Option<u64>,
+    #[serde(default)]
+    max_bytes: Option<u64>,
+    #[serde(default)]
+    max_request_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct SourcePortSignature {
+    name: String,
+    service: String,
+    method: String,
+    kind: String,
+    request: String,
+    response: String,
+}
+
+impl SourcePortSignature {
+    fn to_binding(&self) -> crate::Result<super::transport::PortBinding> {
+        let kind = match self.kind.as_str() {
+            "state" => crate::port::PortKind::State,
+            "sample" => crate::port::PortKind::Sample,
+            "event" => crate::port::PortKind::Event,
+            "stream" => crate::port::PortKind::Stream,
+            "setpoint" => crate::port::PortKind::Setpoint,
+            "read" => crate::port::PortKind::Read,
+            "commands" => crate::port::PortKind::Commands,
+            value => {
+                return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
+                    message: format!("unknown source port kind `{value}`"),
+                }));
+            }
+        };
+        Ok(super::transport::PortBinding {
+            name: self.name.clone(),
+            service: self.service.clone(),
+            method: self.method.clone(),
+            kind,
+            request: self.request.clone(),
+            response: self.response.clone(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputDirection {
+    Request,
+    Publication,
+    Reply,
+    Completion,
+}
+
+impl InputDirection {
+    fn for_kind(kind: super::input::InputKind) -> crate::Result<Self> {
+        match kind {
+            super::input::InputKind::Latest
+            | super::input::InputKind::Samples
+            | super::input::InputKind::Events
+            | super::input::InputKind::Setpoint
+            | super::input::InputKind::Stream => Ok(Self::Publication),
+            super::input::InputKind::Read | super::input::InputKind::Request => Ok(Self::Reply),
+            super::input::InputKind::Commands => Ok(Self::Request),
+            super::input::InputKind::Operation => Ok(Self::Completion),
+        }
+    }
+
+    fn key_direction(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Publication => "publish",
+            Self::Reply => "reply",
+            Self::Completion => "completion",
+        }
+    }
+
+    fn expected_kind(self, input_kind: super::input::InputKind) -> crate::port::PortKind {
+        match self {
+            Self::Request => crate::port::PortKind::Commands,
+            Self::Publication => match input_kind {
+                super::input::InputKind::Latest => crate::port::PortKind::State,
+                super::input::InputKind::Samples => crate::port::PortKind::Sample,
+                super::input::InputKind::Events => crate::port::PortKind::Event,
+                super::input::InputKind::Setpoint => crate::port::PortKind::Setpoint,
+                super::input::InputKind::Stream => crate::port::PortKind::Stream,
+                _ => crate::port::PortKind::State,
+            },
+            Self::Reply => match input_kind {
+                super::input::InputKind::Read => crate::port::PortKind::Read,
+                super::input::InputKind::Request => crate::port::PortKind::Commands,
+                _ => crate::port::PortKind::Read,
+            },
+            Self::Completion => crate::port::PortKind::Commands,
+        }
+    }
+}
+
+fn validate_read_request_metadata(
+    binding: &super::transport::PortBinding,
+    allowed_callers: &BTreeMap<String, u64>,
+    sample: &WireSample,
+) -> crate::Result<()> {
+    let metadata = sample.metadata();
+    let command_id = metadata.command_id.ok_or_else(|| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(
+            "read request is missing command_id".to_owned(),
+        ))
+    })?;
+    if metadata.eligible_boundary.is_none() {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!("read request {command_id} is missing eligible_boundary"),
+        )));
+    }
+    let caller_rank = metadata.caller_rank.ok_or_else(|| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+            "read request {command_id} is missing caller_rank"
+        )))
+    })?;
+    let caller = metadata
+        .caller
+        .as_deref()
+        .filter(|caller| !caller.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                "read request {command_id} is missing caller identity"
+            )))
+        })?;
+    let source = metadata
+        .source
+        .as_deref()
+        .filter(|source| !source.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                "read request {command_id} is missing source"
+            )))
+        })?;
+    let (caller_instance, _) = parse_graph_endpoint(caller).map_err(|error| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+            "read request {command_id} has invalid caller `{caller}`: {error}"
+        )))
+    })?;
+    if caller_instance != source {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!("read request {command_id} caller `{caller}` does not match source `{source}`"),
+        )));
+    }
+    let expected_rank = allowed_callers.get(caller).ok_or_else(|| {
+        anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+            "caller `{caller}` is not connected to Read port `{}`",
+            binding.name
+        )))
+    })?;
+    if *expected_rank != caller_rank {
+        return Err(anyhow::anyhow!(TransportError::CommandCorrelation(
+            format!(
+                "read request {command_id} used caller rank {caller_rank}, expected {expected_rank}"
+            )
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedInputRoute {
+    field: &'static str,
+    binding: super::transport::PortBinding,
+    source_instance: String,
+    source_port: String,
+    direction: InputDirection,
+    max_items: u64,
+    max_bytes: u64,
+    request_max_bytes: Option<u64>,
+    caller_identity: Option<String>,
+    caller_rank: Option<u64>,
+}
+
+fn parse_graph_endpoint(value: &str) -> Result<(String, String), String> {
+    let (instance, port) = value
+        .split_once('.')
+        .ok_or_else(|| "missing instance separator".to_owned())?;
+    if instance.is_empty() || port.is_empty() || port.contains('.') {
+        return Err("instance and port must contain exactly one non-empty separator".to_owned());
+    }
+    parse_identifier(instance).map_err(|error| error.to_owned())?;
+    parse_identifier(port).map_err(|error| error.to_owned())?;
+    Ok((instance.to_owned(), port.to_owned()))
 }
 
 fn decode_config<C: Config>(value: Value) -> crate::Result<C> {
@@ -945,11 +2931,20 @@ fn parse_endpoint(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::any::Any;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
     use std::time::Duration;
 
+    use prost::Message;
+
     use super::*;
-    use crate::runtime::{InitContext, Runtime, RuntimeSpec, StepContext};
+    use crate::runtime::{
+        ExecutionDuration, InitContext, ObservationStamp, ReadError, RequestError, Runtime,
+        RuntimeSpec, StepContext,
+    };
 
     #[derive(Debug, Deserialize)]
     struct TestConfig {
@@ -968,6 +2963,8 @@ mod tests {
     }
 
     impl InputSnapshot for TestInputs {
+        type Transport = ();
+
         fn empty() -> Self {
             Self
         }
@@ -994,9 +2991,9 @@ mod tests {
         type Outputs = TestOutputs;
 
         fn validate_config(config: &Self::Config) -> crate::Result<()> {
-            Ok((config.value > 0)
+            (config.value > 0)
                 .then_some(())
-                .ok_or_else(|| anyhow::anyhow!("value must be positive"))?)
+                .ok_or_else(|| anyhow::anyhow!("value must be positive"))
         }
 
         fn init(&self, _ctx: &InitContext, config: Self::Config) -> crate::Result<Self::State> {
@@ -1056,7 +3053,7 @@ mod tests {
         }
     }
 
-    impl OutputSink<TestOutputs> for TestSink {
+    impl OutputSink<TestRuntime> for TestSink {
         fn publish(
             &mut self,
             accepted: AcceptedInvocation<TestOutputs, Self::Reservation>,
@@ -1231,5 +3228,1088 @@ mod tests {
         .expect("runner initializes");
         assert!(runner.poll(ExecutionTime::default()).is_err());
         assert_eq!(runner.status(), RuntimeStatus::Failed);
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct TransportRequest {
+        #[prost(uint32, tag = "1")]
+        value: u32,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct TransportResponse {
+        #[prost(uint32, tag = "1")]
+        value: u32,
+    }
+
+    fn encode_transport_request(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
+        let value = value
+            .downcast_ref::<TransportRequest>()
+            .ok_or(crate::port::CodecError::TypeMismatch)?;
+        let mut bytes = Vec::with_capacity(value.encoded_len());
+        value
+            .encode(&mut bytes)
+            .map_err(|_| crate::port::CodecError::Encode)?;
+        Ok(bytes)
+    }
+
+    fn decode_transport_request(
+        bytes: &[u8],
+    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
+        TransportRequest::decode(bytes)
+            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
+            .map_err(|_| crate::port::CodecError::Decode)
+    }
+
+    fn encode_transport_response(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
+        let value = value
+            .downcast_ref::<TransportResponse>()
+            .ok_or(crate::port::CodecError::TypeMismatch)?;
+        let mut bytes = Vec::with_capacity(value.encoded_len());
+        value
+            .encode(&mut bytes)
+            .map_err(|_| crate::port::CodecError::Encode)?;
+        Ok(bytes)
+    }
+
+    fn decode_transport_response(
+        bytes: &[u8],
+    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
+        TransportResponse::decode(bytes)
+            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
+            .map_err(|_| crate::port::CodecError::Decode)
+    }
+
+    const TRANSPORT_PORT: crate::port::PortSignature =
+        crate::port::PortSignature::with_descriptor_and_codec(
+            "transport-commands",
+            "phoxal.runtime.test",
+            "Transport",
+            crate::port::PortKind::Commands,
+            "phoxal.runtime.test.TransportRequest",
+            "phoxal.runtime.test.TransportResponse",
+            &[],
+            crate::port::PortCodec::new(
+                Some(encode_transport_request),
+                Some(decode_transport_request),
+                Some(encode_transport_response),
+                Some(decode_transport_response),
+            ),
+        );
+
+    struct TransportInputs {
+        commands: crate::runtime::Commands<TransportRequest, TransportResponse>,
+    }
+
+    impl crate::runtime::input::InputSet for TransportInputs {
+        const FIELDS: &'static [crate::runtime::input::InputField] = &[];
+        const TRANSPORT_FIELDS: &'static [crate::runtime::transport::InputTransportField] =
+            &[crate::runtime::transport::InputTransportField {
+                name: "commands",
+                kind: crate::runtime::input::InputKind::Commands,
+                signature: Some(TRANSPORT_PORT),
+                max_age_ms: None,
+                max_items: Some(4),
+                max_bytes: Some(1024),
+                request_codec: TRANSPORT_PORT.codec(),
+            }];
+
+        fn decode_transport_field(
+            &mut self,
+            field: &str,
+            mut samples: Vec<crate::runtime::transport::WireSample>,
+        ) -> crate::Result<()> {
+            if field != "commands" {
+                return Err(anyhow::anyhow!("unexpected transport input field {field}"));
+            }
+            crate::runtime::transport::sort_command_samples(&mut samples)?;
+            let mut items = Vec::with_capacity(samples.len());
+            let mut bytes = 0_u64;
+            for sample in samples {
+                bytes = bytes
+                    .checked_add(sample.payload().len() as u64)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(crate::runtime::transport::TransportError::BatchTooLarge {
+                            port: TRANSPORT_PORT.name.to_owned(),
+                            what: "encoded bytes",
+                            actual: u64::MAX,
+                            maximum: 1024,
+                        })
+                    })?;
+                if bytes > 1024 {
+                    return Err(anyhow::anyhow!(
+                        crate::runtime::transport::TransportError::BatchTooLarge {
+                            port: TRANSPORT_PORT.name.to_owned(),
+                            what: "encoded bytes",
+                            actual: bytes,
+                            maximum: 1024,
+                        }
+                    ));
+                }
+                let request: TransportRequest =
+                    crate::runtime::transport::decode_request(TRANSPORT_PORT, &sample)?;
+                let metadata = sample.metadata();
+                let id = crate::runtime::CommandId::new(
+                    metadata
+                        .command_id
+                        .ok_or_else(|| anyhow::anyhow!("missing command id"))?,
+                );
+                let order = crate::runtime::CommandOrder::new(
+                    metadata
+                        .eligible_boundary
+                        .ok_or_else(|| anyhow::anyhow!("missing eligible boundary"))?,
+                    metadata
+                        .caller_rank
+                        .ok_or_else(|| anyhow::anyhow!("missing caller rank"))?,
+                    id,
+                );
+                items.push(crate::runtime::Command::with_order(order, request));
+            }
+            self.commands = crate::runtime::Commands::bounded(
+                items,
+                bytes,
+                crate::runtime::Capacity::new(4, 1024)?,
+            )?;
+            Ok(())
+        }
+    }
+
+    impl InputSnapshot for TransportInputs {
+        type Transport = ();
+
+        fn empty() -> Self {
+            Self {
+                commands: crate::runtime::Commands::default(),
+            }
+        }
+    }
+
+    impl crate::runtime::input::TransportInputSet for TransportInputs {
+        const TRANSPORT_FIELDS: &'static [crate::runtime::transport::InputTransportField] =
+            <Self as crate::runtime::input::InputSet>::TRANSPORT_FIELDS;
+
+        fn decode_transport_field(
+            &mut self,
+            field: &str,
+            _binding: Option<&crate::runtime::transport::PortBinding>,
+            samples: Vec<crate::runtime::transport::WireSample>,
+        ) -> crate::Result<()> {
+            <Self as crate::runtime::input::InputSet>::decode_transport_field(self, field, samples)
+        }
+    }
+
+    impl crate::runtime::input::TransportInputSink for TransportInputs {
+        fn set_latest(
+            &mut self,
+            field: &str,
+            _value: crate::runtime::input::TransportValue,
+            _stamp: ObservationStamp,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!("unexpected latest field {field}")))
+        }
+
+        fn set_samples(
+            &mut self,
+            field: &str,
+            _values: Vec<crate::runtime::input::TransportSample>,
+            _gap: bool,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!("unexpected samples field {field}")))
+        }
+
+        fn set_events(
+            &mut self,
+            field: &str,
+            _values: Vec<crate::runtime::input::TransportValue>,
+            _gap: bool,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!("unexpected events field {field}")))
+        }
+
+        fn set_setpoint(
+            &mut self,
+            field: &str,
+            _value: Option<(
+                crate::runtime::input::TransportValue,
+                ExecutionTime,
+                ExecutionTime,
+            )>,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!(
+                "unexpected setpoint field {field}"
+            )))
+        }
+
+        fn set_stream(
+            &mut self,
+            field: &str,
+            _values: Vec<crate::runtime::input::TransportStreamItem>,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!("unexpected stream field {field}")))
+        }
+
+        fn set_commands(
+            &mut self,
+            field: &str,
+            _values: Vec<crate::runtime::input::TransportCommand>,
+            _encoded_bytes: u64,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!(
+                "unexpected commands sink field {field}"
+            )))
+        }
+
+        fn set_read(
+            &mut self,
+            field: &str,
+            _key: crate::runtime::input::TransportValue,
+            _result: Result<crate::runtime::input::TransportValue, ReadError>,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!("unexpected read field {field}")))
+        }
+
+        fn set_request(
+            &mut self,
+            field: &str,
+            _key: crate::runtime::input::TransportValue,
+            _result: Result<crate::runtime::input::TransportValue, RequestError>,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!("unexpected request field {field}")))
+        }
+
+        fn set_operation(
+            &mut self,
+            field: &str,
+            _key: crate::runtime::input::TransportValue,
+            _result: Result<crate::runtime::input::TransportValue, OperationInputError>,
+        ) -> crate::Result<()> {
+            Err(anyhow::anyhow!(format!(
+                "unexpected operation field {field}"
+            )))
+        }
+    }
+
+    #[derive(Default)]
+    struct TransportOutputs {
+        replies: Vec<crate::runtime::Reply<TransportResponse>>,
+    }
+
+    impl crate::runtime::outputs::OutputSet for TransportOutputs {
+        const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+
+        fn encode_transport(
+            &self,
+            context: StepContext,
+            _resolve_input_port: &dyn Fn(&str) -> Option<crate::port::PortSignature>,
+            source: &str,
+        ) -> crate::Result<Vec<crate::runtime::transport::PreparedOutput>> {
+            let mut records = Vec::with_capacity(self.replies.len());
+            let mut bytes = 0_usize;
+            for reply in &self.replies {
+                let record = crate::runtime::transport::PreparedOutput::reply(
+                    TRANSPORT_PORT,
+                    reply.response() as &dyn Any,
+                    1024,
+                    crate::runtime::transport::reply_metadata(
+                        source,
+                        context,
+                        reply.id().sequence(),
+                        reply.order().eligible_boundary(),
+                        reply.order().caller_rank(),
+                    ),
+                )?;
+                bytes = crate::runtime::transport::checked_add_batch_bytes(
+                    TRANSPORT_PORT,
+                    bytes,
+                    record.payload_len(),
+                    4096,
+                )?;
+                records.push(record);
+            }
+            crate::runtime::transport::check_batch(TRANSPORT_PORT, records.len(), bytes, 4, 4096)?;
+            Ok(records)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct TransportRuntime;
+
+    impl Runtime for TransportRuntime {
+        type Config = ();
+        type State = ();
+        type Inputs = TransportInputs;
+        type Outputs = TransportOutputs;
+
+        fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+            Ok(())
+        }
+
+        fn step(
+            &self,
+            _ctx: &StepContext,
+            state: Self::State,
+            inputs: &Self::Inputs,
+        ) -> crate::Result<(Self::State, Self::Outputs)> {
+            let mut outputs = TransportOutputs::default();
+            for command in inputs.commands.items() {
+                outputs.replies.push(command.reply(TransportResponse {
+                    value: command.request().value.saturating_add(1),
+                }));
+            }
+            Ok((state, outputs))
+        }
+    }
+
+    impl RegisteredRuntime for TransportRuntime {
+        const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 100, 100);
+
+        fn __retain_artifact_metadata() {}
+    }
+
+    impl crate::runtime::outputs::OutputBindings for TransportRuntime {
+        const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_prost_runtime_transport_round_trip_preserves_command_order() {
+        use zenoh::Wait;
+        use zenoh::bytes::Encoding;
+        use zenoh::key_expr::OwnedKeyExpr;
+
+        let (owner, bus) =
+            crate::bus::session::BusOwner::open(crate::bus::BusConfig::for_participant(
+                crate::identity::ExecutionId::mint(),
+                crate::identity::ParticipantId::new("typed-runtime").expect("participant id"),
+                Vec::new(),
+            ))
+            .await
+            .expect("test bus opens");
+        let mut input = ExecutionInputAdapter::<TransportRuntime>::unbound();
+        input
+            .bind_direct(bus.clone(), "transport")
+            .await
+            .expect("input binds");
+        let mut output = ExecutionOutputAdapter::<TransportRuntime>::unbound();
+        output.bind_direct(bus.clone(), "transport");
+
+        let session = bus.session().expect("session is open");
+        let reply_key = bus.full_key(&crate::runtime::transport::port_key(
+            "transport",
+            TRANSPORT_PORT.name,
+            "reply",
+        ));
+        let replies = session
+            .declare_subscriber(OwnedKeyExpr::new(reply_key).expect("reply key"))
+            .with(zenoh::handlers::FifoChannel::new(4))
+            .await
+            .expect("reply subscriber");
+
+        let input_key = bus.full_key(&crate::runtime::transport::port_key(
+            "transport",
+            TRANSPORT_PORT.name,
+            "request",
+        ));
+        let publish_request = |request: TransportRequest,
+                               source: &str,
+                               command_id: u64,
+                               eligible_boundary: u64,
+                               caller_rank: u64| {
+            let mut payload = Vec::new();
+            request.encode(&mut payload).expect("request encodes");
+            let metadata = crate::runtime::transport::RuntimeWireMetadata::command(
+                source,
+                ExecutionTime::from_nanos(10),
+                command_id,
+                eligible_boundary,
+                caller_rank,
+            )
+            .with_caller(format!("{source}.commands"))
+            .encode_bounded()
+            .expect("metadata encodes");
+            session
+                .put(input_key.clone(), payload)
+                .encoding(Encoding::from(
+                    crate::runtime::transport::PROTOBUF_ENCODING.to_owned(),
+                ))
+                .attachment(metadata)
+                .wait()
+                .expect("request publishes");
+        };
+        // Publish the higher-ranked caller first.  The frozen input cut must
+        // still use the authoritative boundary/rank merge key, not Zenoh
+        // arrival order.
+        publish_request(TransportRequest { value: 50 }, "caller-b", 100, 7, 2);
+        publish_request(TransportRequest { value: 41 }, "caller-a", 99, 7, 3);
+
+        let mut runner = RuntimeRunner::new(
+            TransportRuntime,
+            ExecutionTime::default(),
+            (),
+            input,
+            output,
+        )
+        .expect("runtime initializes");
+        let first_poll = runner.poll(ExecutionTime::default());
+        assert!(matches!(
+            first_poll,
+            Ok(PollOutcome::Accepted {
+                invocation_index: 0
+            })
+        ));
+
+        let mut received = Vec::new();
+        for expected in [(100, 2, 51), (99, 3, 42)] {
+            let sample = tokio::time::timeout(Duration::from_secs(2), replies.recv_async())
+                .await
+                .expect("reply arrives")
+                .expect("reply receive succeeds");
+            let wire = crate::runtime::transport::WireSample::from_zenoh(sample)
+                .expect("reply has typed transport metadata");
+            let response = TRANSPORT_PORT
+                .codec()
+                .expect("response codec")
+                .decode_response(wire.payload())
+                .expect("response decodes")
+                .downcast::<TransportResponse>()
+                .expect("response type");
+            assert_eq!(response.value, expected.2);
+            assert_eq!(wire.metadata().command_id, Some(expected.0));
+            assert_eq!(wire.metadata().eligible_boundary, Some(7));
+            assert_eq!(wire.metadata().caller_rank, Some(expected.1));
+            received.push(wire);
+        }
+        assert_eq!(received.len(), 2);
+
+        // A late replay from the already admitted command must fail before a
+        // second service step and must not produce a duplicate reply.
+        publish_request(TransportRequest { value: 999 }, "caller-a", 99, 7, 3);
+        assert!(runner.poll(ExecutionTime::from_nanos(10_000_000)).is_err());
+        assert_eq!(runner.status(), RuntimeStatus::Failed);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), replies.recv_async())
+                .await
+                .is_err()
+        );
+
+        owner.close().await;
+    }
+
+    #[crate::runtime::inputs]
+    struct OperationInputs {
+        operation: crate::runtime::Operation<u64, u32>,
+    }
+
+    struct OperationRuntime {
+        activate_once: Arc<AtomicBool>,
+        completion: Arc<Mutex<Option<u32>>>,
+    }
+
+    impl Runtime for OperationRuntime {
+        type Config = ();
+        type State = ();
+        type Inputs = OperationInputs;
+        type Outputs = ();
+
+        fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+            Ok(())
+        }
+
+        fn step(
+            &self,
+            _ctx: &StepContext,
+            state: Self::State,
+            inputs: &Self::Inputs,
+        ) -> crate::Result<(Self::State, Self::Outputs)> {
+            if let Some(completion) = inputs.operation.new_completion() {
+                let value = completion
+                    .result()
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                *self.completion.lock().expect("operation completion lock") = Some(*value);
+            }
+            Ok((state, ()))
+        }
+    }
+
+    impl RegisteredRuntime for OperationRuntime {
+        const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+        fn __retain_artifact_metadata() {}
+    }
+
+    #[crate::runtime::outputs]
+    impl OperationRuntime {
+        #[crate::runtime::outputs::activate(operation)]
+        fn activate(&self, _state: &()) -> Option<crate::runtime::Activation<u64, u32>> {
+            (!self.activate_once.swap(true, Ordering::AcqRel))
+                .then(|| crate::runtime::Activation::new(7, 41))
+        }
+
+        #[crate::runtime::outputs::operation(operation, timeout_ms = 100, cancel_grace_ms = 20)]
+        fn run(input: u32) -> crate::Result<u32> {
+            Ok(input + 1)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_operation_activation_dispatches_and_returns_typed_completion()
+    -> crate::Result<()> {
+        let (owner, bus) =
+            crate::bus::session::BusOwner::open(crate::bus::BusConfig::for_participant(
+                crate::identity::ExecutionId::mint(),
+                crate::identity::ParticipantId::new("typed-operation").expect("participant id"),
+                Vec::new(),
+            ))
+            .await
+            .expect("test bus opens");
+        let correlations = Arc::new(Mutex::new(BTreeMap::new()));
+        let expired_correlations = Arc::new(Mutex::new(BTreeSet::new()));
+        let operation_completions = Arc::new(Mutex::new(Vec::new()));
+        let exchange_completions = Arc::new(Mutex::new(Vec::new()));
+        let mut input = ExecutionInputAdapter::<OperationRuntime>::unbound().with_shared_state(
+            Arc::clone(&correlations),
+            Arc::clone(&expired_correlations),
+            Arc::clone(&operation_completions),
+            Arc::clone(&exchange_completions),
+        );
+        input
+            .bind_direct(bus.clone(), "operation")
+            .await
+            .expect("input binds");
+        let mut output = ExecutionOutputAdapter::<OperationRuntime>::unbound().with_shared_state(
+            correlations,
+            expired_correlations,
+            operation_completions,
+            exchange_completions,
+        );
+        output.bind_direct(bus.clone(), "operation");
+        let completion = Arc::new(Mutex::new(None));
+        let mut runner = RuntimeRunner::new(
+            OperationRuntime {
+                activate_once: Arc::new(AtomicBool::new(false)),
+                completion: Arc::clone(&completion),
+            },
+            ExecutionTime::default(),
+            (),
+            input,
+            output,
+        )
+        .expect("runtime initializes");
+
+        assert!(matches!(
+            runner.poll(ExecutionTime::default()),
+            Ok(PollOutcome::Accepted {
+                invocation_index: 0
+            })
+        ));
+        for index in 1..=20 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            let now = ExecutionTime::from_nanos(index * 2_000_000);
+            let _ = runner.poll(now)?;
+            if completion
+                .lock()
+                .expect("operation completion lock")
+                .is_some()
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            *completion.lock().expect("operation completion lock"),
+            Some(42)
+        );
+        runner.stop().expect("runner stops");
+        owner.close().await;
+        Ok(())
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct ReadRequest {
+        #[prost(uint32, tag = "1")]
+        value: u32,
+    }
+
+    impl prost::Name for ReadRequest {
+        const NAME: &'static str = "ReadRequest";
+        const PACKAGE: &'static str = "phoxal.runtime.test";
+
+        fn full_name() -> String {
+            "phoxal.runtime.test.ReadRequest".to_owned()
+        }
+
+        fn type_url() -> String {
+            "/phoxal.runtime.test.ReadRequest".to_owned()
+        }
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct ReadResponse {
+        #[prost(uint32, tag = "1")]
+        value: u32,
+    }
+
+    impl prost::Name for ReadResponse {
+        const NAME: &'static str = "ReadResponse";
+        const PACKAGE: &'static str = "phoxal.runtime.test";
+
+        fn full_name() -> String {
+            "phoxal.runtime.test.ReadResponse".to_owned()
+        }
+
+        fn type_url() -> String {
+            "/phoxal.runtime.test.ReadResponse".to_owned()
+        }
+    }
+
+    fn encode_read_request(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
+        let value = value
+            .downcast_ref::<ReadRequest>()
+            .ok_or(crate::port::CodecError::TypeMismatch)?;
+        let mut bytes = Vec::with_capacity(value.encoded_len());
+        value
+            .encode(&mut bytes)
+            .map_err(|_| crate::port::CodecError::Encode)?;
+        Ok(bytes)
+    }
+
+    fn decode_read_request(
+        bytes: &[u8],
+    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
+        ReadRequest::decode(bytes)
+            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
+            .map_err(|_| crate::port::CodecError::Decode)
+    }
+
+    fn encode_read_response(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
+        let value = value
+            .downcast_ref::<ReadResponse>()
+            .ok_or(crate::port::CodecError::TypeMismatch)?;
+        let mut bytes = Vec::with_capacity(value.encoded_len());
+        value
+            .encode(&mut bytes)
+            .map_err(|_| crate::port::CodecError::Encode)?;
+        Ok(bytes)
+    }
+
+    fn decode_read_response(
+        bytes: &[u8],
+    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
+        ReadResponse::decode(bytes)
+            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
+            .map_err(|_| crate::port::CodecError::Decode)
+    }
+
+    const READ_PORT: crate::port::PortSignature =
+        crate::port::PortSignature::with_descriptor_and_codec(
+            "read",
+            "phoxal.runtime.test.Reader",
+            "Current",
+            crate::port::PortKind::Read,
+            "phoxal.runtime.test.ReadRequest",
+            "phoxal.runtime.test.ReadResponse",
+            &[],
+            crate::port::PortCodec::new(
+                Some(encode_read_request),
+                Some(decode_read_request),
+                Some(encode_read_response),
+                Some(decode_read_response),
+            ),
+        );
+
+    #[crate::runtime::inputs]
+    struct ReadClientInputs {
+        #[crate::runtime::input(max_response_bytes = 64)]
+        read: crate::runtime::Read<u64, ReadRequest, ReadResponse>,
+    }
+
+    struct ReadClientRuntime {
+        activate_once: Arc<AtomicBool>,
+        response: Arc<Mutex<Option<u32>>>,
+    }
+
+    impl Runtime for ReadClientRuntime {
+        type Config = ();
+        type State = ();
+        type Inputs = ReadClientInputs;
+        type Outputs = ();
+
+        fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+            Ok(())
+        }
+
+        fn step(
+            &self,
+            _ctx: &StepContext,
+            state: Self::State,
+            inputs: &Self::Inputs,
+        ) -> crate::Result<(Self::State, Self::Outputs)> {
+            if let Some(completion) = inputs.read.new_completion() {
+                let response = completion
+                    .result()
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                *self.response.lock().expect("read response lock") = Some(response.value);
+            }
+            Ok((state, ()))
+        }
+    }
+
+    impl RegisteredRuntime for ReadClientRuntime {
+        const SPEC: RuntimeSpec = RuntimeSpec::from_millis(1, 100, 100);
+
+        fn __retain_artifact_metadata() {}
+    }
+
+    #[crate::runtime::outputs]
+    impl ReadClientRuntime {
+        #[crate::runtime::outputs::activate(read, timeout_ms = 100)]
+        fn request(&self, _state: &()) -> Option<crate::runtime::Activation<u64, ReadRequest>> {
+            (!self.activate_once.swap(true, Ordering::AcqRel))
+                .then(|| crate::runtime::Activation::new(9, ReadRequest { value: 41 }))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> crate::Result<()>
+    {
+        use zenoh::Wait;
+        use zenoh::bytes::Encoding;
+        use zenoh::key_expr::OwnedKeyExpr;
+
+        crate::runtime::transport::register_exchange_codecs::<ReadRequest, ReadResponse>(READ_PORT);
+        let (owner, bus) =
+            crate::bus::session::BusOwner::open(crate::bus::BusConfig::for_participant(
+                crate::identity::ExecutionId::mint(),
+                crate::identity::ParticipantId::new("read-client").expect("participant id"),
+                Vec::new(),
+            ))
+            .await
+            .expect("test bus opens");
+        let signature = SourcePortSignature {
+            name: READ_PORT.name.to_owned(),
+            service: READ_PORT.service.to_owned(),
+            method: READ_PORT.method.to_owned(),
+            kind: READ_PORT.kind.as_str().to_owned(),
+            request: READ_PORT.request.to_owned(),
+            response: READ_PORT.response.to_owned(),
+        };
+        let mut connections = BTreeMap::new();
+        connections.insert(
+            "read-client.read".to_owned(),
+            vec!["reader.read".to_owned()],
+        );
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(
+            "reader".to_owned(),
+            SourceRuntimeRecord {
+                inputs: Vec::new(),
+                transient_outputs: Vec::new(),
+                service_outputs: vec![SourceOutputRecord {
+                    name: "current".to_owned(),
+                    kind: "read".to_owned(),
+                    port: Some("read".to_owned()),
+                    signature: Some(signature),
+                    input: None,
+                    max_items: Some(1),
+                    max_bytes: Some(64),
+                    max_request_bytes: Some(64),
+                }],
+            },
+        );
+        let manifest = RuntimeLaunchManifest {
+            root: PathBuf::from("."),
+            robot_id: "typed-read-test".to_owned(),
+            instance_id: "read-client".to_owned(),
+            executable: PathBuf::from("typed-read-test"),
+            config: Value::Object(serde_json::Map::new()),
+            connections,
+            artifacts,
+        };
+        // The input and output adapters must share one correlation state.
+        let correlations = Arc::new(Mutex::new(BTreeMap::new()));
+        let expired = Arc::new(Mutex::new(BTreeSet::new()));
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let exchanges = Arc::new(Mutex::new(Vec::new()));
+        let mut input = ExecutionInputAdapter::<ReadClientRuntime>::unbound().with_shared_state(
+            Arc::clone(&correlations),
+            Arc::clone(&expired),
+            Arc::clone(&operations),
+            Arc::clone(&exchanges),
+        );
+        input.bind(bus.clone(), &manifest).await?;
+        let mut output = ExecutionOutputAdapter::<ReadClientRuntime>::unbound().with_shared_state(
+            correlations,
+            expired,
+            operations,
+            exchanges,
+        );
+        output.bind(bus.clone(), "read-client", &manifest).await?;
+
+        let session = bus.session().expect("session is open");
+        let request_key = bus.full_key(&crate::runtime::transport::port_key(
+            "reader",
+            READ_PORT.name,
+            "request",
+        ));
+        let requests = session
+            .declare_subscriber(OwnedKeyExpr::new(request_key).expect("request key"))
+            .with(zenoh::handlers::FifoChannel::new(2))
+            .await
+            .expect("request subscriber");
+        let response = Arc::new(Mutex::new(None));
+        let mut runner = RuntimeRunner::new(
+            ReadClientRuntime {
+                activate_once: Arc::new(AtomicBool::new(false)),
+                response: Arc::clone(&response),
+            },
+            ExecutionTime::default(),
+            (),
+            input,
+            output,
+        )?;
+        assert!(matches!(
+            runner.poll(ExecutionTime::default()),
+            Ok(PollOutcome::Accepted {
+                invocation_index: 0
+            })
+        ));
+        let request = tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+            .await
+            .expect("read request arrives")
+            .expect("read request receive succeeds");
+        let wire = crate::runtime::transport::WireSample::from_zenoh(request)?;
+        let request = READ_PORT
+            .codec()
+            .expect("read codec")
+            .decode_request(wire.payload())
+            .expect("request decodes")
+            .downcast::<ReadRequest>()
+            .expect("request type");
+        assert_eq!(request.value, 41);
+        let metadata = wire.metadata();
+        let mut payload = Vec::new();
+        ReadResponse { value: 42 }.encode(&mut payload)?;
+        let reply_metadata = crate::runtime::transport::reply_metadata(
+            "reader",
+            StepContext::first(
+                ExecutionTime::from_nanos(2_000_000),
+                ExecutionDuration::from_millis(1),
+            ),
+            metadata.command_id.expect("command id"),
+            metadata.eligible_boundary.expect("boundary"),
+            metadata.caller_rank.expect("caller rank"),
+        )
+        .encode_bounded()
+        .expect("reply metadata");
+        let response_key = bus.full_key(&crate::runtime::transport::port_key(
+            "reader",
+            READ_PORT.name,
+            "reply",
+        ));
+        session
+            .put(response_key, payload)
+            .encoding(Encoding::from(
+                crate::runtime::transport::PROTOBUF_ENCODING.to_owned(),
+            ))
+            .attachment(reply_metadata)
+            .wait()
+            .expect("reply publishes");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = runner.poll(ExecutionTime::from_nanos(2_000_000))?;
+        assert_eq!(*response.lock().expect("read response lock"), Some(42));
+        runner.stop()?;
+        owner.close().await;
+        Ok(())
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct TypedState {
+        #[prost(int32, tag = "1")]
+        value: i32,
+    }
+
+    impl prost::Name for TypedState {
+        const NAME: &'static str = "TypedState";
+        const PACKAGE: &'static str = "phoxal.runtime.test";
+
+        fn full_name() -> String {
+            "phoxal.runtime.test.TypedState".to_owned()
+        }
+
+        fn type_url() -> String {
+            "/phoxal.runtime.test.TypedState".to_owned()
+        }
+    }
+
+    fn encode_typed_state(value: &dyn Any) -> Result<Vec<u8>, crate::port::CodecError> {
+        let value = value
+            .downcast_ref::<TypedState>()
+            .ok_or(crate::port::CodecError::TypeMismatch)?;
+        let mut payload = Vec::with_capacity(value.encoded_len());
+        value
+            .encode(&mut payload)
+            .map_err(|_| crate::port::CodecError::Encode)?;
+        Ok(payload)
+    }
+
+    fn decode_typed_state(
+        payload: &[u8],
+    ) -> Result<Box<dyn Any + Send + Sync>, crate::port::CodecError> {
+        TypedState::decode(payload)
+            .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
+            .map_err(|_| crate::port::CodecError::Decode)
+    }
+
+    const SOURCE_STATE: crate::port::PortSignature =
+        crate::port::PortSignature::with_descriptor_and_codec(
+            "state",
+            "phoxal.runtime.test",
+            "State",
+            crate::port::PortKind::State,
+            "google.protobuf.Empty",
+            "phoxal.runtime.test.TypedState",
+            &[],
+            crate::port::PortCodec::new(
+                None,
+                None,
+                Some(encode_typed_state),
+                Some(decode_typed_state),
+            ),
+        );
+
+    #[crate::runtime::inputs]
+    struct TypedStateInputs {
+        state: crate::runtime::Latest<TypedState>,
+    }
+
+    struct TypedStateRuntime {
+        seen: Arc<Mutex<Option<i32>>>,
+    }
+
+    impl Runtime for TypedStateRuntime {
+        type Config = ();
+        type State = ();
+        type Inputs = TypedStateInputs;
+        type Outputs = ();
+
+        fn init(&self, _ctx: &InitContext, _config: Self::Config) -> crate::Result<Self::State> {
+            Ok(())
+        }
+
+        fn step(
+            &self,
+            _ctx: &StepContext,
+            state: Self::State,
+            inputs: &Self::Inputs,
+        ) -> crate::Result<(Self::State, Self::Outputs)> {
+            let value = inputs
+                .state
+                .value()
+                .ok_or_else(|| anyhow::anyhow!("typed state was not admitted"))?;
+            *self.seen.lock().expect("typed state observation lock") = Some(value.value);
+            Ok((state, ()))
+        }
+    }
+
+    impl RegisteredRuntime for TypedStateRuntime {
+        const SPEC: RuntimeSpec = RuntimeSpec::from_millis(10, 100, 100);
+
+        fn __retain_artifact_metadata() {}
+    }
+
+    impl crate::runtime::outputs::OutputBindings for TypedStateRuntime {
+        const FIELDS: &'static [crate::runtime::outputs::OutputField] = &[];
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate::Result<()> {
+        let (owner, bus) =
+            crate::bus::session::BusOwner::open(crate::bus::BusConfig::for_participant(
+                crate::identity::ExecutionId::mint(),
+                crate::identity::ParticipantId::new("typed-state").expect("participant id"),
+                Vec::new(),
+            ))
+            .await
+            .expect("test bus opens");
+        let signature = SourcePortSignature {
+            name: SOURCE_STATE.name.to_owned(),
+            service: SOURCE_STATE.service.to_owned(),
+            method: SOURCE_STATE.method.to_owned(),
+            kind: SOURCE_STATE.kind.as_str().to_owned(),
+            request: SOURCE_STATE.request.to_owned(),
+            response: SOURCE_STATE.response.to_owned(),
+        };
+        let mut connections = BTreeMap::new();
+        connections.insert(
+            "consumer.state".to_owned(),
+            vec!["producer.state".to_owned()],
+        );
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert(
+            "producer".to_owned(),
+            SourceRuntimeRecord {
+                inputs: Vec::new(),
+                transient_outputs: Vec::new(),
+                service_outputs: vec![SourceOutputRecord {
+                    name: "state".to_owned(),
+                    kind: "state".to_owned(),
+                    port: Some("state".to_owned()),
+                    signature: Some(signature),
+                    input: None,
+                    max_items: Some(1),
+                    max_bytes: Some(64),
+                    max_request_bytes: None,
+                }],
+            },
+        );
+        let manifest = RuntimeLaunchManifest {
+            root: PathBuf::from("."),
+            robot_id: "typed-test".to_owned(),
+            instance_id: "consumer".to_owned(),
+            executable: PathBuf::from("typed-test"),
+            config: Value::Object(serde_json::Map::new()),
+            connections,
+            artifacts,
+        };
+        let mut input = ExecutionInputAdapter::<TypedStateRuntime>::unbound();
+        input
+            .bind(bus.clone(), &manifest)
+            .await
+            .expect("input binds");
+        let mut output = ExecutionOutputAdapter::<TypedStateRuntime>::unbound();
+        output.bind_direct(bus.clone(), "consumer");
+
+        let prepared = PreparedOutput::response(
+            SOURCE_STATE,
+            &TypedState { value: 42 } as &dyn Any,
+            64,
+            crate::runtime::transport::publication_metadata(
+                "producer",
+                StepContext::first(ExecutionTime::default(), ExecutionDuration::from_millis(10)),
+                0,
+            ),
+        )?;
+        crate::runtime::transport::publish_batch(&bus, "producer", &[prepared])?;
+        let seen = Arc::new(Mutex::new(None));
+        let mut runner = RuntimeRunner::new(
+            TypedStateRuntime { seen: seen.clone() },
+            ExecutionTime::default(),
+            (),
+            input,
+            output,
+        )
+        .expect("runtime initializes");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(matches!(
+            runner.poll(ExecutionTime::default()),
+            Ok(PollOutcome::Accepted {
+                invocation_index: 0
+            })
+        ));
+        assert_eq!(
+            *seen.lock().expect("typed state observation lock"),
+            Some(42)
+        );
+        runner.stop().expect("runner stops");
+        owner.close().await;
+        Ok(())
     }
 }

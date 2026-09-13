@@ -47,6 +47,7 @@ protocol = ["port", "dep:getrandom", "dep:prost", "dep:thiserror"]
 # `port`-only consumers and does not change legacy profile behavior.
 legacy-runtime = [
     "port",
+    "dep:prost",
     "dep:phoxal-macros",
     "dep:clap",
     "dep:const_format",

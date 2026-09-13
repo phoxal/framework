@@ -700,6 +700,26 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
     where
         A: OutputAdmission<R::Outputs>,
     {
+        self.accept_with_hook(context, inputs, admission, |_, _, _, _| Ok(()))
+    }
+
+    /// Prepare state-derived transport products between `step` and output
+    /// reservation without exposing mutable state to the transport owner.
+    ///
+    /// The hook is intentionally part of the serialized owner transition:
+    /// it observes only the candidate next state, and any preparation error
+    /// faults the current execution before the state or schedule advances.
+    pub fn accept_with_hook<A, H>(
+        &mut self,
+        context: &StepContext,
+        inputs: &R::Inputs,
+        admission: &mut A,
+        hook: H,
+    ) -> crate::Result<AcceptedInvocation<R::Outputs, A::Reservation>>
+    where
+        A: OutputAdmission<R::Outputs>,
+        H: FnOnce(&R, &R::State, &StepContext, &mut A) -> crate::Result<()>,
+    {
         if self.status == RuntimeStatus::Failed {
             return Err(anyhow::anyhow!(InvocationError::Failed));
         }
@@ -735,6 +755,20 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
                 return Err(anyhow::anyhow!(InvocationError::Panicked));
             }
         };
+        let hook_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hook(&self.service, &next_state, context, admission)
+        }));
+        match hook_result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.status = RuntimeStatus::Failed;
+                return Err(error);
+            }
+            Err(_) => {
+                self.status = RuntimeStatus::Failed;
+                return Err(anyhow::anyhow!(InvocationError::Panicked));
+            }
+        }
         let reservation = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             admission.reserve(&outputs)
         })) {
@@ -800,7 +834,7 @@ impl<R: RegisteredRuntime> RuntimeOwner<R> {
 pub fn run<R>(service: R) -> crate::Result<()>
 where
     R: RegisteredRuntime,
-    R::Inputs: super::input::InputSnapshot,
+    R::Inputs: super::input::TransportInputSet + super::input::TransportInputSink,
 {
     super::runner::run_transport(service)
 }

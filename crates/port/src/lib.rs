@@ -6,8 +6,112 @@
 //! Constructing one performs no registration, discovery, transport I/O, or
 //! process selection.
 
+use std::any::Any;
 use std::fmt;
 use std::marker::PhantomData;
+
+/// An erased encoder for one generated Protobuf message.
+pub type EncodeFn = fn(&dyn Any) -> Result<Vec<u8>, CodecError>;
+
+/// An erased decoder for one generated Protobuf message.
+pub type DecodeFn = fn(&[u8]) -> Result<Box<dyn Any + Send + Sync>, CodecError>;
+
+/// Failure from a generated typed port codec.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodecError {
+    /// The descriptor was generated without a wire codec.
+    Unavailable,
+    /// The caller supplied a Rust value of a different type than the descriptor.
+    TypeMismatch,
+    /// Protobuf encoding failed.
+    Encode,
+    /// Protobuf decoding failed.
+    Decode,
+}
+
+impl fmt::Display for CodecError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Unavailable => "port has no generated wire codec",
+            Self::TypeMismatch => "port codec received a value of the wrong Rust type",
+            Self::Encode => "Protobuf encoding failed",
+            Self::Decode => "Protobuf decoding failed",
+        })
+    }
+}
+
+impl std::error::Error for CodecError {}
+
+/// Erased request/response codecs retained by generated port descriptors.
+///
+/// The descriptor remains inert: these function pointers perform no I/O and
+/// do not register anything.  They only let a runtime or client use the exact
+/// Prost type selected by the owner's generated service interface.
+#[derive(Clone, Copy, Debug)]
+pub struct PortCodec {
+    request_encode: Option<EncodeFn>,
+    request_decode: Option<DecodeFn>,
+    response_encode: Option<EncodeFn>,
+    response_decode: Option<DecodeFn>,
+}
+
+impl PortCodec {
+    /// Creates a codec pair for a generated request/response port.
+    #[must_use]
+    pub const fn new(
+        request_encode: Option<EncodeFn>,
+        request_decode: Option<DecodeFn>,
+        response_encode: Option<EncodeFn>,
+        response_decode: Option<DecodeFn>,
+    ) -> Self {
+        Self {
+            request_encode,
+            request_decode,
+            response_encode,
+            response_decode,
+        }
+    }
+
+    /// Encodes a request, rejecting descriptors without a request body.
+    pub fn encode_request(&self, value: &dyn Any) -> Result<Vec<u8>, CodecError> {
+        self.request_encode
+            .ok_or(CodecError::Unavailable)
+            .and_then(|encode| encode(value))
+    }
+
+    /// Decodes a request into the generated Rust message type.
+    pub fn decode_request(&self, bytes: &[u8]) -> Result<Box<dyn Any + Send + Sync>, CodecError> {
+        self.request_decode
+            .ok_or(CodecError::Unavailable)
+            .and_then(|decode| decode(bytes))
+    }
+
+    /// Encodes a response or publication payload.
+    pub fn encode_response(&self, value: &dyn Any) -> Result<Vec<u8>, CodecError> {
+        self.response_encode
+            .ok_or(CodecError::Unavailable)
+            .and_then(|encode| encode(value))
+    }
+
+    /// Decodes a response or publication payload into its generated type.
+    pub fn decode_response(&self, bytes: &[u8]) -> Result<Box<dyn Any + Send + Sync>, CodecError> {
+        self.response_decode
+            .ok_or(CodecError::Unavailable)
+            .and_then(|decode| decode(bytes))
+    }
+
+    /// Returns a codec containing only this descriptor's request functions.
+    #[must_use]
+    pub const fn request_only(self) -> Self {
+        Self::new(self.request_encode, self.request_decode, None, None)
+    }
+
+    /// Returns a codec containing only this descriptor's response functions.
+    #[must_use]
+    pub const fn response_only(self) -> Self {
+        Self::new(None, None, self.response_encode, self.response_decode)
+    }
+}
 
 /// The semantic kind of a public service port.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -52,7 +156,7 @@ impl PortKind {
 /// The optional descriptor frame is retained by generated owner bindings so a
 /// release artifact can carry the unchanged descriptor closure without
 /// executing the binary.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct PortSignature {
     /// Public port name.
     pub name: &'static str,
@@ -67,6 +171,33 @@ pub struct PortSignature {
     /// Fully-qualified response message name.
     pub response: &'static str,
     descriptor_set: &'static [u8],
+    codec: Option<PortCodec>,
+}
+
+impl PartialEq for PortSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.service == other.service
+            && self.method == other.method
+            && self.kind == other.kind
+            && self.request == other.request
+            && self.response == other.response
+            && self.descriptor_set == other.descriptor_set
+    }
+}
+
+impl Eq for PortSignature {}
+
+impl std::hash::Hash for PortSignature {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.service.hash(state);
+        self.method.hash(state);
+        self.kind.hash(state);
+        self.request.hash(state);
+        self.response.hash(state);
+        self.descriptor_set.hash(state);
+    }
 }
 
 impl PortSignature {
@@ -102,6 +233,33 @@ impl PortSignature {
             request,
             response,
             descriptor_set,
+            codec: None,
+        }
+    }
+
+    /// Creates an identity retaining its descriptor closure and generated
+    /// request/response Prost codecs.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn with_descriptor_and_codec(
+        name: &'static str,
+        service: &'static str,
+        method: &'static str,
+        kind: PortKind,
+        request: &'static str,
+        response: &'static str,
+        descriptor_set: &'static [u8],
+        codec: PortCodec,
+    ) -> Self {
+        Self {
+            name,
+            service,
+            method,
+            kind,
+            request,
+            response,
+            descriptor_set,
+            codec: Some(codec),
         }
     }
 
@@ -109,6 +267,13 @@ impl PortSignature {
     #[must_use]
     pub const fn descriptor_set(self) -> &'static [u8] {
         self.descriptor_set
+    }
+
+    /// Returns the generated wire codec, when this descriptor came from a
+    /// Protobuf service build.
+    #[must_use]
+    pub const fn codec(self) -> Option<PortCodec> {
+        self.codec
     }
 }
 
@@ -196,6 +361,33 @@ macro_rules! payload_descriptor {
                         request,
                         response,
                         descriptor_set,
+                    ),
+                    payload: PhantomData,
+                }
+            }
+
+            /// Creates a typed descriptor retaining its generated Protobuf
+            /// codec and descriptor closure.
+            #[must_use]
+            pub const fn with_codec_signature(
+                name: &'static str,
+                service: &'static str,
+                method: &'static str,
+                request: &'static str,
+                response: &'static str,
+                descriptor_set: &'static [u8],
+                codec: PortCodec,
+            ) -> Self {
+                Self {
+                    signature: PortSignature::with_descriptor_and_codec(
+                        name,
+                        service,
+                        method,
+                        PortKind::$kind,
+                        request,
+                        response,
+                        descriptor_set,
+                        codec,
                     ),
                     payload: PhantomData,
                 }
@@ -292,6 +484,33 @@ macro_rules! exchange_descriptor {
                         request,
                         response,
                         descriptor_set,
+                    ),
+                    exchange: PhantomData,
+                }
+            }
+
+            /// Creates a typed exchange descriptor retaining its generated
+            /// request/response Protobuf codec and descriptor closure.
+            #[must_use]
+            pub const fn with_codec_signature(
+                name: &'static str,
+                service: &'static str,
+                method: &'static str,
+                request: &'static str,
+                response: &'static str,
+                descriptor_set: &'static [u8],
+                codec: PortCodec,
+            ) -> Self {
+                Self {
+                    signature: PortSignature::with_descriptor_and_codec(
+                        name,
+                        service,
+                        method,
+                        PortKind::$kind,
+                        request,
+                        response,
+                        descriptor_set,
+                        codec,
                     ),
                     exchange: PhantomData,
                 }

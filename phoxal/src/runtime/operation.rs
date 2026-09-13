@@ -437,6 +437,27 @@ where
     }
 }
 
+impl<Key, Input, Response, Worker> Drop for ManagedOperation<Key, Input, Response, Worker>
+where
+    Key: Clone + Send + 'static,
+    Input: Send + 'static,
+    Response: Send + 'static,
+    Worker: Fn(Input) -> crate::Result<Response> + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        // A managed operation never leaves a live worker detached from its
+        // owner.  Normal stop/reset paths have already applied the authored
+        // retirement grace; this final join closes the ownership boundary for
+        // error paths and test fixtures as well.
+        self.pending = None;
+        if let Some(mut worker) = self.live.take()
+            && let Some(handle) = worker.handle.take()
+        {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
