@@ -203,7 +203,7 @@ struct SourceRobot {
 #[serde(deny_unknown_fields)]
 struct SourceComponent {
     component: String,
-    mount_link: String,
+    mount_site: String,
     #[serde(default)]
     driver: Option<serde_json::Value>,
     #[serde(default)]
@@ -645,7 +645,7 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
         if component.component.is_empty() {
             bail!("component `{instance}` has an empty dependency key");
         }
-        if component.mount_link.is_empty() {
+        if component.mount_site.is_empty() {
             bail!("component `{instance}` has an empty mount link");
         }
         let _ = (&component.driver, &component.config);
@@ -943,7 +943,7 @@ mod tests {
             "imu".to_owned(),
             SourceComponent {
                 component: "bno085".to_owned(),
-                mount_link: "base".to_owned(),
+                mount_site: "base".to_owned(),
                 driver: Some(serde_json::json!({})),
                 config: None,
             },

@@ -306,6 +306,10 @@ pub struct BundleComponent {
     pub package: String,
     /// Stable Cargo source identity.
     pub source: String,
+    /// Persistent site in the parent robot model receiving this instance.
+    pub mount_site: String,
+    /// Component-owned semantic capabilities and native model-local bindings.
+    pub definition: crate::ComponentDocument,
 }
 
 /// The source class of one package in the resolved Cargo closure.
@@ -721,6 +725,8 @@ pub(crate) fn assemble_with_inputs(
                 package_id: public_package_id(prepared, &component.package_id),
                 package: component.package.clone(),
                 source: source_identity(&component.source)?,
+                mount_site: component.mount_site.clone(),
+                definition: component.definition.clone(),
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;

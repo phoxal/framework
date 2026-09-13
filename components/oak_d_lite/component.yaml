@@ -1,4 +1,5 @@
 schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
 capabilities:
   left_mono:
     kind: camera
@@ -8,8 +9,8 @@ capabilities:
     height_px: 400
     field_of_view_rad: 1.272271
     target:
-      kind: link
-      id: left_mono_link
+      kind: camera
+      id: left_mono
   rgb:
     kind: camera
     mode: rgb
@@ -18,8 +19,8 @@ capabilities:
     height_px: 480
     field_of_view_rad: 1.204277
     target:
-      kind: link
-      id: rgb_link
+      kind: camera
+      id: rgb
   right_mono:
     kind: camera
     mode: mono
@@ -28,8 +29,8 @@ capabilities:
     height_px: 400
     field_of_view_rad: 1.272271
     target:
-      kind: link
-      id: right_mono_link
+      kind: camera
+      id: right_mono
   depth:
     kind: depth
     publish_rate_hz: 30.0
@@ -41,23 +42,31 @@ capabilities:
     min_range_m: 0.4
     max_range_m: 12.0
     target:
-      kind: link
-      id: stereo_center_link
+      kind: camera
+      id: depth
   imu:
     kind: imu
     publish_rate_hz: 100.0
     target:
-      kind: link
-      id: imu_link
+      kind: site
+      id: imu_site
+    signals:
+      orientation: imu_orientation
+      acceleration: accelerometer
+      angular_velocity: gyroscope
   accelerometer:
     kind: accelerometer
     publish_rate_hz: 100.0
     target:
-      kind: link
-      id: imu_link
+      kind: site
+      id: imu_site
+    signals:
+      acceleration: accelerometer
   gyroscope:
     kind: gyroscope
     publish_rate_hz: 100.0
     target:
-      kind: link
-      id: imu_link
+      kind: site
+      id: imu_site
+    signals:
+      angular_velocity: gyroscope

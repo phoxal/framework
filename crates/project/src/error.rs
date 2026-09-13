@@ -50,6 +50,14 @@ pub enum ValidationError {
         /// Invalid value.
         value: String,
     },
+    /// A component instance used the native namespace separator reserved by composition.
+    #[error("{field} '{value}' contains reserved native namespace separator '__'")]
+    ReservedNamespaceSeparator {
+        /// Authored field containing the identity.
+        field: String,
+        /// Invalid value.
+        value: String,
+    },
     /// An authored map tried to claim the reserved brain identity.
     #[error("{field} uses reserved instance id 'brain'; the root Cargo package owns the brain")]
     ReservedBrainId {

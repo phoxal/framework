@@ -1,4 +1,5 @@
 <mujoco model="vl53l1x">
+  <compiler angle="radian" />
   <worldbody>
     <body name="mount">
       <body name="sensor_link">

@@ -130,7 +130,25 @@ path = "src/lib.rs"
     )?;
     write(
         &directory.path().join("passive-sensor/component.yaml"),
-        "schema: phoxal/component/v0\n",
+        r#"schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
+capabilities:
+  sample:
+    kind: range
+    publish_rate_hz: 20.0
+    min_range_m: 0.04
+    max_range_m: 4.0
+    field_of_view_rad: 0.47
+    target: { kind: site, id: sensor_site }
+"#,
+    )?;
+    write(
+        &directory.path().join("passive-sensor/model.xml"),
+        r#"<mujoco model="passive-sensor">
+  <compiler angle="radian"/>
+  <worldbody><body name="mount"><site name="sensor_site" size="0.001"/></body></worldbody>
+</mujoco>
+"#,
     )?;
     write(
         &directory.path().join("supervisor/Cargo.toml"),
@@ -173,7 +191,7 @@ robot:
   components:
     sensor:
       component: passive-sensor
-      mount_link: sensor_mount
+      mount_site: sensor_mount
 brain: {}
 services:
   counter:
@@ -938,7 +956,7 @@ robot:
   components:
     sensor:
       component: passive-sensor
-      mount_link: sensor_mount
+      mount_site: sensor_mount
       driver:
         dependency: sensor-driver
         binary: sensor-driver
@@ -986,6 +1004,18 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
 
     assert_eq!(bundle.manifest().schema, "phoxal/bundle/v0");
     assert_eq!(bundle.manifest().executables.len(), 2);
+    assert_eq!(bundle.manifest().components.len(), 1);
+    assert_eq!(bundle.manifest().components[0].mount_site, "sensor_mount");
+    assert_eq!(
+        bundle.manifest().components[0].definition.model.file,
+        Path::new("model.xml")
+    );
+    assert_eq!(
+        bundle.manifest().components[0].definition.capabilities["sample"]
+            .target
+            .id,
+        "sensor_site"
+    );
     assert_eq!(
         bundle
             .manifest()

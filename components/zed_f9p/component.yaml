@@ -1,9 +1,10 @@
 schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
 capabilities:
   gnss:
     kind: gnss
     publish_rate_hz: 10.0
     coordinate_system: wgs84
     target:
-      kind: link
-      id: sensor_link
+      kind: site
+      id: sensor_site

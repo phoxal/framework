@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use cargo_metadata::{DependencyKind, Metadata, Package, PackageId, Target};
 
-use crate::document::{BrainSelection, RobotDocument, ServiceSelection};
+use crate::document::{BrainSelection, ComponentDocument, RobotDocument, ServiceSelection};
 use crate::error::SourceError;
 use crate::publication::{RuntimePackageRole, validate_runtime_package};
 
@@ -96,6 +96,10 @@ pub struct SelectedComponent {
     pub package: String,
     /// Package source and provenance class.
     pub source: PackageSource,
+    /// Persistent site in the parent robot model receiving this instance.
+    pub mount_site: String,
+    /// Parsed component-owned semantic and native binding declaration.
+    pub definition: ComponentDocument,
     /// The component-owned driver selected by this instance, when its
     /// authored `driver` block requests a real process.
     pub driver: Option<SelectedDriver>,
@@ -181,6 +185,7 @@ pub fn resolve_sources(
         )?;
         let driver =
             resolve_component_driver(instance, component, &component.component, package, metadata)?;
+        let definition = load_component_definition(instance, &component.component, package)?;
         components.insert(
             instance.clone(),
             SelectedComponent {
@@ -189,6 +194,8 @@ pub fn resolve_sources(
                 package_id: package.id.to_string(),
                 package: package.name.to_string(),
                 source: package_source(package),
+                mount_site: component.mount_site.clone(),
+                definition,
                 driver,
             },
         );
@@ -200,6 +207,62 @@ pub fn resolve_sources(
         services,
         components,
     })
+}
+
+fn load_component_definition(
+    instance: &str,
+    dependency_key: &str,
+    package: &Package,
+) -> Result<ComponentDocument, SourceError> {
+    let root = PathBuf::from(package.manifest_path.as_std_path())
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| SourceError::InvalidPackageRole {
+            role: TargetRole::Component,
+            instance: instance.to_owned(),
+            key: dependency_key.to_owned(),
+            package: package.name.to_string(),
+            message: "Cargo manifest has no package directory".to_owned(),
+        })?;
+    let path = root.join("component.yaml");
+    let text = std::fs::read_to_string(&path).map_err(|error| SourceError::InvalidPackageRole {
+        role: TargetRole::Component,
+        instance: instance.to_owned(),
+        key: dependency_key.to_owned(),
+        package: package.name.to_string(),
+        message: format!("cannot read {}: {error}", path.display()),
+    })?;
+    let definition =
+        ComponentDocument::parse(&text).map_err(|error| SourceError::InvalidPackageRole {
+            role: TargetRole::Component,
+            instance: instance.to_owned(),
+            key: dependency_key.to_owned(),
+            package: package.name.to_string(),
+            message: format!("cannot parse {}: {error}", path.display()),
+        })?;
+    definition
+        .validate()
+        .map_err(|message| SourceError::InvalidPackageRole {
+            role: TargetRole::Component,
+            instance: instance.to_owned(),
+            key: dependency_key.to_owned(),
+            package: package.name.to_string(),
+            message: format!("{} is invalid: {message}", path.display()),
+        })?;
+    let model = root.join(&definition.model.file);
+    if !model.is_file() {
+        return Err(SourceError::InvalidPackageRole {
+            role: TargetRole::Component,
+            instance: instance.to_owned(),
+            key: dependency_key.to_owned(),
+            package: package.name.to_string(),
+            message: format!(
+                "native model entry {} is not a regular file",
+                model.display()
+            ),
+        });
+    }
+    Ok(definition)
 }
 
 const SUPERVISOR_DEPENDENCY_KEY: &str = "phoxal-supervisor";

@@ -1,23 +1,32 @@
 schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
 capabilities:
   imu:
     kind: imu
     publish_rate_hz: 50.0
     axes: [true, true, true]
     target:
-      kind: link
-      id: sensor_link
+      kind: site
+      id: sensor_site
+    signals:
+      orientation: imu_orientation
+      acceleration: accelerometer
+      angular_velocity: gyroscope
   accelerometer:
     kind: accelerometer
     publish_rate_hz: 100.0
     axes: [true, true, true]
     target:
-      kind: link
-      id: sensor_link
+      kind: site
+      id: sensor_site
+    signals:
+      acceleration: accelerometer
   gyroscope:
     kind: gyroscope
     publish_rate_hz: 100.0
     axes: [true, true, true]
     target:
-      kind: link
-      id: sensor_link
+      kind: site
+      id: sensor_site
+    signals:
+      angular_velocity: gyroscope

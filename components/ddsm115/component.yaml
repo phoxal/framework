@@ -1,4 +1,5 @@
 schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
 capabilities:
   motor:
     kind: motor
@@ -10,8 +11,9 @@ capabilities:
     max_velocity_radps: 20.943951
     gear_ratio: 1.0
     target:
-      kind: joint
-      id: motor_joint
+      kind: actuator
+      id: motor
+    joint: motor_joint
   encoder:
     kind: encoder
     publish_rate_hz: 50.0

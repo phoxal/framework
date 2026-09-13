@@ -1,4 +1,5 @@
 schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
 capabilities:
   range:
     kind: range
@@ -7,5 +8,5 @@ capabilities:
     max_range_m: 4.0
     field_of_view_rad: 0.471239
     target:
-      kind: link
-      id: sensor_link
+      kind: site
+      id: sensor_site

@@ -4,6 +4,10 @@
 
 It discovers the nearest `robot.yaml`, requires the root Cargo package beside it, parses explicit `services:` and `connections:`, resolves exact dependency keys through Cargo metadata, prepares the mandatory supervisor dependency, and runs selected targets with one Cargo lock.
 
+Mounted components use `mount_site` to select a persistent site in the parent MJCF model.
+Each selected component package must provide `component.yaml` with `model: { file, root_body }` and explicit capability-local native targets.
+The prepared bundle retains those semantic declarations so the independent native application can validate compiled bindings without guessing names from ports or product types.
+
 The crate deliberately has no dependency on the Runtime SDK, supervisor, service implementations, simulator, registry client, or archived `phoxal-cli`.
 
 `cargo-phoxal` is the command-line entry point over this library.

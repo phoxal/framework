@@ -1,4 +1,5 @@
 <mujoco model="oak_d_lite">
+  <compiler angle="radian" />
   <worldbody>
     <body name="mount">
       <body name="body_link">

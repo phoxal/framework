@@ -33,8 +33,9 @@ pub use bundle::{
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, CargoSelection, LockMode};
 pub use discovery::ProjectLayout;
 pub use document::{
-    BrainSelection, ComponentInstance, ConnectionSources, PortReference, PortReferenceError,
-    ROBOT_SCHEMA, RobotDocument, RobotSection, ServiceSelection, is_identifier,
+    BrainSelection, COMPONENT_SCHEMA, CapabilityDeclaration, ComponentDocument, ComponentInstance,
+    ComponentModel, ConnectionSources, NativeTarget, NativeTargetKind, PortReference,
+    PortReferenceError, ROBOT_SCHEMA, RobotDocument, RobotSection, ServiceSelection, is_identifier,
 };
 pub use error::{
     DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,

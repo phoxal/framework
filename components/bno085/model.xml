@@ -1,4 +1,5 @@
 <mujoco model="bno085">
+  <compiler angle="radian" />
   <worldbody>
     <body name="mount">
       <body name="sensor_link">

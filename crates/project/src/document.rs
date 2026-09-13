@@ -8,6 +8,9 @@ use crate::error::{ValidationError, ValidationErrors};
 /// The source-language tag accepted by this first project compiler.
 pub const ROBOT_SCHEMA: &str = "phoxal/robot/v0";
 
+/// The component definition generation consumed by native model preparation.
+pub const COMPONENT_SCHEMA: &str = "phoxal/component/v0";
+
 /// A parsed and validated `robot.yaml` document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,6 +87,12 @@ impl RobotDocument {
 
         for (instance, component) in &self.robot.components {
             validate_identifier(&format!("robot.components.{instance}"), instance, errors);
+            if instance.contains("__") {
+                errors.push(ValidationError::ReservedNamespaceSeparator {
+                    field: format!("robot.components.{instance}"),
+                    value: instance.clone(),
+                });
+            }
             if self.services.contains_key(instance) {
                 errors.push(ValidationError::InstanceCollision {
                     instance: instance.clone(),
@@ -104,9 +113,9 @@ impl RobotDocument {
                     value: component.component.clone(),
                 });
             }
-            if component.mount_link.trim().is_empty() {
+            if component.mount_site.trim().is_empty() {
                 errors.push(ValidationError::EmptySourceKey {
-                    field: format!("robot.components.{instance}.mount_link"),
+                    field: format!("robot.components.{instance}.mount_site"),
                 });
             }
             if let Some(config) = &component.config {
@@ -321,14 +330,201 @@ pub struct RobotSection {
 pub struct ComponentInstance {
     /// Cargo dependency key selecting the component package.
     pub component: String,
-    /// Native model mount/site name.
-    pub mount_link: String,
+    /// Persistent native site in the parent robot model receiving the component root.
+    pub mount_site: String,
     /// Component-owned driver connection and configuration.
     #[serde(default)]
     pub driver: Option<serde_json::Value>,
     /// Component-owned configuration, if the component declares one.
     #[serde(default, deserialize_with = "deserialize_optional_value")]
     pub config: Option<serde_json::Value>,
+}
+
+/// A component-owned native model and semantic capability definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentDocument {
+    /// Authored component document generation.
+    pub schema: String,
+    /// Native model entry and attachment root.
+    pub model: ComponentModel,
+    /// Public semantic capabilities keyed by component-local identity.
+    pub capabilities: BTreeMap<String, CapabilityDeclaration>,
+    /// Explicit additional package assets retained by publication tooling.
+    #[serde(default)]
+    pub assets: Vec<PathBuf>,
+}
+
+impl ComponentDocument {
+    /// Parses one complete component definition.
+    pub fn parse(text: &str) -> Result<Self, serde_yaml::Error> {
+        serde_yaml::from_str(text)
+    }
+
+    /// Validates the fixed native authoring contract used by model admission.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != COMPONENT_SCHEMA {
+            return Err(format!(
+                "schema {:?} is not supported; expected {COMPONENT_SCHEMA}",
+                self.schema
+            ));
+        }
+        validate_relative_model_path(&self.model.file, "model.file")?;
+        validate_native_local_name(&self.model.root_body, "model.root_body")?;
+        for (identity, capability) in &self.capabilities {
+            validate_native_local_name(identity, &format!("capabilities.{identity}"))?;
+            capability.validate(identity)?;
+        }
+        Ok(())
+    }
+}
+
+/// The native model entry selected by a component definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentModel {
+    /// MJCF entry path relative to the component package root.
+    pub file: PathBuf,
+    /// Exactly one component-local body attached to the parent mount site.
+    pub root_body: String,
+}
+
+/// A stable native target category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeTargetKind {
+    /// A compiled scalar native actuator.
+    Actuator,
+    /// A compiled native joint.
+    Joint,
+    /// A persistent native site.
+    Site,
+    /// A compiled native camera.
+    Camera,
+}
+
+/// One component-local native object selected by a semantic capability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeTarget {
+    /// Required native object category.
+    pub kind: NativeTargetKind,
+    /// Component-local native object name.
+    pub id: String,
+}
+
+/// A semantic capability plus the minimum native binding needed by a provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityDeclaration {
+    /// Semantic capability kind owned by the component contract.
+    pub kind: String,
+    /// Persistent native target selected by this capability.
+    pub target: NativeTarget,
+    /// Joint transmitted by a motor actuator, when this is a motor.
+    #[serde(default)]
+    pub joint: Option<String>,
+    /// Component-local native signal names required to encode the public payload.
+    #[serde(default)]
+    pub signals: BTreeMap<String, String>,
+    /// Capability-specific semantic values retained without creating a second physical model.
+    #[serde(flatten)]
+    pub semantics: BTreeMap<String, serde_json::Value>,
+}
+
+impl CapabilityDeclaration {
+    fn validate(&self, identity: &str) -> Result<(), String> {
+        let field = format!("capabilities.{identity}");
+        validate_native_local_name(&self.target.id, &format!("{field}.target.id"))?;
+        let expected_target = match self.kind.as_str() {
+            "motor" => NativeTargetKind::Actuator,
+            "encoder" => NativeTargetKind::Joint,
+            "imu" | "accelerometer" | "gyroscope" | "range" | "gnss" => NativeTargetKind::Site,
+            "camera" | "depth" => NativeTargetKind::Camera,
+            kind => return Err(format!("{field}.kind {kind:?} is not supported")),
+        };
+        if self.target.kind != expected_target {
+            return Err(format!(
+                "{field}.target.kind must be {:?} for capability kind {:?}",
+                expected_target, self.kind
+            ));
+        }
+        if self.kind == "motor" {
+            let joint = self
+                .joint
+                .as_deref()
+                .ok_or_else(|| format!("{field}.joint is required for a motor"))?;
+            validate_native_local_name(joint, &format!("{field}.joint"))?;
+        } else if self.joint.is_some() {
+            return Err(format!("{field}.joint is only valid for a motor"));
+        }
+        for (role, signal) in &self.signals {
+            validate_native_local_name(role, &format!("{field}.signals key"))?;
+            validate_native_local_name(signal, &format!("{field}.signals.{role}"))?;
+        }
+        match self.kind.as_str() {
+            "imu" => require_signals(
+                &field,
+                &self.signals,
+                &["orientation", "acceleration", "angular_velocity"],
+            ),
+            "accelerometer" => require_signals(&field, &self.signals, &["acceleration"]),
+            "gyroscope" => require_signals(&field, &self.signals, &["angular_velocity"]),
+            _ if !self.signals.is_empty() => Err(format!(
+                "{field}.signals is only valid for inertial capabilities"
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn require_signals(
+    field: &str,
+    signals: &BTreeMap<String, String>,
+    required: &[&str],
+) -> Result<(), String> {
+    let actual = signals.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = required.iter().copied().collect::<BTreeSet<_>>();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{field}.signals must contain exactly {expected:?}, got {actual:?}"
+        ))
+    }
+}
+
+fn validate_native_local_name(value: &str, field: &str) -> Result<(), String> {
+    if !is_identifier(value) {
+        return Err(format!(
+            "{field} {value:?} must use lowercase letters, digits, '-' or '_'"
+        ));
+    }
+    if value.contains("__") {
+        return Err(format!(
+            "{field} {value:?} contains reserved native namespace separator '__'"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_relative_model_path(path: &std::path::Path, field: &str) -> Result<(), String> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(format!("{field} must be a non-empty relative path"));
+    }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(format!("{field} must remain inside the component package"));
+    }
+    if path.extension().and_then(std::ffi::OsStr::to_str) != Some("xml") {
+        return Err(format!("{field} must select an MJCF .xml entry"));
+    }
+    Ok(())
 }
 
 /// One explicit behavioral service instance.
@@ -464,7 +660,7 @@ robot:
   components:
     imu:
       component: imu-package
-      mount_link: imu_mount
+      mount_site: imu_mount
 brain:
   binary: rover-brain
 services:
@@ -550,7 +746,7 @@ robot:
   components:
     imu:
       component: imu
-      mount_link: imu_mount
+      mount_site: imu_mount
       roles:
         imu: [navigation]
 "#,
@@ -599,5 +795,76 @@ connections:
             ValidationError::InvalidPortReference { value, .. }
                 if value == "navigation.state.extra"
         )));
+    }
+
+    #[test]
+    fn component_native_bindings_are_parsed_without_losing_semantics() {
+        let document = ComponentDocument::parse(
+            r#"
+schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
+capabilities:
+  motor:
+    kind: motor
+    command: velocity
+    max_torque_nm: 2.0
+    target: { kind: actuator, id: motor }
+    joint: motor_joint
+  encoder:
+    kind: encoder
+    publish_rate_hz: 50.0
+    target: { kind: joint, id: motor_joint }
+"#,
+        )
+        .expect("component definition parses");
+        document.validate().expect("native bindings validate");
+        assert_eq!(
+            document.capabilities["motor"].semantics["command"],
+            serde_json::json!("velocity")
+        );
+        assert_eq!(
+            document.capabilities["encoder"].target.kind,
+            NativeTargetKind::Joint
+        );
+    }
+
+    #[test]
+    fn component_bindings_reject_legacy_targets_and_namespace_collisions() {
+        let legacy = ComponentDocument::parse(
+            r#"
+schema: phoxal/component/v0
+model: { file: model.xml, root_body: mount }
+capabilities:
+  range:
+    kind: range
+    target: { kind: joint, id: sensor_link }
+"#,
+        )
+        .expect("definition parses");
+        assert!(
+            legacy
+                .validate()
+                .expect_err("wrong target kind")
+                .contains("Site")
+        );
+
+        let document = RobotDocument::parse(
+            r#"
+robot:
+  id: bench
+  components:
+    left__motor: { component: motor, mount_site: left_mount }
+services: {}
+connections: {}
+"#,
+        )
+        .expect("robot parses");
+        assert!(
+            document
+                .validate()
+                .expect_err("reserved separator")
+                .iter()
+                .any(|error| matches!(error, ValidationError::ReservedNamespaceSeparator { .. }))
+        );
     }
 }

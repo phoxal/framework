@@ -1,4 +1,5 @@
 <mujoco model="ddsm115">
+  <compiler angle="radian" />
   <asset>
     <mesh name="ddsm115_mesh" file="assets/meshes/ddsm115.obj" />
   </asset>
@@ -30,8 +31,11 @@
       name="motor"
       joint="motor_joint"
       kv="1"
+      gear="1"
       ctrlrange="-20.943951 20.943951"
       ctrllimited="true"
+      forcerange="-2 2"
+      forcelimited="true"
     />
   </actuator>
   <sensor>
