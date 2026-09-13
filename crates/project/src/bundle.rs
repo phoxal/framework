@@ -238,6 +238,49 @@ pub struct BundleToolchain {
     pub all_features: bool,
     /// Whether the root disabled default features.
     pub no_default_features: bool,
+    /// Cargo lock policy used for the build.
+    pub lock: String,
+    /// Whether Cargo was forced offline.
+    pub offline: bool,
+    /// Cargo's caller-provided arguments, retained in invocation order.
+    pub cargo_args: Vec<String>,
+    /// Cargo message format requested by the caller.
+    pub message_format: Option<String>,
+    /// Environment inputs that can affect Cargo, Rust, or native builds.
+    pub environment: Vec<BundleEnvironment>,
+    /// Native tool identities observed in the build environment.
+    pub native_tools: Vec<BundleNativeTool>,
+    /// Workspace configuration files carried by the source closure.
+    pub config_files: Vec<BundleFile>,
+    /// Exact Cargo argument vectors used for selected executable builds.
+    pub invocations: Vec<BundleCargoInvocation>,
+}
+
+/// One environment value retained as build provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleEnvironment {
+    /// Environment variable name.
+    pub name: String,
+    /// Environment variable value, or an explicit redaction marker.
+    pub value: String,
+}
+
+/// One native compiler or linker input retained as build provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleNativeTool {
+    /// Environment variable selecting the tool.
+    pub name: String,
+    /// Configured tool path or command.
+    pub command: String,
+    /// Version output when the configured command could be queried.
+    pub version: Option<String>,
+}
+
+/// One Cargo invocation used to produce a selected executable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleCargoInvocation {
+    /// Cargo arguments in process order, with local roots made relocatable.
+    pub arguments: Vec<String>,
 }
 
 /// The relocatable local source closure carried by a compiled bundle.
@@ -380,10 +423,11 @@ pub struct LocalSimulationPlan {
     pub identity: LocalIdentity,
 }
 
-pub(crate) fn assemble(
+pub(crate) fn assemble_with_inputs(
     prepared: &PreparedProject,
     options: &CargoOptions,
     output: impl AsRef<Path>,
+    expected_inputs: Option<&BuildInputs>,
 ) -> Result<CompiledBundle, Error> {
     options.validate()?;
     let output = output.as_ref();
@@ -402,6 +446,9 @@ pub(crate) fn assemble(
             source,
         })?;
     let staged_root = staging.path();
+    let build_inputs = expected_inputs
+        .cloned()
+        .map_or_else(|| capture_build_inputs(prepared), Ok)?;
     fs::create_dir(staged_root.join(BIN_DIR)).map_err(|source| Error::BundleDirectory {
         path: staged_root.join(BIN_DIR),
         source,
@@ -410,12 +457,14 @@ pub(crate) fn assemble(
     let staged_source_tree = stage_source_tree(prepared, staged_root)?;
 
     let mut artifacts = BTreeMap::new();
+    let mut invocations = Vec::new();
     for (_, target) in prepared.assembly_targets() {
         let key = (target.package_id.clone(), target.target.clone());
         if artifacts.contains_key(&key) {
             continue;
         }
         let output = cargo::build_target(prepared, target, options)?;
+        invocations.push(output.arguments.clone());
         let executable = cargo::artifact_path(&output.stdout, target)?;
         let metadata = fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
             path: executable.clone(),
@@ -488,25 +537,28 @@ pub(crate) fn assemble(
         .collect::<BTreeMap<_, _>>();
     validation::validate_configurations(prepared, &contract_map)?;
     validation::validate_connections(prepared, &contract_map)?;
+    verify_build_inputs(prepared, &build_inputs)?;
 
     let mut components = prepared
         .sources()
         .components
         .values()
-        .map(|component| BundleComponent {
-            instance: component.instance.clone(),
-            dependency_key: component.dependency_key.clone(),
-            package_id: public_package_id(prepared, &component.package_id),
-            package: component.package.clone(),
-            source: source_identity(&component.source),
+        .map(|component| {
+            Ok(BundleComponent {
+                instance: component.instance.clone(),
+                dependency_key: component.dependency_key.clone(),
+                package_id: public_package_id(prepared, &component.package_id),
+                package: component.package.clone(),
+                source: source_identity(&component.source)?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, Error>>()?;
     components.sort_by(|left, right| left.instance.cmp(&right.instance));
 
     let (sources, source_closure_sha256) = source_closure(prepared)?;
-    let target = options.target.clone().unwrap_or_else(|| "host".to_owned());
-    let profile = options.profile.clone().unwrap_or_else(|| "dev".to_owned());
-    let features = normalized_features(options);
+    let target = effective_target(options);
+    let profile = effective_profile(options);
+    let features = effective_features(options);
     let manifest = BundleManifest {
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_id: prepared.document().robot.id.clone(),
@@ -530,6 +582,7 @@ pub(crate) fn assemble(
         staged_source_tree,
         options,
         &manifest,
+        &invocations,
     )?;
     write_json(&staged_root.join(MANIFEST_FILE), &manifest)?;
     write_json(&staged_root.join(PROVENANCE_FILE), &provenance)?;
@@ -543,6 +596,7 @@ pub(crate) fn assemble(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn provenance(
     prepared: &PreparedProject,
     staged_model: Option<&StagedModel>,
@@ -551,8 +605,16 @@ fn provenance(
     staged_source_tree: BundleSourceClosure,
     options: &CargoOptions,
     manifest: &BundleManifest,
+    invocations: &[Vec<std::ffi::OsString>],
 ) -> Result<BundleProvenance, Error> {
     let cargo_lock = optional_file(&prepared.cargo_lock(), "Cargo.lock")?;
+    let toolchain = toolchain(
+        options,
+        manifest,
+        &staged_source_tree,
+        invocations,
+        prepared.layout().root(),
+    )?;
     Ok(BundleProvenance {
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_manifest_sha256: digest_file(prepared.layout().robot_manifest())?.sha256,
@@ -562,20 +624,112 @@ fn provenance(
         sources,
         source_closure_sha256,
         source_tree: staged_source_tree,
-        toolchain: toolchain(options, manifest)?,
+        toolchain,
         model: staged_model.map(|model| model.source.clone()),
         model_closure: staged_model.map(|model| model.closure.clone()),
     })
 }
 
-fn normalized_features(options: &CargoOptions) -> Vec<String> {
+fn effective_target(options: &CargoOptions) -> String {
+    cargo_arg_value(&options.cargo_args, "--target")
+        .or_else(|| options.target.clone())
+        .unwrap_or_else(|| "host".to_owned())
+}
+
+fn effective_profile(options: &CargoOptions) -> String {
+    let mut profile = options.profile.clone();
+    let arguments = options
+        .cargo_args
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--release" | "-r" => profile = Some("release".to_owned()),
+            "--profile" => {
+                if let Some(value) = arguments.get(index + 1) {
+                    profile = Some(value.clone());
+                    index += 1;
+                }
+            }
+            value if value.starts_with("--profile=") => {
+                profile = Some(value["--profile=".len()..].to_owned());
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    profile.unwrap_or_else(|| "dev".to_owned())
+}
+
+fn effective_features(options: &CargoOptions) -> Vec<String> {
     let mut features = options.features.clone();
+    let arguments = options
+        .cargo_args
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let mut index = 0;
+    while index < arguments.len() {
+        if arguments[index] == "--features" {
+            index += 1;
+            while let Some(value) = arguments.get(index) {
+                if value.starts_with('-') {
+                    break;
+                }
+                features.extend(
+                    value
+                        .split(|character: char| character == ',' || character.is_whitespace())
+                        .filter(|feature| !feature.is_empty())
+                        .map(str::to_owned),
+                );
+                index += 1;
+            }
+            continue;
+        }
+        if let Some(value) = arguments[index].strip_prefix("--features=") {
+            features.extend(
+                value
+                    .split(|character: char| character == ',' || character.is_whitespace())
+                    .filter(|feature| !feature.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+        index += 1;
+    }
     features.sort();
     features.dedup();
     features
 }
 
-fn toolchain(options: &CargoOptions, manifest: &BundleManifest) -> Result<BundleToolchain, Error> {
+fn cargo_arg_value(arguments: &[std::ffi::OsString], name: &str) -> Option<String> {
+    let arguments = arguments
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let equals = format!("{name}=");
+    let mut value = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        if arguments[index] == name {
+            value = arguments.get(index + 1).cloned();
+            index += 1;
+        } else if let Some(argument) = arguments[index].strip_prefix(&equals) {
+            value = Some(argument.to_owned());
+        }
+        index += 1;
+    }
+    value
+}
+
+fn toolchain(
+    options: &CargoOptions,
+    manifest: &BundleManifest,
+    source_tree: &BundleSourceClosure,
+    invocations: &[Vec<std::ffi::OsString>],
+    project_root: &Path,
+) -> Result<BundleToolchain, Error> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     Ok(BundleToolchain {
@@ -586,9 +740,67 @@ fn toolchain(options: &CargoOptions, manifest: &BundleManifest) -> Result<Bundle
         target: manifest.target.clone(),
         profile: manifest.profile.clone(),
         features: manifest.features.clone(),
-        all_features: options.all_features,
-        no_default_features: options.no_default_features,
+        all_features: effective_all_features(options),
+        no_default_features: effective_no_default_features(options),
+        lock: effective_lock(options),
+        offline: options.offline || has_cargo_flag(options, "--offline"),
+        cargo_args: options
+            .cargo_args
+            .iter()
+            .map(|argument| normalize_provenance_text(&argument.to_string_lossy(), project_root))
+            .collect(),
+        message_format: Some(
+            options
+                .message_format
+                .as_deref()
+                .filter(|format| format.starts_with("json"))
+                .unwrap_or("json-render-diagnostics")
+                .to_owned(),
+        ),
+        environment: build_environment(),
+        native_tools: native_tools(),
+        config_files: {
+            let mut files = source_tree_config_files(source_tree);
+            files.extend(external_cargo_config_files()?);
+            files
+        },
+        invocations: invocations
+            .iter()
+            .map(|arguments| BundleCargoInvocation {
+                arguments: arguments
+                    .iter()
+                    .map(|argument| {
+                        normalize_provenance_text(&argument.to_string_lossy(), project_root)
+                    })
+                    .collect(),
+            })
+            .collect(),
     })
+}
+
+fn has_cargo_flag(options: &CargoOptions, flag: &str) -> bool {
+    options
+        .cargo_args
+        .iter()
+        .any(|argument| argument.to_string_lossy() == flag)
+}
+
+fn effective_all_features(options: &CargoOptions) -> bool {
+    options.all_features || has_cargo_flag(options, "--all-features")
+}
+
+fn effective_no_default_features(options: &CargoOptions) -> bool {
+    options.no_default_features || has_cargo_flag(options, "--no-default-features")
+}
+
+fn effective_lock(options: &CargoOptions) -> String {
+    if has_cargo_flag(options, "--frozen") {
+        "frozen".to_owned()
+    } else if has_cargo_flag(options, "--locked") {
+        "locked".to_owned()
+    } else {
+        format!("{:?}", options.lock).to_lowercase()
+    }
 }
 
 fn version_output(program: &std::ffi::OsStr, arguments: &[&str]) -> Result<String, Error> {
@@ -614,6 +826,448 @@ fn version_output(program: &std::ffi::OsStr, arguments: &[&str]) -> Result<Strin
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn external_cargo_config_paths() -> Vec<(String, PathBuf)> {
+    let mut roots = Vec::new();
+    if let Some(cargo_home) = std::env::var_os("CARGO_HOME") {
+        roots.push(PathBuf::from(cargo_home));
+    } else if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".cargo"));
+    }
+    let mut paths = Vec::new();
+    for root in roots {
+        for name in ["config.toml", "config"] {
+            paths.push((format!("external/.cargo/{name}"), root.join(name)));
+        }
+    }
+    paths
+}
+
+fn external_cargo_config_files() -> Result<Vec<BundleFile>, Error> {
+    external_cargo_config_paths()
+        .into_iter()
+        .filter(|(_, path)| path.is_file())
+        .map(|(path, source)| {
+            let digest = digest_file(&source)?;
+            Ok(BundleFile {
+                path,
+                sha256: digest.sha256,
+                bytes: digest.bytes,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BuildInputs {
+    source: String,
+    environment: String,
+}
+
+pub(crate) fn capture_build_inputs(prepared: &PreparedProject) -> Result<BuildInputs, Error> {
+    let mut hasher = Sha256::new();
+    let mut add_file = |label: String, path: &Path| -> Result<(), Error> {
+        let digest = digest_file(path)?;
+        update_digest_bytes(&mut hasher, label.as_bytes());
+        update_digest_bytes(&mut hasher, digest.sha256.as_bytes());
+        update_digest_bytes(&mut hasher, &digest.bytes.to_le_bytes());
+        Ok(())
+    };
+    add_file("robot.yaml".to_owned(), prepared.layout().robot_manifest())?;
+    add_file("Cargo.toml".to_owned(), prepared.layout().cargo_manifest())?;
+    add_file("Cargo.lock".to_owned(), &prepared.cargo_lock())?;
+    let workspace_root = prepared
+        .cargo_workspace_root()
+        .canonicalize()
+        .map_err(|source| Error::ArtifactFile {
+            path: prepared.cargo_workspace_root().to_owned(),
+            source,
+        })?;
+    if workspace_root.join(".cargo").is_dir() {
+        for file in source_files(&workspace_root.join(".cargo"))? {
+            add_file(
+                format!("workspace/.cargo/{}", file.path),
+                &workspace_root.join(".cargo").join(&file.path),
+            )?;
+        }
+    }
+    for (label, path) in external_cargo_config_paths() {
+        if path.is_file() {
+            add_file(label, &path)?;
+        }
+    }
+    for package in prepared
+        .metadata()
+        .packages
+        .iter()
+        .filter(|package| resolved_package_ids(prepared).contains(&package.id.to_string()))
+    {
+        let package_root = package_root(package)?;
+        for file in source_files_with(&package_root, package.source.is_some())? {
+            add_file(
+                format!("package/{}/{}", package.id, file.path),
+                &package_root.join(&file.path),
+            )?;
+        }
+    }
+    let source = format!("{:x}", hasher.finalize());
+    let environment = environment_digest();
+    Ok(BuildInputs {
+        source,
+        environment,
+    })
+}
+
+pub(crate) fn verify_build_inputs(
+    prepared: &PreparedProject,
+    expected: &BuildInputs,
+) -> Result<(), Error> {
+    let current = capture_build_inputs(prepared)?;
+    if current == *expected {
+        return Ok(());
+    }
+    let mut differences = Vec::new();
+    if current.source != expected.source {
+        differences.push("source, manifest, lock, or workspace configuration");
+    }
+    if current.environment != expected.environment {
+        differences.push("build environment");
+    }
+    Err(Error::BundleSourceChanged {
+        message: differences.join(" and "),
+    })
+}
+
+fn environment_digest() -> String {
+    let mut variables = build_environment_values();
+    variables.sort();
+    let mut hasher = Sha256::new();
+    for (name, value) in variables {
+        update_digest_bytes(&mut hasher, name.as_bytes());
+        update_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn build_environment() -> Vec<BundleEnvironment> {
+    render_build_environment(build_environment_values())
+}
+
+fn render_build_environment(variables: Vec<(String, String)>) -> Vec<BundleEnvironment> {
+    let mut variables = variables
+        .into_iter()
+        .map(|(name, value)| {
+            let value = if is_sensitive_environment_name(&name)
+                || is_sensitive_environment_value(&value)
+                || looks_like_local_path_value(&name, &value)
+            {
+                format!("<sha256:{}>", digest_text(&value))
+            } else {
+                value
+            };
+            BundleEnvironment { name, value }
+        })
+        .collect::<Vec<_>>();
+    variables.sort_by(|left, right| left.name.cmp(&right.name));
+    variables
+}
+
+fn build_environment_values() -> Vec<(String, String)> {
+    select_build_environment(std::env::vars_os().map(|(name, value)| {
+        (
+            name.to_string_lossy().into_owned(),
+            value.to_string_lossy().into_owned(),
+        )
+    }))
+}
+
+fn select_build_environment(
+    variables: impl IntoIterator<Item = (String, String)>,
+) -> Vec<(String, String)> {
+    variables
+        .into_iter()
+        .filter(|(name, _)| is_build_environment_name(name))
+        .collect()
+}
+
+fn is_build_environment_name(name: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "ANDROID_HOME",
+        "ANDROID_NDK_ROOT",
+        "AR",
+        "BINDGEN_EXTRA_CLANG_ARGS",
+        "CC",
+        "CARGO_BUILD_INCREMENTAL",
+        "CARGO_BUILD_JOBS",
+        "CARGO_BUILD_RUSTC",
+        "CARGO_BUILD_RUSTDOC",
+        "CARGO_BUILD_RUSTFLAGS",
+        "CARGO_BUILD_TARGET",
+        "CARGO_HOME",
+        "CARGO_INCREMENTAL",
+        "CARGO_HTTP_CAINFO",
+        "CARGO_HTTP_PROXY",
+        "CARGO_HTTP_TIMEOUT",
+        "CARGO_MAKEFLAGS",
+        "CARGO_NET_GIT_FETCH_WITH_CLI",
+        "CARGO_NET_OFFLINE",
+        "CARGO_REGISTRY_TOKEN",
+        "CMAKE",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "EMSDK",
+        "GIT_ASKPASS",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_SSH_COMMAND",
+        "LD",
+        "LIBCLANG_PATH",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "MAKE",
+        "MAKEFLAGS",
+        "NASM",
+        "NUM_JOBS",
+        "OPENSSL_DIR",
+        "OPENSSL_INCLUDE_DIR",
+        "OPENSSL_LIB_DIR",
+        "PKG_CONFIG",
+        "PKG_CONFIG_LIBDIR",
+        "PKG_CONFIG_PATH",
+        "PKG_CONFIG_SYSROOT_DIR",
+        "PROTOC",
+        "PROTOC_INCLUDE",
+        "RANLIB",
+        "ROCM_PATH",
+        "RUSTC",
+        "RUSTC_BOOTSTRAP",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTC_WRAPPER",
+        "RUSTDOC",
+        "RUSTDOCFLAGS",
+        "RUSTFLAGS",
+        "RUSTUP_HOME",
+        "RUSTUP_TOOLCHAIN",
+        "SDKROOT",
+        "SSH_AGENT_PID",
+        "SSH_AUTH_SOCK",
+        "SOURCE_DATE_EPOCH",
+        "VCPKG_ROOT",
+        "WASI_SDK_PATH",
+        "ZIG",
+    ];
+    NAMES.contains(&name)
+        || (name.starts_with("CARGO_REGISTRIES_")
+            && ["_INDEX", "_PROTOCOL", "_TOKEN", "_CREDENTIAL_PROVIDER"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)))
+        || (name.starts_with("CARGO_TARGET_")
+            && ["_AR", "_LINKER", "_RUSTC", "_RUSTFLAGS", "_RUNNER"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix)))
+}
+
+fn digest_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn is_sensitive_environment_name(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    [
+        "API_KEY",
+        "AUTH",
+        "AWS",
+        "COOKIE",
+        "CREDENTIAL",
+        "PASSWORD",
+        "PRIVATE",
+        "SECRET",
+        "SESSION",
+        "TOKEN",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
+}
+
+fn is_sensitive_environment_value(value: &str) -> bool {
+    ["http://", "https://", "ssh://", "git://"]
+        .iter()
+        .filter_map(|scheme| value.find(scheme).map(|index| index + scheme.len()))
+        .any(|authority_start| {
+            value[authority_start..].split_once('/').map_or_else(
+                || value[authority_start..].contains('@'),
+                |(authority, _)| authority.contains('@'),
+            )
+        })
+}
+
+fn looks_like_local_path_value(name: &str, value: &str) -> bool {
+    const PATH_NAMES: &[&str] = &[
+        "ANDROID_HOME",
+        "ANDROID_NDK_ROOT",
+        "AR",
+        "CC",
+        "CARGO_HOME",
+        "CARGO_HTTP_CAINFO",
+        "CMAKE",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "LD",
+        "LIBCLANG_PATH",
+        "MAKE",
+        "NASM",
+        "OPENSSL_DIR",
+        "OPENSSL_INCLUDE_DIR",
+        "OPENSSL_LIB_DIR",
+        "PKG_CONFIG",
+        "PKG_CONFIG_LIBDIR",
+        "PKG_CONFIG_PATH",
+        "PKG_CONFIG_SYSROOT_DIR",
+        "PROTOC",
+        "PROTOC_INCLUDE",
+        "RANLIB",
+        "ROCM_PATH",
+        "RUSTC",
+        "RUSTDOC",
+        "RUSTUP_HOME",
+        "SDKROOT",
+        "SSH_AUTH_SOCK",
+        "VCPKG_ROOT",
+        "WASI_SDK_PATH",
+        "ZIG",
+    ];
+    PATH_NAMES.contains(&name) || value.split_whitespace().any(is_local_path_fragment)
+}
+
+fn is_local_path_fragment(part: &str) -> bool {
+    part.starts_with('/')
+        || part.starts_with("\\\\")
+        || part.as_bytes().get(1) == Some(&b':')
+        || part
+            .split_once('=')
+            .is_some_and(|(_, suffix)| is_local_path_fragment(suffix))
+        || part.starts_with("file:")
+}
+
+fn normalize_provenance_text(value: &str, project_root: &Path) -> String {
+    let project_root = project_root.display().to_string();
+    let current_dir = std::env::current_dir()
+        .ok()
+        .map(|path| path.display().to_string());
+    value
+        .split_whitespace()
+        .map(|part| {
+            let part = part.replace(&project_root, "<project-root>");
+            let part = current_dir.as_ref().map_or(part.clone(), |current_dir| {
+                part.replace(current_dir, "<current-dir>")
+            });
+            normalize_provenance_token(&part)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_provenance_token(value: &str) -> String {
+    let value = normalize_url_credentials(value);
+    if value.starts_with('/') || value.starts_with("\\\\") || value.as_bytes().get(1) == Some(&b':')
+    {
+        return "<local-path>".to_owned();
+    }
+    if let Some((prefix, suffix)) = value.split_once('=')
+        && (suffix.starts_with('/')
+            || suffix.starts_with("\\\\")
+            || suffix.as_bytes().get(1) == Some(&b':')
+            || suffix.starts_with("file:"))
+    {
+        return format!("{prefix}=<local-path>");
+    }
+    if value.starts_with("file:") {
+        return "file:<local-path>".to_owned();
+    }
+    if !value.contains("://")
+        && let Some(index) = value.find('/')
+        && value.starts_with('-')
+    {
+        return format!("{}<local-path>", &value[..index]);
+    }
+    value.to_owned()
+}
+
+fn normalize_url_credentials(value: &str) -> String {
+    for scheme in ["http://", "https://", "ssh://", "git://"] {
+        let Some(scheme_start) = value.find(scheme) else {
+            continue;
+        };
+        let authority_start = scheme_start + scheme.len();
+        let authority_end = value[authority_start..]
+            .find(['/', '?', '#'])
+            .map_or(value.len(), |offset| authority_start + offset);
+        let authority = &value[authority_start..authority_end];
+        let Some(credentials_end) = authority.find('@') else {
+            continue;
+        };
+        return format!(
+            "{}<redacted>@{}{}",
+            &value[..authority_start],
+            &authority[credentials_end + 1..],
+            &value[authority_end..]
+        );
+    }
+    if let (Some(at), Some(colon)) = (value.find('@'), value.find(':'))
+        && at < colon
+    {
+        return format!("<redacted>@{}", &value[at + 1..]);
+    }
+    value.to_owned()
+}
+
+fn native_tools() -> Vec<BundleNativeTool> {
+    let mut names = BTreeSet::new();
+    for name in ["CC", "CXX", "AR", "RANLIB", "LD", "CMAKE", "NASM"] {
+        names.insert(name.to_owned());
+    }
+    for name in std::env::vars_os().map(|(name, _)| name.to_string_lossy().into_owned()) {
+        if name.starts_with("CARGO_TARGET_") && name.ends_with("_LINKER") {
+            names.insert(name);
+        }
+    }
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let command = std::env::var_os(&name)?;
+            let command_text = command.to_string_lossy().into_owned();
+            let program = command_text.split_whitespace().next()?;
+            let version = Command::new(program)
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| {
+                    normalize_provenance_text(
+                        String::from_utf8_lossy(&output.stdout).trim(),
+                        Path::new("<project-root>"),
+                    )
+                })
+                .filter(|value| !value.is_empty());
+            Some(BundleNativeTool {
+                name,
+                command: normalize_provenance_text(&command_text, Path::new("<project-root>")),
+                version,
+            })
+        })
+        .collect()
+}
+
+fn source_tree_config_files(source_tree: &BundleSourceClosure) -> Vec<BundleFile> {
+    source_tree
+        .files
+        .iter()
+        .filter(|file| file.path == ".cargo" || file.path.starts_with(".cargo/"))
+        .map(|file| BundleFile {
+            path: format!("source/{}", file.path),
+            sha256: file.sha256.clone(),
+            bytes: file.bytes,
+        })
+        .collect()
+}
+
 fn stage_source_tree(
     prepared: &PreparedProject,
     staged_root: &Path,
@@ -630,6 +1284,10 @@ fn stage_source_tree(
             path: prepared.cargo_workspace_root().to_owned(),
             source,
         })?;
+    if workspace_root.join(".cargo").is_dir() {
+        validate_cargo_config(&workspace_root.join(".cargo"))?;
+        copy_source_tree(&workspace_root.join(".cargo"), &closure_root.join(".cargo"))?;
+    }
     let package_ids = resolved_package_ids(prepared);
     let local_packages = prepared
         .metadata()
@@ -638,93 +1296,127 @@ fn stage_source_tree(
         .filter(|package| package_ids.contains(&package.id.to_string()) && package.source.is_none())
         .collect::<Vec<_>>();
     let mut locations = BTreeMap::new();
-    let mut content_locations = BTreeMap::<String, PathBuf>::new();
+    let mut workspace_groups = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
     for package in &local_packages {
         let package_root = package_root(package)?;
-        let staged = if package_root.starts_with(&workspace_root) {
-            let relative = package_root
-                .strip_prefix(&workspace_root)
-                .map(PathBuf::from)
-                .map_err(|_| Error::ArtifactInvalid {
-                    path: package_root.clone(),
-                    message: "local Cargo source escaped its owning workspace".to_owned(),
-                })?;
-            closure_root.join(relative)
+        let owner = if package_root.starts_with(&workspace_root) {
+            workspace_root.clone()
         } else {
-            let digest = digest_source_tree(&package_root)?;
-            if let Some(existing) = content_locations.get(&digest) {
-                existing.clone()
-            } else {
-                let destination = closure_root.join("_phoxal_path_dependencies").join(&digest);
-                content_locations.insert(digest, destination.clone());
-                destination
-            }
+            owning_workspace_root(&package_root)?
         };
-        locations.insert(package_root, staged);
+        workspace_groups
+            .entry(owner)
+            .or_default()
+            .push(package_root);
     }
-
-    let workspace_manifest = workspace_root.join("Cargo.toml");
-    let mut workspace_value = read_toml_file(&workspace_manifest)?;
-    let original_workspace_value = workspace_value.clone();
-    let has_workspace = workspace_value
-        .get("workspace")
-        .is_some_and(toml::Value::is_table);
-    if has_workspace {
-        let members = local_packages
-            .iter()
-            .filter_map(|package| {
-                let root = package_root(package).ok()?;
-                root.strip_prefix(&workspace_root)
-                    .ok()
-                    .filter(|relative| !relative.as_os_str().is_empty())
-                    .map(path_string)
-            })
-            .collect::<BTreeSet<_>>();
-        let workspace = workspace_value
-            .get_mut("workspace")
-            .and_then(toml::Value::as_table_mut)
-            .ok_or_else(|| Error::ArtifactInvalid {
-                path: workspace_manifest.clone(),
-                message: "workspace manifest changed shape while staging".to_owned(),
-            })?;
-        if !members.is_empty() {
+    let mut staged_workspaces = BTreeMap::<PathBuf, (PathBuf, toml::Value)>::new();
+    for (owner, packages) in &mut workspace_groups {
+        packages.sort();
+        packages.dedup();
+        let staged_root = if owner == &workspace_root {
+            closure_root.clone()
+        } else {
+            let digest = digest_source_tree(owner)?;
+            closure_root.join("_phoxal_path_dependencies").join(digest)
+        };
+        let owner_manifest = owner.join("Cargo.toml");
+        let mut owner_value = read_toml_file(&owner_manifest)?;
+        let has_workspace = owner_value
+            .get("workspace")
+            .is_some_and(toml::Value::is_table);
+        if has_workspace {
+            let members = packages
+                .iter()
+                .filter_map(|package| {
+                    package
+                        .strip_prefix(owner)
+                        .ok()
+                        .filter(|relative| !relative.as_os_str().is_empty())
+                        .map(path_string)
+                })
+                .collect::<BTreeSet<_>>();
+            let workspace = owner_value
+                .get_mut("workspace")
+                .and_then(toml::Value::as_table_mut)
+                .ok_or_else(|| Error::ArtifactInvalid {
+                    path: owner_manifest.clone(),
+                    message: "workspace manifest changed shape while staging".to_owned(),
+                })?;
             workspace.insert(
                 "members".to_owned(),
                 toml::Value::Array(members.into_iter().map(toml::Value::String).collect()),
             );
-        } else {
-            workspace.insert("members".to_owned(), toml::Value::Array(Vec::new()));
+            if owner == &workspace_root {
+                let excludes = workspace
+                    .entry("exclude".to_owned())
+                    .or_insert_with(|| toml::Value::Array(Vec::new()))
+                    .as_array_mut()
+                    .ok_or_else(|| Error::ArtifactInvalid {
+                        path: owner_manifest.clone(),
+                        message: "workspace exclude changed shape while staging".to_owned(),
+                    })?;
+                if !excludes
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|exclude| exclude == "_phoxal_path_dependencies")
+                {
+                    excludes.push(toml::Value::String("_phoxal_path_dependencies".to_owned()));
+                }
+            }
+            workspace.remove("default-members");
         }
-        workspace.remove("default-members");
+        locations.insert(owner.clone(), staged_root.clone());
+        for package in packages.iter() {
+            let relative = package
+                .strip_prefix(owner)
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::new());
+            locations.insert(package.clone(), staged_root.join(relative));
+        }
+        staged_workspaces.insert(owner.clone(), (staged_root, owner_value));
     }
-    let staged_workspace_manifest = closure_root.join("Cargo.toml");
-    for package in &local_packages {
-        let original_root = package_root(package)?;
-        let staged_root = locations
-            .get(&original_root)
+    for (owner, (staged_root, workspace_value)) in &staged_workspaces {
+        if owner.join(".cargo").is_dir() {
+            validate_cargo_config(&owner.join(".cargo"))?;
+            copy_source_tree(&owner.join(".cargo"), &staged_root.join(".cargo"))?;
+        }
+        if owner.join("Cargo.lock").is_file() && owner != &workspace_root {
+            copy_source_file(&owner.join("Cargo.lock"), &staged_root.join("Cargo.lock"))?;
+        }
+        let package_roots = workspace_groups
+            .get(owner)
             .ok_or_else(|| Error::ArtifactInvalid {
-                path: original_root.clone(),
-                message: "local Cargo source has no staged location".to_owned(),
-            })?
-            .clone();
-        copy_source_tree(&original_root, &staged_root)?;
-        let original_manifest = original_root.join("Cargo.toml");
-        let staged_manifest = staged_root.join("Cargo.toml");
-        let mut value = read_toml_file(&original_manifest)?;
-        let changed = rewrite_local_paths(&mut value, &original_root, &workspace_root, &locations)?;
-        if changed {
-            write_toml_file(&staged_manifest, &value)?;
+                path: owner.clone(),
+                message: "staged workspace has no captured packages".to_owned(),
+            })?;
+        for original_root in package_roots {
+            let staged_package =
+                locations
+                    .get(original_root)
+                    .ok_or_else(|| Error::ArtifactInvalid {
+                        path: original_root.clone(),
+                        message: "local Cargo source has no staged location".to_owned(),
+                    })?;
+            if original_root.join(".cargo").is_dir() {
+                validate_cargo_config(&original_root.join(".cargo"))?;
+            }
+            copy_source_tree(original_root, staged_package)?;
+            let original_manifest = original_root.join("Cargo.toml");
+            let staged_manifest = staged_package.join("Cargo.toml");
+            let mut value = read_toml_file(&original_manifest)?;
+            let changed = rewrite_local_paths(&mut value, original_root, owner, &locations)?;
+            if changed {
+                write_toml_file(&staged_manifest, &value)?;
+            }
         }
-    }
-    if has_workspace {
-        rewrite_workspace_paths(
-            &original_workspace_value,
-            &mut workspace_value,
-            &workspace_root,
-            &closure_root,
-            &locations,
-        )?;
-        write_toml_file(&staged_workspace_manifest, &workspace_value)?;
+        if workspace_value
+            .get("workspace")
+            .is_some_and(toml::Value::is_table)
+        {
+            let mut workspace_value = workspace_value.clone();
+            rewrite_workspace_paths(&mut workspace_value, owner, staged_root, &locations)?;
+            write_toml_file(&staged_root.join("Cargo.toml"), &workspace_value)?;
+        }
     }
     let lock = prepared.cargo_lock();
     if !lock.is_file() {
@@ -755,6 +1447,58 @@ fn package_root(package: &cargo_metadata::Package) -> Result<PathBuf, Error> {
                 path: path.to_owned(),
                 source,
             })
+        })
+}
+
+fn owning_workspace_root(package_root: &Path) -> Result<PathBuf, Error> {
+    let manifest = package_root.join("Cargo.toml");
+    let value = read_toml_file(&manifest)?;
+    if let Some(workspace) = value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("workspace"))
+        .and_then(toml::Value::as_str)
+    {
+        let root = resolve_local_dependency(package_root, workspace)?;
+        if root.join("Cargo.toml").is_file() {
+            return root
+                .canonicalize()
+                .map_err(|source| Error::ArtifactFile { path: root, source });
+        }
+        return Err(Error::ArtifactInvalid {
+            path: manifest,
+            message: format!("declared Cargo workspace '{workspace}' has no Cargo.toml"),
+        });
+    }
+    if value.get("workspace").is_some_and(toml::Value::is_table) {
+        return package_root
+            .canonicalize()
+            .map_err(|source| Error::ArtifactFile {
+                path: package_root.to_owned(),
+                source,
+            });
+    }
+    let mut cursor = package_root.parent().map(Path::to_path_buf);
+    while let Some(root) = cursor {
+        let candidate = root.join("Cargo.toml");
+        if candidate.is_file() {
+            let candidate_value = read_toml_file(&candidate)?;
+            if candidate_value
+                .get("workspace")
+                .is_some_and(toml::Value::is_table)
+            {
+                return root
+                    .canonicalize()
+                    .map_err(|source| Error::ArtifactFile { path: root, source });
+            }
+        }
+        cursor = root.parent().map(Path::to_path_buf);
+    }
+    package_root
+        .canonicalize()
+        .map_err(|source| Error::ArtifactFile {
+            path: package_root.to_owned(),
+            source,
         })
 }
 
@@ -854,6 +1598,8 @@ fn copy_source_tree(source: &Path, destination: &Path) -> Result<(), Error> {
         if name == ".git"
             || name == ".cargo-ok"
             || name == ".cargo_vcs_info.json"
+            || name == "credentials"
+            || name == "credentials.toml"
             || name == "target"
             || name == ".codex"
         {
@@ -865,7 +1611,6 @@ fn copy_source_tree(source: &Path, destination: &Path) -> Result<(), Error> {
 }
 
 fn rewrite_workspace_paths(
-    original: &toml::Value,
     value: &mut toml::Value,
     workspace_root: &Path,
     staged_root: &Path,
@@ -877,48 +1622,17 @@ fn rewrite_workspace_paths(
     else {
         return Ok(());
     };
-    let Some(dependencies) = workspace.get_mut("dependencies") else {
-        return Ok(());
-    };
-    let Some(original_dependencies) = original
-        .get("workspace")
-        .and_then(toml::Value::as_table)
-        .and_then(|workspace| workspace.get("dependencies"))
-        .and_then(toml::Value::as_table)
-    else {
-        return Ok(());
-    };
-    let Some(dependencies) = dependencies.as_table_mut() else {
-        return Ok(());
-    };
-    for (key, dependency) in original_dependencies {
-        let Some(path) = dependency
-            .as_table()
-            .and_then(|table| table.get("path"))
-            .and_then(toml::Value::as_str)
-        else {
-            continue;
-        };
-        let canonical = resolve_local_dependency(workspace_root, path)?;
-        let Some(staged_dependency) = locations.get(&canonical) else {
-            continue;
-        };
-        let staged_path = relative_path(staged_root, staged_dependency).ok_or_else(|| {
-            Error::ArtifactInvalid {
-                path: staged_dependency.clone(),
-                message: "captured workspace dependency is outside the source closure".to_owned(),
-            }
-        })?;
-        if let Some(dependency) = dependencies
-            .get_mut(key)
-            .and_then(toml::Value::as_table_mut)
-        {
-            dependency.insert(
-                "path".to_owned(),
-                toml::Value::String(path_string(&staged_path)),
-            );
-        }
+    if let Some(dependencies) = workspace.get_mut("dependencies") {
+        rewrite_dependency_table_paths(
+            dependencies,
+            workspace_root,
+            workspace_root,
+            staged_root,
+            staged_root,
+            locations,
+        )?;
     }
+    rewrite_override_paths(value, workspace_root, staged_root, locations)?;
     Ok(())
 }
 
@@ -928,55 +1642,117 @@ fn rewrite_local_paths(
     workspace_root: &Path,
     locations: &BTreeMap<PathBuf, PathBuf>,
 ) -> Result<bool, Error> {
-    let mut changed = false;
+    let staged_package = locations
+        .get(package_root)
+        .ok_or_else(|| Error::ArtifactInvalid {
+            path: package_root.to_owned(),
+            message: "captured package has no staged location".to_owned(),
+        })?
+        .clone();
+    let staged_workspace = locations
+        .get(workspace_root)
+        .cloned()
+        .unwrap_or_else(|| staged_package.clone());
+    let before = serde_json::to_vec(value).map_err(|error| Error::BundleJson {
+        path: package_root.join("Cargo.toml"),
+        source: error,
+    })?;
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        let Some(dependencies) = value.get_mut(section).and_then(toml::Value::as_table_mut) else {
-            continue;
-        };
-        for dependency in dependencies.iter_mut().map(|(_, value)| value) {
-            let Some(table) = dependency.as_table_mut() else {
-                continue;
-            };
-            let Some(path) = table.get("path").and_then(toml::Value::as_str) else {
-                continue;
-            };
-            let base = if table.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
-                workspace_root
-            } else {
-                package_root
-            };
-            let canonical = resolve_local_dependency(base, path)?;
-            let Some(staged_dependency) = locations.get(&canonical) else {
-                continue;
-            };
-            let staged_package =
-                locations
-                    .get(package_root)
-                    .ok_or_else(|| Error::ArtifactInvalid {
-                        path: package_root.to_owned(),
-                        message: "captured package has no staged location".to_owned(),
-                    })?;
-            let staged_path =
-                relative_path(staged_package, staged_dependency).ok_or_else(|| {
-                    Error::ArtifactInvalid {
-                        path: staged_dependency.clone(),
-                        message: "captured path dependency is outside the source closure"
-                            .to_owned(),
-                    }
-                })?;
-            let staged_path = path_string(&staged_path);
-            if path != staged_path {
-                table.insert("path".to_owned(), toml::Value::String(staged_path));
-                changed = true;
-            }
+        if let Some(dependencies) = value.get_mut(section) {
+            rewrite_dependency_table_paths(
+                dependencies,
+                package_root,
+                workspace_root,
+                &staged_package,
+                &staged_workspace,
+                locations,
+            )?;
         }
     }
     if let Some(targets) = value.get_mut("target").and_then(toml::Value::as_table_mut) {
         for target in targets.iter_mut().map(|(_, value)| value) {
-            changed |= rewrite_local_paths(target, package_root, workspace_root, locations)?;
+            rewrite_local_paths(target, package_root, workspace_root, locations)?;
         }
     }
-    Ok(changed)
+    rewrite_override_paths(value, package_root, &staged_package, locations)?;
+    let after = serde_json::to_vec(value).map_err(|error| Error::BundleJson {
+        path: package_root.join("Cargo.toml"),
+        source: error,
+    })?;
+    Ok(before != after)
+}
+
+fn rewrite_dependency_table_paths(
+    value: &mut toml::Value,
+    package_root: &Path,
+    workspace_root: &Path,
+    staged_package: &Path,
+    staged_workspace: &Path,
+    locations: &BTreeMap<PathBuf, PathBuf>,
+) -> Result<(), Error> {
+    let Some(table) = value.as_table_mut() else {
+        return Ok(());
+    };
+    let paths = table
+        .iter()
+        .filter_map(|(key, dependency)| {
+            let dependency = dependency.as_table()?;
+            let path = dependency.get("path")?.as_str()?;
+            Some((
+                key.clone(),
+                path.to_owned(),
+                dependency.get("workspace").and_then(toml::Value::as_bool) == Some(true),
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (key, path, uses_workspace) in paths {
+        let (base, staged_base) = if uses_workspace {
+            (workspace_root, staged_workspace)
+        } else {
+            (package_root, staged_package)
+        };
+        let canonical = resolve_local_dependency(base, &path)?;
+        let Some(staged_dependency) = locations.get(&canonical) else {
+            continue;
+        };
+        let staged_path = relative_path(staged_base, staged_dependency).ok_or_else(|| {
+            Error::ArtifactInvalid {
+                path: staged_dependency.clone(),
+                message: "captured path dependency is outside the source closure".to_owned(),
+            }
+        })?;
+        if let Some(dependency) = table.get_mut(&key).and_then(toml::Value::as_table_mut) {
+            dependency.insert(
+                "path".to_owned(),
+                toml::Value::String(path_string(&staged_path)),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_override_paths(
+    value: &mut toml::Value,
+    package_root: &Path,
+    staged_package: &Path,
+    locations: &BTreeMap<PathBuf, PathBuf>,
+) -> Result<(), Error> {
+    for section in ["patch", "replace"] {
+        let Some(overrides) = value.get_mut(section).and_then(toml::Value::as_table_mut) else {
+            continue;
+        };
+        for table in overrides.iter_mut().map(|(_, value)| value) {
+            rewrite_dependency_table_paths(
+                table,
+                package_root,
+                package_root,
+                staged_package,
+                staged_package,
+                locations,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_local_dependency(base: &Path, reference: &str) -> Result<PathBuf, Error> {
@@ -1086,7 +1862,7 @@ fn source_record(
     package: &cargo_metadata::Package,
     checksums: &BTreeMap<(String, String, String), String>,
 ) -> Result<BundleSource, Error> {
-    let source = package
+    let raw_source = package
         .source
         .as_ref()
         .map_or_else(|| "local".to_owned(), |source| source.repr.clone());
@@ -1101,6 +1877,14 @@ fn source_record(
             });
         }
     };
+    let source = if kind == BundleSourceKind::Git {
+        sanitize_git_source(
+            &raw_source,
+            &PathBuf::from(package.manifest_path.as_std_path()),
+        )?
+    } else {
+        raw_source
+    };
     let package_root = PathBuf::from(package.manifest_path.as_std_path())
         .parent()
         .ok_or_else(|| Error::ArtifactInvalid {
@@ -1113,7 +1897,15 @@ fn source_record(
     let package_id = public_package_id(prepared, &package.id.to_string());
     let identity = format!("{package_id}#{digest}");
     let git = if kind == BundleSourceKind::Git {
-        Some(git_source(&source, &package_root)?)
+        let source = package
+            .source
+            .as_ref()
+            .map(|source| source.repr.as_str())
+            .ok_or_else(|| Error::ArtifactInvalid {
+                path: package_root.join("Cargo.toml"),
+                message: "Git source classification has no source identity".to_owned(),
+            })?;
+        Some(git_source(source, &package_root)?)
     } else {
         None
     };
@@ -1179,6 +1971,8 @@ fn source_files_with(
             if name == ".git"
                 || name == ".cargo-ok"
                 || (name == ".cargo_vcs_info.json" && !preserve_registry_metadata)
+                || name == "credentials"
+                || name == "credentials.toml"
                 || name == "target"
                 || name == ".codex"
             {
@@ -1225,6 +2019,30 @@ fn source_files_with(
 
 fn digest_source_tree(root: &Path) -> Result<String, Error> {
     Ok(digest_source_files(&source_files(root)?))
+}
+
+fn validate_cargo_config(root: &Path) -> Result<(), Error> {
+    let files = source_files(root)?;
+    for file in files {
+        if !file.path.ends_with(".toml") {
+            continue;
+        }
+        let path = root.join(&file.path);
+        let text = fs::read_to_string(&path).map_err(|source| Error::ArtifactFile {
+            path: path.clone(),
+            source,
+        })?;
+        if text.lines().any(|line| {
+            let line = line.trim_start().to_ascii_lowercase();
+            line.starts_with("token") || line.starts_with("password") || line.starts_with("secret")
+        }) {
+            return Err(Error::ArtifactInvalid {
+                path,
+                message: "Cargo configuration contains credential material".to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn digest_source_files(files: &[BundleSourceFile]) -> String {
@@ -1294,6 +2112,7 @@ fn git_source(source: &str, package_root: &Path) -> Result<BundleGitSource, Erro
         .split_once('?')
         .map_or(repository_with_query, |(repository, _)| repository)
         .to_owned();
+    let repository = safe_git_repository(&repository, package_root)?;
     let git_root =
         git_output(package_root, &["rev-parse", "--show-toplevel"]).ok_or_else(|| {
             Error::ArtifactInvalid {
@@ -1354,6 +2173,44 @@ fn git_source(source: &str, package_root: &Path) -> Result<BundleGitSource, Erro
         revision: revision.to_owned(),
         subdirectory,
     })
+}
+
+fn sanitize_git_source(source: &str, path: &Path) -> Result<String, Error> {
+    let value = source
+        .strip_prefix("git+")
+        .ok_or_else(|| Error::ArtifactInvalid {
+            path: path.to_owned(),
+            message: "Git package source is missing Cargo's git source prefix".to_owned(),
+        })?;
+    let (repository, revision) = value
+        .rsplit_once('#')
+        .ok_or_else(|| Error::ArtifactInvalid {
+            path: path.to_owned(),
+            message: "Git package source is missing its resolved immutable revision".to_owned(),
+        })?;
+    let repository = repository
+        .split_once('?')
+        .map_or(repository, |(repository, _)| repository);
+    let repository = safe_git_repository(repository, path)?;
+    Ok(format!("git+{repository}#{revision}"))
+}
+
+fn safe_git_repository(repository: &str, path: &Path) -> Result<String, Error> {
+    if let Some(authority) = repository.split_once("://").map(|(_, rest)| rest)
+        && authority
+            .split_once('/')
+            .map_or(authority, |(authority, _)| authority)
+            .contains('@')
+    {
+        return Err(Error::ArtifactInvalid {
+            path: path.to_owned(),
+            message: "Git source URL contains credentials".to_owned(),
+        });
+    }
+    if repository.starts_with("file:") || repository.starts_with('/') {
+        return Ok("local-git".to_owned());
+    }
+    Ok(repository.to_owned())
 }
 
 fn git_output(package_root: &Path, arguments: &[&str]) -> Option<String> {
@@ -2070,12 +2927,11 @@ fn validate_identity_part(field: &'static str, value: &str) -> Result<(), Error>
     }
 }
 
-fn source_identity(source: &PackageSource) -> String {
+fn source_identity(source: &PackageSource) -> Result<String, Error> {
     match source {
-        PackageSource::Local { .. } => "local".to_owned(),
-        PackageSource::Git { source }
-        | PackageSource::Registry { source }
-        | PackageSource::Other { source } => source.clone(),
+        PackageSource::Local { .. } => Ok("local".to_owned()),
+        PackageSource::Git { source } => sanitize_git_source(source, Path::new("Cargo.toml")),
+        PackageSource::Registry { source } | PackageSource::Other { source } => Ok(source.clone()),
     }
 }
 
@@ -2105,9 +2961,146 @@ mod tests {
         assert_eq!(
             source_identity(&PackageSource::Local {
                 manifest_path: PathBuf::from("/private/checkout/Cargo.toml"),
-            }),
+            })
+            .expect("local identity"),
             "local"
         );
+    }
+
+    #[test]
+    fn effective_bundle_inputs_include_passthrough_cargo_flags() {
+        let options = CargoOptions {
+            cargo_args: vec![
+                "--target".into(),
+                "aarch64-unknown-linux-gnu".into(),
+                "--target=x86_64-unknown-linux-gnu".into(),
+                "--profile".into(),
+                "custom".into(),
+                "--release".into(),
+                "--features".into(),
+                "camera,imu".into(),
+                "telemetry".into(),
+                "--features=vision localization".into(),
+                "--all-features".into(),
+            ],
+            ..CargoOptions::default()
+        };
+        assert_eq!(effective_target(&options), "x86_64-unknown-linux-gnu");
+        assert_eq!(effective_profile(&options), "release");
+        assert_eq!(
+            effective_features(&options),
+            ["camera", "imu", "localization", "telemetry", "vision"]
+        );
+        assert!(effective_all_features(&options));
+    }
+
+    #[test]
+    fn build_environment_is_allowlisted_and_never_serializes_paths_or_secrets() {
+        let values = select_build_environment([
+            ("HOME".to_owned(), "/private/user".to_owned()),
+            ("AWS_SECRET_ACCESS_KEY".to_owned(), "aws-secret".to_owned()),
+            ("API_KEY".to_owned(), "api-secret".to_owned()),
+            (
+                "CARGO_REGISTRIES_PHOO_INDEX".to_owned(),
+                "https://user:secret@example.invalid/index".to_owned(),
+            ),
+            (
+                "RUSTFLAGS".to_owned(),
+                "-C link-arg=/private/toolchain/libnative.a".to_owned(),
+            ),
+            (
+                "CARGO_BUILD_TARGET".to_owned(),
+                "aarch64-unknown-linux-gnu".to_owned(),
+            ),
+        ]);
+        let mut names = values
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "CARGO_BUILD_TARGET",
+                "CARGO_REGISTRIES_PHOO_INDEX",
+                "RUSTFLAGS"
+            ]
+        );
+        let rendered = render_build_environment(values);
+        let serialized = serde_json::to_string(&rendered).expect("environment JSON");
+        assert!(!serialized.contains("/private"));
+        assert!(!serialized.contains("aws-secret"));
+        assert!(!serialized.contains("api-secret"));
+        assert!(!serialized.contains("user:secret"));
+        assert!(serialized.contains("CARGO_BUILD_TARGET"));
+    }
+
+    #[test]
+    fn provenance_text_normalizes_embedded_local_paths_and_git_credentials() {
+        let value = normalize_provenance_text(
+            "--target-dir=/private/build https://user:secret@example.invalid/repo /private/tool",
+            Path::new("/private/project"),
+        );
+        assert!(!value.contains("/private"));
+        assert!(!value.contains("user:secret"));
+        assert!(value.contains("<local-path>"));
+        assert!(value.contains("<redacted>"));
+    }
+
+    #[test]
+    fn git_source_identity_redacts_local_paths_and_rejects_credentials() {
+        let path = Path::new("Cargo.toml");
+        assert_eq!(
+            safe_git_repository("file:///private/checkout", path).expect("local URL"),
+            "local-git"
+        );
+        assert!(matches!(
+            safe_git_repository("https://user:secret@example.invalid/repo", path),
+            Err(Error::ArtifactInvalid { message, .. }) if message.contains("credentials")
+        ));
+    }
+
+    #[test]
+    fn path_rewrites_preserve_target_specific_aliases_and_overrides()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let package = root.path().join("package");
+        let host = root.path().join("host");
+        let target = root.path().join("target");
+        let patch = root.path().join("patch");
+        for path in [&package, &host, &target, &patch] {
+            fs::create_dir_all(path)?;
+            fs::write(path.join("Cargo.toml"), "[package]\nname = \"fixture\"\n")?;
+        }
+        let staged_package = root.path().join("staged/package");
+        let mut locations = BTreeMap::new();
+        locations.insert(package.canonicalize()?, staged_package.clone());
+        locations.insert(host.canonicalize()?, root.path().join("staged/deps/host"));
+        locations.insert(
+            target.canonicalize()?,
+            root.path().join("staged/deps/target"),
+        );
+        locations.insert(patch.canonicalize()?, root.path().join("staged/deps/patch"));
+        let mut value = toml::from_str(
+            "[dependencies]\nfoo = { path = \"../host\" }\n\n[target.'cfg(unix)'.dependencies]\nfoo = { path = \"../target\" }\n\n[patch.crates-io]\nbar = { path = \"../patch\" }\n",
+        )?;
+        let package = package.canonicalize()?;
+        assert!(rewrite_local_paths(
+            &mut value, &package, &package, &locations
+        )?);
+        assert_eq!(
+            value["dependencies"]["foo"]["path"].as_str(),
+            Some("../deps/host")
+        );
+        assert_eq!(
+            value["target"]["cfg(unix)"]["dependencies"]["foo"]["path"].as_str(),
+            Some("../deps/target")
+        );
+        assert_eq!(
+            value["patch"]["crates-io"]["bar"]["path"].as_str(),
+            Some("../deps/patch")
+        );
+        Ok(())
     }
 
     #[test]

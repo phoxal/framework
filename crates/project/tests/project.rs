@@ -735,6 +735,10 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
 fn bundle_carries_a_relocatable_nested_external_path_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = project_fixture()?;
+    write(
+        &fixture.path().join(".cargo/config.toml"),
+        "[build]\nrustflags = []\n",
+    )?;
     let parent = fixture
         .path()
         .parent()
@@ -794,6 +798,7 @@ fn bundle_carries_a_relocatable_nested_external_path_closure()
     let bundle = prepared.build_bundle(&options, &output)?;
     let source_root = bundle.source_root();
     assert!(source_root.join("Cargo.lock").is_file());
+    assert!(source_root.join(".cargo/config.toml").is_file());
     assert_eq!(
         fs::read(source_root.join("Cargo.lock"))?,
         fs::read(prepared.cargo_lock())?
@@ -946,7 +951,7 @@ path = "src/main.rs"
     assert_eq!(source.kind, phoxal_project::BundleSourceKind::Git);
     assert_eq!(source.registry_checksum, None);
     let git = source.git.as_ref().ok_or("Git provenance is missing")?;
-    assert_eq!(git.repository, repository_url);
+    assert_eq!(git.repository, "local-git");
     assert_eq!(git.revision, revision);
     assert_eq!(git.subdirectory, "packages/git-service");
     assert!(!source.files.iter().any(|file| file.path == ".cargo-ok"));

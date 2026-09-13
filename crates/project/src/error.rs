@@ -257,6 +257,12 @@ pub enum SourceError {
         "the robot root package has no eligible brain binary; add one binary target or set brain.binary"
     )]
     MissingBrain,
+    /// A directly selected Git dependency has no Cargo target. Project
+    /// preparation cannot yet turn such a package into a passive carrier.
+    #[error(
+        "direct Git dependency '{package}' has no Cargo target; targetless Git carriers are only supported through publication"
+    )]
+    UnsupportedTargetlessGit { package: String },
     /// A requested brain binary is not an ordinary root-package binary.
     #[error("brain binary '{binary}' is not an eligible binary target of the root Cargo package")]
     InvalidBrainBinary {
@@ -434,6 +440,12 @@ pub enum Error {
         package: String,
         /// Cargo binary target.
         target: String,
+    },
+    /// Source or build configuration changed while constructing a bundle.
+    #[error("bundle source inputs changed during compilation: {message}")]
+    BundleSourceChanged {
+        /// Difference detected between the pre-build and post-build snapshots.
+        message: String,
     },
     /// A selected service configuration did not satisfy its exact compiled
     /// Runtime::Config schema.
@@ -719,6 +731,23 @@ pub enum PublicationError {
         path: PathBuf,
         /// Filesystem failure.
         source: std::io::Error,
+    },
+    /// A Git source identity contains credentials or cannot be represented
+    /// without leaking a developer-local path.
+    #[error("publication Git source identity is unsafe at {path}: {message}")]
+    UnsafeGitIdentity {
+        /// Authored Git checkout or manifest path.
+        path: PathBuf,
+        /// Safe diagnostic explaining the rejected identity.
+        message: String,
+    },
+    /// A captured Cargo configuration contains credential material.
+    #[error("publication Cargo configuration is unsafe at {path}: {message}")]
+    UnsafeCargoConfiguration {
+        /// Cargo configuration path.
+        path: PathBuf,
+        /// Safe diagnostic explaining the rejected configuration.
+        message: String,
     },
     /// Staging directory creation failed.
     #[error("cannot create publication staging directory: {source}")]

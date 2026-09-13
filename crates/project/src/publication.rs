@@ -144,6 +144,9 @@ pub struct PublicationSourceProvenance {
     pub subdirectory: Option<String>,
     /// Exact bytes added to a derived staged carrier.
     pub derived_files: Vec<PublicationFile>,
+    /// Exact staged manifests, locks, and configuration files used for Cargo
+    /// publication.
+    pub staged_files: Vec<PublicationFile>,
 }
 
 /// The local result of a validated publication preparation.
@@ -258,7 +261,7 @@ impl PublicationResult {
 pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationResult, Error> {
     let selected = select_package(options)?;
     let source_digest = digest_source_tree(&selected.source_root)?;
-    let mut source_provenance = authored_source_provenance(&selected, &source_digest);
+    let mut source_provenance = authored_source_provenance(&selected, &source_digest)?;
     let staging = tempfile::Builder::new()
         .prefix("phoxal-publication-")
         .tempdir()
@@ -267,6 +270,7 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
 
     let captured = capture_source(&selected, &staging_root)?;
     let expected_assets = stage_package(&selected, &captured)?;
+    source_provenance.staged_files = staged_context_files(&staging_root)?;
     if selected.role == PackageRole::PassiveComponent || selected.role == PackageRole::Preset {
         source_provenance.preparation = "targetless-cargo-carrier/v0".to_owned();
         source_provenance.derived_files = carrier_files(&captured)?;
@@ -876,19 +880,47 @@ fn find_workspace(source_root: &Path, manifest: &Path) -> Result<Option<Workspac
     let mut cursor = source_root.to_owned();
     loop {
         let candidate = cursor.join("Cargo.toml");
-        if candidate == manifest {
+        if candidate == manifest || candidate.is_file() {
             let value = read_manifest(&candidate)?;
-            if value.get("workspace").is_some_and(toml::Value::is_table)
-                && value.get("package").is_none()
+            if candidate == manifest
+                && let Some(workspace) = value
+                    .get("package")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|package| package.get("workspace"))
+                    .and_then(toml::Value::as_str)
             {
-                return Ok(Some(WorkspaceContext {
-                    root: cursor,
-                    manifest: candidate,
-                    package_relative: PathBuf::from("."),
-                }));
+                let root = safe_dependency_path(source_root, workspace).map_err(|_| {
+                    PublicationError::UnsafeAssetPath {
+                        reference: workspace.to_owned(),
+                        definition: manifest.to_owned(),
+                        root: source_root.to_owned(),
+                    }
+                })?;
+                let root =
+                    root.canonicalize()
+                        .map_err(|source| PublicationError::CaptureSource {
+                            path: root.clone(),
+                            source,
+                        })?;
+                let manifest = root.join("Cargo.toml");
+                let root_value = read_manifest(&manifest)?;
+                if root_value
+                    .get("workspace")
+                    .is_some_and(toml::Value::is_table)
+                {
+                    let package_relative = source_root
+                        .strip_prefix(&root)
+                        .ok()
+                        .filter(|relative| !relative.as_os_str().is_empty())
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    return Ok(Some(WorkspaceContext {
+                        root,
+                        manifest,
+                        package_relative,
+                    }));
+                }
             }
-        } else if candidate.is_file() {
-            let value = read_manifest(&candidate)?;
             if value.get("workspace").is_some_and(toml::Value::is_table) {
                 let relative = source_root
                     .strip_prefix(&cursor)
@@ -897,6 +929,11 @@ fn find_workspace(source_root: &Path, manifest: &Path) -> Result<Option<Workspac
                         path: source_root.to_owned(),
                         source: io::Error::other("workspace root is not an ancestor"),
                     })?;
+                let relative = if relative.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    relative
+                };
                 return Ok(Some(WorkspaceContext {
                     root: cursor,
                     manifest: candidate,
@@ -1050,6 +1087,21 @@ struct CaptureState {
     /// External staged roots that must not become selected-package archive
     /// content.
     excluded_paths: BTreeSet<PathBuf>,
+    /// External owning workspaces already captured into the staging tree.
+    workspaces: BTreeMap<PathBuf, ExternalWorkspace>,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalWorkspace {
+    staged_root: PathBuf,
+    manifest: toml::Value,
+}
+
+#[derive(Debug, Clone)]
+struct DependencyOccurrence {
+    table_path: Vec<String>,
+    key: String,
+    value: toml::Value,
 }
 
 fn capture_source(
@@ -1078,6 +1130,21 @@ fn capture_source(
                 "members".to_owned(),
                 toml::Value::Array(vec![toml::Value::String(member)]),
             );
+            let excludes = workspace_table
+                .entry("exclude".to_owned())
+                .or_insert_with(|| toml::Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| PublicationError::CaptureSource {
+                    path: workspace.manifest.clone(),
+                    source: io::Error::other("workspace exclude changed shape while staging"),
+                })?;
+            if !excludes
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .any(|exclude| exclude == "_phoxal_path_dependencies")
+            {
+                excludes.push(toml::Value::String("_phoxal_path_dependencies".to_owned()));
+            }
             workspace_table.remove("default-members");
             let workspace_manifest = root.join("Cargo.toml");
             let workspace_text = toml::to_string_pretty(&workspace_value)
@@ -1086,9 +1153,11 @@ fn capture_source(
             if !root_package {
                 write_staged_file(&workspace_manifest, workspace_text.as_bytes())?;
             }
+            validate_cargo_config(&workspace.root.join(".cargo"))?;
             copy_tree(&workspace.root.join(".cargo"), &root.join(".cargo"), true)?;
             copy_optional_file(&workspace.root.join("Cargo.lock"), &root.join("Cargo.lock"))?;
             let target = root.join(&workspace.package_relative);
+            validate_cargo_config(&selected.source_root.join(".cargo"))?;
             copy_tree(&selected.source_root, &target, false)?;
             if root_package {
                 write_staged_file(&workspace_manifest, workspace_text.as_bytes())?;
@@ -1116,9 +1185,19 @@ fn capture_source(
                 Some(&workspace_manifest),
                 &mut state,
             )?;
+            capture_path_dependencies(
+                &workspace.root,
+                &root,
+                &workspace.root,
+                &workspace_value,
+                &root,
+                Some(&workspace_manifest),
+                &mut state,
+            )?;
             target
         } else {
             let target = staging_root.to_owned();
+            validate_cargo_config(&selected.source_root.join(".cargo"))?;
             copy_tree(&selected.source_root, &target, false)?;
             let selected_canonical = selected.source_root.canonicalize().map_err(|source| {
                 PublicationError::CaptureSource {
@@ -1176,6 +1255,196 @@ fn write_staged_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+fn owning_workspace_root(package_root: &Path) -> Result<Option<PathBuf>, Error> {
+    let manifest = package_root.join("Cargo.toml");
+    let value = read_manifest(&manifest)?;
+    if let Some(workspace) = value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("workspace"))
+        .and_then(toml::Value::as_str)
+    {
+        let root = safe_dependency_path(package_root, workspace).map_err(|_| {
+            PublicationError::UnsafeAssetPath {
+                reference: workspace.to_owned(),
+                definition: manifest.clone(),
+                root: package_root.to_owned(),
+            }
+        })?;
+        let root = root
+            .canonicalize()
+            .map_err(|source| PublicationError::CaptureSource {
+                path: root.clone(),
+                source,
+            })?;
+        if root.join("Cargo.toml").is_file() {
+            return Ok(Some(root));
+        }
+        return Err(PublicationError::MissingPackageManifest {
+            path: root.join("Cargo.toml"),
+        }
+        .into());
+    }
+    if value.get("workspace").is_some_and(toml::Value::is_table) {
+        return Ok(Some(package_root.canonicalize().map_err(|source| {
+            PublicationError::CaptureSource {
+                path: package_root.to_owned(),
+                source,
+            }
+        })?));
+    }
+    let mut cursor = package_root.parent().map(Path::to_path_buf);
+    while let Some(root) = cursor {
+        let candidate = root.join("Cargo.toml");
+        if candidate.is_file() {
+            let value = read_manifest(&candidate)?;
+            if value.get("workspace").is_some_and(toml::Value::is_table) {
+                return Ok(Some(root.canonicalize().map_err(|source| {
+                    PublicationError::CaptureSource {
+                        path: root.clone(),
+                        source,
+                    }
+                })?));
+            }
+        }
+        cursor = root.parent().map(Path::to_path_buf);
+    }
+    Ok(None)
+}
+
+fn capture_external_workspace(
+    workspace_root: &Path,
+    package_root: &Path,
+    staging_root: &Path,
+    state: &mut CaptureState,
+) -> Result<(PathBuf, toml::Value, PathBuf), Error> {
+    let workspace_root =
+        workspace_root
+            .canonicalize()
+            .map_err(|source| PublicationError::CaptureSource {
+                path: workspace_root.to_owned(),
+                source,
+            })?;
+    let package_root =
+        package_root
+            .canonicalize()
+            .map_err(|source| PublicationError::CaptureSource {
+                path: package_root.to_owned(),
+                source,
+            })?;
+    let (staged_root, manifest) = if let Some(workspace) = state.workspaces.get(&workspace_root) {
+        (workspace.staged_root.clone(), workspace.manifest.clone())
+    } else {
+        let digest = digest_source_tree(&workspace_root)?;
+        let staged_root = staging_root.join("_phoxal_path_dependencies").join(digest);
+        if staged_root.exists() {
+            return Err(PublicationError::CaptureSource {
+                path: staged_root,
+                source: io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "staged workspace content identity collides",
+                ),
+            }
+            .into());
+        }
+        let mut manifest = read_manifest(&workspace_root.join("Cargo.toml"))?;
+        let relative = package_root
+            .strip_prefix(&workspace_root)
+            .map(path_string)
+            .map_err(|_| PublicationError::CaptureSource {
+                path: package_root.clone(),
+                source: io::Error::other("external package is outside its owning workspace"),
+            })?;
+        manifest
+            .get_mut("workspace")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| PublicationError::CaptureSource {
+                path: workspace_root.join("Cargo.toml"),
+                source: io::Error::other("owning workspace has no workspace table"),
+            })?
+            .insert(
+                "members".to_owned(),
+                toml::Value::Array(vec![toml::Value::String(relative)]),
+            );
+        if let Some(workspace) = manifest
+            .get_mut("workspace")
+            .and_then(toml::Value::as_table_mut)
+        {
+            workspace.remove("default-members");
+        }
+        copy_optional_file(
+            &workspace_root.join("Cargo.lock"),
+            &staged_root.join("Cargo.lock"),
+        )?;
+        validate_cargo_config(&workspace_root.join(".cargo"))?;
+        copy_tree(
+            &workspace_root.join(".cargo"),
+            &staged_root.join(".cargo"),
+            true,
+        )?;
+        let workspace_manifest = staged_root.join("Cargo.toml");
+        let text = toml::to_string_pretty(&manifest)
+            .map_err(|source| PublicationError::SerializeStagedManifest { source })?;
+        write_staged_file(&workspace_manifest, text.as_bytes())?;
+        state.workspaces.insert(
+            workspace_root.clone(),
+            ExternalWorkspace {
+                staged_root: staged_root.clone(),
+                manifest: manifest.clone(),
+            },
+        );
+        state
+            .locations
+            .insert(workspace_root.clone(), staged_root.clone());
+        state.excluded_paths.insert(staged_root.clone());
+        (staged_root, manifest)
+    };
+    let relative = package_root
+        .strip_prefix(&workspace_root)
+        .map(path_string)
+        .map_err(|_| PublicationError::CaptureSource {
+            path: package_root.clone(),
+            source: io::Error::other("external package is outside its owning workspace"),
+        })?;
+    if let Some(workspace) = state.workspaces.get_mut(&workspace_root) {
+        let table = workspace
+            .manifest
+            .get_mut("workspace")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| PublicationError::CaptureSource {
+                path: workspace_root.join("Cargo.toml"),
+                source: io::Error::other("owning workspace has no workspace table"),
+            })?;
+        let members = table
+            .entry("members".to_owned())
+            .or_insert_with(|| toml::Value::Array(Vec::new()))
+            .as_array_mut()
+            .ok_or_else(|| PublicationError::CaptureSource {
+                path: workspace_root.join("Cargo.toml"),
+                source: io::Error::other("workspace members changed shape while staging"),
+            })?;
+        if !members
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|member| member == relative)
+        {
+            members.push(toml::Value::String(relative.clone()));
+            let text = toml::to_string_pretty(&workspace.manifest)
+                .map_err(|source| PublicationError::SerializeStagedManifest { source })?;
+            write_staged_file(&workspace.staged_root.join("Cargo.toml"), text.as_bytes())?;
+        }
+    }
+    let staged_package = staged_root.join(&relative);
+    state
+        .locations
+        .insert(package_root.clone(), staged_package.clone());
+    if !staged_package.exists() {
+        validate_cargo_config(&package_root.join(".cargo"))?;
+        copy_tree(&package_root, &staged_package, false)?;
+    }
+    Ok((staged_package, manifest, staged_root.join("Cargo.toml")))
+}
+
 fn capture_path_dependencies(
     package_root: &Path,
     staged_package_root: &Path,
@@ -1187,14 +1456,16 @@ fn capture_path_dependencies(
 ) -> Result<(), Error> {
     let manifest_path = package_root.join("Cargo.toml");
     let manifest = read_manifest(&manifest_path)?;
-    let mut dependencies = BTreeMap::new();
+    let mut dependencies = Vec::new();
     collect_dependency_tables(&manifest, &mut dependencies);
     let workspace_dependencies = workspace_manifest
         .get("workspace")
         .and_then(toml::Value::as_table)
         .and_then(|workspace| workspace.get("dependencies"))
         .and_then(toml::Value::as_table);
-    for (key, dependency) in dependencies {
+    for occurrence in dependencies {
+        let key = occurrence.key.clone();
+        let dependency = occurrence.value.clone();
         let effective = if dependency.as_table().is_some_and(|table| {
             table.get("workspace").and_then(toml::Value::as_bool) == Some(true)
         }) {
@@ -1236,46 +1507,99 @@ fn capture_path_dependencies(
                     path: dependency_root.clone(),
                     source,
                 })?;
-        let staged_dependency = if let Some(staged) = state.locations.get(&canonical) {
-            staged.clone()
-        } else {
-            let staged = if canonical.starts_with(workspace_root) {
-                let relative = canonical
-                    .strip_prefix(workspace_root)
-                    .map(PathBuf::from)
-                    .map_err(|_| PublicationError::CaptureSource {
-                        path: canonical.clone(),
-                        source: io::Error::other("path dependency escapes staging workspace"),
-                    })?;
-                staging_root.join(relative)
-            } else {
-                let digest = digest_source_tree(&canonical)?;
-                if let Some(existing) = state.digests.get(&digest) {
-                    existing.clone()
-                } else {
-                    let destination = staging_root.join("_phoxal_path_dependencies").join(&digest);
-                    if destination.exists() {
-                        return Err(PublicationError::CaptureSource {
-                            path: destination,
-                            source: io::Error::new(
-                                io::ErrorKind::AlreadyExists,
-                                "staged path dependency content identity collides",
-                            ),
+        let owner = owning_workspace_root(&canonical)?;
+        let (staged_dependency, next_workspace_root, next_workspace_manifest, next_staged_manifest) =
+            match owner {
+                Some(owner) if owner == workspace_root => {
+                    let staged = if let Some(staged) = state.locations.get(&canonical) {
+                        staged.clone()
+                    } else {
+                        let relative = canonical
+                            .strip_prefix(workspace_root)
+                            .map(PathBuf::from)
+                            .map_err(|_| PublicationError::CaptureSource {
+                                path: canonical.clone(),
+                                source: io::Error::other(
+                                    "path dependency escapes staging workspace",
+                                ),
+                            })?;
+                        let staged = staging_root.join(relative);
+                        state.locations.insert(canonical.clone(), staged.clone());
+                        if !staged.exists() {
+                            validate_cargo_config(&canonical.join(".cargo"))?;
+                            copy_tree(&canonical, &staged, false)?;
                         }
-                        .into());
+                        staged
+                    };
+                    (
+                        staged,
+                        workspace_root.to_owned(),
+                        workspace_manifest.clone(),
+                        staged_workspace_manifest.map(Path::to_path_buf),
+                    )
+                }
+                Some(owner) => {
+                    let (staged, manifest, staged_manifest) =
+                        capture_external_workspace(&owner, &canonical, staging_root, state)?;
+                    (staged, owner, manifest, Some(staged_manifest))
+                }
+                None => {
+                    let staged = if let Some(staged) = state.locations.get(&canonical) {
+                        staged.clone()
+                    } else if canonical.starts_with(workspace_root) {
+                        let relative = canonical
+                            .strip_prefix(workspace_root)
+                            .map(PathBuf::from)
+                            .map_err(|_| PublicationError::CaptureSource {
+                                path: canonical.clone(),
+                                source: io::Error::other(
+                                    "path dependency escapes staging workspace",
+                                ),
+                            })?;
+                        let staged = staging_root.join(relative);
+                        state.locations.insert(canonical.clone(), staged.clone());
+                        if !staged.exists() {
+                            validate_cargo_config(&canonical.join(".cargo"))?;
+                            copy_tree(&canonical, &staged, false)?;
+                        }
+                        staged
+                    } else {
+                        let digest = digest_source_tree(&canonical)?;
+                        if let Some(existing) = state.digests.get(&digest) {
+                            existing.clone()
+                        } else {
+                            let destination =
+                                staging_root.join("_phoxal_path_dependencies").join(&digest);
+                            if destination.exists() {
+                                return Err(PublicationError::CaptureSource {
+                                    path: destination,
+                                    source: io::Error::new(
+                                        io::ErrorKind::AlreadyExists,
+                                        "staged path dependency content identity collides",
+                                    ),
+                                }
+                                .into());
+                            }
+                            validate_cargo_config(&canonical.join(".cargo"))?;
+                            copy_tree(&canonical, &destination, false)?;
+                            state.digests.insert(digest, destination.clone());
+                            state.excluded_paths.insert(destination.clone());
+                            destination
+                        }
+                    };
+                    state.locations.insert(canonical.clone(), staged.clone());
+                    if !staged.exists() {
+                        validate_cargo_config(&canonical.join(".cargo"))?;
+                        copy_tree(&canonical, &staged, false)?;
                     }
-                    copy_tree(&canonical, &destination, false)?;
-                    state.digests.insert(digest, destination.clone());
-                    state.excluded_paths.insert(destination.clone());
-                    destination
+                    (
+                        staged,
+                        canonical.clone(),
+                        toml::Value::Table(toml::map::Map::new()),
+                        None,
+                    )
                 }
             };
-            state.locations.insert(canonical.clone(), staged.clone());
-            if !staged.exists() {
-                copy_tree(&canonical, &staged, false)?;
-            }
-            staged
-        };
         let staged_path_base = if uses_workspace {
             staged_workspace_manifest
                 .and_then(Path::parent)
@@ -1302,47 +1626,41 @@ fn capture_path_dependencies(
                         "workspace path dependency has no captured workspace manifest",
                     ),
                 })?;
-            rewrite_workspace_dependency_path(workspace_manifest, &key, &staged_path)?;
+            rewrite_manifest_dependency_occurrence(
+                workspace_manifest,
+                &["workspace".to_owned(), "dependencies".to_owned()],
+                &key,
+                &staged_path,
+            )?;
         } else {
-            rewrite_dependency_path(&staged_package_root.join("Cargo.toml"), &key, &staged_path)?;
+            rewrite_manifest_dependency_occurrence(
+                &staged_package_root.join("Cargo.toml"),
+                &occurrence.table_path,
+                &key,
+                &staged_path,
+            )?;
         }
         capture_path_dependencies(
             &canonical,
             &staged_dependency,
-            workspace_root,
-            workspace_manifest,
+            &next_workspace_root,
+            &next_workspace_manifest,
             staging_root,
-            staged_workspace_manifest,
+            next_staged_manifest.as_deref(),
             state,
         )?;
     }
     Ok(())
 }
 
-fn rewrite_dependency_path(manifest: &Path, key: &str, path: &Path) -> Result<(), Error> {
-    rewrite_manifest_dependency(manifest, key, path, false)
-}
-
-fn rewrite_workspace_dependency_path(manifest: &Path, key: &str, path: &Path) -> Result<(), Error> {
-    rewrite_manifest_dependency(manifest, key, path, true)
-}
-
-fn rewrite_manifest_dependency(
+fn rewrite_manifest_dependency_occurrence(
     manifest: &Path,
+    table_path: &[String],
     key: &str,
     path: &Path,
-    workspace_only: bool,
 ) -> Result<(), Error> {
     let mut value = read_manifest(manifest)?;
-    let changed = if workspace_only {
-        value
-            .get_mut("workspace")
-            .and_then(toml::Value::as_table_mut)
-            .and_then(|workspace| workspace.get_mut("dependencies"))
-            .is_some_and(|dependencies| rewrite_dependency_table(dependencies, key, path))
-    } else {
-        rewrite_dependency_value(&mut value, key, path)
-    };
+    let changed = rewrite_dependency_table_at(&mut value, table_path, key, path);
     if !changed {
         return Err(PublicationError::CaptureSource {
             path: manifest.to_owned(),
@@ -1357,19 +1675,26 @@ fn rewrite_manifest_dependency(
     write_staged_file(manifest, text.as_bytes())
 }
 
-fn rewrite_dependency_value(value: &mut toml::Value, key: &str, path: &Path) -> bool {
-    let mut changed = false;
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(dependencies) = value.get_mut(section) {
-            changed |= rewrite_dependency_table(dependencies, key, path);
-        }
+fn rewrite_dependency_table_at(
+    value: &mut toml::Value,
+    table_path: &[String],
+    key: &str,
+    path: &Path,
+) -> bool {
+    let Some((last, parents)) = table_path.split_last() else {
+        return false;
+    };
+    let mut current = value;
+    for parent in parents {
+        let Some(next) = current.get_mut(parent) else {
+            return false;
+        };
+        current = next;
     }
-    if let Some(targets) = value.get_mut("target").and_then(toml::Value::as_table_mut) {
-        for target in targets.iter_mut().map(|(_, value)| value) {
-            changed |= rewrite_dependency_value(target, key, path);
-        }
-    }
-    changed
+    let Some(table) = current.get_mut(last) else {
+        return false;
+    };
+    rewrite_dependency_table(table, key, path)
 }
 
 fn rewrite_dependency_table(value: &mut toml::Value, key: &str, path: &Path) -> bool {
@@ -1411,23 +1736,59 @@ fn relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
     Some(relative)
 }
 
-fn collect_dependency_tables(
+fn collect_dependency_tables(manifest: &toml::Value, dependencies: &mut Vec<DependencyOccurrence>) {
+    collect_dependency_tables_at(manifest, dependencies, &[]);
+}
+
+fn collect_dependency_tables_at(
     manifest: &toml::Value,
-    dependencies: &mut BTreeMap<String, toml::Value>,
+    dependencies: &mut Vec<DependencyOccurrence>,
+    prefix: &[String],
 ) {
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(table) = manifest.get(section).and_then(toml::Value::as_table) {
-            dependencies.extend(
-                table
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone())),
-            );
+            let mut table_path = prefix.to_vec();
+            table_path.push(section.to_owned());
+            dependencies.extend(table.iter().map(|(key, value)| DependencyOccurrence {
+                table_path: table_path.clone(),
+                key: key.clone(),
+                value: value.clone(),
+            }));
         }
     }
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
-        for target in targets.values() {
-            collect_dependency_tables(target, dependencies);
+        for (target_name, target) in targets {
+            let mut target_path = prefix.to_vec();
+            target_path.push("target".to_owned());
+            target_path.push(target_name.clone());
+            collect_dependency_tables_at(target, dependencies, &target_path);
         }
+    }
+    if let Some(overrides) = manifest.get("patch").and_then(toml::Value::as_table) {
+        for (namespace, table) in overrides {
+            let mut table_path = prefix.to_vec();
+            table_path.extend(["patch".to_owned(), namespace.clone()]);
+            dependencies.extend(table.as_table().into_iter().flat_map(|table| {
+                table.iter().map(|(key, value)| DependencyOccurrence {
+                    table_path: table_path.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+            }));
+        }
+    }
+    if let Some(replacements) = manifest.get("replace").and_then(toml::Value::as_table) {
+        let mut table_path = prefix.to_vec();
+        table_path.push("replace".to_owned());
+        dependencies.extend(
+            replacements
+                .iter()
+                .map(|(key, value)| DependencyOccurrence {
+                    table_path: table_path.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                }),
+        );
     }
 }
 
@@ -1491,12 +1852,40 @@ fn copy_tree(source: &Path, destination: &Path, optional: bool) -> Result<(), Er
         if name == ".git"
             || name == ".cargo-ok"
             || name == ".cargo_vcs_info.json"
+            || name == "credentials"
+            || name == "credentials.toml"
             || name == "target"
             || name == ".codex"
         {
             continue;
         }
         copy_tree(&entry.path(), &destination.join(name), false)?;
+    }
+    Ok(())
+}
+
+fn validate_cargo_config(root: &Path) -> Result<(), Error> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for path in walk_files(root)? {
+        if path.extension().is_none_or(|extension| extension != "toml") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).map_err(|source| PublicationError::CaptureSource {
+            path: path.clone(),
+            source,
+        })?;
+        if text.lines().any(|line| {
+            let line = line.trim_start().to_ascii_lowercase();
+            line.starts_with("token") || line.starts_with("password") || line.starts_with("secret")
+        }) {
+            return Err(PublicationError::UnsafeCargoConfiguration {
+                path,
+                message: "Cargo configuration contains credential material".to_owned(),
+            }
+            .into());
+        }
     }
     Ok(())
 }
@@ -1927,6 +2316,8 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
         if entry.file_name() == ".git"
             || entry.file_name() == ".cargo-ok"
             || entry.file_name() == ".cargo_vcs_info.json"
+            || entry.file_name() == "credentials"
+            || entry.file_name() == "credentials.toml"
             || entry.file_name() == "target"
             || entry.file_name() == ".codex"
         {
@@ -1976,9 +2367,9 @@ fn digest_source_tree(root: &Path) -> Result<String, Error> {
 fn authored_source_provenance(
     selected: &SelectedPackage,
     digest: &str,
-) -> PublicationSourceProvenance {
-    let Some((repository, revision, subdirectory)) = git_identity(&selected.source_root) else {
-        return PublicationSourceProvenance {
+) -> Result<PublicationSourceProvenance, Error> {
+    let Some((repository, revision, subdirectory)) = git_identity(&selected.source_root)? else {
+        return Ok(PublicationSourceProvenance {
             origin: "local".to_owned(),
             path: ".".to_owned(),
             digest: digest.to_owned(),
@@ -1987,36 +2378,82 @@ fn authored_source_provenance(
             revision: None,
             subdirectory: None,
             derived_files: Vec::new(),
-        };
+            staged_files: Vec::new(),
+        });
     };
-    PublicationSourceProvenance {
+    Ok(PublicationSourceProvenance {
         origin: "git".to_owned(),
         path: ".".to_owned(),
         digest: digest.to_owned(),
         preparation: "none".to_owned(),
-        repository: Some(repository),
+        repository,
         revision: Some(revision),
         subdirectory: Some(subdirectory),
         derived_files: Vec::new(),
-    }
+        staged_files: Vec::new(),
+    })
 }
 
-fn git_identity(package_root: &Path) -> Option<(String, String, String)> {
-    let git_root = PathBuf::from(git_output(package_root, &["rev-parse", "--show-toplevel"])?);
-    let git_root = git_root.canonicalize().ok()?;
-    let package_root = package_root.canonicalize().ok()?;
-    let subdirectory = package_root.strip_prefix(&git_root).ok()?;
-    let revision = git_output(&package_root, &["rev-parse", "HEAD"])?;
+fn git_identity(package_root: &Path) -> Result<Option<(Option<String>, String, String)>, Error> {
+    let Some(git_root) = git_output(package_root, &["rev-parse", "--show-toplevel"]) else {
+        return Ok(None);
+    };
+    let git_root = PathBuf::from(git_root).canonicalize().map_err(|source| {
+        PublicationError::CaptureSource {
+            path: package_root.to_owned(),
+            source,
+        }
+    })?;
+    let package_root =
+        package_root
+            .canonicalize()
+            .map_err(|source| PublicationError::CaptureSource {
+                path: package_root.to_owned(),
+                source,
+            })?;
+    let Some(subdirectory) = package_root.strip_prefix(&git_root).ok() else {
+        return Ok(None);
+    };
+    let Some(revision) = git_output(&package_root, &["rev-parse", "HEAD"]) else {
+        return Ok(None);
+    };
     if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
+        return Ok(None);
     }
-    let status = git_status(&git_root).ok()?;
+    let status = git_status(&git_root)?;
     if !status.is_empty() {
-        return None;
+        return Ok(None);
     }
     let repository = git_output(&git_root, &["config", "--get", "remote.origin.url"])
-        .unwrap_or_else(|| format!("file://{}", git_root.display()));
-    Some((repository, revision, path_string(subdirectory)))
+        .map(|repository| safe_git_repository(&repository, &package_root));
+    let repository = match repository {
+        Some(Ok(repository)) => repository,
+        Some(Err(error)) => return Err(error),
+        None => None,
+    };
+    Ok(Some((repository, revision, path_string(subdirectory))))
+}
+
+fn safe_git_repository(repository: &str, path: &Path) -> Result<Option<String>, Error> {
+    let repository = repository
+        .split_once('?')
+        .map_or(repository, |(repository, _)| repository);
+    if let Some(authority) = repository.split_once("://").map(|(_, rest)| rest)
+        && authority
+            .split_once('/')
+            .map_or(authority, |(authority, _)| authority)
+            .contains('@')
+    {
+        return Err(PublicationError::UnsafeGitIdentity {
+            path: path.to_owned(),
+            message: "Git remote URL contains credentials".to_owned(),
+        }
+        .into());
+    }
+    if repository.starts_with("file:") || repository.starts_with('/') {
+        return Ok(None);
+    }
+    Ok(Some(repository.to_owned()))
 }
 
 fn git_output(directory: &Path, arguments: &[&str]) -> Option<String> {
@@ -2082,6 +2519,62 @@ fn carrier_files(captured: &CapturedSource) -> Result<Vec<PublicationFile>, Erro
         bytes,
         sha256: archive_checksum(&path)?,
     }])
+}
+
+fn staged_context_files(staging_root: &Path) -> Result<Vec<PublicationFile>, Error> {
+    let mut paths = walk_files(staging_root)?;
+    paths.retain(|path| {
+        let relative = path.strip_prefix(staging_root).unwrap_or(path);
+        let relative = path_string(relative);
+        relative == "Cargo.toml"
+            || relative == "Cargo.lock"
+            || relative.ends_with("/Cargo.toml")
+            || relative.ends_with("/Cargo.lock")
+            || relative.starts_with(".cargo/")
+            || relative == GENERATED_LIB
+    });
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let relative =
+                path.strip_prefix(staging_root)
+                    .map_err(|_| PublicationError::CaptureSource {
+                        path: path.clone(),
+                        source: io::Error::other("staged context file escaped staging root"),
+                    })?;
+            let digest = digest_publication_file(&path)?;
+            Ok(PublicationFile {
+                path: path_string(relative),
+                bytes: digest.0,
+                sha256: digest.1,
+            })
+        })
+        .collect()
+}
+
+fn digest_publication_file(path: &Path) -> Result<(u64, String), Error> {
+    let mut file = File::open(path).map_err(|source| PublicationError::CaptureSource {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut hasher = Sha256::new();
+    let mut bytes = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| PublicationError::CaptureSource {
+                path: path.to_owned(),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        bytes += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((bytes, format!("{:x}", hasher.finalize())))
 }
 
 fn package_with_cargo(package: &str, captured: &CapturedSource) -> Result<PathBuf, Error> {
@@ -2462,6 +2955,138 @@ mod tests {
         assert!(matches!(
             error,
             Error::Publication(PublicationError::PackageNameMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_detection_keeps_root_packages_and_explicit_package_workspace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let root_manifest = root.path().join("Cargo.toml");
+        let member = root.path().join("member");
+        write(
+            &root_manifest,
+            "[package]\nname = \"root-package\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\nmembers = [\"member\"]\n",
+        )?;
+        write(
+            &member.join("Cargo.toml"),
+            "[package]\nname = \"member-package\"\nversion = \"0.1.0\"\nedition = \"2024\"\nworkspace = \"..\"\n",
+        )?;
+        let root_context = find_workspace(root.path(), &root_manifest)?
+            .ok_or("root package workspace was not detected")?;
+        assert_eq!(root_context.root, root.path());
+        assert_eq!(root_context.package_relative, Path::new("."));
+        let member_manifest = member.join("Cargo.toml");
+        let member_context =
+            find_workspace(&member.canonicalize()?, &member_manifest.canonicalize()?)?
+                .ok_or("explicit package workspace was not detected")?;
+        assert_eq!(member_context.root, root.path().canonicalize()?);
+        assert_eq!(member_context.package_relative, Path::new("member"));
+        Ok(())
+    }
+
+    #[test]
+    fn staged_context_provenance_captures_manifests_configuration_and_carrier()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        write(&root.path().join("Cargo.toml"), "[package]\nname = \"x\"\n")?;
+        write(&root.path().join("Cargo.lock"), "version = 4\n")?;
+        write(
+            &root.path().join(".cargo/config.toml"),
+            "[build]\ntarget = \"host\"\n",
+        )?;
+        write(&root.path().join(GENERATED_LIB), "#![no_std]\n")?;
+        write(&root.path().join("src/lib.rs"), "pub struct Authored;\n")?;
+        let files = staged_context_files(root.path())?;
+        let paths = files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(paths.contains("Cargo.toml"));
+        assert!(paths.contains("Cargo.lock"));
+        assert!(paths.contains(".cargo/config.toml"));
+        assert!(paths.contains(GENERATED_LIB));
+        assert!(!paths.contains("src/lib.rs"));
+        Ok(())
+    }
+
+    #[test]
+    fn root_package_workspace_publication_is_packaged_as_one_member()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        write(
+            &directory.path().join("Cargo.toml"),
+            "[package]\nname = \"root-passive\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\nmembers = []\n",
+        )?;
+        write(
+            &directory.path().join("component.yaml"),
+            "schema: phoxal/component/v0\n",
+        )?;
+        let result = prepare_publication(&PublicationOptions {
+            kind: PublicationKind::Component,
+            name: "root-passive".to_owned(),
+            path: Some(directory.path().to_owned()),
+            dry_run: true,
+        })?;
+        assert!(result.archive().is_file());
+        assert!(
+            result
+                .source_provenance()
+                .staged_files
+                .iter()
+                .any(|file| file.path == "Cargo.toml")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn git_remote_identity_rejects_credentials_and_hides_local_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let init = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root.path())
+            .output()?;
+        assert!(init.status.success());
+        for arguments in [
+            vec!["config", "user.name", "Phoxal Test"],
+            vec!["config", "user.email", "phoxal@example.invalid"],
+            vec!["remote", "add", "origin", "file:///private/local"],
+        ] {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(root.path())
+                .output()?;
+            assert!(output.status.success());
+        }
+        let manifest = root.path().join("Cargo.toml");
+        write(
+            &manifest,
+            "[package]\nname = \"git-source\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        for arguments in [vec!["add", "."], vec!["commit", "--quiet", "-m", "fixture"]] {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(root.path())
+                .output()?;
+            assert!(output.status.success());
+        }
+        let identity = git_identity(root.path())?.ok_or("Git identity missing")?;
+        assert_eq!(identity.0, None);
+        Command::new("git")
+            .args([
+                "config",
+                "remote.origin.url",
+                "https://user:secret@example.invalid/repo",
+            ])
+            .current_dir(root.path())
+            .output()?;
+        let error = git_identity(root.path()).expect_err("credential URL must be rejected");
+        assert!(matches!(
+            error,
+            Error::Publication(PublicationError::UnsafeGitIdentity { message, .. })
+                if message.contains("credentials")
         ));
         Ok(())
     }
@@ -2893,6 +3518,125 @@ mod tests {
         assert!(
             output.status.success(),
             "relocated publication capture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_captures_nested_external_workspace_inheritance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let parent = directory
+            .path()
+            .parent()
+            .ok_or("publication fixture has no temporary parent")?;
+        let leaf = tempfile::Builder::new()
+            .prefix("phoxal-publication-workspace-leaf-")
+            .tempdir_in(parent)?;
+        let external = tempfile::Builder::new()
+            .prefix("phoxal-publication-workspace-external-")
+            .tempdir_in(parent)?;
+        let leaf_name = leaf
+            .path()
+            .file_name()
+            .ok_or("leaf has no directory name")?
+            .to_string_lossy();
+        let external_name = external
+            .path()
+            .file_name()
+            .ok_or("external workspace has no directory name")?
+            .to_string_lossy();
+        write(
+            &directory.path().join("Cargo.toml"),
+            &format!(
+                "[workspace]\nmembers = [\"service\"]\n[workspace.package]\nedition = \"2024\"\n\n[workspace.dependencies]\nexternal-helper = {{ path = \"../{external_name}/packages/helper\" }}\n"
+            ),
+        )?;
+        write(
+            &directory.path().join("service/Cargo.toml"),
+            "[package]\nname = \"publication-nested-workspace-service\"\nversion = \"0.1.0\"\nedition.workspace = true\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"publication-nested-workspace-service\"\npath = \"src/main.rs\"\n\n[dependencies]\nexternal-helper = { workspace = true }\n",
+        )?;
+        write(
+            &directory.path().join("service/src/lib.rs"),
+            "pub fn value() -> u32 { external_helper::value() }\n",
+        )?;
+        write(
+            &directory.path().join("service/src/main.rs"),
+            "fn main() { let _ = external_helper::value(); }\n",
+        )?;
+        write(
+            &external.path().join("Cargo.toml"),
+            &format!(
+                "[workspace]\nmembers = [\"packages/helper\"]\n\n[workspace.dependencies]\nexternal-leaf = {{ path = \"../{leaf_name}\" }}\n"
+            ),
+        )?;
+        write(
+            &external.path().join("packages/helper/Cargo.toml"),
+            "[package]\nname = \"external-helper\"\nversion = \"0.1.0\"\nedition = \"2024\"\nworkspace = \"../..\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nexternal-leaf = { workspace = true }\n",
+        )?;
+        write(
+            &external.path().join("packages/helper/src/lib.rs"),
+            "pub fn value() -> u32 { external_leaf::VALUE }\n",
+        )?;
+        write(
+            &leaf.path().join("Cargo.toml"),
+            "[package]\nname = \"external-leaf\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )?;
+        write(
+            &leaf.path().join("src/lib.rs"),
+            "pub const VALUE: u32 = 17;\n",
+        )?;
+
+        let options = PublicationOptions {
+            kind: PublicationKind::Service,
+            name: "publication-nested-workspace-service".to_owned(),
+            path: Some(directory.path().join("service")),
+            dry_run: true,
+        };
+        let selected =
+            selected_from_manifest(directory.path().join("service/Cargo.toml"), &options)?;
+        let staging = tempfile::Builder::new()
+            .prefix("phoxal-publication-nested-workspace-")
+            .tempdir()?;
+        let captured = capture_source(&selected, staging.path())?;
+        let root = captured.workspace_root.clone();
+        let external_roots =
+            fs::read_dir(root.join("_phoxal_path_dependencies"))?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(external_roots.len(), 2);
+        let helper_manifest = walk_files(&root)
+            .map_err(|error| io::Error::other(error.to_string()))?
+            .into_iter()
+            .find(|path| {
+                path.file_name().and_then(|name| name.to_str()) == Some("Cargo.toml")
+                    && fs::read_to_string(path)
+                        .is_ok_and(|text| text.contains("name = \"external-helper\""))
+            })
+            .ok_or("captured external helper manifest missing")?;
+        let helper_text = fs::read_to_string(helper_manifest)?;
+        assert!(helper_text.contains("workspace = \"../..\""));
+        let relocated = tempfile::tempdir()?;
+        let relocated_root = relocated.path().join("capture");
+        copy_tree(&root, &relocated_root, false)?;
+        let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+        let target = relocated.path().join("target");
+        let output = Command::new(cargo)
+            .current_dir(&relocated_root)
+            .args([
+                "check",
+                "--offline",
+                "--manifest-path",
+                &relocated_root
+                    .join("service/Cargo.toml")
+                    .display()
+                    .to_string(),
+                "--target-dir",
+                &target.display().to_string(),
+            ])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "relocated nested workspace capture failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         Ok(())

@@ -21,10 +21,11 @@ pub use artifact::{
     OutputKind, OutputRecord, PortKind, PortSignature, RuntimeRecord, validate_connected_endpoints,
 };
 pub use bundle::{
-    BUNDLE_SCHEMA, BundleArtifact, BundleComponent, BundleExecutable, BundleFile, BundleGitSource,
-    BundleManifest, BundleModelClosure, BundlePackage, BundleProvenance, BundleResource,
-    BundleSource, BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleToolchain,
-    CompiledBundle, LocalIdentity, LocalRunPlan, LocalSimulationPlan,
+    BUNDLE_SCHEMA, BundleArtifact, BundleCargoInvocation, BundleComponent, BundleEnvironment,
+    BundleExecutable, BundleFile, BundleGitSource, BundleManifest, BundleModelClosure,
+    BundleNativeTool, BundlePackage, BundleProvenance, BundleResource, BundleSource,
+    BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleToolchain, CompiledBundle,
+    LocalIdentity, LocalRunPlan, LocalSimulationPlan,
 };
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, LockMode};
 pub use discovery::ProjectLayout;
@@ -115,6 +116,9 @@ impl Project {
             Ok(metadata) => metadata,
             Err(error) => return rollback_preparation(preparation, error),
         };
+        if let Err(error) = reject_direct_targetless_git(&metadata) {
+            return rollback_preparation(preparation, error);
+        }
         let sources = match resolve_sources(&self.document, &metadata, self.layout.cargo_manifest())
         {
             Ok(sources) => sources,
@@ -134,6 +138,39 @@ impl Project {
             preparation_changes,
         })
     }
+}
+
+fn reject_direct_targetless_git(metadata: &cargo_metadata::Metadata) -> Result<(), Error> {
+    let Some(resolve) = metadata.resolve.as_ref() else {
+        return Ok(());
+    };
+    let Some(root) = resolve.root.as_ref() else {
+        return Ok(());
+    };
+    let Some(node) = resolve.nodes.iter().find(|node| node.id == *root) else {
+        return Ok(());
+    };
+    for dependency in &node.dependencies {
+        let Some(package) = metadata
+            .packages
+            .iter()
+            .find(|package| package.id == *dependency)
+        else {
+            continue;
+        };
+        if package
+            .source
+            .as_ref()
+            .is_some_and(|source| source.repr.starts_with("git+"))
+            && package.targets.is_empty()
+        {
+            return Err(SourceError::UnsupportedTargetlessGit {
+                package: package.name.to_string(),
+            }
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn rollback_preparation<T>(
@@ -235,14 +272,18 @@ impl PreparedProject {
         options: &CargoOptions,
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
+        let build_inputs = bundle::capture_build_inputs(self)?;
         self.build_supervisor(options)?;
-        bundle::assemble(self, options, output)
+        bundle::verify_build_inputs(self, &build_inputs)?;
+        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs))
     }
 
     /// Builds the exact supervisor binary selected through the root Cargo
     /// graph and returns Cargo's reported executable path.
     pub fn build_supervisor(&self, options: &CargoOptions) -> Result<PathBuf, Error> {
+        let build_inputs = bundle::capture_build_inputs(self)?;
         let output = cargo::build_target(self, &self.sources.supervisor, options)?;
+        bundle::verify_build_inputs(self, &build_inputs)?;
         let executable = cargo::artifact_path(&output.stdout, &self.sources.supervisor)?;
         let metadata =
             std::fs::symlink_metadata(&executable).map_err(|source| Error::ArtifactFile {
@@ -265,8 +306,10 @@ impl PreparedProject {
         options: &CargoOptions,
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
+        let build_inputs = bundle::capture_build_inputs(self)?;
         let supervisor = self.build_supervisor(options)?;
-        let bundle = bundle::assemble(self, options, output)?;
+        bundle::verify_build_inputs(self, &build_inputs)?;
+        let bundle = bundle::assemble_with_inputs(self, options, output, Some(&build_inputs))?;
         let status = Command::new(&supervisor)
             .arg(bundle.root())
             .args(["--scope", "local", "--supervisor-id", "local"])
