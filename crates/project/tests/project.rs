@@ -3,7 +3,8 @@ use std::path::Path;
 use std::process::Command;
 
 use phoxal_project::{
-    CargoOperation, CargoOptions, Error, LockMode, PackageSource, Project, SourceError,
+    CargoOperation, CargoOptions, CargoSelection, Error, LockMode, PackageSource, Project,
+    SourceError,
 };
 use sha2::{Digest, Sha256};
 
@@ -524,6 +525,162 @@ fn check_runs_the_root_and_selected_service_targets() -> Result<(), Box<dyn std:
     let prepared = project.prepare(&options)?;
     let outputs = prepared.run(CargoOperation::Check, &options)?;
     assert_eq!(outputs.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn explicit_cargo_selection_runs_once_without_target_duplication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions {
+        offline: true,
+        release: true,
+        cargo_args: vec!["--color".into(), "never".into()],
+        selection: CargoSelection {
+            packages: vec!["fixture-robot".to_owned()],
+            all_targets: true,
+            ..CargoSelection::default()
+        },
+        ..CargoOptions::default()
+    };
+    let prepared = project.prepare(&options)?;
+    let outputs = prepared.run(CargoOperation::Check, &options)?;
+    assert_eq!(outputs.len(), 1);
+    let package_count = outputs[0]
+        .arguments
+        .windows(2)
+        .filter(|window| window[0] == "--package")
+        .count();
+    assert_eq!(package_count, 1);
+    assert!(
+        outputs[0]
+            .arguments
+            .windows(2)
+            .any(|window| window[0] == "--package" && window[1] == "fixture-robot")
+    );
+    assert!(
+        outputs[0]
+            .arguments
+            .iter()
+            .any(|argument| argument == "--all-targets")
+    );
+    let release_position = outputs[0]
+        .arguments
+        .iter()
+        .position(|argument| argument == "--release")
+        .expect("typed release flag is forwarded");
+    let color_position = outputs[0]
+        .arguments
+        .iter()
+        .position(|argument| argument == "--color")
+        .expect("raw Cargo arguments are forwarded");
+    assert!(release_position < color_position);
+    assert!(
+        outputs[0]
+            .arguments
+            .windows(2)
+            .any(|window| window[0] == "--color" && window[1] == "never")
+    );
+    let build_outputs = prepared.run(CargoOperation::Build, &options)?;
+    assert_eq!(build_outputs.len(), 1);
+    let build_package_count = build_outputs[0]
+        .arguments
+        .windows(2)
+        .filter(|window| window[0] == "--package")
+        .count();
+    assert_eq!(build_package_count, 1);
+    assert!(
+        build_outputs[0]
+            .arguments
+            .iter()
+            .any(|argument| argument == "--all-targets")
+    );
+    let test_options = CargoOptions {
+        test_args: vec!["--nocapture".into()],
+        ..options.clone()
+    };
+    let test_outputs = prepared.run(CargoOperation::Test, &test_options)?;
+    assert_eq!(test_outputs.len(), 1);
+    let delimiter = test_outputs[0]
+        .arguments
+        .iter()
+        .position(|argument| argument == "--")
+        .expect("test command has a Cargo test delimiter");
+    assert!(matches!(
+        test_outputs[0].arguments.get(delimiter + 1),
+        Some(argument) if argument == "--nocapture"
+    ));
+    Ok(())
+}
+
+#[test]
+fn explicit_update_validates_the_fresh_graph_before_success()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions {
+        offline: true,
+        cargo_args: vec!["--dry-run".into()],
+        ..CargoOptions::default()
+    };
+    let outputs = project.update(&options)?;
+    assert_eq!(outputs.len(), 1);
+    assert!(
+        outputs[0]
+            .arguments
+            .iter()
+            .any(|argument| argument == "update")
+    );
+    assert!(fixture.path().join("Cargo.lock").is_file());
+    assert!(
+        fixture
+            .path()
+            .join("Cargo.toml")
+            .display()
+            .to_string()
+            .ends_with("Cargo.toml")
+    );
+    Ok(())
+}
+
+#[test]
+fn update_rejects_target_selectors_before_preparation_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let project = Project::discover(fixture.path())?;
+    let manifest = fixture.path().join("Cargo.toml");
+    let before_manifest = fs::read(&manifest)?;
+    let error = project
+        .update(&CargoOptions {
+            offline: true,
+            selection: CargoSelection {
+                lib: true,
+                ..CargoSelection::default()
+            },
+            ..CargoOptions::default()
+        })
+        .expect_err("cargo update must reject target selectors");
+    assert!(matches!(
+        error,
+        Error::InvalidOptions { message } if message.contains("target selectors")
+    ));
+    assert_eq!(fs::read(&manifest)?, before_manifest);
+    assert!(!fixture.path().join("Cargo.lock").exists());
+
+    let error = project
+        .update(&CargoOptions {
+            offline: true,
+            cargo_args: vec!["--bin".into(), "fixture-robot".into()],
+            ..CargoOptions::default()
+        })
+        .expect_err("raw cargo update target selectors must be rejected");
+    assert!(matches!(
+        error,
+        Error::InvalidOptions { message } if message.contains("target selectors")
+    ));
+    assert_eq!(fs::read(&manifest)?, before_manifest);
+    assert!(!fixture.path().join("Cargo.lock").exists());
     Ok(())
 }
 

@@ -708,6 +708,9 @@ fn effective_target(options: &CargoOptions) -> String {
 
 fn effective_profile(options: &CargoOptions) -> String {
     let mut profile = options.profile.clone();
+    if options.release {
+        profile = Some("release".to_owned());
+    }
     let arguments = options
         .cargo_args
         .iter()
@@ -800,10 +803,10 @@ fn toolchain(
     invocations: &[Vec<std::ffi::OsString>],
     project_root: &Path,
 ) -> Result<BundleToolchain, Error> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo = options.cargo_program();
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     Ok(BundleToolchain {
-        cargo: version_output(&cargo, &["--version"])?
+        cargo: version_output(cargo.as_os_str(), &["--version"])?
             .trim_end()
             .to_owned(),
         rustc: version_output(&rustc, &["-vV"])?.trim_end().to_owned(),

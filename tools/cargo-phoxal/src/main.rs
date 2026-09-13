@@ -4,22 +4,24 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use phoxal_project::{
-    CargoOperation, CargoOptions, LockMode, Project, PublicationKind, PublicationOptions,
-    SubmissionResult, prepare_publication, submit_publication,
+    CargoOperation, CargoOptions, CargoSelection, LockMode, Project, PublicationKind,
+    PublicationOptions, SubmissionResult, prepare_publication, submit_publication,
 };
 
 fn main() -> ExitCode {
-    match run() {
+    let cli = Cli::parse();
+    let json_diagnostics = cli.json_diagnostics();
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error:#}");
+            print_error(&error, json_diagnostics);
             ExitCode::FAILURE
         }
     }
 }
 
-fn run() -> Result<(), phoxal_project::Error> {
-    let command = Cli::parse().command;
+fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
+    let command = cli.command;
     match command {
         Command::Publish(arguments) => run_publication(arguments),
         command => {
@@ -42,7 +44,10 @@ fn run() -> Result<(), phoxal_project::Error> {
                     print_preparation(&prepared);
                     let output = output.unwrap_or_else(|| prepared.default_bundle_path());
                     let bundle = prepared.build_bundle(&options, output)?;
-                    println!("compiled bundle: {}", bundle.root().display());
+                    print_status(
+                        &options,
+                        &format!("compiled bundle: {}", bundle.root().display()),
+                    );
                     Ok(())
                 }
                 Command::Run(arguments) => {
@@ -52,7 +57,10 @@ fn run() -> Result<(), phoxal_project::Error> {
                     print_preparation(&prepared);
                     let output = output.unwrap_or_else(|| prepared.default_bundle_path());
                     let bundle = prepared.run_local(&options, output)?;
-                    println!("compiled bundle: {}", bundle.root().display());
+                    print_status(
+                        &options,
+                        &format!("compiled bundle: {}", bundle.root().display()),
+                    );
                     Ok(())
                 }
                 Command::Test(arguments) => run_cargo(
@@ -62,6 +70,15 @@ fn run() -> Result<(), phoxal_project::Error> {
                         .options
                         .into_options(Vec::new(), arguments.test_args),
                 ),
+                Command::Update(arguments) => {
+                    let options = arguments.into_options();
+                    let outputs = project.update(&options)?;
+                    for output in outputs {
+                        print_bytes(&output.stdout, false);
+                        print_bytes(&output.stderr, true);
+                    }
+                    Ok(())
+                }
                 Command::Publish(_) => unreachable!("publish was handled above"),
             }
         }
@@ -131,6 +148,7 @@ fn run_cargo(
     operation: CargoOperation,
     options: CargoOptions,
 ) -> Result<(), phoxal_project::Error> {
+    let json = json_requested(&options);
     let prepared = project.prepare(&options)?;
     print_preparation(&prepared);
     let outputs = if operation == CargoOperation::Check {
@@ -142,7 +160,118 @@ fn run_cargo(
         print_bytes(&output.stdout, false);
         print_bytes(&output.stderr, true);
     }
+    if json {
+        eprintln!("cargo phoxal: {} completed", operation.as_str());
+    }
     Ok(())
+}
+
+fn print_status(options: &CargoOptions, message: &str) {
+    if json_requested(options) {
+        eprintln!("{message}");
+    } else {
+        println!("{message}");
+    }
+}
+
+fn json_requested(options: &CargoOptions) -> bool {
+    json_format(options.message_format.as_deref(), &options.cargo_args)
+}
+
+fn json_common(options: &CommonArgs, cargo_args: &[OsString]) -> bool {
+    json_format(options.message_format.as_deref(), cargo_args)
+}
+
+fn json_format(explicit: Option<&str>, arguments: &[OsString]) -> bool {
+    if explicit.is_some_and(|format| format.starts_with("json")) {
+        return true;
+    }
+    let mut arguments = arguments.iter();
+    while let Some(argument) = arguments.next() {
+        let argument = argument.to_string_lossy();
+        if let Some(format) = argument.strip_prefix("--message-format=") {
+            return format.starts_with("json");
+        }
+        if argument == "--message-format"
+            && arguments
+                .next()
+                .is_some_and(|format| format.to_string_lossy().starts_with("json"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn print_error(error: &phoxal_project::Error, json: bool) {
+    if !json {
+        eprintln!("error: {error:#}");
+        return;
+    }
+    let span = diagnostic_path(error).map(|path| {
+        serde_json::json!({
+            "file_name": path,
+            "byte_start": 0,
+            "byte_end": 0,
+            "line_start": 1,
+            "line_end": 1,
+            "column_start": 1,
+            "column_end": 1,
+            "is_primary": true,
+            "label": "Phoxal project diagnostic"
+        })
+    });
+    let diagnostic = serde_json::json!({
+        "reason": "phoxal-diagnostic",
+        "message": format!("{error:#}"),
+        "level": "error",
+        "spans": span.into_iter().collect::<Vec<_>>(),
+        "children": [],
+        "rendered": format!("error: {error:#}\n")
+    });
+    eprintln!("{diagnostic}");
+}
+
+fn diagnostic_path(error: &phoxal_project::Error) -> Option<PathBuf> {
+    match error {
+        phoxal_project::Error::Discovery(error) => match error {
+            phoxal_project::DiscoveryError::Resolve { path, .. }
+            | phoxal_project::DiscoveryError::MissingRobot { start: path }
+            | phoxal_project::DiscoveryError::MissingManifest { root: path } => Some(path.clone()),
+        },
+        phoxal_project::Error::ReadRobot { path, .. }
+        | phoxal_project::Error::ParseRobot { path, .. }
+        | phoxal_project::Error::InvalidRobot { path, .. }
+        | phoxal_project::Error::ReadManifest { path, .. }
+        | phoxal_project::Error::ParseManifest { path, .. }
+        | phoxal_project::Error::VirtualManifest { path }
+        | phoxal_project::Error::MissingInitialization { path, .. }
+        | phoxal_project::Error::ManifestPreparation { path, .. }
+        | phoxal_project::Error::ManifestWrite { path, .. }
+        | phoxal_project::Error::ManifestRestore { path, .. }
+        | phoxal_project::Error::CargoMetadata { manifest: path, .. } => Some(path.clone()),
+        phoxal_project::Error::ConfigurationInvalid { .. }
+        | phoxal_project::Error::Source(_)
+        | phoxal_project::Error::CargoCommand { .. }
+        | phoxal_project::Error::CargoSpawn { .. }
+        | phoxal_project::Error::InvalidOptions { .. }
+        | phoxal_project::Error::ArtifactCapture { .. }
+        | phoxal_project::Error::MissingArtifactContract { .. }
+        | phoxal_project::Error::BundleSourceChanged { .. }
+        | phoxal_project::Error::SupervisorLaunch { .. }
+        | phoxal_project::Error::ArtifactInvalid { .. }
+        | phoxal_project::Error::ArtifactFile { .. }
+        | phoxal_project::Error::BundleDirectory { .. }
+        | phoxal_project::Error::BundleCopy { .. }
+        | phoxal_project::Error::BundleJson { .. }
+        | phoxal_project::Error::BundleWrite { .. }
+        | phoxal_project::Error::BundleBusy { .. }
+        | phoxal_project::Error::BundleLock { .. }
+        | phoxal_project::Error::BundlePublish { .. }
+        | phoxal_project::Error::BundleCleanup { .. }
+        | phoxal_project::Error::InvalidExecutionIdentity { .. }
+        | phoxal_project::Error::Publication(_) => None,
+    }
 }
 
 fn print_preparation(prepared: &phoxal_project::PreparedProject) {
@@ -176,6 +305,20 @@ struct Cli {
     command: Command,
 }
 
+impl Cli {
+    fn json_diagnostics(&self) -> bool {
+        match &self.command {
+            Command::Check(arguments) => json_common(&arguments.options, &arguments.cargo_args),
+            Command::Build(arguments) | Command::Run(arguments) => {
+                json_common(&arguments.options, &arguments.cargo_args)
+            }
+            Command::Test(arguments) => json_common(&arguments.options, &[]),
+            Command::Update(arguments) => json_common(&arguments.options, &arguments.cargo_args),
+            Command::Publish(_) => false,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Prepare the project, validate composition, and Cargo-check selected targets.
@@ -186,8 +329,25 @@ enum Command {
     Run(BuildArgs),
     /// Prepare the project and run tests for the root robot package.
     Test(TestArgs),
+    /// Resolve permitted Cargo updates and validate the resulting Phoxal graph.
+    Update(UpdateArgs),
     /// Prepare an authored component or service package for registry review.
     Publish(PublishArgs),
+}
+
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    #[command(flatten)]
+    options: CommonArgs,
+    /// Additional arguments passed to `cargo update`.
+    #[arg(last = true, allow_hyphen_values = true)]
+    cargo_args: Vec<OsString>,
+}
+
+impl UpdateArgs {
+    fn into_options(self) -> CargoOptions {
+        self.options.into_options(self.cargo_args, Vec::new())
+    }
 }
 
 #[derive(Debug, Args)]
@@ -260,6 +420,9 @@ struct TestArgs {
 
 #[derive(Debug, Args)]
 struct CommonArgs {
+    /// Cargo executable to use for every metadata, build, check, test, and update invocation.
+    #[arg(long, env = "CARGO", hide_env_values = true)]
+    cargo: Option<PathBuf>,
     /// Require an existing current Cargo.lock.
     #[arg(long, conflicts_with = "frozen")]
     locked: bool,
@@ -284,14 +447,57 @@ struct CommonArgs {
     /// Disable default root features.
     #[arg(long = "no-default-features")]
     no_default_features: bool,
+    /// Build with Cargo's release profile.
+    #[arg(long)]
+    release: bool,
     /// Cargo compiler message format, such as `json`.
     #[arg(long)]
     message_format: Option<String>,
+    /// Select the whole Cargo workspace.
+    #[arg(long)]
+    workspace: bool,
+    /// Select an explicit Cargo package, repeatable.
+    #[arg(long = "package", short = 'p', action = clap::ArgAction::Append)]
+    packages: Vec<String>,
+    /// Exclude a workspace package, repeatable.
+    #[arg(long = "exclude", action = clap::ArgAction::Append)]
+    excludes: Vec<String>,
+    /// Select all targets.
+    #[arg(long)]
+    all_targets: bool,
+    /// Select the package library target.
+    #[arg(long)]
+    lib: bool,
+    /// Select all binary targets.
+    #[arg(long)]
+    bins: bool,
+    /// Select a named binary target, repeatable.
+    #[arg(long = "bin", action = clap::ArgAction::Append)]
+    binaries: Vec<String>,
+    /// Select all example targets.
+    #[arg(long)]
+    examples: bool,
+    /// Select a named example target, repeatable.
+    #[arg(long = "example", action = clap::ArgAction::Append)]
+    examples_named: Vec<String>,
+    /// Select all integration tests.
+    #[arg(long)]
+    tests: bool,
+    /// Select a named integration test, repeatable.
+    #[arg(long = "test", action = clap::ArgAction::Append)]
+    tests_named: Vec<String>,
+    /// Select all benchmarks.
+    #[arg(long)]
+    benches: bool,
+    /// Select a named benchmark, repeatable.
+    #[arg(long = "bench", action = clap::ArgAction::Append)]
+    benches_named: Vec<String>,
 }
 
 impl CommonArgs {
     fn into_options(self, cargo_args: Vec<OsString>, test_args: Vec<OsString>) -> CargoOptions {
         CargoOptions {
+            cargo_path: self.cargo,
             lock: if self.frozen {
                 LockMode::Frozen
             } else if self.locked {
@@ -305,9 +511,25 @@ impl CommonArgs {
             features: self.features,
             all_features: self.all_features,
             no_default_features: self.no_default_features,
+            release: self.release,
             message_format: self.message_format,
             cargo_args,
             test_args,
+            selection: CargoSelection {
+                workspace: self.workspace,
+                packages: self.packages,
+                excludes: self.excludes,
+                all_targets: self.all_targets,
+                lib: self.lib,
+                bins: self.bins,
+                binaries: self.binaries,
+                examples: self.examples,
+                examples_named: self.examples_named,
+                tests: self.tests,
+                tests_named: self.tests_named,
+                benches: self.benches,
+                benches_named: self.benches_named,
+            },
         }
     }
 }
@@ -366,6 +588,18 @@ mod tests {
     }
 
     #[test]
+    fn test_delimiter_does_not_turn_test_binary_arguments_into_json_diagnostics() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "test",
+            "--",
+            "--message-format=json-render-diagnostics",
+        ])
+        .expect("test binary arguments parse");
+        assert!(!parsed.json_diagnostics());
+    }
+
+    #[test]
     fn build_boundary_parses_without_extra_process_options() {
         let parsed = Cli::try_parse_from([
             "cargo-phoxal",
@@ -398,6 +632,7 @@ mod tests {
         assert_eq!(arguments.output, Some(PathBuf::from("target/run-bundle")));
         let options = arguments.into_options();
         assert_eq!(options.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+        assert!(!options.release);
         assert_eq!(options.cargo_args, [OsString::from("--release")]);
     }
 
@@ -420,5 +655,66 @@ mod tests {
         ])
         .expect("normal publication parses");
         assert!(matches!(parsed.command, Command::Publish(_)));
+    }
+
+    #[test]
+    fn cargo_path_and_native_package_selection_are_preserved() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "test",
+            "--cargo",
+            "/opt/cargo/bin/cargo",
+            "--workspace",
+            "--package",
+            "robot",
+            "--exclude",
+            "fixture",
+            "--all-targets",
+            "--release",
+            "--message-format",
+            "json-render-diagnostics",
+            "--",
+            "--nocapture",
+        ])
+        .expect("Cargo selectors parse");
+        let options = match parsed.command {
+            Command::Test(arguments) => arguments
+                .options
+                .into_options(Vec::new(), arguments.test_args),
+            _ => panic!("the test command parsed as a different variant"),
+        };
+        assert_eq!(
+            options.cargo_path,
+            Some(PathBuf::from("/opt/cargo/bin/cargo"))
+        );
+        assert!(options.selection.workspace);
+        assert_eq!(options.selection.packages, ["robot"]);
+        assert_eq!(options.selection.excludes, ["fixture"]);
+        assert!(options.selection.all_targets);
+        assert!(options.release);
+        assert!(options.cargo_args.is_empty());
+        assert_eq!(options.test_args, [OsString::from("--nocapture")]);
+        assert!(json_requested(&options));
+    }
+
+    #[test]
+    fn update_command_preserves_its_cargo_boundary() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "update",
+            "--offline",
+            "--package",
+            "robot",
+            "--",
+            "--dry-run",
+        ])
+        .expect("update command parses");
+        let options = match parsed.command {
+            Command::Update(arguments) => arguments.into_options(),
+            _ => panic!("the update command parsed as a different variant"),
+        };
+        assert!(options.offline);
+        assert_eq!(options.selection.packages, ["robot"]);
+        assert_eq!(options.cargo_args, [OsString::from("--dry-run")]);
     }
 }

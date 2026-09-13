@@ -46,6 +46,13 @@ impl LockMode {
 /// Shared preparation and Cargo-command options.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CargoOptions {
+    /// Cargo executable selected by the caller.
+    ///
+    /// When absent, the `CARGO` environment variable is used and finally the
+    /// `cargo` executable is resolved through `PATH`.  Capturing this once in
+    /// the options keeps metadata, checks, builds, tests, and updates on the
+    /// same Cargo installation.
+    pub cargo_path: Option<std::path::PathBuf>,
     /// Lockfile policy.
     pub lock: LockMode,
     /// Forbid registry and Git network access without requiring `--frozen`.
@@ -60,17 +67,22 @@ pub struct CargoOptions {
     pub all_features: bool,
     /// Disable default root features.
     pub no_default_features: bool,
+    /// Build with Cargo's release profile.
+    pub release: bool,
     /// Cargo compiler output format.
     pub message_format: Option<String>,
     /// Additional Cargo arguments before a test delimiter.
     pub cargo_args: Vec<OsString>,
     /// Arguments after Cargo's `--` test delimiter.
     pub test_args: Vec<OsString>,
+    /// Cargo package and target-selection options supplied by the caller.
+    pub selection: CargoSelection,
 }
 
 impl Default for CargoOptions {
     fn default() -> Self {
         Self {
+            cargo_path: None,
             lock: LockMode::Unlocked,
             offline: false,
             target: None,
@@ -78,10 +90,122 @@ impl Default for CargoOptions {
             features: Vec::new(),
             all_features: false,
             no_default_features: false,
+            release: false,
             message_format: None,
             cargo_args: Vec::new(),
             test_args: Vec::new(),
+            selection: CargoSelection::default(),
         }
+    }
+}
+
+/// Cargo package and target selectors that remain meaningful at the
+/// `cargo-phoxal` boundary.
+///
+/// The project compiler still selects the validated brain, service, and
+/// driver targets for bundle assembly.  These selectors are forwarded to
+/// source-development Cargo invocations so root, workspace, package, and
+/// test workflows retain Cargo's documented semantics.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CargoSelection {
+    /// Restrict Cargo to the workspace rather than the root package.
+    pub workspace: bool,
+    /// Explicit package specifications, in caller order.
+    pub packages: Vec<String>,
+    /// Workspace packages excluded from a workspace selection.
+    pub excludes: Vec<String>,
+    /// Select every target in the selected package set.
+    pub all_targets: bool,
+    /// Select the package library target.
+    pub lib: bool,
+    /// Select all binary targets.
+    pub bins: bool,
+    /// Select named binary targets.
+    pub binaries: Vec<String>,
+    /// Select all example targets.
+    pub examples: bool,
+    /// Select named example targets.
+    pub examples_named: Vec<String>,
+    /// Select all integration tests.
+    pub tests: bool,
+    /// Select named integration tests.
+    pub tests_named: Vec<String>,
+    /// Select all benchmarks.
+    pub benches: bool,
+    /// Select named benchmarks.
+    pub benches_named: Vec<String>,
+}
+
+impl CargoSelection {
+    fn append_to(&self, command: &mut Command) {
+        if self.workspace {
+            command.arg("--workspace");
+        }
+        for package in &self.packages {
+            command.args(["--package", package]);
+        }
+        for exclude in &self.excludes {
+            command.args(["--exclude", exclude]);
+        }
+        if self.all_targets {
+            command.arg("--all-targets");
+        }
+        if self.lib {
+            command.arg("--lib");
+        }
+        if self.bins {
+            command.arg("--bins");
+        }
+        for binary in &self.binaries {
+            command.args(["--bin", binary]);
+        }
+        if self.examples {
+            command.arg("--examples");
+        }
+        for example in &self.examples_named {
+            command.args(["--example", example]);
+        }
+        if self.tests {
+            command.arg("--tests");
+        }
+        for test in &self.tests_named {
+            command.args(["--test", test]);
+        }
+        if self.benches {
+            command.arg("--benches");
+        }
+        for bench in &self.benches_named {
+            command.args(["--bench", bench]);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.workspace
+            && self.packages.is_empty()
+            && self.excludes.is_empty()
+            && !self.all_targets
+            && !self.lib
+            && !self.bins
+            && self.binaries.is_empty()
+            && !self.examples
+            && self.examples_named.is_empty()
+            && !self.tests
+            && self.tests_named.is_empty()
+            && !self.benches
+            && self.benches_named.is_empty()
+    }
+
+    fn has_update_unsupported_targets(&self) -> bool {
+        self.all_targets
+            || self.lib
+            || self.bins
+            || !self.binaries.is_empty()
+            || self.examples
+            || !self.examples_named.is_empty()
+            || self.tests
+            || !self.tests_named.is_empty()
+            || self.benches
+            || !self.benches_named.is_empty()
     }
 }
 
@@ -105,7 +229,12 @@ impl CargoOptions {
         Ok(())
     }
 
-    fn append_common(&self, command: &mut Command, include_message_format: bool) {
+    fn append_common(
+        &self,
+        command: &mut Command,
+        include_message_format: bool,
+        include_selection: bool,
+    ) {
         for flag in self.lock.flags() {
             command.arg(flag);
         }
@@ -127,10 +256,23 @@ impl CargoOptions {
         if !self.features.is_empty() {
             command.args(["--features", &self.features.join(",")]);
         }
+        if self.release {
+            command.arg("--release");
+        }
         if include_message_format && let Some(message_format) = &self.message_format {
             command.args(["--message-format", message_format]);
         }
+        if include_selection {
+            self.selection.append_to(command);
+        }
         command.args(&self.cargo_args);
+    }
+
+    pub(crate) fn cargo_program(&self) -> std::path::PathBuf {
+        self.cargo_path
+            .clone()
+            .or_else(|| std::env::var_os("CARGO").map(std::path::PathBuf::from))
+            .unwrap_or_else(|| std::path::PathBuf::from("cargo"))
     }
 }
 
@@ -143,6 +285,8 @@ pub enum CargoOperation {
     Build,
     /// Run tests selected by Cargo for the root robot package.
     Test,
+    /// Resolve permitted package updates in the root Cargo graph.
+    Update,
 }
 
 impl CargoOperation {
@@ -153,6 +297,7 @@ impl CargoOperation {
             Self::Check => "check",
             Self::Build => "build",
             Self::Test => "test",
+            Self::Update => "update",
         }
     }
 }
@@ -174,6 +319,7 @@ pub struct CargoOutput {
 pub(crate) fn load_metadata(manifest: &Path, options: &CargoOptions) -> Result<Metadata, Error> {
     options.validate()?;
     let mut command = MetadataCommand::new();
+    command.cargo_path(options.cargo_program());
     command
         .manifest_path(manifest)
         .features(CargoOpt::SomeFeatures(options.features.clone()));
@@ -214,8 +360,10 @@ pub(crate) fn run(
     match operation {
         CargoOperation::Test => {
             let root = &prepared.root_package;
-            let mut command = command_for(prepared, operation, options, true);
-            command.args(["--package", root.id.to_string().as_str()]);
+            let mut command = command_for(prepared, operation, options, true, true);
+            if options.selection.is_empty() {
+                command.args(["--package", root.id.to_string().as_str()]);
+            }
             command.args([
                 "--manifest-path",
                 &prepared.layout.cargo_manifest().display().to_string(),
@@ -225,8 +373,17 @@ pub(crate) fn run(
             outputs.push(run_command(command, operation)?);
         }
         CargoOperation::Check | CargoOperation::Build => {
+            if !options.selection.is_empty() {
+                let mut command = command_for(prepared, operation, options, true, true);
+                command.args([
+                    "--manifest-path",
+                    &prepared.layout.cargo_manifest().display().to_string(),
+                ]);
+                outputs.push(run_command(command, operation)?);
+                return Ok(outputs);
+            }
             for target in prepared.execution_targets() {
-                let mut command = command_for(prepared, operation, options, true);
+                let mut command = command_for(prepared, operation, options, true, false);
                 command.args([
                     "--manifest-path",
                     &prepared.layout.cargo_manifest().display().to_string(),
@@ -234,6 +391,11 @@ pub(crate) fn run(
                 append_target_selection(&mut command, prepared, target);
                 outputs.push(run_command(command, operation)?);
             }
+        }
+        CargoOperation::Update => {
+            return Err(Error::InvalidOptions {
+                message: "cargo update must be invoked through Project::update so the resulting graph is validated".to_owned(),
+            });
         }
     }
     Ok(outputs)
@@ -244,14 +406,108 @@ fn command_for(
     operation: CargoOperation,
     options: &CargoOptions,
     include_message_format: bool,
+    include_selection: bool,
 ) -> Command {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let mut command = Command::new(cargo);
+    let mut command = Command::new(options.cargo_program());
     command.current_dir(prepared.layout.root());
     command.arg(operation.as_str());
     command.args(["--config", &registry_config()]);
-    options.append_common(&mut command, include_message_format);
+    options.append_common(&mut command, include_message_format, include_selection);
     command
+}
+
+/// Runs one explicit Cargo update from the owning project root.
+pub(crate) fn update(
+    manifest: &Path,
+    current_dir: &Path,
+    options: &CargoOptions,
+) -> Result<CargoOutput, Error> {
+    validate_update_options(options)?;
+    let mut command = Command::new(options.cargo_program());
+    command.current_dir(current_dir);
+    command.args(["update", "--config", &registry_config()]);
+    for flag in options.lock.flags() {
+        command.arg(flag);
+    }
+    if options.offline {
+        command.arg("--offline");
+    }
+    command.args(["--manifest-path", &manifest.display().to_string()]);
+    options.selection.append_to(&mut command);
+    command.args(&options.cargo_args);
+    run_command(command, CargoOperation::Update)
+}
+
+/// Validates the subset of Cargo options that `cargo update` accepts before
+/// project preparation can mutate the authored manifest or lockfile.
+pub(crate) fn validate_update_options(options: &CargoOptions) -> Result<(), Error> {
+    options.validate()?;
+    if options.selection.has_update_unsupported_targets()
+        || options.cargo_args.iter().any(is_update_target_argument)
+    {
+        return Err(Error::InvalidOptions {
+            message: "cargo phoxal update accepts only Cargo package, workspace, and exclude selectors; target selectors such as --lib, --bin, --test, and --all-targets belong to check/build/test".to_owned(),
+        });
+    }
+    if options.target.is_some()
+        || options.profile.is_some()
+        || !options.features.is_empty()
+        || options.all_features
+        || options.no_default_features
+        || options.release
+        || options.message_format.is_some()
+        || options
+            .cargo_args
+            .iter()
+            .any(is_update_unsupported_argument)
+    {
+        return Err(Error::InvalidOptions {
+            message: "cargo phoxal update accepts Cargo update options only; target, profile, feature, release, and compiler-message options belong to check/build/test".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn is_update_unsupported_argument(argument: &OsString) -> bool {
+    is_update_target_argument(argument) || is_update_compiler_argument(argument)
+}
+
+fn is_update_compiler_argument(argument: &OsString) -> bool {
+    let argument = argument.to_string_lossy();
+    matches!(
+        argument.as_ref(),
+        "--target"
+            | "--profile"
+            | "--features"
+            | "--all-features"
+            | "--no-default-features"
+            | "--message-format"
+            | "--release"
+            | "-r"
+    ) || argument.starts_with("--target=")
+        || argument.starts_with("--profile=")
+        || argument.starts_with("--features=")
+        || argument.starts_with("--message-format=")
+}
+
+fn is_update_target_argument(argument: &OsString) -> bool {
+    let argument = argument.to_string_lossy();
+    matches!(
+        argument.as_ref(),
+        "--all-targets"
+            | "--lib"
+            | "--bins"
+            | "--bin"
+            | "--examples"
+            | "--example"
+            | "--tests"
+            | "--test"
+            | "--benches"
+            | "--bench"
+    ) || argument.starts_with("--bin=")
+        || argument.starts_with("--example=")
+        || argument.starts_with("--test=")
+        || argument.starts_with("--bench=")
 }
 
 /// Builds one selected executable while retaining Cargo's machine-readable
@@ -262,7 +518,7 @@ pub(crate) fn build_target(
     options: &CargoOptions,
 ) -> Result<CargoOutput, Error> {
     options.validate()?;
-    let mut command = command_for(prepared, CargoOperation::Build, options, false);
+    let mut command = command_for(prepared, CargoOperation::Build, options, false, false);
     command.args([
         "--manifest-path",
         &prepared.layout().cargo_manifest().display().to_string(),

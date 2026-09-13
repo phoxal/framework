@@ -27,7 +27,7 @@ pub use bundle::{
     BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleSupervisor, BundleToolchain,
     CompiledBundle, LocalIdentity, LocalRunPlan, LocalSimulationPlan,
 };
-pub use cargo::{CargoOperation, CargoOptions, CargoOutput, LockMode};
+pub use cargo::{CargoOperation, CargoOptions, CargoOutput, CargoSelection, LockMode};
 pub use discovery::ProjectLayout;
 pub use document::{
     BrainSelection, ComponentInstance, ConnectionSources, PortReference, PortReferenceError,
@@ -137,6 +137,27 @@ impl Project {
             sources,
             preparation_changes,
         })
+    }
+
+    /// Runs an explicit Cargo update and validates the resulting Phoxal graph.
+    ///
+    /// The update is deliberately a project operation rather than a bare
+    /// Cargo passthrough.  Cargo first resolves the caller's permitted update
+    /// request, then a fresh metadata preparation and exact contract check
+    /// must succeed before this method reports success.  Update-only trailing
+    /// Cargo arguments are not replayed into the validation builds.
+    pub fn update(&self, options: &CargoOptions) -> Result<Vec<CargoOutput>, Error> {
+        cargo::validate_update_options(options)?;
+        let _initial = self.prepare(options)?;
+        let output = cargo::update(self.layout.cargo_manifest(), self.layout.root(), options)?;
+        let prepared = self.prepare(options)?;
+        let validation_options = CargoOptions {
+            cargo_args: Vec::new(),
+            test_args: Vec::new(),
+            ..options.clone()
+        };
+        prepared.check(&validation_options)?;
+        Ok(vec![output])
     }
 }
 

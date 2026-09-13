@@ -2,7 +2,7 @@
 
 `cargo-phoxal` is the canonical Phoxal source-development command.
 
-The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, and reviewed package publication.
+The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, and reviewed package publication.
 
 Each command discovers the nearest robot project, validates explicit composition, resolves source packages through the root Cargo graph, and applies the requested Cargo lock and offline policy.
 
@@ -11,6 +11,13 @@ The bundle includes inspectable manifest and provenance records and is published
 
 `cargo phoxal run` independently prepares and validates the hardware bundle, then launches the selected supervisor with the isolated `local` scope and `local` supervisor identity.
 It does not launch simulation or claim domain readiness or physical safety.
+
+`cargo phoxal update` runs the requested Cargo update against the owning workspace lock and then performs a fresh Phoxal preparation, exact contract extraction, configuration validation, and connection validation before reporting success.
+Update-only Cargo arguments are not replayed into the validation builds.
+
+All source-development commands accept `--cargo <path>` and preserve the selected executable across Cargo metadata and operation invocations.
+Cargo package, workspace, target, and test selectors are forwarded using Cargo's native option names.
+In JSON compiler-message mode, compiler JSON remains on stdout and Phoxal progress and structured project diagnostics remain on stderr.
 
 Ordinary preparation adds the known `phoxal-supervisor` dependency with an unconstrained first-resolution requirement when it is missing, preserving existing manifest content and letting Cargo select the newest compatible package.
 `--locked` and `--frozen` report an actionable initialization error before changing `Cargo.toml` or `Cargo.lock`.
