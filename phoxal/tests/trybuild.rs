@@ -1,4 +1,4 @@
-//! Compile-pass / compile-fail coverage for the authoring macros.
+//! Compile-pass and compile-fail coverage for the Runtime macros.
 //!
 //! Each `fail/` case pins a compile-time guarantee the surface makes: a
 //! capability a role does not have, a handle from the wrong API, a request or

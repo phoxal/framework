@@ -708,23 +708,6 @@ mod tests {
             classify("crates/macros/Cargo.toml")?,
             ManifestClassification::Excluded
         );
-        assert_eq!(
-            classify("crates/fixture/Cargo.toml")?,
-            ManifestClassification::Excluded
-        );
-        Ok(())
-    }
-
-    /// `fixture/` holds authored documents and no packages at all, so the
-    /// grammar has nothing to say about anything under it. It used to be an
-    /// explicit exclusion because a crate lived there too; the exclusion went
-    /// away with the crate.
-    #[test]
-    fn the_authored_fixture_tree_names_no_package() -> Result<()> {
-        assert_eq!(
-            classify("fixture/components/foo/Cargo.toml")?,
-            ManifestClassification::NonArtifact
-        );
         Ok(())
     }
 

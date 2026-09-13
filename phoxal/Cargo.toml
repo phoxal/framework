@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 autotests = false
 publish = ["phoxal"]
-description = "Phoxal - production-oriented autonomous robot framework: the one framework library, holding the runtime engine, the api contract tree, the typed bus, the canonical model, and the bundle."
+description = "Phoxal - the framework runtime, protocol contracts, typed ports, and public sessions."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -35,7 +35,7 @@ path = "src/lib.rs"
 default = ["runtime"]
 
 # The contract descriptor family is deliberately available without selecting a
-# runner, transport, host, or authoring profile.
+# runner, transport, or host profile.
 port = ["dep:phoxal-port"]
 
 # Framework-owned public protocol messages and pure admission state.
@@ -49,7 +49,7 @@ protocol = [
     "dep:thiserror",
 ]
 
-# Synchronous Runtime authoring, typed input/output forms, and bounded managed
+# Synchronous Runtime definitions, typed input/output forms, and bounded managed
 # operations.
 runtime = [
     "protocol",
@@ -84,9 +84,9 @@ session = [
 #
 # `zenoh/unstable` is the router's: `link_events_listener()` observes links
 # coming and going and has no stable equivalent. Pulling it in *here* rather
-# than on the workspace dependency keeps that surface out of every participant
-# build. `libc` is deliberately absent from this list - `bus::time` and
-# `supervisor::rendezvous` need it in every profile, so it is a plain
+# than on the workspace dependency keeps that surface out of every runtime
+# build. `libc` is deliberately absent from this list - supervisor rendezvous
+# uses it in every profile, so it is a plain
 # dependency rather than one this profile turns on.
 supervisor = [
     "runtime",
@@ -106,25 +106,6 @@ supervisor = [
     "zenoh/unstable",
 ]
 
-# The authored-source layer: `robot.yaml`, `component.yaml`, `simulation.yaml`,
-# URDF, their JSON Schemas, and the project compiler. Off by default: a launched
-# participant reads the compiled `manifest.json` and never an authored document,
-# so its readers - and the YAML/TOML/URDF parsers under them - have no place in
-# a robot binary.
-authoring = [
-    "dep:phoxal-macros",
-    "dep:schemars",
-    "dep:serde",
-    "dep:serde_bytes",
-    "dep:serde_json",
-    "dep:serde_yaml",
-    "dep:sha2",
-    "dep:tempfile",
-    "dep:toml",
-    "dep:tracing",
-    "dep:urdf-rs",
-]
-
 [dependencies]
 phoxal-macros = { workspace = true, optional = true }
 anyhow = { workspace = true }
@@ -135,17 +116,10 @@ const_format = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
-# Not optional, and not a `cfg_attr` gate inside the model: a feature that
-# changes what a canonical type derives is a second shape of the same type, and
-# the authored-source layer points editor schemas at the one canonical
-# definition. The weight is a derive, and the alternative is `cfg(feature = …)`
-# inside a domain module.
-schemars = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
-serde_yaml = { workspace = true, optional = true }
 # The supervisor asks its own host to reboot or power off.
 system_shutdown = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
@@ -154,10 +128,8 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time
 # `rt`: the supervisor's one shutdown token, cancelled from the signal handler
 # and awaited by everything it owns.
 tokio-util = { workspace = true, features = ["rt"], optional = true }
-toml = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
-urdf-rs = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 
 phoxal-port = { workspace = true, optional = true }
@@ -171,8 +143,7 @@ phoxal-build.workspace = true
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
 
-# docs.rs builds every profile, so `phoxal::session` and `phoxal::authoring`
-# have published documentation and every host item carries an "available on
+# docs.rs builds every profile, so every host item carries an "available on
 # crate feature …" badge.
 [package.metadata.docs.rs]
 all-features = true
@@ -180,9 +151,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 phoxal-project = { workspace = true }
-# `tests/authoring_workspace_build_requirements.rs` reads every workspace
-# manifest through this crate's own build-requirement reader.
-cargo_metadata = { workspace = true }
+# The Config derive test compares the emitted schema with the independent
+# schemars oracle without making schemars a runtime dependency.
+schemars = { workspace = true }
 jsonschema = { workspace = true }
 serial_test = { workspace = true }
 sha2 = { workspace = true }
@@ -244,23 +215,3 @@ required-features = ["session", "supervisor"]
 name = "trybuild"
 path = "tests/trybuild.rs"
 required-features = ["runtime"]
-
-[[test]]
-name = "authoring_compile"
-path = "tests/authoring_compile.rs"
-required-features = ["authoring"]
-
-[[test]]
-name = "authoring_schema"
-path = "tests/authoring_schema.rs"
-required-features = ["authoring"]
-
-[[test]]
-name = "authoring_source_boundary"
-path = "tests/authoring_source_boundary.rs"
-required-features = ["authoring"]
-
-[[test]]
-name = "authoring_workspace_build_requirements"
-path = "tests/authoring_workspace_build_requirements.rs"
-required-features = ["authoring"]

@@ -2,11 +2,10 @@
 //! public library graph, the edges no canonical crate may ever grow, and the
 //! Zenoh feature set every binary links.
 //!
-//! The two dependency facts that need the framework *linked* are not here and
+//! The dependency facts that need the framework *linked* are not here and
 //! cannot be: the wire protocol version the transport actually speaks is proved
-//! against `phoxal::bus`'s own declared contract surface, and the
-//! build-requirement union CI installs is proved against
-//! `phoxal::authoring`'s own reader - both in `phoxal`'s tests.
+//! against the owning protocol contract, while project preparation and source
+//! validation are proved in `phoxal-project`'s own tests.
 
 use std::fs;
 
@@ -67,13 +66,6 @@ const RETIRED_LIBRARIES: [&str; 6] = [
     "phoxal-manifest",
     "phoxal-runtime-contract",
 ];
-
-/// The feature no official participant and no framework executable may enable.
-///
-/// `authoring` compiles the authored-source layer and the YAML/TOML/URDF
-/// parsers under it. Source compilation stops at bundle compilation and never
-/// links into a process that runs a robot.
-const AUTHORING_FEATURE: &str = "authoring";
 
 pub(super) fn public_library_dependency_direction_is_exact(
     subject: &Subject,
@@ -149,25 +141,6 @@ pub(super) fn canonical_crates_and_the_framework_executable_keep_forbidden_edges
                 violations.push(Violation::new(format!(
                     "{} -> {} ({:?})",
                     package.name, dependency.name, dependency.kind
-                )));
-            }
-            // A framework executable consumes a finalized bundle; the
-            // authored-source reader stops at bundle compilation and never
-            // links into a process that runs a robot. It is a feature of the
-            // one framework library now, so the edge to look for is the feature
-            // rather than a package. Official participants own their profile
-            // selection directly in their manifests.
-            if dependency.name.as_str() == super::FACADE
-                && dependency
-                    .features
-                    .iter()
-                    .any(|feature| feature == AUTHORING_FEATURE)
-            {
-                violations.push(Violation::new(format!(
-                    "{} enables {}/{AUTHORING_FEATURE} ({:?})",
-                    package.name,
-                    super::FACADE,
-                    dependency.kind
                 )));
             }
         }

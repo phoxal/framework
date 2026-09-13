@@ -9,9 +9,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# Runnable crates own apt build requirements in package.metadata.phoxal.build;
-# phoxal's `authoring_workspace_build_requirements` test keeps that bootstrap
-# input synchronized with their declared union.
+# Runnable crates own apt build requirements in package.metadata.phoxal.build.
 jobs:
   contracts:
     name: Protobuf contracts
@@ -94,7 +92,7 @@ jobs:
   # every profile at once and can say nothing about any single profile. These
   # are the builds that can: each is what one supported consumer actually gets.
   #
-  # Rustdoc runs per profile too, because the crate root is participant-first
+  # Rustdoc runs per profile too, because the crate root is Runtime-first
   # and a doc link into a module another profile hides is a break only that
   # profile's build can see.
   consumer-profiles:
@@ -109,9 +107,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # default: the participant SDK a robot project gets.
+          # default: the Runtime SDK a robot project gets.
           cargo check -p phoxal
-          for profile in session simulator supervisor authoring session,authoring; do
+          for profile in port protocol runtime session supervisor; do
             cargo check -p phoxal --no-default-features --features "$profile"
           done
           # Additivity: every profile compiled together must still be one crate.
@@ -124,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo doc -p phoxal --no-deps
-          for profile in session simulator supervisor authoring session,authoring; do
+          for profile in port protocol runtime session supervisor; do
             cargo doc -p phoxal --no-default-features --features "$profile" --no-deps
           done
           cargo doc -p phoxal --all-features --no-deps

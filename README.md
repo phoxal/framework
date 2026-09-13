@@ -11,13 +11,13 @@ This repository and its source are the authority for current framework implement
 
 - `phoxal/` - the framework facade and runtime library
 - `crates/` and `contracts/` - independently versioned public libraries, proc
-  macros, service-owned contracts, project tooling, and test fixtures
+  macros, service-owned contracts, and project tooling
 - `supervisor/` - the framework execution supervisor
 - `services/`, `components/` - official Runtime service and component-driver packages
 - `simulators/mujoco/` - the independently versioned MuJoCo application kept
   outside the universal framework library
 - `tools/cargo-phoxal/` - the registry-aware project and publication command
-- `fixture/` - the authored test robot, world, and components (the example robot project is [phoxal/robot-rover](https://github.com/phoxal/robot-rover))
+- `robot-rover` - the maintained example robot project is hosted in the separate [phoxal/robot-rover](https://github.com/phoxal/robot-rover) repository
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
 

@@ -1,8 +1,0 @@
-schema: phoxal/component/v0
-capabilities:
-  gnss:
-    kind: gnss
-    publish_rate_hz: 10.0
-    target:
-      kind: link
-      id: sensor_link

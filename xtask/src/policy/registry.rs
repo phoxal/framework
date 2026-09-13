@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
-// Reaching a workspace by manifest path is the fixture tests' entry alone: a
-// rule reads the one metadata the run already has.
+// Reaching a workspace by manifest path is limited to isolated policy tests:
+// production policy reads the one metadata the run already has.
 #[cfg(test)]
 use anyhow::Context;
 #[cfg(test)]
@@ -41,7 +41,7 @@ impl Workspace {
     /// names, including completeness of the exact framework-owned executable
     /// list.
     ///
-    /// Only the fixture tests below reach a workspace by manifest path; a rule
+    /// Only isolated tests below reach a workspace by manifest path; a rule
     /// reads the one metadata the run already has through
     /// [`Self::from_metadata`].
     #[cfg(test)]

@@ -47,7 +47,7 @@ impl Spec {
         self.lib_name
     }
 
-    /// Dependencies that would move authoring or parsing policy into this
+    /// Dependencies that would move non-supervisor policy into this
     /// framework-owned executable.
     pub const fn forbidden_dependencies(self) -> &'static [&'static str] {
         self.forbidden_dependencies
@@ -108,11 +108,6 @@ pub const SPECS: [Spec; 1] = [Spec {
         // The supervisor is built from the one framework library, never from
         // its former CLI owner.
         "phoxal-cli",
-        // Authored YAML/URDF and their parsers stop at bundle compilation. The
-        // `authoring` feature that would pull them in is refused separately, by
-        // the dependency rule that covers every official participant.
-        "serde_yaml",
-        "urdf-rs",
     ],
 }];
 
@@ -133,8 +128,7 @@ pub(crate) fn spec_for_package(package_name: &str) -> Option<Spec> {
 
 /// The framework-owned executable set's place in the workspace. The supervisor is an ordinary
 /// default member that plain root cargo commands build, publishing to the
-/// `phoxal` registry, carrying none of the authoring or parser dependencies its
-/// spec forbids, and standing outside the artifact catalogue rather than inside
+/// `phoxal` registry and standing outside the artifact catalogue rather than inside
 /// it under a kind of its own.
 pub(super) fn the_supervisor_is_a_default_member_and_non_catalog_executable(
     subject: &Subject,
@@ -193,7 +187,7 @@ pub(super) fn the_supervisor_is_a_default_member_and_non_catalog_executable(
             .contains(&dependency.name.as_str())
         {
             violations.push(Violation::new(format!(
-                "{} has the forbidden authoring or parser dependency {}",
+                "{} has the forbidden infrastructure dependency {}",
                 supervisor.name, dependency.name
             )));
         }

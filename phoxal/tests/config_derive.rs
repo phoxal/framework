@@ -2,7 +2,7 @@
 //! must match a `schemars` oracle over the supported surface, and must accept
 //! exactly the documents `serde` accepts.
 //!
-//! This drives the derive the way a participant crate does - expanding it from
+//! This drives the derive the way a Runtime crate does - expanding it from
 //! outside `phoxal`, against the same `__private` macro ABI - which is why it
 //! is an integration test here rather than a unit test in `phoxal-macros`:
 //! that crate's own tests assert on expanded token text and cannot

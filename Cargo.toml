@@ -10,12 +10,9 @@ repository = "https://github.com/phoxal/framework"
 
 [workspace]
 resolver = "3"
-# The engine crate and its proc-macros, plus the official services and suite
-# component crates on the current authoring
-# surface (components/<name> also carries the component definition: component.yaml,
-# model.xml, and any locally referenced assets).
+# The framework runtime, its proc-macros, the project compiler, official
+# services, and suite component crates.
 members = [
-    "crates/fixture",
     "crates/build",
     "crates/port",
     "crates/robotics",
@@ -54,7 +51,6 @@ members = [
 # When adding a workspace member, add it to both members and default-members;
 # otherwise plain cargo build/test silently skips it.
 default-members = [
-    "crates/fixture",
     "crates/build",
     "crates/port",
     "crates/robotics",
@@ -90,7 +86,7 @@ anyhow = "1.0.102"
 async-trait = "0.1.89"
 base64 = "0.22.1"
 # The workspace's own manifest reader, shared by the `cargo xtask policy` gate
-# and by the two crates whose tests read the workspace the same way.
+# and project tooling tests that inspect an authored workspace.
 cargo_metadata = "0.23.1"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 const_format = "0.2"
@@ -144,7 +140,6 @@ toml_edit = "0.25.12"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trybuild = "1"
-urdf-rs = "0.9.0"
 # Default features minus transport_compression: Phoxal never enables zenoh
 # compression at runtime, so the feature only pulls lz4_flex into shipped
 # binaries. Re-enable defaults if a Phoxal transport ever compresses.
@@ -182,17 +177,13 @@ phoxal-world = { path = "contracts/world", version = "0.1.0", registry = "phoxal
 phoxal-safety = { path = "contracts/safety", version = "0.1.0", registry = "phoxal" }
 phoxal-project = { path = "crates/project", version = "0.1.0", registry = "phoxal" }
 phoxal-installation = { path = "crates/installation", version = "0.1.0", registry = "phoxal" }
-# Test-support only, and never published. Deliberately carries no version: a
-# dev-dependency without one is stripped from the manifest on publish, so the
-# participant crates that use it in tests stay publishable.
-phoxal-fixture = { path = "crates/fixture" }
 
 [workspace.lints.rust]
 unused = "warn"
 
 # The panic and stub rules, enforced rather than reviewed.
 #
-# A participant is a long-lived process supervising hardware: a panic takes the
+# A Runtime process is long-lived and may supervise hardware: a panic takes the
 # whole robot process down, so a failure that a caller could act on must be a
 # typed error and not a `.unwrap()`. Denied at the workspace root rather than
 # per crate so a new member inherits the gate by writing `[lints] workspace =
@@ -205,7 +196,8 @@ unused = "warn"
 # too.
 #
 # Tests are exempt through `clippy.toml`, which is where clippy takes that
-# switch; a test that cannot get its fixture has nothing to report but a panic.
+# switch; a test that cannot get its temporary inputs has nothing to report but
+# a panic.
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"

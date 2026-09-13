@@ -2,8 +2,8 @@
 //!
 //! The fixture binary is copied into a source `phoxal/bundle/v0` manifest, so
 //! the supervisor has to admit its digest, launch the exact selected path,
-//! and observe the child's execution-scoped Ready liveliness token through the
-//! bus-owned transport test helper.
+//! and observe the child's execution-scoped Ready state through the public
+//! session contract.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -12,6 +12,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use phoxal::communication::session::SupervisorState;
+use phoxal::session::{Connection, ConnectionConfig, Supervisor, connect};
 use sha2::{Digest, Sha256};
 
 const STARTUP: Duration = Duration::from_secs(20);
@@ -39,28 +41,65 @@ async fn compiled_runtime_crosses_supervisor_and_zenoh_before_termination() {
         .await
     });
 
-    let ready_result = tokio::time::timeout(
-        STARTUP,
-        phoxal::__bus_test_support::wait_for_participant_ready(&endpoint, "brain"),
-    )
-    .await;
-    match ready_result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => panic!("runtime Ready observer remains live: {error:#}"),
-        Err(_) => {
-            if supervisor.is_finished() {
-                eprintln!("supervisor result: {:?}", supervisor.await);
-            }
-            panic!("runtime Ready arrives before the startup deadline");
-        }
-    }
+    let connection =
+        tokio::time::timeout(STARTUP, connect_when_bound(&endpoint, &supervisor)).await;
+    let connection = connection.expect("the supervisor binds its public session endpoint");
+    let supervisor_session = connection
+        .supervisor("runtime-e2e")
+        .await
+        .expect("the supervisor accepts the public session");
+    tokio::time::timeout(STARTUP, wait_until_ready(&supervisor_session))
+        .await
+        .expect("runtime reaches Ready before the startup deadline")
+        .expect("runtime remains healthy while reaching Ready");
     tokio::time::timeout(STARTUP, wait_for_step(&root))
         .await
         .expect("runtime executes a bounded step")
         .expect("runtime step marker is readable");
 
+    supervisor_session
+        .close()
+        .await
+        .expect("the supervisor session closes cleanly");
+    connection
+        .close()
+        .await
+        .expect("the public connection closes cleanly");
     supervisor.abort();
     let _ = supervisor.await;
+}
+
+/// Connect as soon as the supervisor's embedded router is listening.
+async fn connect_when_bound(
+    endpoint: &str,
+    supervisor: &tokio::task::JoinHandle<phoxal::Result<()>>,
+) -> Connection {
+    loop {
+        assert!(
+            !supervisor.is_finished(),
+            "the supervisor exited before it was reachable at {endpoint}"
+        );
+        let config = ConnectionConfig::new(endpoint, "local", "runtime-e2e")
+            .expect("the session config is valid");
+        match connect(config).await {
+            Ok(connection) => return connection,
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
+/// Wait for the public supervisor projection to observe Runtime admission.
+async fn wait_until_ready(supervisor: &Supervisor) -> phoxal::Result<()> {
+    loop {
+        let status = supervisor.management().status().await?;
+        match status.state {
+            state if state == SupervisorState::Ready as i32 => return Ok(()),
+            state if state == SupervisorState::Failed as i32 => {
+                anyhow::bail!("supervisor entered Failed before Runtime Ready")
+            }
+            _ => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
 }
 
 async fn wait_for_step(root: &Path) -> phoxal::Result<()> {

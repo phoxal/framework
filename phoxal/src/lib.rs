@@ -3,8 +3,9 @@
 //! A [`runtime::Runtime`] owns one synchronous state machine and exchanges
 //! generated Protobuf values through the execution protocol. Applications
 //! attach through [`session`] and the supervisor owns the transport and
-//! process lifecycle. Source tooling remains in [`authoring`] and the
-//! immutable compiled model remains in [`model`].
+//! process lifecycle. Source preparation and immutable bundle assembly are
+//! owned by `phoxal-project`; this crate only exposes the runtime and public
+//! session boundaries that consume their completed products.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -16,6 +17,8 @@ mod sample_schedule;
 
 /// Opaque execution, producer, and timeline identities used by the runtime
 /// and public protocols.
+#[cfg(feature = "protocol")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protocol")))]
 pub mod identity;
 
 /// Framework-owned Protobuf protocol messages and transport-independent
@@ -42,15 +45,6 @@ pub mod runtime;
 #[cfg(feature = "session")]
 #[cfg_attr(docsrs, doc(cfg(feature = "session")))]
 pub mod session;
-
-/// Source documents and canonical model compilation.
-#[cfg(feature = "authoring")]
-#[cfg_attr(docsrs, doc(cfg(feature = "authoring")))]
-pub mod authoring;
-
-#[cfg(feature = "authoring")]
-#[cfg_attr(docsrs, doc(cfg(feature = "authoring")))]
-pub mod model;
 
 /// Public Protobuf transport implementation shared by sessions and the
 /// supervisor host. It is not an SDK transport handle.

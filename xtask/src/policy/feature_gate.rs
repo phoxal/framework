@@ -115,8 +115,8 @@ mod tests {
     fn a_profile_gate_is_recognized_however_the_predicate_is_written() {
         let gated = concat!(
             "//! A doc comment.\n",                                 // 1
-            "#[cfg(feature = \"authoring\")]\n",                    // 2
-            "pub mod authoring;\n",                                 // 3
+            "#[cfg(feature = \"runtime\")]\n",                      // 2
+            "pub mod runtime;\n",                                   // 3
             "#[cfg_attr(feature = \"session\", doc = \"host\")]\n", // 4
             "pub struct Session;\n",                                // 5
             "#[cfg(all(feature = \"supervisor\", unix))]\n",        // 6
@@ -130,12 +130,12 @@ mod tests {
         assert_eq!(gated_lines(gated), [2, 4, 6, 8]);
 
         let clean = concat!(
-            "//! The `authoring` profile publishes this module.\n",
+            "//! The `runtime` profile publishes this module.\n",
             "#[cfg(test)]\n",
             "mod tests {}\n",
             "#[cfg(unix)]\n",
             "fn only_on_unix() {}\n",
-            "const FEATURE: &str = \"authoring\";\n",
+            "const FEATURE: &str = \"runtime\";\n",
         );
         assert!(gated_lines(clean).is_empty(), "{:?}", gated_lines(clean));
     }

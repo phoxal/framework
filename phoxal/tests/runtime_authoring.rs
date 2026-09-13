@@ -19,7 +19,7 @@ struct CounterInputs {
     #[phoxal::runtime::input(max_age_ms = 100)]
     latest: Latest<u64>,
     #[phoxal::runtime::input(max_items = 4, max_bytes = 64)]
-    events: Events<u8>,
+    events: Events<u32>,
 }
 
 #[derive(Default)]
@@ -31,11 +31,11 @@ struct CounterOutputs {
         max_items = 4,
         max_bytes = 64,
     )]
-    events: Vec<u8>,
+    events: Vec<u32>,
 }
 
 const COUNTER_STATE: phoxal::port::State<u64> = phoxal::port::State::new("state");
-const COUNTER_EVENTS: phoxal::port::Event<u8> = phoxal::port::Event::new("events");
+const COUNTER_EVENTS: phoxal::port::Event<u32> = phoxal::port::Event::new("events");
 
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for Counter {
@@ -57,7 +57,7 @@ impl Runtime for Counter {
         let latest = inputs.latest.value().copied().unwrap_or_default();
         let next = state + latest;
         let mut outputs = CounterOutputs::default();
-        outputs.events.push(next as u8);
+        outputs.events.push(next as u32);
         Ok((next, outputs))
     }
 }

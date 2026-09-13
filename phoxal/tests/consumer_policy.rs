@@ -87,9 +87,6 @@ fn session_profile_is_public_client_only() {
             "clap",
             "tempfile",
             "tracing-subscriber",
-            "serde_yaml",
-            "toml",
-            "urdf-rs",
             "system_shutdown",
         ],
     );
