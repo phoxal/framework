@@ -30,7 +30,6 @@ const CLIENT_ID_ENV: &str = "PHOXAL_GITHUB_CLIENT_ID";
 const KEYRING_SERVICE: &str = "org.phoxal.cargo-phoxal";
 const KEYRING_ACCOUNT: &str = "github.com";
 const USER_AGENT: &str = "cargo-phoxal";
-const PHOXAL_INDEX: &str = "sparse+https://phoxal.github.io/registry/";
 const CRATES_IO_INDEX: &str = "https://github.com/rust-lang/crates.io-index";
 const MAX_GIT_BLOB_BYTES: usize = 100 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -414,7 +413,7 @@ fn dependency_tables(
                     )
                 };
             let registry = match registry {
-                Some(PHOXAL_INDEX) => Value::Null,
+                Some(crate::cargo::PHOXAL_REGISTRY_INDEX) => Value::Null,
                 Some(value) => json!(value),
                 None => json!(CRATES_IO_INDEX),
             };

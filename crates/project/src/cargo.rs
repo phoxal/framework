@@ -6,6 +6,13 @@ use cargo_metadata::{CargoOpt, Message, Metadata, MetadataCommand};
 
 use crate::error::Error;
 
+/// The retained public sparse index used by official Phoxal package coordinates.
+pub(crate) const PHOXAL_REGISTRY_INDEX: &str = "sparse+https://phoxal.github.io/registry/";
+
+fn registry_config() -> String {
+    format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\"")
+}
+
 /// Cargo's lockfile policy for project preparation and commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LockMode {
@@ -182,6 +189,7 @@ pub(crate) fn load_metadata(manifest: &Path, options: &CargoOptions) -> Result<M
         .iter()
         .map(|flag| (*flag).to_owned())
         .collect::<Vec<_>>();
+    extra.extend(["--config".to_owned(), registry_config()]);
     if options.offline {
         extra.push("--offline".to_owned());
     }
@@ -241,6 +249,7 @@ fn command_for(
     let mut command = Command::new(cargo);
     command.current_dir(prepared.layout.root());
     command.arg(operation.as_str());
+    command.args(["--config", &registry_config()]);
     options.append_common(&mut command, include_message_format);
     command
 }

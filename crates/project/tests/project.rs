@@ -37,12 +37,6 @@ phoxal-supervisor = { path = "supervisor" }
 "#,
     )?;
     write(
-        &directory.path().join(".cargo/config.toml"),
-        r#"[registries.phoxal]
-index = "sparse+https://phoxal.github.io/registry/"
-"#,
-    )?;
-    write(
         &directory.path().join("build.rs"),
         &artifact_build_script(r#"{"type":"null"}"#),
     )?;
