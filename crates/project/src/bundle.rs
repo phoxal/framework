@@ -11,6 +11,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -282,6 +283,7 @@ pub(crate) fn assemble(
         path: parent.to_owned(),
         source,
     })?;
+    let _publication_lock = acquire_bundle_publication_lock(output)?;
 
     let staging = tempfile::Builder::new()
         .prefix(".phoxal-bundle-")
@@ -857,6 +859,50 @@ fn publish_directory(staged: &Path, output: &Path) -> Result<(), Error> {
     })
 }
 
+fn acquire_bundle_publication_lock(output: &Path) -> Result<File, Error> {
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|source| Error::BundleDirectory {
+            path: parent.to_owned(),
+            source,
+        })?;
+    let output_name = output.file_name().ok_or_else(|| Error::ArtifactInvalid {
+        path: output.to_owned(),
+        message: "bundle output must name a directory below an existing parent".to_owned(),
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_parent.as_os_str().as_encoded_bytes());
+    hasher.update([0]);
+    hasher.update(output_name.as_encoded_bytes());
+    let lock_directory = parent.join(".phoxal-bundle-locks");
+    fs::create_dir_all(&lock_directory).map_err(|source| Error::BundleDirectory {
+        path: lock_directory.clone(),
+        source,
+    })?;
+    let lock_path = lock_directory.join(format!("{:x}.lock", hasher.finalize()));
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|source| Error::BundleLock {
+            path: lock_path.clone(),
+            source,
+        })?;
+    match FileExt::try_lock(&lock) {
+        Ok(()) => Ok(lock),
+        Err(TryLockError::WouldBlock) => Err(Error::BundleBusy {
+            path: output.to_owned(),
+        }),
+        Err(TryLockError::Error(source)) => Err(Error::BundleLock {
+            path: lock_path,
+            source,
+        }),
+    }
+}
+
 fn directories_equal(left: &Path, right: &Path) -> Result<bool, Error> {
     let left_entries = directory_entries(left)?;
     let right_entries = directory_entries(right)?;
@@ -1074,5 +1120,18 @@ mod tests {
             safe_input_path(Path::new("models/robot.xml")).expect("relative path"),
             PathBuf::from("models/robot.xml")
         );
+    }
+
+    #[test]
+    fn bundle_publication_is_serialized_per_output() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("bundle");
+        let held = acquire_bundle_publication_lock(&output).expect("first publication lock");
+        assert!(matches!(
+            acquire_bundle_publication_lock(&output),
+            Err(Error::BundleBusy { path }) if path == output
+        ));
+        drop(held);
+        acquire_bundle_publication_lock(&output).expect("released publication lock");
     }
 }

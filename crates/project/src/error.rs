@@ -508,6 +508,20 @@ pub enum Error {
         /// Filesystem failure.
         source: std::io::Error,
     },
+    /// Another process is already constructing the same bundle output.
+    #[error("another cargo phoxal command is publishing compiled bundle {path}")]
+    BundleBusy {
+        /// Contended complete bundle output.
+        path: PathBuf,
+    },
+    /// Opening or locking the bundle publication guard failed.
+    #[error("cannot lock compiled bundle publication at {path}: {source}")]
+    BundleLock {
+        /// Stable lock file for one output path.
+        path: PathBuf,
+        /// Filesystem or locking failure.
+        source: std::io::Error,
+    },
     /// Publishing the complete bundle failed.
     #[error("cannot publish compiled bundle {path}: {source}")]
     BundlePublish {
