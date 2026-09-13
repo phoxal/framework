@@ -10,9 +10,9 @@ xtask = "run --quiet --package xtask --"
 # configuration"), including inside the shared reusable release-PR workflow,
 # which does not inherit the caller's environment.
 #
-# Robot projects need no equivalent: the `phoxal` CLI injects this index for the
-# `cargo install` calls it makes on their behalf, so a robot workspace stays
-# free of registry configuration.
+# Robot projects need no equivalent: `cargo phoxal` supplies this index to the
+# Cargo metadata, build, test, update, and packaging operations it owns, so a
+# robot workspace stays free of registry configuration.
 [registries.phoxal]
 index = "sparse+https://phoxal.github.io/registry/"
 
