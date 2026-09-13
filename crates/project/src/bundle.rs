@@ -11,6 +11,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
@@ -2714,7 +2715,25 @@ fn publish_directory(staged: &Path, output: &Path) -> Result<(), Error> {
     })
 }
 
-fn acquire_bundle_publication_lock(output: &Path) -> Result<File, Error> {
+struct BundlePublicationLock {
+    file: File,
+    key: PathBuf,
+}
+
+static ACTIVE_BUNDLE_PUBLICATION_LOCKS: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
+
+impl Drop for BundlePublicationLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+        if let Some(active) = ACTIVE_BUNDLE_PUBLICATION_LOCKS.get()
+            && let Ok(mut active) = active.lock()
+        {
+            active.remove(&self.key);
+        }
+    }
+}
+
+fn acquire_bundle_publication_lock(output: &Path) -> Result<BundlePublicationLock, Error> {
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let canonical_parent = parent
         .canonicalize()
@@ -2730,12 +2749,22 @@ fn acquire_bundle_publication_lock(output: &Path) -> Result<File, Error> {
     hasher.update(canonical_parent.as_os_str().as_encoded_bytes());
     hasher.update([0]);
     hasher.update(output_name.as_encoded_bytes());
-    let lock_directory = parent.join(".phoxal-bundle-locks");
+    let lock_directory = canonical_parent.join(".phoxal-bundle-locks");
     fs::create_dir_all(&lock_directory).map_err(|source| Error::BundleDirectory {
         path: lock_directory.clone(),
         source,
     })?;
     let lock_path = lock_directory.join(format!("{:x}.lock", hasher.finalize()));
+    let active = ACTIVE_BUNDLE_PUBLICATION_LOCKS.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let mut active = active.lock().map_err(|_| Error::BundleLock {
+        path: lock_path.clone(),
+        source: io::Error::other("bundle publication lock registry is poisoned"),
+    })?;
+    if active.contains(&lock_path) {
+        return Err(Error::BundleBusy {
+            path: output.to_owned(),
+        });
+    }
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -2747,7 +2776,13 @@ fn acquire_bundle_publication_lock(output: &Path) -> Result<File, Error> {
             source,
         })?;
     match FileExt::try_lock(&lock) {
-        Ok(()) => Ok(lock),
+        Ok(()) => {
+            active.insert(lock_path.clone());
+            Ok(BundlePublicationLock {
+                file: lock,
+                key: lock_path,
+            })
+        }
         Err(TryLockError::WouldBlock) => Err(Error::BundleBusy {
             path: output.to_owned(),
         }),
