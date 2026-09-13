@@ -3,8 +3,8 @@ syntax = "proto3";
 package phoxal.world.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
 import "phoxal/kinematics/v1/kinematics.proto";
+import "phoxal/port.proto";
 
 message WorldBelief {
   string frame_id = 1;

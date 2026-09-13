@@ -881,6 +881,16 @@ where
         result = recv_execution::<execution_wire::AdmitExecutionRequest>(&admit_subscriber) => result?,
     };
     let execution_mode = match execution_wire::ExecutionMode::try_from(admission.mode) {
+        Ok(execution_wire::ExecutionMode::Unspecified) => {
+            let response = execution_wire::AdmitExecutionResponse {
+                admitted: false,
+                unsupported_contracts: Vec::new(),
+                detail: Some("execution scheduling mode is required".to_owned()),
+            };
+            let _ = publish_execution(&bus, &launch.instance_id, "admit-response", &response).await;
+            let _ = owner.close().await;
+            return Err(anyhow::anyhow!("execution scheduling mode is required"));
+        }
         Ok(mode) => mode,
         Err(_) => {
             let response = execution_wire::AdmitExecutionResponse {
@@ -928,6 +938,9 @@ where
     .await?;
 
     let result = match execution_mode {
+        execution_wire::ExecutionMode::Unspecified => {
+            Err(anyhow::anyhow!("execution scheduling mode is required"))
+        }
         execution_wire::ExecutionMode::Hardware => {
             let mut ticker = tokio::time::interval(R::SPEC.period.as_duration());
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1083,6 +1096,12 @@ fn validate_execution_admission<R: RegisteredRuntime>(
         );
     }
     match mode {
+        execution_wire::ExecutionMode::Unspecified => {
+            return reject(
+                "execution scheduling mode is required".to_owned(),
+                Vec::new(),
+            );
+        }
         execution_wire::ExecutionMode::Hardware => {
             if request.quantum_ns != 0 {
                 return reject(

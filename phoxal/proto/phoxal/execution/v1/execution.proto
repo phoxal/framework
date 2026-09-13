@@ -11,8 +11,9 @@ message ContractRequirement {
 // Hardware runtimes retain their host-monotonic cadence; controlled runtimes
 // wait for an explicit Invocation at each due boundary.
 enum ExecutionMode {
-  HARDWARE = 0;
-  CONTROLLED = 1;
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_HARDWARE = 1;
+  EXECUTION_MODE_CONTROLLED = 2;
 }
 
 message AdmitExecutionRequest {

@@ -3,8 +3,8 @@ syntax = "proto3";
 package phoxal.safety.v1;
 
 import "google/protobuf/empty.proto";
-import "phoxal/port.proto";
 import "phoxal/motion/v1/motion.proto";
+import "phoxal/port.proto";
 import "phoxal/world/v1/world.proto";
 
 message RangeObservation {
