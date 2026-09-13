@@ -4298,17 +4298,53 @@ async fn query_one(
     operation: &str,
     limits: &PublicTransportLimits,
 ) -> Result<Vec<u8>, PublicTransportError> {
-    let expected_key = key.clone();
     let deadline = tokio::time::Instant::now() + limits.deadline();
+    loop {
+        let result = query_one_attempt(
+            session,
+            &key,
+            payload.as_deref(),
+            operation,
+            limits,
+            deadline,
+        )
+        .await;
+        match result {
+            Err(PublicTransportError::NoReply { .. }) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep_until(
+                    (tokio::time::Instant::now() + Duration::from_millis(20)).min(deadline),
+                )
+                .await;
+            }
+            result => return result,
+        }
+    }
+}
+
+async fn query_one_attempt(
+    session: &zenoh::Session,
+    key: &str,
+    payload: Option<&[u8]>,
+    operation: &str,
+    limits: &PublicTransportLimits,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<u8>, PublicTransportError> {
+    let expected_key = key.to_owned();
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(PublicTransportError::NoReply {
+            operation: operation.to_owned(),
+        });
+    }
     let builder = session
         .get(key)
         .target(QueryTarget::All)
         .consolidation(ConsolidationMode::None)
-        .timeout(limits.deadline())
+        .timeout(remaining)
         .with(FifoChannel::new(limits.query_capacity()));
     let builder = match payload {
         Some(payload) => builder
-            .payload(payload)
+            .payload(payload.to_vec())
             .encoding(Encoding::from(PUBLIC_PROTOBUF_ENCODING.to_owned())),
         None => builder,
     };
