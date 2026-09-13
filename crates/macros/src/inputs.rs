@@ -1035,8 +1035,7 @@ fn expand_transport_decoder(
             let max_bytes = options.max_bytes.ok_or_else(|| {
                 syn::Error::new_spanned(item, "Commands requires max_bytes = ...")
             })?;
-            bounds
-                .push(quote! { #request: ::core::marker::Send + ::core::marker::Sync + 'static, });
+            bounds.push(prost_bound(&request));
             quote! {
                 #field_text => {
                     let signature = #binding_fn(binding, #field_text)?;
