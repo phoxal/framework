@@ -19,12 +19,34 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The first contract PR has no Protobuf files on its base branch. Buf
+      # cannot compare against an empty module, so establish that first
+      # baseline with build, format, and lint only. Every later PR must also
+      # pass the breaking-change check.
+      - name: Detect Protobuf baseline
+        id: protobuf-baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base_files="$(git ls-tree -r --name-only "${{ github.event.pull_request.base.sha }}")"
+          if grep -qE '\.proto$' <<< "$base_files"; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "No Protobuf contract baseline exists on the base revision."
+          fi
+
       - uses: bufbuild/buf-action@v1
         with:
           version: "1.73.0"
           lint: true
           format: true
-          breaking: ${{ github.event_name == 'pull_request' }}
+          breaking: ${{ steps.protobuf-baseline.outputs.available == 'true' }}
           push: false
           archive: false
           pr_comment: false
