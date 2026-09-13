@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::fmt;
 use std::sync::Arc;
 
-use mujoco_rs::prelude::{MjModel, MjSpec, MjtJoint, MjtObj};
+use mujoco_rs::prelude::{MjModel, MjtJoint, MjtObj};
 use mujoco_rs::wrappers::MjVfs;
 use phoxal_port::{PortDescriptor, PortKind, PortSignature};
 
@@ -43,10 +43,7 @@ impl Model {
                 .map_err(|error| native_error("resource admission", error))?;
         }
 
-        let mut spec = MjSpec::from_xml_vfs(artifact.entry(), &vfs)
-            .map_err(|error| native_error("MJCF parse", error))?;
-        let model = spec
-            .compile()
+        let model = MjModel::from_xml_vfs(artifact.entry(), &vfs)
             .map_err(|error| native_error("MJCF compile", error))?;
         let timestep = model.opt().timestep;
         if !timestep.is_finite() || timestep <= 0.0 {
