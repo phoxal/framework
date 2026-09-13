@@ -1329,8 +1329,10 @@ mod tests {
 
     #[test]
     fn runtime_metadata_is_bounded_before_encoding() {
-        let mut metadata = RuntimeWireMetadata::default();
-        metadata.source = Some("x".repeat(2_000));
+        let metadata = RuntimeWireMetadata {
+            source: Some("x".repeat(2_000)),
+            ..RuntimeWireMetadata::default()
+        };
         assert!(encode_runtime_metadata(&metadata).is_err());
     }
 
@@ -1449,7 +1451,7 @@ mod tests {
                 .lock()
                 .expect("test lock")
                 .pop_front()
-                .ok_or_else(|| PublicBackendError::Capacity)
+                .ok_or(PublicBackendError::Capacity)
         }
     }
 
