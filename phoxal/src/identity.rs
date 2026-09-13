@@ -1,11 +1,11 @@
 //! The identity axes that reach the wire.
 //!
-//! - [`ExecutionId`] names one supervised run. It scopes participants, bus
+//! - [`crate::identity::ExecutionId`] names one supervised run. It scopes participants, bus
 //!   traffic, and authority, and it is the bus session root, so traffic from a
 //!   previous execution cannot physically be observed as current.
-//! - [`ProducerId`] names one publishing session. It is minted by [`crate::bus`]
-//!   before opening the transport and pinned as the Zenoh session id.
-//! - [`TimelineId`] names one world history. A simulation reset or a replay
+//! - [`crate::identity::ProducerId`] names one publishing session. The internal bus mints it
+//!   before opening the transport and pins it as the Zenoh session id.
+//! - [`crate::identity::TimelineId`] names one world history. A simulation reset or a replay
 //!   branch creates a new timeline within the same execution.
 //!
 //! `ExecutionId` and `ProducerId` are both Zenoh session identities and share

@@ -1,7 +1,8 @@
-//! What a running Phoxal process says about itself.
+//! Typed Runtime authoring, scheduling, bounded inputs and outputs, and process execution.
 //!
-//! [`api`] is the `runtime` contract family: log events plus bus and step
-//! telemetry. Any process publishes here; the family names no collector.
+//! A service implements [`crate::runtime::Runtime`], declares an [`crate::runtime::InputSet`], and uses the
+//! output attributes to bind generated service-owned Protobuf ports.
+//! [`crate::runtime::RuntimeRunner`] owns validation, admission, scheduling, reset, and shutdown.
 
 pub mod artifact;
 mod core;

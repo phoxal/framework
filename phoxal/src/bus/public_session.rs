@@ -1,7 +1,7 @@
 //! The first public `phoxal.session.v1` Zenoh transport.
 //!
 //! This module is deliberately owned by the session and supervisor boundary.
-//! The Protobuf messages and route/admission rules remain in [`super`], while
+//! The Protobuf messages and route/admission rules remain in [`crate::communication`], while
 //! this file owns only the wire exchange, bounded query collection, and the
 //! lifetime of the public queryables.
 //!
