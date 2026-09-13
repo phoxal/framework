@@ -6,7 +6,7 @@ struct Service;
 #[phoxal::runtime::inputs]
 struct Inputs {
     #[phoxal::runtime::input(max_response_bytes = 32)]
-    read: Read<u64, u8, u16>,
+    read: Read<u64, u32, u64>,
 }
 
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 100)]
@@ -33,7 +33,7 @@ impl Runtime for Service {
 #[phoxal::runtime::outputs]
 impl Service {
     #[phoxal::runtime::outputs::activate(read, timeout_ms = 10)]
-    fn select(&self, _state: &()) -> Option<Activation<u64, u16>> {
+    fn select(&self, _state: &()) -> Option<Activation<u64, u64>> {
         None
     }
 }

@@ -199,7 +199,7 @@ required-features = ["runtime"]
 [[test]]
 name = "runtime_supervisor_e2e"
 path = "tests/runtime_supervisor_e2e.rs"
-required-features = ["runtime", "supervisor"]
+required-features = ["runtime", "session", "supervisor"]
 
 [[bin]]
 name = "phoxal-runtime-reference"

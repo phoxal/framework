@@ -41,8 +41,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
     let mut metadata = Vec::new();
     let mut checks = Vec::new();
     let mut bindings = Vec::new();
-    let mut transport_fields = Vec::new();
-    let mut transport_decoders = Vec::new();
     let mut generated_transport_fields = Vec::new();
     let mut generated_transport_decoders = Vec::new();
     let mut generated_transport_encoders = Vec::new();
@@ -129,69 +127,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
             checks.push(quote! {
                 fn #check_name() {
                     ::phoxal::runtime::__private::assert_commands_port::<_, #request, #response>(#port);
-                }
-            });
-            let max_items = options.max_items.ok_or_else(|| {
-                syn::Error::new_spanned(&*field, "Commands requires max_items = ...")
-            })?;
-            let max_bytes = options.max_bytes.ok_or_else(|| {
-                syn::Error::new_spanned(&*field, "Commands requires max_bytes = ...")
-            })?;
-            transport_fields.push(quote! {
-                ::phoxal::runtime::transport::InputTransportField {
-                    name: stringify!(#field_name),
-                    kind: ::phoxal::runtime::input::InputKind::Commands,
-                    signature: Some((#port).signature()),
-                    max_age_ms: None,
-                    max_items: Some(#max_items),
-                    max_bytes: Some(#max_bytes),
-                }
-            });
-            transport_decoders.push(quote! {
-                stringify!(#field_name) => {
-                    ::phoxal::runtime::transport::sort_command_samples(&mut samples)?;
-                    let capacity = ::phoxal::runtime::Capacity::new(#max_items, #max_bytes)
-                        .map_err(|error| ::anyhow::anyhow!(error))?;
-                    let mut items = ::std::vec::Vec::with_capacity(samples.len());
-                    let mut encoded_bytes = 0_u64;
-                    for sample in samples {
-                        encoded_bytes = encoded_bytes
-                            .checked_add(sample.payload().len() as u64)
-                            .ok_or_else(|| ::anyhow::anyhow!(
-                                ::phoxal::runtime::transport::TransportError::BatchTooLarge {
-                                    port: (#port).name().to_owned(),
-                                    what: "encoded bytes",
-                                    actual: u64::MAX,
-                                    maximum: #max_bytes,
-                                }
-                            ))?;
-                        if encoded_bytes > #max_bytes {
-                            return Err(::anyhow::anyhow!(
-                                ::phoxal::runtime::transport::TransportError::BatchTooLarge {
-                                    port: (#port).name().to_owned(),
-                                    what: "encoded bytes",
-                                    actual: encoded_bytes,
-                                    maximum: #max_bytes,
-                                }
-                            ));
-                        }
-                        let request: #request = ::phoxal::runtime::transport::decode_request(
-                            (#port).signature(),
-                            &sample,
-                            #max_bytes,
-                        )
-                        .map_err(|error| ::anyhow::anyhow!(error))?;
-                        let order = ::phoxal::runtime::transport::command_order(sample.metadata())
-                            .map_err(|error| ::anyhow::anyhow!(error))?;
-                        items.push(::phoxal::runtime::Command::with_order(order, request));
-                    }
-                    self.#field_name = ::phoxal::runtime::Commands::bounded(
-                        items,
-                        encoded_bytes,
-                        capacity,
-                    )
-                    .map_err(|error| ::anyhow::anyhow!(error))?;
-                    Ok(())
                 }
             });
         }
@@ -281,24 +216,6 @@ pub fn expand_inputs(attr: TokenStream, item: TokenStream) -> syn::Result<TokenS
 
         impl ::phoxal::runtime::input::InputSet for #name {
             const FIELDS: &'static [::phoxal::runtime::input::InputField] = &[#(#metadata),*];
-
-            const TRANSPORT_FIELDS: &'static [::phoxal::runtime::transport::InputTransportField] =
-                &[#(#transport_fields),*];
-
-            fn decode_transport_field(
-                &mut self,
-                field: &str,
-                mut samples: ::std::vec::Vec<::phoxal::runtime::transport::WireSample>,
-            ) -> ::phoxal::Result<()> {
-                match field {
-                    #(#transport_decoders,)*
-                    _ => Err(::anyhow::anyhow!(
-                        ::phoxal::runtime::transport::TransportError::InvalidMetadata {
-                            detail: format!("input field `{field}` has no generated transport binding"),
-                        }
-                    )),
-                }
-            }
 
         }
 

@@ -1,11 +1,77 @@
-error[E0080]: evaluation panicked: activation timeout policy does not match its input form
-  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:33:1
+error: remote activation requires timeout_ms = ...
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:36:5
    |
-33 | #[phoxal::runtime::outputs]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_::_` failed inside this call
+36 | /     fn select(&self, _state: &()) -> Option<Activation<u64, u32>> {
+37 | |         None
+38 | |     }
+   | |_____^
+
+warning: unused import: `Activation`
+ --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:2:23
+  |
+2 | use phoxal::runtime::{Activation, InitContext, Runtime, StepContext};
+  |                       ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0277]: the trait bound `Service: OutputBindings` is not satisfied
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:13:18
    |
-note: inside `__phoxal_activate_select::<Inputs, Option<Activation<u64, u8>>, Service, ()>`
-  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:33:1
+13 | impl Runtime for Service {
+   |                  ^^^^^^^ unsatisfied trait bound
    |
-33 | #[phoxal::runtime::outputs]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+help: the trait `OutputBindings` is not implemented for `Service`
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:4:1
+   |
+ 4 | struct Service;
+   | ^^^^^^^^^^^^^^
+note: required by a bound in `RegisteredRuntime`
+  --> src/runtime/core.rs
+   |
+   | pub trait RegisteredRuntime: Runtime + OutputBindings {
+   |                                        ^^^^^^^^^^^^^^ required by this bound in `RegisteredRuntime`
+
+error[E0277]: the trait bound `Service: OutputBindings` is not satisfied
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:12:1
+   |
+12 | #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 100)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `OutputBindings` is not implemented for `Service`
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:4:1
+   |
+ 4 | struct Service;
+   | ^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `phoxal::runtime` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Service: OutputBindings` is not satisfied
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:13:18
+   |
+13 | impl Runtime for Service {
+   |                  ^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `OutputBindings` is not implemented for `Service`
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:4:1
+   |
+ 4 | struct Service;
+   | ^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `Service: OutputBindings` is not satisfied
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:13:18
+   |
+13 | impl Runtime for Service {
+   |                  ^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `OutputBindings` is not implemented for `Service`
+  --> tests/trybuild/fail/runtime_invalid_activation_policy.rs:4:1
+   |
+ 4 | struct Service;
+   | ^^^^^^^^^^^^^^
+note: required by a bound in `SPEC`
+  --> src/runtime/core.rs
+   |
+   | pub trait RegisteredRuntime: Runtime + OutputBindings {
+   |                                        ^^^^^^^^^^^^^^ required by this bound in `RegisteredRuntime::SPEC`
+   |     /// The source-authored cadence and deadline metadata.
+   |     const SPEC: RuntimeSpec;
+   |           ---- required by a bound in this associated constant

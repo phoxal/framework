@@ -10,26 +10,52 @@ const COUNTER_READ: phoxal::port::Read<CounterReadRequest, CounterReadResponse> 
     phoxal::port::Read::new("counter-read");
 const READER_STATUS: phoxal::port::State<ReaderStatus> = phoxal::port::State::new("reader-status");
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
 struct CounterStatus {
+    #[prost(uint64, tag = "1")]
     inspected_count: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl prost::Name for CounterStatus {
+    const NAME: &'static str = "CounterStatus";
+    const PACKAGE: &'static str = "phoxal.examples.runtime";
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
 struct CounterReadRequest {
+    #[prost(bool, tag = "1")]
     include_count: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl prost::Name for CounterReadRequest {
+    const NAME: &'static str = "CounterReadRequest";
+    const PACKAGE: &'static str = "phoxal.examples.runtime";
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
 struct CounterReadResponse {
+    #[prost(uint64, tag = "1")]
     inspected_count: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl prost::Name for CounterReadResponse {
+    const NAME: &'static str = "CounterReadResponse";
+    const PACKAGE: &'static str = "phoxal.examples.runtime";
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, prost::Message)]
 struct ReaderStatus {
+    #[prost(uint64, optional, tag = "1")]
     last_count: Option<u64>,
+    #[prost(bool, tag = "2")]
     finished: bool,
+    #[prost(bool, tag = "3")]
     last_attempt_failed: bool,
+}
+
+impl prost::Name for ReaderStatus {
+    const NAME: &'static str = "ReaderStatus";
+    const PACKAGE: &'static str = "phoxal.examples.runtime";
 }
 
 struct Counter;
@@ -270,11 +296,19 @@ impl OnceReader {
 const VALUES: [f64; 10] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
 const SUM_STATUS: phoxal::port::State<SumStatus> = phoxal::port::State::new("sum-status");
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, PartialEq, prost::Message)]
 struct SumStatus {
+    #[prost(uint32, tag = "1")]
     processed: u32,
+    #[prost(double, tag = "2")]
     total: f64,
+    #[prost(bool, tag = "3")]
     complete: bool,
+}
+
+impl prost::Name for SumStatus {
+    const NAME: &'static str = "SumStatus";
+    const PACKAGE: &'static str = "phoxal.examples.runtime";
 }
 
 struct IncrementalSum;

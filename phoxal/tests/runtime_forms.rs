@@ -7,32 +7,32 @@ struct Forms;
 
 type Key = u64;
 
-const STATE: phoxal::port::State<u8> = phoxal::port::State::new("state");
-const SAMPLE: phoxal::port::Sample<u16> = phoxal::port::Sample::new("sample");
+const STATE: phoxal::port::State<u32> = phoxal::port::State::new("state");
+const SAMPLE: phoxal::port::Sample<u64> = phoxal::port::Sample::new("sample");
 const EVENT: phoxal::port::Event<u32> = phoxal::port::Event::new("event");
 const STREAM: phoxal::port::Stream<u64> = phoxal::port::Stream::new("stream");
-const SETPOINT: phoxal::port::Setpoint<u8> = phoxal::port::Setpoint::new("setpoint");
-const READ: phoxal::port::Read<u16, u32> = phoxal::port::Read::new("read");
-const COMMANDS: phoxal::port::Commands<u16, u32> = phoxal::port::Commands::new("commands");
+const SETPOINT: phoxal::port::Setpoint<u32> = phoxal::port::Setpoint::new("setpoint");
+const READ: phoxal::port::Read<u64, u32> = phoxal::port::Read::new("read");
+const COMMANDS: phoxal::port::Commands<u64, u32> = phoxal::port::Commands::new("commands");
 
 #[phoxal::runtime::inputs]
 #[allow(dead_code)]
 struct FormsInputs {
     #[phoxal::runtime::input(max_age_ms = 100)]
-    latest: Latest<u8>,
+    latest: Latest<u32>,
     #[phoxal::runtime::input(max_items = 2, max_bytes = 64)]
-    samples: Samples<u16>,
+    samples: Samples<u64>,
     #[phoxal::runtime::input(max_items = 2, max_bytes = 64)]
     events: Events<u32>,
-    setpoint: Setpoint<u8>,
+    setpoint: Setpoint<u32>,
     #[phoxal::runtime::input(max_items = 2, max_bytes = 64)]
     stream: Stream<u64>,
     #[phoxal::runtime::input(port = COMMANDS, max_items = 2, max_bytes = 64)]
-    commands: Commands<u16, u32>,
+    commands: Commands<u64, u32>,
     #[phoxal::runtime::input(max_response_bytes = 64)]
-    read: Read<Key, u16, u32>,
+    read: Read<Key, u64, u32>,
     #[phoxal::runtime::input(max_response_bytes = 64)]
-    request: Request<Key, u16, u32>,
+    request: Request<Key, u64, u32>,
     operation: Operation<Key, u32>,
 }
 
@@ -43,7 +43,7 @@ struct FormsOutputs {
     #[phoxal::runtime::outputs::reply(commands, max_items = 2, max_bytes = 64)]
     replies: Vec<phoxal::runtime::Reply<u32>>,
     #[phoxal::runtime::outputs::sample(port = SAMPLE, max_items = 2, max_bytes = 64)]
-    samples: Vec<phoxal::runtime::Sample<u16>>,
+    samples: Vec<phoxal::runtime::Sample<u64>>,
     #[phoxal::runtime::outputs::event(port = EVENT, max_items = 2, max_bytes = 64)]
     events: Vec<u32>,
     #[phoxal::runtime::outputs::stream(port = STREAM, max_items = 2, max_bytes = 64)]
@@ -53,7 +53,7 @@ struct FormsOutputs {
 #[phoxal::runtime(period_ms = 20, timeout_ms = 100, init_timeout_ms = 1000)]
 impl Runtime for Forms {
     type Config = ();
-    type State = u8;
+    type State = u32;
     type Inputs = FormsInputs;
     type Outputs = FormsOutputs;
 
@@ -75,12 +75,12 @@ impl Runtime for Forms {
 #[allow(dead_code)]
 impl Forms {
     #[phoxal::runtime::outputs::state(port = STATE, max_bytes = 64, bootstrap)]
-    fn state(&self, state: &u8) -> u8 {
+    fn state(&self, state: &u32) -> u32 {
         *state
     }
 
     #[phoxal::runtime::outputs::setpoint(port = SETPOINT, max_bytes = 64, valid_for_ms = 100)]
-    fn setpoint(&self, state: &u8) -> Option<u8> {
+    fn setpoint(&self, state: &u32) -> Option<u32> {
         Some(*state)
     }
 
@@ -90,22 +90,22 @@ impl Forms {
         max_request_bytes = 64,
         max_response_bytes = 64,
     )]
-    fn read(&self, _view: &u8, request: &u16) -> u32 {
-        u32::from(*request)
+    fn read(&self, _view: &u32, request: &u64) -> u32 {
+        u32::try_from(*request).unwrap_or(u32::MAX)
     }
 
     #[phoxal::runtime::outputs::activate(read, timeout_ms = 100, refresh_every_steps = 2)]
-    fn read_request(&self, _state: &u8) -> Option<Activation<Key, u16>> {
+    fn read_request(&self, _state: &u32) -> Option<Activation<Key, u64>> {
         Some(Activation::new(0, 1))
     }
 
     #[phoxal::runtime::outputs::activate(request, timeout_ms = 100)]
-    fn command_request(&self, _state: &u8) -> Option<Activation<Key, u16>> {
+    fn command_request(&self, _state: &u32) -> Option<Activation<Key, u64>> {
         Some(Activation::new(0, 1))
     }
 
     #[phoxal::runtime::outputs::activate(operation)]
-    fn operation_request(&self, _state: &u8) -> Option<Activation<Key, u32>> {
+    fn operation_request(&self, _state: &u32) -> Option<Activation<Key, u32>> {
         Some(Activation::new(0, 1))
     }
 
