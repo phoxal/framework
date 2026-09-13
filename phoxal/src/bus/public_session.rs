@@ -829,10 +829,6 @@ impl PublicSessionServer {
     }
 
     /// Update the supervisor status while retaining the public surface.
-    #[expect(
-        dead_code,
-        reason = "the supervisor host updates status through this crate-private hook"
-    )]
     pub(crate) async fn set_status(
         &self,
         state: SupervisorState,
@@ -849,10 +845,6 @@ impl PublicSessionServer {
     }
 
     /// Update the execution lifecycle after a process graph transition.
-    #[expect(
-        dead_code,
-        reason = "the supervisor host updates execution state through this crate-private hook"
-    )]
     pub(crate) async fn set_execution_state(
         &self,
         execution_id: &str,
