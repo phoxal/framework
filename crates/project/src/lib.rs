@@ -13,6 +13,7 @@ mod error;
 mod preparation;
 mod publication;
 mod selection;
+mod simulation;
 mod submission;
 mod validation;
 
@@ -46,6 +47,11 @@ pub use publication::{
 pub use selection::{
     PackageSource, SelectedComponent, SelectedDriver, SelectedService, SelectedTarget,
     SourceSelection, TargetRole, resolve_sources,
+};
+pub use simulation::{
+    DEFAULT_SIMULATOR_BINARY, DEFAULT_SIMULATOR_PACKAGE, DEFAULT_SIMULATOR_VERSION,
+    SIMULATION_PROTOCOL, SimulationBound, SimulationCleanup, SimulationPresentation,
+    SimulationRunOptions, SimulationRunReport, SimulatorArtifactSummary,
 };
 pub use submission::{DeviceAuthorization, SubmissionResult, submit_publication};
 
@@ -161,6 +167,17 @@ impl Project {
         };
         prepared.check(&validation_options)?;
         Ok(vec![output])
+    }
+
+    /// Provisions the independent simulator application, probes its native
+    /// model contract, builds the simulation bundle, and runs one finite
+    /// simulation with bounded supervisor cleanup.
+    pub fn run_simulation(
+        &self,
+        options: &CargoOptions,
+        request: &SimulationRunOptions,
+    ) -> Result<SimulationRunReport, Error> {
+        simulation::run(self, options, request)
     }
 }
 

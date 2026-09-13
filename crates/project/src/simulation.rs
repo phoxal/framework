@@ -1,0 +1,1430 @@
+//! Independent simulator provisioning and local finite-run orchestration.
+//!
+//! A simulator is an application selected outside the robot Cargo graph. This
+//! module keeps its own small Cargo project and lockfile, probes the native
+//! application's explicit model facts, then asks the prepared robot project
+//! to assemble a simulation bundle.
+
+use std::ffi::OsStr;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use cargo_metadata::{Message, MetadataCommand};
+use fs4::FileExt;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tempfile::NamedTempFile;
+
+use crate::cargo::{CargoOptions, LockMode, PHOXAL_REGISTRY_INDEX};
+use crate::{CompiledBundle, Error, Project, SimulationModelFacts};
+
+/// The official independently installed native simulation application.
+pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator-mujoco";
+/// The first simulator package release selected by the framework tool.
+pub const DEFAULT_SIMULATOR_VERSION: &str = "0.1.0";
+/// The binary target exposed by the official simulator package.
+pub const DEFAULT_SIMULATOR_BINARY: &str = "phoxal-simulator-mujoco";
+/// The public simulation contract selected by the application.
+pub const SIMULATION_PROTOCOL: &str = "phoxal.simulation.v1";
+
+const SELECTION_FILE: &str = "selection.json";
+const PROVISION_LOCK: &str = "provision.lock";
+const SIMULATOR_MANIFEST: &str = "Cargo.toml";
+const SIMULATOR_LOCK: &str = "Cargo.lock";
+const BUILD_ROOT: &str = "build";
+const ARTIFACT_ROOT: &str = "artifacts";
+const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const READINESS_SETTLE: Duration = Duration::from_millis(100);
+const PROCESS_POLL: Duration = Duration::from_millis(25);
+
+/// The presentation selected for a finite simulation run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SimulationPresentation {
+    /// Run without creating a presentation window.
+    Headless,
+    /// Open the simulator's interactive presentation.
+    Desktop,
+}
+
+impl SimulationPresentation {
+    /// The simulator command-line spelling.
+    #[must_use]
+    pub const fn flag(self) -> &'static str {
+        match self {
+            Self::Headless => "--headless",
+            Self::Desktop => "--desktop",
+        }
+    }
+}
+
+/// One positive finite bound for a simulation command.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SimulationBound {
+    /// Advance exactly this many native quanta.
+    Steps(u64),
+    /// Advance exactly this many seconds after native quantum validation.
+    Duration(f64),
+}
+
+impl SimulationBound {
+    fn validate(self) -> Result<(), Error> {
+        match self {
+            Self::Steps(steps) if steps > 0 => Ok(()),
+            Self::Steps(_) => Err(simulation_error("steps must be a positive integer")),
+            Self::Duration(duration) if duration.is_finite() && duration > 0.0 => Ok(()),
+            Self::Duration(_) => Err(simulation_error(
+                "duration must be a positive finite number",
+            )),
+        }
+    }
+
+    fn validate_for_quantum(self, quantum_ns: u64) -> Result<(), Error> {
+        if quantum_ns == 0 {
+            return Err(simulation_error("simulation quantum must be positive"));
+        }
+        match self {
+            Self::Steps(_) => Ok(()),
+            Self::Duration(duration) => {
+                let duration_ns = duration * 1_000_000_000.0;
+                let quanta = duration_ns / quantum_ns as f64;
+                let nearest = quanta.round();
+                let error = (quanta - nearest).abs();
+                let tolerance = f64::EPSILON * quanta.abs().max(1.0) * 16.0;
+                if !quanta.is_finite() || nearest < 1.0 || error > tolerance {
+                    return Err(simulation_error(format!(
+                        "duration {duration} seconds is not an integral number of {quantum_ns}ns simulation quanta"
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Inputs for one local simulation command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimulationRunOptions {
+    scene: PathBuf,
+    presentation: SimulationPresentation,
+    bound: SimulationBound,
+    simulator_executable: Option<PathBuf>,
+    simulator_package: String,
+    simulator_version: String,
+    simulator_binary: String,
+    output: Option<PathBuf>,
+    scope: String,
+    supervisor_id: String,
+    run_id: String,
+    startup_timeout: Duration,
+    cleanup_timeout: Duration,
+}
+
+impl SimulationRunOptions {
+    /// Construct a request using the official simulator selection.
+    pub fn new(
+        scene: impl Into<PathBuf>,
+        presentation: SimulationPresentation,
+        bound: SimulationBound,
+    ) -> Result<Self, Error> {
+        bound.validate()?;
+        Ok(Self {
+            scene: scene.into(),
+            presentation,
+            bound,
+            simulator_executable: None,
+            simulator_package: DEFAULT_SIMULATOR_PACKAGE.to_owned(),
+            simulator_version: DEFAULT_SIMULATOR_VERSION.to_owned(),
+            simulator_binary: DEFAULT_SIMULATOR_BINARY.to_owned(),
+            output: None,
+            scope: "local".to_owned(),
+            supervisor_id: "local".to_owned(),
+            run_id: "local-simulation".to_owned(),
+            startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+            cleanup_timeout: DEFAULT_CLEANUP_TIMEOUT,
+        })
+    }
+
+    /// The scene path supplied by the caller.
+    #[must_use]
+    pub fn scene(&self) -> &Path {
+        &self.scene
+    }
+
+    /// The selected presentation.
+    #[must_use]
+    pub const fn presentation(&self) -> SimulationPresentation {
+        self.presentation
+    }
+
+    /// The selected finite bound.
+    #[must_use]
+    pub const fn bound(&self) -> SimulationBound {
+        self.bound
+    }
+
+    /// Use an explicitly selected simulator executable.
+    ///
+    /// This is the injection seam for local development and deterministic
+    /// process fixtures. The executable is checked as a regular file before
+    /// it is launched and its digest is retained in the run report.
+    #[must_use]
+    pub fn with_simulator_executable(mut self, path: impl Into<PathBuf>) -> Self {
+        self.simulator_executable = Some(path.into());
+        self
+    }
+
+    /// Select an exact simulator package, version, and binary target.
+    #[must_use]
+    pub fn with_simulator_package(
+        mut self,
+        package: impl Into<String>,
+        version: impl Into<String>,
+        binary: impl Into<String>,
+    ) -> Self {
+        self.simulator_package = package.into();
+        self.simulator_version = version.into();
+        self.simulator_binary = binary.into();
+        self
+    }
+
+    /// Put the immutable robot simulation bundle at an explicit path.
+    #[must_use]
+    pub fn with_output(mut self, path: impl Into<PathBuf>) -> Self {
+        self.output = Some(path.into());
+        self
+    }
+
+    /// Set the explicit router namespace, supervisor identity, and run id.
+    #[must_use]
+    pub fn with_identity(
+        mut self,
+        scope: impl Into<String>,
+        supervisor_id: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> Self {
+        self.scope = scope.into();
+        self.supervisor_id = supervisor_id.into();
+        self.run_id = run_id.into();
+        self
+    }
+
+    /// Set bounded process startup and cleanup waits.
+    #[must_use]
+    pub fn with_timeouts(mut self, startup: Duration, cleanup: Duration) -> Self {
+        self.startup_timeout = startup;
+        self.cleanup_timeout = cleanup;
+        self
+    }
+}
+
+/// The exact simulator artifact selected for a run.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimulatorArtifactSummary {
+    /// Cargo package name.
+    pub package: String,
+    /// Exact Cargo package version.
+    pub version: String,
+    /// Selected binary target.
+    pub binary: String,
+    /// Acquisition source, registry or explicit injected path.
+    pub source: String,
+    /// Absolute executable path used by the launcher.
+    pub executable: PathBuf,
+    /// SHA-256 of the executable bytes.
+    pub sha256: String,
+    /// Exact standalone application Cargo.toml digest, when provisioned.
+    pub cargo_manifest_sha256: Option<String>,
+    /// Exact independent application Cargo.lock digest, when provisioned.
+    pub cargo_lock_sha256: Option<String>,
+}
+
+/// Bounded cleanup evidence for a local simulation process pair.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimulationCleanup {
+    /// Whether the supervisor was asked to stop.
+    pub supervisor_stop_requested: bool,
+    /// Whether the supervisor exited before the cleanup deadline.
+    pub supervisor_exited: bool,
+    /// Whether a forced kill was required.
+    pub supervisor_killed: bool,
+    /// Human-readable cleanup diagnostic, if cleanup was incomplete.
+    pub error: Option<String>,
+}
+
+/// Terminal evidence retained by one local finite simulation run.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SimulationRunReport {
+    /// Summary schema identifier.
+    pub schema: String,
+    /// Canonical scene resource path.
+    pub scene: PathBuf,
+    /// Exact simulator artifact used.
+    pub simulator: SimulatorArtifactSummary,
+    /// Compiled simulation bundle path.
+    pub bundle: PathBuf,
+    /// Explicit router namespace.
+    pub scope: String,
+    /// Explicit supervisor identity.
+    pub supervisor_id: String,
+    /// Explicit finite run identity.
+    pub run_id: String,
+    /// Whether the supervisor survived startup readiness.
+    pub supervisor_ready: bool,
+    /// Whether the simulator emitted the required provider-contract terminal
+    /// evidence for the finite run.
+    pub provider_contract_verified: bool,
+    /// Simulator exit code, or none when it terminated by signal.
+    pub simulator_exit_code: Option<i32>,
+    /// Complete simulator standard output.
+    pub simulator_stdout: String,
+    /// Complete simulator standard error.
+    pub simulator_stderr: String,
+    /// Bounded supervisor cleanup evidence.
+    pub cleanup: SimulationCleanup,
+}
+
+impl SimulationRunReport {
+    /// Whether the simulator exited successfully and cleanup completed.
+    #[must_use]
+    pub fn success(&self) -> bool {
+        self.simulator_exit_code == Some(0)
+            && self.cleanup.error.is_none()
+            && self.supervisor_ready
+            && self.provider_contract_verified
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct SimulatorSelection {
+    schema: String,
+    package: String,
+    version: String,
+    binary: String,
+    source: String,
+    executable: PathBuf,
+    cargo_manifest: Option<PathBuf>,
+    cargo_lock: Option<PathBuf>,
+    executable_bytes: u64,
+    executable_sha256: String,
+    cargo_manifest_sha256: Option<String>,
+    cargo_lock_sha256: Option<String>,
+}
+
+#[derive(Debug)]
+struct SimulatorArtifact {
+    summary: SimulatorArtifactSummary,
+    cargo_manifest: Option<PathBuf>,
+    cargo_lock: Option<PathBuf>,
+}
+
+impl SimulatorArtifact {
+    fn from_selection(selection: SimulatorSelection) -> Result<Self, Error> {
+        if selection.schema != "phoxal/simulator-selection/v0" {
+            return Err(simulation_error(format!(
+                "unsupported simulator selection schema {}",
+                selection.schema
+            )));
+        }
+        ensure_regular_file(&selection.executable, "simulator executable")?;
+        let digest = digest_file(&selection.executable)?;
+        if digest.bytes != selection.executable_bytes
+            || digest.sha256 != selection.executable_sha256
+        {
+            return Err(simulation_error(format!(
+                "selected simulator executable {} changed after provisioning",
+                selection.executable.display()
+            )));
+        }
+        match (&selection.cargo_manifest, &selection.cargo_lock) {
+            (Some(manifest), Some(lock)) => {
+                ensure_regular_file(manifest, "simulator Cargo.toml")?;
+                let actual = digest_file(manifest)?.sha256;
+                if selection.cargo_manifest_sha256.as_deref() != Some(actual.as_str()) {
+                    return Err(simulation_error(format!(
+                        "selected simulator Cargo.toml {} changed after provisioning",
+                        manifest.display()
+                    )));
+                }
+                ensure_regular_file(lock, "simulator Cargo.lock")?;
+                let actual = digest_file(lock)?.sha256;
+                if selection.cargo_lock_sha256.as_deref() != Some(actual.as_str()) {
+                    return Err(simulation_error(format!(
+                        "selected simulator Cargo.lock {} changed after provisioning",
+                        lock.display()
+                    )));
+                }
+            }
+            (None, None) => {
+                if selection.source.starts_with("registry:") {
+                    return Err(simulation_error(
+                        "registry simulator selection is missing its standalone Cargo graph",
+                    ));
+                }
+            }
+            _ => {
+                return Err(simulation_error(
+                    "simulator selection must retain both Cargo.toml and Cargo.lock together",
+                ));
+            }
+        }
+        Ok(Self {
+            summary: SimulatorArtifactSummary {
+                package: selection.package,
+                version: selection.version,
+                binary: selection.binary,
+                source: selection.source,
+                executable: selection.executable,
+                sha256: digest.sha256,
+                cargo_manifest_sha256: selection.cargo_manifest_sha256,
+                cargo_lock_sha256: selection.cargo_lock_sha256,
+            },
+            cargo_manifest: selection.cargo_manifest,
+            cargo_lock: selection.cargo_lock,
+        })
+    }
+}
+
+/// Run one finite simulation from a prepared robot source project.
+pub(crate) fn run(
+    project: &Project,
+    cargo_options: &CargoOptions,
+    request: &SimulationRunOptions,
+) -> Result<SimulationRunReport, Error> {
+    cargo_options.validate()?;
+    validate_request(request)?;
+
+    // Provisioning happens before Project::prepare. A missing application in
+    // locked or frozen mode therefore fails before the robot Cargo manifest or
+    // its owning Cargo.lock can be changed by automatic supervisor setup.
+    let scene = canonical_scene(request.scene())?;
+    let simulator = provision(project, cargo_options, request)?;
+    let prepared = project.prepare(cargo_options)?;
+    let probe_output = probe_bundle_path(&prepared);
+    let probe_bundle = prepared.build_bundle(cargo_options, &probe_output)?;
+    let facts = probe(&simulator, &scene, probe_bundle.root(), request)?;
+    request.bound.validate_for_quantum(facts.quantum_ns)?;
+    let output = request.output.clone().unwrap_or_else(|| {
+        prepared
+            .default_bundle_path()
+            .with_file_name("simulation-bundle")
+    });
+    let bundle = prepared.build_simulation_bundle(cargo_options, &output, &facts)?;
+    launch(&simulator, &bundle, &scene, request)
+}
+
+fn validate_request(request: &SimulationRunOptions) -> Result<(), Error> {
+    request.bound.validate()?;
+    validate_identity_part("scope", &request.scope)?;
+    validate_identity_part("supervisor_id", &request.supervisor_id)?;
+    validate_identity_part("run_id", &request.run_id)?;
+    if request.startup_timeout.is_zero() || request.cleanup_timeout.is_zero() {
+        return Err(simulation_error(
+            "simulation startup and cleanup timeouts must be positive",
+        ));
+    }
+    if request.simulator_package.is_empty()
+        || request.simulator_version.is_empty()
+        || request.simulator_binary.is_empty()
+    {
+        return Err(simulation_error(
+            "simulator package, version, and binary must be non-empty",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_identity_part(field: &str, value: &str) -> Result<(), Error> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        return Err(simulation_error(format!(
+            "{field} must be 1-128 lowercase ASCII letters, digits, '-' or '_'"
+        )));
+    }
+    Ok(())
+}
+
+fn canonical_scene(path: &Path) -> Result<PathBuf, Error> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(simulation_error(format!(
+            "simulation scene {} must be a regular non-symlink file",
+            path.display()
+        )));
+    }
+    let extension = path.extension().and_then(OsStr::to_str).unwrap_or_default();
+    if !matches!(extension, "xml" | "mjz") {
+        return Err(simulation_error(format!(
+            "simulation scene {} must end in .xml or .mjz",
+            path.display()
+        )));
+    }
+    path.canonicalize().map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn probe_bundle_path(prepared: &crate::PreparedProject) -> PathBuf {
+    prepared
+        .default_bundle_path()
+        .with_file_name("simulation-probe-bundle")
+}
+
+fn provision(
+    project: &Project,
+    options: &CargoOptions,
+    request: &SimulationRunOptions,
+) -> Result<SimulatorArtifact, Error> {
+    if let Some(path) = &request.simulator_executable {
+        ensure_regular_file(path, "explicit simulator executable")?;
+        let digest = digest_file(path)?;
+        return Ok(SimulatorArtifact {
+            summary: SimulatorArtifactSummary {
+                package: request.simulator_package.clone(),
+                version: request.simulator_version.clone(),
+                binary: request.simulator_binary.clone(),
+                source: "explicit-executable".to_owned(),
+                executable: path.canonicalize().map_err(|source| Error::ArtifactFile {
+                    path: path.clone(),
+                    source,
+                })?,
+                sha256: digest.sha256,
+                cargo_manifest_sha256: None,
+                cargo_lock_sha256: None,
+            },
+            cargo_manifest: None,
+            cargo_lock: None,
+        });
+    }
+
+    let root = simulator_store_root(project);
+    let selection_path = root.join(SELECTION_FILE);
+    if selection_path.is_file() {
+        let selection = read_selection(&selection_path)?;
+        return selected_artifact(selection, request);
+    }
+
+    if !matches!(options.lock, LockMode::Unlocked) {
+        return Err(simulation_error(format!(
+            "simulator provisioning is required for {} {} and no exact local selection exists; rerun without --locked/--frozen to provision before project preparation",
+            request.simulator_package, request.simulator_version
+        )));
+    }
+    fs::create_dir_all(&root).map_err(|source| Error::ArtifactFile {
+        path: root.clone(),
+        source,
+    })?;
+    let lock_path = root.join(PROVISION_LOCK);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| Error::ArtifactFile {
+            path: lock_path.clone(),
+            source,
+        })?;
+    FileExt::try_lock(&lock).map_err(|error| {
+        simulation_error(format!(
+            "cannot acquire simulator provisioning lock {}: {error}",
+            lock_path.display()
+        ))
+    })?;
+    if selection_path.is_file() {
+        let selection = read_selection(&selection_path)?;
+        return selected_artifact(selection, request);
+    }
+    let artifact = build_registry_simulator(&root, options, request)?;
+    let executable_metadata =
+        fs::metadata(&artifact.summary.executable).map_err(|source| Error::ArtifactFile {
+            path: artifact.summary.executable.clone(),
+            source,
+        })?;
+    let selection = SimulatorSelection {
+        schema: "phoxal/simulator-selection/v0".to_owned(),
+        package: artifact.summary.package.clone(),
+        version: artifact.summary.version.clone(),
+        binary: artifact.summary.binary.clone(),
+        source: artifact.summary.source.clone(),
+        executable: artifact.summary.executable.clone(),
+        cargo_manifest: artifact.cargo_manifest.clone(),
+        cargo_lock: artifact.cargo_lock.clone(),
+        executable_bytes: executable_metadata.len(),
+        executable_sha256: artifact.summary.sha256.clone(),
+        cargo_manifest_sha256: artifact.summary.cargo_manifest_sha256.clone(),
+        cargo_lock_sha256: artifact.summary.cargo_lock_sha256.clone(),
+    };
+    atomic_json(&selection_path, &selection)?;
+    Ok(artifact)
+}
+
+fn selected_artifact(
+    selection: SimulatorSelection,
+    request: &SimulationRunOptions,
+) -> Result<SimulatorArtifact, Error> {
+    if selection.package != request.simulator_package
+        || selection.version != request.simulator_version
+        || selection.binary != request.simulator_binary
+    {
+        return Err(simulation_error(format!(
+            "stored simulator selection is {} {} {}, but this run requests {} {} {}",
+            selection.package,
+            selection.version,
+            selection.binary,
+            request.simulator_package,
+            request.simulator_version,
+            request.simulator_binary
+        )));
+    }
+    SimulatorArtifact::from_selection(selection)
+}
+
+fn simulator_store_root(project: &Project) -> PathBuf {
+    project.layout().root().join("target/phoxal/simulation")
+}
+
+fn read_selection(path: &Path) -> Result<SimulatorSelection, Error> {
+    let bytes = fs::read(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    serde_json::from_slice(&bytes).map_err(|source| Error::SimulationInvalid {
+        message: format!(
+            "cannot parse simulator selection {}: {source}",
+            path.display()
+        ),
+    })
+}
+
+fn build_registry_simulator(
+    root: &Path,
+    options: &CargoOptions,
+    request: &SimulationRunOptions,
+) -> Result<SimulatorArtifact, Error> {
+    let staging = tempfile::Builder::new()
+        .prefix("phoxal-simulator-build-")
+        .tempdir()
+        .map_err(|source| Error::ArtifactFile {
+            path: root.to_owned(),
+            source,
+        })?;
+    let source_root = staging.path();
+    let selector_manifest = source_root.join(SIMULATOR_MANIFEST);
+    fs::write(&selector_manifest, simulator_manifest(request)).map_err(|source| {
+        Error::ArtifactFile {
+            path: selector_manifest.clone(),
+            source,
+        }
+    })?;
+    let target_root = root.join(BUILD_ROOT);
+    fs::create_dir_all(&target_root).map_err(|source| Error::ArtifactFile {
+        path: target_root.clone(),
+        source,
+    })?;
+    let selector_metadata = simulator_metadata(&selector_manifest, options, false)?;
+    let package = selector_metadata
+        .packages
+        .iter()
+        .find(|package| {
+            package.name == request.simulator_package
+                && package.version.to_string() == request.simulator_version
+        })
+        .ok_or_else(|| {
+            simulation_error(format!(
+                "registry did not resolve simulator package {} {}",
+                request.simulator_package, request.simulator_version
+            ))
+        })?;
+    let expected_source = format!(
+        "registry+{}",
+        PHOXAL_REGISTRY_INDEX
+            .strip_prefix("sparse+")
+            .unwrap_or(PHOXAL_REGISTRY_INDEX)
+    );
+    if package.source.as_ref().map(|source| source.repr.as_str()) != Some(expected_source.as_str())
+    {
+        return Err(simulation_error(format!(
+            "simulator package {} {} did not resolve from the Phoxal registry",
+            request.simulator_package, request.simulator_version
+        )));
+    }
+    let package_root = PathBuf::from(package.manifest_path.as_std_path())
+        .parent()
+        .map(Path::to_owned)
+        .ok_or_else(|| {
+            simulation_error(format!(
+                "simulator package {} has no source root",
+                request.simulator_package
+            ))
+        })?;
+    let application_root = source_root.join("application");
+    copy_tree(&package_root, &application_root)?;
+    let application_manifest = application_root.join(SIMULATOR_MANIFEST);
+    let application_lock = application_root.join(SIMULATOR_LOCK);
+    if !application_lock.is_file() {
+        generate_application_lock(&application_manifest, options)?;
+    }
+    let metadata = simulator_metadata(&application_manifest, options, true)?;
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| {
+            package.name == request.simulator_package
+                && package.version.to_string() == request.simulator_version
+        })
+        .ok_or_else(|| {
+            simulation_error(format!(
+                "staged simulator source no longer resolves package {} {}",
+                request.simulator_package, request.simulator_version
+            ))
+        })?;
+    let package_id = package.id.to_string();
+    let target = package
+        .targets
+        .iter()
+        .find(|target| target.name == request.simulator_binary && target.is_bin())
+        .ok_or_else(|| {
+            simulation_error(format!(
+                "simulator package {} {} has no binary target {}",
+                request.simulator_package, request.simulator_version, request.simulator_binary
+            ))
+        })?;
+    let mut command = Command::new(options.cargo_program());
+    command.current_dir(&application_root);
+    command.args([
+        "build",
+        "--manifest-path",
+        &application_manifest.display().to_string(),
+        "--bin",
+        &target.name,
+        "--target-dir",
+        &target_root.display().to_string(),
+        "--message-format",
+        "json-render-diagnostics",
+        "--config",
+        &format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""),
+    ]);
+    // The standalone application owns the lock generated above.  The robot
+    // lock policy controls whether this application may be provisioned, but
+    // never replaces the application's own dependency graph.
+    command.arg("--locked");
+    if options.offline {
+        command.arg("--offline");
+    }
+    let output = command.output().map_err(|source| Error::CargoSpawn {
+        operation: "build simulator".to_owned(),
+        source,
+    })?;
+    if !output.status.success() {
+        return Err(Error::CargoCommand {
+            operation: "build simulator".to_owned(),
+            status: status_string(output.status),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let executable = artifact_path(&output.stdout, &package_id, &target.name)?;
+    ensure_regular_file(&executable, "built simulator executable")?;
+    let digest = digest_file(&executable)?;
+    let artifact_dir = root.join(ARTIFACT_ROOT).join(&digest.sha256);
+    fs::create_dir_all(&artifact_dir).map_err(|source| Error::ArtifactFile {
+        path: artifact_dir.clone(),
+        source,
+    })?;
+    let artifact_path = artifact_dir.join(&request.simulator_binary);
+    copy_regular(&executable, &artifact_path)?;
+    make_executable(&artifact_path)?;
+    ensure_regular_file(&application_lock, "simulator Cargo.lock")?;
+    let retained_lock = artifact_dir.join(SIMULATOR_LOCK);
+    copy_regular(&application_lock, &retained_lock)?;
+    let retained_manifest = artifact_dir.join(SIMULATOR_MANIFEST);
+    copy_regular(&application_manifest, &retained_manifest)?;
+    let lock_digest = digest_file(&retained_lock)?.sha256;
+    let manifest_digest = digest_file(&retained_manifest)?.sha256;
+    Ok(SimulatorArtifact {
+        summary: SimulatorArtifactSummary {
+            package: request.simulator_package.clone(),
+            version: request.simulator_version.clone(),
+            binary: request.simulator_binary.clone(),
+            source: format!("registry:{PHOXAL_REGISTRY_INDEX}"),
+            executable: artifact_path,
+            sha256: digest.sha256,
+            cargo_manifest_sha256: Some(manifest_digest),
+            cargo_lock_sha256: Some(lock_digest),
+        },
+        cargo_manifest: Some(retained_manifest),
+        cargo_lock: Some(retained_lock),
+    })
+}
+
+fn generate_application_lock(manifest: &Path, options: &CargoOptions) -> Result<(), Error> {
+    let mut command = Command::new(options.cargo_program());
+    command.args([
+        "generate-lockfile",
+        "--manifest-path",
+        &manifest.display().to_string(),
+        "--config",
+        &format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""),
+    ]);
+    if options.offline {
+        command.arg("--offline");
+    }
+    let output = command.output().map_err(|source| Error::CargoSpawn {
+        operation: "generate simulator lockfile".to_owned(),
+        source,
+    })?;
+    if !output.status.success() {
+        return Err(Error::CargoCommand {
+            operation: "generate simulator lockfile".to_owned(),
+            status: status_string(output.status),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<(), Error> {
+    let metadata = fs::symlink_metadata(source).map_err(|source_error| Error::ArtifactFile {
+        path: source.to_owned(),
+        source: source_error,
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(simulation_error(format!(
+            "simulator source tree contains a symlink at {}",
+            source.display()
+        )));
+    }
+    if metadata.is_file() {
+        return copy_regular(source, destination);
+    }
+    if !metadata.is_dir() {
+        return Err(simulation_error(format!(
+            "simulator source tree entry {} is not a regular file or directory",
+            source.display()
+        )));
+    }
+    fs::create_dir_all(destination).map_err(|source_error| Error::ArtifactFile {
+        path: destination.to_owned(),
+        source: source_error,
+    })?;
+    let mut entries = fs::read_dir(source)
+        .map_err(|source_error| Error::ArtifactFile {
+            path: source.to_owned(),
+            source: source_error,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source_error| Error::ArtifactFile {
+            path: source.to_owned(),
+            source: source_error,
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+fn simulator_manifest(request: &SimulationRunOptions) -> String {
+    format!(
+        "[workspace]\nresolver = \"3\"\n\n[package]\nname = \"phoxal-simulator-selection\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\n{} = {{ package = \"{}\", version = \"={}\", registry = \"phoxal\" }}\n",
+        cargo_dependency_key(&request.simulator_package),
+        request.simulator_package,
+        request.simulator_version
+    )
+}
+
+fn cargo_dependency_key(package: &str) -> String {
+    let mut key = package
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || byte == b'_' {
+                byte as char
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if key.is_empty() || key.as_bytes()[0].is_ascii_digit() {
+        key.insert(0, '_');
+    }
+    key
+}
+
+fn simulator_metadata(
+    manifest: &Path,
+    options: &CargoOptions,
+    locked: bool,
+) -> Result<cargo_metadata::Metadata, Error> {
+    let mut command = MetadataCommand::new();
+    command
+        .cargo_path(options.cargo_program())
+        .manifest_path(manifest)
+        .other_options(vec![
+            "--config".to_owned(),
+            format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\""),
+        ]);
+    if options.offline {
+        command.other_options(vec!["--offline".to_owned()]);
+    }
+    if locked {
+        command.other_options(vec!["--locked".to_owned()]);
+    }
+    command.exec().map_err(|source| Error::CargoMetadata {
+        manifest: manifest.to_owned(),
+        source,
+    })
+}
+
+fn probe(
+    simulator: &SimulatorArtifact,
+    scene: &Path,
+    bundle: &Path,
+    request: &SimulationRunOptions,
+) -> Result<SimulationModelFacts, Error> {
+    let mut command = Command::new(&simulator.summary.executable);
+    command.args([
+        "--probe",
+        "--scene",
+        &scene.display().to_string(),
+        "--bundle",
+        &bundle.display().to_string(),
+        "--json",
+    ]);
+    command.arg(request.presentation.flag());
+    let output = command
+        .output()
+        .map_err(|source| Error::SimulationInvalid {
+            message: format!(
+                "cannot start simulator probe {}: {source}",
+                simulator.summary.executable.display()
+            ),
+        })?;
+    if !output.status.success() {
+        return Err(Error::SimulationInvalid {
+            message: format!(
+                "simulator probe failed ({}){}",
+                status_string(output.status),
+                diagnostic_output(&output.stderr)
+            ),
+        });
+    }
+    let facts: SimulationModelFacts = serde_json::from_slice(&output.stdout).map_err(|source| {
+        simulation_error(format!(
+            "simulator probe returned no valid SimulationModelFacts: {source}"
+        ))
+    })?;
+    if facts.model_identity.is_empty() || facts.quantum_ns == 0 {
+        return Err(simulation_error(
+            "simulator probe returned incomplete model identity or quantum facts",
+        ));
+    }
+    Ok(facts)
+}
+
+fn launch(
+    simulator: &SimulatorArtifact,
+    bundle: &CompiledBundle,
+    scene: &Path,
+    request: &SimulationRunOptions,
+) -> Result<SimulationRunReport, Error> {
+    let supervisor_path = bundle.executable("supervisor");
+    let mut supervisor = Command::new(&supervisor_path)
+        .arg(bundle.root())
+        .args([
+            "--scope",
+            &request.scope,
+            "--supervisor-id",
+            &request.supervisor_id,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|source| Error::SupervisorLaunch {
+            message: format!("cannot start {}: {source}", supervisor_path.display()),
+        })?;
+    let supervisor_ready = wait_process_ready(&mut supervisor, request.startup_timeout)?;
+    if !supervisor_ready {
+        let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
+        return Err(Error::SupervisorLaunch {
+            message: format!(
+                "supervisor exited before readiness; cleanup: {}",
+                cleanup_diagnostic(&cleanup)
+            ),
+        });
+    }
+
+    let mut simulator_command = Command::new(&simulator.summary.executable);
+    simulator_command
+        .args([
+            "--scene",
+            &scene.display().to_string(),
+            "--bundle",
+            &bundle.root().display().to_string(),
+            request.presentation.flag(),
+            "--scope",
+            &request.scope,
+            "--supervisor-id",
+            &request.supervisor_id,
+            "--run-id",
+            &request.run_id,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match request.bound {
+        SimulationBound::Steps(steps) => {
+            simulator_command.args(["--steps", &steps.to_string()]);
+        }
+        SimulationBound::Duration(duration) => {
+            simulator_command.args(["--duration", &duration.to_string()]);
+        }
+    }
+    let output = simulator_command
+        .output()
+        .map_err(|source| Error::SimulationInvalid {
+            message: format!(
+                "cannot start simulator {}: {source}",
+                simulator.summary.executable.display()
+            ),
+        })?;
+    let provider_contract_verified = provider_contract_verified(&output.stdout);
+    let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
+    Ok(SimulationRunReport {
+        schema: "phoxal/simulation-run/v0".to_owned(),
+        scene: scene.to_owned(),
+        simulator: simulator.summary.clone(),
+        bundle: bundle.root().to_owned(),
+        scope: request.scope.clone(),
+        supervisor_id: request.supervisor_id.clone(),
+        run_id: request.run_id.clone(),
+        supervisor_ready,
+        provider_contract_verified,
+        simulator_exit_code: output.status.code(),
+        simulator_stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        simulator_stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        cleanup,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct SimulatorTerminalEvidence {
+    schema: String,
+    #[serde(rename = "provider_contract_verified")]
+    provider_contract_verified: bool,
+    outcome: String,
+    completed_steps: u64,
+    requested_steps: u64,
+}
+
+fn provider_contract_verified(stdout: &[u8]) -> bool {
+    let Some(line) = stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .next_back()
+    else {
+        return false;
+    };
+    let Ok(evidence) = serde_json::from_slice::<SimulatorTerminalEvidence>(line) else {
+        return false;
+    };
+    evidence.schema == "phoxal/simulation-run/v0"
+        && evidence.provider_contract_verified
+        && evidence.outcome == "success"
+        && evidence.completed_steps == evidence.requested_steps
+        && evidence.requested_steps > 0
+}
+
+fn wait_process_ready(child: &mut Child, timeout: Duration) -> Result<bool, Error> {
+    // The current supervisor executable has no machine-readable readiness
+    // endpoint.  Keep the process-level fallback bounded and short so a
+    // healthy process is not mistaken for a fifteen-second startup delay.
+    // A supervisor that exits during this settle interval is still rejected.
+    let deadline = Instant::now() + READINESS_SETTLE.min(timeout);
+    loop {
+        match child.try_wait().map_err(|source| Error::SupervisorLaunch {
+            message: format!("cannot inspect supervisor readiness: {source}"),
+        })? {
+            Some(_) => return Ok(false),
+            None if Instant::now() >= deadline => return Ok(true),
+            None => thread::sleep(PROCESS_POLL),
+        }
+    }
+}
+
+fn cleanup_process(child: &mut Child, timeout: Duration) -> SimulationCleanup {
+    let mut result = SimulationCleanup {
+        supervisor_stop_requested: true,
+        supervisor_exited: false,
+        supervisor_killed: false,
+        error: None,
+    };
+    match child.try_wait() {
+        Ok(Some(_)) => {
+            result.supervisor_exited = true;
+            return result;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            result.error = Some(format!("cannot inspect supervisor cleanup: {error}"));
+            return result;
+        }
+    }
+    if let Err(error) = child.kill() {
+        result.error = Some(format!("cannot stop supervisor: {error}"));
+        return result;
+    }
+    result.supervisor_killed = true;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                result.supervisor_exited = true;
+                return result;
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(PROCESS_POLL),
+            Ok(None) => {
+                result.error = Some("supervisor did not exit after bounded cleanup".to_owned());
+                return result;
+            }
+            Err(error) => {
+                result.error = Some(format!("cannot reap supervisor after kill: {error}"));
+                return result;
+            }
+        }
+    }
+}
+
+fn cleanup_diagnostic(cleanup: &SimulationCleanup) -> String {
+    cleanup
+        .error
+        .clone()
+        .unwrap_or_else(|| "supervisor cleanup completed".to_owned())
+}
+
+fn artifact_path(stdout: &[u8], package_id: &str, target: &str) -> Result<PathBuf, Error> {
+    let mut executable = None;
+    for line in stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let message = serde_json::from_slice::<Message>(line).map_err(|error| {
+            simulation_error(format!("simulator Cargo emitted invalid JSON: {error}"))
+        })?;
+        if let Message::CompilerArtifact(artifact) = message
+            && artifact.package_id.to_string() == package_id
+            && artifact.target.name == target
+            && artifact.target.is_bin()
+        {
+            executable = artifact.executable.map(|path| path.into_std_path_buf());
+        }
+    }
+    executable.ok_or_else(|| {
+        simulation_error(format!(
+            "Cargo built simulator package {package_id} but emitted no executable target {target}"
+        ))
+    })
+}
+
+fn ensure_regular_file(path: &Path, label: &str) -> Result<(), Error> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(simulation_error(format!(
+            "{label} {} must be a regular non-symlink file",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct FileDigest {
+    bytes: u64,
+    sha256: String,
+}
+
+fn digest_file(path: &Path) -> Result<FileDigest, Error> {
+    let mut file = File::open(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut hasher = Sha256::new();
+    let mut bytes = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| Error::ArtifactFile {
+                path: path.to_owned(),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        bytes = bytes
+            .checked_add(read as u64)
+            .ok_or_else(|| simulation_error("artifact byte count overflowed"))?;
+    }
+    Ok(FileDigest {
+        bytes,
+        sha256: format!("{:x}", hasher.finalize()),
+    })
+}
+
+fn copy_regular(from: &Path, to: &Path) -> Result<(), Error> {
+    ensure_regular_file(from, "source artifact")?;
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    fs::copy(from, to).map_err(|source| Error::ArtifactFile {
+        path: to.to_owned(),
+        source,
+    })?;
+    Ok(())
+}
+
+fn make_executable(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(path).map_err(|source| Error::ArtifactFile {
+            path: path.to_owned(),
+            source,
+        })?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).map_err(|source| Error::ArtifactFile {
+            path: path.to_owned(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = NamedTempFile::new_in(parent).map_err(|source| Error::ArtifactFile {
+        path: parent.to_owned(),
+        source,
+    })?;
+    let bytes = serde_json::to_vec_pretty(value).map_err(|source| Error::SimulationInvalid {
+        message: format!("cannot serialize simulator selection: {source}"),
+    })?;
+    temporary
+        .write_all(&bytes)
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|source| Error::ArtifactFile {
+            path: path.to_owned(),
+            source,
+        })?;
+    temporary
+        .persist(path)
+        .map_err(|error| Error::ArtifactFile {
+            path: path.to_owned(),
+            source: error.error,
+        })?;
+    Ok(())
+}
+
+fn status_string(status: ExitStatus) -> String {
+    status.code().map_or_else(
+        || "terminated by signal".to_owned(),
+        |code| code.to_string(),
+    )
+}
+
+fn diagnostic_output(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes).trim().to_owned();
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
+    }
+}
+
+fn simulation_error(message: impl Into<String>) -> Error {
+    Error::SimulationInvalid {
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project_fixture() -> Result<(tempfile::TempDir, Project), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"simulation-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        fs::create_dir_all(directory.path().join("src"))?;
+        fs::write(directory.path().join("src/main.rs"), "fn main() {}\n")?;
+        fs::write(directory.path().join("scene.xml"), "<mujoco/>\n")?;
+        fs::write(
+            directory.path().join("robot.yaml"),
+            "schema: phoxal/robot/v0\nrobot:\n  id: simulation-fixture\n  model: scene.xml\n  components: {}\nbrain: {}\nservices: {}\nconnections: {}\n",
+        )?;
+        let project = Project::discover(directory.path())?;
+        Ok((directory, project))
+    }
+
+    #[test]
+    fn simulation_bound_rejects_zero_and_non_finite_values() {
+        assert!(SimulationBound::Steps(0).validate().is_err());
+        assert!(SimulationBound::Duration(0.0).validate().is_err());
+        assert!(SimulationBound::Duration(f64::NAN).validate().is_err());
+        assert!(SimulationBound::Steps(1).validate().is_ok());
+    }
+
+    #[test]
+    fn duration_must_be_an_integral_number_of_native_quanta() {
+        assert!(
+            SimulationBound::Duration(0.03)
+                .validate_for_quantum(10_000_000)
+                .is_ok()
+        );
+        assert!(
+            SimulationBound::Duration(0.025)
+                .validate_for_quantum(10_000_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn terminal_evidence_requires_the_provider_contract_marker() {
+        let complete = br#"{"schema":"phoxal/simulation-run/v0","provider_contract_verified":true,"outcome":"success","completed_steps":2,"requested_steps":2}"#;
+        assert!(provider_contract_verified(complete));
+        let missing = br#"{"schema":"phoxal/simulation-run/v0","outcome":"success","completed_steps":2,"requested_steps":2}"#;
+        assert!(!provider_contract_verified(missing));
+        let incomplete = br#"{"schema":"phoxal/simulation-run/v0","provider_contract_verified":true,"outcome":"failed","completed_steps":1,"requested_steps":2}"#;
+        assert!(!provider_contract_verified(incomplete));
+    }
+
+    #[test]
+    fn locked_or_frozen_missing_simulator_fails_before_store_creation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for lock in [LockMode::Locked, LockMode::Frozen] {
+            let (fixture, project) = project_fixture()?;
+            let manifest = fixture.path().join("Cargo.toml");
+            let before = fs::read(&manifest)?;
+            let request = SimulationRunOptions::new(
+                fixture.path().join("scene.xml"),
+                SimulationPresentation::Headless,
+                SimulationBound::Steps(1),
+            )?;
+            let error = provision(
+                &project,
+                &CargoOptions {
+                    lock,
+                    offline: true,
+                    ..CargoOptions::default()
+                },
+                &request,
+            )
+            .expect_err("locked simulator provisioning must require an existing selection");
+            assert!(matches!(
+                error,
+                Error::SimulationInvalid { message }
+                    if message.contains("provisioning is required")
+            ));
+            assert_eq!(fs::read(&manifest)?, before);
+            assert!(!fixture.path().join("target").exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_valid_stored_selection_is_reused_in_frozen_mode() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (fixture, project) = project_fixture()?;
+        let executable = fixture
+            .path()
+            .join("target/phoxal/simulation/artifacts/fake/simulator");
+        if let Some(parent) = executable.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&executable, "fake simulator")?;
+        let digest = digest_file(&executable)?;
+        let selection_path = fixture
+            .path()
+            .join("target/phoxal/simulation/selection.json");
+        let selection = SimulatorSelection {
+            schema: "phoxal/simulator-selection/v0".to_owned(),
+            package: DEFAULT_SIMULATOR_PACKAGE.to_owned(),
+            version: DEFAULT_SIMULATOR_VERSION.to_owned(),
+            binary: DEFAULT_SIMULATOR_BINARY.to_owned(),
+            source: "fixture".to_owned(),
+            executable: executable.clone(),
+            cargo_manifest: None,
+            cargo_lock: None,
+            executable_bytes: digest.bytes,
+            executable_sha256: digest.sha256.clone(),
+            cargo_manifest_sha256: None,
+            cargo_lock_sha256: None,
+        };
+        fs::write(&selection_path, serde_json::to_vec(&selection)?)?;
+        let request = SimulationRunOptions::new(
+            fixture.path().join("scene.xml"),
+            SimulationPresentation::Headless,
+            SimulationBound::Steps(1),
+        )?;
+        let artifact = provision(
+            &project,
+            &CargoOptions {
+                lock: LockMode::Frozen,
+                offline: true,
+                ..CargoOptions::default()
+            },
+            &request,
+        )?;
+        assert_eq!(artifact.summary.source, "fixture");
+        assert_eq!(artifact.summary.sha256, digest.sha256);
+        Ok(())
+    }
+
+    #[test]
+    fn simulator_manifest_uses_only_registry_coordinates() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let request = SimulationRunOptions::new(
+            "scene.xml",
+            SimulationPresentation::Headless,
+            SimulationBound::Steps(1),
+        )?;
+        let manifest = simulator_manifest(&request);
+        assert!(manifest.contains("registry = \"phoxal\""));
+        assert!(!manifest.contains("path ="));
+        assert!(manifest.contains("version = \"=0.1.0\""));
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_path_requires_the_exact_package_and_binary() {
+        let line = r#"{"reason":"compiler-artifact","package_id":"registry+https://example.invalid/#phoxal-simulator-mujoco@0.1.0","target":{"kind":["bin"],"crate_types":["bin"],"name":"phoxal-simulator-mujoco","src_path":"/tmp/main.rs","edition":"2024","required-features":[]},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false,"panic":"unwind","incremental":true,"codegen-units":256,"rpath":false},"features":[],"filenames":[],"executable":"/tmp/simulator","fresh":false}"#;
+        let path = artifact_path(
+            line.as_bytes(),
+            "registry+https://example.invalid/#phoxal-simulator-mujoco@0.1.0",
+            "phoxal-simulator-mujoco",
+        );
+        assert_eq!(path.ok(), Some(PathBuf::from("/tmp/simulator")));
+    }
+}

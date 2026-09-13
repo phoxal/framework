@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use phoxal_project::{
     CargoOperation, CargoOptions, CargoSelection, LockMode, Project, PublicationKind,
-    PublicationOptions, SubmissionResult, prepare_publication, submit_publication,
+    PublicationOptions, SimulationBound, SimulationPresentation, SimulationRunOptions,
+    SubmissionResult, prepare_publication, submit_publication,
 };
 
 fn main() -> ExitCode {
@@ -24,6 +25,10 @@ fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
     let command = cli.command;
     match command {
         Command::Publish(arguments) => run_publication(arguments),
+        Command::Simulation(arguments) => {
+            let SimulationCommand::Run(arguments) = arguments.command;
+            run_simulation(arguments)
+        }
         command => {
             let project = Project::discover(std::env::current_dir().map_err(|source| {
                 phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
@@ -79,9 +84,117 @@ fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
                     }
                     Ok(())
                 }
+                Command::Simulation(_) => unreachable!("simulation was handled above"),
                 Command::Publish(_) => unreachable!("publish was handled above"),
             }
         }
+    }
+}
+
+fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Error> {
+    let SimulationRunArgs {
+        scene,
+        headless,
+        desktop,
+        steps,
+        duration,
+        simulator,
+        output,
+        scope,
+        supervisor_id,
+        run_id,
+        options,
+    } = arguments;
+    let presentation = if headless {
+        SimulationPresentation::Headless
+    } else if desktop {
+        SimulationPresentation::Desktop
+    } else {
+        SimulationPresentation::Desktop
+    };
+    let bound = match (steps, duration) {
+        (Some(steps), None) => SimulationBound::Steps(steps),
+        (None, Some(duration)) => SimulationBound::Duration(duration),
+        (None, None) => SimulationBound::Steps(1),
+        (Some(_), Some(_)) => {
+            return Err(phoxal_project::Error::SimulationInvalid {
+                message: "choose either --steps or --duration".to_owned(),
+            });
+        }
+    };
+    let mut request = SimulationRunOptions::new(scene, presentation, bound)?;
+    if let Some(path) = simulator {
+        request = request.with_simulator_executable(path);
+    }
+    if let Some(path) = output {
+        request = request.with_output(path);
+    }
+    if scope.is_some() || supervisor_id.is_some() || run_id.is_some() {
+        request = request.with_identity(
+            scope.unwrap_or_else(|| "local".to_owned()),
+            supervisor_id.unwrap_or_else(|| "local".to_owned()),
+            run_id.unwrap_or_else(|| "local-simulation".to_owned()),
+        );
+    }
+    let cargo_options = options.into_options(Vec::new(), Vec::new());
+    let project = Project::discover(std::env::current_dir().map_err(|source| {
+        phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+            path: ".".into(),
+            source,
+        })
+    })?)?;
+    let report = project.run_simulation(&cargo_options, &request)?;
+    if !report.simulator_stdout.trim().is_empty() {
+        print!("{}", report.simulator_stdout);
+        if !report.simulator_stdout.ends_with('\n') {
+            println!();
+        }
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&report).map_err(|source| {
+                phoxal_project::Error::SimulationInvalid {
+                    message: format!("cannot encode simulation terminal report: {source}"),
+                }
+            })?
+        );
+    }
+    if !report.simulator_stderr.is_empty() {
+        eprint!("{}", report.simulator_stderr);
+    }
+    eprintln!(
+        "simulation: simulator={} bundle={} provider_contract={} cleanup={}",
+        report.simulator.executable.display(),
+        report.bundle.display(),
+        if report.provider_contract_verified {
+            "verified"
+        } else {
+            "unverified"
+        },
+        if report.cleanup.error.is_none() {
+            "complete"
+        } else {
+            "incomplete"
+        }
+    );
+    if report.success() {
+        Ok(())
+    } else {
+        Err(phoxal_project::Error::SimulationInvalid {
+            message: format!(
+                "simulation did not complete successfully (exit={}, supervisor_ready={}, provider_contract_verified={}, cleanup={})",
+                report
+                    .simulator_exit_code
+                    .map_or_else(|| "signal".to_owned(), |code| code.to_string()),
+                report.supervisor_ready,
+                report.provider_contract_verified,
+                if report.cleanup.error.is_none() {
+                    "complete"
+                } else {
+                    "incomplete"
+                }
+            ),
+        })
     }
 }
 
@@ -271,6 +384,7 @@ fn diagnostic_path(error: &phoxal_project::Error) -> Option<PathBuf> {
         | phoxal_project::Error::BundlePublish { .. }
         | phoxal_project::Error::BundleCleanup { .. }
         | phoxal_project::Error::InvalidExecutionIdentity { .. }
+        | phoxal_project::Error::SimulationInvalid { .. }
         | phoxal_project::Error::Publication(_) => None,
     }
 }
@@ -315,6 +429,9 @@ impl Cli {
             }
             Command::Test(arguments) => json_common(&arguments.options, &[]),
             Command::Update(arguments) => json_common(&arguments.options, &arguments.cargo_args),
+            Command::Simulation(arguments) => match &arguments.command {
+                SimulationCommand::Run(arguments) => json_common(&arguments.options, &[]),
+            },
             Command::Publish(_) => false,
         }
     }
@@ -332,8 +449,57 @@ enum Command {
     Test(TestArgs),
     /// Resolve permitted Cargo updates and validate the resulting Phoxal graph.
     Update(UpdateArgs),
+    /// Provision and run the independent native simulator application.
+    Simulation(SimulationArgs),
     /// Prepare an authored component or service package for registry review.
     Publish(PublishArgs),
+}
+
+#[derive(Debug, Args)]
+struct SimulationArgs {
+    #[command(subcommand)]
+    command: SimulationCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SimulationCommand {
+    /// Run one finite scene against the selected robot bundle.
+    Run(SimulationRunArgs),
+}
+
+#[derive(Debug, Args)]
+struct SimulationRunArgs {
+    /// Scene MJCF or MJZ archive.
+    scene: PathBuf,
+    /// Run without opening a presentation window.
+    #[arg(long, conflicts_with = "desktop")]
+    headless: bool,
+    /// Run with the simulator desktop presentation.
+    #[arg(long, conflicts_with = "headless")]
+    desktop: bool,
+    /// Advance exactly this many native quanta.
+    #[arg(long, conflicts_with = "duration")]
+    steps: Option<u64>,
+    /// Advance exactly this many seconds, requiring an integral quantum count.
+    #[arg(long, conflicts_with = "steps")]
+    duration: Option<f64>,
+    /// Explicit simulator executable injection or installed artifact path.
+    #[arg(long)]
+    simulator: Option<PathBuf>,
+    /// Compiled simulation bundle output path.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Router namespace for this local launch.
+    #[arg(long)]
+    scope: Option<String>,
+    /// Supervisor identity within the router namespace.
+    #[arg(long)]
+    supervisor_id: Option<String>,
+    /// Finite run identity passed to the simulator.
+    #[arg(long)]
+    run_id: Option<String>,
+    #[command(flatten)]
+    options: CommonArgs,
 }
 
 #[derive(Debug, Args)]
@@ -635,6 +801,73 @@ mod tests {
         assert_eq!(options.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
         assert!(!options.release);
         assert_eq!(options.cargo_args, [OsString::from("--release")]);
+    }
+
+    #[test]
+    fn simulation_run_parses_scene_mode_bound_and_lock_policy() {
+        let parsed = Cli::try_parse_from([
+            "cargo-phoxal",
+            "simulation",
+            "run",
+            "scene.xml",
+            "--headless",
+            "--steps",
+            "4",
+            "--locked",
+            "--scope",
+            "workshop",
+            "--supervisor-id",
+            "rover-01",
+            "--run-id",
+            "run-1",
+        ])
+        .expect("simulation run parses");
+        let arguments = match parsed.command {
+            Command::Simulation(arguments) => match arguments.command {
+                SimulationCommand::Run(arguments) => arguments,
+            },
+            _ => panic!("simulation command parsed as a different variant"),
+        };
+        assert_eq!(arguments.scene, PathBuf::from("scene.xml"));
+        assert!(arguments.headless);
+        assert!(!arguments.desktop);
+        assert_eq!(arguments.steps, Some(4));
+        assert_eq!(arguments.duration, None);
+        assert_eq!(arguments.scope.as_deref(), Some("workshop"));
+        assert_eq!(arguments.supervisor_id.as_deref(), Some("rover-01"));
+        assert_eq!(arguments.run_id.as_deref(), Some("run-1"));
+        assert_eq!(
+            arguments.options.into_options(Vec::new(), Vec::new()).lock,
+            LockMode::Locked
+        );
+    }
+
+    #[test]
+    fn simulation_run_rejects_conflicting_modes_and_bounds() {
+        assert!(
+            Cli::try_parse_from([
+                "cargo-phoxal",
+                "simulation",
+                "run",
+                "scene.xml",
+                "--headless",
+                "--desktop",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "cargo-phoxal",
+                "simulation",
+                "run",
+                "scene.xml",
+                "--steps",
+                "1",
+                "--duration",
+                "0.01",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
