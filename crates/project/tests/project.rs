@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use phoxal_project::{
     CargoOperation, CargoOptions, Error, LockMode, PackageSource, Project, SourceError,
@@ -10,6 +11,30 @@ fn write(path: &Path, contents: &str) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, contents)
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, destination)?;
+        return Ok(());
+    }
+    fs::create_dir_all(destination)?;
+    let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if matches!(
+            entry.file_name().to_str(),
+            Some("target" | ".git" | ".codex")
+        ) {
+            continue;
+        }
+        copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
 }
 
 fn project_fixture() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
@@ -659,6 +684,18 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
     assert!(output.join("manifest.json").is_file());
     assert!(output.join("provenance.json").is_file());
     assert!(bundle.provenance().cargo_lock_sha256.is_some());
+    assert_eq!(bundle.provenance().source_tree.path, "source");
+    assert!(bundle.source_root().join("Cargo.lock").is_file());
+    assert!(
+        bundle
+            .provenance()
+            .source_tree
+            .files
+            .iter()
+            .any(|file| file.path == "Cargo.lock")
+    );
+    assert!(!bundle.provenance().toolchain.cargo.is_empty());
+    assert!(!bundle.provenance().toolchain.rustc.is_empty());
     assert!(bundle.provenance().model.is_some());
     let model_closure = bundle
         .provenance()
@@ -690,6 +727,264 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
         std::fs::metadata(&output)?.modified()?,
         output_modified,
         "unchanged assembly must preserve its output timestamp"
+    );
+    Ok(())
+}
+
+#[test]
+fn bundle_carries_a_relocatable_nested_external_path_closure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let parent = fixture
+        .path()
+        .parent()
+        .ok_or("fixture has no temporary parent")?;
+    let leaf = tempfile::Builder::new()
+        .prefix("phoxal-external-leaf-")
+        .tempdir_in(parent)?;
+    let helper = tempfile::Builder::new()
+        .prefix("phoxal-external-helper-")
+        .tempdir_in(parent)?;
+    let leaf_name = leaf
+        .path()
+        .file_name()
+        .ok_or("leaf has no directory name")?
+        .to_string_lossy();
+    let helper_name = helper
+        .path()
+        .file_name()
+        .ok_or("helper has no directory name")?
+        .to_string_lossy();
+    write(
+        &leaf.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture-external-leaf\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+    )?;
+    write(
+        &leaf.path().join("src/lib.rs"),
+        "pub const VALUE: u32 = 7;\n",
+    )?;
+    write(
+        &helper.path().join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"fixture-external-helper\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nfixture-external-leaf = {{ path = \"../{leaf_name}\" }}\n"
+        ),
+    )?;
+    write(
+        &helper.path().join("src/lib.rs"),
+        "pub fn value() -> u32 { fixture_external_leaf::VALUE }\n",
+    )?;
+    let root_manifest = fixture.path().join("Cargo.toml");
+    let root = fs::read_to_string(&root_manifest)?.replace(
+        "[dependencies]\n",
+        &format!("[dependencies]\nfixture-external-helper = {{ path = \"../{helper_name}\" }}\n"),
+    );
+    write(&root_manifest, &root)?;
+    write(
+        &fixture.path().join("src/main.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/artifact.rs\"));\nfn main() { let _ = fixture_external_helper::value(); }\n",
+    )?;
+
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let prepared = project.prepare(&options)?;
+    let output = fixture.path().join("target/phoxal/fixture-robot/closure");
+    let bundle = prepared.build_bundle(&options, &output)?;
+    let source_root = bundle.source_root();
+    assert!(source_root.join("Cargo.lock").is_file());
+    assert_eq!(
+        fs::read(source_root.join("Cargo.lock"))?,
+        fs::read(prepared.cargo_lock())?
+    );
+    let source_manifest = fs::read_to_string(source_root.join("Cargo.toml"))?;
+    assert!(!source_manifest.contains(&fixture.path().display().to_string()));
+    assert!(!source_manifest.contains(&helper.path().display().to_string()));
+    let external_root = source_root.join("_phoxal_path_dependencies");
+    let external_count = fs::read_dir(&external_root)?.count();
+    assert_eq!(external_count, 2);
+    assert!(
+        bundle
+            .provenance()
+            .sources
+            .iter()
+            .any(|source| source.package == "fixture-external-helper")
+    );
+    assert!(
+        bundle
+            .provenance()
+            .sources
+            .iter()
+            .any(|source| source.package == "fixture-external-leaf")
+    );
+
+    let relocated = tempfile::tempdir()?;
+    let relocated_root = relocated.path().join("source");
+    copy_tree(&source_root, &relocated_root)?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let target = relocated.path().join("target");
+    let output = Command::new(cargo)
+        .current_dir(&relocated_root)
+        .args([
+            "--config",
+            "registries.phoxal.index=\"sparse+https://phoxal.github.io/registry/\"",
+            "check",
+            "--offline",
+            "--locked",
+            "--manifest-path",
+            &relocated_root.join("Cargo.toml").display().to_string(),
+            "--target-dir",
+            &target.display().to_string(),
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "relocated source closure failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+#[test]
+fn bundle_records_the_full_pinned_git_revision_and_subdirectory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = project_fixture()?;
+    let parent = fixture
+        .path()
+        .parent()
+        .ok_or("fixture has no temporary parent")?;
+    let repository = tempfile::Builder::new()
+        .prefix("phoxal-git-service-")
+        .tempdir_in(parent)?;
+    let package_root = repository.path().join("packages/git-service");
+    write(
+        &package_root.join("Cargo.toml"),
+        r#"[package]
+name = "fixture-git-service"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fixture-git-service"
+path = "src/main.rs"
+"#,
+    )?;
+    write(
+        &package_root.join("build.rs"),
+        &artifact_build_script(r#"{"type":"object"}"#),
+    )?;
+    write(&package_root.join("src/lib.rs"), "pub struct GitService;\n")?;
+    write(
+        &package_root.join("src/main.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/artifact.rs\"));\nfn main() {}\n",
+    )?;
+    let init = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(repository.path())
+        .output()?;
+    assert!(init.status.success());
+    for arguments in [
+        vec!["config", "user.name", "Phoxal Test"],
+        vec!["config", "user.email", "phoxal@example.invalid"],
+        vec!["add", "."],
+        vec!["commit", "--quiet", "-m", "fixture"],
+    ] {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(repository.path())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "git command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let revision = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repository.path())
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_owned();
+    let repository_url = format!("file://{}", repository.path().display());
+    let root_manifest = fixture.path().join("Cargo.toml");
+    let root = fs::read_to_string(&root_manifest)?.replace(
+        "[dependencies]\n",
+        &format!(
+            "[dependencies]\ngit-service = {{ package = \"fixture-git-service\", git = \"{repository_url}\", rev = \"{revision}\" }}\n"
+        ),
+    );
+    write(&root_manifest, &root)?;
+    write(
+        &fixture.path().join("robot.yaml"),
+        &fs::read_to_string(fixture.path().join("robot.yaml"))?.replace(
+            "implementation: counter-service",
+            "implementation: git-service",
+        ),
+    )?;
+
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions::default();
+    let prepared = project.prepare(&options)?;
+    let output = fixture
+        .path()
+        .join("target/phoxal/fixture-robot/git-bundle");
+    let bundle = prepared.build_bundle(&options, &output)?;
+    let source = bundle
+        .provenance()
+        .sources
+        .iter()
+        .find(|source| source.package == "fixture-git-service")
+        .ok_or("Git source was not retained in bundle provenance")?;
+    assert_eq!(source.kind, phoxal_project::BundleSourceKind::Git);
+    assert_eq!(source.registry_checksum, None);
+    let git = source.git.as_ref().ok_or("Git provenance is missing")?;
+    assert_eq!(git.repository, repository_url);
+    assert_eq!(git.revision, revision);
+    assert_eq!(git.subdirectory, "packages/git-service");
+    assert!(!source.files.iter().any(|file| file.path == ".cargo-ok"));
+    assert!(source.identity.starts_with(&source.package_id));
+    Ok(())
+}
+
+#[test]
+fn bundle_records_registry_checksums_from_the_root_lock() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = project_fixture()?;
+    let root_manifest = fixture.path().join("Cargo.toml");
+    let root = fs::read_to_string(&root_manifest)?.replace(
+        "[dependencies]\n",
+        "[dependencies]\nserde = { version = \"1.0\", features = [\"derive\"] }\n",
+    );
+    write(&root_manifest, &root)?;
+    let project = Project::discover(fixture.path())?;
+    let options = CargoOptions {
+        offline: true,
+        ..CargoOptions::default()
+    };
+    let prepared = project.prepare(&options)?;
+    let output = fixture
+        .path()
+        .join("target/phoxal/fixture-robot/registry-bundle");
+    let bundle = prepared.build_bundle(&options, &output)?;
+    let registry_sources = bundle
+        .provenance()
+        .sources
+        .iter()
+        .filter(|source| source.kind == phoxal_project::BundleSourceKind::Registry)
+        .collect::<Vec<_>>();
+    assert!(!registry_sources.is_empty());
+    assert!(
+        registry_sources
+            .iter()
+            .all(|source| source.registry_checksum.is_some())
     );
     Ok(())
 }

@@ -21,9 +21,10 @@ pub use artifact::{
     OutputKind, OutputRecord, PortKind, PortSignature, RuntimeRecord, validate_connected_endpoints,
 };
 pub use bundle::{
-    BUNDLE_SCHEMA, BundleArtifact, BundleComponent, BundleExecutable, BundleFile, BundleManifest,
-    BundleModelClosure, BundlePackage, BundleProvenance, BundleResource, CompiledBundle,
-    LocalIdentity, LocalRunPlan, LocalSimulationPlan,
+    BUNDLE_SCHEMA, BundleArtifact, BundleComponent, BundleExecutable, BundleFile, BundleGitSource,
+    BundleManifest, BundleModelClosure, BundlePackage, BundleProvenance, BundleResource,
+    BundleSource, BundleSourceClosure, BundleSourceFile, BundleSourceKind, BundleToolchain,
+    CompiledBundle, LocalIdentity, LocalRunPlan, LocalSimulationPlan,
 };
 pub use cargo::{CargoOperation, CargoOptions, CargoOutput, LockMode};
 pub use discovery::ProjectLayout;
@@ -37,7 +38,7 @@ pub use error::{
 pub use preparation::PreparationChange;
 pub use publication::{
     PUBLICATION_SCHEMA, PublicationFile, PublicationKind, PublicationOptions, PublicationResult,
-    prepare_publication,
+    PublicationSourceProvenance, prepare_publication,
 };
 pub use selection::{
     PackageSource, SelectedComponent, SelectedDriver, SelectedService, SelectedTarget,

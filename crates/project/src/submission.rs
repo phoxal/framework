@@ -449,18 +449,14 @@ fn provenance(
         .iter()
         .map(|file| json!({"path": file.path, "size": file.bytes, "sha256": file.sha256}))
         .collect::<Vec<_>>();
+    let source = serde_json::to_value(publication.source_provenance()).map_err(submission_json)?;
     pretty_json(&json!({
         "name": publication.package(),
         "version": publication.version(),
         "kind": publication.registry_kind(),
         "archive": archive_path,
         "archive_sha256": publication.checksum(),
-        "source": {
-            "origin": "local",
-            "path": ".",
-            "digest": publication.source_digest(),
-            "preparation": format!("cargo-phoxal {}", env!("CARGO_PKG_VERSION")),
-        },
+        "source": source,
         "publisher": login,
         "assets": assets,
     }))

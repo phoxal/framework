@@ -6,10 +6,11 @@
 //! atomically. This module deliberately does not launch a process, install a
 //! release, or claim that a built executable is Ready.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use fs4::{FileExt, TryLockError};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,7 @@ use crate::{CargoOptions, Error, PreparedProject, RobotDocument};
 pub const BUNDLE_SCHEMA: &str = "phoxal/bundle/v0";
 const BIN_DIR: &str = "bin";
 const ASSET_DIR: &str = "assets";
+const SOURCE_DIR: &str = "source";
 const MANIFEST_FILE: &str = "manifest.json";
 const PROVENANCE_FILE: &str = "provenance.json";
 
@@ -59,6 +61,12 @@ impl CompiledBundle {
     #[must_use]
     pub fn executable(&self, instance: &str) -> PathBuf {
         self.root.join(BIN_DIR).join(instance)
+    }
+
+    /// Resolve the immutable local source closure carried by the bundle.
+    #[must_use]
+    pub fn source_root(&self) -> PathBuf {
+        self.root.join(SOURCE_DIR)
     }
 }
 
@@ -152,6 +160,97 @@ pub struct BundleComponent {
     pub source: String,
 }
 
+/// The source class of one package in the resolved Cargo closure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BundleSourceKind {
+    /// A package selected from the robot's local workspace or an external path.
+    Local,
+    /// A package selected from a pinned Git revision.
+    Git,
+    /// A package selected from a Cargo registry archive.
+    Registry,
+    /// A Cargo source not recognized by this version of the tooling.
+    Other,
+}
+
+/// Immutable provenance for a pinned Git package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleGitSource {
+    /// Repository URL without Cargo's source prefix or query string.
+    pub repository: String,
+    /// Full immutable commit selected by Cargo.
+    pub revision: String,
+    /// Package subdirectory within the checked-out revision.
+    pub subdirectory: String,
+}
+
+/// One source file captured as a digest in bundle provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleSourceFile {
+    /// Path relative to the source package root.
+    pub path: String,
+    /// Lowercase SHA-256 digest of the source bytes.
+    pub sha256: String,
+    /// Exact source byte count.
+    pub bytes: u64,
+}
+
+/// One package and its exact source closure in the resolved Cargo graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleSource {
+    /// Stable identity that does not contain a developer-local absolute path.
+    pub identity: String,
+    /// Public package identity used by the bundle, without local path leakage.
+    pub package_id: String,
+    /// Cargo package name.
+    pub package: String,
+    /// Cargo package version.
+    pub version: String,
+    /// Stable Cargo source representation, or `local` for path packages.
+    pub source: String,
+    /// Source classification.
+    pub kind: BundleSourceKind,
+    /// Digest over the sorted source file path and byte closure.
+    pub digest: String,
+    /// Every regular file in the package source closure.
+    pub files: Vec<BundleSourceFile>,
+    /// Registry archive checksum when this is a registry package.
+    pub registry_checksum: Option<String>,
+    /// Git provenance when this is a Git package.
+    pub git: Option<BundleGitSource>,
+}
+
+/// Toolchain and invocation inputs used to create one compiled bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleToolchain {
+    /// Exact Cargo version output.
+    pub cargo: String,
+    /// Exact verbose rustc version output.
+    pub rustc: String,
+    /// Target triple or the explicit host marker.
+    pub target: String,
+    /// Cargo profile selected for the build.
+    pub profile: String,
+    /// Root features selected for the build.
+    pub features: Vec<String>,
+    /// Whether the root requested all features.
+    pub all_features: bool,
+    /// Whether the root disabled default features.
+    pub no_default_features: bool,
+}
+
+/// The relocatable local source closure carried by a compiled bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleSourceClosure {
+    /// Bundle-relative source directory.
+    pub path: String,
+    /// Digest over every retained source file and its relative path.
+    pub digest: String,
+    /// Exact file inventory relative to the closure directory.
+    pub files: Vec<BundleSourceFile>,
+}
+
 /// Source and tool inputs used to construct a bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleProvenance {
@@ -163,6 +262,16 @@ pub struct BundleProvenance {
     pub cargo_manifest_sha256: String,
     /// SHA-256 of the workspace-owned Cargo lock, when present.
     pub cargo_lock_sha256: Option<String>,
+    /// Exact workspace-owned Cargo.lock input, when present.
+    pub cargo_lock: Option<BundleFile>,
+    /// Deduplicated package source closure used by the selected Cargo graph.
+    pub sources: Vec<BundleSource>,
+    /// Digest over the ordered source records.
+    pub source_closure_sha256: String,
+    /// Relocatable local source and lock closure carried by the bundle.
+    pub source_tree: BundleSourceClosure,
+    /// Compiler and invocation inputs used for the bundle.
+    pub toolchain: BundleToolchain,
     /// Model path and digest when the authored model exists.
     pub model: Option<BundleFile>,
     /// The validated model/resource closure copied into the bundle's assets.
@@ -298,6 +407,7 @@ pub(crate) fn assemble(
         source,
     })?;
     let staged_model = stage_model(prepared, staged_root)?;
+    let staged_source_tree = stage_source_tree(prepared, staged_root)?;
 
     let mut artifacts = BTreeMap::new();
     for (_, target) in prepared.assembly_targets() {
@@ -361,7 +471,7 @@ pub(crate) fn assemble(
         executable_records.push(BundleExecutable {
             role: prepared.executable_role(&instance),
             instance: instance.clone(),
-            package_id: built_target.package_id.clone(),
+            package_id: public_package_id(prepared, &built_target.package_id),
             package: built_target.package.clone(),
             target: built_target.target.clone(),
             path: relative,
@@ -386,32 +496,41 @@ pub(crate) fn assemble(
         .map(|component| BundleComponent {
             instance: component.instance.clone(),
             dependency_key: component.dependency_key.clone(),
-            package_id: component.package_id.clone(),
+            package_id: public_package_id(prepared, &component.package_id),
             package: component.package.clone(),
             source: source_identity(&component.source),
         })
         .collect::<Vec<_>>();
     components.sort_by(|left, right| left.instance.cmp(&right.instance));
 
-    let mut features = options.features.clone();
-    features.sort();
-    features.dedup();
+    let (sources, source_closure_sha256) = source_closure(prepared)?;
+    let target = options.target.clone().unwrap_or_else(|| "host".to_owned());
+    let profile = options.profile.clone().unwrap_or_else(|| "dev".to_owned());
+    let features = normalized_features(options);
     let manifest = BundleManifest {
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_id: prepared.document().robot.id.clone(),
         document: prepared.document().clone(),
         root_package: BundlePackage {
-            id: prepared.root_package().id.to_string(),
+            id: public_package_id(prepared, &prepared.root_package().id.to_string()),
             name: prepared.root_package().name.to_string(),
             source: "local".to_owned(),
         },
-        target: options.target.clone().unwrap_or_else(|| "host".to_owned()),
-        profile: options.profile.clone().unwrap_or_else(|| "dev".to_owned()),
+        target,
+        profile,
         features,
         executables: executable_records,
         components,
     };
-    let provenance = provenance(prepared, staged_model.as_ref())?;
+    let provenance = provenance(
+        prepared,
+        staged_model.as_ref(),
+        sources,
+        source_closure_sha256,
+        staged_source_tree,
+        options,
+        &manifest,
+    )?;
     write_json(&staged_root.join(MANIFEST_FILE), &manifest)?;
     write_json(&staged_root.join(PROVENANCE_FILE), &provenance)?;
 
@@ -427,15 +546,887 @@ pub(crate) fn assemble(
 fn provenance(
     prepared: &PreparedProject,
     staged_model: Option<&StagedModel>,
+    sources: Vec<BundleSource>,
+    source_closure_sha256: String,
+    staged_source_tree: BundleSourceClosure,
+    options: &CargoOptions,
+    manifest: &BundleManifest,
 ) -> Result<BundleProvenance, Error> {
+    let cargo_lock = optional_file(&prepared.cargo_lock(), "Cargo.lock")?;
     Ok(BundleProvenance {
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_manifest_sha256: digest_file(prepared.layout().robot_manifest())?.sha256,
         cargo_manifest_sha256: digest_file(prepared.layout().cargo_manifest())?.sha256,
-        cargo_lock_sha256: optional_digest(&prepared.cargo_lock())?,
+        cargo_lock_sha256: cargo_lock.as_ref().map(|file| file.sha256.clone()),
+        cargo_lock,
+        sources,
+        source_closure_sha256,
+        source_tree: staged_source_tree,
+        toolchain: toolchain(options, manifest)?,
         model: staged_model.map(|model| model.source.clone()),
         model_closure: staged_model.map(|model| model.closure.clone()),
     })
+}
+
+fn normalized_features(options: &CargoOptions) -> Vec<String> {
+    let mut features = options.features.clone();
+    features.sort();
+    features.dedup();
+    features
+}
+
+fn toolchain(options: &CargoOptions, manifest: &BundleManifest) -> Result<BundleToolchain, Error> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    Ok(BundleToolchain {
+        cargo: version_output(&cargo, &["--version"])?
+            .trim_end()
+            .to_owned(),
+        rustc: version_output(&rustc, &["-vV"])?.trim_end().to_owned(),
+        target: manifest.target.clone(),
+        profile: manifest.profile.clone(),
+        features: manifest.features.clone(),
+        all_features: options.all_features,
+        no_default_features: options.no_default_features,
+    })
+}
+
+fn version_output(program: &std::ffi::OsStr, arguments: &[&str]) -> Result<String, Error> {
+    let output = Command::new(program)
+        .args(arguments)
+        .output()
+        .map_err(|source| Error::ArtifactFile {
+            path: PathBuf::from(program),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(Error::ArtifactInvalid {
+            path: PathBuf::from(program),
+            message: format!(
+                "toolchain command failed with {}",
+                output
+                    .status
+                    .code()
+                    .map_or_else(|| "a signal".to_owned(), |code| code.to_string())
+            ),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn stage_source_tree(
+    prepared: &PreparedProject,
+    staged_root: &Path,
+) -> Result<BundleSourceClosure, Error> {
+    let closure_root = staged_root.join(SOURCE_DIR);
+    fs::create_dir_all(&closure_root).map_err(|source| Error::BundleDirectory {
+        path: closure_root.clone(),
+        source,
+    })?;
+    let workspace_root = prepared
+        .cargo_workspace_root()
+        .canonicalize()
+        .map_err(|source| Error::ArtifactFile {
+            path: prepared.cargo_workspace_root().to_owned(),
+            source,
+        })?;
+    let package_ids = resolved_package_ids(prepared);
+    let local_packages = prepared
+        .metadata()
+        .packages
+        .iter()
+        .filter(|package| package_ids.contains(&package.id.to_string()) && package.source.is_none())
+        .collect::<Vec<_>>();
+    let mut locations = BTreeMap::new();
+    let mut content_locations = BTreeMap::<String, PathBuf>::new();
+    for package in &local_packages {
+        let package_root = package_root(package)?;
+        let staged = if package_root.starts_with(&workspace_root) {
+            let relative = package_root
+                .strip_prefix(&workspace_root)
+                .map(PathBuf::from)
+                .map_err(|_| Error::ArtifactInvalid {
+                    path: package_root.clone(),
+                    message: "local Cargo source escaped its owning workspace".to_owned(),
+                })?;
+            closure_root.join(relative)
+        } else {
+            let digest = digest_source_tree(&package_root)?;
+            if let Some(existing) = content_locations.get(&digest) {
+                existing.clone()
+            } else {
+                let destination = closure_root.join("_phoxal_path_dependencies").join(&digest);
+                content_locations.insert(digest, destination.clone());
+                destination
+            }
+        };
+        locations.insert(package_root, staged);
+    }
+
+    let workspace_manifest = workspace_root.join("Cargo.toml");
+    let mut workspace_value = read_toml_file(&workspace_manifest)?;
+    let original_workspace_value = workspace_value.clone();
+    let has_workspace = workspace_value
+        .get("workspace")
+        .is_some_and(toml::Value::is_table);
+    if has_workspace {
+        let members = local_packages
+            .iter()
+            .filter_map(|package| {
+                let root = package_root(package).ok()?;
+                root.strip_prefix(&workspace_root)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(path_string)
+            })
+            .collect::<BTreeSet<_>>();
+        let workspace = workspace_value
+            .get_mut("workspace")
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| Error::ArtifactInvalid {
+                path: workspace_manifest.clone(),
+                message: "workspace manifest changed shape while staging".to_owned(),
+            })?;
+        if !members.is_empty() {
+            workspace.insert(
+                "members".to_owned(),
+                toml::Value::Array(members.into_iter().map(toml::Value::String).collect()),
+            );
+        } else {
+            workspace.insert("members".to_owned(), toml::Value::Array(Vec::new()));
+        }
+        workspace.remove("default-members");
+    }
+    let staged_workspace_manifest = closure_root.join("Cargo.toml");
+    for package in &local_packages {
+        let original_root = package_root(package)?;
+        let staged_root = locations
+            .get(&original_root)
+            .ok_or_else(|| Error::ArtifactInvalid {
+                path: original_root.clone(),
+                message: "local Cargo source has no staged location".to_owned(),
+            })?
+            .clone();
+        copy_source_tree(&original_root, &staged_root)?;
+        let original_manifest = original_root.join("Cargo.toml");
+        let staged_manifest = staged_root.join("Cargo.toml");
+        let mut value = read_toml_file(&original_manifest)?;
+        let changed = rewrite_local_paths(&mut value, &original_root, &workspace_root, &locations)?;
+        if changed {
+            write_toml_file(&staged_manifest, &value)?;
+        }
+    }
+    if has_workspace {
+        rewrite_workspace_paths(
+            &original_workspace_value,
+            &mut workspace_value,
+            &workspace_root,
+            &closure_root,
+            &locations,
+        )?;
+        write_toml_file(&staged_workspace_manifest, &workspace_value)?;
+    }
+    let lock = prepared.cargo_lock();
+    if !lock.is_file() {
+        return Err(Error::ArtifactInvalid {
+            path: lock,
+            message: "prepared Cargo graph has no workspace Cargo.lock".to_owned(),
+        });
+    }
+    copy_source_file(&prepared.cargo_lock(), &closure_root.join("Cargo.lock"))?;
+
+    let files = source_files(&closure_root)?;
+    Ok(BundleSourceClosure {
+        path: SOURCE_DIR.to_owned(),
+        digest: digest_source_files(&files),
+        files,
+    })
+}
+
+fn package_root(package: &cargo_metadata::Package) -> Result<PathBuf, Error> {
+    PathBuf::from(package.manifest_path.as_std_path())
+        .parent()
+        .ok_or_else(|| Error::ArtifactInvalid {
+            path: PathBuf::from(package.manifest_path.as_std_path()),
+            message: "Cargo package manifest has no parent directory".to_owned(),
+        })
+        .and_then(|path| {
+            path.canonicalize().map_err(|source| Error::ArtifactFile {
+                path: path.to_owned(),
+                source,
+            })
+        })
+}
+
+fn read_toml_file(path: &Path) -> Result<toml::Value, Error> {
+    let text = fs::read_to_string(path).map_err(|source| Error::ArtifactFile {
+        path: path.to_owned(),
+        source,
+    })?;
+    toml::from_str(&text).map_err(|source| Error::ArtifactInvalid {
+        path: path.to_owned(),
+        message: format!("invalid captured Cargo manifest: {source}"),
+    })
+}
+
+fn write_toml_file(path: &Path, value: &toml::Value) -> Result<(), Error> {
+    let text = toml::to_string_pretty(value).map_err(|source| Error::ArtifactInvalid {
+        path: path.to_owned(),
+        message: format!("cannot serialize captured Cargo manifest: {source}"),
+    })?;
+    write_source_file(path, text.as_bytes())
+}
+
+fn copy_source_file(source: &Path, destination: &Path) -> Result<(), Error> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| Error::ArtifactFile {
+        path: source.to_owned(),
+        source: error,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(Error::ArtifactInvalid {
+            path: source.to_owned(),
+            message: "captured source input must be a regular file".to_owned(),
+        });
+    }
+    let bytes = fs::read(source).map_err(|error| Error::ArtifactFile {
+        path: source.to_owned(),
+        source: error,
+    })?;
+    write_source_file(destination, &bytes)
+}
+
+fn write_source_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::BundleDirectory {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    let mut file = File::create(path).map_err(|source| Error::BundleWrite {
+        path: path.to_owned(),
+        source,
+    })?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| Error::BundleWrite {
+            path: path.to_owned(),
+            source,
+        })
+}
+
+fn copy_source_tree(source: &Path, destination: &Path) -> Result<(), Error> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| Error::ArtifactFile {
+        path: source.to_owned(),
+        source: error,
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(Error::ArtifactInvalid {
+            path: source.to_owned(),
+            message: "resolved Cargo source contains a symbolic link".to_owned(),
+        });
+    }
+    if metadata.is_file() {
+        return copy_source_file(source, destination);
+    }
+    if !metadata.is_dir() {
+        return Err(Error::ArtifactInvalid {
+            path: source.to_owned(),
+            message: "resolved Cargo source is not a regular file or directory".to_owned(),
+        });
+    }
+    fs::create_dir_all(destination).map_err(|error| Error::BundleDirectory {
+        path: destination.to_owned(),
+        source: error,
+    })?;
+    let mut entries = fs::read_dir(source)
+        .map_err(|error| Error::ArtifactFile {
+            path: source.to_owned(),
+            source: error,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| Error::ArtifactFile {
+            path: source.to_owned(),
+            source: error,
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name();
+        if name == ".git"
+            || name == ".cargo-ok"
+            || name == ".cargo_vcs_info.json"
+            || name == "target"
+            || name == ".codex"
+        {
+            continue;
+        }
+        copy_source_tree(&entry.path(), &destination.join(name))?;
+    }
+    Ok(())
+}
+
+fn rewrite_workspace_paths(
+    original: &toml::Value,
+    value: &mut toml::Value,
+    workspace_root: &Path,
+    staged_root: &Path,
+    locations: &BTreeMap<PathBuf, PathBuf>,
+) -> Result<(), Error> {
+    let Some(workspace) = value
+        .get_mut("workspace")
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return Ok(());
+    };
+    let Some(dependencies) = workspace.get_mut("dependencies") else {
+        return Ok(());
+    };
+    let Some(original_dependencies) = original
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(());
+    };
+    let Some(dependencies) = dependencies.as_table_mut() else {
+        return Ok(());
+    };
+    for (key, dependency) in original_dependencies {
+        let Some(path) = dependency
+            .as_table()
+            .and_then(|table| table.get("path"))
+            .and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+        let canonical = resolve_local_dependency(workspace_root, path)?;
+        let Some(staged_dependency) = locations.get(&canonical) else {
+            continue;
+        };
+        let staged_path = relative_path(staged_root, staged_dependency).ok_or_else(|| {
+            Error::ArtifactInvalid {
+                path: staged_dependency.clone(),
+                message: "captured workspace dependency is outside the source closure".to_owned(),
+            }
+        })?;
+        if let Some(dependency) = dependencies
+            .get_mut(key)
+            .and_then(toml::Value::as_table_mut)
+        {
+            dependency.insert(
+                "path".to_owned(),
+                toml::Value::String(path_string(&staged_path)),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_local_paths(
+    value: &mut toml::Value,
+    package_root: &Path,
+    workspace_root: &Path,
+    locations: &BTreeMap<PathBuf, PathBuf>,
+) -> Result<bool, Error> {
+    let mut changed = false;
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let Some(dependencies) = value.get_mut(section).and_then(toml::Value::as_table_mut) else {
+            continue;
+        };
+        for dependency in dependencies.iter_mut().map(|(_, value)| value) {
+            let Some(table) = dependency.as_table_mut() else {
+                continue;
+            };
+            let Some(path) = table.get("path").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            let base = if table.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
+                workspace_root
+            } else {
+                package_root
+            };
+            let canonical = resolve_local_dependency(base, path)?;
+            let Some(staged_dependency) = locations.get(&canonical) else {
+                continue;
+            };
+            let staged_package =
+                locations
+                    .get(package_root)
+                    .ok_or_else(|| Error::ArtifactInvalid {
+                        path: package_root.to_owned(),
+                        message: "captured package has no staged location".to_owned(),
+                    })?;
+            let staged_path =
+                relative_path(staged_package, staged_dependency).ok_or_else(|| {
+                    Error::ArtifactInvalid {
+                        path: staged_dependency.clone(),
+                        message: "captured path dependency is outside the source closure"
+                            .to_owned(),
+                    }
+                })?;
+            let staged_path = path_string(&staged_path);
+            if path != staged_path {
+                table.insert("path".to_owned(), toml::Value::String(staged_path));
+                changed = true;
+            }
+        }
+    }
+    if let Some(targets) = value.get_mut("target").and_then(toml::Value::as_table_mut) {
+        for target in targets.iter_mut().map(|(_, value)| value) {
+            changed |= rewrite_local_paths(target, package_root, workspace_root, locations)?;
+        }
+    }
+    Ok(changed)
+}
+
+fn resolve_local_dependency(base: &Path, reference: &str) -> Result<PathBuf, Error> {
+    let path = Path::new(reference);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
+    {
+        return Err(Error::ArtifactInvalid {
+            path: base.join(path),
+            message: "Cargo path dependency must be relative".to_owned(),
+        });
+    }
+    base.join(path)
+        .canonicalize()
+        .map_err(|source| Error::ArtifactFile {
+            path: base.join(path),
+            source,
+        })
+}
+
+fn relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common == 0 {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in &from[common..] {
+        if matches!(component, Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &to[common..] {
+        if let Component::Normal(component) = component {
+            relative.push(component);
+        }
+    }
+    Some(relative)
+}
+
+fn path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn source_closure(prepared: &PreparedProject) -> Result<(Vec<BundleSource>, String), Error> {
+    let package_ids = resolved_package_ids(prepared);
+    let checksums = lock_checksums(&prepared.cargo_lock())?;
+    let mut sources = prepared
+        .metadata()
+        .packages
+        .iter()
+        .filter(|package| package_ids.contains(&package.id.to_string()))
+        .map(|package| source_record(prepared, package, &checksums))
+        .collect::<Result<Vec<_>, _>>()?;
+    sources.sort_by(|left, right| left.identity.cmp(&right.identity));
+
+    let mut hasher = Sha256::new();
+    for source in &sources {
+        let serialized = serde_json::to_vec(source).map_err(|error| Error::BundleJson {
+            path: PathBuf::from("provenance.json"),
+            source: error,
+        })?;
+        update_digest_bytes(&mut hasher, &serialized);
+    }
+    Ok((sources, format!("{:x}", hasher.finalize())))
+}
+
+fn resolved_package_ids(prepared: &PreparedProject) -> BTreeSet<String> {
+    let Some(resolve) = prepared.metadata().resolve.as_ref() else {
+        return prepared
+            .metadata()
+            .packages
+            .iter()
+            .map(|package| package.id.to_string())
+            .collect();
+    };
+    let Some(root) = resolve.root.as_ref() else {
+        return prepared
+            .metadata()
+            .packages
+            .iter()
+            .map(|package| package.id.to_string())
+            .collect();
+    };
+    let mut pending = VecDeque::from([root.to_string()]);
+    let mut selected = BTreeSet::new();
+    while let Some(id) = pending.pop_front() {
+        if !selected.insert(id.clone()) {
+            continue;
+        }
+        if let Some(node) = resolve.nodes.iter().find(|node| node.id.to_string() == id) {
+            pending.extend(node.dependencies.iter().map(ToString::to_string));
+        }
+    }
+    selected
+}
+
+fn source_record(
+    prepared: &PreparedProject,
+    package: &cargo_metadata::Package,
+    checksums: &BTreeMap<(String, String, String), String>,
+) -> Result<BundleSource, Error> {
+    let source = package
+        .source
+        .as_ref()
+        .map_or_else(|| "local".to_owned(), |source| source.repr.clone());
+    let kind = match package.source.as_ref().map(|source| source.repr.as_str()) {
+        None => BundleSourceKind::Local,
+        Some(source) if source.starts_with("git+") => BundleSourceKind::Git,
+        Some(source) if source.starts_with("registry+") => BundleSourceKind::Registry,
+        Some(source) => {
+            return Err(Error::ArtifactInvalid {
+                path: PathBuf::from(package.manifest_path.as_std_path()),
+                message: format!("unsupported Cargo source scheme '{source}'"),
+            });
+        }
+    };
+    let package_root = PathBuf::from(package.manifest_path.as_std_path())
+        .parent()
+        .ok_or_else(|| Error::ArtifactInvalid {
+            path: PathBuf::from(package.manifest_path.as_std_path()),
+            message: "Cargo package manifest has no parent directory".to_owned(),
+        })?
+        .to_owned();
+    let files = source_files_with(&package_root, kind == BundleSourceKind::Registry)?;
+    let digest = digest_source_files(&files);
+    let package_id = public_package_id(prepared, &package.id.to_string());
+    let identity = format!("{package_id}#{digest}");
+    let git = if kind == BundleSourceKind::Git {
+        Some(git_source(&source, &package_root)?)
+    } else {
+        None
+    };
+    let registry_checksum = if kind == BundleSourceKind::Registry {
+        Some(
+            checksums
+                .get(&(
+                    package.name.to_string(),
+                    package.version.to_string(),
+                    source.clone(),
+                ))
+                .cloned()
+                .ok_or_else(|| Error::ArtifactInvalid {
+                    path: package_root.join("Cargo.toml"),
+                    message: format!(
+                        "Cargo.lock has no checksum for registry package {} {} from {}",
+                        package.name, package.version, source
+                    ),
+                })?,
+        )
+    } else {
+        None
+    };
+    Ok(BundleSource {
+        identity,
+        package_id,
+        package: package.name.to_string(),
+        version: package.version.to_string(),
+        source,
+        kind,
+        digest,
+        files,
+        registry_checksum,
+        git,
+    })
+}
+
+fn source_files(root: &Path) -> Result<Vec<BundleSourceFile>, Error> {
+    source_files_with(root, false)
+}
+
+fn source_files_with(
+    root: &Path,
+    preserve_registry_metadata: bool,
+) -> Result<Vec<BundleSourceFile>, Error> {
+    let mut pending = VecDeque::from([PathBuf::new()]);
+    let mut paths = Vec::new();
+    while let Some(relative) = pending.pop_front() {
+        let directory = root.join(&relative);
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|source| Error::ArtifactFile {
+                path: directory.clone(),
+                source,
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| Error::ArtifactFile {
+                path: directory.clone(),
+                source,
+            })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            if name == ".git"
+                || name == ".cargo-ok"
+                || (name == ".cargo_vcs_info.json" && !preserve_registry_metadata)
+                || name == "target"
+                || name == ".codex"
+            {
+                continue;
+            }
+            let child = relative.join(name);
+            let path = root.join(&child);
+            let metadata = fs::symlink_metadata(&path).map_err(|source| Error::ArtifactFile {
+                path: path.clone(),
+                source,
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err(Error::ArtifactInvalid {
+                    path,
+                    message: "resolved Cargo source contains a symbolic link".to_owned(),
+                });
+            }
+            if metadata.is_dir() {
+                pending.push_back(child);
+            } else if metadata.is_file() {
+                paths.push(child);
+            } else {
+                return Err(Error::ArtifactInvalid {
+                    path,
+                    message: "resolved Cargo source contains a non-regular entry".to_owned(),
+                });
+            }
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|relative| {
+            let path = root.join(&relative);
+            let digest = digest_file(&path)?;
+            Ok(BundleSourceFile {
+                path: relative.to_string_lossy().replace('\\', "/"),
+                sha256: digest.sha256,
+                bytes: digest.bytes,
+            })
+        })
+        .collect()
+}
+
+fn digest_source_tree(root: &Path) -> Result<String, Error> {
+    Ok(digest_source_files(&source_files(root)?))
+}
+
+fn digest_source_files(files: &[BundleSourceFile]) -> String {
+    let mut hasher = Sha256::new();
+    for file in files {
+        update_digest_bytes(&mut hasher, file.path.as_bytes());
+        update_digest_bytes(&mut hasher, file.sha256.as_bytes());
+        update_digest_bytes(&mut hasher, &file.bytes.to_le_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn lock_checksums(path: &Path) -> Result<BTreeMap<(String, String, String), String>, Error> {
+    let Ok(bytes) = fs::read(path) else {
+        return Ok(BTreeMap::new());
+    };
+    let text = String::from_utf8(bytes).map_err(|error| Error::ArtifactInvalid {
+        path: path.to_owned(),
+        message: format!("Cargo.lock is not UTF-8: {error}"),
+    })?;
+    let value = toml::from_str::<toml::Value>(&text).map_err(|error| Error::ArtifactInvalid {
+        path: path.to_owned(),
+        message: format!("Cargo.lock is not valid TOML: {error}"),
+    })?;
+    let mut checksums = BTreeMap::new();
+    if let Some(packages) = value.get("package").and_then(toml::Value::as_array) {
+        for package in packages {
+            let Some(table) = package.as_table() else {
+                continue;
+            };
+            let Some(checksum) = table.get("checksum").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            let (Some(name), Some(version), Some(source)) = (
+                table.get("name").and_then(toml::Value::as_str),
+                table.get("version").and_then(toml::Value::as_str),
+                table.get("source").and_then(toml::Value::as_str),
+            ) else {
+                continue;
+            };
+            checksums.insert(
+                (name.to_owned(), version.to_owned(), source.to_owned()),
+                checksum.to_owned(),
+            );
+        }
+    }
+    Ok(checksums)
+}
+
+fn git_source(source: &str, package_root: &Path) -> Result<BundleGitSource, Error> {
+    let value = source
+        .strip_prefix("git+")
+        .and_then(|value| value.rsplit_once('#'))
+        .ok_or_else(|| Error::ArtifactInvalid {
+            path: package_root.join("Cargo.toml"),
+            message: "Git package source is missing its resolved immutable revision".to_owned(),
+        })?;
+    let repository_with_query = value.0;
+    let revision = value.1;
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::ArtifactInvalid {
+            path: package_root.join("Cargo.toml"),
+            message: format!("Git package source revision '{revision}' is not a full commit"),
+        });
+    }
+    let repository = repository_with_query
+        .split_once('?')
+        .map_or(repository_with_query, |(repository, _)| repository)
+        .to_owned();
+    let git_root =
+        git_output(package_root, &["rev-parse", "--show-toplevel"]).ok_or_else(|| {
+            Error::ArtifactInvalid {
+                path: package_root.to_owned(),
+                message: "Cargo Git source is not inside a readable Git checkout".to_owned(),
+            }
+        })?;
+    let git_root =
+        PathBuf::from(git_root)
+            .canonicalize()
+            .map_err(|source| Error::ArtifactFile {
+                path: package_root.to_owned(),
+                source,
+            })?;
+    let package_root = package_root
+        .canonicalize()
+        .map_err(|source| Error::ArtifactFile {
+            path: package_root.to_owned(),
+            source,
+        })?;
+    let subdirectory = package_root
+        .strip_prefix(&git_root)
+        .map(path_string)
+        .map_err(|_| Error::ArtifactInvalid {
+            path: package_root.clone(),
+            message: format!(
+                "Cargo Git source checkout {} does not contain package root {}",
+                git_root.display(),
+                package_root.display()
+            ),
+        })?;
+    let head = git_output(&package_root, &["rev-parse", "HEAD"]).ok_or_else(|| {
+        Error::ArtifactInvalid {
+            path: package_root.clone(),
+            message: "Cargo Git source checkout has no readable HEAD".to_owned(),
+        }
+    })?;
+    if !head.eq_ignore_ascii_case(revision) {
+        return Err(Error::ArtifactInvalid {
+            path: package_root,
+            message: format!(
+                "Cargo Git source HEAD {head} does not match resolved revision {revision}"
+            ),
+        });
+    }
+    let dirty = git_status(&package_root)?;
+    if !dirty.is_empty() {
+        return Err(Error::ArtifactInvalid {
+            path: package_root,
+            message: format!(
+                "Cargo Git source checkout has source changes outside Cargo metadata: {}",
+                dirty.join(", ")
+            ),
+        });
+    }
+    Ok(BundleGitSource {
+        repository,
+        revision: revision.to_owned(),
+        subdirectory,
+    })
+}
+
+fn git_output(package_root: &Path, arguments: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(package_root)
+        .args(arguments)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!value.is_empty()).then_some(value)
+}
+
+fn git_status(package_root: &Path) -> Result<Vec<String>, Error> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(package_root)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .map_err(|source| Error::ArtifactFile {
+            path: package_root.to_owned(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(Error::ArtifactInvalid {
+            path: package_root.to_owned(),
+            message: format!(
+                "cannot inspect Cargo Git source status: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let path = line.get(3..)?.trim();
+            let path = path.rsplit_once(" -> ").map_or(path, |(_, path)| path);
+            let file_name = Path::new(path).file_name().and_then(|name| name.to_str());
+            (!matches!(file_name, Some(".cargo-ok" | ".cargo_vcs_info.json")))
+                .then_some(line.to_owned())
+        })
+        .collect())
+}
+
+fn public_package_id(prepared: &PreparedProject, package_id: &str) -> String {
+    if let Some(package) = prepared
+        .metadata()
+        .packages
+        .iter()
+        .find(|package| package.id.to_string() == package_id)
+    {
+        if package.source.is_none() {
+            return format!("local:{}@{}", package.name, package.version);
+        }
+        if let Some(source) = package.source.as_ref()
+            && source.repr.starts_with("git+")
+        {
+            let revision = source
+                .repr
+                .rsplit_once('#')
+                .map_or("unknown", |(_, revision)| revision);
+            return format!("git:{}@{}#{revision}", package.name, package.version);
+        }
+        return package.id.to_string();
+    }
+    if package_id.starts_with("path+") {
+        "local".to_owned()
+    } else {
+        package_id.to_owned()
+    }
 }
 
 fn stage_model(
@@ -701,9 +1692,16 @@ fn invalid_model(root: &Path, relative: &Path, message: impl Into<String>) -> Er
     }
 }
 
-fn optional_digest(path: &Path) -> Result<Option<String>, Error> {
+fn optional_file(path: &Path, relative: &str) -> Result<Option<BundleFile>, Error> {
     match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(Some(digest_file(path)?.sha256)),
+        Ok(metadata) if metadata.is_file() => {
+            let digest = digest_file(path)?;
+            Ok(Some(BundleFile {
+                path: relative.to_owned(),
+                sha256: digest.sha256,
+                bytes: digest.bytes,
+            }))
+        }
         Ok(_) => Err(Error::ArtifactInvalid {
             path: path.to_owned(),
             message: "authored Cargo.lock path is not a regular file".to_owned(),
@@ -1110,6 +2108,85 @@ mod tests {
             }),
             "local"
         );
+    }
+
+    #[test]
+    fn source_inventory_excludes_cargo_cache_markers_except_registry_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"source\"\n",
+        )?;
+        fs::write(directory.path().join(".cargo-ok"), "")?;
+        fs::write(directory.path().join(".cargo_vcs_info.json"), "{}")?;
+        let local = source_files(directory.path())?;
+        assert!(!local.iter().any(|file| file.path == ".cargo-ok"));
+        assert!(!local.iter().any(|file| file.path == ".cargo_vcs_info.json"));
+        let registry = source_files_with(directory.path(), true)?;
+        assert!(!registry.iter().any(|file| file.path == ".cargo-ok"));
+        assert!(
+            registry
+                .iter()
+                .any(|file| file.path == ".cargo_vcs_info.json")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn git_provenance_uses_checkout_identity_for_subdirectories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = tempfile::tempdir()?;
+        let package_root = repository.path().join("checkouts/service");
+        fs::create_dir_all(package_root.join("src"))?;
+        fs::write(
+            package_root.join("Cargo.toml"),
+            "[package]\nname = \"git-service\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )?;
+        fs::write(package_root.join("src/lib.rs"), "pub struct Service;\n")?;
+        let init = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repository.path())
+            .output()?;
+        assert!(init.status.success());
+        for arguments in [
+            vec!["config", "user.name", "Phoxal Test"],
+            vec!["config", "user.email", "phoxal@example.invalid"],
+            vec!["add", "."],
+            vec!["commit", "--quiet", "-m", "fixture"],
+        ] {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(repository.path())
+                .output()?;
+            assert!(
+                output.status.success(),
+                "git command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let revision = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repository.path())
+                .output()?
+                .stdout,
+        )?
+        .trim()
+        .to_owned();
+        let source = format!("git+file://{}#{revision}", repository.path().display());
+        let provenance = git_source(&source, &package_root)?;
+        assert_eq!(provenance.revision, revision);
+        assert_eq!(provenance.subdirectory, "checkouts/service");
+        fs::write(package_root.join("src/lib.rs"), "pub struct Changed;\n")?;
+        let error = git_source(&source, &package_root)
+            .expect_err("a dirty Git source must not claim immutable provenance");
+        assert!(matches!(
+            error,
+            Error::ArtifactInvalid { message, .. }
+                if message.contains("source changes outside Cargo metadata")
+        ));
+        Ok(())
     }
 
     #[test]
