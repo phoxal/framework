@@ -14,6 +14,7 @@ struct Options {
     model_path: PathBuf,
     bounds: RunBounds,
     presentation: Presentation,
+    native_core: bool,
 }
 
 fn main() -> ExitCode {
@@ -29,6 +30,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let options = Options::parse(std::env::args_os().skip(1))?;
+    if !options.native_core {
+        return Err(
+            "a model-only invocation is disabled; use `--native-core` for a native smoke run or `cargo phoxal simulation run` for a bundle-backed run"
+                .to_owned(),
+        );
+    }
     let mut core = SimulationCore::from_model_path(&options.model_path)
         .map_err(|error| error.to_string())?;
     match options.presentation {
@@ -69,6 +76,7 @@ impl Options {
         let mut steps = None;
         let mut duration_seconds = None;
         let mut presentation = None;
+        let mut native_core = false;
         let mut args = args.peekable();
         while let Some(argument) = args.next() {
             let argument = argument
@@ -77,7 +85,7 @@ impl Options {
             match argument.as_str() {
                 "--help" | "-h" => {
                     println!(
-                        "usage: phoxal-simulator-mujoco <model.xml> [--headless|--desktop] [--steps N | --duration SECONDS]"
+                        "usage: phoxal-simulator-mujoco <model.xml> --native-core [--headless|--desktop] [--steps N | --duration SECONDS]"
                     );
                     return Err(String::new());
                 }
@@ -94,6 +102,12 @@ impl Options {
                     }) {
                         return Err("choose either --headless or --desktop".to_owned());
                     }
+                }
+                "--native-core" => {
+                    if native_core {
+                        return Err("--native-core may be specified once".to_owned());
+                    }
+                    native_core = true;
                 }
                 "--steps" => {
                     let value = args
@@ -151,6 +165,7 @@ impl Options {
             model_path,
             bounds,
             presentation: presentation.unwrap_or(Presentation::Headless),
+            native_core,
         })
     }
 }
@@ -165,7 +180,14 @@ mod tests {
 
     #[test]
     fn options_parse_exact_steps_and_headless_mode() {
-        let options = parse(&["fixture.xml", "--headless", "--steps", "12"]).unwrap();
+        let options = parse(&[
+            "fixture.xml",
+            "--native-core",
+            "--headless",
+            "--steps",
+            "12",
+        ])
+        .unwrap();
         assert_eq!(options.model_path, PathBuf::from("fixture.xml"));
         assert_eq!(options.bounds, RunBounds::Steps(12));
         assert_eq!(options.presentation, Presentation::Headless);
@@ -173,7 +195,14 @@ mod tests {
 
     #[test]
     fn options_parse_desktop_and_exact_duration() {
-        let options = parse(&["fixture.xml", "--desktop", "--duration", "0.1"]).unwrap();
+        let options = parse(&[
+            "fixture.xml",
+            "--native-core",
+            "--desktop",
+            "--duration",
+            "0.1",
+        ])
+        .unwrap();
         assert_eq!(options.bounds, RunBounds::Duration(0.1));
         assert_eq!(options.presentation, Presentation::Desktop);
     }

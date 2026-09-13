@@ -7,12 +7,21 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "AGPL-3.0-only"
-publish = false
+publish = ["phoxal"]
 description = "Independent Phoxal MuJoCo simulator application."
+documentation = "https://docs.rs/phoxal-simulator-mujoco"
+homepage = "https://github.com/phoxal/framework"
+repository = "https://github.com/phoxal/framework"
+
+[[bin]]
+name = "phoxal-simulator-mujoco"
+path = "src/main.rs"
+required-features = ["native"]
 
 [features]
-default = []
-desktop = ["dep:eframe"]
+default = ["native"]
+native = ["dep:phoxal-mujoco", "phoxal-mujoco/native"]
+desktop = ["native", "dep:eframe"]
 
 [dependencies]
 eframe = {
@@ -24,8 +33,34 @@ eframe = {
 phoxal-mujoco = {
     path = "../../crates/mujoco",
     version = "0.1.0",
-    features = ["native"],
+    registry = "phoxal",
+    default-features = false,
+    optional = true,
 }
+phoxal = {
+    path = "../../phoxal",
+    version = "=0.68.0",
+    registry = "phoxal",
+    default-features = false,
+    features = ["session"],
+}
+phoxal-kinematics = {
+    path = "../../contracts/kinematics",
+    version = "0.1.0",
+    registry = "phoxal",
+}
+phoxal-robotics = {
+    path = "../../crates/robotics",
+    version = "0.1.0",
+    registry = "phoxal",
+}
+phoxal-motion = {
+    path = "../../contracts/motion",
+    version = "0.1.0",
+    registry = "phoxal",
+}
+prost = "0.14.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.149"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "net"] }
 thiserror = "2.0.18"
