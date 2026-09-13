@@ -37,6 +37,7 @@ const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 /// A package role accepted by the publication command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PublicationKind {
     /// A component package, including a passive data-only component.
     Component,
