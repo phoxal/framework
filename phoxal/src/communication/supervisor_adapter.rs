@@ -56,6 +56,8 @@ pub enum PublicRouteKind {
     Inspection,
     /// Service operation admission for already bound mutable ports.
     Mutation,
+    /// Deterministic simulation authority and boundary coordination.
+    Simulation,
 }
 
 /// The exact operation suffix carried by one public session route.
@@ -90,6 +92,16 @@ pub enum PublicOperation {
     Watch,
     /// Establish a bounded event/stream subscription.
     Subscribe,
+    /// Acquire exclusive simulation authority for one execution.
+    AcquireAuthority,
+    /// Advance an acquired simulation boundary.
+    Advance,
+    /// Reset an acquired simulation timeline.
+    Reset,
+    /// Release simulation authority.
+    ReleaseAuthority,
+    /// Inspect the current simulation boundary.
+    Progress,
 }
 
 impl PublicOperation {
@@ -109,6 +121,11 @@ impl PublicOperation {
             Self::Command => "command",
             Self::Watch => "watch",
             Self::Subscribe => "subscribe",
+            Self::AcquireAuthority => "acquire-authority",
+            Self::Advance => "advance",
+            Self::Reset => "reset",
+            Self::ReleaseAuthority => "release-authority",
+            Self::Progress => "progress",
         }
     }
 
@@ -126,6 +143,11 @@ impl PublicOperation {
             "command" => Self::Command,
             "watch" => Self::Watch,
             "subscribe" => Self::Subscribe,
+            "acquire-authority" => Self::AcquireAuthority,
+            "advance" => Self::Advance,
+            "reset" => Self::Reset,
+            "release-authority" => Self::ReleaseAuthority,
+            "progress" => Self::Progress,
             _ => return None,
         })
     }
@@ -144,6 +166,11 @@ impl PublicOperation {
             | Self::Watch
             | Self::Subscribe => PublicRouteKind::Inspection,
             Self::Command => PublicRouteKind::Mutation,
+            Self::AcquireAuthority
+            | Self::Advance
+            | Self::Reset
+            | Self::ReleaseAuthority
+            | Self::Progress => PublicRouteKind::Simulation,
         }
     }
 }
@@ -153,6 +180,7 @@ const fn default_operation(kind: PublicRouteKind) -> PublicOperation {
         PublicRouteKind::Control => PublicOperation::Open,
         PublicRouteKind::Inspection => PublicOperation::Info,
         PublicRouteKind::Mutation => PublicOperation::Command,
+        PublicRouteKind::Simulation => PublicOperation::AcquireAuthority,
     }
 }
 
@@ -162,6 +190,7 @@ impl PublicRouteKind {
             Self::Control => "control",
             Self::Inspection => "inspection",
             Self::Mutation => "mutation",
+            Self::Simulation => "simulation",
         }
     }
 
@@ -170,6 +199,7 @@ impl PublicRouteKind {
             "control" => Some(Self::Control),
             "inspection" => Some(Self::Inspection),
             "mutation" => Some(Self::Mutation),
+            "simulation" => Some(Self::Simulation),
             _ => None,
         }
     }
@@ -243,27 +273,53 @@ impl PublicRoute {
     /// Parse an exact public route key for the selected target.
     ///
     /// Accepted keys have exactly this shape:
+    /// Session keys have the shape
     /// `{P}/session/v1/clients/{principal}/{control|inspection|mutation}/{operation}`.
+    /// Simulation keys have the shape
+    /// `{P}/simulation/v1/clients/{principal}/{operation}`.
     /// Wildcards, query expressions, extra path segments, redirects, and
     /// another supervisor's prefix are rejected.
     pub fn parse(target: &DeploymentTarget, key: &str) -> Result<Self, SupervisorAdapterError> {
-        let prefix = format!("{}/clients/", target.session_prefix());
+        let session_prefix = format!("{}/clients/", target.session_prefix());
+        if let Some(suffix) = key.strip_prefix(&session_prefix) {
+            let mut segments = suffix.split('/');
+            let principal = segments
+                .next()
+                .ok_or(SupervisorAdapterError::MalformedRoute)?;
+            let kind = segments
+                .next()
+                .and_then(PublicRouteKind::from_segment)
+                .ok_or(SupervisorAdapterError::MalformedRoute)?;
+            let operation = segments
+                .next()
+                .and_then(PublicOperation::from_segment)
+                .ok_or(SupervisorAdapterError::MalformedRoute)?;
+            if segments.next().is_some()
+                || !valid_identifier(principal)
+                || operation.kind() != kind
+                || kind == PublicRouteKind::Simulation
+            {
+                return Err(SupervisorAdapterError::MalformedRoute);
+            }
+            return Self::for_operation(target, principal, operation);
+        }
+
+        let simulation_prefix = format!("{}/clients/", target.simulation_prefix());
         let suffix = key
-            .strip_prefix(&prefix)
+            .strip_prefix(&simulation_prefix)
             .ok_or(SupervisorAdapterError::WrongRoute)?;
         let mut segments = suffix.split('/');
         let principal = segments
             .next()
             .ok_or(SupervisorAdapterError::MalformedRoute)?;
-        let kind = segments
-            .next()
-            .and_then(PublicRouteKind::from_segment)
-            .ok_or(SupervisorAdapterError::MalformedRoute)?;
         let operation = segments
             .next()
             .and_then(PublicOperation::from_segment)
             .ok_or(SupervisorAdapterError::MalformedRoute)?;
-        if segments.next().is_some() || !valid_identifier(principal) || operation.kind() != kind {
+        if segments.next().is_some()
+            || !valid_identifier(principal)
+            || operation.kind() != PublicRouteKind::Simulation
+        {
             return Err(SupervisorAdapterError::MalformedRoute);
         }
         Self::for_operation(target, principal, operation)
@@ -302,13 +358,22 @@ impl PublicRoute {
     /// The exact concrete key to query or publish through the transport.
     #[must_use]
     pub fn key(&self) -> String {
-        format!(
-            "{}/clients/{}/{}/{}",
-            self.target.session_prefix(),
-            self.principal,
-            self.kind.segment(),
-            self.operation.segment()
-        )
+        if self.kind == PublicRouteKind::Simulation {
+            format!(
+                "{}/clients/{}/{}",
+                self.target.simulation_prefix(),
+                self.principal,
+                self.operation.segment()
+            )
+        } else {
+            format!(
+                "{}/clients/{}/{}/{}",
+                self.target.session_prefix(),
+                self.principal,
+                self.kind.segment(),
+                self.operation.segment()
+            )
+        }
     }
 }
 
@@ -335,6 +400,12 @@ impl DeploymentTarget {
                 key_prefix: self.session_prefix(),
             }],
         }
+    }
+
+    /// Exact v1 simulation coordination prefix.
+    #[must_use]
+    pub fn simulation_prefix(&self) -> String {
+        format!("{}/simulation/v1", self.prefix())
     }
 }
 
@@ -470,9 +541,144 @@ impl ServicePorts {
 
 /// One execution and its generated public service metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SimulationProviderDefinition {
+    service_instance: String,
+    port: String,
+    kind: PortKind,
+    input_fqn: String,
+    payload_fqn: String,
+}
+
+impl SimulationProviderDefinition {
+    /// Construct one immutable provider requirement from generated metadata.
+    pub fn new(
+        service_instance: impl Into<String>,
+        port: impl Into<String>,
+        kind: PortKind,
+        input_fqn: impl Into<String>,
+        payload_fqn: impl Into<String>,
+    ) -> Result<Self, SupervisorAdapterError> {
+        let definition = Self {
+            service_instance: service_instance.into(),
+            port: port.into(),
+            kind,
+            input_fqn: input_fqn.into(),
+            payload_fqn: payload_fqn.into(),
+        };
+        validate_identifier(&definition.service_instance, "simulation service instance")?;
+        validate_identifier(&definition.port, "simulation provider port")?;
+        if !matches!(
+            definition.kind,
+            PortKind::State | PortKind::Sample | PortKind::Event | PortKind::Stream
+        ) || !valid_fqn(&definition.input_fqn)
+            || !valid_fqn(&definition.payload_fqn)
+            || definition.payload_fqn.is_empty()
+        {
+            return Err(SupervisorAdapterError::InvalidSimulationDefinition);
+        }
+        Ok(definition)
+    }
+
+    /// Service instance containing the provider.
+    #[must_use]
+    pub fn service_instance(&self) -> &str {
+        &self.service_instance
+    }
+
+    /// Generated provider port name.
+    #[must_use]
+    pub fn port(&self) -> &str {
+        &self.port
+    }
+
+    /// Generated public port kind.
+    #[must_use]
+    pub const fn kind(&self) -> PortKind {
+        self.kind
+    }
+
+    /// Input-side payload signature, when the generated port defines one.
+    #[must_use]
+    pub fn input_fqn(&self) -> &str {
+        &self.input_fqn
+    }
+
+    /// Provider observation payload signature.
+    #[must_use]
+    pub fn payload_fqn(&self) -> &str {
+        &self.payload_fqn
+    }
+}
+
+/// Immutable simulation contract compiled into one admitted execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SimulationDefinition {
+    model_identity: String,
+    quantum_ns: u64,
+    providers: Vec<SimulationProviderDefinition>,
+}
+
+impl SimulationDefinition {
+    /// Construct a complete simulation contract owned by the supervisor.
+    pub fn new(
+        model_identity: impl Into<String>,
+        quantum_ns: u64,
+        mut providers: Vec<SimulationProviderDefinition>,
+    ) -> Result<Self, SupervisorAdapterError> {
+        let model_identity = model_identity.into();
+        if model_identity.is_empty()
+            || model_identity.len() > MAX_FQN_BYTES
+            || !model_identity.is_ascii()
+            || model_identity
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace())
+            || quantum_ns == 0
+            || providers.is_empty()
+        {
+            return Err(SupervisorAdapterError::InvalidSimulationDefinition);
+        }
+        providers.sort_by(|left, right| {
+            left.service_instance
+                .cmp(&right.service_instance)
+                .then_with(|| left.port.cmp(&right.port))
+        });
+        if providers.windows(2).any(|pair| {
+            pair[0].service_instance == pair[1].service_instance && pair[0].port == pair[1].port
+        }) {
+            return Err(SupervisorAdapterError::InvalidSimulationDefinition);
+        }
+        Ok(Self {
+            model_identity,
+            quantum_ns,
+            providers,
+        })
+    }
+
+    /// Immutable model identity selected by the supervisor bundle.
+    #[must_use]
+    pub fn model_identity(&self) -> &str {
+        &self.model_identity
+    }
+
+    /// Immutable common simulation quantum in nanoseconds.
+    #[must_use]
+    pub const fn quantum_ns(&self) -> u64 {
+        self.quantum_ns
+    }
+
+    /// Required generated observation providers in canonical order.
+    #[must_use]
+    pub fn providers(&self) -> &[SimulationProviderDefinition] {
+        &self.providers
+    }
+}
+
+/// One execution and its generated public service metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionDefinition {
     summary: ExecutionSummary,
     services: Vec<ServicePorts>,
+    simulation: Option<SimulationDefinition>,
 }
 
 impl ExecutionDefinition {
@@ -495,7 +701,65 @@ impl ExecutionDefinition {
                 });
             }
         }
-        Ok(Self { summary, services })
+        Ok(Self {
+            summary,
+            services,
+            simulation: None,
+        })
+    }
+
+    /// Attach the complete immutable simulation definition to this execution.
+    ///
+    /// The definition is checked against the generated service metadata now,
+    /// so an authority request cannot invent a model, quantum, provider kind,
+    /// or payload signature later.
+    pub fn with_simulation(
+        mut self,
+        definition: SimulationDefinition,
+    ) -> Result<Self, SupervisorAdapterError> {
+        for provider in definition.providers() {
+            let service = self.service(provider.service_instance()).ok_or_else(|| {
+                SupervisorAdapterError::ServiceNotFound {
+                    execution_id: self.summary.execution_id.clone(),
+                    service_instance: provider.service_instance().to_owned(),
+                }
+            })?;
+            let metadata = service
+                .ports
+                .iter()
+                .find(|port| port.name == provider.port())
+                .ok_or_else(|| SupervisorAdapterError::PortNotFound {
+                    execution_id: self.summary.execution_id.clone(),
+                    service_instance: provider.service_instance().to_owned(),
+                    name: provider.port().to_owned(),
+                })?;
+            let metadata_kind = PortKind::try_from(metadata.kind)
+                .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))?;
+            if metadata_kind != provider.kind()
+                || metadata.input_fqn != provider.input_fqn()
+                || metadata.output_fqn != provider.payload_fqn()
+            {
+                return Err(SupervisorAdapterError::SimulationProviderMismatch {
+                    service_instance: provider.service_instance().to_owned(),
+                    port: provider.port().to_owned(),
+                });
+            }
+        }
+        self.simulation = Some(definition);
+        Ok(self)
+    }
+
+    /// Whether this execution may acquire public simulation authority.
+    #[must_use]
+    pub const fn is_simulation(&self) -> bool {
+        self.simulation.is_some()
+    }
+
+    /// The immutable simulation contract, when this execution is configured
+    /// for public simulation authority.
+    #[must_use]
+    pub fn simulation_definition(&self) -> Option<&SimulationDefinition> {
+        self.simulation.as_ref()
     }
 
     /// The execution's exact identity and current timeline.
@@ -549,6 +813,23 @@ impl std::fmt::Debug for BindingId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("BindingId(<redacted>)")
     }
+}
+
+/// The fully validated identity supplied to a public service backend.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingContext {
+    /// Opaque logical-session identifier.
+    pub session_id: Vec<u8>,
+    /// Opaque binding identifier.
+    pub binding_id: Vec<u8>,
+    /// Exact execution identity.
+    pub execution_id: String,
+    /// Exact timeline identity.
+    pub timeline_id: String,
+    /// Deployed service instance.
+    pub service_instance: String,
+    /// Admitted generated descriptor.
+    pub metadata: PortMetadata,
 }
 
 #[derive(Clone, Debug)]
@@ -919,6 +1200,145 @@ impl SupervisorAdapter {
         })
     }
 
+    /// Return one execution only when it is eligible for simulation authority.
+    pub fn simulation_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<ExecutionSummary, SupervisorAdapterError> {
+        let execution = self.execution(execution_id)?;
+        if execution.simulation.is_none() {
+            return Err(SupervisorAdapterError::SimulationUnavailable {
+                execution_id: execution_id.to_owned(),
+            });
+        }
+        if execution.summary.state == ExecutionState::Stopped as i32
+            || execution.summary.state == ExecutionState::Failed as i32
+        {
+            return Err(SupervisorAdapterError::ExecutionUnavailable {
+                execution_id: execution_id.to_owned(),
+            });
+        }
+        Ok(execution.summary.clone())
+    }
+
+    /// Return the immutable simulation definition compiled into one
+    /// simulation-configured execution.
+    pub fn simulation_definition(
+        &self,
+        execution_id: &str,
+    ) -> Result<SimulationDefinition, SupervisorAdapterError> {
+        let execution = self.execution(execution_id)?;
+        execution
+            .simulation
+            .clone()
+            .ok_or_else(|| SupervisorAdapterError::SimulationUnavailable {
+                execution_id: execution_id.to_owned(),
+            })
+    }
+
+    /// Validate one complete simulation provider declaration against generated
+    /// service metadata before authority is granted.
+    pub fn validate_simulation_provider(
+        &self,
+        execution_id: &str,
+        service_instance: &str,
+        port_name: &str,
+        kind: i32,
+        input_fqn: &str,
+        payload_fqn: &str,
+    ) -> Result<(), SupervisorAdapterError> {
+        let execution = self.execution(execution_id)?;
+        let definition = execution.simulation.as_ref().ok_or_else(|| {
+            SupervisorAdapterError::SimulationUnavailable {
+                execution_id: execution_id.to_owned(),
+            }
+        })?;
+        let service = execution.service(service_instance).ok_or_else(|| {
+            SupervisorAdapterError::ServiceNotFound {
+                execution_id: execution_id.to_owned(),
+                service_instance: service_instance.to_owned(),
+            }
+        })?;
+        let port = service
+            .ports
+            .iter()
+            .find(|port| port.name == port_name)
+            .ok_or_else(|| SupervisorAdapterError::PortNotFound {
+                execution_id: execution_id.to_owned(),
+                service_instance: service_instance.to_owned(),
+                name: port_name.to_owned(),
+            })?;
+        let metadata_kind = PortKind::try_from(port.kind)
+            .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))?;
+        if !matches!(
+            metadata_kind,
+            PortKind::State | PortKind::Sample | PortKind::Event | PortKind::Stream
+        ) || kind != metadata_kind as i32
+            || port.input_fqn != input_fqn
+            || port.output_fqn != payload_fqn
+        {
+            return Err(SupervisorAdapterError::SimulationProviderMismatch {
+                service_instance: service_instance.to_owned(),
+                port: port_name.to_owned(),
+            });
+        }
+        let requested_kind = PortKind::try_from(kind)
+            .map_err(|_| SupervisorAdapterError::InvalidEnum("simulation provider kind"))?;
+        if !definition.providers().iter().any(|provider| {
+            provider.service_instance() == service_instance
+                && provider.port() == port_name
+                && provider.kind() == requested_kind
+                && provider.input_fqn() == input_fqn
+                && provider.payload_fqn() == payload_fqn
+        }) {
+            return Err(SupervisorAdapterError::SimulationProviderMismatch {
+                service_instance: service_instance.to_owned(),
+                port: port_name.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate one runtime observation against the immutable provider set
+    /// and return its generated metadata for byte-bound checks.
+    pub fn validate_simulation_observation(
+        &self,
+        execution_id: &str,
+        service_instance: &str,
+        port_name: &str,
+    ) -> Result<PortMetadata, SupervisorAdapterError> {
+        let execution = self.execution(execution_id)?;
+        let definition = execution.simulation.as_ref().ok_or_else(|| {
+            SupervisorAdapterError::SimulationUnavailable {
+                execution_id: execution_id.to_owned(),
+            }
+        })?;
+        if !definition.providers().iter().any(|provider| {
+            provider.service_instance() == service_instance && provider.port() == port_name
+        }) {
+            return Err(SupervisorAdapterError::SimulationProviderMismatch {
+                service_instance: service_instance.to_owned(),
+                port: port_name.to_owned(),
+            });
+        }
+        let service = execution.service(service_instance).ok_or_else(|| {
+            SupervisorAdapterError::ServiceNotFound {
+                execution_id: execution_id.to_owned(),
+                service_instance: service_instance.to_owned(),
+            }
+        })?;
+        service
+            .ports
+            .iter()
+            .find(|port| port.name == port_name)
+            .cloned()
+            .ok_or_else(|| SupervisorAdapterError::PortNotFound {
+                execution_id: execution_id.to_owned(),
+                service_instance: service_instance.to_owned(),
+                name: port_name.to_owned(),
+            })
+    }
+
     /// Admit a binding only when the current generated metadata exactly equals
     /// the caller's expected descriptor.
     pub fn bind(
@@ -982,6 +1402,40 @@ impl SupervisorAdapter {
         })
     }
 
+    /// Authorize a simulation request against the active logical session.
+    ///
+    /// Simulation routes have a dedicated lane rather than a session operation
+    /// suffix, so this check is explicit and is performed for every authority
+    /// request before grant or boundary state is touched.
+    pub fn authorize_simulation_session(
+        &mut self,
+        route: &PublicRoute,
+        session_id: &[u8],
+        now_ms: u64,
+    ) -> Result<SessionId, SupervisorAdapterError> {
+        self.require_route(route, PublicRouteKind::Simulation)?;
+        let id = SessionId::from_bytes(session_id)?;
+        self.sessions.authorize(id, route.principal(), now_ms)?;
+        Ok(id)
+    }
+
+    /// Check whether an authority owner's logical session is still active.
+    ///
+    /// This is used while reclaiming an authority whose client disappeared
+    /// without sending release. It intentionally returns only a boolean so an
+    /// expired session's diagnostic cannot be confused with a new admission.
+    pub fn simulation_session_active(
+        &mut self,
+        principal: &str,
+        session_id: &[u8],
+        now_ms: u64,
+    ) -> bool {
+        let Ok(id) = SessionId::from_bytes(session_id) else {
+            return false;
+        };
+        self.sessions.authorize(id, principal, now_ms).is_ok()
+    }
+
     /// Validate a previously admitted binding before a read or command.
     ///
     /// This is the adapter's transport-independent stale-resource check. The
@@ -993,6 +1447,44 @@ impl SupervisorAdapter {
         request: &super::session::OperationRequest,
         now_ms: u64,
     ) -> Result<PortMetadata, SupervisorAdapterError> {
+        Ok(self
+            .validate_binding_context(route, request, now_ms)?
+            .metadata)
+    }
+
+    /// Validate one bound operation and return all identity required by the
+    /// service-owned public backend.
+    pub fn validate_operation_binding(
+        &mut self,
+        route: &PublicRoute,
+        request: &super::session::OperationRequest,
+        operation: PublicOperation,
+        now_ms: u64,
+    ) -> Result<BindingContext, SupervisorAdapterError> {
+        let context = self.validate_binding_context(route, request, now_ms)?;
+        let kind = PortKind::try_from(context.metadata.kind)
+            .map_err(|_| SupervisorAdapterError::InvalidEnum("port kind"))?;
+        let valid = match operation {
+            PublicOperation::Read => kind == PortKind::Read,
+            PublicOperation::Command => kind == PortKind::Commands,
+            PublicOperation::Watch => kind == PortKind::State,
+            PublicOperation::Subscribe => {
+                matches!(kind, PortKind::Sample | PortKind::Event | PortKind::Stream)
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err(SupervisorAdapterError::BindingKindMismatch { operation, kind });
+        }
+        Ok(context)
+    }
+
+    fn validate_binding_context(
+        &mut self,
+        route: &PublicRoute,
+        request: &super::session::OperationRequest,
+        now_ms: u64,
+    ) -> Result<BindingContext, SupervisorAdapterError> {
         let session = SessionId::from_bytes(&request.session_id)?;
         let binding_id = BindingId::from_bytes(&request.binding_id)?;
         let expected_kind = self
@@ -1046,7 +1538,14 @@ impl SupervisorAdapter {
         if request.timeline_id != binding.timeline_id {
             return Err(SupervisorAdapterError::TimelineMismatch);
         }
-        Ok(binding.metadata.clone())
+        Ok(BindingContext {
+            session_id: request.session_id.clone(),
+            binding_id: request.binding_id.clone(),
+            execution_id: binding.execution_id.clone(),
+            timeline_id: binding.timeline_id.clone(),
+            service_instance: binding.service_instance.clone(),
+            metadata: binding.metadata.clone(),
+        })
     }
 
     /// Expire leases and clean all resources owned by expired sessions.
@@ -1362,6 +1861,13 @@ pub enum SupervisorAdapterError {
     /// The selected execution is known but cannot serve a binding.
     #[error("execution is unavailable: {execution_id}")]
     ExecutionUnavailable { execution_id: String },
+    /// The selected execution is a hardware or ordinary runtime execution.
+    #[error("execution is not configured for public simulation authority: {execution_id}")]
+    SimulationUnavailable { execution_id: String },
+    /// The immutable simulation definition is incomplete or internally
+    /// inconsistent with generated service metadata.
+    #[error("simulation definition is invalid")]
+    InvalidSimulationDefinition,
     /// The selected service instance is not known.
     #[error("service {service_instance} is not found in execution {execution_id}")]
     ServiceNotFound {
@@ -1379,6 +1885,15 @@ pub enum SupervisorAdapterError {
         service_instance: String,
         /// The public port name that was queried.
         name: String,
+    },
+    /// The requested simulation provider does not match an admitted generated
+    /// publication port and payload contract.
+    #[error("simulation provider does not match generated port {service_instance}/{port}")]
+    SimulationProviderMismatch {
+        /// Service instance containing the provider port.
+        service_instance: String,
+        /// Provider port name.
+        port: String,
     },
     /// A bind request omitted its expected generated descriptor.
     #[error("bind request is missing expected port metadata")]
@@ -1398,6 +1913,14 @@ pub enum SupervisorAdapterError {
     /// No active binding has the requested identifier.
     #[error("binding is unknown or was invalidated")]
     UnknownBinding,
+    /// The operation does not match the admitted public port kind.
+    #[error("public port kind {kind:?} cannot be used with {operation:?}")]
+    BindingKindMismatch {
+        /// Requested operation.
+        operation: PublicOperation,
+        /// Admitted descriptor kind.
+        kind: PortKind,
+    },
     /// A stale request uses a different execution identity.
     #[error("operation execution identity does not match its binding")]
     ExecutionMismatch,
@@ -1525,6 +2048,67 @@ mod tests {
         ] {
             assert!(PublicRoute::parse(&target, invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn simulation_routes_use_the_dedicated_v1_prefix() {
+        let target = target();
+        let route =
+            PublicRoute::for_operation(&target, "simulator", PublicOperation::AcquireAuthority)
+                .expect("simulation route");
+        assert_eq!(
+            route.key(),
+            "phoxal/workshop/supervisors/rover-01/simulation/v1/clients/simulator/acquire-authority"
+        );
+        let parsed = PublicRoute::parse(&target, &route.key()).expect("parse simulation route");
+        assert_eq!(parsed.kind(), PublicRouteKind::Simulation);
+        assert_eq!(parsed.operation(), PublicOperation::AcquireAuthority);
+        assert!(PublicRoute::parse(
+            &target,
+            "phoxal/workshop/supervisors/rover-01/session/v1/clients/simulator/simulation/advance"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn simulation_admission_requires_an_explicit_simulation_execution() {
+        let mut adapter = adapter();
+        adapter
+            .install_execution(execution("timeline-1"))
+            .expect("install hardware execution");
+        assert!(matches!(
+            adapter.simulation_execution("execution-1"),
+            Err(SupervisorAdapterError::SimulationUnavailable { .. })
+        ));
+        let simulation = SimulationDefinition::new(
+            "example-model",
+            1_000_000,
+            vec![
+                SimulationProviderDefinition::new(
+                    "navigation",
+                    "status",
+                    PortKind::State,
+                    "example.Request",
+                    "example.Response",
+                )
+                .expect("provider"),
+            ],
+        )
+        .expect("simulation definition");
+        adapter
+            .install_execution(
+                execution("timeline-2")
+                    .with_simulation(simulation)
+                    .expect("simulation execution"),
+            )
+            .expect("replace with simulation execution");
+        assert_eq!(
+            adapter
+                .simulation_execution("execution-1")
+                .expect("simulation execution")
+                .timeline_id,
+            "timeline-2"
+        );
     }
 
     #[test]

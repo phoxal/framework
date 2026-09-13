@@ -164,6 +164,19 @@ message SubscriptionRequest {
   uint32 max_buffered_bytes = 7;
 }
 
+// Admission acknowledges the bounded observation cursor before publications
+// are emitted on the dedicated observation key.  `initial` is present only
+// for a State watch.  Event, Sample, and Stream subscriptions begin at this
+// admitted boundary and therefore carry no synthetic initial record.
+message SubscriptionAdmission {
+  bytes session_id = 1;
+  bytes binding_id = 2;
+  bytes subscription_id = 3;
+  string execution_id = 4;
+  string timeline_id = 5;
+  optional SubscriptionRecord initial = 6;
+}
+
 message SubscriptionRecord {
   bytes session_id = 1;
   bytes binding_id = 2;

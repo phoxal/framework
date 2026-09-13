@@ -37,13 +37,22 @@
 
 mod connection;
 mod error;
+mod public;
 
 pub use crate::communication_transport::{
-    PrincipalPolicy, PublicSessionConfig, PublicSessionConnection, PublicSessionTransport,
-    PublicTransportError, PublicTransportLimits,
+    DiscoveryEvent, PrincipalPolicy, PublicSessionBackend, PublicSessionConfig,
+    PublicSessionConnection, PublicSessionTransport, PublicSimulationBackend,
+    PublicSimulationContext, PublicSubscription, PublicTlsCredentials, PublicTransportError,
+    PublicTransportLimits, PublicTransportSecurity, SupervisorWatch,
 };
 pub use crate::world::{
     WorldDiagnosticsSubscription, WorldSessionClient, WorldSessionWireError, WorldStateSubscription,
 };
 pub use connection::{ConnectOptions, ConnectedExecution, Session, SessionHandle};
 pub use error::{CloseError, CompatibilityRefusal, ConnectError, DisconnectReason, SessionError};
+pub use public::{
+    CommandHandle, CommandOutcome, Connection, ConnectionConfig, EventHandle, EventSubscription,
+    Execution, Management, ReadHandle, ReadOutcome, SampleHandle, SampleSubscription, Service,
+    Simulation, StateHandle, StateSubscription, StateSubscriptionItem, StreamHandle,
+    StreamSubscription, SubscriptionItem, Supervisor, connect,
+};

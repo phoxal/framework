@@ -7,12 +7,16 @@ message AcquireAuthorityRequest {
   string model_identity = 2;
   uint64 quantum_ns = 3;
   repeated ProviderRequirement providers = 4;
+  bytes session_id = 5;
+  bytes correlation_id = 6;
 }
 
 message ProviderRequirement {
   string service_instance = 1;
   string port = 2;
   string payload_fqn = 3;
+  int32 kind = 4;
+  string input_fqn = 5;
 }
 
 message AcquireAuthorityResponse {
@@ -20,6 +24,11 @@ message AcquireAuthorityResponse {
   string timeline_id = 2;
   uint64 boundary = 3;
   uint32 lease_ms = 4;
+  bytes session_id = 5;
+  string execution_id = 6;
+  string model_identity = 7;
+  uint64 quantum_ns = 8;
+  bytes correlation_id = 9;
 }
 
 message AdvanceRequest {
@@ -28,6 +37,8 @@ message AdvanceRequest {
   string timeline_id = 3;
   uint64 boundary = 4;
   repeated Observation observations = 5;
+  bytes session_id = 6;
+  bytes correlation_id = 7;
 }
 
 message Observation {
@@ -41,6 +52,12 @@ message AdvanceResponse {
   uint64 completed_boundary = 1;
   repeated Actuation actuation = 2;
   repeated ProductReceipt observation_receipts = 3;
+  bytes session_id = 4;
+  string execution_id = 5;
+  string timeline_id = 6;
+  uint64 requested_boundary = 7;
+  bytes correlation_id = 8;
+  bytes authority_grant = 9;
 }
 
 message Actuation {
@@ -54,6 +71,8 @@ message ProductReceipt {
   string service_instance = 1;
   string port = 2;
   uint64 sequence = 3;
+  uint64 boundary = 4;
+  bytes correlation_id = 5;
 }
 
 message ResetRequest {
@@ -61,21 +80,40 @@ message ResetRequest {
   string execution_id = 2;
   string timeline_id = 3;
   uint64 completed_boundary = 4;
+  bytes session_id = 5;
+  bytes correlation_id = 6;
 }
 
 message ResetResponse {
   string next_timeline_id = 1;
   uint64 boundary = 2;
+  bytes session_id = 3;
+  string execution_id = 4;
+  bytes authority_grant = 5;
+  bytes correlation_id = 6;
+  string previous_timeline_id = 7;
+  uint64 requested_boundary = 8;
 }
 
 message ReleaseAuthorityRequest {
   bytes authority_grant = 1;
+  bytes session_id = 2;
+  bytes correlation_id = 3;
 }
 
-message ReleaseAuthorityResponse {}
+message ReleaseAuthorityResponse {
+  bytes session_id = 1;
+  bytes authority_grant = 2;
+  bytes correlation_id = 3;
+  string execution_id = 4;
+  string timeline_id = 5;
+  uint64 completed_boundary = 6;
+}
 
 message ProgressRequest {
   bytes authority_grant = 1;
+  bytes session_id = 2;
+  bytes correlation_id = 3;
 }
 
 message ProgressResponse {
@@ -84,4 +122,7 @@ message ProgressResponse {
   uint64 completed_boundary = 3;
   bool failed = 4;
   optional string detail = 5;
+  bytes session_id = 6;
+  bytes authority_grant = 7;
+  bytes correlation_id = 8;
 }
