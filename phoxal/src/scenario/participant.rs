@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::scenario::plan::{Action, Capture, Step, MAX_PAYLOAD};
+use crate::scenario::plan::{Action, Capture, ScenarioPlan, Step, MAX_PAYLOAD};
 use crate::scenario::program::Program;
 
 /// One quantum-aligned outcome captured during execution. P3 fills
@@ -215,15 +215,18 @@ impl FixtureParticipant {
                         ),
                     };
                 }
-                let simulated_deadline = self.boundary.0.saturating_add(SIM_DEADLINE_TICKS);
-                let host_deadline = self.boundary.0.saturating_add(HOST_DEADLINE_TICKS);
-                self.command_correlation.insert(
-                    label.clone(),
-                    CommandCorrelation {
-                        simulated_deadline,
-                        host_deadline,
-                    },
-                );
+                let entry = self
+                    .command_correlation
+                    .entry(label.clone())
+                    .or_insert_with(|| {
+                        let now = self.boundary.0;
+                        CommandCorrelation {
+                            simulated_deadline: now.saturating_add(SIM_DEADLINE_TICKS),
+                            host_deadline: now.saturating_add(HOST_DEADLINE_TICKS),
+                        }
+                    });
+                let simulated_deadline = entry.simulated_deadline;
+                let host_deadline = entry.host_deadline;
                 StepOutcome::CommandIssued {
                     label: label.clone(),
                     reply_pending: true,
@@ -430,6 +433,144 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             FixtureError::IdentityMismatch(_)
+        ));
+    }
+
+    #[test]
+    fn gate_one_setpoint_reaches_boundary() {
+        let program = Program::normalize(
+            "scenarios/Gate",
+            std::time::Duration::from_secs(1),
+            vec![Step::new(
+                "set",
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![],
+        )
+        .unwrap();
+        let mut participant = FixtureParticipant::from_program(program).unwrap();
+        let trace = participant.run();
+        assert_eq!(trace.step_outcomes.len(), 1);
+        match &trace.step_outcomes[0].1 {
+            StepOutcome::SetpointDelivered {
+                production,
+                eligibility,
+            } => {
+                assert_eq!(*production, 0);
+                assert_eq!(*eligibility, 1);
+            }
+            other => panic!("expected setpoint delivery, got {other:?}"),
+        }
+        assert!(trace.passed());
+    }
+
+    #[test]
+    fn gate_one_command_does_not_pause_advancement() {
+        let program = Program::normalize(
+            "scenarios/Gate",
+            std::time::Duration::from_secs(1),
+            vec![
+                Step::new(
+                    "do",
+                    0,
+                    Action::Command {
+                        service_signature: command_sig(),
+                        request_encoded: vec![1],
+                        label: "do".to_owned(),
+                    },
+                ),
+                Step::new(
+                    "after",
+                    1,
+                    Action::Setpoint {
+                        consumer_signature: setpoint_sig(),
+                        encoded_payload: vec![2],
+                    },
+                ),
+            ],
+            vec![],
+        )
+        .unwrap();
+        let mut participant = FixtureParticipant::from_program(program).unwrap();
+        let trace = participant.run();
+        // The command is left pending, yet the next step still ran:
+        // advancement is not paused by the unreplied command.
+        match &trace.step_outcomes[0].1 {
+            StepOutcome::CommandIssued {
+                reply_pending, ..
+            } => assert!(reply_pending),
+            other => panic!("expected command issued, got {other:?}"),
+        }
+        assert!(matches!(
+            trace.step_outcomes[1].1,
+            StepOutcome::SetpointDelivered { .. }
+        ));
+        assert!(trace.passed());
+    }
+
+    #[test]
+    fn gate_expire_pending_commands_uses_failure_path() {
+        let program = Program::normalize(
+            "scenarios/Gate",
+            std::time::Duration::from_secs(1),
+            vec![Step::new(
+                "do",
+                0,
+                Action::Command {
+                    service_signature: command_sig(),
+                    request_encoded: vec![1],
+                    label: "do".to_owned(),
+                },
+            )],
+            vec![],
+        )
+        .unwrap();
+        let mut participant = FixtureParticipant::from_program(program).unwrap();
+        let _ = participant.run();
+        // Drive the boundary past the host deadline.
+        for _ in 0..(HOST_DEADLINE_TICKS + 1) {
+            let _ = participant.run();
+        }
+        let expired = participant.expire_pending_commands();
+        assert_eq!(expired, vec!["do".to_owned()]);
+    }
+
+    #[test]
+    fn gate_rejects_when_program_identity_tampered() {
+        let mut program = sample_program();
+        // Bypass `from_program` so we can construct a participant from
+        // an identity that has been mutated after normalize.
+        program.verify_identity().unwrap();
+        program.scenario_name = "scenarios/Other".to_owned();
+        let result = FixtureParticipant::from_program(program);
+        assert!(matches!(
+            result.unwrap_err(),
+            FixtureError::IdentityMismatch(_)
+        ));
+    }
+
+    #[test]
+    fn gate_rejects_wrong_port_kind_via_plan_validation() {
+        let plan = ScenarioPlan::with_steps(
+            "scenarios/Gate",
+            std::time::Duration::from_secs(1),
+            vec![Step::new(
+                "bad",
+                0,
+                Action::Setpoint {
+                    consumer_signature: command_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![],
+        );
+        assert!(matches!(
+            plan.unwrap_err(),
+            crate::scenario::PlanValidationError::WrongPortKind { .. }
         ));
     }
 }

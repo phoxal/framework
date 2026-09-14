@@ -15,8 +15,10 @@
 //! `cargo test --no-run` invocation lives in `crates/project/src/scenario/build.rs`
 //! and `run.rs` (P4).
 
+mod bundle;
 mod discovery;
 mod harness;
 
+pub use bundle::{ScenarioBundle, SubstitutedEdge, SCENARIO_NONDEPLOYABLE};
 pub use discovery::{DiscoveredScenario, DiscoveryError, discover_scenarios, module_identifier};
 pub use harness::generate_harness_source;
