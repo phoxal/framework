@@ -18,6 +18,7 @@
 //! registry reports it as diagnostics only.
 
 mod harness;
+mod participant;
 mod plan;
 mod program;
 mod registry;
@@ -25,6 +26,10 @@ mod results;
 mod trait_def;
 
 pub use harness::{HarnessError, HarnessRun, run_harness};
+pub use participant::{
+    FixtureError, FixtureMetadata, FixtureParticipant, FixtureTrace, StepOutcome,
+    HOST_DEADLINE_TICKS, SIM_DEADLINE_TICKS,
+};
 pub use plan::{Action, Capture, PlanValidationError, ScenarioPlan, Step, MAX_PAYLOAD};
 pub use program::{Program, ProgramError, PROGRAM_SCHEMA_VERSION};
 pub use registry::{
