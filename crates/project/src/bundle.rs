@@ -2003,6 +2003,35 @@ fn stage_source_tree(
             .or_default()
             .push(package_root);
     }
+    // Git- and registry-pinned packages also need their authored source trees
+    // staged. `source_closure` enumerates their files from `package_root`
+    // (the git checkout for `source` = `git+...`, the extracted `.crate` for
+    // `source` = `registry+...`), but without this loop those files never
+    // land in `closure_root`. The simulator's source-closure probe then
+    // fails: every `source.files[i]` is missing from the staged tree.
+    //
+    // Routing these through the same `workspace_groups` path keeps them
+    // behind the existing path-dependency staging logic (`_phoxal_path_dependencies/<digest>/`)
+    // and through `rewrite_local_paths`, so workspace dependencies between
+    // framework packages resolve to the staged tree.
+    for package in
+        prepared.cargo_metadata().packages.iter().filter(|package| {
+            package_ids.contains(&package.id.to_string()) && package.source.is_some()
+        })
+    {
+        let package_root = package_root(package)?;
+        if package_root.starts_with(&workspace_root) {
+            // Defensive: an owned package with a non-empty source URL would
+            // be a configuration error elsewhere; skip it instead of adding
+            // a duplicate entry.
+            continue;
+        }
+        let owner = owning_workspace_root(&package_root)?;
+        workspace_groups
+            .entry(owner)
+            .or_default()
+            .push(package_root);
+    }
     let mut staged_workspaces = BTreeMap::<PathBuf, (PathBuf, toml::Value)>::new();
     for (owner, packages) in &mut workspace_groups {
         packages.sort();

@@ -6,4 +6,7 @@ target/
 .aider*
 /.codex/worktrees/
 
+# Local-only maintainer toolchain pin (R0). The end user should not need it.
+/rust-toolchain.toml
+
 .DS_Store

@@ -13,10 +13,10 @@ This repository and its source are the authority for current framework implement
 - `crates/` - reusable libraries, proc macros, and project tooling
 - `supervisor/` - the framework execution supervisor
 - `services/`, `components/` - official services and drivers, with their owned contracts beside private binary implementations
-- `simulators/mujoco/` - the independently versioned MuJoCo application kept
-  outside the universal framework library
 - `tools/cargo-phoxal/` - the registry-aware project and publication command
 - `robot-rover` - the maintained example robot project is hosted in the separate [phoxal/robot-rover](https://github.com/phoxal/robot-rover) repository
+
+The native MuJoCo simulator application is owned by [phoxal/simulator](https://github.com/phoxal/simulator); it is not part of this workspace. Hardware-only projects and `cargo-phoxal` build and run without it.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and contribution requirements.
 
