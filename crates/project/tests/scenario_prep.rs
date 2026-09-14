@@ -291,20 +291,7 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         "schema: phoxal/robot/v0\nrobot:\n  id: p1-robot\n  components: {}\nservices: {}\n",
     )
     .expect("robot.yaml");
-    // The framework's `phoxal` crate publishes into the local `phoxal`
-    // registry; point Cargo at that local registry so the path
-    // dependency resolves under `--offline`.
-    fs::create_dir_all(robot_root.join(".cargo")).expect("cargo dir");
-    let registry_path = framework_registry_dir()
-        .canonicalize()
-        .expect("canonicalize registry dir")
-        .to_string_lossy()
-        .replace('\\', "/");
-    fs::write(
-        robot_root.join(".cargo/config.toml"),
-        format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}\"\n"),
-    )
-    .expect("cargo config");
+    write_phoxal_local_registry_config(&robot_root);
     fs::create_dir_all(robot_root.join("src")).expect("src");
     fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
     let scenarios = robot_root.join("scenarios");
@@ -426,6 +413,167 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         ],
         "list output must report the two canonical struct identities in alphabetical order:\n{stdout}"
     );
+}
+
+
+/// Repeated preparation with no changes must produce byte-identical
+/// `Cargo.toml` and lockfile outputs. This protects against
+/// accumulator-style mutations that would dirty a repo's diff.
+#[test]
+fn prepare_scenarios_byte_identical_on_unchanged_repeat() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let robot_root = directory.path().to_path_buf();
+    let manifest_text = "[package]\n\
+                        name = \"p1-robot\"\n\
+                        version = \"0.1.0\"\n\
+                        edition = \"2024\"\n\
+                        publish = false\n\n\
+                        [dependencies]\n\
+                        phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }";
+    fs::write(robot_root.join("Cargo.toml"), manifest_text).expect("manifest");
+    fs::write(
+        robot_root.join("robot.yaml"),
+        "schema: phoxal/robot/v0\nrobot:\n  id: p1-robot\n  components: {}\nservices: {}\n",
+    )
+    .expect("robot.yaml");
+    fs::create_dir_all(robot_root.join("src")).expect("src");
+    fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
+    let scenarios = robot_root.join("scenarios");
+    fs::create_dir_all(&scenarios).expect("scenarios dir");
+    fs::write(scenarios.join("only.rs"), "// only scenario\n").expect("only");
+
+    let layout = phoxal_project::ProjectLayout::discover(&robot_root).expect("layout");
+    let project = phoxal_project::Project::from_layout(layout).expect("project");
+    let first = project
+        .prepare_scenarios(&CargoOptions::default())
+        .expect("first");
+    let first_cargo = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read first");
+    let first_lock_path = robot_root.join("Cargo.lock");
+    let first_lock = fs::read_to_string(&first_lock_path).ok();
+
+    let second = project
+        .prepare_scenarios(&CargoOptions::default())
+        .expect("second");
+    assert!(
+        second.is_empty(),
+        "second preparation must report no changes on a no-op input: {second:?}"
+    );
+    let second_cargo = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read second");
+    let second_lock = fs::read_to_string(&first_lock_path).ok();
+    assert_eq!(
+        first_cargo, second_cargo,
+        "Cargo.toml must be byte-identical across repeated preparation"
+    );
+    assert_eq!(
+        first_lock, second_lock,
+        "Cargo.lock must be byte-identical across repeated preparation"
+    );
+    let _ = first;
+}
+
+/// Two scenarios that share a struct name (one in a file, one in a
+/// module under a different filename) must produce duplicate
+/// detection when listing through the harness. The struct identity is
+/// the public name; both files declare a struct called `SameName` and
+/// the registry must reject this before any execution.
+#[test]
+fn prepare_scenarios_duplicate_struct_identities_rejected() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let robot_root = directory.path().to_path_buf();
+    let phoxal_path = framework_phoxal_dir()
+        .canonicalize()
+        .expect("phoxal canonicalize")
+        .to_string_lossy()
+        .replace('\\', "/");
+    fs::write(
+        robot_root.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"p1-robot\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+             publish = false\n\n[dependencies]\n\
+             phoxal = {{ path = {phoxal_path:?}, features = [\"scenario\"] }}\n"
+        ),
+    )
+    .expect("manifest");
+    fs::write(
+        robot_root.join("robot.yaml"),
+        "schema: phoxal/robot/v0\nrobot:\n  id: p1-robot\n  components: {}\nservices: {}\n",
+    )
+    .expect("robot.yaml");
+    write_phoxal_local_registry_config(&robot_root);
+    fs::create_dir_all(robot_root.join("src")).expect("src");
+    fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
+    let scenarios = robot_root.join("scenarios");
+    fs::create_dir_all(&scenarios).expect("scenarios dir");
+    let scene_decl = "use phoxal::scenario::{Scenario, ScenarioPlan};\n\
+                      use std::path::PathBuf;\n\
+                      use std::time::Duration;\n\
+                      #[derive(Default)]\n\
+                      pub struct SameName;\n\
+                      #[phoxal::scenario]\n\
+                      impl Scenario for SameName {\n\
+                          fn plan(&self) -> phoxal::Result<ScenarioPlan> {\n\
+                              Ok(ScenarioPlan::new(PathBuf::from(\"same.scene\"), Duration::from_secs(1)))\n\
+                          }\n\
+                          fn verify(&self, _run: &phoxal::scenario::ScenarioRun) -> phoxal::Result<()> { Ok(()) }\n\
+                      }\n";
+    fs::write(scenarios.join("first_layout.rs"), scene_decl).expect("first file scenario");
+    fs::create_dir_all(scenarios.join("second_layout")).expect("second scenario dir");
+    fs::write(scenarios.join("second_layout").join("mod.rs"), scene_decl).expect("module scenario");
+
+    let layout = phoxal_project::ProjectLayout::discover(&robot_root).expect("layout");
+    let project = phoxal_project::Project::from_layout(layout).expect("project");
+    project
+        .prepare_scenarios(&CargoOptions::default())
+        .expect("prepare");
+
+    let cargo_output = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "--test",
+            "phoxal-scenarios",
+            "--offline",
+            "--message-format=json",
+        ])
+        .current_dir(&robot_root)
+        .env_remove("RUSTC_WRAPPER")
+        .output()
+        .expect("cargo build");
+    assert!(
+        cargo_output.status.success(),
+        "cargo build must succeed; the duplicate is a runtime contract, not a compile error.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&cargo_output.stdout),
+        String::from_utf8_lossy(&cargo_output.stderr),
+    );
+    let executable = parse_test_executable(&cargo_output.stdout, "phoxal-scenarios")
+        .expect("test executable");
+    let list_output = std::process::Command::new(&executable)
+        .arg("list")
+        .output()
+        .expect("list");
+    let stderr = String::from_utf8_lossy(&list_output.stderr);
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        combined.contains("duplicate") || combined.contains("Duplicate"),
+        "duplicate struct identity must be reported before execution; got:\n{combined}"
+    );
+}
+
+fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
+    // The framework's `phoxal` crate publishes into the local `phoxal`
+    // registry; point Cargo at that local registry so the path
+    // dependency resolves under `--offline`.
+    fs::create_dir_all(robot_root.join(".cargo")).expect("cargo dir");
+    let registry_path = framework_registry_dir()
+        .canonicalize()
+        .expect("canonicalize registry dir")
+        .to_string_lossy()
+        .replace('\\', "/");
+    fs::write(
+        robot_root.join(".cargo/config.toml"),
+        format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}\"\n"),
+    )
+    .expect("cargo config");
 }
 
 fn framework_phoxal_dir() -> std::path::PathBuf {
