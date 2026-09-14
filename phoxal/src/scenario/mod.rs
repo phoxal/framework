@@ -17,6 +17,7 @@
 //! filename or module path is intentionally not part of that identity: the
 //! registry reports it as diagnostics only.
 
+mod attach;
 mod harness;
 mod participant;
 mod plan;
@@ -25,6 +26,7 @@ mod registry;
 mod results;
 mod trait_def;
 
+pub use attach::ApplicationAttachment;
 pub use harness::{HarnessError, HarnessRun, run_harness};
 pub use participant::{
     FixtureError, FixtureMetadata, FixtureParticipant, FixtureTrace, StepOutcome,
