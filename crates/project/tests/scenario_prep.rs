@@ -13,7 +13,6 @@
 
 use std::fs;
 use std::io::BufRead as _;
-use std::path::Path;
 
 use phoxal_project::{CargoOptions, LockMode};
 
@@ -256,26 +255,101 @@ fn prepare_scenarios_preserves_existing_workspace_phoxal_coordinates() {
 
 #[test]
 fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
+    // Real Cargo workflow: a temp robot package with absolute path-based
+    // dependency on the framework's `phoxal` crate, two genuinely
+    // annotated scenarios in `scenarios/first.rs` and
+    // `scenarios/second/mod.rs`, then the actual `cargo test
+    // --test phoxal-scenarios --no-run --message-format=json` invocation.
+    // The executable is recovered from the `compiler-artifact` event and
+    // executed with `list`; the canonical names reported by the harness
+    // must match exactly.
     let directory = tempfile::tempdir().expect("tempdir");
     let robot_root = directory.path().to_path_buf();
-    fs::write(robot_root.join("Cargo.toml"), "[package]\n\
-                                              name = \"p1-robot\"\n\
-                                              version = \"0.1.0\"\n\
-                                              edition = \"2024\"\n\
-                                              publish = false\n\n\
-                                              [dependencies]\n\
-                                              phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }\n")
-        .expect("manifest");
+    let phoxal_dir = framework_phoxal_dir();
+    let phoxal_path = phoxal_dir
+        .canonicalize()
+        .expect("canonicalize phoxal dir")
+        .to_string_lossy()
+        .replace('\\', "/");
+    fs::write(
+        robot_root.join("Cargo.toml"),
+        format!(
+            "[package]\n\
+             name = \"p1-robot\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             rust-version = \"1.88\"\n\
+             publish = false\n\
+             \n\
+             [dependencies]\n\
+             phoxal = {{ path = {phoxal_path:?}, features = [\"scenario\"] }}\n",
+        ),
+    )
+    .expect("manifest");
     fs::write(
         robot_root.join("robot.yaml"),
         "schema: phoxal/robot/v0\nrobot:\n  id: p1-robot\n  components: {}\nservices: {}\n",
     )
     .expect("robot.yaml");
+    // The framework's `phoxal` crate publishes into the local `phoxal`
+    // registry; point Cargo at that local registry so the path
+    // dependency resolves under `--offline`.
+    fs::create_dir_all(robot_root.join(".cargo")).expect("cargo dir");
+    let registry_path = framework_registry_dir()
+        .canonicalize()
+        .expect("canonicalize registry dir")
+        .to_string_lossy()
+        .replace('\\', "/");
+    fs::write(
+        robot_root.join(".cargo/config.toml"),
+        format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}\"\n"),
+    )
+    .expect("cargo config");
     fs::create_dir_all(robot_root.join("src")).expect("src");
     fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
     let scenarios = robot_root.join("scenarios");
     fs::create_dir_all(&scenarios).expect("scenarios dir");
-    fs::write(scenarios.join("forward.rs"), "// stub\n").expect("scenario");
+    fs::write(
+        scenarios.join("first.rs"),
+        "use phoxal::scenario::{Scenario, ScenarioPlan};\n\
+         use std::path::PathBuf;\n\
+         use std::time::Duration;\n\
+         \n\
+         #[derive(Default)]\n\
+         pub struct First;\n\
+         \n\
+         #[phoxal::scenario]\n\
+         impl Scenario for First {\n\
+             fn plan(&self) -> phoxal::Result<ScenarioPlan> {\n\
+                 Ok(ScenarioPlan::new(PathBuf::from(\"first.scene\"), Duration::from_secs(1)))\n\
+             }\n\
+             fn verify(&self, _run: &phoxal::scenario::ScenarioRun) -> phoxal::Result<()> {\n\
+                 Ok(())\n\
+             }\n\
+         }\n",
+    )
+    .expect("first scenario");
+    fs::create_dir_all(scenarios.join("second")).expect("second scenario dir");
+    fs::write(
+        scenarios.join("second").join("mod.rs"),
+        "use phoxal::scenario::{Scenario, ScenarioPlan};\n\
+         use std::path::PathBuf;\n\
+         use std::time::Duration;\n\
+         \n\
+         #[derive(Default)]\n\
+         pub struct Second;\n\
+         \n\
+         #[phoxal::scenario]\n\
+         impl Scenario for Second {\n\
+             fn plan(&self) -> phoxal::Result<ScenarioPlan> {\n\
+                 Ok(ScenarioPlan::new(PathBuf::from(\"second.scene\"), Duration::from_secs(1)))\n\
+             }\n\
+             fn verify(&self, _run: &phoxal::scenario::ScenarioRun) -> phoxal::Result<()> {\n\
+                 Ok(())\n\
+             }\n\
+         }\n",
+    )
+    .expect("second scenario mod.rs");
 
     let layout = phoxal_project::ProjectLayout::discover(&robot_root).expect("layout");
     let project = phoxal_project::Project::from_layout(layout).expect("project");
@@ -289,38 +363,50 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         "harness must exist at {harness_path:?} before compile"
     );
 
-    // Locate the framework's phoxal rlib (built by this workspace).
-    let phoxal_rlib = find_phoxal_rlib().expect("phoxal rlib in target/debug");
-    // `cargo build` emits the canonical rlib at `target/debug/libphoxal.rlib`
-    // but the transitive deps (inventory, serde, etc.) live in
-    // `target/debug/deps`. Pass that directory on `-L` so rustc can resolve
-    // them when linking the harness binary.
-    let deps_dir = phoxal_rlib.parent().expect("rlib parent").join("deps");
-    let bin_out = directory.path().join("scenarios-bin");
-
-    // The harness uses `#[path = "../../../scenarios/<name>.rs"]` so its
-    // scenario includes resolve relative to the harness *source file's*
-    // directory. The natural location for that source file is
-    // `<robot>/.phoxal/generated/scenarios/main.rs` — exactly where
-    // `cargo build --test phoxal-scenarios` would invoke `rustc` from.
-    // Compile it in place rather than copying it to a temp directory,
-    // which would break the relative `#[path]` references.
-    let status = std::process::Command::new("rustc")
-        .arg("--edition=2024")
-        .arg(format!("--extern=phoxal={}", phoxal_rlib.display()))
-        .arg("-L")
-        .arg(&deps_dir)
-        .arg("-o")
-        .arg(&bin_out)
-        .arg(&harness_path)
-        .status()
-        .expect("rustc invocation");
+    // Build the `phoxal-scenarios` test target through ordinary cargo.
+    // The `--message-format=json` stream contains one `compiler-artifact`
+    // event per produced binary; we filter to the one whose `target.name`
+    // matches `phoxal-scenarios` and `target.kind` contains `test`.
+    let output = std::process::Command::new("cargo")
+        .args([
+            "test",
+            "--test",
+            "phoxal-scenarios",
+            "--no-run",
+            "--offline",
+            "--message-format=json",
+        ])
+        .current_dir(&robot_root)
+        .env_remove("RUSTC_WRAPPER")
+        .output()
+        .expect("cargo test invocation");
     assert!(
-        status.success(),
-        "rustc failed on the generated harness (exit: {status:?})"
+        output.status.success(),
+        "cargo test --test phoxal-scenarios --no-run failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let executable = match parse_test_executable(&output.stdout, "phoxal-scenarios") {
+        Some(path) => path,
+        None => {
+            // Surface cargo's JSON output when the parser fails so a
+            // future cargo format change is diagnosed quickly.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            panic!(
+                "test executable path in cargo JSON output; cargo stdout was:\n{stdout}"
+            );
+        }
+    };
+    assert!(
+        executable.is_file(),
+        "cargo reported executable {executable:?} but the file does not exist"
     );
 
-    let list_output = std::process::Command::new(&bin_out)
+    // Execute the freshly-built harness with `list` and assert the
+    // exact canonical names (`scenarios/<StructIdent>`) appear in
+    // alphabetical order. The struct identity — not the filename — is
+    // what the registry reports, by plan.
+    let list_output = std::process::Command::new(&executable)
         .arg("list")
         .output()
         .expect("list command");
@@ -328,48 +414,54 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         list_output.status.success(),
         "list command exited non-zero: {:?}\nstderr: {}",
         list_output.status,
-        String::from_utf8_lossy(&list_output.stderr)
+        String::from_utf8_lossy(&list_output.stderr),
     );
     let stdout = String::from_utf8(list_output.stdout).expect("utf8 stdout");
-    // The scenarios are stubs that do not register any structs, so the
-    // list output should be empty. This confirms the harness compiled,
-    // linked, and runs without panic.
-    assert!(
-        stdout.is_empty(),
-        "stub scenarios should not register any structs, got: {stdout:?}"
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "scenarios/First\tphoxal_scenarios::_scenario_first",
+            "scenarios/Second\tphoxal_scenarios::_scenario_second",
+        ],
+        "list output must report the two canonical struct identities in alphabetical order:\n{stdout}"
     );
 }
 
-fn find_phoxal_rlib() -> Option<std::path::PathBuf> {
-    // Use `cargo build --message-format=json` and parse the emitted
-    // `compiler-artifact` events to discover the exact rlib path for the
-    // `phoxal` crate built with the `scenario` feature. Scanning the deps
-    // directory is not robust — the framework has many `libphoxal-*.rlib`
-    // artefacts from other feature combinations, and there is no portable
-    // way to tell them apart from a Rust integration test.
+fn framework_phoxal_dir() -> std::path::PathBuf {
+    // The framework's `phoxal` crate is a sibling of the
+    // `phoxal-project` test crate, so we can locate it directly from the
+    // manifest dir resolved at compile time.
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
+    manifest_dir
         .ancestors()
-        .find(|p| p.join("Cargo.toml").is_file() && p.join("phoxal").is_dir())
-        .map(std::path::Path::to_path_buf)?;
-    let output = std::process::Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "phoxal",
-            "--no-default-features",
-            "--features",
-            "scenario",
-            "--message-format=json",
-        ])
-        .current_dir(&workspace_root)
-        .env_remove("RUSTC_WRAPPER")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    for line in output.stdout.lines() {
+        .find_map(|ancestor| {
+            let candidate = ancestor.join("phoxal");
+                candidate.join("Cargo.toml").is_file().then_some(candidate)
+            })
+        .expect("phoxal crate must be a sibling of crates/project")
+}
+
+fn framework_registry_dir() -> std::path::PathBuf {
+    // The framework's sibling `registry directory is the local registry
+    // index that the `phoxal` package publishes into. The test temp
+    // robots need it on disk so path-based dependencies resolve under
+    // `--offline`.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .ancestors()
+        .find_map(|ancestor| {
+            let candidate = ancestor.join("registry");
+                candidate.join("config.json").is_file().then_some(candidate)
+            })
+        .expect("registry directory must be a sibling of crates/project")
+}
+
+fn parse_test_executable(
+    stdout: &[u8],
+    target_name: &str,
+) -> Option<std::path::PathBuf> {
+    for line in stdout.lines() {
         let Ok(line) = line else { continue };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
@@ -377,29 +469,22 @@ fn find_phoxal_rlib() -> Option<std::path::PathBuf> {
         if value.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
             continue;
         }
-        if value
-            .get("target")
-            .and_then(|t| t.get("name"))
-            .and_then(|n| n.as_str())
-            != Some("phoxal")
-        {
+        let target = value.get("target")?;
+        if target.get("name").and_then(|n| n.as_str()) != Some(target_name) {
             continue;
         }
-        let Some(filenames) = value.get("filenames").and_then(|f| f.as_array()) else {
+        let is_test = target
+            .get("kind")
+            .and_then(|k| k.as_array())
+            .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some("test")));
+        if !is_test {
             continue;
-        };
-        for filename in filenames {
-            if let Some(s) = filename.as_str()
-                && s.ends_with(".rlib")
-            {
-                return Some(std::path::PathBuf::from(s));
-            }
+        }
+        // Cargo emits test executables as `kind: ["test"]`, `crate_types: ["bin"]`,
+        // with the absolute binary path in the top-level `executable` field.
+        if let Some(exec) = value.get("executable").and_then(|e| e.as_str()) {
+            return Some(std::path::PathBuf::from(exec));
         }
     }
     None
 }
-
-// Force the harness module to be linked so the binary references the
-// scenario types when scenarios are present.
-#[allow(dead_code)]
-fn _force_link(_: &Path) {}
