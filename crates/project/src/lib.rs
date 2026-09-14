@@ -123,14 +123,6 @@ impl Project {
     /// and let Cargo update the owning workspace lock.  Locked and frozen
     /// preparation refuses that addition before changing either file.
     pub fn prepare(&self, options: &CargoOptions) -> Result<PreparedProject, Error> {
-        // Scenario preparation runs after supervisor preparation in the
-        // same call, sharing the existing workspace lock pattern through
-        // `prepare_scenario_target`. This is the production wiring: any
-        // `Project::prepare` invocation that finds `<robot>/scenarios/`
-        // materialises the test target, the dev-dep, and the generated
-        // harness under `.phoxal/generated/scenarios/main.rs`.
-        let scenario_changes = preparation::prepare_scenario_target(&self.layout, options)?;
-        let _ = scenario_changes;
         self.prepare_with(options, |_, _, _| Ok(()))
             .map(|(prepared, ())| prepared)
     }
@@ -152,7 +144,17 @@ impl Project {
         options: &CargoOptions,
         before_resolution: impl FnOnce(&Path, &Path, Option<&Path>) -> Result<T, Error>,
     ) -> Result<(PreparedProject, T), Error> {
-        let preparation = preparation::ensure_required_dependencies(&self.layout, options)?;
+        let mut preparation = preparation::ensure_required_dependencies(&self.layout, options)?;
+        // Scenario preparation runs *inside* the same workspace lock and
+        // manifest snapshot. Any later failure restores the manifest to its
+        // pre-supervisor state, which also undoes the scenario additions.
+        if let Err(error) = preparation::prepare_scenario_target_in_transaction(
+            &self.layout,
+            options,
+            &mut preparation,
+        ) {
+            return rollback_preparation(preparation, error);
+        }
         let local_source = match publication::prepare_local_project_source(&self.layout) {
             Ok(source) => source,
             Err(error) => return rollback_preparation(preparation, error),

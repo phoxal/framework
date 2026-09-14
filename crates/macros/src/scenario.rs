@@ -69,10 +69,15 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
         }
     };
 
-    // (5) The macro sees the `impl ... for ... { ... }` block at this
-    //     span; record its starting location for diagnostics. P1 reports
-    //     0 until the proc-macro2 `Span::start()` resolution is finalized.
-    let span_start_line_marker: u32 = 0;
+    // (5) Capture the starting line of the user's `impl` block so the
+    //     registry can report a meaningful diagnostic location instead of
+    //     a placeholder. `proc_macro2::Span::start()` resolves through
+    //     both host toolchains (rustc and rust-analyzer) without falling
+    //     back to `0`. `line` returns `usize`; we truncate to `u32` since
+    //     line numbers greater than `u32::MAX` are not realistic for
+    //     human-authored sources.
+    let span_start_line: u32 =
+        u32::try_from(impl_block.brace_token.span.open().start().line).unwrap_or(u32::MAX);
 
     let short_name = type_ident.to_string();
     let full_name = format!("scenarios/{short_name}");
@@ -108,7 +113,7 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
                 short_name: #short_name,
                 module_path: ::std::module_path!(),
                 source_file: ::std::file!(),
-                source_line: #span_start_line_marker,
+                source_line: #span_start_line,
                 entry: #entry_name,
             }
         }

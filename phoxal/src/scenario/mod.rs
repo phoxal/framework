@@ -1,9 +1,12 @@
 //! Scenario authoring and execution surface.
 //!
-//! A [`Scenario`] author declares one finite simulated experiment through a
-//! [`ScenarioPlan`] (P2 will land the plan/action/step types) and validates
-//! its outcome through [`Scenario::verify`] over a [`ScenarioRun`] of typed
-//! records and selected native samples (P3 will land the run types).
+//! A [`Scenario`](crate::scenario::Scenario) author declares one finite
+//! simulated experiment through a
+//! [`ScenarioPlan`](crate::scenario::ScenarioPlan) (P2 will land the
+//! plan/action/step types) and validates its outcome through
+//! [`Scenario::verify`](crate::scenario::Scenario::verify) over a
+//! [`ScenarioRun`](crate::scenario::ScenarioRun) of typed records and
+//! selected native samples (P3 will land the run types).
 //!
 //! The trait, registry, and case-host protocol skeleton ship in P1 so the
 //! `cargo phoxal simulation scenario list` and `run` commands have a

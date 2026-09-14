@@ -18,7 +18,8 @@ use crate::scenario::results::ScenarioRun;
 
 /// A scenario author implements this trait on a `pub struct` with a
 /// hand-written or derived [`Default`]. The `#[phoxal::scenario]`
-/// attribute registers the impl into the static [`ScenarioRegistry`].
+/// attribute registers the impl into the static
+/// [`ScenarioRegistry`](crate::scenario::ScenarioRegistry).
 ///
 /// `plan()` declares one finite simulated experiment. P2 replaces the
 /// placeholder `ScenarioPlan` with the typed action schedule and capture

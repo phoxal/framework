@@ -143,7 +143,7 @@ fn prepare_scenarios_refuses_to_mutate_under_locked_mode_when_setup_is_missing()
 }
 
 #[test]
-fn prepare_scenarios_removes_stale_test_target_when_last_scenario_deleted() {
+fn prepare_scenarios_retains_persistent_setup_when_last_scenario_removed() {
     let directory = tempfile::tempdir().expect("tempdir");
     let robot_root = directory.path().to_path_buf();
     let manifest_text = "[package]\n\
@@ -176,19 +176,35 @@ fn prepare_scenarios_removes_stale_test_target_when_last_scenario_deleted() {
     let persisted = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read");
     assert!(persisted.contains("phoxal-scenarios"));
 
-    // Delete all scenarios and re-run; should roll back the target.
+    // Delete all scenarios and re-run. Per the plan, the persistent setup
+    // (managed `[[test]]` target + `scenario` dev-dep feature) must remain
+    // because the user might add scenarios back later. Only the disposable
+    // harness is regenerated to an empty body so the binary compiles an
+    // empty registry.
     fs::remove_file(scenarios.join("a.rs")).expect("rm a");
     fs::remove_file(scenarios.join("b.rs")).expect("rm b");
     let second = project.prepare_scenarios(&options).expect("second run");
-    println!("second-run changes: {second:?}");
+    assert!(
+        second.iter().any(|change| matches!(
+            change,
+            phoxal_project::ScenarioPreparationChange::HarnessWritten { .. }
+        )),
+        "harness must be regenerated to the empty form when no scenarios remain: {second:?}"
+    );
     let after = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read after");
     assert!(
-        !after.contains("phoxal-scenarios"),
-        "test target must be removed when no scenarios remain; manifest:\n{after}"
+        after.contains("phoxal-scenarios"),
+        "managed `[[test]]` target must be retained when no scenarios remain; manifest:\n{after}"
     );
     assert!(
-        !after.contains("scenario"),
-        "scenario feature must be removed from dev-dep when no scenarios remain; manifest:\n{after}"
+        after.contains("scenario"),
+        "managed `scenario` dev-dep feature must be retained when no scenarios remain; manifest:\n{after}"
+    );
+    let harness = fs::read_to_string(robot_root.join(".phoxal/generated/scenarios/main.rs"))
+        .expect("harness");
+    assert!(
+        !harness.contains("mod _scenario"),
+        "harness must not reference any scenario mod when none remain:\n{harness}"
     );
 }
 

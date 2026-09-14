@@ -35,18 +35,41 @@ pub struct PreparationChange {
 }
 
 /// One visible change made by scenario preparation.
+///
+/// Per the plan, the tool never removes persistent setup the user authored
+/// in `Cargo.toml`: it only adds the managed `[[test]] phoxal-scenarios`
+/// target when missing, the `scenario` feature on `[dev-dependencies]
+/// phoxal` when missing, and regenerates the disposable harness source.
+/// Removing the last scenario leaves an empty harness and the existing
+/// persistent setup untouched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenarioPreparationChange {
     /// `[[test]]` target added under the given name with the given path.
     TestTargetAdded { name: String, path: String },
-    /// `[[test]]` target removed after the last scenario was deleted.
-    TestTargetRemoved { name: String },
     /// `phoxal` feature gate added to the dev-dependencies entry.
     FeatureAdded { feature: String },
-    /// `phoxal` feature gate removed from the dev-dependencies entry.
-    FeatureRemoved { feature: String },
     /// Harness source regenerated under the given path.
     HarnessWritten { path: String },
+}
+
+impl From<ScenarioPreparationChange> for PreparationChange {
+    fn from(change: ScenarioPreparationChange) -> Self {
+        let description = match &change {
+            ScenarioPreparationChange::TestTargetAdded { name, path } => {
+                format!("added `[[test]] name = \"{name}\", path = \"{path}\"`")
+            }
+            ScenarioPreparationChange::FeatureAdded { feature } => {
+                format!("added `{feature}` feature to [dev-dependencies] phoxal")
+            }
+            ScenarioPreparationChange::HarnessWritten { path } => {
+                format!("regenerated harness source at {path}")
+            }
+        };
+        Self {
+            dependency: "scenario-preparation".to_owned(),
+            requirement: description,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +97,16 @@ impl ManifestTransaction {
     /// Finish a successful preparation and release its source mutation lock.
     pub(crate) fn commit(self) -> Vec<PreparationChange> {
         self.changes
+    }
+
+    /// Records a scenario preparation change as part of this transaction
+    /// so the rollback path also covers the scenario additions.
+    pub(crate) fn extend_with_scenario_changes(
+        &mut self,
+        scenario_changes: Vec<ScenarioPreparationChange>,
+    ) {
+        self.changes
+            .extend(scenario_changes.into_iter().map(PreparationChange::from));
     }
 
     /// Restores all files captured before an unsuccessful preparation.
@@ -253,11 +286,30 @@ pub(crate) fn ensure_required_dependencies(
 pub(crate) const SCENARIO_TEST_TARGET_NAME: &str = "phoxal-scenarios";
 pub(crate) const SCENARIO_HARNESS_RELATIVE_PATH: &str = ".phoxal/generated/scenarios/main.rs";
 
+/// The pure description of what scenario preparation *would* do against a
+/// given authored manifest, with no I/O. The caller decides whether to
+/// refuse (locked/frozen without persistent setup) and whether to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScenarioChangePlan {
+    pub discovered: Vec<crate::scenario::DiscoveredScenario>,
+    pub add_test_target: bool,
+    pub add_scenario_feature: bool,
+    pub harness_changed: bool,
+    /// `true` if any persistent setup (test target or feature) needs to be
+    /// added — the case that locked/frozen modes must refuse.
+    pub needs_persistent_setup: bool,
+}
+
 /// Production scenario preparation entry point. Acquires the same
 /// workspace file lock as ordinary preparation, idempotently edits the
 /// manifest, writes the generated harness, and commits the manifest
 /// atomically. Locked/frozen modes refuse *before* mutating when the
 /// persistent setup is missing.
+///
+/// Per the plan, this never removes authored configuration: when the
+/// last scenario is removed, the existing managed `[[test]]` target and
+/// the existing `[dev-dependencies] phoxal.features = ["scenario"]`
+/// entry are preserved (the binary simply compiles an empty harness).
 pub(crate) fn prepare_scenario_target(
     layout: &ProjectLayout,
     options: &CargoOptions,
@@ -289,10 +341,8 @@ fn prepare_scenario_target_locked(
                 path: manifest.to_owned(),
                 message: format!("cannot parse authored manifest: {source}"),
             })?;
-    let mut changes = Vec::new();
-    prepare_scenario_target_in_document(layout, robot_root, &mut document, &mut changes)?;
-    let prepared = document.to_string().into_bytes();
-    if prepared != manifest_text.as_bytes() && !changes.is_empty() {
+    let plan = compute_scenario_change_plan(layout, robot_root, &document)?;
+    if plan.needs_persistent_setup {
         match options.lock {
             LockMode::Unlocked => {}
             LockMode::Locked | LockMode::Frozen => {
@@ -308,20 +358,39 @@ fn prepare_scenario_target_locked(
                 });
             }
         }
+    }
+    let mut changes = Vec::new();
+    apply_scenario_change_plan(layout, robot_root, &plan, &mut document, &mut changes)?;
+    let prepared = document.to_string().into_bytes();
+    if prepared != manifest_text.as_bytes() {
         atomic_write(manifest, &prepared).map_err(|source| Error::ManifestPreparation {
             path: manifest.to_owned(),
             message: format!("cannot persist manifest: {source}"),
         })?;
     }
+    if plan.harness_changed {
+        write_scenario_harness_file(robot_root, &plan.discovered).map_err(|message| {
+            Error::ManifestPreparation {
+                path: manifest.to_owned(),
+                message,
+            }
+        })?;
+        changes.push(ScenarioPreparationChange::HarnessWritten {
+            path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
+        });
+    }
     Ok(changes)
 }
 
-fn prepare_scenario_target_in_document(
+/// Pure computation of the change plan. No I/O. Refuses locked/frozen
+/// upstream based on `plan.needs_persistent_setup` so the harness-only
+/// regeneration path stays available when persistent setup is already
+/// present.
+pub(crate) fn compute_scenario_change_plan(
     layout: &ProjectLayout,
     robot_root: &Path,
-    document: &mut DocumentMut,
-    changes: &mut Vec<ScenarioPreparationChange>,
-) -> Result<(), Error> {
+    document: &DocumentMut,
+) -> Result<ScenarioChangePlan, Error> {
     let discovered = match super::scenario::discover_scenarios(robot_root) {
         Ok(list) => list,
         Err(error) => {
@@ -331,65 +400,170 @@ fn prepare_scenario_target_in_document(
             });
         }
     };
-    if discovered.is_empty() {
-        if let Some(true) = remove_scenario_test_target(document) {
-            changes.push(ScenarioPreparationChange::TestTargetRemoved {
-                name: SCENARIO_TEST_TARGET_NAME.to_owned(),
-            });
-        }
-        if remove_scenario_dev_dependency_feature(document) {
-            changes.push(ScenarioPreparationChange::FeatureRemoved {
-                feature: "scenario".to_owned(),
-            });
-        }
-        let harness_changed =
-            write_scenario_harness(robot_root, &discovered).map_err(|message| {
-                Error::ManifestPreparation {
-                    path: layout.cargo_manifest().to_owned(),
-                    message,
-                }
-            })?;
-        if harness_changed {
-            changes.push(ScenarioPreparationChange::HarnessWritten {
-                path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
-            });
-        }
+    let add_test_target =
+        !lookup_scenario_test_target(document).is_some_and(|table| managed_target_matches(&table));
+    let add_scenario_feature = !dev_dependency_has_scenario_feature(document);
+    let harness_changed = harness_needs_write(robot_root, &discovered);
+    let needs_persistent_setup =
+        (add_test_target || add_scenario_feature) && !discovered.is_empty();
+    Ok(ScenarioChangePlan {
+        discovered,
+        add_test_target,
+        add_scenario_feature,
+        harness_changed,
+        needs_persistent_setup,
+    })
+}
+
+fn harness_needs_write(
+    robot_root: &Path,
+    discovered: &[crate::scenario::DiscoveredScenario],
+) -> bool {
+    let harness_path = robot_root.join(SCENARIO_HARNESS_RELATIVE_PATH);
+    let expected = super::scenario::generate_harness_source(robot_root, discovered).into_bytes();
+    match fs::read(&harness_path) {
+        Ok(current) => current != expected,
+        Err(_) => true,
+    }
+}
+
+fn managed_target_matches(table: &Table) -> bool {
+    let path = table.get("path").and_then(Item::as_str);
+    let harness = table.get("harness").and_then(Item::as_bool);
+    let test_flag = table.get("test").and_then(Item::as_bool);
+    path == Some(SCENARIO_HARNESS_RELATIVE_PATH)
+        && harness == Some(false)
+        && test_flag == Some(false)
+}
+
+fn dev_dependency_has_scenario_feature(document: &DocumentMut) -> bool {
+    let Some(dev) = document.get("dev-dependencies").and_then(Item::as_table) else {
+        return false;
+    };
+    let Some(entry) = dev.get("phoxal").and_then(Item::as_value) else {
+        return false;
+    };
+    let Some(inline) = entry.as_inline_table() else {
+        return false;
+    };
+    inline
+        .get("features")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().any(|v| v.as_str() == Some("scenario")))
+        .unwrap_or(false)
+}
+
+fn apply_scenario_change_plan(
+    layout: &ProjectLayout,
+    robot_root: &Path,
+    plan: &ScenarioChangePlan,
+    document: &mut DocumentMut,
+    changes: &mut Vec<ScenarioPreparationChange>,
+) -> Result<(), Error> {
+    if plan.discovered.is_empty() {
+        // Per the plan: never remove authored configuration. The harness is
+        // the disposable part; when the last scenario is removed the binary
+        // still compiles, listing an empty registry.
         return Ok(());
     }
-    let test_target =
-        ensure_scenario_test_target(document).map_err(|message| Error::ManifestPreparation {
-            path: layout.cargo_manifest().to_owned(),
-            message,
-        })?;
-    if let Some(change) = test_target {
+    if plan.add_test_target
+        && let Some(change) =
+            ensure_scenario_test_target(document).map_err(|message| Error::ManifestPreparation {
+                path: robot_root.join("Cargo.toml"),
+                message,
+            })?
+    {
         changes.push(change);
     }
-    let dev_dep =
-        ensure_scenario_dev_dependency(document).map_err(|message| Error::ManifestPreparation {
-            path: layout.cargo_manifest().to_owned(),
-            message,
-        })?;
-    if let Some(change) = dev_dep {
+    if plan.add_scenario_feature
+        && let Some(change) =
+            ensure_scenario_dev_dependency(layout, document).map_err(|message| {
+                Error::ManifestPreparation {
+                    path: robot_root.join("Cargo.toml"),
+                    message,
+                }
+            })?
+    {
         changes.push(change);
-    }
-    let harness_changed = write_scenario_harness(robot_root, &discovered).map_err(|message| {
-        Error::ManifestPreparation {
-            path: layout.cargo_manifest().to_owned(),
-            message,
-        }
-    })?;
-    if harness_changed {
-        changes.push(ScenarioPreparationChange::HarnessWritten {
-            path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
-        });
     }
     Ok(())
 }
 
-fn write_scenario_harness(
+/// Extends an in-flight preparation transaction with the scenario
+/// preparation step. The original manifest captured by the transaction
+/// remains the rollback target — both supervisor and scenario changes
+/// are restored atomically if a later step fails.
+pub(crate) fn prepare_scenario_target_in_transaction(
+    layout: &ProjectLayout,
+    options: &CargoOptions,
+    transaction: &mut ManifestTransaction,
+) -> Result<(), Error> {
+    options.validate()?;
+    let manifest = layout.cargo_manifest();
+    let manifest_text =
+        fs::read_to_string(manifest).map_err(|source| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("cannot read authored manifest: {source}"),
+        })?;
+    let mut document: DocumentMut =
+        manifest_text
+            .parse()
+            .map_err(|source| Error::ManifestPreparation {
+                path: manifest.to_owned(),
+                message: format!("cannot parse authored manifest: {source}"),
+            })?;
+    let plan = compute_scenario_change_plan(layout, layout.root(), &document)?;
+    if plan.needs_persistent_setup {
+        match options.lock {
+            LockMode::Unlocked => {}
+            LockMode::Locked | LockMode::Frozen => {
+                return Err(Error::ManifestPreparation {
+                    path: manifest.to_owned(),
+                    message: format!(
+                        "scenario setup needs to add `[[test]] {SCENARIO_TEST_TARGET_NAME}` and \
+                         `[dev-dependencies] phoxal.features = [\"scenario\"]`; refusing to \
+                         mutate the manifest while {:?} is in effect. Re-run without \
+                         --locked / --frozen.",
+                        options.lock
+                    ),
+                });
+            }
+        }
+    }
+    let mut scenario_changes = Vec::new();
+    apply_scenario_change_plan(
+        layout,
+        layout.root(),
+        &plan,
+        &mut document,
+        &mut scenario_changes,
+    )?;
+    let prepared = document.to_string().into_bytes();
+    if prepared != manifest_text.as_bytes() {
+        atomic_write(manifest, &prepared).map_err(|source| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("cannot persist manifest: {source}"),
+        })?;
+        transaction.extend_with_scenario_changes(scenario_changes);
+    }
+    if plan.harness_changed {
+        write_scenario_harness_file(layout.root(), &plan.discovered).map_err(|message| {
+            Error::ManifestPreparation {
+                path: manifest.to_owned(),
+                message,
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Write the harness source unconditionally — the caller has already
+/// computed `harness_needs_write` and decided to commit. This is the
+/// post-write half of the harness lifecycle; it never inspects content.
+fn write_scenario_harness_file(
     robot_root: &Path,
     discovered: &[crate::scenario::DiscoveredScenario],
-) -> Result<bool, String> {
+) -> Result<(), String> {
     let harness_path = robot_root.join(SCENARIO_HARNESS_RELATIVE_PATH);
     if let Some(parent) = harness_path.parent() {
         fs::create_dir_all(parent)
@@ -397,14 +571,8 @@ fn write_scenario_harness(
     }
     let harness_source = super::scenario::generate_harness_source(robot_root, discovered);
     let next = harness_source.into_bytes();
-    let previous = fs::read(&harness_path).ok();
-    if previous.as_deref() != Some(next.as_slice()) {
-        atomic_write(&harness_path, &next)
-            .map_err(|source| format!("cannot write generated harness: {source}"))?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    atomic_write(&harness_path, &next)
+        .map_err(|source| format!("cannot write generated harness: {source}"))
 }
 
 fn ensure_scenario_test_target(
@@ -471,6 +639,7 @@ fn build_scenario_test_table() -> Table {
 }
 
 fn ensure_scenario_dev_dependency(
+    layout: &ProjectLayout,
     document: &mut DocumentMut,
 ) -> Result<Option<ScenarioPreparationChange>, String> {
     let has_phoxal_dev_dep = document
@@ -479,7 +648,7 @@ fn ensure_scenario_dev_dependency(
         .map(|t| t.contains_key("phoxal"))
         .unwrap_or(false);
     if !has_phoxal_dev_dep {
-        let mirror = build_phoxal_dev_dependency_from_existing(document)?;
+        let mirror = build_phoxal_dev_dependency_from_existing(layout, document)?;
         let dev_table = ensure_dev_dependencies_table(document)?;
         dev_table.insert("phoxal", mirror);
         return Ok(Some(ScenarioPreparationChange::FeatureAdded {
@@ -540,50 +709,102 @@ fn ensure_dev_dependencies_table(document: &mut DocumentMut) -> Result<&mut Tabl
         .ok_or_else(|| "`[dev-dependencies]` exists but is not a table".to_owned())
 }
 
-fn build_phoxal_dev_dependency_from_existing(document: &DocumentMut) -> Result<Item, String> {
-    let sources = ["dependencies", "workspace.dependencies"];
-    for path in sources {
-        if let Some(value) = lookup_phoxal_dependency(document, path) {
-            let mut inline = match value {
-                Value::InlineTable(table) => table.clone(),
-                _ => {
-                    return Err(format!(
-                        "authored `phoxal` dependency under `[{path}]` is not an inline table; \
-                         cannot mirror its coordinates into [dev-dependencies]"
-                    ));
-                }
-            };
-            // When `[dependencies] phoxal` only inherits from the workspace
-            // (`workspace = true` and nothing else of substance), follow
-            // the inheritance: the workspace-declared coordinates live in
-            // `[workspace.dependencies] phoxal`. Falling through here keeps
-            // the dev-dependency aligned with the real source.
-            if path == "dependencies" && is_workspace_inherit_only(&inline) {
-                continue;
-            }
-            let existing_features = inline
-                .get("features")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let mut merged = existing_features;
-            if !merged.iter().any(|f| f == "scenario") {
-                merged.push("scenario".to_owned());
-            }
-            inline.insert("features", Value::Array(Array::from_iter(merged)));
-            return Ok(Item::Value(Value::InlineTable(inline)));
+fn build_phoxal_dev_dependency_from_existing(
+    layout: &ProjectLayout,
+    document: &DocumentMut,
+) -> Result<Item, String> {
+    // Sources are examined in this order:
+    //   1. `[dependencies] phoxal` in the member, when it has authored
+    //      coordinates of its own (inline table or string form).
+    //   2. `[workspace.dependencies] phoxal` — first in the member itself
+    //      (single-package workspace case), then in the parent workspace
+    //      manifest (real workspace-member case).
+    //
+    // String-form declarations such as `phoxal = "0.99"` are accepted and
+    // promoted to `{ version = "0.99" }`. Plain tables (non-inline) are
+    // not accepted because they would lose key ordering on round-trip.
+    if let Some(value) = lookup_phoxal_dependency(document, "dependencies") {
+        let inline = phoxal_value_to_inline(value).ok_or_else(|| {
+            "authored `[dependencies] phoxal` is not an inline table or version string; \
+             cannot mirror its coordinates into [dev-dependencies]"
+                .to_owned()
+        })?;
+        if !is_workspace_inherit_only(&inline) {
+            return Ok(Item::Value(Value::InlineTable(add_scenario_feature(
+                inline,
+            ))));
         }
     }
+    // Single-package workspace: the package is its own workspace root, so
+    // `[workspace.dependencies]` lives in the same document.
+    if let Some(value) = lookup_phoxal_dependency(document, "workspace.dependencies") {
+        let inline = phoxal_value_to_inline(value).ok_or_else(|| {
+            "authored `[workspace.dependencies] phoxal` is not an inline table or version \
+             string; cannot mirror its coordinates into [dev-dependencies]"
+                .to_owned()
+        })?;
+        return Ok(Item::Value(Value::InlineTable(add_scenario_feature(
+            inline,
+        ))));
+    }
+    // Real workspace member: load the parent workspace manifest and look
+    // there. `load_workspace_document` returns `None` for single-package
+    // workspaces (where the workspace root is the robot itself) and when
+    // the parent manifest cannot be parsed.
+    if let Some(workspace_document) = load_workspace_document(layout)
+        && let Some(value) = lookup_phoxal_dependency(&workspace_document, "workspace.dependencies")
+    {
+        let inline = phoxal_value_to_inline(value).ok_or_else(|| {
+            "authored `[workspace.dependencies] phoxal` in the parent workspace manifest \
+             is not an inline table or version string; cannot mirror its coordinates into \
+             [dev-dependencies]"
+                .to_owned()
+        })?;
+        return Ok(Item::Value(Value::InlineTable(add_scenario_feature(
+            inline,
+        ))));
+    }
     Err(
-        "no authored `[dependencies] phoxal` or `[workspace.dependencies] phoxal` entry to \
-         mirror; cannot author coordinates on your behalf. Add `phoxal` to one of those tables \
-         first."
+        "no authored `[dependencies] phoxal` (in the member) or `[workspace.dependencies] phoxal` \
+         (in the member or parent workspace manifest) entry to mirror; cannot author coordinates \
+         on your behalf. Add `phoxal` to one of those tables first."
             .to_owned(),
     )
+}
+
+/// Promotes the various authored forms of `phoxal` into a mutable
+/// `InlineTable`:
+///   * `phoxal = { ... }`         → clone of the inline table
+///   * `phoxal = "1.2.3"`         → `{ version = "1.2.3" }`
+///   * `phoxal.workspace = true`  → empty `{}` (inheritance handled by caller)
+fn phoxal_value_to_inline(value: &Value) -> Option<InlineTable> {
+    match value {
+        Value::InlineTable(table) => Some(table.clone()),
+        Value::String(version) => {
+            let mut table = InlineTable::new();
+            table.insert("version", Value::from(version.value().clone()));
+            Some(table)
+        }
+        _ => None,
+    }
+}
+
+fn add_scenario_feature(mut table: InlineTable) -> InlineTable {
+    let existing_features = table
+        .get("features")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut merged = existing_features;
+    if !merged.iter().any(|f| f == "scenario") {
+        merged.push("scenario".to_owned());
+    }
+    table.insert("features", Value::Array(Array::from_iter(merged)));
+    table
 }
 
 /// True when the inline table contains `workspace = true` and no
@@ -636,69 +857,18 @@ fn lookup_phoxal_dependency<'a>(document: &'a DocumentMut, section: &str) -> Opt
     section_item.get("phoxal")?.as_value()
 }
 
-fn remove_scenario_test_target(document: &mut DocumentMut) -> Option<bool> {
-    let Some(item) = document.get_mut("test") else {
-        return Some(false);
-    };
-    let Some(tests) = item.as_array_of_tables_mut() else {
-        return Some(false);
-    };
-    let mut removed = false;
-    let mut idx = 0;
-    while idx < tests.len() {
-        let name_matches = tests
-            .get(idx)
-            .and_then(|t| t.get("name"))
-            .and_then(Item::as_str)
-            == Some(SCENARIO_TEST_TARGET_NAME);
-        if name_matches {
-            tests.remove(idx);
-            removed = true;
-        } else {
-            idx += 1;
-        }
+/// Load the parent workspace's Cargo.toml document, if any. Returns
+/// `None` for standalone packages and when the workspace manifest cannot
+/// be parsed (the latter case is treated as a missing lookup rather
+/// than a hard error).
+fn load_workspace_document(layout: &ProjectLayout) -> Option<DocumentMut> {
+    let workspace_root = cargo_workspace_root(layout, layout.cargo_manifest()).ok()?;
+    let workspace_manifest = workspace_root.join("Cargo.toml");
+    if workspace_manifest == layout.cargo_manifest() {
+        return None;
     }
-    if tests.is_empty() {
-        document.as_table_mut().remove("test");
-    }
-    Some(removed)
-}
-
-fn remove_scenario_dev_dependency_feature(document: &mut DocumentMut) -> bool {
-    let Some(dev) = document.get_mut("dev-dependencies") else {
-        return false;
-    };
-    let Some(table) = dev.as_table_mut() else {
-        return false;
-    };
-    let Some(entry) = table.get_mut("phoxal") else {
-        return false;
-    };
-    let Some(value) = entry.as_value_mut() else {
-        return false;
-    };
-    let Some(inline) = value.as_inline_table_mut() else {
-        return false;
-    };
-    let mut removed = false;
-    if let Some(features) = inline.get_mut("features")
-        && let Some(arr) = features.as_array_mut()
-    {
-        let mut idx = 0;
-        while idx < arr.len() {
-            let is_scenario = arr.get(idx).and_then(|v| v.as_str()) == Some("scenario");
-            if is_scenario {
-                arr.remove(idx);
-                removed = true;
-            } else {
-                idx += 1;
-            }
-        }
-        if arr.is_empty() {
-            inline.remove("features");
-        }
-    }
-    removed
+    let source = fs::read_to_string(&workspace_manifest).ok()?;
+    source.parse::<DocumentMut>().ok()
 }
 
 fn acquire_preparation_lock(
