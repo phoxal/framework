@@ -19,12 +19,14 @@
 
 mod harness;
 mod plan;
+mod program;
 mod registry;
 mod results;
 mod trait_def;
 
 pub use harness::{HarnessError, HarnessRun, run_harness};
-pub use plan::ScenarioPlan;
+pub use plan::{Action, Capture, PlanValidationError, ScenarioPlan, Step, MAX_PAYLOAD};
+pub use program::{Program, ProgramError, PROGRAM_SCHEMA_VERSION};
 pub use registry::{
     DuplicateLocation, DuplicateScenarioError, RegisteredScenario, ScenarioDescriptor,
     ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,

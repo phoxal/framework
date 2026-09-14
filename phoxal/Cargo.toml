@@ -69,6 +69,7 @@ runtime = [
 # that only want to define scenarios do not pull Zenoh, tokio, or clap.
 scenario = [
     "protocol",
+    "port",
     "dep:phoxal-macros",
     "dep:inventory",
     "dep:serde",
