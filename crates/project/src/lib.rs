@@ -13,6 +13,7 @@ mod error;
 mod file_lock;
 mod preparation;
 mod publication;
+pub mod scenario;
 mod selection;
 mod simulation;
 mod submission;
@@ -41,7 +42,7 @@ pub use document::{
 pub use error::{
     DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,
 };
-pub use preparation::PreparationChange;
+pub use preparation::{PreparationChange, ScenarioPreparationChange};
 pub use publication::{
     PUBLICATION_SCHEMA, PublicationFile, PublicationKind, PublicationOptions, PublicationResult,
     PublicationSourceProvenance, prepare_publication,
@@ -122,8 +123,26 @@ impl Project {
     /// and let Cargo update the owning workspace lock.  Locked and frozen
     /// preparation refuses that addition before changing either file.
     pub fn prepare(&self, options: &CargoOptions) -> Result<PreparedProject, Error> {
+        // Scenario preparation runs after supervisor preparation in the
+        // same call, sharing the existing workspace lock pattern through
+        // `prepare_scenario_target`. This is the production wiring: any
+        // `Project::prepare` invocation that finds `<robot>/scenarios/`
+        // materialises the test target, the dev-dep, and the generated
+        // harness under `.phoxal/generated/scenarios/main.rs`.
+        let scenario_changes = preparation::prepare_scenario_target(&self.layout, options)?;
+        let _ = scenario_changes;
         self.prepare_with(options, |_, _, _| Ok(()))
             .map(|(prepared, ())| prepared)
+    }
+
+    /// Run only the scenario preparation step. Useful for `cargo phoxal
+    /// simulation scenario list/run` to materialise the test target and
+    /// generated harness without a full Cargo graph resolution.
+    pub fn prepare_scenarios(
+        &self,
+        options: &CargoOptions,
+    ) -> Result<Vec<ScenarioPreparationChange>, Error> {
+        preparation::prepare_scenario_target(&self.layout, options)
     }
 
     /// Stage authored inputs before resolving, allowing an explicit update to

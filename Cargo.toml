@@ -132,6 +132,7 @@ syn = { version = "2.0", features = ["full", "extra-traits"] }
 # (not the newest 0.39.x) because newer releases raise their MSRV past this
 # workspace's `rust-version`.
 sysinfo = { version = "0.36", default-features = false, features = ["disk", "system"] }
+inventory = "0.3"
 tempfile = "3.27.0"
 tobj = { version = "4.0.4", default-features = false, features = ["use_f64"] }
 thiserror = "2.0.18"

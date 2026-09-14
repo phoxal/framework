@@ -32,6 +32,13 @@ pub mod communication;
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub mod runtime;
 
+/// Scenario authoring and execution surface (P1 foundation: trait, registry,
+/// case-host skeleton). Independent of `runtime` so consumer crates that
+/// only define scenarios do not pull Zenoh/tokio/clap.
+#[cfg(feature = "scenario")]
+#[cfg_attr(docsrs, doc(cfg(feature = "scenario")))]
+pub mod scenario;
+
 /// Public logical-session client.
 #[cfg(feature = "session")]
 #[cfg_attr(docsrs, doc(cfg(feature = "session")))]
@@ -44,7 +51,7 @@ pub mod session;
 pub mod communication_transport;
 
 /// Framework result type backed by `anyhow`.
-pub use anyhow::Result;
+pub use anyhow::{Result, anyhow};
 
 /// Inert generated public-port descriptors.
 #[cfg(feature = "port")]
@@ -54,6 +61,11 @@ pub use phoxal_port as port;
 #[cfg(feature = "runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::{Config, runtime};
+
+/// `#[phoxal::scenario]` attribute for `impl Scenario` blocks.
+#[cfg(feature = "scenario")]
+#[cfg_attr(docsrs, doc(cfg(feature = "scenario")))]
+pub use phoxal_macros::scenario;
 
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};
 

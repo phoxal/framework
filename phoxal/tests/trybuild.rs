@@ -22,3 +22,15 @@ fn trybuild_host_ui() {
     t.pass("tests/trybuild/host_pass/*.rs");
     t.compile_fail("tests/trybuild/host_fail/*.rs");
 }
+
+// Scenario authoring surface: positive and negative compile coverage for the
+// `#[phoxal::scenario]` attribute. The attribute verifies the impl block's
+// trait is `Scenario`, rejects generic impls and anonymous types, and rejects
+// inherent impls.
+#[cfg(feature = "scenario")]
+#[test]
+fn trybuild_scenario_ui() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/trybuild/scenario_pass/*.rs");
+    t.compile_fail("tests/trybuild/scenario_fail/*.rs");
+}

@@ -64,6 +64,18 @@ runtime = [
     "dep:zenoh",
 ]
 
+# Scenario authoring surface: trait, descriptors, inventory registration,
+# case-host protocol skeleton. Independent of `runtime` so consumer crates
+# that only want to define scenarios do not pull Zenoh, tokio, or clap.
+scenario = [
+    "protocol",
+    "dep:phoxal-macros",
+    "dep:inventory",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:thiserror",
+]
+
 # The CLI, Operator, and any other application attaching to a running
 # execution. The public session owns its Protobuf-over-Zenoh transport and typed
 # client only; it does not pull in the participant runner or its internal bus.
@@ -100,6 +112,11 @@ zenoh = { workspace = true, optional = true }
 
 phoxal-port = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
+
+# Scenario surface deps. `inventory` is the link-time registration mechanism
+# for the #[phoxal::scenario] attribute; `anyhow`/`serde`/`serde_json`/`thiserror`
+# back the trait and result types.
+inventory = { workspace = true, optional = true }
 
 [build-dependencies]
 phoxal-build.workspace = true

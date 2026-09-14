@@ -1,0 +1,37 @@
+//! Scenario authoring and execution surface.
+//!
+//! A [`Scenario`] author declares one finite simulated experiment through a
+//! [`ScenarioPlan`] (P2 will land the plan/action/step types) and validates
+//! its outcome through [`Scenario::verify`] over a [`ScenarioRun`] of typed
+//! records and selected native samples (P3 will land the run types).
+//!
+//! The trait, registry, and case-host protocol skeleton ship in P1 so the
+//! `cargo phoxal simulation scenario list` and `run` commands have a
+//! compile-and-dispatch pipeline to land against before P2-P3 add the
+//! behaviour.
+//!
+//! Public identity of a scenario is exactly `scenarios/<StructIdent>`. The
+//! filename or module path is intentionally not part of that identity: the
+//! registry reports it as diagnostics only.
+
+mod harness;
+mod plan;
+mod registry;
+mod results;
+mod trait_def;
+
+pub use harness::{HarnessError, HarnessRun, run_harness};
+pub use plan::ScenarioPlan;
+pub use registry::{
+    DuplicateLocation, DuplicateScenarioError, RegisteredScenario, ScenarioDescriptor,
+    ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,
+};
+pub use results::ScenarioRun;
+pub use trait_def::Scenario;
+
+// Re-exports used by the `#[phoxal::scenario]` macro's expansion. Hidden so
+// end-users do not reach for them; the macro path is the only public entry.
+#[doc(hidden)]
+pub mod __macro {
+    pub use inventory;
+}

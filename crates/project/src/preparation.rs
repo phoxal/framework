@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fs4::TryLockError;
-use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
 use crate::ProjectLayout;
 use crate::cargo::{CargoOptions, LockMode};
@@ -32,6 +32,21 @@ pub struct PreparationChange {
     pub dependency: String,
     /// Human-readable Cargo requirement written for the dependency.
     pub requirement: String,
+}
+
+/// One visible change made by scenario preparation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScenarioPreparationChange {
+    /// `[[test]]` target added under the given name with the given path.
+    TestTargetAdded { name: String, path: String },
+    /// `[[test]]` target removed after the last scenario was deleted.
+    TestTargetRemoved { name: String },
+    /// `phoxal` feature gate added to the dev-dependencies entry.
+    FeatureAdded { feature: String },
+    /// `phoxal` feature gate removed from the dev-dependencies entry.
+    FeatureRemoved { feature: String },
+    /// Harness source regenerated under the given path.
+    HarnessWritten { path: String },
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +246,459 @@ pub(crate) fn ensure_required_dependencies(
             ),
         }],
     })
+}
+
+// --- Scenario preparation entry point ---------------------------------
+
+pub(crate) const SCENARIO_TEST_TARGET_NAME: &str = "phoxal-scenarios";
+pub(crate) const SCENARIO_HARNESS_RELATIVE_PATH: &str = ".phoxal/generated/scenarios/main.rs";
+
+/// Production scenario preparation entry point. Acquires the same
+/// workspace file lock as ordinary preparation, idempotently edits the
+/// manifest, writes the generated harness, and commits the manifest
+/// atomically. Locked/frozen modes refuse *before* mutating when the
+/// persistent setup is missing.
+pub(crate) fn prepare_scenario_target(
+    layout: &ProjectLayout,
+    options: &CargoOptions,
+) -> Result<Vec<ScenarioPreparationChange>, Error> {
+    options.validate()?;
+    let (lock, _workspace_root) = acquire_preparation_lock(layout, layout.cargo_manifest())?;
+    let result = prepare_scenario_target_locked(layout, options, layout.root(), &lock);
+    drop(lock);
+    result
+}
+
+fn prepare_scenario_target_locked(
+    layout: &ProjectLayout,
+    options: &CargoOptions,
+    robot_root: &Path,
+    _lock: &ExclusiveFileLock,
+) -> Result<Vec<ScenarioPreparationChange>, Error> {
+    options.validate()?;
+    let manifest = layout.cargo_manifest();
+    let manifest_text =
+        fs::read_to_string(manifest).map_err(|source| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("cannot read authored manifest: {source}"),
+        })?;
+    let mut document: DocumentMut =
+        manifest_text
+            .parse()
+            .map_err(|source| Error::ManifestPreparation {
+                path: manifest.to_owned(),
+                message: format!("cannot parse authored manifest: {source}"),
+            })?;
+    let mut changes = Vec::new();
+    prepare_scenario_target_in_document(layout, robot_root, &mut document, &mut changes)?;
+    let prepared = document.to_string().into_bytes();
+    if prepared != manifest_text.as_bytes() && !changes.is_empty() {
+        match options.lock {
+            LockMode::Unlocked => {}
+            LockMode::Locked | LockMode::Frozen => {
+                return Err(Error::ManifestPreparation {
+                    path: manifest.to_owned(),
+                    message: format!(
+                        "scenario setup needs to add `[[test]] {SCENARIO_TEST_TARGET_NAME}` and \
+                         `[dev-dependencies] phoxal.features = [\"scenario\"]`; refusing to \
+                         mutate the manifest while {:?} is in effect. Re-run without \
+                         --locked / --frozen.",
+                        options.lock
+                    ),
+                });
+            }
+        }
+        atomic_write(manifest, &prepared).map_err(|source| Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message: format!("cannot persist manifest: {source}"),
+        })?;
+    }
+    Ok(changes)
+}
+
+fn prepare_scenario_target_in_document(
+    layout: &ProjectLayout,
+    robot_root: &Path,
+    document: &mut DocumentMut,
+    changes: &mut Vec<ScenarioPreparationChange>,
+) -> Result<(), Error> {
+    let discovered = match super::scenario::discover_scenarios(robot_root) {
+        Ok(list) => list,
+        Err(error) => {
+            return Err(Error::ManifestPreparation {
+                path: layout.cargo_manifest().to_owned(),
+                message: format!("scenario discovery failed: {error}"),
+            });
+        }
+    };
+    if discovered.is_empty() {
+        if let Some(true) = remove_scenario_test_target(document) {
+            changes.push(ScenarioPreparationChange::TestTargetRemoved {
+                name: SCENARIO_TEST_TARGET_NAME.to_owned(),
+            });
+        }
+        if remove_scenario_dev_dependency_feature(document) {
+            changes.push(ScenarioPreparationChange::FeatureRemoved {
+                feature: "scenario".to_owned(),
+            });
+        }
+        let harness_changed =
+            write_scenario_harness(robot_root, &discovered).map_err(|message| {
+                Error::ManifestPreparation {
+                    path: layout.cargo_manifest().to_owned(),
+                    message,
+                }
+            })?;
+        if harness_changed {
+            changes.push(ScenarioPreparationChange::HarnessWritten {
+                path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
+            });
+        }
+        return Ok(());
+    }
+    let test_target =
+        ensure_scenario_test_target(document).map_err(|message| Error::ManifestPreparation {
+            path: layout.cargo_manifest().to_owned(),
+            message,
+        })?;
+    if let Some(change) = test_target {
+        changes.push(change);
+    }
+    let dev_dep =
+        ensure_scenario_dev_dependency(document).map_err(|message| Error::ManifestPreparation {
+            path: layout.cargo_manifest().to_owned(),
+            message,
+        })?;
+    if let Some(change) = dev_dep {
+        changes.push(change);
+    }
+    let harness_changed = write_scenario_harness(robot_root, &discovered).map_err(|message| {
+        Error::ManifestPreparation {
+            path: layout.cargo_manifest().to_owned(),
+            message,
+        }
+    })?;
+    if harness_changed {
+        changes.push(ScenarioPreparationChange::HarnessWritten {
+            path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn write_scenario_harness(
+    robot_root: &Path,
+    discovered: &[crate::scenario::DiscoveredScenario],
+) -> Result<bool, String> {
+    let harness_path = robot_root.join(SCENARIO_HARNESS_RELATIVE_PATH);
+    if let Some(parent) = harness_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|source| format!("cannot create `{}`: {source}", parent.display()))?;
+    }
+    let harness_source = super::scenario::generate_harness_source(robot_root, discovered);
+    let next = harness_source.into_bytes();
+    let previous = fs::read(&harness_path).ok();
+    if previous.as_deref() != Some(next.as_slice()) {
+        atomic_write(&harness_path, &next)
+            .map_err(|source| format!("cannot write generated harness: {source}"))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn ensure_scenario_test_target(
+    document: &mut DocumentMut,
+) -> Result<Option<ScenarioPreparationChange>, String> {
+    if let Some(existing) = lookup_scenario_test_target(document) {
+        let path = existing.get("path").and_then(Item::as_str);
+        let harness = existing.get("harness").and_then(Item::as_bool);
+        let test_flag = existing.get("test").and_then(Item::as_bool);
+        if path == Some(SCENARIO_HARNESS_RELATIVE_PATH)
+            && harness == Some(false)
+            && test_flag == Some(false)
+        {
+            return Ok(None);
+        }
+        return Err(format!(
+            "authored `[[test]] name = \"{SCENARIO_TEST_TARGET_NAME}\"` exists with a different \
+             path or harness setting ({path:?}, harness={harness:?}, test={test_flag:?}); \
+             refusing to overwrite",
+        ));
+    }
+    match document.get_mut("test") {
+        Some(item) => match item.as_array_of_tables_mut() {
+            Some(arr) => {
+                arr.push(build_scenario_test_table());
+                Ok(Some(ScenarioPreparationChange::TestTargetAdded {
+                    name: SCENARIO_TEST_TARGET_NAME.to_owned(),
+                    path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
+                }))
+            }
+            None => Err(
+                "`[test]]` exists but is not an array-of-tables; cannot add the scenario target"
+                    .to_owned(),
+            ),
+        },
+        None => {
+            let mut arr = ArrayOfTables::new();
+            arr.push(build_scenario_test_table());
+            document["test"] = Item::ArrayOfTables(arr);
+            Ok(Some(ScenarioPreparationChange::TestTargetAdded {
+                name: SCENARIO_TEST_TARGET_NAME.to_owned(),
+                path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
+            }))
+        }
+    }
+}
+
+fn lookup_scenario_test_target(document: &DocumentMut) -> Option<Table> {
+    let item = document.get("test")?;
+    let tests = item.as_array_of_tables()?;
+    tests
+        .iter()
+        .find(|t| t.get("name").and_then(Item::as_str) == Some(SCENARIO_TEST_TARGET_NAME))
+        .cloned()
+}
+
+fn build_scenario_test_table() -> Table {
+    let mut table = Table::new();
+    table["name"] = Item::Value(Value::from(SCENARIO_TEST_TARGET_NAME));
+    table["path"] = Item::Value(Value::from(SCENARIO_HARNESS_RELATIVE_PATH));
+    table["harness"] = Item::Value(Value::from(false));
+    table["test"] = Item::Value(Value::from(false));
+    table
+}
+
+fn ensure_scenario_dev_dependency(
+    document: &mut DocumentMut,
+) -> Result<Option<ScenarioPreparationChange>, String> {
+    let has_phoxal_dev_dep = document
+        .get("dev-dependencies")
+        .and_then(Item::as_table)
+        .map(|t| t.contains_key("phoxal"))
+        .unwrap_or(false);
+    if !has_phoxal_dev_dep {
+        let mirror = build_phoxal_dev_dependency_from_existing(document)?;
+        let dev_table = ensure_dev_dependencies_table(document)?;
+        dev_table.insert("phoxal", mirror);
+        return Ok(Some(ScenarioPreparationChange::FeatureAdded {
+            feature: "scenario".to_owned(),
+        }));
+    }
+    let entry = document
+        .get_mut("dev-dependencies")
+        .and_then(Item::as_table_mut)
+        .and_then(|t| t.get_mut("phoxal"))
+        .ok_or_else(|| "missing phoxal dev-dependency after existence check".to_owned())?;
+    let value = entry.as_value_mut().ok_or_else(|| {
+        "`phoxal` dev-dependency is not a value; cannot add scenario feature".to_owned()
+    })?;
+    let inline = match value.as_inline_table_mut() {
+        Some(t) => t,
+        None => {
+            return Err(
+                "`phoxal` dev-dependency is not an inline table; cannot inspect features"
+                    .to_owned(),
+            );
+        }
+    };
+    let already_has = inline
+        .get("features")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().any(|v| v.as_str() == Some("scenario")))
+        .unwrap_or(false);
+    if already_has {
+        return Ok(None);
+    }
+    match inline.get_mut("features") {
+        Some(features) => {
+            let arr = features
+                .as_array_mut()
+                .ok_or_else(|| "phoxal `features` is not an array".to_owned())?;
+            arr.push("scenario");
+        }
+        None => {
+            inline.insert(
+                "features",
+                Value::Array(Array::from_iter(["scenario".to_owned()])),
+            );
+        }
+    }
+    Ok(Some(ScenarioPreparationChange::FeatureAdded {
+        feature: "scenario".to_owned(),
+    }))
+}
+
+fn ensure_dev_dependencies_table(document: &mut DocumentMut) -> Result<&mut Table, String> {
+    if document.get("dev-dependencies").is_none() {
+        document["dev-dependencies"] = Item::Table(Table::new());
+    }
+    document
+        .get_mut("dev-dependencies")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| "`[dev-dependencies]` exists but is not a table".to_owned())
+}
+
+fn build_phoxal_dev_dependency_from_existing(document: &DocumentMut) -> Result<Item, String> {
+    let sources = ["dependencies", "workspace.dependencies"];
+    for path in sources {
+        if let Some(value) = lookup_phoxal_dependency(document, path) {
+            let mut inline = match value {
+                Value::InlineTable(table) => table.clone(),
+                _ => {
+                    return Err(format!(
+                        "authored `phoxal` dependency under `[{path}]` is not an inline table; \
+                         cannot mirror its coordinates into [dev-dependencies]"
+                    ));
+                }
+            };
+            // When `[dependencies] phoxal` only inherits from the workspace
+            // (`workspace = true` and nothing else of substance), follow
+            // the inheritance: the workspace-declared coordinates live in
+            // `[workspace.dependencies] phoxal`. Falling through here keeps
+            // the dev-dependency aligned with the real source.
+            if path == "dependencies" && is_workspace_inherit_only(&inline) {
+                continue;
+            }
+            let existing_features = inline
+                .get("features")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut merged = existing_features;
+            if !merged.iter().any(|f| f == "scenario") {
+                merged.push("scenario".to_owned());
+            }
+            inline.insert("features", Value::Array(Array::from_iter(merged)));
+            return Ok(Item::Value(Value::InlineTable(inline)));
+        }
+    }
+    Err(
+        "no authored `[dependencies] phoxal` or `[workspace.dependencies] phoxal` entry to \
+         mirror; cannot author coordinates on your behalf. Add `phoxal` to one of those tables \
+         first."
+            .to_owned(),
+    )
+}
+
+/// True when the inline table contains `workspace = true` and no
+/// substantive coordinate — i.e. it is just inheriting from
+/// `[workspace.dependencies]` rather than declaring its own.
+fn is_workspace_inherit_only(inline: &InlineTable) -> bool {
+    let inherits = inline
+        .get("workspace")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !inherits {
+        return false;
+    }
+    for key in [
+        "path",
+        "git",
+        "version",
+        "registry",
+        "features",
+        "default-features",
+    ] {
+        if inline.contains_key(key) {
+            return false;
+        }
+    }
+    true
+}
+
+fn lookup_phoxal_dependency<'a>(document: &'a DocumentMut, section: &str) -> Option<&'a Value> {
+    // `toml_edit::Table::get` is a single-key lookup, not a dotted-path
+    // traversal, so a section path like `workspace.dependencies` must be
+    // descended by hand. Every segment must materialise as a regular
+    // `Table` because `[workspace.dependencies]` is a section header, not
+    // an inline table. Once we have reached the section, we look up the
+    // hardcoded `phoxal` key inside it and return its inline-table value.
+    let mut segments = section.split('.');
+    let last = segments.next_back()?;
+    let mut current: &Item = document.as_item();
+    for segment in segments {
+        let next = current.get(segment)?;
+        if !next.is_table() {
+            return None;
+        }
+        current = next;
+    }
+    let section_item = current.get(last)?;
+    if !section_item.is_table() {
+        return None;
+    }
+    section_item.get("phoxal")?.as_value()
+}
+
+fn remove_scenario_test_target(document: &mut DocumentMut) -> Option<bool> {
+    let Some(item) = document.get_mut("test") else {
+        return Some(false);
+    };
+    let Some(tests) = item.as_array_of_tables_mut() else {
+        return Some(false);
+    };
+    let mut removed = false;
+    let mut idx = 0;
+    while idx < tests.len() {
+        let name_matches = tests
+            .get(idx)
+            .and_then(|t| t.get("name"))
+            .and_then(Item::as_str)
+            == Some(SCENARIO_TEST_TARGET_NAME);
+        if name_matches {
+            tests.remove(idx);
+            removed = true;
+        } else {
+            idx += 1;
+        }
+    }
+    if tests.is_empty() {
+        document.as_table_mut().remove("test");
+    }
+    Some(removed)
+}
+
+fn remove_scenario_dev_dependency_feature(document: &mut DocumentMut) -> bool {
+    let Some(dev) = document.get_mut("dev-dependencies") else {
+        return false;
+    };
+    let Some(table) = dev.as_table_mut() else {
+        return false;
+    };
+    let Some(entry) = table.get_mut("phoxal") else {
+        return false;
+    };
+    let Some(value) = entry.as_value_mut() else {
+        return false;
+    };
+    let Some(inline) = value.as_inline_table_mut() else {
+        return false;
+    };
+    let mut removed = false;
+    if let Some(features) = inline.get_mut("features")
+        && let Some(arr) = features.as_array_mut()
+    {
+        let mut idx = 0;
+        while idx < arr.len() {
+            let is_scenario = arr.get(idx).and_then(|v| v.as_str()) == Some("scenario");
+            if is_scenario {
+                arr.remove(idx);
+                removed = true;
+            } else {
+                idx += 1;
+            }
+        }
+        if arr.is_empty() {
+            inline.remove("features");
+        }
+    }
+    removed
 }
 
 fn acquire_preparation_lock(

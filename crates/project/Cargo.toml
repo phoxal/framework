@@ -38,5 +38,11 @@ toml_edit = { workspace = true }
 object = { workspace = true, features = ["write"] }
 tempfile = { workspace = true }
 
+# The compile-and-list integration test compiles the generated scenario
+# harness with `rustc --extern phoxal=...`; declaring `phoxal` here with
+# the `scenario` feature ensures `cargo test` builds a matching rlib in
+# `target/debug/deps` deterministically.
+phoxal = { workspace = true, features = ["scenario"] }
+
 [lints]
 workspace = true
