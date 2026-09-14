@@ -32,7 +32,10 @@ pub mod scenario_admission {
     /// Admission verdict returned by `evaluate_scenario_admission`.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum ScenarioAdmission {
-        Accept { scenario_name: String, digest: String },
+        Accept {
+            scenario_name: String,
+            digest: String,
+        },
         RefuseNondeployableOnHardware,
         RefuseMissingIdentity,
         RefuseMalformedDigest(String),
@@ -90,8 +93,8 @@ pub mod scenario_admission {
 }
 
 pub use scenario_admission::{
-    admission_diagnostic, evaluate_scenario_admission, ScenarioAdmission, ScenarioLaunchMode,
-    SCENARIO_NONDEPLOYABLE,
+    SCENARIO_NONDEPLOYABLE, ScenarioAdmission, ScenarioLaunchMode, admission_diagnostic,
+    evaluate_scenario_admission,
 };
 
 #[cfg(test)]
@@ -126,7 +129,10 @@ mod admission_tests {
             Some(SCENARIO_NONDEPLOYABLE),
         );
         match verdict {
-            ScenarioAdmission::Accept { scenario_name, digest } => {
+            ScenarioAdmission::Accept {
+                scenario_name,
+                digest,
+            } => {
                 assert_eq!(scenario_name, "scenarios/First");
                 assert_eq!(digest.len(), 64);
             }
@@ -155,7 +161,10 @@ mod admission_tests {
             "not-hex",
             Some(SCENARIO_NONDEPLOYABLE),
         );
-        assert!(matches!(verdict, ScenarioAdmission::RefuseMalformedDigest(_)));
+        assert!(matches!(
+            verdict,
+            ScenarioAdmission::RefuseMalformedDigest(_)
+        ));
     }
 
     #[test]

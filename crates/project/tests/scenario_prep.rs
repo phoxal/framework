@@ -379,9 +379,7 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
             // Surface cargo's JSON output when the parser fails so a
             // future cargo format change is diagnosed quickly.
             let stdout = String::from_utf8_lossy(&output.stdout);
-            panic!(
-                "test executable path in cargo JSON output; cargo stdout was:\n{stdout}"
-            );
+            panic!("test executable path in cargo JSON output; cargo stdout was:\n{stdout}");
         }
     };
     assert!(
@@ -414,7 +412,6 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         "list output must report the two canonical struct identities in alphabetical order:\n{stdout}"
     );
 }
-
 
 /// Repeated preparation with no changes must produce byte-identical
 /// `Cargo.toml` and lockfile outputs. This protects against
@@ -544,8 +541,8 @@ fn prepare_scenarios_duplicate_struct_identities_rejected() {
         String::from_utf8_lossy(&cargo_output.stdout),
         String::from_utf8_lossy(&cargo_output.stderr),
     );
-    let executable = parse_test_executable(&cargo_output.stdout, "phoxal-scenarios")
-        .expect("test executable");
+    let executable =
+        parse_test_executable(&cargo_output.stdout, "phoxal-scenarios").expect("test executable");
     let list_output = std::process::Command::new(&executable)
         .arg("list")
         .output()
@@ -559,6 +556,7 @@ fn prepare_scenarios_duplicate_struct_identities_rejected() {
     );
 }
 
+#[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
     // The framework's `phoxal` crate publishes into the local `phoxal`
     // registry; point Cargo at that local registry so the path
@@ -576,6 +574,7 @@ fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
     .expect("cargo config");
 }
 
+#[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 fn framework_phoxal_dir() -> std::path::PathBuf {
     // The framework's `phoxal` crate is a sibling of the
     // `phoxal-project` test crate, so we can locate it directly from the
@@ -585,11 +584,12 @@ fn framework_phoxal_dir() -> std::path::PathBuf {
         .ancestors()
         .find_map(|ancestor| {
             let candidate = ancestor.join("phoxal");
-                candidate.join("Cargo.toml").is_file().then_some(candidate)
-            })
+            candidate.join("Cargo.toml").is_file().then_some(candidate)
+        })
         .expect("phoxal crate must be a sibling of crates/project")
 }
 
+#[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 fn framework_registry_dir() -> std::path::PathBuf {
     // The framework's sibling `registry directory is the local registry
     // index that the `phoxal` package publishes into. The test temp
@@ -600,15 +600,13 @@ fn framework_registry_dir() -> std::path::PathBuf {
         .ancestors()
         .find_map(|ancestor| {
             let candidate = ancestor.join("registry");
-                candidate.join("config.json").is_file().then_some(candidate)
-            })
+            candidate.join("config.json").is_file().then_some(candidate)
+        })
         .expect("registry directory must be a sibling of crates/project")
 }
 
-fn parse_test_executable(
-    stdout: &[u8],
-    target_name: &str,
-) -> Option<std::path::PathBuf> {
+#[allow(dead_code, clippy::unwrap_used)]
+fn parse_test_executable(stdout: &[u8], target_name: &str) -> Option<std::path::PathBuf> {
     for line in stdout.lines() {
         let Ok(line) = line else { continue };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {

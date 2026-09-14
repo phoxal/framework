@@ -43,7 +43,9 @@ impl std::fmt::Display for ScenarioRunError {
             Self::PreparationFailed(detail) => {
                 write!(f, "scenario preparation failed: {detail}")
             }
-            Self::HarnessCompilationFailed(detail) => write!(f, "harness compilation failed: {detail}"),
+            Self::HarnessCompilationFailed(detail) => {
+                write!(f, "harness compilation failed: {detail}")
+            }
             Self::HarnessExecutionFailed(detail) => write!(f, "harness execution failed: {detail}"),
         }
     }
@@ -56,7 +58,10 @@ impl std::error::Error for ScenarioRunError {}
 /// exists on disk, then shells out to `cargo test --no-run` and
 /// executes the test binary with `list`. The caller is responsible
 /// for the surrounding CLI plumbing.
-pub fn list_scenarios(project: &Project, options: &CargoOptions) -> Result<Vec<ScenarioListEntry>, ScenarioRunError> {
+pub fn list_scenarios(
+    project: &Project,
+    options: &CargoOptions,
+) -> Result<Vec<ScenarioListEntry>, ScenarioRunError> {
     project
         .prepare_scenarios(options)
         .map_err(|error| ScenarioRunError::PreparationFailed(error.to_string()))?;
@@ -154,7 +159,13 @@ fn build_harness_binary(
 ) -> Result<std::path::PathBuf, String> {
     let robot_root = project.layout.root().to_owned();
     let cargo_output = std::process::Command::new("cargo")
-        .args(["test", "--test", "phoxal-scenarios", "--no-run", "--offline"])
+        .args([
+            "test",
+            "--test",
+            "phoxal-scenarios",
+            "--no-run",
+            "--offline",
+        ])
         .current_dir(&robot_root)
         .env_remove("RUSTC_WRAPPER")
         .output()
@@ -180,7 +191,8 @@ fn build_harness_binary(
         })
         .unwrap_or_else(|| robot_root.clone());
     let deps_dir = workspace_root.join("target/debug/deps");
-    let read = std::fs::read_dir(&deps_dir).map_err(|error| format!("read {}: {error}", deps_dir.display()))?;
+    let read = std::fs::read_dir(&deps_dir)
+        .map_err(|error| format!("read {}: {error}", deps_dir.display()))?;
     let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = read
         .flatten()
         .filter_map(|entry| {

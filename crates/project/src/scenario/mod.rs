@@ -20,7 +20,7 @@ mod discovery;
 mod harness;
 mod run;
 
-pub use bundle::{ScenarioBundle, SubstitutedEdge, SCENARIO_NONDEPLOYABLE};
+pub use bundle::{SCENARIO_NONDEPLOYABLE, ScenarioBundle, SubstitutedEdge};
 pub use discovery::{DiscoveredScenario, DiscoveryError, discover_scenarios, module_identifier};
 pub use harness::generate_harness_source;
-pub use run::{list_scenarios, run_scenario, ScenarioListEntry, ScenarioRunError};
+pub use run::{ScenarioListEntry, ScenarioRunError, list_scenarios, run_scenario};

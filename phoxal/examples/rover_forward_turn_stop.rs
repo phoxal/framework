@@ -16,10 +16,10 @@
 //! cargo run --example rover_forward_turn_stop --features scenario
 //! ```
 
-use phoxal_port::{PortKind, PortSignature};
 use phoxal::scenario::{
     Action, ApplicationAttachment, Capture, FixtureMetadata, FixtureParticipant, Program, Step,
 };
+use phoxal_port::{PortKind, PortSignature};
 
 fn setpoint_sig() -> PortSignature {
     PortSignature::new(
@@ -94,11 +94,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut participant = FixtureParticipant::from_program(program)?;
     println!("metadata:       {:#?}", participant.metadata());
-    println!("attachments:    {:#?}", vec![ApplicationAttachment::new(
-        "rover-1",
-        state_sig(),
-        "scenarios/RoverForwardTurnStop"
-    )]);
+    println!(
+        "attachments:    {:#?}",
+        vec![ApplicationAttachment::new(
+            "rover-1",
+            state_sig(),
+            "scenarios/RoverForwardTurnStop"
+        )]
+    );
 
     let trace = participant.run();
     println!("trace.passed:   {}", trace.passed());
@@ -106,7 +109,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Mark the command reply after the simulator acknowledges it.
     participant.mark_command_reply("turn");
-    println!("sim_expired:    {:?}", participant.expire_simulated_deadlines());
+    println!(
+        "sim_expired:    {:?}",
+        participant.expire_simulated_deadlines()
+    );
 
     let _ = FixtureMetadata::from_program; // touched so the import is not flagged
     Ok(())

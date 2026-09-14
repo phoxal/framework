@@ -14,7 +14,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::scenario::plan::{Action, Capture, ScenarioPlan, Step, MAX_PAYLOAD};
+#[cfg(test)]
+use crate::scenario::plan::ScenarioPlan;
+use crate::scenario::plan::{Action, Capture, MAX_PAYLOAD, Step};
 use crate::scenario::program::Program;
 
 /// One quantum-aligned outcome captured during execution. P3 fills
@@ -39,9 +41,7 @@ pub enum StepOutcome {
     },
     /// Step could not be issued; the boundary rejected it. The
     /// failure message is included for diagnostics.
-    Rejected {
-        reason: String,
-    },
+    Rejected { reason: String },
 }
 
 /// One full execution trace. P3 extends this with capture samples.
@@ -181,7 +181,9 @@ impl FixtureParticipant {
     fn execute_step(&mut self, step: &Step) -> StepOutcome {
         let production = self.boundary.tick();
         match &step.action {
-            Action::Setpoint { encoded_payload, .. } => {
+            Action::Setpoint {
+                encoded_payload, ..
+            } => {
                 if encoded_payload.len() > MAX_PAYLOAD {
                     return StepOutcome::Rejected {
                         reason: format!(
@@ -301,10 +303,7 @@ pub const HOST_DEADLINE_TICKS: u64 = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FixtureError {
     IdentityMismatch(String),
-    TransitionCountMismatch {
-        declared: u32,
-        actual: u32,
-    },
+    TransitionCountMismatch { declared: u32, actual: u32 },
 }
 
 impl std::fmt::Display for FixtureError {
@@ -418,10 +417,7 @@ mod tests {
         let trace = participant.run();
         assert!(matches!(
             trace.step_outcomes[0].1,
-            StepOutcome::SetpointDelivered {
-                production: 0,
-                ..
-            }
+            StepOutcome::SetpointDelivered { production: 0, .. }
         ));
     }
 
@@ -500,9 +496,7 @@ mod tests {
         // The command is left pending, yet the next step still ran:
         // advancement is not paused by the unreplied command.
         match &trace.step_outcomes[0].1 {
-            StepOutcome::CommandIssued {
-                reply_pending, ..
-            } => assert!(reply_pending),
+            StepOutcome::CommandIssued { reply_pending, .. } => assert!(reply_pending),
             other => panic!("expected command issued, got {other:?}"),
         }
         assert!(matches!(

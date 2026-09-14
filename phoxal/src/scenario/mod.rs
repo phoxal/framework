@@ -29,11 +29,11 @@ mod trait_def;
 pub use attach::ApplicationAttachment;
 pub use harness::{HarnessError, HarnessRun, run_harness};
 pub use participant::{
-    FixtureError, FixtureMetadata, FixtureParticipant, FixtureTrace, StepOutcome,
-    HOST_DEADLINE_TICKS, SIM_DEADLINE_TICKS,
+    FixtureError, FixtureMetadata, FixtureParticipant, FixtureTrace, HOST_DEADLINE_TICKS,
+    SIM_DEADLINE_TICKS, StepOutcome,
 };
-pub use plan::{Action, Capture, PlanValidationError, ScenarioPlan, Step, MAX_PAYLOAD};
-pub use program::{Program, ProgramError, PROGRAM_SCHEMA_VERSION};
+pub use plan::{Action, Capture, MAX_PAYLOAD, PlanValidationError, ScenarioPlan, Step};
+pub use program::{PROGRAM_SCHEMA_VERSION, Program, ProgramError};
 pub use registry::{
     DuplicateLocation, DuplicateScenarioError, RegisteredScenario, ScenarioDescriptor,
     ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,

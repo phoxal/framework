@@ -165,10 +165,7 @@ mod tests {
         // so mark_command_reply returns false for that label.
         assert!(!participant.mark_command_reply("set"));
         let mut captures = BTreeMap::new();
-        captures.insert(
-            "motion".to_owned(),
-            CaptureRecord::State(vec![0x42, 0x43]),
-        );
+        captures.insert("motion".to_owned(), CaptureRecord::State(vec![0x42, 0x43]));
         let mut command_replies = BTreeMap::new();
         command_replies.insert(
             "set".to_owned(),
@@ -184,7 +181,10 @@ mod tests {
             run.outcome("set"),
             Some(StepOutcome::SetpointDelivered { .. })
         ));
-        assert!(matches!(run.capture("motion"), Some(CaptureRecord::State(_))));
+        assert!(matches!(
+            run.capture("motion"),
+            Some(CaptureRecord::State(_))
+        ));
     }
 
     #[test]
@@ -200,7 +200,10 @@ mod tests {
         };
         let run = ScenarioRun::from_trace(trace, BTreeMap::new(), BTreeMap::new());
         assert!(!run.passed);
-        assert!(matches!(run.outcome("rejected"), Some(StepOutcome::Rejected { .. })));
+        assert!(matches!(
+            run.outcome("rejected"),
+            Some(StepOutcome::Rejected { .. })
+        ));
     }
 
     #[test]

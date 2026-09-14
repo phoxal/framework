@@ -140,9 +140,7 @@ pub enum Action {
     },
     /// Withdraw the targeted producer's published state without
     /// supplying a replacement.
-    Withdraw {
-        producer_signature: PortSignature,
-    },
+    Withdraw { producer_signature: PortSignature },
     /// Submit a request to a commands-style service and observe the
     /// correlation id through the controlled boundary. Advancement
     /// continues while the reply is pending.
@@ -365,13 +363,34 @@ mod tests {
     use super::*;
 
     fn setpoint_sig() -> PortSignature {
-        PortSignature::new("motion/cmd", "phoxal.motion", "Set", phoxal_port::PortKind::Setpoint, "SetpointRequest", "SetpointReply")
+        PortSignature::new(
+            "motion/cmd",
+            "phoxal.motion",
+            "Set",
+            phoxal_port::PortKind::Setpoint,
+            "SetpointRequest",
+            "SetpointReply",
+        )
     }
     fn command_sig() -> PortSignature {
-        PortSignature::new("motion/cmd", "phoxal.motion", "Do", phoxal_port::PortKind::Commands, "CommandRequest", "CommandReply")
+        PortSignature::new(
+            "motion/cmd",
+            "phoxal.motion",
+            "Do",
+            phoxal_port::PortKind::Commands,
+            "CommandRequest",
+            "CommandReply",
+        )
     }
     fn state_sig() -> PortSignature {
-        PortSignature::new("motion/state", "phoxal.motion", "State", phoxal_port::PortKind::State, "State", "State")
+        PortSignature::new(
+            "motion/state",
+            "phoxal.motion",
+            "State",
+            phoxal_port::PortKind::State,
+            "State",
+            "State",
+        )
     }
 
     #[test]
@@ -379,7 +398,14 @@ mod tests {
         let plan = ScenarioPlan::with_steps(
             "scene",
             Duration::ZERO,
-            vec![Step::new("a", 0, Action::Setpoint { consumer_signature: setpoint_sig(), encoded_payload: vec![1] })],
+            vec![Step::new(
+                "a",
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
             vec![],
         );
         assert_eq!(plan.unwrap_err(), PlanValidationError::ZeroDuration);
@@ -388,12 +414,30 @@ mod tests {
     #[test]
     fn rejects_quantum_at_or_beyond_final_transition() {
         let steps = vec![
-            Step::new("a", 0, Action::Setpoint { consumer_signature: setpoint_sig(), encoded_payload: vec![1] }),
-            Step::new("b", 5, Action::Setpoint { consumer_signature: setpoint_sig(), encoded_payload: vec![2] }),
+            Step::new(
+                "a",
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            ),
+            Step::new(
+                "b",
+                5,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![2],
+                },
+            ),
         ];
         let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(2), steps, vec![]);
         match plan.unwrap_err() {
-            PlanValidationError::QuantumOutOfRange { label, quantum, transitions } => {
+            PlanValidationError::QuantumOutOfRange {
+                label,
+                quantum,
+                transitions,
+            } => {
                 assert_eq!(label, "b");
                 assert_eq!(quantum, 5);
                 // Two steps => transition_count == 2; quantum 5 is out of range.
@@ -406,8 +450,22 @@ mod tests {
     #[test]
     fn rejects_duplicate_step_labels() {
         let steps = vec![
-            Step::new("a", 0, Action::Setpoint { consumer_signature: setpoint_sig(), encoded_payload: vec![1] }),
-            Step::new("a", 0, Action::Setpoint { consumer_signature: setpoint_sig(), encoded_payload: vec![2] }),
+            Step::new(
+                "a",
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            ),
+            Step::new(
+                "a",
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![2],
+                },
+            ),
         ];
         let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(1), steps, vec![]);
         assert!(matches!(
@@ -419,8 +477,24 @@ mod tests {
     #[test]
     fn rejects_duplicate_command_labels() {
         let steps = vec![
-            Step::new("step_one", 0, Action::Command { service_signature: command_sig(), request_encoded: vec![1], label: "cmd".to_owned() }),
-            Step::new("step_two", 0, Action::Command { service_signature: command_sig(), request_encoded: vec![2], label: "cmd".to_owned() }),
+            Step::new(
+                "step_one",
+                0,
+                Action::Command {
+                    service_signature: command_sig(),
+                    request_encoded: vec![1],
+                    label: "cmd".to_owned(),
+                },
+            ),
+            Step::new(
+                "step_two",
+                0,
+                Action::Command {
+                    service_signature: command_sig(),
+                    request_encoded: vec![2],
+                    label: "cmd".to_owned(),
+                },
+            ),
         ];
         let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(1), steps, vec![]);
         assert!(matches!(
@@ -483,11 +557,26 @@ mod tests {
     #[test]
     fn sorted_steps_retain_validation() {
         let mut steps = vec![
-            Step::new("second", 1, Action::Setpoint { consumer_signature: setpoint_sig(), encoded_payload: vec![2] }),
-            Step::new("first", 0, Action::Setpoint { consumer_signature: setpoint_sig(), encoded_payload: vec![1] }),
+            Step::new(
+                "second",
+                1,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![2],
+                },
+            ),
+            Step::new(
+                "first",
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            ),
         ];
         steps.sort_by_key(|s| (s.quantum_index, s.label.clone()));
-        let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(2), steps, vec![]).unwrap();
+        let plan =
+            ScenarioPlan::with_steps("scene", Duration::from_secs(2), steps, vec![]).unwrap();
         assert_eq!(plan.steps[0].label, "first");
         assert_eq!(plan.steps[1].label, "second");
         // Two steps => transition_count == 2.

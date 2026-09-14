@@ -43,11 +43,11 @@ pub use error::{
     DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,
 };
 pub use preparation::{PreparationChange, ScenarioPreparationChange};
-pub use scenario::{DiscoveredScenario, generate_harness_source};
 pub use publication::{
     PUBLICATION_SCHEMA, PublicationFile, PublicationKind, PublicationOptions, PublicationResult,
     PublicationSourceProvenance, prepare_publication,
 };
+pub use scenario::{DiscoveredScenario, generate_harness_source};
 pub use selection::{
     PackageSource, SelectedComponent, SelectedDriver, SelectedService, SelectedTarget,
     SourceSelection, TargetRole, resolve_sources,
