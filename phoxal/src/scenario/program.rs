@@ -8,6 +8,7 @@
 //! are exposed for verifier consumption but cannot be used to forge a
 //! different identity after the program is sealed.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -201,6 +202,28 @@ impl Program {
         // simultaneous actions receive distinct identities.
         let mut sorted: Vec<(usize, ScheduleEntry)> = schedule.into_iter().enumerate().collect();
         sorted.sort_by_key(|(_, entry)| entry.boundary);
+        // Reject duplicate command labels at the single
+        // normalization path. The plan-time validator already does
+        // this through ScenarioPlan::with_steps; the fixture/test
+        // path that calls Program::normalize directly must apply
+        // the same invariant so a tampered or hand-rolled schedule
+        // cannot smuggle in two requests with the same correlation
+        // label. See Gate B3 of followup-24c026ed.md.
+        let mut seen_command_labels: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, entry) in &sorted {
+            if let crate::scenario::plan::Action::Command { label, .. } = &entry.action {
+                if let Some(prior_index) = seen_command_labels.get(label) {
+                    return Err(ProgramError::Other(format!(
+                        "duplicate command label `{label}` at schedule indices {prior_index} and {}",
+                        sorted
+                            .iter()
+                            .position(|(_, candidate)| std::ptr::eq(candidate, entry))
+                            .unwrap_or(0)
+                    )));
+                }
+                seen_command_labels.insert(label.clone(), 0);
+            }
+        }
         let mut steps: Vec<Step> = Vec::with_capacity(sorted.len());
         for (action_index, (_, entry)) in sorted.into_iter().enumerate() {
             if entry.boundary >= transitions {

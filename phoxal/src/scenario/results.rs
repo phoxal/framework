@@ -16,7 +16,9 @@
 use std::collections::BTreeMap;
 
 use crate::scenario::participant::StepOutcome;
-use crate::scenario::program::Program;
+use crate::scenario::program::{Program};
+#[cfg(test)]
+use crate::scenario::program::ProgramError;
 
 /// Why a `ScenarioRun` cannot be sealed. The collector is exhaustive
 /// because sealing must fail closed on missing required evidence —
@@ -93,6 +95,12 @@ pub enum SealError {
     /// A single capture record exceeds `MAX_RECORD_BYTES`.
     CaptureByteOverflow {
         capture: String,
+        bytes: usize,
+        cap: usize,
+    },
+    /// A single command reply payload exceeds `MAX_RECORD_BYTES`.
+    ReplyByteOverflow {
+        label: String,
         bytes: usize,
         cap: usize,
     },
@@ -182,6 +190,10 @@ impl std::fmt::Display for SealError {
             } => write!(
                 f,
                 "capture `{capture}` is {bytes} bytes, exceeding the {cap}-byte per-record cap"
+            ),
+            Self::ReplyByteOverflow { label, bytes, cap } => write!(
+                f,
+                "command reply `{label}` is {bytes} bytes, exceeding the {cap}-byte per-record cap"
             ),
             Self::CaptureEntryOverflow {
                 capture,
@@ -556,8 +568,12 @@ impl EvidenceCollector {
     }
 
     /// Record one command-reply acknowledgement. The collector
-    /// rejects duplicate recordings and replies for undeclared
-    /// command labels.
+    /// rejects duplicate recordings, replies for undeclared command
+    /// labels, and reply payloads that exceed the per-record or
+    /// cumulative run byte caps. See Gate B3 of
+    /// followup-24c026ed.md: "Account for every retained payload,
+    /// including command replies, step error details, capture
+    /// metadata, and nested interval entries."
     pub fn record_command_reply(
         &mut self,
         label: String,
@@ -575,6 +591,35 @@ impl EvidenceCollector {
                 declared: self.declared_command_labels.len(),
             });
         }
+        // Per-reply byte accounting. The reply either carries an
+        // accepted response payload or an enum variant; we count
+        // every byte that lands in the sealed run.
+        let reply_bytes = match &reply {
+            CommandReply::Accepted { response_bytes } => response_bytes.len(),
+            CommandReply::ExpiredSimulated | CommandReply::ExpiredHost => 0,
+            CommandReply::Rejected { reason } => reason.len(),
+        };
+        if reply_bytes > MAX_RECORD_BYTES {
+            return Err(SealError::ReplyByteOverflow {
+                label: label.clone(),
+                bytes: reply_bytes,
+                cap: MAX_RECORD_BYTES,
+            });
+        }
+        let updated_total =
+            self.record_bytes_total
+                .checked_add(reply_bytes)
+                .ok_or(SealError::RunByteOverflow {
+                    bytes: reply_bytes,
+                    cap: MAX_RUN_BYTES,
+                })?;
+        if updated_total > MAX_RUN_BYTES {
+            return Err(SealError::RunByteOverflow {
+                bytes: reply_bytes,
+                cap: MAX_RUN_BYTES,
+            });
+        }
+        self.record_bytes_total = updated_total;
         self.command_replies.insert(label, reply);
         Ok(())
     }
@@ -645,20 +690,21 @@ impl EvidenceCollector {
         // followup-24c026ed.md: "Finalize against
         // `Program::transition_count()` and the actual final
         // observation/native receipts, not `max(action.boundary)`.
-// No-action and command-only experiments must still prove
-// completion of their requested interval."
-//
-// The setpoint-bearing experiments must observe eligibility at the
-// program's last transition (which, for a finite schedule, equals
-// `transition_count - 1` when actions cover the whole schedule, or
-// `transition_count` when an action sits at the final boundary).
-// A 3,000-transition plan with only a boundary-zero setpoint
-// acknowledgement therefore fails to finalize, regardless of the
-// authored `max_boundary`.
-        let has_setpoint_step =
-            self.program.steps().iter().any(|step| {
-                matches!(step.action, crate::scenario::plan::Action::Setpoint { .. })
-            });
+        // No-action and command-only experiments must still prove
+        // completion of their requested interval."
+        //
+        // The setpoint-bearing experiments must observe eligibility at the
+        // program's last transition (which, for a finite schedule, equals
+        // `transition_count - 1` when actions cover the whole schedule, or
+        // `transition_count` when an action sits at the final boundary).
+        // A 3,000-transition plan with only a boundary-zero setpoint
+        // acknowledgement therefore fails to finalize, regardless of the
+        // authored `max_boundary`.
+        let has_setpoint_step = self
+            .program
+            .steps()
+            .iter()
+            .any(|step| matches!(step.action, crate::scenario::plan::Action::Setpoint { .. }));
         if has_setpoint_step {
             let last_transition = self.program.transition_count().saturating_sub(1) as u64;
             let observed_max = self
@@ -1321,5 +1367,81 @@ mod tests {
             }
             other => panic!("expected MissingFinalBoundary, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn seal_rejects_oversized_command_reply_payload() {
+        // Regression for followup-24c026ed.md line 336: "duplicate
+        // commands + wrong occurrence + 17MiB reply seal: Ok(true)".
+        // A command reply whose payload exceeds MAX_RECORD_BYTES
+        // must be refused at record time, never sealed as passed.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/OversizedReply",
+            quantum,
+            std::time::Duration::from_micros(2_000),
+            vec![ScheduleEntry::at(0, command_action("do_thing", 1))],
+            vec![],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        // Record the step outcome so the seal reaches the command
+        // reply check (otherwise MissingStepLabel fires first).
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::CommandIssued {
+                    label: "do_thing".to_owned(),
+                    reply_pending: true,
+                    simulated_deadline_boundary: 0,
+                    host_deadline_unix_micros: 0,
+                },
+            )
+            .expect("record step");
+        let oversized = vec![0u8; super::MAX_RECORD_BYTES + 1];
+        let err = collector
+            .record_command_reply(
+                "do_thing".to_owned(),
+                CommandReply::Accepted {
+                    response_bytes: oversized.clone(),
+                },
+            )
+            .expect_err("oversized reply payload must be refused at record time");
+        assert!(matches!(
+            err,
+            SealError::ReplyByteOverflow {
+                ref label,
+                bytes,
+                cap,
+            } if label == "do_thing" && bytes == super::MAX_RECORD_BYTES + 1 && cap == super::MAX_RECORD_BYTES
+        ));
+        // Sealing after the rejection must fail (the collector is
+        // still missing the reply, so MissingCommandReply is the
+        // diagnostic).
+        let err = collector.seal().expect_err("seal must refuse");
+        match err {
+            SealError::MissingCommandReply(_) => {}
+            other => panic!("expected MissingCommandReply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seal_rejects_duplicate_command_label_pair() {
+        // Regression for followup-24c026ed.md line 336: duplicate
+        // commands with the same label. The plan-time validator must
+        // refuse this before any collector is built so the test
+        // cannot reach the seal path.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let result = Program::normalize(
+            "scenarios/DupCommands",
+            quantum,
+            std::time::Duration::from_micros(2_000),
+            vec![
+                ScheduleEntry::at(0, command_action("cmd", 1)),
+                ScheduleEntry::at(0, command_action("cmd", 2)),
+            ],
+            vec![],
+        );
+        assert!(matches!(result, Err(ProgramError::Other(_))));
     }
 }
