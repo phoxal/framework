@@ -96,9 +96,6 @@ pub struct FixtureParticipant {
     steps: Vec<Step>,
     captures: Vec<Capture>,
     boundary: BoundaryClock,
-    /// Wall-clock start of the experiment; combined with `host_deadline_ticks`
-    /// yields the absolute monotonic deadline for fixture-loss detection.
-    host_started: std::time::Instant,
     command_correlation: BTreeMap<String, CommandCorrelation>,
 }
 
@@ -113,7 +110,10 @@ struct CommandCorrelation {
     /// operation. Driven by advancement.
     simulated_deadline: SimulatedDeadline,
     /// Wall-clock instant by which a host-side reply must arrive even
-    /// if the simulator is stalled.
+    /// if the simulator is stalled. Recorded at the moment the
+    /// command is issued, not at participant construction, so an
+    /// experiment that issues commands late still has a meaningful
+    /// wall-clock budget per command.
     host_deadline: MonotonicHostDeadline,
 }
 
@@ -150,7 +150,6 @@ impl FixtureParticipant {
             steps: program.steps().to_vec(),
             captures: program.captures().to_vec(),
             boundary: BoundaryClock::default(),
-            host_started: std::time::Instant::now(),
             command_correlation: BTreeMap::new(),
         })
     }
@@ -245,8 +244,13 @@ impl FixtureParticipant {
                             simulated_deadline: SimulatedDeadline(
                                 now.saturating_add(SIM_DEADLINE_TICKS),
                             ),
+                            // Wall-clock deadline is recorded at
+                            // command issuance, not at participant
+                            // construction. Each command gets a
+                            // fresh budget from the moment it was
+                            // published.
                             host_deadline: MonotonicHostDeadline(
-                                self.host_started
+                                std::time::Instant::now()
                                     + std::time::Duration::from_micros(HOST_DEADLINE_MICROS),
                             ),
                         }
@@ -255,9 +259,16 @@ impl FixtureParticipant {
                     SimulatedDeadline(b) => b,
                 };
                 let host_deadline_unix_micros = match entry.host_deadline {
-                    MonotonicHostDeadline(instant) => instant
-                        .saturating_duration_since(self.host_started)
-                        .as_micros() as u64,
+                    MonotonicHostDeadline(deadline) => {
+                        // Report the absolute host-wall-clock deadline
+                        // as the offset from `Instant::now()`. The
+                        // trace is bounded by u64 microseconds since
+                        // process start; the verifier reconstructs
+                        // the absolute instant if it needs one.
+                        deadline
+                            .saturating_duration_since(std::time::Instant::now())
+                            .as_micros() as u64
+                    }
                 };
                 StepOutcome::CommandIssued {
                     label: label.clone(),
