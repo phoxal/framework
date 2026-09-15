@@ -127,7 +127,9 @@ pub async fn run(
         // Validate quantum/bound alignment: the controlled
         // simulation's quantum and transition bounds must agree with
         // the decoded program. Presence alone is insufficient.
-        let simulation = runtime.simulation().expect("simulation presence checked above");
+        let simulation = runtime.simulation().ok_or_else(|| {
+            anyhow::anyhow!("scenario bundle must declare a controlled simulation")
+        })?;
         let declared_quantum_micros = simulation.quantum_ns / 1_000;
         if u128::from(declared_quantum_micros) != u128::from(decoded.quantum().micros()) {
             return Err(anyhow::anyhow!(

@@ -69,8 +69,8 @@ pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
 
 #[cfg(test)]
 mod tests {
-    use crate::scenario::registry::{ScenarioDescriptor, ScenarioOutcome};
     use crate::scenario::ScenarioPlan;
+    use crate::scenario::registry::{ScenarioDescriptor, ScenarioOutcome};
 
     /// Panic in `Default::default` so any eager construction at
     /// listing or registration time would surface here. See Gate A1
@@ -130,8 +130,7 @@ mod tests {
     /// `Default` impl.
     #[test]
     fn listing_does_not_construct_registered_scenarios() {
-        let entries = crate::scenario::registry::list_scenarios()
-            .expect("list scenarios");
+        let entries = crate::scenario::registry::list_scenarios().expect("list scenarios");
         for entry in entries {
             // Touching only the static metadata — never call the
             // entry function. A panic-from-Default test would surface

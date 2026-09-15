@@ -1484,7 +1484,7 @@ mod tests {
             .expect("nested section accepts the project shape");
         assert_eq!(section.marker, "phoxal/scenarios/nondeployable");
         assert_eq!(section.program.scenario_name, "scenarios/Demo");
-        assert_eq!(section.program.controlled_execution, true);
+        assert!(section.program.controlled_execution);
 
         // A flat top-level shape (the previous, superseded one) must
         // now be refused. Reading it directly as the manifest must
@@ -1511,6 +1511,9 @@ mod tests {
             },
         });
         let parsed: Result<SourceManifest, _> = serde_json::from_value(flat_payload);
-        assert!(parsed.is_err(), "flat shape must be rejected after refactor");
+        assert!(
+            parsed.is_err(),
+            "flat shape must be rejected after refactor"
+        );
     }
 }

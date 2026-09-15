@@ -17,7 +17,7 @@
 //! ```
 
 use phoxal::scenario::{
-    Action, Capture, FixtureMetadata, FixtureParticipant, Program, Quantum, ScheduleEntry, Validity,
+    Action, Capture, FixtureParticipant, Program, Quantum, ScheduleEntry, Validity,
 };
 use phoxal_port::{PortKind, PortSignature};
 
@@ -88,20 +88,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("transitions:    {}", program.transition_count());
     println!("byte length:    {}", program.byte_length());
 
-    let mut participant = FixtureParticipant::from_program(program)?;
-    println!("metadata:       {:#?}", participant.metadata());
-
-    let trace = participant.run();
-    println!("trace.passed:   {}", trace.passed());
-    println!("step outcomes:  {:#?}", trace.step_outcomes);
-
-    // Mark the command reply after the simulator acknowledges it.
-    participant.mark_command_reply("turn");
-    println!(
-        "sim_expired:    {:?}",
-        participant.expire_simulated_deadlines()
-    );
-
-    let _ = FixtureMetadata::from_program; // touched so the import is not flagged
+    // The example exercises plan authoring and program construction
+    // only. The synthetic fixture `run` path is removed (Gate B1 of
+    // followup-24c026ed.md); the controlled phase driver that
+    // produces a real trace is the case-host lifecycle that lands in
+    // Gate B1/B4. Until then, the example does not invoke the
+    // participant beyond identity verification.
+    let participant = FixtureParticipant::from_program(program.clone())?;
+    let _ = participant.metadata();
+    program.verify_identity()?;
     Ok(())
 }

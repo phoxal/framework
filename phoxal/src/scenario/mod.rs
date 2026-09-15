@@ -28,8 +28,8 @@ mod trait_def;
 
 pub use harness::{HarnessError, HarnessRun, run_harness};
 pub use participant::{
-    FixtureError, FixtureMetadata, FixtureParticipant, FixtureTrace, HOST_DEADLINE_TICKS,
-    SIM_DEADLINE_TICKS, StepOutcome,
+    FixtureError, FixtureMetadata, FixtureParticipant, HOST_DEADLINE_TICKS, SIM_DEADLINE_TICKS,
+    StepOutcome,
 };
 pub use plan::{Action, Capture, MAX_PAYLOAD, PlanValidationError, ScenarioPlan, Step, Validity};
 pub use program::{PROGRAM_SCHEMA_VERSION, Program, ProgramError, Quantum, ScheduleEntry};

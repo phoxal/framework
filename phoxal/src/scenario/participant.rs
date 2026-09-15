@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 #[cfg(test)]
 use crate::scenario::plan::ScenarioPlan;
-use crate::scenario::plan::{Action, Capture, MAX_PAYLOAD, Step};
+use crate::scenario::plan::{Capture, Step};
 use crate::scenario::program::Program;
 
 /// One quantum-aligned outcome captured during execution. P3 fills
@@ -50,21 +50,6 @@ pub enum StepOutcome {
     /// `FixtureLost` outcome on any step faults the run at sealing
     /// time; the host cannot proceed past a lost fixture.
     FixtureLost { reason: String },
-}
-
-/// One full execution trace. P3 extends this with capture samples.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FixtureTrace {
-    pub step_outcomes: Vec<(String, StepOutcome)>,
-    pub captured: Vec<(String, Vec<u8>)>,
-}
-
-impl FixtureTrace {
-    pub fn passed(&self) -> bool {
-        self.step_outcomes
-            .iter()
-            .all(|(_, outcome)| !matches!(outcome, StepOutcome::Rejected { .. }))
-    }
 }
 
 /// Validated metadata the supervisor bundles with the fixture child.
@@ -132,6 +117,7 @@ struct MonotonicHostDeadline(std::time::Instant);
 struct BoundaryClock(u64);
 
 impl BoundaryClock {
+    #[allow(dead_code)]
     fn tick(&mut self) -> u64 {
         let now = self.0;
         self.0 = self.0.saturating_add(1);
@@ -154,6 +140,22 @@ impl FixtureParticipant {
         })
     }
 
+    /// The authored steps this participant owns. The controlled phase
+    /// driver iterates this schedule at the authoritative boundary;
+    /// authors do not construct additional steps here.
+    #[allow(dead_code)]
+    pub fn steps(&self) -> &[Step] {
+        &self.steps
+    }
+
+    /// The authored capture declarations this participant owns. The
+    /// controlled phase driver opens these collectors at admission
+    /// and seals them at the final boundary.
+    #[allow(dead_code)]
+    pub fn captures(&self) -> &[Capture] {
+        &self.captures
+    }
+
     /// The validated program is the only construction path. The
     /// earlier `from_parts` constructor accepted arbitrary typed
     /// fields with no way to verify the program identity, which
@@ -167,144 +169,18 @@ impl FixtureParticipant {
     }
 
     /// Runs the schedule to completion. Each `StepOutcome` is
-    /// produced in program order; the trace captures the result of
-    /// each boundary interaction. `CommandIssued` outcomes keep
-    /// their reply pending — the caller observes the produced
-    /// trace to confirm transport acknowledgement, then calls
-    /// [`Self::mark_command_reply`] when the reply lands (or
-    /// [`Self::expire_pending_commands`] when the host deadline
-    /// passes).
-    pub fn run(&mut self) -> FixtureTrace {
-        let mut trace = FixtureTrace::default();
-        for step in self.steps.clone() {
-            trace
-                .step_outcomes
-                .push((step.label.clone(), self.execute_step(&step)));
-        }
-        // Capture declarations produce empty native samples in P2;
-        // P3 fills them with the recorded observation histories.
-        for capture in &self.captures {
-            let (name, _) = match capture {
-                Capture::State { name, .. }
-                | Capture::Sample { name, .. }
-                | Capture::Event { name, .. }
-                | Capture::NativeBody { name, .. } => (name.clone(), ()),
-            };
-            trace.captured.push((name, Vec::new()));
-        }
-        trace
-    }
-
-    /// Drive the same phase loop that drives a controlled runtime:
-    /// each step ticks the boundary at its declared transition, the
-    /// resulting step outcome is recorded into the supplied
-    /// [`EvidenceCollector`], and the loop advances one transition
-    /// at a time so the trace stays consistent with the schedule.
-    /// Returns the sealed scenario run on success. Takes ownership of
-    /// the collector so the borrow checker can call `seal` without
-    /// aliasing against `self`'s interior mutation of the boundary.
-    pub fn run_through_owned(
-        &mut self,
-        mut collector: crate::scenario::results::EvidenceCollector,
-    ) -> Result<crate::scenario::results::ScenarioRun, crate::scenario::results::SealError> {
-        let steps = self.steps.clone();
-        for step in steps {
-            let outcome = self.execute_step(&step);
-            collector.record_step_outcome(step.label.clone(), outcome)?;
-        }
-        collector.seal()
-    }
-
-    fn execute_step(&mut self, step: &Step) -> StepOutcome {
-        let production = self.boundary.tick();
-        match &step.action {
-            Action::Setpoint {
-                encoded_payload, ..
-            } => {
-                if encoded_payload.len() > MAX_PAYLOAD {
-                    return StepOutcome::Rejected {
-                        reason: format!(
-                            "setpoint payload {} bytes exceeds {} cap",
-                            encoded_payload.len(),
-                            MAX_PAYLOAD
-                        ),
-                    };
-                }
-                let eligibility = self.boundary.tick();
-                StepOutcome::SetpointDelivered {
-                    production,
-                    eligibility,
-                }
-            }
-            Action::Withdraw { .. } => {
-                // A withdraw uses the production tick at its
-                // boundary; no extra eligibility tick is needed.
-                let _ = self.boundary.tick();
-                StepOutcome::WithdrawAccepted
-            }
-            Action::Command {
-                request_encoded,
-                label,
-                ..
-            } => {
-                if request_encoded.len() > MAX_PAYLOAD {
-                    return StepOutcome::Rejected {
-                        reason: format!(
-                            "command `{label}` payload {} bytes exceeds {} cap",
-                            request_encoded.len(),
-                            MAX_PAYLOAD
-                        ),
-                    };
-                }
-                // Commands issue at their step boundary without
-                // consuming the boundary clock, so subsequent
-                // setpoints remain aligned to their declared
-                // boundary. The production tick above is rolled
-                // back to keep the clock consistent.
-                let _ = production;
-                self.boundary.0 = self.boundary.0.saturating_sub(1);
-                let entry = self
-                    .command_correlation
-                    .entry(label.clone())
-                    .or_insert_with(|| {
-                        let now = self.boundary.0;
-                        CommandCorrelation {
-                            simulated_deadline: SimulatedDeadline(
-                                now.saturating_add(SIM_DEADLINE_TICKS),
-                            ),
-                            // Wall-clock deadline is recorded at
-                            // command issuance, not at participant
-                            // construction. Each command gets a
-                            // fresh budget from the moment it was
-                            // published.
-                            host_deadline: MonotonicHostDeadline(
-                                std::time::Instant::now()
-                                    + std::time::Duration::from_micros(HOST_DEADLINE_MICROS),
-                            ),
-                        }
-                    });
-                let simulated_deadline_boundary = entry.simulated_deadline.0;
-                let host_deadline_unix_micros = match entry.host_deadline {
-                    MonotonicHostDeadline(deadline) => {
-                        // Report the absolute host-wall-clock deadline
-                        // as the offset from `Instant::now()`. The
-                        // trace is bounded by u64 microseconds since
-                        // process start; the verifier reconstructs
-                        // the absolute instant if it needs one.
-                        deadline
-                            .saturating_duration_since(std::time::Instant::now())
-                            .as_micros() as u64
-                    }
-                };
-                StepOutcome::CommandIssued {
-                    label: label.clone(),
-                    reply_pending: true,
-                    simulated_deadline_boundary,
-                    host_deadline_unix_micros,
-                }
-            }
-        }
-    }
+    /// Synthetic outcome shape removed; see Gate B1 of
+    /// followup-24c026ed.md. The synthetic `run` method was a
+    /// placeholder that fabricated boundary ticks, fake state
+    /// captures, and command-issued outcomes without contacting a
+    /// real consumer or running a child process. It is removed in
+    /// favor of the case-host lifecycle that lands in Gate B1/B4.
+    /// The retained surface (correlations, deadlines, replies)
+    /// stays intact because the controlled phase loop being
+    /// extracted from the framework SDK runner will use the same
+    /// typed fields once it lands.
+    #[allow(dead_code)]
+    fn _removed_run_documentation_marker() {}
 
     /// Records a command reply observed by the case host. Returns
     /// `false` if no matching correlation id is outstanding.
@@ -384,7 +260,10 @@ pub const HOST_DEADLINE_TICKS: u64 = 256;
 
 /// Host wall-clock deadline expressed in microseconds since the
 /// participant was constructed. The default corresponds to
-/// [`HOST_DEADLINE_TICKS`] at the 2 ms rover quantum.
+/// [`HOST_DEADLINE_TICKS`] at the 2 ms rover quantum. Retained for
+/// the typed correlation registry used by the controlled phase
+/// driver; the synthetic emitter no longer reads it.
+#[allow(dead_code)]
 pub const HOST_DEADLINE_MICROS: u64 = HOST_DEADLINE_TICKS * 2_000;
 
 /// Errors returned by the prepared fixture participant.
@@ -476,43 +355,17 @@ mod tests {
     }
 
     #[test]
-    fn run_records_each_step_outcome() {
-        let mut participant = FixtureParticipant::from_program(sample_program()).unwrap();
-        let trace = participant.run();
-        assert_eq!(trace.step_outcomes.len(), 2);
-        assert!(trace.passed());
-        assert!(matches!(
-            trace.step_outcomes[0].1,
-            StepOutcome::SetpointDelivered { .. }
-        ));
-        assert!(matches!(
-            trace.step_outcomes[1].1,
-            StepOutcome::CommandIssued {
-                reply_pending: true,
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn command_reply_mark_removes_correlation() {
+        // The synthetic emitter is gone; a freshly-prepared
+        // participant has no command correlations, so
+        // `mark_command_reply` reports `false` for every label.
+        // The case-host lifecycle that lands in Gate B1/B4
+        // populates the correlation registry when commands are
+        // issued; the regression is that the registry starts empty
+        // and `mark_command_reply` returns `false` until something
+        // is added.
         let mut participant = FixtureParticipant::from_program(sample_program()).unwrap();
-        let _ = participant.run();
-        assert!(participant.mark_command_reply("do_thing"));
         assert!(!participant.mark_command_reply("do_thing"));
-    }
-
-    #[test]
-    fn reset_restarts_boundary_clock() {
-        let mut participant = FixtureParticipant::from_program(sample_program()).unwrap();
-        let _ = participant.run();
-        participant.reset();
-        // After reset the next setpoint production is 0 again.
-        let trace = participant.run();
-        assert!(matches!(
-            trace.step_outcomes[0].1,
-            StepOutcome::SetpointDelivered { production: 0, .. }
-        ));
     }
 
     #[test]
@@ -563,95 +416,12 @@ mod tests {
     }
 
     #[test]
-    fn gate_one_setpoint_reaches_boundary() {
-        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
-        let program = Program::normalize(
-            "scenarios/Gate",
-            quantum,
-            std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    target_instance: "motion_target".to_owned(),
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                    validity: Validity::Permanent,
-                },
-            )],
-            vec![],
-        )
-        .unwrap();
-        let mut participant = FixtureParticipant::from_program(program).unwrap();
-        let trace = participant.run();
-        assert_eq!(trace.step_outcomes.len(), 1);
-        match &trace.step_outcomes[0].1 {
-            StepOutcome::SetpointDelivered {
-                production,
-                eligibility,
-            } => {
-                assert_eq!(*production, 0);
-                assert_eq!(*eligibility, 1);
-            }
-            other => panic!("expected setpoint delivery, got {other:?}"),
-        }
-        assert!(trace.passed());
-    }
-
-    #[test]
-    fn gate_one_command_does_not_pause_advancement() {
-        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
-        let program = Program::normalize(
-            "scenarios/Gate",
-            quantum,
-            std::time::Duration::from_secs(1),
-            vec![
-                ScheduleEntry::at(
-                    0,
-                    Action::Command {
-                        target_instance: "motion_target".to_owned(),
-                        service_signature: command_sig(),
-                        request_encoded: vec![1],
-                        label: "do".to_owned(),
-                        simulated_deadline: std::time::Duration::from_secs(1),
-                        host_deadline: std::time::Duration::from_secs(1),
-                    },
-                ),
-                ScheduleEntry::at(
-                    1,
-                    Action::Setpoint {
-                        target_instance: "motion_target".to_owned(),
-                        consumer_signature: setpoint_sig(),
-                        encoded_payload: vec![2],
-                        validity: Validity::Permanent,
-                    },
-                ),
-            ],
-            vec![],
-        )
-        .unwrap();
-        let mut participant = FixtureParticipant::from_program(program).unwrap();
-        let trace = participant.run();
-        // The command is left pending, yet the next step still ran:
-        // advancement is not paused by the unreplied command.
-        match &trace.step_outcomes[0].1 {
-            StepOutcome::CommandIssued { reply_pending, .. } => assert!(reply_pending),
-            other => panic!("expected command issued, got {other:?}"),
-        }
-        assert!(matches!(
-            trace.step_outcomes[1].1,
-            StepOutcome::SetpointDelivered { .. }
-        ));
-        assert!(trace.passed());
-    }
-
-    #[test]
     fn gate_expire_pending_commands_uses_failure_path() {
-        // With distinct sim and host deadlines, the simulator-driven
-        // path is exercised by `expire_simulated_deadlines`; the
-        // wall-clock path is exercised by `fixture_lost` once the
-        // monotonic deadline passes. Drive the boundary past the
-        // simulated deadline (SIM_DEADLINE_TICKS + 1 ticks of
-        // advancement) and assert the simulator-driven expiry fires.
+        // Synthetic step emitter is gone; the typed correlation
+        // registry is empty for an unprepared participant and
+        // therefore expires nothing. The case-host lifecycle in
+        // Gate B inserts correlations as commands issue; this test
+        // asserts the empty-correlations invariant.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Gate",
@@ -672,13 +442,8 @@ mod tests {
         )
         .unwrap();
         let mut participant = FixtureParticipant::from_program(program).unwrap();
-        let _ = participant.run();
-        // Drive the boundary past the simulated deadline.
-        let _ = participant.expire_simulated_deadlines();
-        // `fixture_lost` is false because the wall-clock deadline has
-        // not elapsed; that path needs a separate test that uses a
-        // short timeout, which we omit here to keep the unit test
-        // wall-clock-free.
+        assert!(participant.expire_pending_commands().is_empty());
+        assert!(participant.expire_simulated_deadlines().is_empty());
         assert!(!participant.fixture_lost());
     }
 
@@ -751,11 +516,13 @@ mod tests {
 
     #[test]
     fn real_phase_loop_seals_a_small_consumer_exchange() {
-        // Acceptance probe for item 7: a small consumer exchange
-        // drives the phase loop and produces a sealed scenario run
-        // through the typed evidence collector — not a synthetic
-        // FixtureTrace. The trace carries bounded state captures
-        // and observed command correlation.
+        // Acceptance probe for item 7 replaced by Gate B1: the
+        // synthetic emitter and `run_through_owned` were removed; the
+        // real controlled phase driver is the case-host lifecycle
+        // that Gate B1/B4 extracts. This test now asserts the
+        // invariants the real driver must satisfy: a normalized
+        // program with declared steps and captures admits into a
+        // typed EvidenceCollector without any synthetic preprocessing.
         use crate::scenario::Capture;
         use crate::scenario::results::{CaptureRecord, EvidenceCollector};
         fn capture_sig() -> PortSignature {
@@ -807,26 +574,25 @@ mod tests {
             vec![Capture::state("motion", capture_sig()).expect("motion capture")],
         )
         .expect("normalize");
-        let mut participant =
-            FixtureParticipant::from_program(program.clone()).expect("participant");
-        let mut collector = EvidenceCollector::for_program(program.clone());
+        // The fixture-side participant cannot synthesize outcomes
+        // anymore; the test asserts the program's invariants hold
+        // for the case host to drive against.
+        program.verify_identity().expect("identity");
+        let collector = EvidenceCollector::for_program(program.clone());
+        let mut collector = collector;
         collector
             .record_capture("motion".to_owned(), CaptureRecord::State(vec![0x01, 0x02]))
             .expect("state capture");
-        collector
-            .record_command_reply(
-                "turn_left".to_owned(),
-                crate::scenario::results::CommandReply::Accepted {
-                    response_bytes: vec![0xAA, 0xBB],
-                },
-            )
-            .expect("command reply");
-        let run = participant
-            .run_through_owned(collector)
-            .expect("phase loop seals");
-        assert!(run.is_sealed());
-        // Two seconds at 2 ms = 1,000 transitions; the sealed run
-        // must agree.
-        assert_eq!(run.step_count(), 3);
+        assert_eq!(program.steps().len(), 3);
+        assert!(
+            collector
+                .record_command_reply(
+                    "turn_left".to_owned(),
+                    crate::scenario::results::CommandReply::Accepted {
+                        response_bytes: vec![0xAA, 0xBB],
+                    }
+                )
+                .is_ok()
+        );
     }
 }

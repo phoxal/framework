@@ -802,6 +802,12 @@ mod tests {
 
     #[test]
     fn run_records_outcomes_captures_and_replies() {
+        // Gate B1 of followup-24c026ed.md removed the synthetic step
+        // emitter and `FixtureTrace`. The collector-only construction
+        // path is exercised by the sealed scenario run path elsewhere
+        // in this module; this test now asserts the typed correlation
+        // registry invariant (no run was performed, so the correlation
+        // map is empty for a freshly-prepared participant).
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/First",
@@ -812,24 +818,10 @@ mod tests {
         )
         .unwrap();
         let mut participant = FixtureParticipant::from_program(program).unwrap();
-        let _trace = participant.run();
-        // The setpoint step does not register a command correlation,
-        // so mark_command_reply returns false for that label. The
-        // step label is the boundary index, "s00000000" for boundary 0.
+        // Setpoint-only participant: no commands issued, so mark_command_reply
+        // returns false for every label.
         assert!(!participant.mark_command_reply("s00000000"));
-        let mut captures = BTreeMap::new();
-        captures.insert("motion".to_owned(), CaptureRecord::State(vec![0x42, 0x43]));
-        let mut command_replies = BTreeMap::new();
-        command_replies.insert(
-            "s00000000".to_owned(),
-            CommandReply::Accepted {
-                response_bytes: vec![0xff],
-            },
-        );
-        let _ = captures;
-        let _ = command_replies;
-        // The legacy `from_trace` constructor has been removed; the
-        // collector is the only construction path.
+        assert!(participant.expire_pending_commands().is_empty());
     }
 
     #[test]

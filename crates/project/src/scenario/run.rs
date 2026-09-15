@@ -247,7 +247,8 @@ fn resolve_root_package_id(
         .no_deps()
         .exec()
         .map_err(|error| format!("cargo metadata: {error}"))?;
-    let canonical_manifest = std::fs::canonicalize(staged_manifest).unwrap_or_else(|_| staged_manifest.to_owned());
+    let canonical_manifest =
+        std::fs::canonicalize(staged_manifest).unwrap_or_else(|_| staged_manifest.to_owned());
     metadata
         .packages
         .iter()
