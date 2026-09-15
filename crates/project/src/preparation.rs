@@ -145,24 +145,6 @@ impl ManifestTransaction {
         self.changes.extend(scenario_changes);
     }
 
-    /// Records a scenario preparation change that was already applied
-    /// to disk. The rollback path restores the manifest bytes from
-    /// the captured snapshot regardless of whether any changes have
-    /// been recorded, so a write that partly succeeded is reversed
-    /// even if the calling code dropped the transaction before
-    /// reaching `extend_with_scenario_changes`.
-    #[allow(dead_code)]
-    pub(crate) fn explicit_abort(self) -> Result<Vec<PreparationChange>, Error> {
-        // Explicit aborts run the same restoration that Drop would
-        // run, and additionally return the original error path so
-        // the caller can chain a single restoration failure with
-        // the originating preparation failure. The Drop impl
-        // becomes a best-effort fallback for panics and other
-        // unwinding paths only.
-        self.rollback()?;
-        Ok(Vec::new())
-    }
-
     /// Restores all files captured before an unsuccessful preparation.
     pub(crate) fn rollback(&self) -> Result<(), Error> {
         if !self.changes.is_empty() {
@@ -394,10 +376,11 @@ pub(crate) fn compute_scenario_change_plan(
             });
         }
     };
-    let add_test_target =
-        !lookup_scenario_test_target(document).is_some_and(|table| managed_target_matches(&table));
+    let has_managed_test_target =
+        lookup_scenario_test_target(document).is_some_and(|table| managed_target_matches(&table));
+    let add_test_target = !has_managed_test_target;
     let add_scenario_feature = !dev_dependency_has_scenario_feature(document);
-    let harness_changed = harness_needs_write(robot_root, &discovered);
+    let harness_changed = harness_needs_write(robot_root, &discovered, has_managed_test_target);
     let needs_persistent_setup =
         (add_test_target || add_scenario_feature) && !discovered.is_empty();
     Ok(ScenarioChangePlan {
@@ -412,6 +395,7 @@ pub(crate) fn compute_scenario_change_plan(
 fn harness_needs_write(
     robot_root: &Path,
     discovered: &[crate::scenario::DiscoveredScenario],
+    has_managed_test_target: bool,
 ) -> bool {
     let harness_path = robot_root.join(SCENARIO_HARNESS_RELATIVE_PATH);
     let expected = super::scenario::generate_harness_source(robot_root, discovered).into_bytes();
@@ -419,11 +403,15 @@ fn harness_needs_write(
         // The existing harness content differs from what the
         // current registry would produce — regenerate.
         Ok(current) => current != expected,
-        // No harness on disk: only consider it missing-and-needed
-        // when there is at least one scenario to register. An
-        // empty registry's absent harness is the correct state,
-        // so prepare() should not record a HarnessWritten change.
-        Err(_) => !discovered.is_empty(),
+        // No harness on disk: regenerate when there is work to
+        // register (scenarios exist) or when a managed test
+        // target is already declared (its generated harness was
+        // removed externally and must be restored). See Gate C
+        // preparation cleanup in followup-24c026ed.md:
+        // "Regenerate an empty harness for that retained target
+        // before broad Cargo checks; preserve a no-op only when
+        // there is no managed target to satisfy."
+        Err(_) => has_managed_test_target || !discovered.is_empty(),
     }
 }
 
