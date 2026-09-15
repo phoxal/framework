@@ -185,13 +185,24 @@ fn build_harness_binary(
     let mut command = std::process::Command::new(options.cargo_program());
     command
         .args(["test", "--test", "phoxal-scenarios", "--no-run"])
+        // Explicit single-package selection. The selection the user
+        // asked for (`options.selection`) is intentionally dropped
+        // here so a workspace selector that names a different package
+        // cannot silently override the robot the case host owns.
+        .args(["--package", &format!("{package_id}")])
         .args([
             "--message-format",
             "json-render-diagnostics",
             "--manifest-path",
         ])
         .arg(&staged_manifest);
-    options.append_common(&mut command, false, true);
+    // Forward lock/offline/target/profile/feature/wrapper flags from
+    // the prepared Cargo context so the harness build uses the same
+    // Cargo executable, registry injection, and lock file as the
+    // rest of the project. `include_selection` is forced false here
+    // because the explicit `--package` already names the single
+    // robot package.
+    options.append_common(&mut command, true, false);
     command.current_dir(&robot_root);
     let output = command
         .output()
@@ -219,7 +230,15 @@ fn build_harness_binary(
 /// Resolve the root robot package's exact `PackageId` via Cargo's
 /// own resolver. The resolver walks the prepared manifest path and
 /// returns the opaque `PackageId` (which Cargo emits verbatim in its
-/// `compiler-artifact` JSON events). No hand-written string scanner.
+/// `compiler-artifact` JSON events).
+///
+/// Selection is by exact `manifest_path` against the manifest the
+/// project is about to compile. `metadata.packages.first()` is not a
+/// stable identifier: a sibling sorted before the robot in a
+/// workspace, or a fixture helper package whose manifest is part of
+/// the same Cargo graph, would otherwise be chosen. `resolve.nodes`
+/// likewise depends on Cargo's traversal order and is not stable
+/// across workspace layouts.
 fn resolve_root_package_id(
     staged_manifest: &std::path::Path,
 ) -> Result<cargo_metadata::PackageId, String> {
@@ -228,25 +247,22 @@ fn resolve_root_package_id(
         .no_deps()
         .exec()
         .map_err(|error| format!("cargo metadata: {error}"))?;
-    // The root robot package is the workspace root package (or the
-    // only package for single-package workspaces).
+    let canonical_manifest = std::fs::canonicalize(staged_manifest).unwrap_or_else(|_| staged_manifest.to_owned());
     metadata
-        .resolve
-        .as_ref()
-        .and_then(|resolve| {
-            resolve
-                .nodes
-                .iter()
-                .find(|node| {
-                    metadata
-                        .workspace_members
-                        .iter()
-                        .any(|member| member == &node.id)
-                })
-                .map(|node| node.id.clone())
+        .packages
+        .iter()
+        .find(|pkg| {
+            std::fs::canonicalize(&pkg.manifest_path)
+                .map(|path| path == canonical_manifest)
+                .unwrap_or_else(|_| pkg.manifest_path == staged_manifest)
         })
-        .or_else(|| metadata.packages.first().map(|pkg| pkg.id.clone()))
-        .ok_or_else(|| "cargo metadata returned no packages".to_owned())
+        .map(|pkg| pkg.id.clone())
+        .ok_or_else(|| {
+            format!(
+                "cargo metadata did not return a package for manifest `{}`",
+                staged_manifest.display()
+            )
+        })
 }
 
 /// Parse Cargo's JSON event stream with `cargo_metadata::Message`
@@ -450,5 +466,39 @@ mod parse_artifact_tests {
             "executable": executable,
             "fresh": true,
         })
+    }
+
+    /// End-to-end exercise of [`super::resolve_root_package_id`]
+    /// against a real workspace with two packages. The
+    /// alphabetically-sorted sibling (`a-helper`) would otherwise be
+    /// picked by `packages.first()`; selecting by exact
+    /// `manifest_path` must always return the package the staged
+    /// source tree owns. See Gate A2 of followup-24c026ed.md.
+    #[test]
+    fn resolver_picks_staged_manifest_not_first_package() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let helper = directory.path().join("a-helper");
+        let robot = directory.path().join("z-review-robot");
+        std::fs::create_dir_all(helper.join("src")).expect("mkdir helper");
+        std::fs::create_dir_all(robot.join("src")).expect("mkdir robot");
+        std::fs::write(
+            helper.join("Cargo.toml"),
+            "[package]\nname = \"a-helper\"\nedition = \"2024\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write helper manifest");
+        std::fs::write(
+            robot.join("Cargo.toml"),
+            "[package]\nname = \"z-review-robot\"\nedition = \"2024\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write robot manifest");
+        std::fs::write(helper.join("src/lib.rs"), "pub fn x() {}").expect("helper src");
+        std::fs::write(robot.join("src/lib.rs"), "pub fn x() {}").expect("robot src");
+        let resolved = super::resolve_root_package_id(robot.join("Cargo.toml").as_path())
+            .expect("resolve by exact manifest path");
+        let resolved_str = format!("{resolved}");
+        assert!(
+            resolved_str.contains("z-review-robot"),
+            "resolver returned `{resolved_str}`; expected the manifest-owned package",
+        );
     }
 }
