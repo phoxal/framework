@@ -87,31 +87,45 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
     // (6) Build the expansion. The user's impl is preserved verbatim; the
     //     entry function is monomorphized (one per impl block) and the
     //     descriptor registers it. The entry constructs the scenario
-    //     through `Default::default()`, calls `plan()`, and returns the
-    //     outcome. Author construction (typed actions) lives in the
-    //     user's `plan()` implementation; the case-host process owns
-    //     that path so the supervisor fixture can prepare a fresh
-    //     fixture-side participant from the same artifact.
+    //     through `Default::default()`, validates `plan()`, and returns
+    //     an explicit non-pass outcome. Author construction (typed
+    //     actions) lives in the user's `plan()` implementation; the
+    //     case-host process owns the lifecycle that turns a planned
+    //     scenario into a real controlled-runtime execution and only
+    //     that path may produce a passing `ScenarioOutcome`.
+    //
+    //     Until the case-host lifecycle lands, the entry returns
+    //     `passed: false` with a diagnostic naming the missing
+    //     boundary. The descriptor is registered so inventory listing
+    //     continues to work, and the `plan()` call exercises the
+    //     author's typed constructors so regressions surface at compile
+    //     and at inventory time rather than at run time.
     let expanded = quote! {
         #impl_block
 
         #[doc(hidden)]
         #[allow(non_snake_case)]
         fn #entry_name() -> ::phoxal::Result<::phoxal::scenario::ScenarioOutcome> {
-            let scenario = <#self_type as ::phoxal::scenario::Scenario>::default();
-            let plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
-            if plan.scenario_name() != #full_name {
-                return ::phoxal::Result::Err(::phoxal::anyhow!(
-                    "scenario `{}` declared plan name `{}`; \
-                     the #[phoxal::scenario] macro owns the canonical identity",
-                    #full_name,
-                    plan.scenario_name(),
-                ));
-            }
+            // Construct through `Default`; `Scenario` does not provide
+            // its own `default` method.
+            let scenario = <#self_type as ::std::default::Default>::default();
+            // Validate the user's plan so an authored impl that does
+            // not type-check or fails validation never registers.
+            let _plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
+            // Until the case-host lifecycle lands, registration-only
+            // expansion explicitly does not produce a passing trace.
+            // Constructing a `ScenarioOutcome { passed: true, .. }`
+            // here would be a false success path: see followup-24c026ed
+            // Gate A1 clause 3.
             Ok(::phoxal::scenario::ScenarioOutcome {
                 name: #full_name.to_owned(),
-                passed: true,
-                detail: Some(plan.transition_count().to_string()),
+                passed: false,
+                detail: Some(
+                    "scenario case-host lifecycle is not yet implemented; \
+                     #[phoxal::scenario] registers the plan but does not \
+                     execute it. See Gate B in followup-24c026ed.md."
+                        .to_owned(),
+                ),
             })
         }
 
