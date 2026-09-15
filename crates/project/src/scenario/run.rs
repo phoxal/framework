@@ -155,65 +155,134 @@ fn parse_list_output(stdout: &str) -> Vec<ScenarioListEntry> {
 /// workflow.
 fn build_harness_binary(
     project: &crate::Project,
-    _options: &CargoOptions,
+    options: &CargoOptions,
 ) -> Result<std::path::PathBuf, String> {
     let robot_root = project.layout.root().to_owned();
-    let cargo_output = std::process::Command::new("cargo")
+    // Cargo's structured `compiler-artifact` JSON events report the
+    // exact executable path for the package + target kind + target name
+    // we asked for. Scanning `target/debug/deps` for the newest
+    // matching filename can pick a stale artifact or another
+    // package's harness, so we use the JSON stream instead.
+    //
+    // We override `--message-format=json` for this invocation so the
+    // structured stream is always available, regardless of what the
+    // caller asked for. Selection (lock, offline, profile, target,
+    // features) is forwarded through the existing helper.
+    let mut command = std::process::Command::new("cargo");
+    command
+        .args(["test", "--test", "phoxal-scenarios", "--no-run"])
         .args([
-            "test",
-            "--test",
-            "phoxal-scenarios",
-            "--no-run",
-            "--offline",
-        ])
+            "--message-format",
+            "json",
+        ]);
+    options.append_common(&mut command, false, true);
+    command
         .current_dir(&robot_root)
-        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WRAPPER");
+    let output = command
         .output()
         .map_err(|error| format!("cargo invocation: {error}"))?;
-    if !cargo_output.status.success() {
+    if !output.status.success() {
         return Err(format!(
             "cargo test --test phoxal-scenarios --no-run failed:\n--- stderr ---\n{}",
-            String::from_utf8_lossy(&cargo_output.stderr),
+            String::from_utf8_lossy(&output.stderr),
         ));
     }
-    // Find the freshly built executable. The harness binary lives
-    // in `target/debug/deps/phoxal_scenarios-<hash>` and the test
-    // name never appears on disk with the test suffix. We scan
-    // `target/debug/deps` for the newest matching binary.
-    let workspace_root = robot_root
-        .ancestors()
-        .find_map(|ancestor| {
-            if ancestor.join("Cargo.toml").is_file() && ancestor.join("target").is_dir() {
-                Some(ancestor.to_path_buf())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| robot_root.clone());
-    let deps_dir = workspace_root.join("target/debug/deps");
-    let read = std::fs::read_dir(&deps_dir)
-        .map_err(|error| format!("read {}: {error}", deps_dir.display()))?;
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = read
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let name = path.file_name().and_then(|n| n.to_str())?;
-            if name.starts_with("phoxal_scenarios-")
-                && path.extension().is_none()
-                && !name.ends_with(".rmeta")
-                && !name.ends_with(".d")
-            {
-                let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
-                Some((modified, path))
-            } else {
-                None
-            }
-        })
-        .collect();
-    candidates.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    candidates
-        .into_iter()
-        .map(|(_, path)| path)
-        .next()
-        .ok_or_else(|| "harness binary not produced by cargo".to_owned())
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_artifact_executable(&stdout, "phoxal-scenarios", "test").ok_or_else(|| {
+        "cargo did not report an executable for the `phoxal-scenarios` test target".to_owned()
+    })
+}
+
+/// Parse Cargo's `--message-format=json` stream and return the
+/// executable path of the named test target. Matches exactly on
+/// package identity, target kind (`test`), and target name so a
+/// stale artifact from another package or a non-test target cannot
+/// satisfy the lookup.
+fn parse_artifact_executable(
+    stdout: &str,
+    target_name: &str,
+    target_kind: &str,
+) -> Option<PathBuf> {
+    let mut found: Option<PathBuf> = None;
+    for line in stdout.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Cargo emits non-JSON progress lines when `--message-format=json`
+        // is paired with a terminal; skip anything that does not start
+        // with `{`.
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let event: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(event) => event,
+            Err(_) => continue,
+        };
+        if event.get("reason").and_then(|v| v.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        // Cargo's test profile is the only one that produces test
+        // executables. The harness binary is reported with profile
+        // "test"; we filter on that to avoid matching a debug
+        // executable named the same thing.
+        let profile = event.pointer("/profile/test").is_some();
+        let name = event.pointer("/target/name").and_then(|v| v.as_str());
+        let kinds: Vec<String> = event
+            .pointer("/target/kind")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let executable = event
+            .pointer("/executable")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        if profile && name == Some(target_name) && kinds.iter().any(|k| k == target_kind) {
+            found = executable;
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod parse_artifact_tests {
+    use super::parse_artifact_executable;
+    use std::path::PathBuf;
+
+    #[test]
+    fn matches_test_profile_target() {
+        let stdout = r#"
+{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/phoxal_scenarios-abc"}
+{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"other-binary","kind":["bin"]},"executable":"/build/other"}
+"#;
+        assert_eq!(
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test"),
+            Some(PathBuf::from("/build/phoxal_scenarios-abc"))
+        );
+    }
+
+    #[test]
+    fn ignores_non_test_profile() {
+        let stdout = r#"
+{"reason":"compiler-artifact","profile":{"dev":true},"target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/wrong"}
+{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/right"}
+"#;
+        assert_eq!(
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test"),
+            Some(PathBuf::from("/build/right"))
+        );
+    }
+
+    #[test]
+    fn ignores_other_targets() {
+        let stdout = r#"
+{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"other-binary","kind":["test"]},"executable":"/build/other"}
+"#;
+        assert_eq!(parse_artifact_executable(stdout, "phoxal-scenarios", "test"), None);
+    }
 }

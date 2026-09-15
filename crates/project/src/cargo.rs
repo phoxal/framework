@@ -229,7 +229,7 @@ impl CargoOptions {
         Ok(())
     }
 
-    fn append_common(
+    pub(crate) fn append_common(
         &self,
         command: &mut Command,
         include_message_format: bool,
