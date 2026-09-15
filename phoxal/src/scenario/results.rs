@@ -638,33 +638,47 @@ impl EvidenceCollector {
                 _ => {}
             }
         }
-        // Final-boundary check: the trace must report at least one
-        // observed eligibility at the program's last declared
-        // boundary, but only when the program has a setpoint step.
-        // A valid command-only or withdrawal-only experiment is
-        // finalized through command replies and withdrawal receipts
-        // and does not need a setpoint-style eligibility tick at
-        // the final boundary.
-        if let Some(max_boundary) = self.program.steps().iter().map(|step| step.boundary).max() {
-            let has_setpoint_step =
-                self.program.steps().iter().any(|step| {
-                    matches!(step.action, crate::scenario::plan::Action::Setpoint { .. })
+        // Final-boundary check: finalize against
+        // `Program::transition_count()` and the actual final
+        // observation/native receipts, not against the maximum
+        // authored action boundary. See Gate B2 of
+        // followup-24c026ed.md: "Finalize against
+        // `Program::transition_count()` and the actual final
+        // observation/native receipts, not `max(action.boundary)`.
+// No-action and command-only experiments must still prove
+// completion of their requested interval."
+//
+// The setpoint-bearing experiments must observe eligibility at the
+// program's last transition (which, for a finite schedule, equals
+// `transition_count - 1` when actions cover the whole schedule, or
+// `transition_count` when an action sits at the final boundary).
+// A 3,000-transition plan with only a boundary-zero setpoint
+// acknowledgement therefore fails to finalize, regardless of the
+// authored `max_boundary`.
+        let has_setpoint_step =
+            self.program.steps().iter().any(|step| {
+                matches!(step.action, crate::scenario::plan::Action::Setpoint { .. })
+            });
+        if has_setpoint_step {
+            let last_transition = self.program.transition_count().saturating_sub(1) as u64;
+            let observed_max = self
+                .step_outcomes
+                .iter()
+                .filter_map(|(_, outcome)| match outcome {
+                    StepOutcome::SetpointDelivered { eligibility, .. } => Some(*eligibility),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            // Allow observed_max == last_transition (action at the
+            // final boundary) or observed_max == last_transition + 1
+            // (canonical N-to-N+1 delivery). Anything strictly below
+            // last_transition means the experiment has not yet reached
+            // its declared timeline.
+            if observed_max < last_transition {
+                return Err(SealError::MissingFinalBoundary {
+                    expected: u32::try_from(last_transition).unwrap_or(u32::MAX),
                 });
-            if has_setpoint_step {
-                let observed_max = self
-                    .step_outcomes
-                    .iter()
-                    .filter_map(|(_, outcome)| match outcome {
-                        StepOutcome::SetpointDelivered { eligibility, .. } => Some(*eligibility),
-                        _ => None,
-                    })
-                    .max()
-                    .unwrap_or(0);
-                if observed_max < max_boundary as u64 {
-                    return Err(SealError::MissingFinalBoundary {
-                        expected: max_boundary,
-                    });
-                }
             }
         }
         // Compute the passed flag from the typed evidence only; the
@@ -891,7 +905,10 @@ mod tests {
         let program = Program::normalize(
             "scenarios/SealOk",
             quantum,
-            std::time::Duration::from_secs(1),
+            // 2 ms at the 2 ms quantum = 1 transition; the recorded
+            // setpoint acknowledgement at boundary 0 reaches the
+            // program's last transition. See Gate B2.
+            std::time::Duration::from_micros(2_000),
             vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
@@ -1242,7 +1259,9 @@ mod tests {
         let program = Program::normalize(
             "scenarios/ZeroEventInterval",
             quantum,
-            std::time::Duration::from_secs(1),
+            // 2 ms at the 2 ms quantum = 1 transition; the setpoint
+            // acknowledgement at boundary 0 reaches last_transition.
+            std::time::Duration::from_micros(2_000),
             vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::event("motion", event_sig()).expect("event capture")],
         )
@@ -1262,5 +1281,45 @@ mod tests {
             .expect("zero-event interval must be accepted");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
+    }
+
+    #[test]
+    fn seal_rejects_3000_transition_plan_with_only_boundary_zero() {
+        // Regression for followup-24c026ed.md line 333: "3000-transition
+        // program seals with only boundary zero: Ok(true)". A
+        // 6-second plan with only a single setpoint at boundary 0
+        // cannot finalize because the recorded eligibility never
+        // reaches `transition_count - 1`; the experiment did not run.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/LongSparse",
+            quantum,
+            std::time::Duration::from_secs(6),
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
+            .expect("record capture");
+        let err = collector
+            .seal()
+            .expect_err("3000-transition plan with boundary-zero evidence must not seal");
+        match err {
+            SealError::MissingFinalBoundary { expected } => {
+                assert_eq!(expected, 2_999);
+            }
+            other => panic!("expected MissingFinalBoundary, got {other:?}"),
+        }
     }
 }
