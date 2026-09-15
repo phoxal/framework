@@ -50,7 +50,11 @@ impl Bundle {
     /// reject hardware launches.
     pub(crate) fn scenario_marker(&self) -> Option<String> {
         match self {
-            Self::Source(bundle) => bundle.manifest.scenario_marker.clone(),
+            Self::Source(bundle) => bundle
+                .manifest
+                .scenario
+                .as_ref()
+                .map(|section| section.marker.clone()),
         }
     }
 
@@ -59,9 +63,24 @@ impl Bundle {
     /// bounded program path, byte length, SHA-256 digest, fixture
     /// instance id, and the controlled-execution flag the case host
     /// wrote. The supervisor verifies the bytes before admission.
+    #[allow(dead_code)]
     pub(crate) fn scenario_program(&self) -> Option<ScenarioProgramRef> {
         match self {
-            Self::Source(bundle) => bundle.manifest.scenario_program.clone(),
+            Self::Source(bundle) => bundle
+                .manifest
+                .scenario
+                .as_ref()
+                .map(|section| section.program.clone()),
+        }
+    }
+
+    /// The full scenario execution section, if the manifest is a
+    /// scenario bundle. `None` means the bundle is an ordinary
+    /// runtime bundle.
+    #[allow(dead_code)]
+    pub(crate) fn scenario_section(&self) -> Option<&SourceScenarioSection> {
+        match self {
+            Self::Source(bundle) => bundle.manifest.scenario.as_ref(),
         }
     }
 
@@ -159,24 +178,31 @@ pub(crate) struct SourceManifest {
     components: Vec<SourceComponentRecord>,
     #[serde(default)]
     pub(crate) simulation: Option<SourceSimulation>,
-    /// Optional scenario nondeployable marker. Set by the case host
-    /// when it builds a scenario bundle; ordinary source bundles
-    /// omit the field. The supervisor admission policy rejects
-    /// hardware launches of bundles that carry the marker.
+    /// Optional scenario execution identity. The presence of this
+    /// section means the bundle is nondeployable and the supervisor
+    /// admission path is in control of the execution. The marker
+    /// and program identity travel together so a tampered or partial
+    /// shape cannot pass admission: there is no scenario_marker or
+    /// scenario_program fallback field. See Gate A3 of
+    /// followup-24c026ed.md.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) scenario_marker: Option<String>,
-    /// Validated program identity for the scenario bundle. The case
-    /// host serializes this when it writes the manifest; the
-    /// supervisor verifies the bounded program bytes against the
-    /// recorded length and SHA-256 digest during admission. Bundles
-    /// that carry `scenario_marker` but omit `scenario_program` are
-    /// refused outright.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) scenario_program: Option<ScenarioProgramRef>,
+    pub(crate) scenario: Option<SourceScenarioSection>,
 }
 
-/// Scenario program identity recorded in the source manifest. The
-/// supervisor verifies the exact bounded program bytes against
+/// Scenario execution identity recorded in the source manifest.
+/// Presence means the bundle is nondeployable and the supervisor
+/// admission path is in control of the execution. The marker and
+/// program identity travel together so a tampered or partial shape
+/// cannot pass admission.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SourceScenarioSection {
+    pub(crate) marker: String,
+    pub(crate) program: ScenarioProgramRef,
+}
+
+/// Scenario program identity recorded inside [`SourceScenarioSection`].
+/// The supervisor verifies the exact bounded program bytes against
 /// `program_byte_length` and `program_digest` before admission so a
 /// tampered bundle cannot drive the fixture.
 ///
@@ -557,8 +583,7 @@ impl SourceManifest {
                 name: "fixture".to_owned(),
                 source: "local".to_owned(),
             },
-            scenario_marker: None,
-            scenario_program: None,
+            scenario: None,
             target: "host".to_owned(),
             profile: "dev".to_owned(),
             features: Vec::new(),
@@ -1431,5 +1456,61 @@ mod tests {
             .verify_against(directory.path())
             .expect_err("symlink must be refused");
         assert!(format!("{error:#}").contains("symbolic link"));
+    }
+
+    /// Producer/consumer round-trip: the supervisor's nested
+    /// `SourceScenarioSection` must deserialize the exact JSON the
+    /// project's `BundleScenarioSection` writes. See Gate A3 of
+    /// followup-24c026ed.md: "Test producer output with the real
+    /// consumer. Serializing and deserializing BundleScenarioSection
+    /// with the same type does not prove supervisor compatibility."
+    #[test]
+    fn source_section_round_trips_with_project_writer() {
+        // Write the exact shape `BundleScenarioSection` serializes
+        // (mirror what the project crate emits).
+        let project_payload = serde_json::json!({
+            "marker": "phoxal/scenarios/nondeployable",
+            "program": {
+                "scenario_name": "scenarios/Demo",
+                "program_path": "program.bin",
+                "program_byte_length": 4_u32,
+                "program_digest": "abcd".repeat(8),
+                "fixture_instance_id": "fixture",
+                "controlled_execution": true,
+            },
+        });
+        // The supervisor's nested section must accept it.
+        let section: SourceScenarioSection = serde_json::from_value(project_payload.clone())
+            .expect("nested section accepts the project shape");
+        assert_eq!(section.marker, "phoxal/scenarios/nondeployable");
+        assert_eq!(section.program.scenario_name, "scenarios/Demo");
+        assert_eq!(section.program.controlled_execution, true);
+
+        // A flat top-level shape (the previous, superseded one) must
+        // now be refused. Reading it directly as the manifest must
+        // fail with `unknown field scenario_marker`/`scenario_program`
+        // since those are no longer part of the schema.
+        let flat_payload = serde_json::json!({
+            "schema": SOURCE_SCHEMA,
+            "robot_id": "robot",
+            "document": { "robot": { "id": "robot" } },
+            "root_package": { "id": "robot", "name": "robot", "source": "local" },
+            "target": "host",
+            "profile": "dev",
+            "features": [],
+            "executables": [],
+            "components": [],
+            "scenario_marker": "phoxal/scenarios/nondeployable",
+            "scenario_program": {
+                "scenario_name": "scenarios/Demo",
+                "program_path": "program.bin",
+                "program_byte_length": 4_u32,
+                "program_digest": "abcd".repeat(8),
+                "fixture_instance_id": "fixture",
+                "controlled_execution": true,
+            },
+        });
+        let parsed: Result<SourceManifest, _> = serde_json::from_value(flat_payload);
+        assert!(parsed.is_err(), "flat shape must be rejected after refactor");
     }
 }

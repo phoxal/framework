@@ -63,17 +63,18 @@ pub async fn run(
     let lock = lock::SupervisorLock::acquire(&paths.supervisor_lock())?;
     let runtime = bundle::open(&canonical)?;
     if let Some(marker_value) = runtime.scenario_marker() {
-        // Scenario bundles must carry a validated program identity.
-        // Verify the bounded program bytes against the recorded
-        // length and SHA-256 digest before consulting the admission
-        // policy; refuse inconsistent launch modes; never substitute
-        // placeholder identity values.
-        let program = runtime.scenario_program().ok_or_else(|| {
+        // Scenario bundles must carry a validated program identity inside
+        // the nested `scenario` section. Verify the bounded program
+        // bytes against the recorded length and SHA-256 digest before
+        // consulting the admission policy; refuse inconsistent launch
+        // modes; never substitute placeholder identity values.
+        let section = runtime.scenario_section().ok_or_else(|| {
             anyhow::anyhow!(
-                "scenario bundle carries `{marker_value}` but no validated program identity \
-                 (`scenario_program`) was written; refusing to launch"
+                "scenario bundle carries `{marker_value}` but no nested `scenario` section \
+                 was written; refusing to launch"
             )
         })?;
+        let program = &section.program;
         let bytes = program.verify_against(&canonical).with_context(|| {
             format!(
                 "scenario program `{}` failed admission",
@@ -90,6 +91,18 @@ pub async fn run(
         decoded
             .verify_identity()
             .map_err(|error| anyhow::anyhow!("scenario program identity check failed: {error}"))?;
+        // The scenario name must match what the program itself
+        // carries. A scenario_name mismatch means the case host
+        // mis-wired the bundle or a tampered bundle substituted an
+        // unrelated program.
+        if decoded.scenario_name() != program.scenario_name {
+            return Err(anyhow::anyhow!(
+                "scenario program `{}` declared scenario_name `{}`; refusing to admit \
+                 a bundle whose program identity disagrees with the manifest",
+                program.scenario_name,
+                decoded.scenario_name(),
+            ));
+        }
         if !program.controlled_execution {
             return Err(anyhow::anyhow!(
                 "scenario bundle `{}` declares a non-controlled execution mode; \
@@ -109,6 +122,20 @@ pub async fn run(
                 "scenario bundle `{}` requires a controlled simulation definition; \
                  refusing to launch without one",
                 program.scenario_name
+            ));
+        }
+        // Validate quantum/bound alignment: the controlled
+        // simulation's quantum and transition bounds must agree with
+        // the decoded program. Presence alone is insufficient.
+        let simulation = runtime.simulation().expect("simulation presence checked above");
+        let declared_quantum_micros = simulation.quantum_ns / 1_000;
+        if u128::from(declared_quantum_micros) != u128::from(decoded.quantum().micros()) {
+            return Err(anyhow::anyhow!(
+                "scenario program `{}` declares quantum {} micros but the controlled \
+                 simulation provides {} micros; refusing to admit mismatched timing",
+                program.scenario_name,
+                decoded.quantum().micros(),
+                declared_quantum_micros,
             ));
         }
         let admission = evaluate_scenario_admission(
