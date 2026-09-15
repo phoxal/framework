@@ -17,7 +17,8 @@
 //! ```
 
 use phoxal::scenario::{
-    Action, ApplicationAttachment, Capture, FixtureMetadata, FixtureParticipant, Program, Step,
+    Action, ApplicationAttachment, Capture, FixtureMetadata, FixtureParticipant, Program, Quantum,
+    ScheduleEntry,
 };
 use phoxal_port::{PortKind, PortSignature};
 
@@ -55,20 +56,20 @@ fn state_sig() -> PortSignature {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let quantum = Quantum::from_micros(2_000).expect("quantum");
     let program = Program::normalize(
         "scenarios/RoverForwardTurnStop",
+        quantum,
         std::time::Duration::from_secs(3),
         vec![
-            Step::new(
-                "forward",
+            ScheduleEntry::at(
                 0,
                 Action::Setpoint {
                     consumer_signature: setpoint_sig(),
                     encoded_payload: vec![1],
                 },
             ),
-            Step::new(
-                "turn",
+            ScheduleEntry::at(
                 1,
                 Action::Command {
                     service_signature: command_sig(),
@@ -76,8 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     label: "turn".to_owned(),
                 },
             ),
-            Step::new(
-                "stop",
+            ScheduleEntry::at(
                 2,
                 Action::Setpoint {
                     consumer_signature: setpoint_sig(),
@@ -85,12 +85,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             ),
         ],
-        vec![Capture::state("motion", state_sig())],
+        vec![Capture::state("motion", state_sig()).expect("motion capture")],
     )?;
 
-    println!("program digest: {}", program.program_digest);
-    println!("transitions:    {}", program.steps.len());
-    println!("byte length:    {}", program.byte_length);
+    println!("program digest: {}", program.program_digest());
+    println!("transitions:    {}", program.transition_count());
+    println!("byte length:    {}", program.byte_length());
 
     let mut participant = FixtureParticipant::from_program(program)?;
     println!("metadata:       {:#?}", participant.metadata());

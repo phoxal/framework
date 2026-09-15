@@ -118,8 +118,8 @@ impl ScenarioRun {
 mod tests {
     use super::*;
     use crate::scenario::participant::FixtureParticipant;
-    use crate::scenario::plan::{Action, Step};
-    use crate::scenario::program::Program;
+    use crate::scenario::plan::Action;
+    use crate::scenario::program::{Program, ScheduleEntry};
     use phoxal_port::PortSignature;
 
     fn setpoint_sig() -> PortSignature {
@@ -145,30 +145,32 @@ mod tests {
 
     #[test]
     fn run_records_outcomes_captures_and_replies() {
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/First",
+            quantum,
             std::time::Duration::from_secs(1),
-            vec![Step::new(
-                "set",
+            vec![ScheduleEntry::at(
                 0,
                 Action::Setpoint {
                     consumer_signature: setpoint_sig(),
                     encoded_payload: vec![1, 2, 3],
                 },
             )],
-            vec![crate::scenario::Capture::state("motion", state_sig())],
+            vec![crate::scenario::Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
         let mut participant = FixtureParticipant::from_program(program).unwrap();
         let trace = participant.run();
         // The setpoint step does not register a command correlation,
-        // so mark_command_reply returns false for that label.
-        assert!(!participant.mark_command_reply("set"));
+        // so mark_command_reply returns false for that label. The
+        // step label is the boundary index, "b00000000" for boundary 0.
+        assert!(!participant.mark_command_reply("b00000000"));
         let mut captures = BTreeMap::new();
         captures.insert("motion".to_owned(), CaptureRecord::State(vec![0x42, 0x43]));
         let mut command_replies = BTreeMap::new();
         command_replies.insert(
-            "set".to_owned(),
+            "b00000000".to_owned(),
             CommandReply::Accepted {
                 response_bytes: vec![0xff],
             },
@@ -178,7 +180,7 @@ mod tests {
         assert_eq!(run.step_count(), 1);
         assert_eq!(run.command_count(), 1);
         assert!(matches!(
-            run.outcome("set"),
+            run.outcome("b00000000"),
             Some(StepOutcome::SetpointDelivered { .. })
         ));
         assert!(matches!(

@@ -22,6 +22,7 @@ mod harness;
 mod participant;
 mod plan;
 mod program;
+mod publication;
 mod registry;
 mod results;
 mod trait_def;
@@ -33,7 +34,7 @@ pub use participant::{
     SIM_DEADLINE_TICKS, StepOutcome,
 };
 pub use plan::{Action, Capture, MAX_PAYLOAD, PlanValidationError, ScenarioPlan, Step};
-pub use program::{PROGRAM_SCHEMA_VERSION, Program, ProgramError};
+pub use program::{PROGRAM_SCHEMA_VERSION, Program, ProgramError, Quantum, ScheduleEntry};
 pub use registry::{
     DuplicateLocation, DuplicateScenarioError, RegisteredScenario, ScenarioDescriptor,
     ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,

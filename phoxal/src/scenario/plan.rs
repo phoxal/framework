@@ -45,7 +45,7 @@ impl ScenarioPlan {
         mut steps: Vec<Step>,
         captures: Vec<Capture>,
     ) -> Result<Self, PlanValidationError> {
-        steps.sort_by_key(|step| (step.quantum_index, step.label.clone()));
+        steps.sort_by_key(|step| (step.boundary, step.label.clone()));
         let plan = Self {
             scene: scene.into(),
             duration,
@@ -58,7 +58,7 @@ impl ScenarioPlan {
 
     /// Returns the total transition count of the schedule. The plan is
     /// quantized to `steps.len()` transitions; every step's
-    /// `quantum_index` must lie inside `[0, steps.len())`.
+    /// `boundary` must lie inside `[0, steps.len())`.
     pub fn transition_count(&self) -> u32 {
         self.steps.len() as u32
     }
@@ -78,18 +78,18 @@ impl ScenarioPlan {
         let mut seen_labels: BTreeMap<&str, &Step> = BTreeMap::new();
         let mut seen_commands: BTreeMap<&str, &Step> = BTreeMap::new();
         for step in &self.steps {
-            if step.quantum_index >= transition_count {
+            if step.boundary >= transition_count {
                 return Err(PlanValidationError::QuantumOutOfRange {
                     label: step.label.clone(),
-                    quantum: step.quantum_index,
+                    quantum: step.boundary,
                     transitions: transition_count,
                 });
             }
             if let Some(prior) = seen_labels.get(step.label.as_str()) {
                 return Err(PlanValidationError::DuplicateStepLabel {
                     label: step.label.clone(),
-                    prior_quantum: prior.quantum_index,
-                    duplicate_quantum: step.quantum_index,
+                    prior_quantum: prior.boundary,
+                    duplicate_quantum: step.boundary,
                 });
             }
             seen_labels.insert(step.label.as_str(), step);
@@ -115,15 +115,17 @@ impl ScenarioPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     pub label: String,
-    pub quantum_index: u32,
+    /// Zero-indexed boundary in the validated transition count. Zero is
+    /// the first transition, `transition_count - 1` the last.
+    pub boundary: u32,
     pub action: Action,
 }
 
 impl Step {
-    pub fn new(label: impl Into<String>, quantum_index: u32, action: Action) -> Self {
+    pub fn new(label: impl Into<String>, boundary: u32, action: Action) -> Self {
         Self {
             label: label.into(),
-            quantum_index,
+            boundary,
             action,
         }
     }
@@ -238,26 +240,106 @@ pub enum Capture {
         name: String,
         signature: PortSignature,
     },
+    /// Native simulator body data, identified by documented units and
+    /// reference frame so the verifier can interpret the bytes
+    /// regardless of how the simulator names them.
+    NativeBody {
+        name: String,
+        units: String,
+        frame: String,
+    },
 }
 
+/// Errors returned by the typed capture constructors. Each variant
+/// names the constructor and the offending signature so the caller can
+/// correct the wire form rather than guessing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureError {
+    WrongPortKind {
+        constructor: &'static str,
+        expected: phoxal_port::PortKind,
+        actual: phoxal_port::PortKind,
+    },
+}
+
+impl std::fmt::Display for CaptureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongPortKind {
+                constructor,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "{constructor}: expected port kind {expected:?}, got {actual:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CaptureError {}
+
 impl Capture {
-    pub fn state(name: impl Into<String>, signature: PortSignature) -> Self {
-        Self::State {
+    /// Capture a state-style port. The signature must declare
+    /// `PortKind::State`; commands-style or setpoint-style signatures
+    /// are rejected at construction so the program never observes a
+    /// mismatched wire form.
+    pub fn state(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+        require_kind("Capture::state", phoxal_port::PortKind::State, signature.kind)?;
+        Ok(Self::State {
             name: name.into(),
             signature,
-        }
+        })
     }
-    pub fn sample(name: impl Into<String>, signature: PortSignature) -> Self {
-        Self::Sample {
+    pub fn sample(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+        require_kind("Capture::sample", phoxal_port::PortKind::Sample, signature.kind)?;
+        Ok(Self::Sample {
             name: name.into(),
             signature,
-        }
+        })
     }
-    pub fn event(name: impl Into<String>, signature: PortSignature) -> Self {
-        Self::Event {
+    pub fn event(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
+        require_kind("Capture::event", phoxal_port::PortKind::Event, signature.kind)?;
+        Ok(Self::Event {
             name: name.into(),
             signature,
+        })
+    }
+    /// Capture a documented native simulator body. The verifier needs
+    /// the units and frame to interpret the bytes; both must be
+    /// non-empty so a typo cannot silently disable validation.
+    pub fn native_body(
+        name: impl Into<String>,
+        units: impl Into<String>,
+        frame: impl Into<String>,
+    ) -> Result<Self, CaptureError> {
+        let name = name.into();
+        let units = units.into();
+        let frame = frame.into();
+        if units.is_empty() || frame.is_empty() {
+            return Err(CaptureError::WrongPortKind {
+                constructor: "Capture::native_body",
+                expected: phoxal_port::PortKind::Stream,
+                actual: phoxal_port::PortKind::Stream,
+            });
         }
+        Ok(Self::NativeBody { name, units, frame })
+    }
+}
+
+fn require_kind(
+    constructor: &'static str,
+    expected: phoxal_port::PortKind,
+    actual: phoxal_port::PortKind,
+) -> Result<(), CaptureError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(CaptureError::WrongPortKind {
+            constructor,
+            expected,
+            actual,
+        })
     }
 }
 
@@ -574,7 +656,7 @@ mod tests {
                 },
             ),
         ];
-        steps.sort_by_key(|s| (s.quantum_index, s.label.clone()));
+        steps.sort_by_key(|s| (s.boundary, s.label.clone()));
         let plan =
             ScenarioPlan::with_steps("scene", Duration::from_secs(2), steps, vec![]).unwrap();
         assert_eq!(plan.steps[0].label, "first");

@@ -2254,6 +2254,7 @@ name = "phoxal"
 version = "0.68.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "getrandom 0.3.4",
  "inventory",

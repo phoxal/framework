@@ -1,32 +1,46 @@
 //! Immutable program representation. A `Program` is the on-disk
 //! artifact that pairs a scenario with one finite quantized schedule.
-//! It carries the exact byte serialization, length, and SHA-256 digest
-//! so the bundle can prove identity without re-serializing.
+//!
+//! The public identity surface is the canonical bytes (`program_bytes`)
+//! and the SHA-256 digest computed over those exact bytes. Identity
+//! checks compare the digest against the *stored* bytes — never against
+//! a re-serialization of the decoded typed fields. The decoded fields
+//! are exposed for verifier consumption but cannot be used to forge a
+//! different identity after the program is sealed.
 
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::scenario::plan::{Action, Capture, MAX_PAYLOAD, Step};
+use crate::scenario::plan::{Action, Capture, Step, MAX_PAYLOAD};
 
 /// One immutable, serializable scenario program. Constructed via
-/// [`Program::normalize`] which deterministically orders steps,
-/// records byte length and digest, and refuses malformed inputs.
-///
-/// Serialization goes through the wire form [`WireProgram`] rather
-/// than the public type, so the on-disk format stays stable while
-/// the typed Rust fields can evolve.
+/// [`Program::normalize`], which is the single validation owner for the
+/// program surface: it derives `transition_count` from the validated
+/// quantum and duration, deterministically orders steps, records the
+/// exact byte length and SHA-256 digest of the canonical wire form,
+/// and refuses malformed inputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
-    pub schema_version: u32,
-    pub scenario_name: String,
-    pub duration_micros: u64,
-    pub steps: Vec<Step>,
-    pub captures: Vec<Capture>,
-    pub program_bytes: Vec<u8>,
-    pub program_digest: String,
-    pub byte_length: u32,
+    schema_version: u32,
+    scenario_name: String,
+    /// Resolved native quantum. A duration of six seconds at a two ms
+    /// quantum is a 3000-transition schedule regardless of how many
+    /// actions the author wrote into it.
+    quantum: Quantum,
+    /// Total transition count derived from the validated duration and
+    /// quantum at construction. Authoritative for all runtime checks.
+    transition_count: u32,
+    steps: Vec<Step>,
+    captures: Vec<Capture>,
+    program_bytes: Vec<u8>,
+    program_digest: String,
+    byte_length: u32,
 }
 
 /// Errors returned by [`Program::normalize`].
@@ -34,9 +48,11 @@ pub struct Program {
 pub enum ProgramError {
     EmptyScenarioName,
     DuplicateStepLabel(String),
+    /// The plan's quantum indices exceed the schedule's transition count
+    /// derived from the validated quantum and duration.
     QuantumOutOfRange {
         label: String,
-        quantum: u32,
+        quantum_index: u32,
         transitions: u32,
     },
     PayloadTooLarge {
@@ -59,11 +75,11 @@ impl fmt::Display for ProgramError {
             }
             Self::QuantumOutOfRange {
                 label,
-                quantum,
+                quantum_index,
                 transitions,
             } => write!(
                 f,
-                "step `{label}` quantum {quantum} is at or beyond the final transition {transitions}"
+                "step `{label}` quantum {quantum_index} is at or beyond the final transition {transitions}"
             ),
             Self::PayloadTooLarge { step_label, bytes } => write!(
                 f,
@@ -84,51 +100,124 @@ impl std::error::Error for ProgramError {}
 /// uses to decide whether to upgrade its decoder.
 pub const PROGRAM_SCHEMA_VERSION: u32 = 1;
 
+/// The native quantum of the simulator's discrete tick. The framework
+/// resolves a request's duration to a multiple of this quantum and
+/// rejects any mismatch. The rover's two millisecond quantum is the
+/// canonical default; callers that need a different quantum declare it
+/// through `Quantum::from_micros` and carry that exact value through
+/// the plan boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quantum(u32);
+
+impl Quantum {
+    /// Two milliseconds, in microseconds. The rover's validated quantum.
+    pub const DEFAULT_MICROS: u32 = 2_000;
+
+    /// Build a quantum from a positive microsecond value. Zero is
+    /// rejected because it would make every non-zero duration map to
+    /// infinity transitions.
+    pub const fn from_micros(micros: u32) -> Option<Self> {
+        if micros == 0 {
+            None
+        } else {
+            Some(Self(micros))
+        }
+    }
+
+    /// The quantum as a positive microsecond count.
+    pub const fn micros(self) -> u32 {
+        self.0
+    }
+
+    /// Resolve a duration to an exact, checked transition count. Returns
+    /// `None` only when the duration is an unaligned multiple of the
+    /// quantum — every finite duration either aligns or is rejected, so
+    /// the caller's "the experiment is six seconds" statement must agree
+    /// with the quantum before this function returns a number.
+    pub fn transition_count(self, duration: Duration) -> Option<u32> {
+        let total_micros = u64::try_from(duration.as_micros()).ok()?;
+        let quantum_micros = u64::from(self.0);
+        if total_micros == 0 || total_micros % quantum_micros != 0 {
+            return None;
+        }
+        let transitions = total_micros / quantum_micros;
+        u32::try_from(transitions).ok()
+    }
+}
+
+/// A schedule entry. Separate from `Action` so that an action's
+/// authoring order is preserved verbatim at equal boundaries rather
+/// than being alphabetised by the program's deterministic-ordering pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleEntry {
+    /// The authored boundary, in zero-indexed transitions. Zero is the
+    /// first transition, `transition_count - 1` the last.
+    pub boundary: u32,
+    pub action: Action,
+}
+
+impl ScheduleEntry {
+    pub fn at(boundary: u32, action: Action) -> Self {
+        Self { boundary, action }
+    }
+}
+
 impl Program {
     /// Construct a normalized program. `scenario_name` is the public
-    /// identity (matches `scenarios/<StructIdent>`). `steps` and
-    /// `captures` are copied into the program; the caller must ensure
-    /// any encoded payload was produced by the matching consumer
-    /// service's protobuf encoder.
+    /// identity (matches `scenarios/<StructIdent>`). The schedule's
+    /// transition count is derived from `duration` and the validated
+    /// quantum; equal-boundary entries retain their original order in
+    /// the wire form so the verifier sees what the author wrote.
     pub fn normalize(
         scenario_name: impl Into<String>,
-        duration: std::time::Duration,
-        mut steps: Vec<Step>,
+        quantum: Quantum,
+        duration: Duration,
+        schedule: Vec<ScheduleEntry>,
         captures: Vec<Capture>,
     ) -> Result<Self, ProgramError> {
         let scenario_name = scenario_name.into();
         if scenario_name.is_empty() {
             return Err(ProgramError::EmptyScenarioName);
         }
-        // Deterministic ordering: primary by quantum_index, secondary by label.
-        steps.sort_by(|a, b| {
-            a.quantum_index
-                .cmp(&b.quantum_index)
-                .then_with(|| a.label.cmp(&b.label))
-        });
-        let transitions = steps.len() as u32;
-        // Validate labels and quantum bounds before serialization.
-        for step in &steps {
-            if step.quantum_index >= transitions {
+        let transitions = quantum
+            .transition_count(duration)
+            .ok_or_else(|| ProgramError::Other(format!(
+                "duration {} does not align to a {} microsecond quantum",
+                duration.as_micros(),
+                quantum.micros()
+            )))?;
+        // Validate labels and quantum bounds before serialization. Order
+        // in the wire form follows authored order at equal boundaries
+        // (no alphabetical tie-breaker); this keeps the verifier
+        // identical to the author's intent.
+        let mut steps: Vec<Step> = Vec::with_capacity(schedule.len());
+        for entry in schedule {
+            if entry.boundary >= transitions {
                 return Err(ProgramError::QuantumOutOfRange {
-                    label: step.label.clone(),
-                    quantum: step.quantum_index,
+                    label: format!("boundary@{}", entry.boundary),
+                    quantum_index: entry.boundary,
                     transitions,
                 });
             }
-            match &step.action {
-                crate::scenario::plan::Action::Setpoint {
-                    encoded_payload, ..
-                } => {
-                    check_payload(step.label.as_str(), encoded_payload)?;
+            // ScheduleEntry does not carry a user-visible label, so the
+            // boundary index is the stable identity used by the verifier
+            // to correlate results. Duplicate boundaries are legal —
+            // they mean "deliver both at this tick".
+            let label = format!("b{:08}", entry.boundary);
+            match &entry.action {
+                Action::Setpoint { encoded_payload, .. } => {
+                    check_payload(&label, encoded_payload)?;
                 }
-                crate::scenario::plan::Action::Command {
-                    request_encoded, ..
-                } => {
-                    check_payload(step.label.as_str(), request_encoded)?;
+                Action::Command { request_encoded, .. } => {
+                    check_payload(&label, request_encoded)?;
                 }
-                crate::scenario::plan::Action::Withdraw { .. } => {}
+                Action::Withdraw { .. } => {}
             }
+            steps.push(Step {
+                label,
+                boundary: entry.boundary,
+                action: entry.action,
+            });
         }
         // Canonical wire form: a small JSON envelope. The user keeps
         // writing typed Rust values; the JSON is for storage identity.
@@ -137,6 +226,7 @@ impl Program {
         let envelope = WireProgram {
             schema_version: PROGRAM_SCHEMA_VERSION,
             scenario_name: scenario_name.clone(),
+            quantum_micros: quantum.micros(),
             duration_micros,
             steps: steps.iter().map(wire_step).collect(),
             captures: captures.iter().map(wire_capture).collect(),
@@ -149,7 +239,8 @@ impl Program {
         Ok(Program {
             schema_version: PROGRAM_SCHEMA_VERSION,
             scenario_name,
-            duration_micros,
+            quantum,
+            transition_count: transitions,
             steps,
             captures,
             program_bytes,
@@ -158,27 +249,62 @@ impl Program {
         })
     }
 
+    /// Returns the scenario's public name.
+    pub fn scenario_name(&self) -> &str {
+        &self.scenario_name
+    }
+
+    /// Returns the validated native quantum.
+    pub fn quantum(&self) -> Quantum {
+        self.quantum
+    }
+
+    /// Returns the exact transition count derived from the duration and
+    /// quantum at construction. Authoritative for runtime gating.
+    pub fn transition_count(&self) -> u32 {
+        self.transition_count
+    }
+
+    /// Returns the decoded typed steps.
+    pub fn steps(&self) -> &[Step] {
+        &self.steps
+    }
+
+
+    /// Returns the declared captures.
+    pub fn captures(&self) -> &[Capture] {
+        &self.captures
+    }
+
+    /// Returns the canonical on-disk bytes. The digest was computed
+    /// over these exact bytes, so identity checks compare the digest
+    /// against `program_bytes` rather than a re-serialization.
+    pub fn program_bytes(&self) -> &[u8] {
+        &self.program_bytes
+    }
+
+    /// Returns the SHA-256 digest of the canonical bytes.
+    pub fn program_digest(&self) -> &str {
+        &self.program_digest
+    }
+
+    /// Returns the canonical byte length.
+    pub fn byte_length(&self) -> u32 {
+        self.byte_length
+    }
+
     /// Verifies the recorded byte length and digest against the
-    /// canonical serialization. Returns `Ok` on a clean identity
-    /// check, `Err` if the program was tampered with after recording.
+    /// canonical bytes. Returns `Ok` on a clean identity check, `Err`
+    /// if the program was tampered with after recording.
     pub fn verify_identity(&self) -> Result<(), ProgramError> {
-        let envelope = WireProgram {
-            schema_version: PROGRAM_SCHEMA_VERSION,
-            scenario_name: self.scenario_name.clone(),
-            duration_micros: self.duration_micros,
-            steps: self.steps.iter().map(wire_step).collect(),
-            captures: self.captures.iter().map(wire_capture).collect(),
-        };
-        let bytes = serde_json::to_vec(&envelope)
-            .map_err(|error| ProgramError::Other(format!("re-serialize: {error}")))?;
-        if bytes.len() as u32 != self.byte_length {
+        if self.program_bytes.len() as u32 != self.byte_length {
             return Err(ProgramError::Other(format!(
                 "byte length mismatch: stored {} actual {}",
                 self.byte_length,
-                bytes.len()
+                self.program_bytes.len()
             )));
         }
-        let actual = sha256_hex(&bytes);
+        let actual = sha256_hex(&self.program_bytes);
         if actual != self.program_digest {
             return Err(ProgramError::Other(format!(
                 "digest mismatch: stored {} actual {actual}",
@@ -188,12 +314,40 @@ impl Program {
         Ok(())
     }
 
-    /// Persists the canonical bytes to disk at `path`. Writes are
-    /// atomic; the destination is replaced only after the temp file
-    /// has been flushed.
+    /// Persists the canonical bytes to disk at `path`. Writes go
+    /// through the artifact publication helper so the destination is
+    /// replaced only after the temp file has been flushed and renamed.
     pub fn write_to(&self, path: &Path) -> Result<(), ProgramError> {
-        write_atomic(path, &self.program_bytes)
+        crate::scenario::publication::write_program_bytes(path, &self.program_bytes)
             .map_err(|error| ProgramError::Other(format!("write {}: {error}", path.display())))
+    }
+}
+
+fn check_payload(step_label: &str, payload: &[u8]) -> Result<(), ProgramError> {
+    if payload.is_empty() {
+        return Err(ProgramError::EmptyPayload {
+            step_label: step_label.to_owned(),
+        });
+    }
+    if payload.len() > MAX_PAYLOAD {
+        return Err(ProgramError::PayloadTooLarge {
+            step_label: step_label.to_owned(),
+            bytes: payload.len(),
+        });
+    }
+    Ok(())
+}
+
+fn port_kind_label(kind: phoxal_port::PortKind) -> &'static str {
+    match kind {
+        phoxal_port::PortKind::State => "state",
+        phoxal_port::PortKind::Sample => "sample",
+        phoxal_port::PortKind::Event => "event",
+        phoxal_port::PortKind::Stream => "stream",
+        phoxal_port::PortKind::Setpoint => "setpoint",
+        phoxal_port::PortKind::Read => "read",
+        phoxal_port::PortKind::Commands => "commands",
+        _ => "unknown",
     }
 }
 
@@ -201,6 +355,7 @@ impl Program {
 struct WireProgram {
     schema_version: u32,
     scenario_name: String,
+    quantum_micros: u32,
     duration_micros: u64,
     steps: Vec<WireStep>,
     captures: Vec<WireCapture>,
@@ -213,7 +368,7 @@ struct WireProgram {
 #[derive(Debug, Serialize, Deserialize)]
 struct WireStep {
     label: String,
-    quantum_index: u32,
+    boundary: u32,
     action: WireAction,
 }
 
@@ -277,59 +432,17 @@ enum WireCapture {
         signature_request: String,
         signature_response: String,
     },
-}
-
-fn check_payload(step_label: &str, payload: &[u8]) -> Result<(), ProgramError> {
-    if payload.is_empty() {
-        return Err(ProgramError::EmptyPayload {
-            step_label: step_label.to_owned(),
-        });
-    }
-    if payload.len() > MAX_PAYLOAD {
-        return Err(ProgramError::PayloadTooLarge {
-            step_label: step_label.to_owned(),
-            bytes: payload.len(),
-        });
-    }
-    Ok(())
-}
-
-fn port_kind_label(kind: phoxal_port::PortKind) -> &'static str {
-    match kind {
-        phoxal_port::PortKind::State => "state",
-        phoxal_port::PortKind::Sample => "sample",
-        phoxal_port::PortKind::Event => "event",
-        phoxal_port::PortKind::Stream => "stream",
-        phoxal_port::PortKind::Setpoint => "setpoint",
-        phoxal_port::PortKind::Read => "read",
-        phoxal_port::PortKind::Commands => "commands",
-        _ => "unknown",
-    }
-}
-
-#[allow(dead_code)]
-fn port_kind_from_label(label: &str) -> Option<phoxal_port::PortKind> {
-    Some(match label {
-        "state" => phoxal_port::PortKind::State,
-        "sample" => phoxal_port::PortKind::Sample,
-        "event" => phoxal_port::PortKind::Event,
-        "stream" => phoxal_port::PortKind::Stream,
-        "setpoint" => phoxal_port::PortKind::Setpoint,
-        "read" => phoxal_port::PortKind::Read,
-        "commands" => phoxal_port::PortKind::Commands,
-        _ => return None,
-    })
-}
-
-#[allow(dead_code)]
-fn _port_kind_label_mark_used() -> &'static str {
-    port_kind_label(phoxal_port::PortKind::State)
+    NativeBody {
+        name: String,
+        units: String,
+        frame: String,
+    },
 }
 
 fn wire_step(step: &Step) -> WireStep {
     WireStep {
         label: step.label.clone(),
-        quantum_index: step.quantum_index,
+        boundary: step.boundary,
         action: match &step.action {
             Action::Setpoint {
                 consumer_signature,
@@ -344,7 +457,7 @@ fn wire_step(step: &Step) -> WireStep {
                     consumer_kind: kind,
                     consumer_request: request.to_owned(),
                     consumer_response: response.to_owned(),
-                    encoded_payload_b64: base64_encode(encoded_payload),
+                    encoded_payload_b64: BASE64_ENGINE.encode(encoded_payload),
                 }
             }
             Action::Withdraw { producer_signature } => {
@@ -373,7 +486,7 @@ fn wire_step(step: &Step) -> WireStep {
                     service_kind: kind,
                     service_request: request.to_owned(),
                     service_response: response.to_owned(),
-                    request_encoded_b64: base64_encode(request_encoded),
+                    request_encoded_b64: BASE64_ENGINE.encode(request_encoded),
                     label: label.clone(),
                 }
             }
@@ -419,40 +532,12 @@ fn wire_capture(capture: &Capture) -> WireCapture {
                 signature_response: sresp.to_owned(),
             }
         }
+        Capture::NativeBody { name, units, frame } => WireCapture::NativeBody {
+            name: name.clone(),
+            units: units.clone(),
+            frame: frame.clone(),
+        },
     }
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
-        let n = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | chunk[2] as u32;
-        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
-        out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
-        out.push(TABLE[(n & 0x3f) as usize] as char);
-    }
-    let remainder = chunks.remainder();
-    if !remainder.is_empty() {
-        let n = (remainder[0] as u32) << 16;
-        let second = if remainder.len() == 2 {
-            (remainder[1] as u32) << 8
-        } else {
-            0
-        };
-        let n = n | second;
-        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
-        if remainder.len() == 2 {
-            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
-            out.push('=');
-        } else {
-            out.push('=');
-            out.push('=');
-        }
-    }
-    out
 }
 
 fn sig_strings(
@@ -476,214 +561,106 @@ fn sig_strings(
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    // A small, dependency-free SHA-256 implementation. It runs only
-    // once per program boundary so the cost is amortised; correctness
-    // here matters more than micro-optimisation. Uses the FIPS 180-4
-    // round constants and message schedule.
-    use std::num::Wrapping;
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let mut msg = bytes.to_vec();
-    let bit_len = (bytes.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-    for chunk in msg.chunks_exact(64) {
-        let mut w = [0u32; 64];
-        for (i, word) in chunk.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = (Wrapping(w[i - 16]) + Wrapping(s0) + Wrapping(w[i - 7]) + Wrapping(s1)).0;
-        }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ (!e & g);
-            let t1 =
-                (Wrapping(hh) + Wrapping(s1) + Wrapping(ch) + Wrapping(K[i]) + Wrapping(w[i])).0;
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let mj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = (Wrapping(s0) + Wrapping(mj)).0;
-            hh = g;
-            g = f;
-            f = e;
-            e = (Wrapping(d) + Wrapping(t1)).0;
-            d = c;
-            c = b;
-            b = a;
-            a = (Wrapping(t1) + Wrapping(t2)).0;
-        }
-        h[0] = (Wrapping(h[0]) + Wrapping(a)).0;
-        h[1] = (Wrapping(h[1]) + Wrapping(b)).0;
-        h[2] = (Wrapping(h[2]) + Wrapping(c)).0;
-        h[3] = (Wrapping(h[3]) + Wrapping(d)).0;
-        h[4] = (Wrapping(h[4]) + Wrapping(e)).0;
-        h[5] = (Wrapping(h[5]) + Wrapping(f)).0;
-        h[6] = (Wrapping(h[6]) + Wrapping(g)).0;
-        h[7] = (Wrapping(h[7]) + Wrapping(hh)).0;
-    }
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
     let mut out = String::with_capacity(64);
-    for word in h {
-        out.push_str(&format!("{word:08x}"));
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
     }
     out
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    if !parent.as_os_str().is_empty() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("program.tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-    }
-    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::plan::{Action, Step};
-    use phoxal_port::PortSignature;
+    use std::time::Duration;
 
-    fn sig(kind: phoxal_port::PortKind) -> PortSignature {
-        PortSignature::new("motion/cmd", "phoxal.motion", "Set", kind, "Req", "Reply")
-    }
-
-    #[test]
-    fn rejects_empty_scenario_name() {
-        let result = Program::normalize("", std::time::Duration::from_secs(1), vec![], vec![]);
-        assert_eq!(result.unwrap_err(), ProgramError::EmptyScenarioName);
-    }
-
-    #[test]
-    fn normalizes_and_round_trips() {
-        let program = Program::normalize(
-            "scenarios/First",
-            std::time::Duration::from_secs(2),
-            vec![Step::new(
-                "set",
-                0,
-                Action::Setpoint {
-                    consumer_signature: sig(phoxal_port::PortKind::Setpoint),
-                    encoded_payload: vec![1, 2, 3],
-                },
-            )],
-            vec![Capture::state("motion", sig(phoxal_port::PortKind::State))],
+    fn setpoint_sig() -> phoxal_port::PortSignature {
+        phoxal_port::PortSignature::new(
+            "motion/cmd",
+            "phoxal.motion",
+            "Set",
+            phoxal_port::PortKind::Setpoint,
+            "SetpointRequest",
+            "SetpointReply",
         )
-        .unwrap();
-        program.verify_identity().expect("identity check");
-        assert_eq!(program.byte_length as usize, program.program_bytes.len());
-        assert_eq!(program.program_digest.len(), 64);
-        assert_eq!(program.steps[0].label, "set");
     }
 
     #[test]
-    fn deterministic_ordering() {
-        let make = |label: &'static str, q: u32| {
-            Step::new(
-                label,
-                q,
-                Action::Setpoint {
-                    consumer_signature: sig(phoxal_port::PortKind::Setpoint),
-                    encoded_payload: vec![1],
-                },
-            )
+    fn quantum_rejects_zero() {
+        assert!(Quantum::from_micros(0).is_none());
+        assert!(Quantum::from_micros(2_000).is_some());
+    }
+
+    #[test]
+    fn transition_count_derives_from_duration() {
+        let quantum = Quantum::from_micros(2_000).expect("quantum");
+        // Six seconds at two millisecond quantum is three thousand
+        // transitions, regardless of how many actions the author wrote.
+        assert_eq!(quantum.transition_count(Duration::from_secs(6)), Some(3_000));
+        // One second at two ms = 500 transitions.
+        assert_eq!(
+            quantum.transition_count(Duration::from_millis(1_000)),
+            Some(500)
+        );
+        // Unaligned durations are rejected.
+        assert_eq!(quantum.transition_count(Duration::from_micros(2_001)), None);
+        assert_eq!(quantum.transition_count(Duration::ZERO), None);
+    }
+
+    #[test]
+    fn program_records_identity_against_stored_bytes() {
+        let quantum = Quantum::from_micros(2_000).expect("quantum");
+        let action = Action::Setpoint {
+            consumer_signature: setpoint_sig(),
+            encoded_payload: vec![0xAB, 0xCD],
         };
-        let a = Program::normalize(
-            "scenarios/A",
-            std::time::Duration::from_secs(1),
-            vec![make("b", 1), make("a", 0)],
+        let program = Program::normalize(
+            "scenarios/Demo",
+            quantum,
+            Duration::from_secs(6),
+            vec![ScheduleEntry::at(0, action.clone())],
             vec![],
         )
-        .unwrap();
-        let b = Program::normalize(
-            "scenarios/A",
-            std::time::Duration::from_secs(1),
-            vec![make("a", 0), make("b", 1)],
-            vec![],
-        )
-        .unwrap();
-        assert_eq!(a.program_digest, b.program_digest);
+        .expect("normalize");
+        // 6 s / 2 ms = 3,000 transitions, independent of action count.
+        assert_eq!(program.transition_count(), 3_000);
+        program.verify_identity().expect("identity");
+        let stored_bytes = program.program_bytes().to_vec();
+        let stored_digest = program.program_digest().to_owned();
+        let recomputed = sha256_hex(&stored_bytes);
+        assert_eq!(recomputed, stored_digest);
     }
 
     #[test]
-    fn detects_tampering() {
-        let mut program = Program::normalize(
-            "scenarios/First",
-            std::time::Duration::from_secs(1),
-            vec![],
+    fn equal_boundaries_retain_authored_order() {
+        let quantum = Quantum::from_micros(2_000).expect("quantum");
+        let make = |label_byte: u8| Action::Setpoint {
+            consumer_signature: setpoint_sig(),
+            encoded_payload: vec![label_byte],
+        };
+        let program = Program::normalize(
+            "scenarios/Order",
+            quantum,
+            Duration::from_secs(6),
+            vec![
+                ScheduleEntry::at(100, make(1)),
+                ScheduleEntry::at(100, make(2)),
+                ScheduleEntry::at(200, make(3)),
+            ],
             vec![],
         )
-        .unwrap();
-        program.scenario_name = "scenarios/Other".to_owned();
-        let result = program.verify_identity();
-        assert!(matches!(result, Err(ProgramError::Other(_))));
-    }
-
-    #[test]
-    fn rejects_quantum_out_of_range() {
-        let result = Program::normalize(
-            "scenarios/Bad",
-            std::time::Duration::from_secs(1),
-            vec![Step::new(
-                "beyond",
-                5,
-                Action::Setpoint {
-                    consumer_signature: sig(phoxal_port::PortKind::Setpoint),
-                    encoded_payload: vec![1],
-                },
-            )],
-            vec![],
-        );
-        assert!(matches!(
-            result.unwrap_err(),
-            ProgramError::QuantumOutOfRange { .. }
-        ));
-    }
-
-    #[test]
-    fn rejects_oversized_payload() {
-        let result = Program::normalize(
-            "scenarios/Bad",
-            std::time::Duration::from_secs(1),
-            vec![Step::new(
-                "big",
-                0,
-                Action::Setpoint {
-                    consumer_signature: sig(phoxal_port::PortKind::Setpoint),
-                    encoded_payload: vec![0; MAX_PAYLOAD + 1],
-                },
-            )],
-            vec![],
-        );
-        assert!(matches!(
-            result.unwrap_err(),
-            ProgramError::PayloadTooLarge { .. }
-        ));
+        .expect("normalize");
+        let payload_bytes: Vec<Vec<u8>> = program
+            .steps()
+            .iter()
+            .filter_map(|step| match &step.action {
+                Action::Setpoint { encoded_payload, .. } => Some(encoded_payload.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(payload_bytes, vec![vec![1], vec![2], vec![3]]);
     }
 }
