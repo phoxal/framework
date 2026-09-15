@@ -73,6 +73,11 @@ pub enum SealError {
     /// The collector recorded a fixture-loss signal; the run is
     /// faulted regardless of any other passing evidence.
     FixtureLost,
+    /// A `FixtureLost` outcome was reported; the run is refused
+    /// outright and the recorded reason is returned. Distinct from
+    /// `FixtureLost` because this variant carries the recorded
+    /// reason string.
+    FixtureLostReported(String),
     /// A step outcome is `Rejected`; the run is failed.
     StepRejected(String),
     /// An internal capacity bound was exceeded while accumulating
@@ -143,6 +148,9 @@ impl std::fmt::Display for SealError {
                 "command reply record supplied for `{label}` but program did not declare it"
             ),
             Self::FixtureLost => write!(f, "fixture was lost (host wall-clock deadline elapsed)"),
+            Self::FixtureLostReported(reason) => {
+                write!(f, "fixture lost during execution: {reason}")
+            }
             Self::StepRejected(reason) => write!(f, "step was rejected: {reason}"),
             Self::CapacityExceeded { surface, declared } => write!(
                 f,
@@ -388,8 +396,17 @@ impl EvidenceCollector {
             production,
             eligibility,
         } = &outcome
-            && (*production > step.boundary as u64 || *eligibility > step.boundary as u64)
+            && (*production > step.boundary as u64
+                || *eligibility > (step.boundary as u64).saturating_add(1))
         {
+            // Production at the action's boundary is the only
+            // acceptable producer tick. Eligibility at the next
+            // boundary is the controlled-runtime receiver admission
+            // rule: the receiver must be admitted within one boundary
+            // of production. Production at N + eligibility at N+1 is
+            // the canonical happy path; later eligibility is a
+            // delayed acknowledgement that the run cannot finalize
+            // inside its budget.
             return Err(SealError::WrongOutcomeBoundary {
                 step_label: label,
                 expected_boundary: step.boundary,
@@ -438,8 +455,11 @@ impl EvidenceCollector {
                 actual: actual_kind,
             });
         }
-        // Reject empty bodies for State/Sample/Event captures so a
-        // missing observation cannot be laundered through sealing.
+        // Reject empty bodies for State captures so a missing
+        // observation cannot be laundered through sealing. Samples
+        // and Events intervals may legitimately be empty — the
+        // simulator observed the window and no events fired, which
+        // is a valid observation.
         match &record {
             CaptureRecord::State(bytes) | CaptureRecord::NativeBody(bytes) => {
                 if bytes.is_empty() {
@@ -450,24 +470,7 @@ impl EvidenceCollector {
                     });
                 }
             }
-            CaptureRecord::Samples(samples) => {
-                if samples.is_empty() {
-                    return Err(SealError::WrongCaptureKind {
-                        capture: name,
-                        expected: "non-empty samples",
-                        actual: "empty",
-                    });
-                }
-            }
-            CaptureRecord::Events(events) => {
-                if events.is_empty() {
-                    return Err(SealError::WrongCaptureKind {
-                        capture: name,
-                        expected: "non-empty events",
-                        actual: "empty",
-                    });
-                }
-            }
+            CaptureRecord::Samples(_) | CaptureRecord::Events(_) => {}
         }
         self.captures.insert(name, record);
         Ok(())
@@ -541,29 +544,50 @@ impl EvidenceCollector {
                 return Err(SealError::UnexpectedCommandReply(label.clone()));
             }
         }
-        // Reject any Rejected step outcome.
+        // Reject any Rejected or FixtureLost outcome. Fixture loss is
+        // a terminal failure that the run cannot recover from; the
+        // sealed run reports it explicitly instead of letting the
+        // verdict derive from completed-by-accident evidence.
         for (_, outcome) in &self.step_outcomes {
-            if let StepOutcome::Rejected { reason } = outcome {
-                return Err(SealError::StepRejected(reason.clone()));
+            match outcome {
+                StepOutcome::Rejected { reason } => {
+                    return Err(SealError::StepRejected(reason.clone()));
+                }
+                StepOutcome::FixtureLost { reason } => {
+                    return Err(SealError::FixtureLostReported(reason.clone()));
+                }
+                _ => {}
             }
         }
-        // Final boundary: the program declared a transition count;
-        // the trace must report an outcome for the last declared
-        // boundary to prove the simulator advanced through the end.
+        // Final-boundary check: the trace must report at least one
+        // observed eligibility at the program's last declared
+        // boundary, but only when the program has a setpoint step.
+        // A valid command-only or withdrawal-only experiment is
+        // finalized through command replies and withdrawal receipts
+        // and does not need a setpoint-style eligibility tick at
+        // the final boundary.
         if let Some(max_boundary) = self.program.steps().iter().map(|step| step.boundary).max() {
-            let observed_max = self
-                .step_outcomes
-                .iter()
-                .filter_map(|(_, outcome)| match outcome {
-                    StepOutcome::SetpointDelivered { eligibility, .. } => Some(*eligibility),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0);
-            if observed_max < max_boundary as u64 {
-                return Err(SealError::MissingFinalBoundary {
-                    expected: max_boundary,
-                });
+            let has_setpoint_step = self.program.steps().iter().any(|step| {
+                matches!(
+                    step.action,
+                    crate::scenario::plan::Action::Setpoint { .. }
+                )
+            });
+            if has_setpoint_step {
+                let observed_max = self
+                    .step_outcomes
+                    .iter()
+                    .filter_map(|(_, outcome)| match outcome {
+                        StepOutcome::SetpointDelivered { eligibility, .. } => Some(*eligibility),
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(0);
+                if observed_max < max_boundary as u64 {
+                    return Err(SealError::MissingFinalBoundary {
+                        expected: max_boundary,
+                    });
+                }
             }
         }
         // Compute the passed flag from the typed evidence only; the
@@ -652,6 +676,17 @@ mod tests {
             phoxal_port::PortKind::State,
             "State",
             "State",
+        )
+    }
+
+    fn event_sig() -> PortSignature {
+        PortSignature::new(
+            "motion/event",
+            "phoxal.motion",
+            "Event",
+            phoxal_port::PortKind::Event,
+            "Event",
+            "Event",
         )
     }
 
@@ -973,5 +1008,191 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, SealError::UnexpectedStepLabel(_)));
+    }
+
+    #[test]
+    fn seal_accepts_production_at_n_eligibility_at_n_plus_one() {
+        // Controlled-runtime happy path: producer at boundary N,
+        // consumer admitted at boundary N+1.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/NToNPlusOne",
+            quantum,
+            std::time::Duration::from_secs(1),
+            vec![ScheduleEntry::at(
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 1,
+                },
+            )
+            .expect("N-to-N+1 must be accepted");
+    }
+
+    #[test]
+    fn seal_rejects_eligibility_at_n_plus_two() {
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/StaleAck",
+            quantum,
+            std::time::Duration::from_secs(1),
+            vec![ScheduleEntry::at(
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        let err = collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 2,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, SealError::WrongOutcomeBoundary { .. }));
+    }
+
+    #[test]
+    fn seal_rejects_fixture_lost_outcome() {
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/FixtureLost",
+            quantum,
+            std::time::Duration::from_secs(1),
+            vec![ScheduleEntry::at(
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::FixtureLost {
+                    reason: "fixture child died".to_owned(),
+                },
+            )
+            .expect("recording fixture loss");
+        let err = collector.seal().unwrap_err();
+        assert!(matches!(err, SealError::FixtureLostReported(_)));
+    }
+
+    #[test]
+    fn seal_finalizes_command_only_program_without_setpoint_boundary() {
+        // A program that has only Command actions has no setpoint
+        // boundary to observe; the final-cut check must finalize
+        // through command replies alone.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let command_signature = PortSignature::new(
+            "motion/do",
+            "phoxal.motion",
+            "Do",
+            phoxal_port::PortKind::Commands,
+            "DoReq",
+            "DoReply",
+        );
+        let program = Program::normalize(
+            "scenarios/CommandOnly",
+            quantum,
+            std::time::Duration::from_secs(1),
+            vec![ScheduleEntry::at(
+                0,
+                Action::Command {
+                    service_signature: command_signature,
+                    request_encoded: vec![1],
+                    label: "do_thing".to_owned(),
+                },
+            )],
+            vec![],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::CommandIssued {
+                    label: "do_thing".to_owned(),
+                    reply_pending: true,
+                    simulated_deadline_boundary: 0,
+                    host_deadline_unix_micros: 0,
+                },
+            )
+            .expect("record command");
+        collector
+            .record_command_reply(
+                "do_thing".to_owned(),
+                CommandReply::Accepted {
+                    response_bytes: vec![0xff],
+                },
+            )
+            .expect("record reply");
+        let run = collector.seal().expect("seal");
+        assert!(run.is_sealed());
+        assert!(run.passed());
+    }
+
+    #[test]
+    fn seal_accepts_zero_event_interval() {
+        // An empty event interval is a legitimate observation:
+        // the simulator saw the window, no events fired. The
+        // collector must accept an empty Samples/Events record
+        // (the validation is on presence, not on payload length).
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/ZeroEventInterval",
+            quantum,
+            std::time::Duration::from_secs(1),
+            vec![ScheduleEntry::at(
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![Capture::event("motion", event_sig()).expect("event capture")],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture(
+                "motion".to_owned(),
+                CaptureRecord::Events(Vec::new()),
+            )
+            .expect("zero-event interval must be accepted");
+        let run = collector.seal().expect("seal");
+        assert!(run.is_sealed());
     }
 }
