@@ -90,6 +90,22 @@ pub enum SealError {
     /// The trace did not observe the final boundary the program
     /// declared.
     MissingFinalBoundary { expected: u32 },
+    /// A single capture record exceeds `MAX_RECORD_BYTES`.
+    CaptureByteOverflow {
+        capture: String,
+        bytes: usize,
+        cap: usize,
+    },
+    /// An interval capture (Samples / Events) has more entries than
+    /// `MAX_INTERVAL_ENTRIES`.
+    CaptureEntryOverflow {
+        capture: String,
+        entries: usize,
+        cap: usize,
+    },
+    /// Cumulative bytes across all capture records in the run
+    /// exceed `MAX_RUN_BYTES`.
+    RunByteOverflow { bytes: usize, cap: usize },
 }
 
 impl std::fmt::Display for SealError {
@@ -159,6 +175,26 @@ impl std::fmt::Display for SealError {
             Self::MissingFinalBoundary { expected } => {
                 write!(f, "trace never observed final boundary {expected}")
             }
+            Self::CaptureByteOverflow {
+                capture,
+                bytes,
+                cap,
+            } => write!(
+                f,
+                "capture `{capture}` is {bytes} bytes, exceeding the {cap}-byte per-record cap"
+            ),
+            Self::CaptureEntryOverflow {
+                capture,
+                entries,
+                cap,
+            } => write!(
+                f,
+                "capture `{capture}` has {entries} entries, exceeding the {cap}-entry interval cap"
+            ),
+            Self::RunByteOverflow { bytes, cap } => write!(
+                f,
+                "cumulative capture bytes {bytes} exceed run cap {cap}"
+            ),
         }
     }
 }
@@ -260,6 +296,17 @@ pub enum CaptureRecord {
     NativeBody(Vec<u8>),
 }
 
+/// Per-record byte cap. Each individual `Vec<u8>` inside a record is
+/// bounded to this many bytes before the record is admitted.
+pub const MAX_RECORD_BYTES: usize = 1024 * 1024;
+
+/// Maximum number of samples/events in a single interval record.
+pub const MAX_INTERVAL_ENTRIES: usize = 4096;
+
+/// Maximum total bytes across all admitted evidence records in one
+/// run. Cumulative accounting protects against unbounded growth.
+pub const MAX_RUN_BYTES: usize = 16 * 1024 * 1024;
+
 /// One command reply acknowledgement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandReply {
@@ -293,6 +340,10 @@ pub struct EvidenceCollector {
     declared_step_labels: Vec<String>,
     declared_capture_names: Vec<String>,
     declared_command_labels: Vec<String>,
+    /// Cumulative bytes admitted across all capture records. Bounded
+    /// by `MAX_RUN_BYTES` so unbounded growth cannot hide a tampered
+    /// run.
+    record_bytes_total: usize,
 }
 
 impl EvidenceCollector {
@@ -326,6 +377,7 @@ impl EvidenceCollector {
             declared_step_labels,
             declared_capture_names,
             declared_command_labels,
+            record_bytes_total: 0,
         }
     }
 
@@ -453,6 +505,41 @@ impl EvidenceCollector {
                 capture: name,
                 expected: expected_kind,
                 actual: actual_kind,
+            });
+        }
+        // Enforce per-record byte and entry caps. Each individual
+        // record is bounded to `MAX_RECORD_BYTES`; interval records
+        // additionally bound their entry count. Checked arithmetic
+        // prevents silent truncation when summing bytes.
+        let record_bytes: usize = match &record {
+            CaptureRecord::State(bytes) | CaptureRecord::NativeBody(bytes) => bytes.len(),
+            CaptureRecord::Samples(samples) | CaptureRecord::Events(samples) => {
+                if samples.len() > MAX_INTERVAL_ENTRIES {
+                    return Err(SealError::CaptureEntryOverflow {
+                        capture: name,
+                        entries: samples.len(),
+                        cap: MAX_INTERVAL_ENTRIES,
+                    });
+                }
+                samples
+                    .iter()
+                    .fold(0usize, |acc, sample| acc.saturating_add(sample.len()))
+            }
+        };
+        if record_bytes > MAX_RECORD_BYTES {
+            return Err(SealError::CaptureByteOverflow {
+                capture: name,
+                bytes: record_bytes,
+                cap: MAX_RECORD_BYTES,
+            });
+        }
+        self.record_bytes_total = self
+            .record_bytes_total
+            .saturating_add(record_bytes);
+        if self.record_bytes_total > MAX_RUN_BYTES {
+            return Err(SealError::RunByteOverflow {
+                bytes: self.record_bytes_total,
+                cap: MAX_RUN_BYTES,
             });
         }
         // Reject empty bodies for State captures so a missing
@@ -1153,6 +1240,89 @@ mod tests {
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
         assert!(run.passed());
+    }
+
+    #[test]
+    fn seal_rejects_oversized_capture_record() {
+        // Per-record byte cap: a 2 MiB state record must be refused.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/OversizedCapture",
+            quantum,
+            std::time::Duration::from_secs(1),
+            vec![ScheduleEntry::at(
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        let big = vec![0u8; 2 * 1024 * 1024];
+        let err = collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(big))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SealError::CaptureByteOverflow {
+                cap: super::MAX_RECORD_BYTES,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn seal_rejects_oversized_event_interval() {
+        // Interval entry cap: more than MAX_INTERVAL_ENTRIES events
+        // must be refused.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/OversizedInterval",
+            quantum,
+            std::time::Duration::from_secs(1),
+            vec![ScheduleEntry::at(
+                0,
+                Action::Setpoint {
+                    consumer_signature: setpoint_sig(),
+                    encoded_payload: vec![1],
+                },
+            )],
+            vec![Capture::event("motion", event_sig()).expect("event capture")],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        let too_many = vec![vec![1u8]; super::MAX_INTERVAL_ENTRIES + 1];
+        let err = collector
+            .record_capture("motion".to_owned(), CaptureRecord::Events(too_many))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SealError::CaptureEntryOverflow {
+                cap: super::MAX_INTERVAL_ENTRIES,
+                ..
+            }
+        ));
     }
 
     #[test]
