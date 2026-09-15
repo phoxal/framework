@@ -54,6 +54,17 @@ impl Bundle {
         }
     }
 
+    /// Returns the validated scenario program identity if the
+    /// manifest carries the nondeployable marker. Carries the exact
+    /// bounded program path, byte length, SHA-256 digest, fixture
+    /// instance id, and the controlled-execution flag the case host
+    /// wrote. The supervisor verifies the bytes before admission.
+    pub(crate) fn scenario_program(&self) -> Option<ScenarioProgramRef> {
+        match self {
+            Self::Source(bundle) => bundle.manifest.scenario_program.clone(),
+        }
+    }
+
     pub(crate) fn source(&self) -> Option<&SourceBundle> {
         match self {
             Self::Source(bundle) => Some(bundle),
@@ -144,6 +155,29 @@ pub(crate) struct SourceManifest {
     /// hardware launches of bundles that carry the marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) scenario_marker: Option<String>,
+    /// Validated program identity for the scenario bundle. The case
+    /// host serializes this when it writes the manifest; the
+    /// supervisor verifies the bounded program bytes against the
+    /// recorded length and SHA-256 digest during admission. Bundles
+    /// that carry `scenario_marker` but omit `scenario_program` are
+    /// refused outright.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scenario_program: Option<ScenarioProgramRef>,
+}
+
+/// Scenario program identity recorded in the source manifest. The
+/// supervisor verifies the exact bounded program bytes against
+/// `program_byte_length` and `program_digest` before admission so a
+/// tampered bundle cannot drive the fixture.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScenarioProgramRef {
+    pub(crate) scenario_name: String,
+    pub(crate) program_path: PathBuf,
+    pub(crate) program_byte_length: u32,
+    pub(crate) program_digest: String,
+    pub(crate) fixture_instance_id: String,
+    pub(crate) controlled_execution: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -370,6 +404,8 @@ impl SourceManifest {
                 name: "fixture".to_owned(),
                 source: "local".to_owned(),
             },
+            scenario_marker: None,
+            scenario_program: None,
             target: "host".to_owned(),
             profile: "dev".to_owned(),
             features: Vec::new(),

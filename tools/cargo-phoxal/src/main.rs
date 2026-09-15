@@ -120,7 +120,8 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
         run_id,
         options,
     } = arguments;
-    let presentation = if headless { SimulationPresentation::Headless
+    let presentation = if headless {
+        SimulationPresentation::Headless
     } else {
         SimulationPresentation::Desktop
     };
@@ -512,12 +513,8 @@ impl Cli {
             Command::Simulation(arguments) => match &arguments.command {
                 SimulationCommand::Run(arguments) => json_common(&arguments.options, &[]),
                 SimulationCommand::Scenario(arguments) => match &arguments.command {
-                    ScenarioCommand::List(arguments) => {
-                        json_common(&arguments.options, &[])
-                    }
-                    ScenarioCommand::Run(arguments) => {
-                        json_common(&arguments.options, &[])
-                    }
+                    ScenarioCommand::List(arguments) => json_common(&arguments.options, &[]),
+                    ScenarioCommand::Run(arguments) => json_common(&arguments.options, &[]),
                 },
             },
             Command::Publish(_) => false,

@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 #[cfg(test)]
 use crate::scenario::plan::ScenarioPlan;
-use crate::scenario::plan::{Action, Capture, Step, MAX_PAYLOAD};
+use crate::scenario::plan::{Action, Capture, MAX_PAYLOAD, Step};
 use crate::scenario::program::Program;
 
 /// One quantum-aligned outcome captured during execution. P3 fills
@@ -46,6 +46,10 @@ pub enum StepOutcome {
     /// Step could not be issued; the boundary rejected it. The
     /// failure message is included for diagnostics.
     Rejected { reason: String },
+    /// The fixture child died or was killed by the supervisor. A
+    /// `FixtureLost` outcome on any step faults the run at sealing
+    /// time; the host cannot proceed past a lost fixture.
+    FixtureLost { reason: String },
 }
 
 /// One full execution trace. P3 extends this with capture samples.
@@ -151,34 +155,14 @@ impl FixtureParticipant {
         })
     }
 
-    /// Construct a participant from metadata + the original action
-    /// schedule. Used when the bundle re-assembles the program from
-    /// the on-disk JSON envelope. The schedule's boundary span must
-    /// fit inside the declared transition count, not match it: a six
-    /// second experiment with one setpoint at boundary 500 has 3000
-    /// transitions but one step.
-    pub fn from_parts(
-        metadata: FixtureMetadata,
-        steps: Vec<Step>,
-        captures: Vec<Capture>,
-    ) -> Result<Self, FixtureError> {
-        let max_boundary = steps.iter().map(|step| step.boundary).max();
-        let min_required = max_boundary.map(|m| m + 1).unwrap_or(0);
-        if min_required > metadata.transition_count {
-            return Err(FixtureError::TransitionCountMismatch {
-                declared: metadata.transition_count,
-                actual: min_required,
-            });
-        }
-        Ok(Self {
-            metadata,
-            steps,
-            captures,
-            boundary: BoundaryClock::default(),
-            host_started: std::time::Instant::now(),
-            command_correlation: BTreeMap::new(),
-        })
-    }
+    /// The validated program is the only construction path. The
+    /// earlier `from_parts` constructor accepted arbitrary typed
+    /// fields with no way to verify the program identity, which
+    /// let tampered bundles drive the fixture. Production code now
+    /// must use [`Self::from_program`] with a program loaded from
+    /// the canonical artifact bytes; the participant's identity
+    /// check refuses bundles whose stored bytes do not match the
+    /// stored digest.
 
     pub fn metadata(&self) -> &FixtureMetadata {
         &self.metadata
@@ -271,11 +255,9 @@ impl FixtureParticipant {
                     SimulatedDeadline(b) => b,
                 };
                 let host_deadline_unix_micros = match entry.host_deadline {
-                    MonotonicHostDeadline(instant) => {
-                        instant
-                            .saturating_duration_since(self.host_started)
-                            .as_micros() as u64
-                    }
+                    MonotonicHostDeadline(instant) => instant
+                        .saturating_duration_since(self.host_started)
+                        .as_micros() as u64,
                 };
                 StepOutcome::CommandIssued {
                     label: label.clone(),

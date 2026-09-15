@@ -37,7 +37,10 @@ pub fn write_program_bytes(path: &Path, bytes: &[u8]) -> Result<(), PublicationE
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(PublicationError::Io)?;
     temporary.write_all(bytes).map_err(PublicationError::Io)?;
-    temporary.as_file().sync_all().map_err(PublicationError::Io)?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(PublicationError::Io)?;
     temporary
         .persist(path)
         .map_err(|error| PublicationError::Persist {

@@ -285,21 +285,33 @@ impl Capture {
     /// are rejected at construction so the program never observes a
     /// mismatched wire form.
     pub fn state(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
-        require_kind("Capture::state", phoxal_port::PortKind::State, signature.kind)?;
+        require_kind(
+            "Capture::state",
+            phoxal_port::PortKind::State,
+            signature.kind,
+        )?;
         Ok(Self::State {
             name: name.into(),
             signature,
         })
     }
     pub fn sample(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
-        require_kind("Capture::sample", phoxal_port::PortKind::Sample, signature.kind)?;
+        require_kind(
+            "Capture::sample",
+            phoxal_port::PortKind::Sample,
+            signature.kind,
+        )?;
         Ok(Self::Sample {
             name: name.into(),
             signature,
         })
     }
     pub fn event(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
-        require_kind("Capture::event", phoxal_port::PortKind::Event, signature.kind)?;
+        require_kind(
+            "Capture::event",
+            phoxal_port::PortKind::Event,
+            signature.kind,
+        )?;
         Ok(Self::Event {
             name: name.into(),
             signature,

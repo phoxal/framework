@@ -17,7 +17,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::scenario::plan::{Action, Capture, Step, MAX_PAYLOAD};
+use crate::scenario::plan::{Action, Capture, MAX_PAYLOAD, Step};
 
 /// One immutable, serializable scenario program. Constructed via
 /// [`Program::normalize`], which is the single validation owner for the
@@ -179,13 +179,13 @@ impl Program {
         if scenario_name.is_empty() {
             return Err(ProgramError::EmptyScenarioName);
         }
-        let transitions = quantum
-            .transition_count(duration)
-            .ok_or_else(|| ProgramError::Other(format!(
+        let transitions = quantum.transition_count(duration).ok_or_else(|| {
+            ProgramError::Other(format!(
                 "duration {} does not align to a {} microsecond quantum",
                 duration.as_micros(),
                 quantum.micros()
-            )))?;
+            ))
+        })?;
         // Validate labels and quantum bounds before serialization. Order
         // in the wire form follows authored order at equal boundaries
         // (no alphabetical tie-breaker); this keeps the verifier
@@ -205,10 +205,14 @@ impl Program {
             // they mean "deliver both at this tick".
             let label = format!("b{:08}", entry.boundary);
             match &entry.action {
-                Action::Setpoint { encoded_payload, .. } => {
+                Action::Setpoint {
+                    encoded_payload, ..
+                } => {
                     check_payload(&label, encoded_payload)?;
                 }
-                Action::Command { request_encoded, .. } => {
+                Action::Command {
+                    request_encoded, ..
+                } => {
                     check_payload(&label, request_encoded)?;
                 }
                 Action::Withdraw { .. } => {}
@@ -269,7 +273,6 @@ impl Program {
     pub fn steps(&self) -> &[Step] {
         &self.steps
     }
-
 
     /// Returns the declared captures.
     pub fn captures(&self) -> &[Capture] {
@@ -599,7 +602,10 @@ mod tests {
         let quantum = Quantum::from_micros(2_000).expect("quantum");
         // Six seconds at two millisecond quantum is three thousand
         // transitions, regardless of how many actions the author wrote.
-        assert_eq!(quantum.transition_count(Duration::from_secs(6)), Some(3_000));
+        assert_eq!(
+            quantum.transition_count(Duration::from_secs(6)),
+            Some(3_000)
+        );
         // One second at two ms = 500 transitions.
         assert_eq!(
             quantum.transition_count(Duration::from_millis(1_000)),
@@ -657,7 +663,9 @@ mod tests {
             .steps()
             .iter()
             .filter_map(|step| match &step.action {
-                Action::Setpoint { encoded_payload, .. } => Some(encoded_payload.clone()),
+                Action::Setpoint {
+                    encoded_payload, ..
+                } => Some(encoded_payload.clone()),
                 _ => None,
             })
             .collect();

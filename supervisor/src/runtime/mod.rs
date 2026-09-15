@@ -22,9 +22,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use crate::rendezvous::RuntimeRendezvous;
-use phoxal_supervisor::scenario_admission::{
-    ScenarioLaunchMode, admission_diagnostic, evaluate_scenario_admission,
-};
 use anyhow::{Context, Result, bail};
 use phoxal::communication::session::ExecutionState as PublicExecutionState;
 use phoxal::communication::{DeploymentTarget, SupervisorAdapter};
@@ -33,6 +30,10 @@ use phoxal::communication_transport::{
 };
 use phoxal::identity::ExecutionId;
 use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner};
+use phoxal_supervisor::scenario_admission::{
+    ScenarioLaunchMode, admission_diagnostic, evaluate_scenario_admission,
+};
+use sha2::Digest as _;
 use tokio_util::sync::CancellationToken;
 
 use bundle::Bundle;
@@ -62,23 +63,67 @@ pub async fn run(
     let paths = RuntimeRendezvous::for_root(&bundle::owning_root(&canonical));
     let lock = lock::SupervisorLock::acquire(&paths.supervisor_lock())?;
     let runtime = bundle::open(&canonical)?;
-    // The nondeployable marker only applies to scenario bundles; an
-    // ordinary source bundle carries no marker, so `evaluate_scenario_admission`
-    // admits it under any launch mode. Hardware launches of scenario
-    // bundles are refused outright; controlled launches are admitted
-    // so the case host can drive the experiment.
-    let marker = runtime.scenario_marker();
-    let admission = evaluate_scenario_admission(
-        launch_mode,
-        runtime.robot_id(),
-        0,
-        "",
-        marker.as_deref(),
-    );
-    if let Some(diagnostic) = admission_diagnostic(&admission) {
-        return Err(anyhow::anyhow!(
-            "scenario bundle refused by supervisor admission policy: {diagnostic}"
-        ));
+    if let Some(marker_value) = runtime.scenario_marker() {
+        // Scenario bundles must carry a validated program identity.
+        // Verify the bounded program bytes against the recorded
+        // length and SHA-256 digest before consulting the admission
+        // policy; refuse inconsistent launch modes; never substitute
+        // placeholder identity values.
+        let program = runtime.scenario_program().ok_or_else(|| {
+            anyhow::anyhow!(
+                "scenario bundle carries `{marker_value}` but no validated program identity \
+                 (`scenario_program`) was written; refusing to launch"
+            )
+        })?;
+        let bytes = std::fs::read(&program.program_path).with_context(|| {
+            format!(
+                "failed to read scenario program bytes from {}",
+                program.program_path.display()
+            )
+        })?;
+        if bytes.len() as u32 != program.program_byte_length {
+            return Err(anyhow::anyhow!(
+                "scenario program byte length {} does not match recorded {}",
+                bytes.len(),
+                program.program_byte_length
+            ));
+        }
+        let mut hasher = sha2::Sha256::new();
+        sha2::Digest::update(&mut hasher, &bytes);
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        if hex != program.program_digest {
+            return Err(anyhow::anyhow!(
+                "scenario program digest {hex} does not match recorded {}",
+                program.program_digest
+            ));
+        }
+        if program.controlled_execution && matches!(launch_mode, ScenarioLaunchMode::Hardware) {
+            return Err(anyhow::anyhow!(
+                "scenario bundle was built for controlled execution but launch mode is hardware"
+            ));
+        }
+        if !program.controlled_execution && matches!(launch_mode, ScenarioLaunchMode::Controlled) {
+            return Err(anyhow::anyhow!(
+                "scenario bundle was built for hardware execution but launch mode is controlled"
+            ));
+        }
+        let admission = evaluate_scenario_admission(
+            launch_mode,
+            &program.scenario_name,
+            program.program_byte_length,
+            &program.program_digest,
+            Some(marker_value.as_str()),
+        );
+        if let Some(diagnostic) = admission_diagnostic(&admission) {
+            return Err(anyhow::anyhow!(
+                "scenario bundle refused by supervisor admission policy: {diagnostic}"
+            ));
+        }
     }
     tracing::info!(
         bundle = %runtime.root().display(),

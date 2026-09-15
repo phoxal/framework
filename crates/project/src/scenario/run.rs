@@ -171,14 +171,9 @@ fn build_harness_binary(
     let mut command = std::process::Command::new("cargo");
     command
         .args(["test", "--test", "phoxal-scenarios", "--no-run"])
-        .args([
-            "--message-format",
-            "json",
-        ]);
+        .args(["--message-format", "json"]);
     options.append_common(&mut command, false, true);
-    command
-        .current_dir(&robot_root)
-        .env_remove("RUSTC_WRAPPER");
+    command.current_dir(&robot_root).env_remove("RUSTC_WRAPPER");
     let output = command
         .output()
         .map_err(|error| format!("cargo invocation: {error}"))?;
@@ -283,6 +278,9 @@ mod parse_artifact_tests {
         let stdout = r#"
 {"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"other-binary","kind":["test"]},"executable":"/build/other"}
 "#;
-        assert_eq!(parse_artifact_executable(stdout, "phoxal-scenarios", "test"), None);
+        assert_eq!(
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test"),
+            None
+        );
     }
 }
