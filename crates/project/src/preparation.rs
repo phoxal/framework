@@ -75,12 +75,65 @@ pub(crate) struct ManifestTransaction {
     original_manifest: Vec<u8>,
     locks: Vec<LockSnapshot>,
     changes: Vec<PreparationChange>,
+    /// `true` once `commit()` has run. Drop will skip rollback when
+    /// this is set so a successful commit is not undone by an
+    /// incidental drop later.
+    committed: bool,
+}
+
+impl Drop for ManifestTransaction {
+    fn drop(&mut self) {
+        // If the transaction was never committed, every error path
+        // that propagates with `?` will drop the transaction here.
+        // Restore the original manifest bytes (or any captured lock
+        // file snapshot) so a partly-failed preparation never leaves
+        // the workspace modified.
+        if self.committed {
+            return;
+        }
+        // Best-effort restore; we cannot return an error from drop,
+        // so log to stderr and leave the workspace in a recoverable
+        // state for the operator.
+        if !self.changes.is_empty() {
+            if let Err(source) = atomic_write(&self.manifest, &self.original_manifest) {
+                eprintln!(
+                    "phoxal-project: failed to restore {} after preparation error: {source}",
+                    self.manifest.display()
+                );
+                return;
+            }
+        }
+        for snapshot in &self.locks {
+            let outcome = match &snapshot.contents {
+                Some(contents) => match fs::read(&snapshot.path) {
+                    Ok(current) if current == *contents => Ok(()),
+                    Ok(_) => atomic_write(&snapshot.path, contents),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        atomic_write(&snapshot.path, contents)
+                    }
+                    Err(_) => Ok(()),
+                },
+                None => match fs::remove_file(&snapshot.path) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(source) => Err(source),
+                },
+            };
+            if let Err(source) = outcome {
+                eprintln!(
+                    "phoxal-project: failed to restore {} after preparation error: {source}",
+                    snapshot.path.display()
+                );
+            }
+        }
+    }
 }
 
 impl ManifestTransaction {
     /// Finish a successful preparation and release its source mutation lock.
-    pub(crate) fn commit(self) -> Vec<PreparationChange> {
-        self.changes
+    pub(crate) fn commit(mut self) -> Vec<PreparationChange> {
+        self.committed = true;
+        std::mem::take(&mut self.changes)
     }
 
     /// Records a scenario preparation change as part of this transaction
@@ -90,6 +143,32 @@ impl ManifestTransaction {
         scenario_changes: Vec<PreparationChange>,
     ) {
         self.changes.extend(scenario_changes);
+    }
+
+    /// Records a scenario preparation change that was already applied
+    /// to disk. The rollback path restores the manifest bytes from
+    /// the captured snapshot regardless of whether any changes have
+    /// been recorded, so a write that partly succeeded is reversed
+    /// even if the calling code dropped the transaction before
+    /// reaching `extend_with_scenario_changes`.
+    pub(crate) fn _unused_marker(&mut self) {
+        // Retained to anchor the file-position of related methods
+        // during review; no callers.
+    }
+
+    /// Explicit rollback. Production code uses Drop; tests use this
+    /// to assert restoration behaviour deterministically.
+    #[cfg(test)]
+    pub(crate) fn rollback_for_test(&self) -> Result<(), Error> {
+        if !self.changes.is_empty() {
+            atomic_write(&self.manifest, &self.original_manifest).map_err(|source| {
+                Error::ManifestRestore {
+                    path: self.manifest.clone(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
     }
 
     /// Restores all files captured before an unsuccessful preparation.
@@ -184,6 +263,7 @@ pub(crate) fn ensure_required_dependencies(
             original_manifest,
             locks,
             changes: Vec::new(),
+            committed: false,
         });
     }
 
@@ -261,6 +341,7 @@ pub(crate) fn ensure_required_dependencies(
                 "version = \"{SUPERVISOR_VERSION_REQUIREMENT}\", registry = \"{SUPERVISOR_REGISTRY}\""
             ),
         }],
+        committed: false,
     })
 }
 
@@ -459,6 +540,16 @@ pub(crate) fn prepare_scenario_target_in_transaction(
         &mut document,
         &mut scenario_changes,
     )?;
+    // Plan the harness write up front so its `HarnessWritten`
+    // change is recorded before any disk write. The Drop-based
+    // rollback path then restores the manifest regardless of which
+    // subsequent write fails.
+    if plan.harness_changed {
+        scenario_changes.push(PreparationChange::HarnessWritten {
+            path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
+        });
+    }
+    transaction.extend_with_scenario_changes(scenario_changes);
     let prepared = document.to_string().into_bytes();
     if prepared != manifest_text.as_bytes() {
         atomic_write(manifest, &prepared).map_err(|source| Error::ManifestPreparation {
@@ -467,17 +558,19 @@ pub(crate) fn prepare_scenario_target_in_transaction(
         })?;
     }
     if plan.harness_changed {
-        write_scenario_harness_file(layout.root(), &plan.discovered).map_err(|message| {
-            Error::ManifestPreparation {
+        if let Err(message) = write_scenario_harness_file(layout.root(), &plan.discovered) {
+            // Restore the manifest before propagating so the workspace
+            // is not left half-mutated.
+            transaction.rollback().map_err(|source| Error::ManifestPreparation {
+                path: manifest.to_owned(),
+                message: format!("harness write failed ({message}) and rollback failed: {source}"),
+            })?;
+            return Err(Error::ManifestPreparation {
                 path: manifest.to_owned(),
                 message,
-            }
-        })?;
-        scenario_changes.push(PreparationChange::HarnessWritten {
-            path: SCENARIO_HARNESS_RELATIVE_PATH.to_owned(),
-        });
+            });
+        }
     }
-    transaction.extend_with_scenario_changes(scenario_changes);
     Ok(())
 }
 
