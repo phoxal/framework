@@ -37,10 +37,13 @@ fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
     let command = cli.command;
     match command {
         Command::Publish(arguments) => run_publication(arguments),
-        Command::Simulation(arguments) => {
-            let SimulationCommand::Run(arguments) = arguments.command;
-            run_simulation(arguments)
-        }
+        Command::Simulation(arguments) => match arguments.command {
+            SimulationCommand::Run(arguments) => run_simulation(arguments),
+            SimulationCommand::Scenario(arguments) => match arguments.command {
+                ScenarioCommand::List(arguments) => run_scenario_list(arguments),
+                ScenarioCommand::Run(arguments) => run_scenario_case(arguments),
+            },
+        },
         command => {
             let project = Project::discover(std::env::current_dir().map_err(|source| {
                 phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
@@ -117,8 +120,7 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
         run_id,
         options,
     } = arguments;
-    let presentation = if headless {
-        SimulationPresentation::Headless
+    let presentation = if headless { SimulationPresentation::Headless
     } else {
         SimulationPresentation::Desktop
     };
@@ -205,6 +207,61 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
             ),
         })
     }
+}
+
+fn run_scenario_list(arguments: ScenarioListArgs) -> Result<(), phoxal_project::Error> {
+    let ScenarioListArgs { filter, options } = arguments;
+    let project = Project::discover(std::env::current_dir().map_err(|source| {
+        phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+            path: ".".into(),
+            source,
+        })
+    })?)?;
+    let cargo_options = options.into_options(Vec::new(), Vec::new());
+    let entries = phoxal_project::scenario::list_scenarios(&project, &cargo_options)?;
+    for entry in entries {
+        if filter
+            .as_deref()
+            .is_none_or(|needle| entry.name.contains(needle))
+        {
+            println!("{}", entry.name);
+        }
+    }
+    Ok(())
+}
+
+fn run_scenario_case(arguments: ScenarioRunArgs) -> Result<(), phoxal_project::Error> {
+    let ScenarioRunArgs { scenario, options } = arguments;
+    let project = Project::discover(std::env::current_dir().map_err(|source| {
+        phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+            path: ".".into(),
+            source,
+        })
+    })?)?;
+    let cargo_options = options.into_options(Vec::new(), Vec::new());
+    let outcome = phoxal_project::scenario::run_scenario(&project, &cargo_options, &scenario)?;
+    println!(
+        "scenario {}: {}",
+        outcome.scenario_name,
+        if outcome.passed { "PASSED" } else { "FAILED" }
+    );
+    if !outcome.stdout.is_empty() {
+        for line in outcome.stdout.lines() {
+            println!("  {line}");
+        }
+    }
+    if !outcome.stderr.is_empty() {
+        for line in outcome.stderr.lines() {
+            eprintln!("  {line}");
+        }
+    }
+    if let Some(path) = outcome.report_artifact_path {
+        println!("  report: {}", path.display());
+    }
+    if !outcome.passed {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn run_publication(arguments: PublishArgs) -> Result<(), phoxal_project::Error> {
@@ -396,15 +453,28 @@ fn diagnostic_path(error: &phoxal_project::Error) -> Option<PathBuf> {
         | phoxal_project::Error::BundleCleanup { .. }
         | phoxal_project::Error::InvalidExecutionIdentity { .. }
         | phoxal_project::Error::Publication(_) => None,
+        phoxal_project::Error::ScenarioRun(_) => None,
     }
 }
 
 fn print_preparation(prepared: &phoxal_project::PreparedProject) {
     for change in prepared.preparation_changes() {
-        eprintln!(
-            "prepared dependency {} ({})",
-            change.dependency, change.requirement
-        );
+        match change {
+            phoxal_project::PreparationChange::SupervisorDependencyAdded {
+                dependency,
+                requirement,
+            } => eprintln!("prepared dependency {dependency} ({requirement})"),
+            phoxal_project::PreparationChange::TestTargetAdded { name, path } => {
+                eprintln!("prepared test target `{name}` at {path}")
+            }
+            phoxal_project::PreparationChange::DevDependencyFeatureAdded {
+                dependency,
+                feature,
+            } => eprintln!("prepared dev-dep `{dependency}` feature `{feature}`"),
+            phoxal_project::PreparationChange::HarnessWritten { path } => {
+                eprintln!("prepared harness at {path}")
+            }
+        }
     }
 }
 
@@ -441,6 +511,14 @@ impl Cli {
             Command::Update(arguments) => json_common(&arguments.options, &arguments.cargo_args),
             Command::Simulation(arguments) => match &arguments.command {
                 SimulationCommand::Run(arguments) => json_common(&arguments.options, &[]),
+                SimulationCommand::Scenario(arguments) => match &arguments.command {
+                    ScenarioCommand::List(arguments) => {
+                        json_common(&arguments.options, &[])
+                    }
+                    ScenarioCommand::Run(arguments) => {
+                        json_common(&arguments.options, &[])
+                    }
+                },
             },
             Command::Publish(_) => false,
         }
@@ -475,6 +553,38 @@ struct SimulationArgs {
 enum SimulationCommand {
     /// Run one finite scene against the selected robot bundle.
     Run(SimulationRunArgs),
+    /// List, plan, or run authored scenarios for the selected robot bundle.
+    Scenario(ScenarioArgs),
+}
+
+#[derive(Debug, Args)]
+struct ScenarioArgs {
+    #[command(subcommand)]
+    command: ScenarioCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ScenarioCommand {
+    /// List scenarios registered in the prepared harness binary.
+    List(ScenarioListArgs),
+    /// Run a single scenario by struct identity (e.g. `RoverForwardTurnStop`).
+    Run(ScenarioRunArgs),
+}
+
+#[derive(Debug, Args)]
+struct ScenarioListArgs {
+    /// Optional substring filter against the registered scenario names.
+    filter: Option<String>,
+    #[command(flatten)]
+    options: CommonArgs,
+}
+
+#[derive(Debug, Args)]
+struct ScenarioRunArgs {
+    /// Scenario struct identity (`<StructIdent>`, not the full `scenarios/...` prefix).
+    scenario: String,
+    #[command(flatten)]
+    options: CommonArgs,
 }
 
 #[derive(Debug, Args)]

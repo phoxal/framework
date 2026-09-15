@@ -17,8 +17,7 @@
 //! ```
 
 use phoxal::scenario::{
-    Action, ApplicationAttachment, Capture, FixtureMetadata, FixtureParticipant, Program, Quantum,
-    ScheduleEntry,
+    Action, Capture, FixtureMetadata, FixtureParticipant, Program, Quantum, ScheduleEntry,
 };
 use phoxal_port::{PortKind, PortSignature};
 
@@ -94,14 +93,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut participant = FixtureParticipant::from_program(program)?;
     println!("metadata:       {:#?}", participant.metadata());
-    println!(
-        "attachments:    {:#?}",
-        vec![ApplicationAttachment::new(
-            "rover-1",
-            state_sig(),
-            "scenarios/RoverForwardTurnStop"
-        )]
-    );
 
     let trace = participant.run();
     println!("trace.passed:   {}", trace.passed());

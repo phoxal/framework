@@ -610,6 +610,9 @@ pub enum Error {
     /// Package publication preparation failed.
     #[error("package publication failed: {0}")]
     Publication(#[from] PublicationError),
+    /// Scenario case-host execution failed.
+    #[error("{0}")]
+    ScenarioRun(#[from] crate::scenario::ScenarioRunError),
 }
 
 /// A failure while selecting, staging, packaging, or verifying a publication.
