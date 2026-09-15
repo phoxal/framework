@@ -146,18 +146,12 @@ fn parse_list_output(stdout: &str) -> Vec<ScenarioListEntry> {
         .collect()
 }
 
-/// Locate (or rebuild) the `phoxal-scenarios` test executable. We
-/// prefer the existing artifact in `target/debug/deps/`; if cargo
-/// insists on rebuilding, the caller observes a fresh compile via
-/// the `compiler-artifact` JSON event stream and we hand back the
-/// reported path. A conservative rebuild flag is used because the
-/// plan restricts ad-hoc `cargo` invocations outside the supervisor
-/// workflow.
 fn build_harness_binary(
     project: &crate::Project,
     options: &CargoOptions,
 ) -> Result<std::path::PathBuf, String> {
     let robot_root = project.layout.root().to_owned();
+    let robot_package_id = robot_package_id(project);
     // Cargo's structured `compiler-artifact` JSON events report the
     // exact executable path for the package + target kind + target name
     // we asked for. Scanning `target/debug/deps` for the newest
@@ -167,13 +161,17 @@ fn build_harness_binary(
     // We override `--message-format=json` for this invocation so the
     // structured stream is always available, regardless of what the
     // caller asked for. Selection (lock, offline, profile, target,
-    // features) is forwarded through the existing helper.
-    let mut command = std::process::Command::new("cargo");
+    // features, manifest path) is forwarded through the existing
+    // helper so the configured Cargo executable and supported
+    // wrappers are honored.
+    let mut command = std::process::Command::new(options.cargo_program());
     command
         .args(["test", "--test", "phoxal-scenarios", "--no-run"])
         .args(["--message-format", "json"]);
     options.append_common(&mut command, false, true);
-    command.current_dir(&robot_root).env_remove("RUSTC_WRAPPER");
+    command
+        .current_dir(&robot_root)
+        .env_remove("RUSTC_WRAPPER");
     let output = command
         .output()
         .map_err(|error| format!("cargo invocation: {error}"))?;
@@ -184,30 +182,83 @@ fn build_harness_binary(
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_artifact_executable(&stdout, "phoxal-scenarios", "test").ok_or_else(|| {
-        "cargo did not report an executable for the `phoxal-scenarios` test target".to_owned()
+    parse_artifact_executable(
+        &stdout,
+        "phoxal-scenarios",
+        "test",
+        robot_package_id.as_str(),
+    )
+    .ok_or_else(|| {
+        format!(
+            "cargo did not report an executable for the `{robot_package_id}` package's \
+             `phoxal-scenarios` test target (matching artifacts must declare \
+             `package_id` == `{robot_package_id}`, `profile.test` == true, \
+             `target.kind` containing `test`, and `target.name` == `phoxal-scenarios`)"
+        )
     })
 }
 
+/// Resolve the root robot package's `name version` identity from the
+/// authored manifest. Cargo emits `<name> <version>` in its
+/// `package_id` field, so the lookup uses the same format.
+fn robot_package_id(project: &crate::Project) -> String {
+    let manifest_text =
+        std::fs::read_to_string(project.layout.cargo_manifest()).unwrap_or_default();
+    let mut name: Option<String> = None;
+    let mut version: Option<String> = None;
+    for line in manifest_text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("name") {
+            let rest = rest.trim_start_matches('=').trim().trim_matches('"');
+            if name.is_none() {
+                name = Some(rest.to_owned());
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("version") {
+            let rest = rest.trim_start_matches('=').trim().trim_matches('"');
+            if version.is_none() {
+                version = Some(rest.to_owned());
+            }
+        }
+    }
+    match (name, version) {
+        (Some(n), Some(v)) => format!("{n} {v}"),
+        (Some(n), None) => n,
+        _ => "<unknown>".to_owned(),
+    }
+}
+
 /// Parse Cargo's `--message-format=json` stream and return the
-/// executable path of the named test target. Matches exactly on
-/// package identity, target kind (`test`), and target name so a
-/// stale artifact from another package or a non-test target cannot
-/// satisfy the lookup.
+/// executable path of the named test target. Selection matches
+/// exactly on:
+///
+///  * `package_id` (the Cargo package identity, e.g.
+///    "phoxal-rover 0.1.0"), to refuse artifacts produced for sibling
+///    workspace members.
+///  * `target.name` == `target_name`, to refuse artifacts produced
+///    for other targets.
+///  * `target.kind` containing `target_kind`, to refuse artifacts
+///    produced for other target kinds (a "bin" with the same name
+///    must not satisfy the lookup).
+///  * `profile.test` == true (the boolean must be explicitly true,
+///    not just present), to refuse artifacts built under a different
+///    profile.
+///
+/// Ambiguity (more than one matching artifact) is refused. The
+/// function returns `Some(path)` only when a single artifact
+/// matches every predicate.
 fn parse_artifact_executable(
     stdout: &str,
     target_name: &str,
     target_kind: &str,
+    package_id: &str,
 ) -> Option<PathBuf> {
     let mut found: Option<PathBuf> = None;
+    let mut ambiguous = false;
     for line in stdout.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
             continue;
         }
-        // Cargo emits non-JSON progress lines when `--message-format=json`
-        // is paired with a terminal; skip anything that does not start
-        // with `{`.
         if !trimmed.starts_with('{') {
             continue;
         }
@@ -218,11 +269,14 @@ fn parse_artifact_executable(
         if event.get("reason").and_then(|v| v.as_str()) != Some("compiler-artifact") {
             continue;
         }
-        // Cargo's test profile is the only one that produces test
-        // executables. The harness binary is reported with profile
-        // "test"; we filter on that to avoid matching a debug
-        // executable named the same thing.
-        let profile = event.pointer("/profile/test").is_some();
+        let package_id_match = event
+            .pointer("/package_id")
+            .and_then(|v| v.as_str())
+            == Some(package_id);
+        let test_profile = event
+            .pointer("/profile/test")
+            .and_then(|v| v.as_bool())
+            == Some(true);
         let name = event.pointer("/target/name").and_then(|v| v.as_str());
         let kinds: Vec<String> = event
             .pointer("/target/kind")
@@ -237,9 +291,20 @@ fn parse_artifact_executable(
             .pointer("/executable")
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
-        if profile && name == Some(target_name) && kinds.iter().any(|k| k == target_kind) {
-            found = executable;
+        if package_id_match
+            && test_profile
+            && name == Some(target_name)
+            && kinds.iter().any(|k| k == target_kind)
+            && let Some(path) = executable
+        {
+            if found.is_some() {
+                ambiguous = true;
+            }
+            found = Some(path);
         }
+    }
+    if ambiguous {
+        return None;
     }
     found
 }
@@ -252,23 +317,23 @@ mod parse_artifact_tests {
     #[test]
     fn matches_test_profile_target() {
         let stdout = r#"
-{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/phoxal_scenarios-abc"}
-{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"other-binary","kind":["bin"]},"executable":"/build/other"}
+{"reason":"compiler-artifact","profile":{"test":true},"package_id":"phoxal-rover 0.1.0","target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/phoxal_scenarios-abc"}
+{"reason":"compiler-artifact","profile":{"test":true},"package_id":"other-pkg 0.1.0","target":{"name":"other-binary","kind":["bin"]},"executable":"/build/other"}
 "#;
         assert_eq!(
-            parse_artifact_executable(stdout, "phoxal-scenarios", "test"),
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test", "phoxal-rover 0.1.0"),
             Some(PathBuf::from("/build/phoxal_scenarios-abc"))
         );
     }
 
     #[test]
-    fn ignores_non_test_profile() {
+    fn ignores_non_test_profile_even_with_correct_name() {
         let stdout = r#"
-{"reason":"compiler-artifact","profile":{"dev":true},"target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/wrong"}
-{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/right"}
+{"reason":"compiler-artifact","profile":{"dev":true},"package_id":"phoxal-rover 0.1.0","target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/wrong"}
+{"reason":"compiler-artifact","profile":{"test":true},"package_id":"phoxal-rover 0.1.0","target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/right"}
 "#;
         assert_eq!(
-            parse_artifact_executable(stdout, "phoxal-scenarios", "test"),
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test", "phoxal-rover 0.1.0"),
             Some(PathBuf::from("/build/right"))
         );
     }
@@ -276,10 +341,33 @@ mod parse_artifact_tests {
     #[test]
     fn ignores_other_targets() {
         let stdout = r#"
-{"reason":"compiler-artifact","profile":{"test":true},"target":{"name":"other-binary","kind":["test"]},"executable":"/build/other"}
+{"reason":"compiler-artifact","profile":{"test":true},"package_id":"phoxal-rover 0.1.0","target":{"name":"other-binary","kind":["test"]},"executable":"/build/other"}
 "#;
         assert_eq!(
-            parse_artifact_executable(stdout, "phoxal-scenarios", "test"),
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test", "phoxal-rover 0.1.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_artifacts() {
+        let stdout = r#"
+{"reason":"compiler-artifact","profile":{"test":true},"package_id":"phoxal-rover 0.1.0","target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/one"}
+{"reason":"compiler-artifact","profile":{"test":true},"package_id":"phoxal-rover 0.1.0","target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/two"}
+"#;
+        assert_eq!(
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test", "phoxal-rover 0.1.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_profile_test_false() {
+        let stdout = r#"
+{"reason":"compiler-artifact","profile":{"test":false},"package_id":"phoxal-rover 0.1.0","target":{"name":"phoxal-scenarios","kind":["test"]},"executable":"/build/wrong"}
+"#;
+        assert_eq!(
+            parse_artifact_executable(stdout, "phoxal-scenarios", "test", "phoxal-rover 0.1.0"),
             None
         );
     }

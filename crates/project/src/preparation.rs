@@ -158,7 +158,7 @@ impl ManifestTransaction {
 
     /// Explicit rollback. Production code uses Drop; tests use this
     /// to assert restoration behaviour deterministically.
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn rollback_for_test(&self) -> Result<(), Error> {
         if !self.changes.is_empty() {
             atomic_write(&self.manifest, &self.original_manifest).map_err(|source| {
