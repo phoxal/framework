@@ -25,11 +25,13 @@ async fn main() -> ExitCode {
         }
     };
     init_tracing();
+    let launch_mode: phoxal_supervisor::ScenarioLaunchMode = cli.launch_mode.into();
     match runtime::run(
         &cli.bundle_root,
         target,
         cli.ready_file.as_deref(),
         cli.listen.as_deref(),
+        launch_mode,
     )
     .await
     {

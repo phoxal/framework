@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use crate::rendezvous::RuntimeRendezvous;
+use phoxal_supervisor::scenario_admission::{
+    ScenarioLaunchMode, admission_diagnostic, evaluate_scenario_admission,
+};
 use anyhow::{Context, Result, bail};
 use phoxal::communication::session::ExecutionState as PublicExecutionState;
 use phoxal::communication::{DeploymentTarget, SupervisorAdapter};
@@ -48,6 +51,7 @@ pub async fn run(
     target: DeploymentTarget,
     ready_file: Option<&Path>,
     listen: Option<&str>,
+    launch_mode: ScenarioLaunchMode,
 ) -> Result<()> {
     let canonical = requested_root.canonicalize().with_context(|| {
         format!(
@@ -58,12 +62,31 @@ pub async fn run(
     let paths = RuntimeRendezvous::for_root(&bundle::owning_root(&canonical));
     let lock = lock::SupervisorLock::acquire(&paths.supervisor_lock())?;
     let runtime = bundle::open(&canonical)?;
+    // The nondeployable marker only applies to scenario bundles; an
+    // ordinary source bundle carries no marker, so `evaluate_scenario_admission`
+    // admits it under any launch mode. Hardware launches of scenario
+    // bundles are refused outright; controlled launches are admitted
+    // so the case host can drive the experiment.
+    let marker = runtime.scenario_marker();
+    let admission = evaluate_scenario_admission(
+        launch_mode,
+        runtime.robot_id(),
+        0,
+        "",
+        marker.as_deref(),
+    );
+    if let Some(diagnostic) = admission_diagnostic(&admission) {
+        return Err(anyhow::anyhow!(
+            "scenario bundle refused by supervisor admission policy: {diagnostic}"
+        ));
+    }
     tracing::info!(
         bundle = %runtime.root().display(),
         robot = runtime.robot_id(),
         lock = %lock.path().display(),
         scope = target.scope(),
         supervisor_id = target.supervisor(),
+        launch_mode = ?launch_mode,
         "phoxal-supervisor starting"
     );
 

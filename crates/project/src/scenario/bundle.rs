@@ -4,17 +4,22 @@
 //! controlled-simulation admission path. It is identical in shape to
 //! a normal `Bundle` except for two recorded facts:
 //!  * the bundle is marked nondeployable so the hardware launch /
-//!    installation paths refuse it it before any binary runs.
+//!    installation paths refuse it before any binary runs.
 //!  * one or more input edges are substituted: the scenario
 //!    supplies its own prepared producer payloads so the bundle does
-//!    ! depend on a parallel live input channel. The original edge
+//!    not depend on a parallel live input channel. The original edge
 //!    is preserved in provenance and the unrelated connections
 //!    are left unchanged.
+//!
+//! `assemble` is the only constructor. The old filename-derived
+//! `assemble_from_layout` walked `<robot>/scenarios/<name>.rs` stems
+//! and recorded them as "preserved edges" — those filenames are not
+//! robot connection edges, and the supervisor's resolver mistook
+//! them for connection graph vertices. Callers must now pass the
+//! real instance/port edges the supervisor should preserve.
 
 use std::collections::BTreeMap;
 use std::fmt;
-
-use crate::ProjectLayout;
 
 /// The marker value that flags a bundle as nondeployable. Any
 /// hardware-mode admission path that observes a `Bundle` with this
@@ -43,31 +48,33 @@ pub struct ScenarioBundle {
     pub program_digest: String,
     pub transition_count: u32,
     pub substituted_edges: Vec<SubstitutedEdge>,
-    /// The original input edges that were NOT substituted. Stored
-    /// here as plain strings for inspection; the supervisor's full
-    /// `Bundle` keeps the structured copies.
+    /// The original input edges that were NOT substituted. Each entry
+    /// is a real instance/port edge from the supervisor's connection
+    /// graph; the supervisor's full `Bundle` keeps the structured
+    /// copies.
     pub preserved_edges: Vec<String>,
 }
 
 impl ScenarioBundle {
-    /// Construct a scenario bundle from a list of preserved-edge stems
-    /// (the discovered scenarios that are NOT substituted), the
-    /// prepared program identity, and the substitution map.
+    /// Construct a scenario bundle from the prepared program identity,
+    /// the substitution map, and the real instance/port edges the
+    /// supervisor should preserve (the edges that the scenario does
+    /// not own).
     pub fn assemble(
         scenario_name: impl Into<String>,
         program_byte_length: u32,
         program_digest: impl Into<String>,
         transition_count: u32,
         substitutions: Vec<SubstitutedEdge>,
-        preserved_edge_stems: Vec<String>,
+        preserved_edges: Vec<String>,
     ) -> Self {
         let substituted_edge_ids: BTreeMap<&str, ()> = substitutions
             .iter()
             .map(|edge| (edge.edge_id.as_str(), ()))
             .collect();
-        let preserved_edges: Vec<String> = preserved_edge_stems
+        let preserved_edges: Vec<String> = preserved_edges
             .into_iter()
-            .filter(|stem| !substituted_edge_ids.contains_key(stem.as_str()))
+            .filter(|edge| !substituted_edge_ids.contains_key(edge.as_str()))
             .collect();
         Self {
             scenario_name: scenario_name.into(),
@@ -77,40 +84,6 @@ impl ScenarioBundle {
             substituted_edges: substitutions,
             preserved_edges,
         }
-    }
-
-    /// Convenience constructor that walks the discovered scenarios
-    /// through the layout and records the un-substituted edges.
-    pub fn assemble_from_layout(
-        layout: &ProjectLayout,
-        scenario_name: impl Into<String>,
-        program_byte_length: u32,
-        program_digest: impl Into<String>,
-        transition_count: u32,
-        substitutions: Vec<SubstitutedEdge>,
-    ) -> Self {
-        let preserved = super::discover_scenarios(layout.root())
-            .map(|scenarios| {
-                scenarios
-                    .iter()
-                    .map(|scenario| {
-                        scenario
-                            .module_identifier
-                            .strip_prefix("_scenario_")
-                            .unwrap_or(scenario.module_identifier.as_str())
-                            .to_owned()
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        Self::assemble(
-            scenario_name,
-            program_byte_length,
-            program_digest,
-            transition_count,
-            substitutions,
-            preserved,
-        )
     }
 
     /// The marker the supervisor must attach to the wrapped `Bundle`
@@ -167,9 +140,9 @@ mod tests {
     }
 
     #[test]
-    fn assemble_from_layout_filters_substituted_edges() {
-        // The convenience constructor must drop a stem from the
-        // preserved list when it matches a substitution.
+    fn assemble_filters_substituted_edges() {
+        // The constructor must drop an edge from the preserved list
+        // when it matches a substitution.
         let bundle = ScenarioBundle::assemble(
             "scenarios/First",
             8,

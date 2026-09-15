@@ -34,6 +34,35 @@ pub(super) struct Cli {
     /// Internal machine-readable readiness handoff for local orchestration.
     #[arg(long, value_name = "PATH", hide = true)]
     pub(super) ready_file: Option<PathBuf>,
+
+    /// Launch mode the supervisor runs under. `controlled` is the
+    /// default for local development; `hardware` is the on-robot
+    /// launch. Scenario bundles carry the `nondeployable` marker and
+    /// are refused outright under `hardware`.
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        default_value_t = LaunchModeArg::Controlled
+    )]
+    pub(super) launch_mode: LaunchModeArg,
+}
+
+/// Mirror of [`ScenarioLaunchMode`] for clap. Lives here so the
+/// configuration layer stays free of supervisor runtime types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(super) enum LaunchModeArg {
+    Controlled,
+    Hardware,
+}
+
+impl From<LaunchModeArg> for phoxal_supervisor::ScenarioLaunchMode {
+    fn from(value: LaunchModeArg) -> Self {
+        match value {
+            LaunchModeArg::Controlled => Self::Controlled,
+            LaunchModeArg::Hardware => Self::Hardware,
+        }
+    }
 }
 
 const ABOUT: &str = "phoxal-supervisor - the Phoxal Framework execution observer";

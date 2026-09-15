@@ -43,6 +43,17 @@ impl Bundle {
         }
     }
 
+    /// Returns the scenario nondeployable marker carried by the
+    /// underlying source manifest, if any. Returns `None` for an
+    /// ordinary source bundle. Scenario bundles that the case host
+    /// has built carry the stable marker so the admission policy can
+    /// reject hardware launches.
+    pub(crate) fn scenario_marker(&self) -> Option<String> {
+        match self {
+            Self::Source(bundle) => bundle.manifest.scenario_marker.clone(),
+        }
+    }
+
     pub(crate) fn source(&self) -> Option<&SourceBundle> {
         match self {
             Self::Source(bundle) => Some(bundle),
@@ -127,6 +138,12 @@ pub(crate) struct SourceManifest {
     components: Vec<SourceComponentRecord>,
     #[serde(default)]
     pub(crate) simulation: Option<SourceSimulation>,
+    /// Optional scenario nondeployable marker. Set by the case host
+    /// when it builds a scenario bundle; ordinary source bundles
+    /// omit the field. The supervisor admission policy rejects
+    /// hardware launches of bundles that carry the marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scenario_marker: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
