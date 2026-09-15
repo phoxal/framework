@@ -96,6 +96,97 @@ pub struct BundleManifest {
     /// assembled for an independent simulator run.
     #[serde(default)]
     pub simulation: Option<BundleSimulation>,
+    /// Optional scenario execution identity. Set by the case-host path
+    /// when this bundle was assembled for a controlled-simulation
+    /// scenario run. Presence here is the contract that the supervisor
+    /// and fixture will admit only controlled execution and refuse
+    /// hardware launches; absence means the bundle is the normal
+    /// runtime bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario: Option<BundleScenarioSection>,
+}
+
+/// One coherent scenario execution representation. Presence means
+/// the bundle is nondeployable and the supervisor admission path is
+/// in control of the execution. The case host populates both the
+/// marker and the program identity; readers must refuse inconsistent
+/// or unknown shapes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleScenarioSection {
+    /// Stable marker the supervisor recognises as
+    /// nondeployable. Equal to `crate::scenario::SCENARIO_NONDEPLOYABLE`.
+    pub marker: String,
+    /// Identity of the normalized scenario program the fixture will
+    /// execute. The bundle ships the program bytes alongside the
+    /// manifest at `program_path` so the supervisor can read them
+    /// against `program_byte_length` and `program_digest` without
+    /// leaving the bundle root.
+    pub program: BundleScenarioProgram,
+}
+
+/// Validated scenario program identity. The supervisor rejects the
+/// bundle unless every field satisfies the documented invariants;
+/// see `BundleScenarioProgram::verify_against` in the runtime
+/// supervisor for the receiver-side checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleScenarioProgram {
+    /// Authored scenario name (e.g. `scenarios/ForwardTurnStop`).
+    pub scenario_name: String,
+    /// Bundle-relative POSIX path to the normalized program bytes.
+    /// No absolute prefix, no `..` segments, no symlink escape.
+    pub program_path: String,
+    /// Exact byte length of the program artifact.
+    pub program_byte_length: u32,
+    /// Lowercase SHA-256 digest of the program bytes.
+    pub program_digest: String,
+    /// Fixture instance id that owns the prepared producer payloads.
+    pub fixture_instance_id: String,
+    /// Must be `true` for the supported scenario launch path.
+    pub controlled_execution: bool,
+}
+
+/// One default bundle-relative path for the scenario program
+/// artifact. The case host writes the normalized program bytes to
+/// `<bundle_root>/program.bin` and the supervisor reads them back
+/// from the same path. The two sides never need to negotiate a path
+/// because this constant is owned by the project.
+#[allow(dead_code)]
+pub const DEFAULT_SCENARIO_PROGRAM_PATH: &str = "program.bin";
+
+impl BundleScenarioSection {
+    /// Build a scenario section from an already-normalized program
+    /// artifact. The caller is responsible for writing the bytes at
+    /// `program_path` inside the bundle; this function records the
+    /// identity and verifies the digest matches the bytes.
+    pub fn from_program_artifact(
+        scenario_name: impl Into<String>,
+        fixture_instance_id: impl Into<String>,
+        program_path: impl Into<String>,
+        program_bytes: &[u8],
+    ) -> Result<Self, Error> {
+        let scenario_name = scenario_name.into();
+        let digest = digest_string(program_bytes);
+        let program_byte_length =
+            u32::try_from(program_bytes.len()).map_err(|_| Error::SimulationInvalid {
+                message: format!(
+                    "scenario program `{scenario_name}` is {} bytes; u32 cap exceeded",
+                    program_bytes.len()
+                ),
+            })?;
+        Ok(Self {
+            marker: crate::scenario::SCENARIO_NONDEPLOYABLE.to_owned(),
+            program: BundleScenarioProgram {
+                scenario_name,
+                program_path: program_path.into(),
+                program_byte_length,
+                program_digest: digest,
+                fixture_instance_id: fixture_instance_id.into(),
+                controlled_execution: true,
+            },
+        })
+    }
 }
 
 /// The simulator-facing facts selected while assembling one robot bundle.
@@ -797,6 +888,7 @@ pub(crate) fn assemble_with_inputs(
         executables: executable_records,
         components,
         simulation,
+        scenario: None,
     };
     let provenance = provenance(
         prepared,
@@ -3379,6 +3471,15 @@ fn digest_file(path: &Path) -> Result<FileDigest, Error> {
     })
 }
 
+/// Lowercase SHA-256 of an in-memory byte slice. Used for the
+/// scenario program identity, where the supervisor re-hashes the
+/// bundle-shipped artifact and must agree to the byte.
+fn digest_string(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 fn ensure_regular_executable(path: &Path, target: &str) -> Result<(), Error> {
     let metadata = fs::symlink_metadata(path).map_err(|source| Error::ArtifactFile {
         path: path.to_owned(),
@@ -4067,5 +4168,37 @@ mod tests {
         ));
         drop(held);
         acquire_bundle_publication_lock(&output).expect("released publication lock");
+    }
+
+    #[test]
+    fn scenario_section_records_digest_and_is_round_trip_serializable() {
+        // The project side must hand the supervisor an exact identity
+        // for the program artifact it ships in the bundle. This is
+        // the contract that `ScenarioProgramRef::verify_against`
+        // checks on the supervisor side.
+        let bytes = b"phoxal scenario program bytes";
+        let section = BundleScenarioSection::from_program_artifact(
+            "scenarios/Demo",
+            "fixture",
+            "program.bin",
+            bytes,
+        )
+        .expect("scenario section");
+        assert_eq!(section.marker, crate::scenario::SCENARIO_NONDEPLOYABLE);
+        assert_eq!(section.program.scenario_name, "scenarios/Demo");
+        assert_eq!(section.program.program_path, "program.bin");
+        assert_eq!(section.program.program_byte_length, bytes.len() as u32);
+        assert_eq!(section.program.fixture_instance_id, "fixture");
+        assert!(section.program.controlled_execution);
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let expected = format!("{:x}", hasher.finalize());
+        assert_eq!(section.program.program_digest, expected);
+
+        // The supervisor uses serde_json to deserialize the manifest.
+        // The section must round-trip without losing or renaming fields.
+        let json = serde_json::to_string(&section).expect("serialize");
+        let restored: BundleScenarioSection = serde_json::from_str(&json).expect("parse");
+        assert_eq!(restored, section);
     }
 }

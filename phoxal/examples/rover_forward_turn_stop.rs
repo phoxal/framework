@@ -17,7 +17,7 @@
 //! ```
 
 use phoxal::scenario::{
-    Action, Capture, FixtureMetadata, FixtureParticipant, Program, Quantum, ScheduleEntry,
+    Action, Capture, FixtureMetadata, FixtureParticipant, Program, Quantum, ScheduleEntry, Validity,
 };
 use phoxal_port::{PortKind, PortSignature};
 
@@ -55,7 +55,7 @@ fn state_sig() -> PortSignature {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let quantum = Quantum::from_micros(2_000).expect("quantum");
+    let quantum = Quantum::from_micros(2_000).ok_or("quantum")?;
     let program = Program::normalize(
         "scenarios/RoverForwardTurnStop",
         quantum,
@@ -63,28 +63,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![
             ScheduleEntry::at(
                 0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
+                Action::setpoint("motion", setpoint_sig(), vec![1], Validity::Permanent)?,
             ),
             ScheduleEntry::at(
                 1,
-                Action::Command {
-                    service_signature: command_sig(),
-                    request_encoded: vec![0x10],
-                    label: "turn".to_owned(),
-                },
+                Action::command(
+                    "motion",
+                    command_sig(),
+                    vec![0x10],
+                    "turn",
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(1),
+                )?,
             ),
             ScheduleEntry::at(
                 2,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![0],
-                },
+                Action::setpoint("motion", setpoint_sig(), vec![0], Validity::Permanent)?,
             ),
         ],
-        vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        vec![Capture::state("motion", state_sig())?],
     )?;
 
     println!("program digest: {}", program.program_digest());

@@ -94,14 +94,14 @@ impl Drop for ManifestTransaction {
         // Best-effort restore; we cannot return an error from drop,
         // so log to stderr and leave the workspace in a recoverable
         // state for the operator.
-        if !self.changes.is_empty() {
-            if let Err(source) = atomic_write(&self.manifest, &self.original_manifest) {
-                eprintln!(
-                    "phoxal-project: failed to restore {} after preparation error: {source}",
-                    self.manifest.display()
-                );
-                return;
-            }
+        if !self.changes.is_empty()
+            && let Err(source) = atomic_write(&self.manifest, &self.original_manifest)
+        {
+            eprintln!(
+                "phoxal-project: failed to restore {} after preparation error: {source}",
+                self.manifest.display()
+            );
+            return;
         }
         for snapshot in &self.locks {
             let outcome = match &snapshot.contents {
@@ -555,23 +555,21 @@ pub(crate) fn prepare_scenario_target_in_transaction(
             message: format!("cannot persist manifest: {source}"),
         })?;
     }
-    if plan.harness_changed {
-        if let Err(message) = write_scenario_harness_file(layout.root(), &plan.discovered) {
-            // Restore the manifest before propagating so the workspace
-            // is not left half-mutated.
-            transaction
-                .rollback()
-                .map_err(|source| Error::ManifestPreparation {
-                    path: manifest.to_owned(),
-                    message: format!(
-                        "harness write failed ({message}) and rollback failed: {source}"
-                    ),
-                })?;
-            return Err(Error::ManifestPreparation {
+    if plan.harness_changed
+        && let Err(message) = write_scenario_harness_file(layout.root(), &plan.discovered)
+    {
+        // Restore the manifest before propagating so the workspace
+        // is not left half-mutated.
+        transaction
+            .rollback()
+            .map_err(|source| Error::ManifestPreparation {
                 path: manifest.to_owned(),
-                message,
-            });
-        }
+                message: format!("harness write failed ({message}) and rollback failed: {source}"),
+            })?;
+        return Err(Error::ManifestPreparation {
+            path: manifest.to_owned(),
+            message,
+        });
     }
     Ok(())
 }

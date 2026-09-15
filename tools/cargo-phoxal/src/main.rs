@@ -956,6 +956,9 @@ mod tests {
         let arguments = match parsed.command {
             Command::Simulation(arguments) => match arguments.command {
                 SimulationCommand::Run(arguments) => arguments,
+                SimulationCommand::Scenario(_) => {
+                    panic!("simulation command parsed as a scenario")
+                }
             },
             _ => panic!("simulation command parsed as a different variant"),
         };

@@ -33,7 +33,6 @@ use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner}
 use phoxal_supervisor::scenario_admission::{
     ScenarioLaunchMode, admission_diagnostic, evaluate_scenario_admission,
 };
-use sha2::Digest as _;
 use tokio_util::sync::CancellationToken;
 
 use bundle::Bundle;
@@ -75,41 +74,41 @@ pub async fn run(
                  (`scenario_program`) was written; refusing to launch"
             )
         })?;
-        let bytes = std::fs::read(&program.program_path).with_context(|| {
+        let bytes = program.verify_against(&canonical).with_context(|| {
             format!(
-                "failed to read scenario program bytes from {}",
-                program.program_path.display()
+                "scenario program `{}` failed admission",
+                program.scenario_name
             )
         })?;
-        if bytes.len() as u32 != program.program_byte_length {
+        // The bytes the fixture later consumes are exactly the
+        // bytes the supervisor verified — decode the program here so
+        // a tampered or malformed artifact is rejected before any
+        // child starts. The fixture re-decodes at its own admission
+        // boundary.
+        let decoded = phoxal::scenario::Program::decode(&bytes)
+            .map_err(|error| anyhow::anyhow!("scenario program decode failed: {error}"))?;
+        decoded
+            .verify_identity()
+            .map_err(|error| anyhow::anyhow!("scenario program identity check failed: {error}"))?;
+        if !program.controlled_execution {
             return Err(anyhow::anyhow!(
-                "scenario program byte length {} does not match recorded {}",
-                bytes.len(),
-                program.program_byte_length
+                "scenario bundle `{}` declares a non-controlled execution mode; \
+                 controlled simulation is the only supported scenario launch mode",
+                program.scenario_name
             ));
         }
-        let mut hasher = sha2::Sha256::new();
-        sha2::Digest::update(&mut hasher, &bytes);
-        let digest = hasher.finalize();
-        let mut hex = String::with_capacity(64);
-        for byte in digest {
-            use std::fmt::Write as _;
-            let _ = write!(&mut hex, "{byte:02x}");
-        }
-        if hex != program.program_digest {
+        if matches!(launch_mode, ScenarioLaunchMode::Hardware) {
             return Err(anyhow::anyhow!(
-                "scenario program digest {hex} does not match recorded {}",
-                program.program_digest
+                "scenario bundle `{}` carries the nondeployable marker; \
+                 refusing hardware launch mode",
+                program.scenario_name
             ));
         }
-        if program.controlled_execution && matches!(launch_mode, ScenarioLaunchMode::Hardware) {
+        if runtime.simulation().is_none() {
             return Err(anyhow::anyhow!(
-                "scenario bundle was built for controlled execution but launch mode is hardware"
-            ));
-        }
-        if !program.controlled_execution && matches!(launch_mode, ScenarioLaunchMode::Controlled) {
-            return Err(anyhow::anyhow!(
-                "scenario bundle was built for hardware execution but launch mode is controlled"
+                "scenario bundle `{}` requires a controlled simulation definition; \
+                 refusing to launch without one",
+                program.scenario_name
             ));
         }
         let admission = evaluate_scenario_admission(

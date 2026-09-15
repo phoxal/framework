@@ -204,13 +204,15 @@ fn build_harness_binary(
             stderr, stdout,
         ));
     }
-    parse_artifact_executable(&output.stdout, "phoxal-scenarios", "test", &package_id).ok_or_else(||
-        format!(
-            "cargo did not report an executable for the `{package_id}` package's \
+    parse_artifact_executable(&output.stdout, "phoxal-scenarios", "test", &package_id).ok_or_else(
+        || {
+            format!(
+                "cargo did not report an executable for the `{package_id}` package's \
              `phoxal-scenarios` test target (matching artifacts must declare \
              `package_id` == `{package_id}`, `profile.test` == true, \
              `target.kind` containing `test`, and `target.name` == `phoxal-scenarios`)"
-        )
+            )
+        },
     )
 }
 
@@ -243,12 +245,7 @@ fn resolve_root_package_id(
                 })
                 .map(|node| node.id.clone())
         })
-        .or_else(|| {
-            metadata
-                .packages
-                .first()
-                .map(|pkg| pkg.id.clone())
-        })
+        .or_else(|| metadata.packages.first().map(|pkg| pkg.id.clone()))
         .ok_or_else(|| "cargo metadata returned no packages".to_owned())
 }
 
@@ -345,7 +342,7 @@ mod parse_artifact_tests {
 
     #[test]
     fn matches_test_profile_target() {
-        let stdout = vec![
+        let stdout = [
             msg_line(test_artifact("/build/phoxal_scenarios-abc")),
             msg_line(other_artifact("/build/other")),
         ]
@@ -358,7 +355,7 @@ mod parse_artifact_tests {
 
     #[test]
     fn ignores_non_test_profile() {
-        let stdout = vec![
+        let stdout = [
             msg_line(test_artifact_with_profile("/build/wrong", false)),
             msg_line(test_artifact_with_profile("/build/right", true)),
         ]
@@ -380,7 +377,7 @@ mod parse_artifact_tests {
 
     #[test]
     fn rejects_ambiguous_artifacts() {
-        let stdout = vec![
+        let stdout = [
             msg_line(test_artifact("/build/one")),
             msg_line(test_artifact("/build/two")),
         ]

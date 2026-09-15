@@ -25,7 +25,7 @@ name = "phoxal-supervisor"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["runtime", "session"] }
+phoxal = { workspace = true, features = ["runtime", "scenario", "session"] }
 anyhow.workspace = true
 clap.workspace = true
 ctrlc.workspace = true

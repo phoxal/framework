@@ -65,6 +65,16 @@ impl Bundle {
         }
     }
 
+    /// Returns the controlled-simulation definition carried by the
+    /// source manifest, if any. A scenario bundle that does not also
+    /// carry a controlled simulation definition is refused because
+    /// the fixture has nothing to schedule against.
+    pub(crate) fn simulation(&self) -> Option<&SourceSimulation> {
+        match self {
+            Self::Source(bundle) => bundle.manifest.simulation.as_ref(),
+        }
+    }
+
     pub(crate) fn source(&self) -> Option<&SourceBundle> {
         match self {
             Self::Source(bundle) => Some(bundle),
@@ -169,15 +179,158 @@ pub(crate) struct SourceManifest {
 /// supervisor verifies the exact bounded program bytes against
 /// `program_byte_length` and `program_digest` before admission so a
 /// tampered bundle cannot drive the fixture.
+///
+/// `program_path` is a bundle-relative POSIX path with no `..`
+/// segments, no absolute prefix, and no symlink escape from the
+/// bundle root. The supervisor rejects anything else.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ScenarioProgramRef {
     pub(crate) scenario_name: String,
-    pub(crate) program_path: PathBuf,
+    pub(crate) program_path: String,
     pub(crate) program_byte_length: u32,
     pub(crate) program_digest: String,
     pub(crate) fixture_instance_id: String,
     pub(crate) controlled_execution: bool,
+}
+
+/// The maximum size of a single scenario program artifact. P3 keeps
+/// the cap low because scenario programs are short, bounded, and
+/// fully decoded into typed structures before the fixture runs; an
+/// admission that needs more than this is either a misuse or a
+/// tampered bundle.
+pub(crate) const MAX_SCENARIO_PROGRAM_BYTES: usize = 1024 * 1024;
+
+impl ScenarioProgramRef {
+    /// Validate the bundle-relative program path, read the bounded
+    /// artifact against `bundle_root`, and verify its length and
+    /// digest match the recorded identity. Returns the verified bytes
+    /// so the caller can hand the same artifact to the fixture; the
+    /// bytes are returned only when every invariant has been
+    /// satisfied.
+    pub(crate) fn verify_against(&self, bundle_root: &Path) -> Result<Vec<u8>> {
+        if self.scenario_name.is_empty() {
+            bail!("scenario program carries an empty scenario name");
+        }
+        if self.fixture_instance_id.is_empty() {
+            bail!("scenario program carries an empty fixture instance id");
+        }
+        if self.program_byte_length == 0 {
+            bail!("scenario program declares a zero byte length");
+        }
+        if self.program_byte_length as usize > MAX_SCENARIO_PROGRAM_BYTES {
+            bail!(
+                "scenario program declares {} bytes; cap is {}",
+                self.program_byte_length,
+                MAX_SCENARIO_PROGRAM_BYTES,
+            );
+        }
+        if self.program_digest.len() != 64
+            || !self
+                .program_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            bail!(
+                "scenario program `{}` has an invalid lowercase SHA-256 digest",
+                self.scenario_name,
+            );
+        }
+        let relative = safe_relative_path(&self.program_path)?;
+        let absolute = bundle_root.join(relative);
+        // Canonicalize the bundle root as well so the prefix check
+        // works on platforms whose canonical path differs from the
+        // input path (notably macOS, where `/var/...` resolves to
+        // `/private/var/...`).
+        let canonical_root = fs::canonicalize(bundle_root)
+            .with_context(|| format!("cannot resolve bundle root {}", bundle_root.display(),))?;
+        let metadata = fs::symlink_metadata(&absolute).with_context(|| {
+            format!(
+                "scenario program `{}` is missing at {}",
+                self.scenario_name,
+                absolute.display(),
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "scenario program `{}` must not be a symbolic link: {}",
+                self.scenario_name,
+                absolute.display(),
+            );
+        }
+        if !metadata.is_file() {
+            bail!(
+                "scenario program `{}` is not a regular file: {}",
+                self.scenario_name,
+                absolute.display(),
+            );
+        }
+        let canonical = absolute.canonicalize().with_context(|| {
+            format!(
+                "cannot resolve scenario program `{}` at {}",
+                self.scenario_name,
+                absolute.display(),
+            )
+        })?;
+        if !canonical.starts_with(&canonical_root) {
+            bail!(
+                "scenario program `{}` escapes its bundle root: {}",
+                self.scenario_name,
+                canonical.display(),
+            );
+        }
+        // Bounded read with a +1 trailing byte so an oversize file
+        // is detected even if the declared `program_byte_length` was
+        // also tampered upward.
+        let file = fs::File::open(&canonical).with_context(|| {
+            format!(
+                "cannot open scenario program `{}` at {}",
+                self.scenario_name,
+                canonical.display(),
+            )
+        })?;
+        let mut bytes = Vec::with_capacity(self.program_byte_length as usize);
+        file.take(MAX_SCENARIO_PROGRAM_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| {
+                format!(
+                    "failed to read scenario program `{}` at {}",
+                    self.scenario_name,
+                    canonical.display(),
+                )
+            })?;
+        if bytes.len() > MAX_SCENARIO_PROGRAM_BYTES {
+            bail!(
+                "scenario program `{}` exceeds the {}-byte cap",
+                self.scenario_name,
+                MAX_SCENARIO_PROGRAM_BYTES,
+            );
+        }
+        if bytes.len() != self.program_byte_length as usize {
+            bail!(
+                "scenario program `{}` is {} bytes; manifest declares {}",
+                self.scenario_name,
+                bytes.len(),
+                self.program_byte_length,
+            );
+        }
+        let mut hasher = Sha256::new();
+        sha2::Digest::update(&mut hasher, &bytes);
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        if hex != self.program_digest {
+            bail!(
+                "scenario program `{}` digest {hex} does not match recorded {}",
+                self.scenario_name,
+                self.program_digest,
+            );
+        }
+        Ok(bytes)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1140,5 +1293,143 @@ mod tests {
         manifest.document.connections = authored;
         manifest.simulation = None;
         assert!(execution_connections(&manifest).is_err());
+    }
+
+    fn write_program(directory: &tempfile::TempDir, relative: &str, bytes: &[u8]) -> String {
+        let safe = Path::new(relative);
+        let absolute = directory.path().join(safe);
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent).expect("program parent");
+        }
+        fs::write(&absolute, bytes).expect("write program");
+        let mut hasher = Sha256::new();
+        sha2::Digest::update(&mut hasher, bytes);
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        hex
+    }
+
+    fn program_ref(path: &str, bytes_len: u32, digest: String) -> ScenarioProgramRef {
+        ScenarioProgramRef {
+            scenario_name: "scenarios/Demo".to_owned(),
+            program_path: path.to_owned(),
+            program_byte_length: bytes_len,
+            program_digest: digest,
+            fixture_instance_id: "fixture".to_owned(),
+            controlled_execution: true,
+        }
+    }
+
+    #[test]
+    fn scenario_program_verify_accepts_bundled_artifact() {
+        let directory = tempfile::tempdir().expect("bundle root");
+        let bytes = b"scenarios/Demo program bytes";
+        let digest = write_program(&directory, "program.bin", bytes);
+        let program = program_ref("program.bin", bytes.len() as u32, digest);
+        let verified = program
+            .verify_against(directory.path())
+            .expect("verify succeeds");
+        assert_eq!(verified, bytes);
+    }
+
+    #[test]
+    fn scenario_program_verify_rejects_absolute_path() {
+        let directory = tempfile::tempdir().expect("bundle root");
+        let program = program_ref("/etc/passwd", 1, "0".repeat(64));
+        let error = program
+            .verify_against(directory.path())
+            .expect_err("absolute path must be refused");
+        assert!(format!("{error:#}").contains("not bundle-relative"));
+    }
+
+    #[test]
+    fn scenario_program_verify_rejects_parent_traversal() {
+        let directory = tempfile::tempdir().expect("bundle root");
+        let program = program_ref("../outside.bin", 1, "0".repeat(64));
+        let error = program
+            .verify_against(directory.path())
+            .expect_err("parent traversal must be refused");
+        assert!(format!("{error:#}").contains("not bundle-relative"));
+    }
+
+    #[test]
+    fn scenario_program_verify_rejects_length_mismatch() {
+        let directory = tempfile::tempdir().expect("bundle root");
+        let bytes = b"short";
+        let digest = write_program(&directory, "program.bin", bytes);
+        let program = program_ref("program.bin", bytes.len() as u32 + 16, digest);
+        let error = program
+            .verify_against(directory.path())
+            .expect_err("length mismatch must be refused");
+        assert!(format!("{error:#}").contains("manifest declares"));
+    }
+
+    #[test]
+    fn scenario_program_verify_rejects_tampered_digest() {
+        let directory = tempfile::tempdir().expect("bundle root");
+        let bytes = b"intended";
+        let digest = write_program(&directory, "program.bin", bytes);
+        let mut tampered = digest;
+        // Flip the first hex digit.
+        let replacement = if tampered.starts_with('0') { '1' } else { '0' };
+        unsafe {
+            tampered.as_bytes_mut()[0] = replacement as u8;
+        }
+        let program = program_ref("program.bin", bytes.len() as u32, tampered);
+        let error = program
+            .verify_against(directory.path())
+            .expect_err("digest mismatch must be refused");
+        assert!(format!("{error:#}").contains("does not match recorded"));
+    }
+
+    #[test]
+    fn scenario_program_verify_rejects_oversize_declaration() {
+        let program = program_ref(
+            "program.bin",
+            u32::try_from(MAX_SCENARIO_PROGRAM_BYTES).unwrap() + 1,
+            "0".repeat(64),
+        );
+        let directory = tempfile::tempdir().expect("bundle root");
+        let error = program
+            .verify_against(directory.path())
+            .expect_err("oversize declaration must be refused");
+        assert!(format!("{error:#}").contains("cap is"));
+    }
+
+    #[test]
+    fn scenario_program_verify_rejects_invalid_digest() {
+        let program = program_ref("program.bin", 1, "NOT_HEX".to_owned());
+        let directory = tempfile::tempdir().expect("bundle root");
+        let error = program
+            .verify_against(directory.path())
+            .expect_err("invalid digest must be refused");
+        assert!(format!("{error:#}").contains("invalid lowercase SHA-256"));
+    }
+
+    #[test]
+    fn scenario_program_verify_rejects_symlink_escape() {
+        let directory = tempfile::tempdir().expect("bundle root");
+        let outside = tempfile::tempdir().expect("outside");
+        let outside_path = outside.path().join("secret.bin");
+        fs::write(&outside_path, b"outside bytes").expect("write outside");
+        let link_path = directory.path().join("escape.bin");
+        std::os::unix::fs::symlink(&outside_path, &link_path).expect("symlink");
+        let mut hasher = Sha256::new();
+        sha2::Digest::update(&mut hasher, b"outside bytes");
+        let digest = hasher.finalize();
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        let program = program_ref("escape.bin", 13, hex);
+        let error = program
+            .verify_against(directory.path())
+            .expect_err("symlink must be refused");
+        assert!(format!("{error:#}").contains("symbolic link"));
     }
 }
