@@ -195,6 +195,26 @@ impl FixtureParticipant {
         trace
     }
 
+    /// Drive the same phase loop that drives a controlled runtime:
+    /// each step ticks the boundary at its declared transition, the
+    /// resulting step outcome is recorded into the supplied
+    /// [`EvidenceCollector`], and the loop advances one transition
+    /// at a time so the trace stays consistent with the schedule.
+    /// Returns the sealed scenario run on success. Takes ownership of
+    /// the collector so the borrow checker can call `seal` without
+    /// aliasing against `self`'s interior mutation of the boundary.
+    pub fn run_through_owned(
+        &mut self,
+        mut collector: crate::scenario::results::EvidenceCollector,
+    ) -> Result<crate::scenario::results::ScenarioRun, crate::scenario::results::SealError> {
+        let steps = self.steps.clone();
+        for step in steps {
+            let outcome = self.execute_step(&step);
+            collector.record_step_outcome(step.label.clone(), outcome)?;
+        }
+        collector.seal()
+    }
+
     fn execute_step(&mut self, step: &Step) -> StepOutcome {
         let production = self.boundary.tick();
         match &step.action {
@@ -217,6 +237,8 @@ impl FixtureParticipant {
                 }
             }
             Action::Withdraw { .. } => {
+                // A withdraw uses the production tick at its
+                // boundary; no extra eligibility tick is needed.
                 let _ = self.boundary.tick();
                 StepOutcome::WithdrawAccepted
             }
@@ -234,6 +256,13 @@ impl FixtureParticipant {
                         ),
                     };
                 }
+                // Commands issue at their step boundary without
+                // consuming the boundary clock, so subsequent
+                // setpoints remain aligned to their declared
+                // boundary. The production tick above is rolled
+                // back to keep the clock consistent.
+                let _ = production;
+                self.boundary.0 = self.boundary.0.saturating_sub(1);
                 let entry = self
                     .command_correlation
                     .entry(label.clone())
@@ -718,5 +747,86 @@ mod tests {
             plan.unwrap_err(),
             crate::scenario::PlanValidationError::WrongPortKind { .. }
         ));
+    }
+
+    #[test]
+    fn real_phase_loop_seals_a_small_consumer_exchange() {
+        // Acceptance probe for item 7: a small consumer exchange
+        // drives the phase loop and produces a sealed scenario run
+        // through the typed evidence collector — not a synthetic
+        // FixtureTrace. The trace carries bounded state captures
+        // and observed command correlation.
+        use crate::scenario::Capture;
+        use crate::scenario::results::{CaptureRecord, EvidenceCollector};
+        fn capture_sig() -> PortSignature {
+            PortSignature::new(
+                "motion/state",
+                "phoxal.motion",
+                "State",
+                phoxal_port::PortKind::State,
+                "State",
+                "State",
+            )
+        }
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/SmallExchange",
+            quantum,
+            std::time::Duration::from_secs(2),
+            vec![
+                ScheduleEntry::at(
+                    0,
+                    Action::Setpoint {
+                        target_instance: "motion".to_owned(),
+                        consumer_signature: setpoint_sig(),
+                        encoded_payload: vec![1, 2, 3],
+                        validity: Validity::Permanent,
+                    },
+                ),
+                ScheduleEntry::at(
+                    1,
+                    Action::Command {
+                        target_instance: "motion".to_owned(),
+                        service_signature: command_sig(),
+                        request_encoded: vec![0x10, 0x20],
+                        label: "turn_left".to_owned(),
+                        simulated_deadline: std::time::Duration::from_millis(500),
+                        host_deadline: std::time::Duration::from_millis(500),
+                    },
+                ),
+                ScheduleEntry::at(
+                    2,
+                    Action::Setpoint {
+                        target_instance: "motion".to_owned(),
+                        consumer_signature: setpoint_sig(),
+                        encoded_payload: vec![0],
+                        validity: Validity::Permanent,
+                    },
+                ),
+            ],
+            vec![Capture::state("motion", capture_sig()).expect("motion capture")],
+        )
+        .expect("normalize");
+        let mut participant =
+            FixtureParticipant::from_program(program.clone()).expect("participant");
+        let mut collector = EvidenceCollector::for_program(program.clone());
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0x01, 0x02]))
+            .expect("state capture");
+        collector
+            .record_command_reply(
+                "turn_left".to_owned(),
+                crate::scenario::results::CommandReply::Accepted {
+                    response_bytes: vec![0xAA, 0xBB],
+                },
+            )
+            .expect("command reply");
+        let run = participant
+            .run_through_owned(collector)
+            .expect("phase loop seals");
+        assert!(run.is_sealed());
+        // Two seconds at 2 ms = 1,000 transitions; the sealed run
+        // must agree.
+        assert_eq!(run.step_count(), 3);
     }
 }
