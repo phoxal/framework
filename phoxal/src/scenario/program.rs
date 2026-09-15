@@ -134,13 +134,17 @@ impl Quantum {
     /// quantum — every finite duration either aligns or is rejected, so
     /// the caller's "the experiment is six seconds" statement must agree
     /// with the quantum before this function returns a number.
+    ///
+    /// Uses nanosecond arithmetic so sub-microsecond durations
+    /// (e.g. 2 ms plus 1 ns) cannot be silently truncated to a
+    /// whole-microsecond multiple that happens to align.
     pub fn transition_count(self, duration: Duration) -> Option<u32> {
-        let total_micros = u64::try_from(duration.as_micros()).ok()?;
-        let quantum_micros = u64::from(self.0);
-        if total_micros == 0 || total_micros % quantum_micros != 0 {
+        let total_nanos = u128::from(duration.as_nanos());
+        let quantum_nanos = u128::from(self.0) * 1_000;
+        if total_nanos == 0 || total_nanos % quantum_nanos != 0 {
             return None;
         }
-        let transitions = total_micros / quantum_micros;
+        let transitions = total_nanos / quantum_nanos;
         u32::try_from(transitions).ok()
     }
 }
@@ -189,9 +193,17 @@ impl Program {
         // Validate labels and quantum bounds before serialization. Order
         // in the wire form follows authored order at equal boundaries
         // (no alphabetical tie-breaker); this keeps the verifier
-        // identical to the author's intent.
-        let mut steps: Vec<Step> = Vec::with_capacity(schedule.len());
-        for entry in schedule {
+        // Identical to the author's intent. The schedule is stable-
+        // sorted by boundary so [500, 1] becomes [1, 500], and equal
+        // boundaries retain the authored order so simultaneous
+        // actions remain in the order the author wrote them. Action
+        // IDs are assigned by the post-sort ordinal so two
+        // simultaneous actions receive distinct identities.
+        let mut sorted: Vec<(usize, ScheduleEntry)> =
+            schedule.into_iter().enumerate().collect();
+        sorted.sort_by_key(|(_, entry)| entry.boundary);
+        let mut steps: Vec<Step> = Vec::with_capacity(sorted.len());
+        for (action_index, (_, entry)) in sorted.into_iter().enumerate() {
             if entry.boundary >= transitions {
                 return Err(ProgramError::QuantumOutOfRange {
                     label: format!("boundary@{}", entry.boundary),
@@ -199,11 +211,11 @@ impl Program {
                     transitions,
                 });
             }
-            // ScheduleEntry does not carry a user-visible label, so the
-            // boundary index is the stable identity used by the verifier
-            // to correlate results. Duplicate boundaries are legal —
-            // they mean "deliver both at this tick".
-            let label = format!("b{:08}", entry.boundary);
+            // Action identity is the post-sort ordinal. This makes
+            // simultaneous actions (same boundary, different author
+            // position) carry distinct labels, which is what the
+            // collector uses to detect duplicate recordings.
+            let label = format!("s{:08}", action_index);
             match &entry.action {
                 Action::Setpoint {
                     encoded_payload, ..
@@ -614,6 +626,12 @@ mod tests {
         // Unaligned durations are rejected.
         assert_eq!(quantum.transition_count(Duration::from_micros(2_001)), None);
         assert_eq!(quantum.transition_count(Duration::ZERO), None);
+        // 2 ms plus 1 ns is NOT aligned at any sub-microsecond
+        // resolution. The previous `as_micros()` truncation made
+        // this accepted as one 2 ms transition; nanosecond
+        // arithmetic must reject it.
+        let unaligned = Duration::from_millis(2) + Duration::from_nanos(1);
+        assert_eq!(quantum.transition_count(unaligned), None);
     }
 
     #[test]
@@ -638,6 +656,49 @@ mod tests {
         let stored_digest = program.program_digest().to_owned();
         let recomputed = sha256_hex(&stored_bytes);
         assert_eq!(recomputed, stored_digest);
+    }
+
+    #[test]
+    fn normalize_stable_sorts_authored_boundaries() {
+        // Regression: the old normalize iterated schedule in authored
+        // order, so [500, 1] remained [500, 1] rather than [1, 500].
+        // The new path stable-sorts by boundary while preserving the
+        // authored order at ties.
+        let quantum = Quantum::from_micros(2_000).expect("quantum");
+        let make = |byte: u8| Action::Setpoint {
+            consumer_signature: setpoint_sig(),
+            encoded_payload: vec![byte],
+        };
+        let program = Program::normalize(
+            "scenarios/Sort",
+            quantum,
+            Duration::from_secs(6),
+            vec![
+                ScheduleEntry::at(500, make(1)),
+                ScheduleEntry::at(1, make(2)),
+                ScheduleEntry::at(500, make(3)),
+            ],
+            vec![],
+        )
+        .expect("normalize");
+        let payload_bytes: Vec<Vec<u8>> = program
+            .steps()
+            .iter()
+            .filter_map(|step| match &step.action {
+                Action::Setpoint { encoded_payload, .. } => Some(encoded_payload.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(payload_bytes, vec![vec![2], vec![1], vec![3]]);
+        // Each step must carry a distinct label even when two share
+        // the same boundary.
+        let labels: Vec<&str> = program
+            .steps()
+            .iter()
+            .map(|step| step.label.as_str())
+            .collect();
+        assert!(labels[0] != labels[1]);
+        assert!(labels[1] != labels[2]);
     }
 
     #[test]

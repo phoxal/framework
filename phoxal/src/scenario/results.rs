@@ -667,13 +667,13 @@ mod tests {
         let _trace = participant.run();
         // The setpoint step does not register a command correlation,
         // so mark_command_reply returns false for that label. The
-        // step label is the boundary index, "b00000000" for boundary 0.
-        assert!(!participant.mark_command_reply("b00000000"));
+        // step label is the boundary index, "s00000000" for boundary 0.
+        assert!(!participant.mark_command_reply("s00000000"));
         let mut captures = BTreeMap::new();
         captures.insert("motion".to_owned(), CaptureRecord::State(vec![0x42, 0x43]));
         let mut command_replies = BTreeMap::new();
         command_replies.insert(
-            "b00000000".to_owned(),
+            "s00000000".to_owned(),
             CommandReply::Accepted {
                 response_bytes: vec![0xff],
             },
@@ -708,7 +708,7 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         collector
             .record_step_outcome(
-                "b00000000".to_owned(),
+                "s00000000".to_owned(),
                 StepOutcome::SetpointDelivered {
                     production: 0,
                     eligibility: 0,
@@ -749,7 +749,7 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         collector
             .record_step_outcome(
-                "b00000000".to_owned(),
+                "s00000000".to_owned(),
                 StepOutcome::CommandIssued {
                     label: "do_thing".to_owned(),
                     reply_pending: true,
@@ -786,7 +786,7 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         collector
             .record_step_outcome(
-                "b00000000".to_owned(),
+                "s00000000".to_owned(),
                 StepOutcome::SetpointDelivered {
                     production: 0,
                     eligibility: 0,
@@ -823,7 +823,7 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         collector
             .record_step_outcome(
-                "b00000000".to_owned(),
+                "s00000000".to_owned(),
                 StepOutcome::SetpointDelivered {
                     production: 0,
                     eligibility: 0,
@@ -832,7 +832,7 @@ mod tests {
             .expect("first record");
         let err = collector
             .record_step_outcome(
-                "b00000000".to_owned(),
+                "s00000000".to_owned(),
                 StepOutcome::SetpointDelivered {
                     production: 0,
                     eligibility: 0,
@@ -864,7 +864,7 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         let err = collector
             .record_step_outcome(
-                "b00000000".to_owned(),
+                "s00000000".to_owned(),
                 StepOutcome::CommandIssued {
                     label: "spurious".to_owned(),
                     reply_pending: true,
@@ -923,7 +923,7 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         collector
             .record_step_outcome(
-                "b00000000".to_owned(),
+                "s00000000".to_owned(),
                 StepOutcome::SetpointDelivered {
                     production: 0,
                     eligibility: 0,
@@ -956,7 +956,7 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         let err = collector
             .record_step_outcome(
-                "b99999999".to_owned(),
+                "s99999999".to_owned(),
                 StepOutcome::SetpointDelivered {
                     production: 0,
                     eligibility: 0,
