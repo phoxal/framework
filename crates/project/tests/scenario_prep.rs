@@ -103,7 +103,7 @@ fn prepare_scenarios_refuses_to_mutate_under_locked_mode_when_setup_is_missing()
                                               version = \"0.1.0\"\n\
                                               edition = \"2024\"\n\n\
                                               [dependencies]\n\
-                                              phoxal = { path = \"../framework/phoxal\", version = \"=0.68.0\", registry = \"phoxal\" }\n")
+                                              phoxal-supervisor = { path = \"../framework/supervisor\", version = \"=0.68.0\", registry = \"phoxal\" }\n")
         .expect("manifest");
     fs::write(
         robot_root.join("robot.yaml"),
@@ -132,6 +132,25 @@ fn prepare_scenarios_refuses_to_mutate_under_locked_mode_when_setup_is_missing()
     assert!(
         message.contains("refusing") && message.contains("locked"),
         "locked-mode refusal must mention lock state; got: {message}"
+    );
+    // Now repeat the test with the supervisor dep present so the scenario
+    // refusal path is reached instead of the supervisor-init diagnostic.
+    fs::write(robot_root.join("Cargo.toml"), "[package]\n\
+                                              name = \"p1-robot\"\n\
+                                              version = \"0.1.0\"\n\
+                                              edition = \"2024\"\n\n\
+                                              [dependencies]\n\
+                                              phoxal-supervisor = { path = \"../framework/supervisor\", version = \"=0.68.0\", registry = \"phoxal\" }\n")
+        .expect("manifest with supervisor");
+    let layout2 = phoxal_project::ProjectLayout::discover(&robot_root).expect("layout2");
+    let project2 = phoxal_project::Project::from_layout(layout2).expect("project2");
+    let error2 = project2
+        .prepare_scenarios(&options)
+        .expect_err("locked preparation without scenario setup must refuse");
+    let message2 = format!("{error2:?}");
+    assert!(
+        message2.contains("refusing") && message2.contains("locked"),
+        "locked-mode refusal must mention lock state; got: {message2}"
     );
     // Manifest must be unchanged on disk.
     let persisted = fs::read_to_string(robot_root.join("Cargo.toml")).expect("read manifest");
@@ -186,7 +205,7 @@ fn prepare_scenarios_retains_persistent_setup_when_last_scenario_removed() {
     assert!(
         second.iter().any(|change| matches!(
             change,
-            phoxal_project::ScenarioPreparationChange::HarnessWritten { .. }
+            phoxal_project::PreparationChange::HarnessWritten { .. }
         )),
         "harness must be regenerated to the empty form when no scenarios remain: {second:?}"
     );
@@ -271,6 +290,11 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         .expect("canonicalize phoxal dir")
         .to_string_lossy()
         .replace('\\', "/");
+    let supervisor_path = framework_supervisor_dir()
+        .canonicalize()
+        .expect("canonicalize supervisor dir")
+        .to_string_lossy()
+        .replace('\\', "/");
     fs::write(
         robot_root.join("Cargo.toml"),
         format!(
@@ -282,6 +306,7 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
              publish = false\n\
              \n\
              [dependencies]\n\
+             phoxal-supervisor = {{ path = {supervisor_path:?} }}\n\
              phoxal = {{ path = {phoxal_path:?}, features = [\"scenario\"] }}\n",
         ),
     )
@@ -482,11 +507,17 @@ fn prepare_scenarios_duplicate_struct_identities_rejected() {
         .expect("phoxal canonicalize")
         .to_string_lossy()
         .replace('\\', "/");
+    let supervisor_path = framework_supervisor_dir()
+        .canonicalize()
+        .expect("supervisor canonicalize")
+        .to_string_lossy()
+        .replace('\\', "/");
     fs::write(
         robot_root.join("Cargo.toml"),
         format!(
             "[package]\nname = \"p1-robot\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
              publish = false\n\n[dependencies]\n\
+             phoxal-supervisor = {{ path = {supervisor_path:?} }}\n\
              phoxal = {{ path = {phoxal_path:?}, features = [\"scenario\"] }}\n"
         ),
     )
@@ -569,7 +600,7 @@ fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
         .replace('\\', "/");
     fs::write(
         robot_root.join(".cargo/config.toml"),
-        format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}\"\n"),
+        format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}/\"\n"),
     )
     .expect("cargo config");
 }
@@ -587,6 +618,18 @@ fn framework_phoxal_dir() -> std::path::PathBuf {
             candidate.join("Cargo.toml").is_file().then_some(candidate)
         })
         .expect("phoxal crate must be a sibling of crates/project")
+}
+
+#[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
+fn framework_supervisor_dir() -> std::path::PathBuf {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .ancestors()
+        .find_map(|ancestor| {
+            let candidate = ancestor.join("supervisor");
+            candidate.join("Cargo.toml").is_file().then_some(candidate)
+        })
+        .expect("supervisor crate must be a sibling of crates/project")
 }
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]

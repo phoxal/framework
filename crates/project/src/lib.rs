@@ -42,7 +42,7 @@ pub use document::{
 pub use error::{
     DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,
 };
-pub use preparation::{PreparationChange, ScenarioPreparationChange};
+pub use preparation::PreparationChange;
 pub use publication::{
     PUBLICATION_SCHEMA, PublicationFile, PublicationKind, PublicationOptions, PublicationResult,
     PublicationSourceProvenance, prepare_publication,
@@ -134,7 +134,7 @@ impl Project {
     pub fn prepare_scenarios(
         &self,
         options: &CargoOptions,
-    ) -> Result<Vec<ScenarioPreparationChange>, Error> {
+    ) -> Result<Vec<PreparationChange>, Error> {
         preparation::prepare_scenario_target(&self.layout, options)
     }
 
