@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use crate::scenario::participant::StepOutcome;
-use crate::scenario::program::{Program};
+use crate::scenario::program::Program;
 #[cfg(test)]
 use crate::scenario::program::ProgramError;
 

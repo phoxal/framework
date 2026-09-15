@@ -73,16 +73,19 @@ impl ScenarioPlan {
     /// authoring density with experiment length and made a six-second
     /// experiment with one setpoint look like a single-transition
     /// program.
+    ///
+    /// Uses checked nanosecond arithmetic so sub-microsecond
+    /// durations cannot be silently truncated to a whole-microsecond
+    /// multiple. Unaligned durations fall back to zero transitions;
+    /// `validate` rejects unaligned durations at construction, so
+    /// this only fires for callers that bypass the validator.
     pub fn transition_count(&self) -> u32 {
-        let quantum_micros = 2_000u128;
-        let total_micros = self.duration.as_micros();
-        // `validate` already rejects zero duration, so a zero `total_micros`
-        // cannot reach this point; an unaligned duration falls back to the
-        // authored step count to keep callers that pre-validate from panicking.
-        if !total_micros.is_multiple_of(quantum_micros) {
-            return self.steps.len() as u32;
+        let quantum_nanos: u128 = 2_000_000; // 2 ms rover quantum
+        let total_nanos = self.duration.as_nanos();
+        if total_nanos == 0 || !total_nanos.is_multiple_of(quantum_nanos) {
+            return 0;
         }
-        let transitions = total_micros / quantum_micros;
+        let transitions = total_nanos / quantum_nanos;
         u32::try_from(transitions).unwrap_or(u32::MAX)
     }
 
@@ -93,6 +96,19 @@ impl ScenarioPlan {
     pub fn validate(&self) -> Result<(), PlanValidationError> {
         if self.duration.is_zero() {
             return Err(PlanValidationError::ZeroDuration);
+        }
+        // Reject unaligned durations at construction. The transition
+        // count below is computed from `duration / quantum_nanos` and
+        // would otherwise fall back to zero (per the new
+        // `transition_count` rule); an aligned duration is required
+        // by Gate B4 of followup-24c026ed.md.
+        let quantum_nanos: u128 = 2_000_000;
+        let total_nanos = self.duration.as_nanos();
+        if !total_nanos.is_multiple_of(quantum_nanos) {
+            return Err(PlanValidationError::DurationNotAligned {
+                nanos: total_nanos,
+                quantum_nanos,
+            });
         }
         if self.steps.len() > u32::MAX as usize {
             return Err(PlanValidationError::TooManySteps(self.steps.len()));
@@ -584,6 +600,14 @@ pub const MAX_PAYLOAD: usize = 256 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanValidationError {
     ZeroDuration,
+    /// The plan's duration is not an exact multiple of the 2 ms
+    /// quantum. Authoring schedules that don't align to the quantum
+    /// cannot be admitted: a 1 ns slippage could truncate to a
+    /// whole-microsecond boundary that looks aligned. See Gate B4.
+    DurationNotAligned {
+        nanos: u128,
+        quantum_nanos: u128,
+    },
     TooManySteps(usize),
     QuantumOutOfRange {
         label: String,
@@ -639,6 +663,13 @@ impl std::fmt::Display for PlanValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ZeroDuration => write!(f, "scenario plan duration must be finite"),
+            Self::DurationNotAligned {
+                nanos,
+                quantum_nanos,
+            } => write!(
+                f,
+                "scenario plan duration of {nanos} ns does not align to the {quantum_nanos} ns quantum",
+            ),
             Self::TooManySteps(n) => write!(f, "scenario plan exceeds 2^32 steps: {n}"),
             Self::QuantumOutOfRange {
                 label,
@@ -770,6 +801,27 @@ mod tests {
             vec![],
         );
         assert_eq!(plan.unwrap_err(), PlanValidationError::ZeroDuration);
+    }
+
+    #[test]
+    fn rejects_unaligned_duration() {
+        // Regression for followup-24c026ed.md line 338: "unaligned
+        // duration plan accepted with transition count=1". A
+        // duration of 2_001 ns is not a multiple of the 2 ms (2_000_000 ns)
+        // quantum. The validator must refuse it.
+        let plan = ScenarioPlan::with_steps(
+            "scene",
+            Duration::from_nanos(2_001),
+            vec![Step::new("a", 0, setpoint_action(1))],
+            vec![],
+        );
+        assert!(matches!(
+            plan.unwrap_err(),
+            PlanValidationError::DurationNotAligned {
+                nanos: 2_001,
+                quantum_nanos: 2_000_000,
+            }
+        ));
     }
 
     #[test]
