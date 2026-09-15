@@ -169,9 +169,7 @@ fn build_harness_binary(
         .args(["test", "--test", "phoxal-scenarios", "--no-run"])
         .args(["--message-format", "json"]);
     options.append_common(&mut command, false, true);
-    command
-        .current_dir(&robot_root)
-        .env_remove("RUSTC_WRAPPER");
+    command.current_dir(&robot_root).env_remove("RUSTC_WRAPPER");
     let output = command
         .output()
         .map_err(|error| format!("cargo invocation: {error}"))?;
@@ -269,14 +267,9 @@ fn parse_artifact_executable(
         if event.get("reason").and_then(|v| v.as_str()) != Some("compiler-artifact") {
             continue;
         }
-        let package_id_match = event
-            .pointer("/package_id")
-            .and_then(|v| v.as_str())
-            == Some(package_id);
-        let test_profile = event
-            .pointer("/profile/test")
-            .and_then(|v| v.as_bool())
-            == Some(true);
+        let package_id_match =
+            event.pointer("/package_id").and_then(|v| v.as_str()) == Some(package_id);
+        let test_profile = event.pointer("/profile/test").and_then(|v| v.as_bool()) == Some(true);
         let name = event.pointer("/target/name").and_then(|v| v.as_str());
         let kinds: Vec<String> = event
             .pointer("/target/kind")

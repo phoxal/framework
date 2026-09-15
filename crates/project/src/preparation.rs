@@ -151,24 +151,16 @@ impl ManifestTransaction {
     /// been recorded, so a write that partly succeeded is reversed
     /// even if the calling code dropped the transaction before
     /// reaching `extend_with_scenario_changes`.
-    pub(crate) fn _unused_marker(&mut self) {
-        // Retained to anchor the file-position of related methods
-        // during review; no callers.
-    }
-
-    /// Explicit rollback. Production code uses Drop; tests use this
-    /// to assert restoration behaviour deterministically.
     #[allow(dead_code)]
-    pub(crate) fn rollback_for_test(&self) -> Result<(), Error> {
-        if !self.changes.is_empty() {
-            atomic_write(&self.manifest, &self.original_manifest).map_err(|source| {
-                Error::ManifestRestore {
-                    path: self.manifest.clone(),
-                    source,
-                }
-            })?;
-        }
-        Ok(())
+    pub(crate) fn explicit_abort(self) -> Result<Vec<PreparationChange>, Error> {
+        // Explicit aborts run the same restoration that Drop would
+        // run, and additionally return the original error path so
+        // the caller can chain a single restoration failure with
+        // the originating preparation failure. The Drop impl
+        // becomes a best-effort fallback for panics and other
+        // unwinding paths only.
+        self.rollback()?;
+        Ok(Vec::new())
     }
 
     /// Restores all files captured before an unsuccessful preparation.
@@ -424,8 +416,14 @@ fn harness_needs_write(
     let harness_path = robot_root.join(SCENARIO_HARNESS_RELATIVE_PATH);
     let expected = super::scenario::generate_harness_source(robot_root, discovered).into_bytes();
     match fs::read(&harness_path) {
+        // The existing harness content differs from what the
+        // current registry would produce — regenerate.
         Ok(current) => current != expected,
-        Err(_) => true,
+        // No harness on disk: only consider it missing-and-needed
+        // when there is at least one scenario to register. An
+        // empty registry's absent harness is the correct state,
+        // so prepare() should not record a HarnessWritten change.
+        Err(_) => !discovered.is_empty(),
     }
 }
 
@@ -561,10 +559,14 @@ pub(crate) fn prepare_scenario_target_in_transaction(
         if let Err(message) = write_scenario_harness_file(layout.root(), &plan.discovered) {
             // Restore the manifest before propagating so the workspace
             // is not left half-mutated.
-            transaction.rollback().map_err(|source| Error::ManifestPreparation {
-                path: manifest.to_owned(),
-                message: format!("harness write failed ({message}) and rollback failed: {source}"),
-            })?;
+            transaction
+                .rollback()
+                .map_err(|source| Error::ManifestPreparation {
+                    path: manifest.to_owned(),
+                    message: format!(
+                        "harness write failed ({message}) and rollback failed: {source}"
+                    ),
+                })?;
             return Err(Error::ManifestPreparation {
                 path: manifest.to_owned(),
                 message,

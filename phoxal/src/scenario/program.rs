@@ -139,9 +139,9 @@ impl Quantum {
     /// (e.g. 2 ms plus 1 ns) cannot be silently truncated to a
     /// whole-microsecond multiple that happens to align.
     pub fn transition_count(self, duration: Duration) -> Option<u32> {
-        let total_nanos = u128::from(duration.as_nanos());
+        let total_nanos = duration.as_nanos();
         let quantum_nanos = u128::from(self.0) * 1_000;
-        if total_nanos == 0 || total_nanos % quantum_nanos != 0 {
+        if total_nanos == 0 || !total_nanos.is_multiple_of(quantum_nanos) {
             return None;
         }
         let transitions = total_nanos / quantum_nanos;
@@ -199,8 +199,7 @@ impl Program {
         // actions remain in the order the author wrote them. Action
         // IDs are assigned by the post-sort ordinal so two
         // simultaneous actions receive distinct identities.
-        let mut sorted: Vec<(usize, ScheduleEntry)> =
-            schedule.into_iter().enumerate().collect();
+        let mut sorted: Vec<(usize, ScheduleEntry)> = schedule.into_iter().enumerate().collect();
         sorted.sort_by_key(|(_, entry)| entry.boundary);
         let mut steps: Vec<Step> = Vec::with_capacity(sorted.len());
         for (action_index, (_, entry)) in sorted.into_iter().enumerate() {
@@ -685,7 +684,9 @@ mod tests {
             .steps()
             .iter()
             .filter_map(|step| match &step.action {
-                Action::Setpoint { encoded_payload, .. } => Some(encoded_payload.clone()),
+                Action::Setpoint {
+                    encoded_payload, ..
+                } => Some(encoded_payload.clone()),
                 _ => None,
             })
             .collect();

@@ -162,7 +162,6 @@ impl FixtureParticipant {
     /// the canonical artifact bytes; the participant's identity
     /// check refuses bundles whose stored bytes do not match the
     /// stored digest.
-
     pub fn metadata(&self) -> &FixtureMetadata {
         &self.metadata
     }
@@ -255,9 +254,7 @@ impl FixtureParticipant {
                             ),
                         }
                     });
-                let simulated_deadline_boundary = match entry.simulated_deadline {
-                    SimulatedDeadline(b) => b,
-                };
+                let simulated_deadline_boundary = entry.simulated_deadline.0;
                 let host_deadline_unix_micros = match entry.host_deadline {
                     MonotonicHostDeadline(deadline) => {
                         // Report the absolute host-wall-clock deadline

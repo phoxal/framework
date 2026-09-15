@@ -347,12 +347,15 @@ impl EvidenceCollector {
         // action. A setpoint step cannot produce a CommandIssued
         // outcome; a command step cannot produce a SetpointDelivered
         // outcome. A step observed at the wrong boundary fails closed.
-        let step = self
+        let step = match self
             .program
             .steps()
             .iter()
             .find(|step| step.label == label)
-            .expect("declared step label");
+        {
+            Some(step) => step,
+            None => return Err(SealError::UnexpectedStepLabel(label)),
+        };
         match (&step.action, &outcome) {
             (
                 crate::scenario::plan::Action::Setpoint { .. },
@@ -385,13 +388,12 @@ impl EvidenceCollector {
             production,
             eligibility,
         } = &outcome
+            && (*production > step.boundary as u64 || *eligibility > step.boundary as u64)
         {
-            if *production > step.boundary as u64 || *eligibility > step.boundary as u64 {
-                return Err(SealError::WrongOutcomeBoundary {
-                    step_label: label,
-                    expected_boundary: step.boundary,
-                });
-            }
+            return Err(SealError::WrongOutcomeBoundary {
+                step_label: label,
+                expected_boundary: step.boundary,
+            });
         }
         self.step_outcomes.push((label, outcome));
         Ok(())
@@ -413,13 +415,20 @@ impl EvidenceCollector {
                 declared: self.declared_capture_names.len(),
             });
         }
-        // Validate capture kind against the declaration.
-        let declared = self
+        // Validate capture kind against the declaration. A capture
+        // that the program did not declare is rejected here; the
+        // prior `declared_capture_names.contains` check is the
+        // source of truth, but the lookup is performed here so the
+        // declared descriptor is available for kind validation.
+        let declared = match self
             .program
             .captures()
             .iter()
             .find(|capture| capture_name(capture) == name)
-            .expect("declared capture name");
+        {
+            Some(declared) => declared,
+            None => return Err(SealError::UnexpectedCapture(name)),
+        };
         let expected_kind = capture_kind_name(declared);
         let actual_kind = record_kind_name(&record);
         if expected_kind != actual_kind {

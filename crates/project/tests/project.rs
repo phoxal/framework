@@ -342,10 +342,12 @@ fn preparation_resolves_the_root_brain_services_and_passive_component()
 
     assert_eq!(prepared.root_package().name.as_str(), "fixture-robot");
     assert_eq!(prepared.preparation_changes().len(), 1);
-    assert_eq!(
-        prepared.preparation_changes()[0].dependency,
-        "phoxal-supervisor"
-    );
+    match &prepared.preparation_changes()[0] {
+        phoxal_project::PreparationChange::SupervisorDependencyAdded { dependency, .. } => {
+            assert_eq!(dependency, "phoxal-supervisor");
+        }
+        other => panic!("expected supervisor dependency addition, got {other:?}"),
+    }
     assert!(
         fs::read_to_string(fixture.path().join("Cargo.toml"))?
             .contains("phoxal-supervisor = { version = \"*\", registry = \"phoxal\" }")
