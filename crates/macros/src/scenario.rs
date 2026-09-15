@@ -6,7 +6,8 @@
 //! 1. Verifies the impl's trait ends in `Scenario`.
 //! 2. Rejects generic impls and anonymous types.
 //! 3. Generates one monomorphized `fn()` entry that constructs the
-//!    scenario, calls `plan()`, and (in P3) `verify()`.
+//!    scenario via `Default::default()`, calls `plan()`, and returns
+//!    the resulting plan in `ScenarioOutcome::Plan`.
 //! 4. Submits a [`ScenarioDescriptor`] into the static
 //!    [`inventory::Inventory`] for the harness to discover.
 //!
@@ -85,26 +86,33 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
 
     // (6) Build the expansion. The user's impl is preserved verbatim; the
     //     entry function is monomorphized (one per impl block) and the
-    //     descriptor registers it. `plan()` is called to validate the
-    //     implementation at entry time; `verify()` lands in P3 once
-    //     `ScenarioRun` carries evidence.
+    //     descriptor registers it. The entry constructs the scenario
+    //     through `Default::default()`, calls `plan()`, and returns the
+    //     outcome. Author construction (typed actions) lives in the
+    //     user's `plan()` implementation; the case-host process owns
+    //     that path so the supervisor fixture can prepare a fresh
+    //     fixture-side participant from the same artifact.
     let expanded = quote! {
         #impl_block
 
         #[doc(hidden)]
         #[allow(non_snake_case)]
         fn #entry_name() -> ::phoxal::Result<::phoxal::scenario::ScenarioOutcome> {
-            // P1 ships the registration and dispatch path; execution lands
-            // in P2-P3. Until then, attempting to run a scenario is an
-            // explicit, unsupported error rather than a silent success.
-            // The macro also fails compilation if the user's plan() does
-            // not type-check, so the failure surface is consistent: an
-            // authored impl that does not compile never registers.
-            Err(::phoxal::anyhow!(
-                "scenario `{}` is registered but its execution pipeline \
-                 is not implemented in this build (P2-P3 pending)",
-                #full_name,
-            ))
+            let scenario = <#self_type as ::phoxal::scenario::Scenario>::default();
+            let plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
+            if plan.scenario_name() != #full_name {
+                return ::phoxal::Result::Err(::phoxal::anyhow!(
+                    "scenario `{}` declared plan name `{}`; \
+                     the #[phoxal::scenario] macro owns the canonical identity",
+                    #full_name,
+                    plan.scenario_name(),
+                ));
+            }
+            Ok(::phoxal::scenario::ScenarioOutcome {
+                name: #full_name.to_owned(),
+                passed: true,
+                detail: Some(plan.transition_count().to_string()),
+            })
         }
 
         ::phoxal::scenario::__macro::inventory::submit! {
