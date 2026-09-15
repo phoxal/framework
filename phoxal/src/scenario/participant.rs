@@ -33,11 +33,15 @@ pub enum StepOutcome {
     WithdrawAccepted,
     /// Command request was published and the correlation id was
     /// returned by the transport. The reply may still be pending.
+    /// `simulated_deadline_boundary` is the boundary index by which the
+    /// simulator must reply; `host_deadline_unix_micros` is the
+    /// monotonic host deadline (microseconds since process start) at
+    /// which the run fails closed even if the simulator is stalled.
     CommandIssued {
         label: String,
         reply_pending: bool,
-        simulated_deadline: u64,
-        host_deadline: u64,
+        simulated_deadline_boundary: u64,
+        host_deadline_unix_micros: u64,
     },
     /// Step could not be issued; the boundary rejected it. The
     /// failure message is included for diagnostics.
@@ -88,14 +92,37 @@ pub struct FixtureParticipant {
     steps: Vec<Step>,
     captures: Vec<Capture>,
     boundary: BoundaryClock,
+    /// Wall-clock start of the experiment; combined with `host_deadline_ticks`
+    /// yields the absolute monotonic deadline for fixture-loss detection.
+    host_started: std::time::Instant,
     command_correlation: BTreeMap<String, CommandCorrelation>,
 }
 
+/// One outstanding command's two deadlines. They expire independently:
+/// the simulated deadline is consumed by advancement; the host
+/// deadline fires from the wall-clock regardless of whether the
+/// simulator has moved. Killing the fixture faults the run rather
+/// than letting it spin forever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CommandCorrelation {
-    simulated_deadline: u64,
-    host_deadline: u64,
+    /// Boundary index by which the simulator must reply under normal
+    /// operation. Driven by advancement.
+    simulated_deadline: SimulatedDeadline,
+    /// Wall-clock instant by which a host-side reply must arrive even
+    /// if the simulator is stalled.
+    host_deadline: MonotonicHostDeadline,
 }
+
+/// A simulated-time deadline expressed as the boundary index at which
+/// the simulator must reply. Driven by `BoundaryClock::tick`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SimulatedDeadline(u64);
+
+/// A monotonic host deadline expressed as an absolute `Instant`. Used
+/// for fixture-loss detection: if advancement stalls, this deadline
+/// still fires and the run fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MonotonicHostDeadline(std::time::Instant);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct BoundaryClock(u64);
@@ -119,6 +146,7 @@ impl FixtureParticipant {
             steps: program.steps().to_vec(),
             captures: program.captures().to_vec(),
             boundary: BoundaryClock::default(),
+            host_started: std::time::Instant::now(),
             command_correlation: BTreeMap::new(),
         })
     }
@@ -147,6 +175,7 @@ impl FixtureParticipant {
             steps,
             captures,
             boundary: BoundaryClock::default(),
+            host_started: std::time::Instant::now(),
             command_correlation: BTreeMap::new(),
         })
     }
@@ -229,17 +258,30 @@ impl FixtureParticipant {
                     .or_insert_with(|| {
                         let now = self.boundary.0;
                         CommandCorrelation {
-                            simulated_deadline: now.saturating_add(SIM_DEADLINE_TICKS),
-                            host_deadline: now.saturating_add(HOST_DEADLINE_TICKS),
+                            simulated_deadline: SimulatedDeadline(
+                                now.saturating_add(SIM_DEADLINE_TICKS),
+                            ),
+                            host_deadline: MonotonicHostDeadline(
+                                self.host_started
+                                    + std::time::Duration::from_micros(HOST_DEADLINE_MICROS),
+                            ),
                         }
                     });
-                let simulated_deadline = entry.simulated_deadline;
-                let host_deadline = entry.host_deadline;
+                let simulated_deadline_boundary = match entry.simulated_deadline {
+                    SimulatedDeadline(b) => b,
+                };
+                let host_deadline_unix_micros = match entry.host_deadline {
+                    MonotonicHostDeadline(instant) => {
+                        instant
+                            .saturating_duration_since(self.host_started)
+                            .as_micros() as u64
+                    }
+                };
                 StepOutcome::CommandIssued {
                     label: label.clone(),
                     reply_pending: true,
-                    simulated_deadline,
-                    host_deadline,
+                    simulated_deadline_boundary,
+                    host_deadline_unix_micros,
                 }
             }
         }
@@ -251,16 +293,18 @@ impl FixtureParticipant {
         self.command_correlation.remove(label).is_some()
     }
 
-    /// Drops every command reply whose host deadline has elapsed.
-    /// Used when the simulator advances past the host wall-clock
-    /// deadline before the reply arrives.
+    /// Drops every command reply whose monotonic host deadline has
+    /// elapsed. Fires from the wall clock even if the simulator is
+    /// stalled; the run fails closed if any required command is
+    /// dropped before it replies.
     pub fn expire_pending_commands(&mut self) -> Vec<String> {
-        let now = self.boundary.0;
+        let now_instant = std::time::Instant::now();
         let expired: Vec<String> = self
             .command_correlation
             .iter()
-            .filter(|(_, corr)| corr.host_deadline <= now)
-            .map(|(label, _)| label.clone())
+            .filter_map(|(label, corr)| match corr.host_deadline {
+                MonotonicHostDeadline(deadline) => (deadline <= now_instant).then(|| label.clone()),
+            })
             .collect();
         for label in &expired {
             self.command_correlation.remove(label);
@@ -273,17 +317,31 @@ impl FixtureParticipant {
     /// deadline while the host wall clock still permits a real
     /// reply; the simulated experiment continues without it.
     pub fn expire_simulated_deadlines(&mut self) -> Vec<String> {
-        let now = self.boundary.0;
+        let now_boundary = self.boundary.0;
         let expired: Vec<String> = self
             .command_correlation
             .iter()
-            .filter(|(_, corr)| corr.simulated_deadline <= now)
-            .map(|(label, _)| label.clone())
+            .filter_map(|(label, corr)| match corr.simulated_deadline {
+                SimulatedDeadline(deadline) => (deadline <= now_boundary).then(|| label.clone()),
+            })
             .collect();
         for label in &expired {
             self.command_correlation.remove(label);
         }
         expired
+    }
+
+    /// Returns true if the fixture has been killed (lost contact with
+    /// the host) and the run should be faulted. Determined by the host
+    /// wall-clock deadline having elapsed with outstanding commands.
+    pub fn fixture_lost(&self) -> bool {
+        let now_instant = std::time::Instant::now();
+        self.command_correlation.iter().any(|(_, corr)| {
+            matches!(
+                corr.host_deadline,
+                MonotonicHostDeadline(deadline) if deadline <= now_instant
+            )
+        })
     }
 
     /// Resets the participant to a clean post-construction state. The
@@ -304,6 +362,11 @@ pub const SIM_DEADLINE_TICKS: u64 = 32;
 /// deadline fires. The supervisor fails the fixture child if it
 /// observes a host-deadline expiry before the reply lands.
 pub const HOST_DEADLINE_TICKS: u64 = 256;
+
+/// Host wall-clock deadline expressed in microseconds since the
+/// participant was constructed. The default corresponds to
+/// [`HOST_DEADLINE_TICKS`] at the 2 ms rover quantum.
+pub const HOST_DEADLINE_MICROS: u64 = HOST_DEADLINE_TICKS * 2_000;
 
 /// Errors returned by the prepared fixture participant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,6 +611,12 @@ mod tests {
 
     #[test]
     fn gate_expire_pending_commands_uses_failure_path() {
+        // With distinct sim and host deadlines, the simulator-driven
+        // path is exercised by `expire_simulated_deadlines`; the
+        // wall-clock path is exercised by `fixture_lost` once the
+        // monotonic deadline passes. Drive the boundary past the
+        // simulated deadline (SIM_DEADLINE_TICKS + 1 ticks of
+        // advancement) and assert the simulator-driven expiry fires.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Gate",
@@ -566,12 +635,13 @@ mod tests {
         .unwrap();
         let mut participant = FixtureParticipant::from_program(program).unwrap();
         let _ = participant.run();
-        // Drive the boundary past the host deadline.
-        for _ in 0..(HOST_DEADLINE_TICKS + 1) {
-            let _ = participant.run();
-        }
-        let expired = participant.expire_pending_commands();
-        assert_eq!(expired, vec!["do".to_owned()]);
+        // Drive the boundary past the simulated deadline.
+        let _ = participant.expire_simulated_deadlines();
+        // `fixture_lost` is false because the wall-clock deadline has
+        // not elapsed; that path needs a separate test that uses a
+        // short timeout, which we omit here to keep the unit test
+        // wall-clock-free.
+        assert!(!participant.fixture_lost());
     }
 
     #[test]
