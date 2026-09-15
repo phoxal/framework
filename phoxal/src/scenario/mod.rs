@@ -37,7 +37,7 @@ pub use registry::{
     DuplicateLocation, DuplicateScenarioError, RegisteredScenario, ScenarioDescriptor,
     ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,
 };
-pub use results::ScenarioRun;
+pub use results::{CaptureRecord, CommandReply, EvidenceCollector, ScenarioRun, SealError};
 pub use trait_def::Scenario;
 
 // Re-exports used by the `#[phoxal::scenario]` macro's expansion. Hidden so
