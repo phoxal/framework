@@ -17,7 +17,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::scenario::plan::{Action, Capture, MAX_PAYLOAD, Step};
+use crate::scenario::plan::{Action, Capture, MAX_PAYLOAD, Step, Validity};
 
 /// One immutable, serializable scenario program. Constructed via
 /// [`Program::normalize`], which is the single validation owner for the
@@ -217,16 +217,32 @@ impl Program {
             let label = format!("s{:08}", action_index);
             match &entry.action {
                 Action::Setpoint {
-                    encoded_payload, ..
+                    target_instance,
+                    encoded_payload,
+                    ..
                 } => {
+                    check_target_instance(&label, target_instance)?;
                     check_payload(&label, encoded_payload)?;
                 }
                 Action::Command {
-                    request_encoded, ..
+                    target_instance,
+                    request_encoded,
+                    host_deadline,
+                    ..
                 } => {
+                    check_target_instance(&label, target_instance)?;
                     check_payload(&label, request_encoded)?;
+                    if *host_deadline == Duration::ZERO {
+                        return Err(ProgramError::Other(format!(
+                            "step `{label}` declares a zero host deadline"
+                        )));
+                    }
                 }
-                Action::Withdraw { .. } => {}
+                Action::Withdraw {
+                    target_instance, ..
+                } => {
+                    check_target_instance(&label, target_instance)?;
+                }
             }
             steps.push(Step {
                 label,
@@ -335,6 +351,243 @@ impl Program {
         crate::scenario::publication::write_program_bytes(path, &self.program_bytes)
             .map_err(|error| ProgramError::Other(format!("write {}: {error}", path.display())))
     }
+
+    /// Decode a program from its canonical on-disk bytes and re-run
+    /// the same semantic invariants `normalize` enforces: exact
+    /// nanosecond-aligned duration, stable boundary ordering,
+    /// unique action IDs, and bounded payloads. Hashing alone does
+    /// not validate the encoded program's meaning.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ProgramError> {
+        let envelope: WireProgram = serde_json::from_slice(bytes)
+            .map_err(|error| ProgramError::Other(format!("decode envelope: {error}")))?;
+        if envelope.schema_version != PROGRAM_SCHEMA_VERSION {
+            return Err(ProgramError::Other(format!(
+                "unsupported program schema version `{}`",
+                envelope.schema_version
+            )));
+        }
+        let quantum_micros = envelope.quantum_micros;
+        let quantum = Quantum::from_micros(quantum_micros)
+            .ok_or_else(|| ProgramError::Other("decoded quantum is zero".to_owned()))?;
+        let duration = Duration::from_micros(envelope.duration_micros);
+        let schedule = envelope
+            .steps
+            .into_iter()
+            .map(|step| {
+                Ok(ScheduleEntry {
+                    boundary: step.boundary,
+                    action: decode_action(step.action)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ProgramError>>()?;
+        let captures = envelope
+            .captures
+            .into_iter()
+            .map(decode_capture)
+            .collect::<Result<Vec<_>, ProgramError>>()?;
+        // Re-run the one validation entry point. This is the same
+        // check that authors see when they build a program; the
+        // decoder cannot skip it.
+        Self::normalize(
+            envelope.scenario_name,
+            quantum,
+            duration,
+            schedule,
+            captures,
+        )
+    }
+}
+
+fn decode_action(action: WireAction) -> Result<Action, ProgramError> {
+    Ok(match action {
+        WireAction::Setpoint {
+            target_instance,
+            consumer_name,
+            consumer_service,
+            consumer_method,
+            consumer_kind,
+            consumer_request,
+            consumer_response,
+            encoded_payload_b64,
+            validity,
+        } => {
+            let validity = match validity.as_str() {
+                "permanent" => Validity::Permanent,
+                other => {
+                    return Err(ProgramError::Other(format!(
+                        "decoded setpoint declares unknown validity `{other}`"
+                    )));
+                }
+            };
+            Action::Setpoint {
+                target_instance,
+                consumer_signature: port_signature(
+                    &consumer_name,
+                    &consumer_service,
+                    &consumer_method,
+                    &consumer_kind,
+                    &consumer_request,
+                    &consumer_response,
+                )?,
+                encoded_payload: BASE64_ENGINE
+                    .decode(&encoded_payload_b64)
+                    .map_err(|error| ProgramError::Other(format!("setpoint payload: {error}")))?,
+                validity,
+            }
+        }
+        WireAction::Withdraw {
+            target_instance,
+            producer_name,
+            producer_service,
+            producer_method,
+            producer_kind,
+            producer_request,
+            producer_response,
+        } => Action::Withdraw {
+            target_instance,
+            producer_signature: port_signature(
+                &producer_name,
+                &producer_service,
+                &producer_method,
+                &producer_kind,
+                &producer_request,
+                &producer_response,
+            )?,
+        },
+        WireAction::Command {
+            target_instance,
+            service_name,
+            service_service,
+            service_method,
+            service_kind,
+            service_request,
+            service_response,
+            request_encoded_b64,
+            label,
+            simulated_deadline_micros,
+            host_deadline_micros,
+        } => Action::Command {
+            target_instance,
+            service_signature: port_signature(
+                &service_name,
+                &service_service,
+                &service_method,
+                &service_kind,
+                &service_request,
+                &service_response,
+            )?,
+            request_encoded: BASE64_ENGINE
+                .decode(&request_encoded_b64)
+                .map_err(|error| ProgramError::Other(format!("command request: {error}")))?,
+            label,
+            simulated_deadline: Duration::from_micros(simulated_deadline_micros),
+            host_deadline: Duration::from_micros(host_deadline_micros),
+        },
+    })
+}
+
+fn decode_capture(capture: WireCapture) -> Result<crate::scenario::plan::Capture, ProgramError> {
+    Ok(match capture {
+        WireCapture::State {
+            name,
+            signature_name,
+            signature_service,
+            signature_method,
+            signature_kind,
+            signature_request,
+            signature_response,
+        } => crate::scenario::plan::Capture::State {
+            name,
+            signature: port_signature(
+                &signature_name,
+                &signature_service,
+                &signature_method,
+                &signature_kind,
+                &signature_request,
+                &signature_response,
+            )?,
+        },
+        WireCapture::Sample {
+            name,
+            signature_name,
+            signature_service,
+            signature_method,
+            signature_kind,
+            signature_request,
+            signature_response,
+        } => crate::scenario::plan::Capture::Sample {
+            name,
+            signature: port_signature(
+                &signature_name,
+                &signature_service,
+                &signature_method,
+                &signature_kind,
+                &signature_request,
+                &signature_response,
+            )?,
+        },
+        WireCapture::Event {
+            name,
+            signature_name,
+            signature_service,
+            signature_method,
+            signature_kind,
+            signature_request,
+            signature_response,
+        } => crate::scenario::plan::Capture::Event {
+            name,
+            signature: port_signature(
+                &signature_name,
+                &signature_service,
+                &signature_method,
+                &signature_kind,
+                &signature_request,
+                &signature_response,
+            )?,
+        },
+        WireCapture::NativeBody { name, units, frame } => {
+            crate::scenario::plan::Capture::native_body(name, units, frame)
+                .map_err(|error| ProgramError::Other(format!("native body capture: {error}")))?
+        }
+    })
+}
+
+fn port_signature(
+    name: &str,
+    service: &str,
+    method: &str,
+    kind: &str,
+    request: &str,
+    response: &str,
+) -> Result<phoxal_port::PortSignature, ProgramError> {
+    // PortSignature::new requires &'static str for its string fields.
+    // Decoded program metadata is bounded, finite, and lives for the
+    // duration of the run; leaking the small string set is a one-time
+    // cost and lets the decoder reuse the public constructor.
+    let leaked = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
+    Ok(phoxal_port::PortSignature::new(
+        leaked(name),
+        leaked(service),
+        leaked(method),
+        decode_port_kind(kind)?,
+        leaked(request),
+        leaked(response),
+    ))
+}
+
+fn decode_port_kind(kind: &str) -> Result<phoxal_port::PortKind, ProgramError> {
+    match kind {
+        "state" => Ok(phoxal_port::PortKind::State),
+        "sample" => Ok(phoxal_port::PortKind::Sample),
+        "event" => Ok(phoxal_port::PortKind::Event),
+        "stream" => Ok(phoxal_port::PortKind::Stream),
+        "setpoint" => Ok(phoxal_port::PortKind::Setpoint),
+        "read" => Ok(phoxal_port::PortKind::Read),
+        "commands" => Ok(phoxal_port::PortKind::Commands),
+        other => Err(ProgramError::Other(format!(
+            "decoded program declares unknown port kind `{other}`"
+        ))),
+    }
 }
 
 fn check_payload(step_label: &str, payload: &[u8]) -> Result<(), ProgramError> {
@@ -348,6 +601,15 @@ fn check_payload(step_label: &str, payload: &[u8]) -> Result<(), ProgramError> {
             step_label: step_label.to_owned(),
             bytes: payload.len(),
         });
+    }
+    Ok(())
+}
+
+fn check_target_instance(step_label: &str, target_instance: &str) -> Result<(), ProgramError> {
+    if target_instance.is_empty() {
+        return Err(ProgramError::Other(format!(
+            "step `{step_label}` carries an empty target instance"
+        )));
     }
     Ok(())
 }
@@ -389,6 +651,7 @@ struct WireStep {
 #[derive(Debug, Serialize, Deserialize)]
 enum WireAction {
     Setpoint {
+        target_instance: String,
         consumer_name: String,
         consumer_service: String,
         consumer_method: String,
@@ -396,8 +659,10 @@ enum WireAction {
         consumer_request: String,
         consumer_response: String,
         encoded_payload_b64: String,
+        validity: String,
     },
     Withdraw {
+        target_instance: String,
         producer_name: String,
         producer_service: String,
         producer_method: String,
@@ -406,6 +671,7 @@ enum WireAction {
         producer_response: String,
     },
     Command {
+        target_instance: String,
         service_name: String,
         service_service: String,
         service_method: String,
@@ -414,6 +680,8 @@ enum WireAction {
         service_response: String,
         request_encoded_b64: String,
         label: String,
+        simulated_deadline_micros: u64,
+        host_deadline_micros: u64,
     },
 }
 
@@ -459,12 +727,15 @@ fn wire_step(step: &Step) -> WireStep {
         boundary: step.boundary,
         action: match &step.action {
             Action::Setpoint {
+                target_instance,
                 consumer_signature,
                 encoded_payload,
+                validity,
             } => {
                 let (name, service, method, kind, request, response) =
                     sig_strings(consumer_signature);
                 WireAction::Setpoint {
+                    target_instance: target_instance.clone(),
                     consumer_name: name.to_owned(),
                     consumer_service: service.to_owned(),
                     consumer_method: method.to_owned(),
@@ -472,12 +743,17 @@ fn wire_step(step: &Step) -> WireStep {
                     consumer_request: request.to_owned(),
                     consumer_response: response.to_owned(),
                     encoded_payload_b64: BASE64_ENGINE.encode(encoded_payload),
+                    validity: validity.wire_label().to_owned(),
                 }
             }
-            Action::Withdraw { producer_signature } => {
+            Action::Withdraw {
+                target_instance,
+                producer_signature,
+            } => {
                 let (name, service, method, kind, request, response) =
                     sig_strings(producer_signature);
                 WireAction::Withdraw {
+                    target_instance: target_instance.clone(),
                     producer_name: name.to_owned(),
                     producer_service: service.to_owned(),
                     producer_method: method.to_owned(),
@@ -487,13 +763,17 @@ fn wire_step(step: &Step) -> WireStep {
                 }
             }
             Action::Command {
+                target_instance,
                 service_signature,
                 request_encoded,
                 label,
+                simulated_deadline,
+                host_deadline,
             } => {
                 let (name, service, method, kind, request, response) =
                     sig_strings(service_signature);
                 WireAction::Command {
+                    target_instance: target_instance.clone(),
                     service_name: name.to_owned(),
                     service_service: service.to_owned(),
                     service_method: method.to_owned(),
@@ -502,6 +782,9 @@ fn wire_step(step: &Step) -> WireStep {
                     service_response: response.to_owned(),
                     request_encoded_b64: BASE64_ENGINE.encode(request_encoded),
                     label: label.clone(),
+                    simulated_deadline_micros: u64::try_from(simulated_deadline.as_micros())
+                        .unwrap_or(0),
+                    host_deadline_micros: u64::try_from(host_deadline.as_micros()).unwrap_or(0),
                 }
             }
         },
@@ -602,6 +885,15 @@ mod tests {
         )
     }
 
+    fn make_setpoint(byte: u8) -> Action {
+        Action::Setpoint {
+            target_instance: "motion_target".to_owned(),
+            consumer_signature: setpoint_sig(),
+            encoded_payload: vec![byte],
+            validity: crate::scenario::plan::Validity::Permanent,
+        }
+    }
+
     #[test]
     fn quantum_rejects_zero() {
         assert!(Quantum::from_micros(0).is_none());
@@ -637,8 +929,10 @@ mod tests {
     fn program_records_identity_against_stored_bytes() {
         let quantum = Quantum::from_micros(2_000).expect("quantum");
         let action = Action::Setpoint {
+            target_instance: "motion_target".to_owned(),
             consumer_signature: setpoint_sig(),
             encoded_payload: vec![0xAB, 0xCD],
+            validity: crate::scenario::plan::Validity::Permanent,
         };
         let program = Program::normalize(
             "scenarios/Demo",
@@ -664,10 +958,7 @@ mod tests {
         // The new path stable-sorts by boundary while preserving the
         // authored order at ties.
         let quantum = Quantum::from_micros(2_000).expect("quantum");
-        let make = |byte: u8| Action::Setpoint {
-            consumer_signature: setpoint_sig(),
-            encoded_payload: vec![byte],
-        };
+        let make = make_setpoint;
         let program = Program::normalize(
             "scenarios/Sort",
             quantum,
@@ -705,10 +996,7 @@ mod tests {
     #[test]
     fn equal_boundaries_retain_authored_order() {
         let quantum = Quantum::from_micros(2_000).expect("quantum");
-        let make = |label_byte: u8| Action::Setpoint {
-            consumer_signature: setpoint_sig(),
-            encoded_payload: vec![label_byte],
-        };
+        let make = make_setpoint;
         let program = Program::normalize(
             "scenarios/Order",
             quantum,
@@ -732,5 +1020,100 @@ mod tests {
             })
             .collect();
         assert_eq!(payload_bytes, vec![vec![1], vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn decode_round_trip_preserves_typed_fields() {
+        // Build a six-second sparse schedule with a single action
+        // at boundary 500 — the canonical item 4 acceptance probe.
+        // The wire form must preserve target instance, validity,
+        // and the typed payload so the decoded program is identical
+        // to what the author wrote.
+        let quantum = Quantum::from_micros(2_000).expect("quantum");
+        let action = Action::Setpoint {
+            target_instance: "motion_target".to_owned(),
+            consumer_signature: setpoint_sig(),
+            encoded_payload: vec![0xAB, 0xCD],
+            validity: crate::scenario::plan::Validity::Permanent,
+        };
+        let program = Program::normalize(
+            "scenarios/Sparse",
+            quantum,
+            Duration::from_secs(6),
+            vec![ScheduleEntry::at(500, action.clone())],
+            vec![],
+        )
+        .expect("normalize");
+        let decoded = Program::decode(program.program_bytes()).expect("decode");
+        decoded.verify_identity().expect("identity");
+        assert_eq!(decoded.transition_count(), 3_000);
+        assert_eq!(decoded.scenario_name(), "scenarios/Sparse");
+        let step = &decoded.steps()[0];
+        match &step.action {
+            Action::Setpoint {
+                target_instance,
+                encoded_payload,
+                validity,
+                ..
+            } => {
+                assert_eq!(target_instance, "motion_target");
+                assert_eq!(encoded_payload, &vec![0xAB, 0xCD]);
+                assert_eq!(*validity, crate::scenario::plan::Validity::Permanent);
+            }
+            other => panic!("expected setpoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_rejects_unknown_validity() {
+        // Tampered wire form must fail at decode, not at run time.
+        let quantum = Quantum::from_micros(2_000).expect("quantum");
+        let action = Action::Setpoint {
+            target_instance: "motion_target".to_owned(),
+            consumer_signature: setpoint_sig(),
+            encoded_payload: vec![0xAB, 0xCD],
+            validity: crate::scenario::plan::Validity::Permanent,
+        };
+        let program = Program::normalize(
+            "scenarios/TamperedValidity",
+            quantum,
+            Duration::from_secs(2),
+            vec![ScheduleEntry::at(0, action)],
+            vec![],
+        )
+        .expect("normalize");
+        let mut bytes = program.program_bytes().to_vec();
+        let text = std::str::from_utf8(&bytes)
+            .expect("utf-8 envelope")
+            .to_owned();
+        let tampered = text.replace("\"permanent\"", "\"forever\"");
+        bytes = tampered.into_bytes();
+        assert!(Program::decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn decode_rejects_unknown_port_kind() {
+        let quantum = Quantum::from_micros(2_000).expect("quantum");
+        let action = Action::Setpoint {
+            target_instance: "motion_target".to_owned(),
+            consumer_signature: setpoint_sig(),
+            encoded_payload: vec![0xAB],
+            validity: crate::scenario::plan::Validity::Permanent,
+        };
+        let program = Program::normalize(
+            "scenarios/TamperedKind",
+            quantum,
+            Duration::from_secs(2),
+            vec![ScheduleEntry::at(0, action)],
+            vec![],
+        )
+        .expect("normalize");
+        let mut bytes = program.program_bytes().to_vec();
+        let text = std::str::from_utf8(&bytes)
+            .expect("utf-8 envelope")
+            .to_owned();
+        let tampered = text.replace("\"setpoint\"", "\"nonsense\"");
+        bytes = tampered.into_bytes();
+        assert!(Program::decode(&bytes).is_err());
     }
 }

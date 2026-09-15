@@ -388,7 +388,7 @@ impl From<crate::scenario::program::ProgramError> for FixtureError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::plan::{Action, Step};
+    use crate::scenario::plan::{Action, Step, Validity};
     use crate::scenario::program::ScheduleEntry;
     use phoxal_port::PortSignature;
 
@@ -423,16 +423,21 @@ mod tests {
                 ScheduleEntry::at(
                     0,
                     Action::Setpoint {
+                        target_instance: "motion_target".to_owned(),
                         consumer_signature: setpoint_sig(),
                         encoded_payload: vec![1, 2, 3],
+                        validity: Validity::Permanent,
                     },
                 ),
                 ScheduleEntry::at(
                     1,
                     Action::Command {
+                        target_instance: "motion_target".to_owned(),
                         service_signature: command_sig(),
                         request_encoded: vec![7, 7],
                         label: "do_thing".to_owned(),
+                        simulated_deadline: std::time::Duration::from_secs(1),
+                        host_deadline: std::time::Duration::from_secs(1),
                     },
                 ),
             ],
@@ -498,8 +503,10 @@ mod tests {
             vec![ScheduleEntry::at(
                 0,
                 Action::Setpoint {
+                    target_instance: "motion_target".to_owned(),
                     consumer_signature: setpoint_sig(),
                     encoded_payload: vec![1],
+                    validity: Validity::Permanent,
                 },
             )],
             vec![],
@@ -512,8 +519,10 @@ mod tests {
             vec![ScheduleEntry::at(
                 0,
                 Action::Setpoint {
+                    target_instance: "motion_target".to_owned(),
                     consumer_signature: setpoint_sig(),
                     encoded_payload: vec![2],
+                    validity: Validity::Permanent,
                 },
             )],
             vec![],
@@ -534,8 +543,10 @@ mod tests {
             vec![ScheduleEntry::at(
                 0,
                 Action::Setpoint {
+                    target_instance: "motion_target".to_owned(),
                     consumer_signature: setpoint_sig(),
                     encoded_payload: vec![1],
+                    validity: Validity::Permanent,
                 },
             )],
             vec![],
@@ -568,16 +579,21 @@ mod tests {
                 ScheduleEntry::at(
                     0,
                     Action::Command {
+                        target_instance: "motion_target".to_owned(),
                         service_signature: command_sig(),
                         request_encoded: vec![1],
                         label: "do".to_owned(),
+                        simulated_deadline: std::time::Duration::from_secs(1),
+                        host_deadline: std::time::Duration::from_secs(1),
                     },
                 ),
                 ScheduleEntry::at(
                     1,
                     Action::Setpoint {
+                        target_instance: "motion_target".to_owned(),
                         consumer_signature: setpoint_sig(),
                         encoded_payload: vec![2],
+                        validity: Validity::Permanent,
                     },
                 ),
             ],
@@ -615,9 +631,12 @@ mod tests {
             vec![ScheduleEntry::at(
                 0,
                 Action::Command {
+                    target_instance: "motion_target".to_owned(),
                     service_signature: command_sig(),
                     request_encoded: vec![1],
                     label: "do".to_owned(),
+                    simulated_deadline: std::time::Duration::from_secs(1),
+                    host_deadline: std::time::Duration::from_secs(1),
                 },
             )],
             vec![],
@@ -648,8 +667,10 @@ mod tests {
             vec![ScheduleEntry::at(
                 0,
                 Action::Setpoint {
+                    target_instance: "motion_target".to_owned(),
                     consumer_signature: setpoint_sig(),
                     encoded_payload: vec![1],
+                    validity: Validity::Permanent,
                 },
             )],
             vec![],
@@ -662,8 +683,10 @@ mod tests {
             vec![ScheduleEntry::at(
                 0,
                 Action::Setpoint {
+                    target_instance: "motion_target".to_owned(),
                     consumer_signature: setpoint_sig(),
                     encoded_payload: vec![1],
+                    validity: Validity::Permanent,
                 },
             )],
             vec![],
@@ -683,8 +706,10 @@ mod tests {
                 label: "bad".to_owned(),
                 boundary: 0,
                 action: Action::Setpoint {
+                    target_instance: "motion_target".to_owned(),
                     consumer_signature: command_sig(),
                     encoded_payload: vec![1],
+                    validity: Validity::Permanent,
                 },
             }],
             vec![],

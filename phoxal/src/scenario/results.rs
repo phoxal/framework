@@ -191,10 +191,9 @@ impl std::fmt::Display for SealError {
                 f,
                 "capture `{capture}` has {entries} entries, exceeding the {cap}-entry interval cap"
             ),
-            Self::RunByteOverflow { bytes, cap } => write!(
-                f,
-                "cumulative capture bytes {bytes} exceed run cap {cap}"
-            ),
+            Self::RunByteOverflow { bytes, cap } => {
+                write!(f, "cumulative capture bytes {bytes} exceed run cap {cap}")
+            }
         }
     }
 }
@@ -407,12 +406,7 @@ impl EvidenceCollector {
         // action. A setpoint step cannot produce a CommandIssued
         // outcome; a command step cannot produce a SetpointDelivered
         // outcome. A step observed at the wrong boundary fails closed.
-        let step = match self
-            .program
-            .steps()
-            .iter()
-            .find(|step| step.label == label)
-        {
+        let step = match self.program.steps().iter().find(|step| step.label == label) {
             Some(step) => step,
             None => return Err(SealError::UnexpectedStepLabel(label)),
         };
@@ -533,9 +527,7 @@ impl EvidenceCollector {
                 cap: MAX_RECORD_BYTES,
             });
         }
-        self.record_bytes_total = self
-            .record_bytes_total
-            .saturating_add(record_bytes);
+        self.record_bytes_total = self.record_bytes_total.saturating_add(record_bytes);
         if self.record_bytes_total > MAX_RUN_BYTES {
             return Err(SealError::RunByteOverflow {
                 bytes: self.record_bytes_total,
@@ -654,12 +646,10 @@ impl EvidenceCollector {
         // and does not need a setpoint-style eligibility tick at
         // the final boundary.
         if let Some(max_boundary) = self.program.steps().iter().map(|step| step.boundary).max() {
-            let has_setpoint_step = self.program.steps().iter().any(|step| {
-                matches!(
-                    step.action,
-                    crate::scenario::plan::Action::Setpoint { .. }
-                )
-            });
+            let has_setpoint_step =
+                self.program.steps().iter().any(|step| {
+                    matches!(step.action, crate::scenario::plan::Action::Setpoint { .. })
+                });
             if has_setpoint_step {
                 let observed_max = self
                     .step_outcomes
@@ -741,7 +731,7 @@ fn capture_name(capture: &crate::scenario::plan::Capture) -> &str {
 mod tests {
     use super::*;
     use crate::scenario::participant::FixtureParticipant;
-    use crate::scenario::plan::{Action, Capture};
+    use crate::scenario::plan::{Action, Capture, Validity};
     use crate::scenario::program::{Program, ScheduleEntry};
     use phoxal_port::PortSignature;
 
@@ -777,6 +767,39 @@ mod tests {
         )
     }
 
+    fn setpoint_action(byte: u8) -> Action {
+        Action::setpoint(
+            "motion_target",
+            setpoint_sig(),
+            vec![byte],
+            Validity::Permanent,
+        )
+        .expect("setpoint action")
+    }
+
+    fn command_signature() -> PortSignature {
+        PortSignature::new(
+            "motion/do",
+            "phoxal.motion",
+            "Do",
+            phoxal_port::PortKind::Commands,
+            "DoReq",
+            "DoReply",
+        )
+    }
+
+    fn command_action(label: &str, byte: u8) -> Action {
+        Action::command(
+            "motion_target",
+            command_signature(),
+            vec![byte],
+            label,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .expect("command action")
+    }
+
     #[test]
     fn run_records_outcomes_captures_and_replies() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
@@ -784,13 +807,7 @@ mod tests {
             "scenarios/First",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1, 2, 3],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![crate::scenario::Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
@@ -826,13 +843,7 @@ mod tests {
             "scenarios/Seal",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
@@ -854,26 +865,11 @@ mod tests {
     #[test]
     fn seal_rejects_missing_command_reply() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
-        let command_signature = PortSignature::new(
-            "motion/do",
-            "phoxal.motion",
-            "Do",
-            phoxal_port::PortKind::Commands,
-            "DoReq",
-            "DoReply",
-        );
         let program = Program::normalize(
             "scenarios/SealCmd",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Command {
-                    service_signature: command_signature,
-                    request_encoded: vec![1],
-                    label: "do_thing".to_owned(),
-                },
-            )],
+            vec![ScheduleEntry::at(0, command_action("do_thing", 1))],
             vec![],
         )
         .unwrap();
@@ -904,13 +900,7 @@ mod tests {
             "scenarios/SealOk",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
@@ -941,13 +931,7 @@ mod tests {
             "scenarios/Dup",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![],
         )
         .unwrap();
@@ -982,13 +966,7 @@ mod tests {
             "scenarios/WrongKind",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![],
         )
         .unwrap();
@@ -1015,13 +993,7 @@ mod tests {
             "scenarios/WrongCapture",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
@@ -1041,13 +1013,7 @@ mod tests {
             "scenarios/EmptyCap",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
@@ -1074,13 +1040,7 @@ mod tests {
             "scenarios/Undeclared",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![],
         )
         .unwrap();
@@ -1106,13 +1066,7 @@ mod tests {
             "scenarios/NToNPlusOne",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![],
         )
         .unwrap();
@@ -1135,13 +1089,7 @@ mod tests {
             "scenarios/StaleAck",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![],
         )
         .unwrap();
@@ -1165,13 +1113,7 @@ mod tests {
             "scenarios/FixtureLost",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![],
         )
         .unwrap();
@@ -1194,26 +1136,11 @@ mod tests {
         // boundary to observe; the final-cut check must finalize
         // through command replies alone.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
-        let command_signature = PortSignature::new(
-            "motion/do",
-            "phoxal.motion",
-            "Do",
-            phoxal_port::PortKind::Commands,
-            "DoReq",
-            "DoReply",
-        );
         let program = Program::normalize(
             "scenarios/CommandOnly",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Command {
-                    service_signature: command_signature,
-                    request_encoded: vec![1],
-                    label: "do_thing".to_owned(),
-                },
-            )],
+            vec![ScheduleEntry::at(0, command_action("do_thing", 1))],
             vec![],
         )
         .unwrap();
@@ -1250,13 +1177,7 @@ mod tests {
             "scenarios/OversizedCapture",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
@@ -1292,13 +1213,7 @@ mod tests {
             "scenarios/OversizedInterval",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::event("motion", event_sig()).expect("event capture")],
         )
         .unwrap();
@@ -1336,13 +1251,7 @@ mod tests {
             "scenarios/ZeroEventInterval",
             quantum,
             std::time::Duration::from_secs(1),
-            vec![ScheduleEntry::at(
-                0,
-                Action::Setpoint {
-                    consumer_signature: setpoint_sig(),
-                    encoded_payload: vec![1],
-                },
-            )],
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::event("motion", event_sig()).expect("event capture")],
         )
         .unwrap();
@@ -1357,10 +1266,7 @@ mod tests {
             )
             .expect("record step");
         collector
-            .record_capture(
-                "motion".to_owned(),
-                CaptureRecord::Events(Vec::new()),
-            )
+            .record_capture("motion".to_owned(), CaptureRecord::Events(Vec::new()))
             .expect("zero-event interval must be accepted");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
