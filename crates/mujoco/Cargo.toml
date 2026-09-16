@@ -24,7 +24,7 @@ native = ["dep:mujoco-rs"]
 rendering = ["native", "dep:cgl", "dep:glutin"]
 
 [dependencies]
-phoxal-port = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["port"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 # `mujoco-rs` 6.0.1 is the binding release for MuJoCo 3.12.0.

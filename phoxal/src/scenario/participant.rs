@@ -294,14 +294,14 @@ mod tests {
     use super::*;
     use crate::scenario::plan::{Action, Step, Validity};
     use crate::scenario::program::ScheduleEntry;
-    use phoxal_port::PortSignature;
+    use crate::port::PortSignature;
 
     fn setpoint_sig() -> PortSignature {
         PortSignature::new(
             "motion/cmd",
             "phoxal.motion",
             "Set",
-            phoxal_port::PortKind::Setpoint,
+            crate::port::PortKind::Setpoint,
             "Req",
             "Reply",
         )
@@ -311,7 +311,7 @@ mod tests {
             "motion/cmd",
             "phoxal.motion",
             "Do",
-            phoxal_port::PortKind::Commands,
+            crate::port::PortKind::Commands,
             "Req",
             "Reply",
         )
@@ -531,7 +531,7 @@ mod tests {
                 "motion/state",
                 "phoxal.motion",
                 "State",
-                phoxal_port::PortKind::State,
+                crate::port::PortKind::State,
                 "State",
                 "State",
             )

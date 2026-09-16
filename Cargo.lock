@@ -2299,8 +2299,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-build",
- "phoxal-port",
  "prost",
  "serde",
 ]
@@ -2311,9 +2309,7 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-build",
  "phoxal-motion",
- "phoxal-port",
  "phoxal-robotics",
  "prost",
  "serde",
@@ -2326,8 +2322,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-build",
- "phoxal-port",
  "prost",
  "serde",
 ]
@@ -2338,8 +2332,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-build",
- "phoxal-port",
  "phoxal-robotics",
  "prost",
  "serde",
@@ -2351,8 +2343,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-build",
- "phoxal-port",
  "prost",
  "serde",
 ]
@@ -2361,8 +2351,8 @@ dependencies = [
 name = "phoxal-contract-consumer-fixture"
 version = "0.1.0"
 dependencies = [
+ "phoxal",
  "phoxal-contract-owner-fixture",
- "phoxal-port",
  "prost",
 ]
 
@@ -2370,8 +2360,7 @@ dependencies = [
 name = "phoxal-contract-owner-fixture"
 version = "0.1.0"
 dependencies = [
- "phoxal-build",
- "phoxal-port",
+ "phoxal",
  "prost",
  "prost-types",
 ]
@@ -2382,8 +2371,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-build",
- "phoxal-port",
  "prost",
  "serde",
 ]
@@ -2404,8 +2391,7 @@ dependencies = [
 name = "phoxal-kinematics"
 version = "0.1.0"
 dependencies = [
- "phoxal-build",
- "phoxal-port",
+ "phoxal",
  "phoxal-robotics",
  "prost",
  "thiserror 2.0.19",
@@ -2427,8 +2413,7 @@ dependencies = [
 name = "phoxal-motion"
 version = "0.1.0"
 dependencies = [
- "phoxal-build",
- "phoxal-port",
+ "phoxal",
  "prost",
  "thiserror 2.0.19",
 ]
@@ -2440,13 +2425,13 @@ dependencies = [
  "cgl",
  "glutin",
  "mujoco-rs",
+ "phoxal",
  "phoxal-component-bno085",
  "phoxal-component-ddsm115",
  "phoxal-component-oak_d_lite",
  "phoxal-component-vl53l1x",
  "phoxal-component-zed_f9p",
  "phoxal-motion",
- "phoxal-port",
  "sha2",
  "tempfile",
  "thiserror 2.0.19",
@@ -2456,8 +2441,7 @@ dependencies = [
 name = "phoxal-navigation"
 version = "0.1.0"
 dependencies = [
- "phoxal-build",
- "phoxal-port",
+ "phoxal",
  "prost",
  "thiserror 2.0.19",
 ]
@@ -2503,7 +2487,7 @@ dependencies = [
 name = "phoxal-robotics"
 version = "0.1.0"
 dependencies = [
- "phoxal-build",
+ "phoxal",
  "prost",
  "thiserror 2.0.19",
 ]
@@ -2512,9 +2496,8 @@ dependencies = [
 name = "phoxal-safety"
 version = "0.1.0"
 dependencies = [
- "phoxal-build",
+ "phoxal",
  "phoxal-motion",
- "phoxal-port",
  "phoxal-robotics",
  "phoxal-world",
  "prost",
@@ -2607,9 +2590,8 @@ dependencies = [
 name = "phoxal-world"
 version = "0.1.0"
 dependencies = [
- "phoxal-build",
+ "phoxal",
  "phoxal-kinematics",
- "phoxal-port",
  "prost",
  "thiserror 2.0.19",
 ]

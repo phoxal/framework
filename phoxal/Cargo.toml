@@ -28,15 +28,27 @@ path = "src/lib.rs"
 # features, and who may do what at runtime remains process ownership and the
 # constructible API.
 #
-# Every profile compiles the same code. The one place a feature may be named in
-# this crate's source is `src/lib.rs`, and `cargo xtask policy` rejects it
-# anywhere else.
+# Every profile compiles the same source; features select optional dependencies
+# and `pub` declarations, not parallel code paths. The one place a feature may
+# be named in this crate's source is `src/lib.rs`, and `cargo xtask policy`
+# rejects it anywhere else.
 [features]
 default = ["runtime"]
 
 # The contract descriptor family is deliberately available without selecting a
 # runner, transport, or host profile.
 port = ["dep:phoxal-port"]
+
+# Authoring helper for Protobuf build scripts. The `phoxal::build` module
+# re-exports `compile_protos` and `compile_protos_with_dependencies` over the
+# internal `phoxal-build` implementation helper. Pulls in no
+# runtime/transport/session/supervisor/native simulation dependencies; this
+# feature exists so service contract owners can declare `phoxal` as their
+# `build-dependencies` entry instead of naming `phoxal-build` directly.
+# Phoxal's own `build.rs` keeps a direct `phoxal-build` dependency identified
+# by reason because it cannot depend on its own not-yet-built library to
+# generate its own protocols.
+build = ["dep:phoxal-build"]
 
 # Framework-owned public protocol messages and pure admission state.
 # This layer has no scheduler, transport, simulator, or project dependency.
@@ -117,6 +129,7 @@ tracing = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 
 phoxal-port = { workspace = true, optional = true }
+phoxal-build = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 
 # Scenario surface deps. `inventory` is the link-time registration mechanism

@@ -297,11 +297,11 @@ fn generated_contract_owns_the_fixture_ports() {
     );
     assert_eq!(
         ports::OBSERVATIONS.signature().kind,
-        phoxal_port::PortKind::Sample
+        phoxal::port::PortKind::Sample
     );
     assert_eq!(
         ports::ACTUATOR.signature().kind,
-        phoxal_port::PortKind::Setpoint
+        phoxal::port::PortKind::Setpoint
     );
     assert!(!FILE_DESCRIPTOR_SET.is_empty());
     assert!(!ports::OBSERVATIONS.signature().descriptor_set().is_empty());

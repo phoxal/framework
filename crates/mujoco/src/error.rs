@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[cfg(feature = "native")]
 use crate::ModelIdentity;
 #[cfg(feature = "native")]
-use phoxal_port::PortKind;
+use phoxal::port::PortKind;
 
 /// Errors raised while validating a closed MJCF/resource artifact.
 #[derive(Debug, thiserror::Error)]

@@ -55,7 +55,7 @@ mod tests {
     use phoxal::runtime::input::InputSet;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal_port::{PortDescriptor, PortKind};
+    use phoxal::port::{PortDescriptor, PortKind};
 
     #[test]
     fn generated_encoder_port_uses_the_shared_robotics_payload() {
@@ -70,7 +70,7 @@ mod tests {
         let actuator = &Ddsm115Inputs::FIELDS[0];
         assert_eq!(actuator.name, "actuator");
         assert_eq!(
-            <phoxal_port::Setpoint<phoxal_motion::ActuatorSetpoint> as PortDescriptor>::KIND,
+            <phoxal::port::Setpoint<phoxal_motion::ActuatorSetpoint> as PortDescriptor>::KIND,
             PortKind::Setpoint
         );
         assert_eq!(

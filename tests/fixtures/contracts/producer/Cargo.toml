@@ -16,12 +16,12 @@ name = "phoxal-contract-owner-fixture"
 path = "src/main.rs"
 
 [dependencies]
-phoxal-port = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["port"] }
 prost = { workspace = true }
 prost-types = { workspace = true }
 
 [build-dependencies]
-phoxal-build = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [lints]
 workspace = true

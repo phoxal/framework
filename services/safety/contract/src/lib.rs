@@ -153,7 +153,7 @@ impl SafetyStatus {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_port::{PortDescriptor, PortKind};
+    use phoxal::port::{PortDescriptor, PortKind};
     use prost::Name;
 
     use super::*;
@@ -167,11 +167,11 @@ mod tests {
         assert_eq!(ports::CONSTRAINTS.name(), "constraints");
         assert_eq!(ports::STATUS.name(), "status");
         assert_eq!(
-            <phoxal_port::Sample<RangeSample> as PortDescriptor>::KIND,
+            <phoxal::port::Sample<RangeSample> as PortDescriptor>::KIND,
             PortKind::Sample
         );
         assert_eq!(
-            <phoxal_port::State<MotionConstraints> as PortDescriptor>::KIND,
+            <phoxal::port::State<MotionConstraints> as PortDescriptor>::KIND,
             PortKind::State
         );
         assert_eq!(WorldBelief::PACKAGE, "phoxal.world.v1");

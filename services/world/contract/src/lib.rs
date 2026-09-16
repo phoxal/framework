@@ -249,7 +249,7 @@ fn validate_confidence(value: f32) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_port::{PortDescriptor, PortKind};
+    use phoxal::port::{PortDescriptor, PortKind};
     use prost::Name;
 
     use super::*;
@@ -262,11 +262,11 @@ mod tests {
         assert_eq!(ports::WINDOW.name(), "window");
         assert_eq!(ports::STATUS.name(), "status");
         assert_eq!(
-            <phoxal_port::Sample<OdometryState> as PortDescriptor>::KIND,
+            <phoxal::port::Sample<OdometryState> as PortDescriptor>::KIND,
             PortKind::Sample
         );
         assert_eq!(
-            <phoxal_port::Read<WindowRequest, WindowResponse> as PortDescriptor>::KIND,
+            <phoxal::port::Read<WindowRequest, WindowResponse> as PortDescriptor>::KIND,
             PortKind::Read
         );
         assert_eq!(WorldBelief::PACKAGE, "phoxal.world.v1");

@@ -15,13 +15,13 @@ include = ["build.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
 kind = "library"
 
 [dependencies]
+phoxal = { workspace = true, default-features = false, features = ["port"] }
 phoxal-kinematics = { workspace = true }
-phoxal-port = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
-phoxal-build = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 phoxal-kinematics = { workspace = true }
 
 [lints]

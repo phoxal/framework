@@ -12,7 +12,7 @@ use phoxal_component_vl53l1x as vl53l1x_contract;
 use phoxal_component_zed_f9p as zed_contract;
 use phoxal_motion as motion_contract;
 use phoxal_mujoco::{Model, Scene};
-use phoxal_port::PortDescriptor;
+use phoxal::port::PortDescriptor;
 
 fn assert_sensor_binding<P: PortDescriptor>(model: &Model, port: P, native_sensor: &str) {
     let binding = model

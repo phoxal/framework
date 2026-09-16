@@ -5,7 +5,7 @@ use phoxal_contract_owner_fixture::{
     InspectionReadResponse, InspectionSample, InspectionSetpoint, InspectionState,
     InspectionStream, inspection,
 };
-use phoxal_port::{
+use phoxal::port::{
     Commands, Event, PortDescriptor, PortKind, Read, Sample, Setpoint, State, Stream,
 };
 

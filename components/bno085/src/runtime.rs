@@ -55,7 +55,7 @@ mod tests {
     };
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal_port::PortKind;
+    use phoxal::port::PortKind;
 
     #[test]
     fn generated_ports_cover_every_declared_capability() {

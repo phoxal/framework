@@ -12,8 +12,8 @@ name = "phoxal-contract-consumer-fixture"
 path = "src/main.rs"
 
 [dependencies]
+phoxal = { workspace = true, default-features = false, features = ["port"] }
 phoxal-contract-owner-fixture = { path = "../producer", version = "0.1.0" }
-phoxal-port = { workspace = true }
 prost = { workspace = true }
 
 [lints]

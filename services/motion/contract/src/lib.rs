@@ -187,7 +187,7 @@ fn validate_finite(
 
 #[cfg(test)]
 mod tests {
-    use phoxal_port::{PortDescriptor, PortKind};
+    use phoxal::port::{PortDescriptor, PortKind};
     use prost::Name;
 
     use super::*;
@@ -196,7 +196,7 @@ mod tests {
     fn generated_port_retains_name_kind_and_message_identity() {
         assert_eq!(ports::ACTUATORS.name(), "actuators");
         assert_eq!(
-            <phoxal_port::Setpoint<ActuatorSetpoint> as PortDescriptor>::KIND,
+            <phoxal::port::Setpoint<ActuatorSetpoint> as PortDescriptor>::KIND,
             PortKind::Setpoint
         );
         assert_eq!(ports::MANUAL.name(), "manual");
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(ports::STATUS.name(), "status");
         assert_eq!(ports::EMERGENCY.name(), "emergency");
         assert_eq!(
-            <phoxal_port::Commands<ApplyEmergencyRequest, ApplyEmergencyResponse> as PortDescriptor>::KIND,
+            <phoxal::port::Commands<ApplyEmergencyRequest, ApplyEmergencyResponse> as PortDescriptor>::KIND,
             PortKind::Commands
         );
         assert_eq!(ActuatorSetpoint::PACKAGE, "phoxal.motion.v1");

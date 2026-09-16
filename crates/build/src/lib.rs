@@ -508,7 +508,7 @@ fn embed_descriptor_section(
             actual: descriptor_len,
         })?;
     let section = format!(
-        "\n#[doc(hidden)]\n#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\nstatic __PHOXAL_DESCRIPTOR_SET: [u8; {frame_len}] = ::phoxal_port::descriptor_frame::<{frame_len}>(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{DESCRIPTOR_FILE}\")));\n"
+        "\n#[doc(hidden)]\n#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\nstatic __PHOXAL_DESCRIPTOR_SET: [u8; {frame_len}] = ::phoxal::port::descriptor_frame::<{frame_len}>(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{DESCRIPTOR_FILE}\")));\n"
     );
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -687,7 +687,7 @@ impl prost_build::ServiceGenerator for PortGenerator {
             };
             if spec.kind.is_publication() {
                 buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal_port::{}<{}> = ::phoxal_port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
+                    "    pub const {}: ::phoxal::port::{}<{}> = ::phoxal::port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
                     spec.constant_name,
                     port_type,
                     output_type,
@@ -701,7 +701,7 @@ impl prost_build::ServiceGenerator for PortGenerator {
                 buffer.push('\n');
             } else {
                 buffer.push_str(&format!(
-                    "    pub const {}: ::phoxal_port::{}<{}, {}> = ::phoxal_port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
+                    "    pub const {}: ::phoxal::port::{}<{}, {}> = ::phoxal::port::{}::with_signature({:?}, {:?}, {:?}, {:?}, {:?}, &super::__PHOXAL_DESCRIPTOR_SET);",
                     spec.constant_name,
                     port_type,
                     input_type,
@@ -874,15 +874,15 @@ mod tests {
         let generated = fs::read_to_string(output.path().join("example.inspection.v1.rs"))
             .expect("generated Rust");
         assert!(generated.contains("pub mod inspection"));
-        assert!(generated.contains("phoxal_port::State<super::InspectionState>"));
-        assert!(generated.contains("phoxal_port::Sample<super::InspectionSample>"));
-        assert!(generated.contains("phoxal_port::Event<super::InspectionEvent>"));
-        assert!(generated.contains("phoxal_port::Stream<super::InspectionStream>"));
-        assert!(generated.contains("phoxal_port::Setpoint<super::InspectionSetpoint>"));
-        assert!(generated.contains("phoxal_port::Read<"));
+        assert!(generated.contains("phoxal::port::State<super::InspectionState>"));
+        assert!(generated.contains("phoxal::port::Sample<super::InspectionSample>"));
+        assert!(generated.contains("phoxal::port::Event<super::InspectionEvent>"));
+        assert!(generated.contains("phoxal::port::Stream<super::InspectionStream>"));
+        assert!(generated.contains("phoxal::port::Setpoint<super::InspectionSetpoint>"));
+        assert!(generated.contains("phoxal::port::Read<"));
         assert!(generated.contains("super::InspectionReadRequest"));
         assert!(generated.contains("super::InspectionReadResponse"));
-        assert!(generated.contains("phoxal_port::Commands<"));
+        assert!(generated.contains("phoxal::port::Commands<"));
         assert!(generated.contains("super::InspectionCommandRequest"));
         assert!(generated.contains("super::InspectionCommandResponse"));
         assert!(generated.contains("pub use super::STATUS"));

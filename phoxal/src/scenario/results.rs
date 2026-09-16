@@ -1099,14 +1099,14 @@ mod tests {
     use crate::scenario::participant::FixtureParticipant;
     use crate::scenario::plan::{Action, Capture, Validity};
     use crate::scenario::program::{Program, ScheduleEntry};
-    use phoxal_port::PortSignature;
+    use crate::port::PortSignature;
 
     fn setpoint_sig() -> PortSignature {
         PortSignature::new(
             "motion/cmd",
             "phoxal.motion",
             "Set",
-            phoxal_port::PortKind::Setpoint,
+            crate::port::PortKind::Setpoint,
             "Req",
             "Reply",
         )
@@ -1116,7 +1116,7 @@ mod tests {
             "motion/state",
             "phoxal.motion",
             "State",
-            phoxal_port::PortKind::State,
+            crate::port::PortKind::State,
             "State",
             "State",
         )
@@ -1127,7 +1127,7 @@ mod tests {
             "motion/event",
             "phoxal.motion",
             "Event",
-            phoxal_port::PortKind::Event,
+            crate::port::PortKind::Event,
             "Event",
             "Event",
         )
@@ -1148,7 +1148,7 @@ mod tests {
             "motion/do",
             "phoxal.motion",
             "Do",
-            phoxal_port::PortKind::Commands,
+            crate::port::PortKind::Commands,
             "DoReq",
             "DoReply",
         )

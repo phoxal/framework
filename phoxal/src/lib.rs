@@ -58,6 +58,21 @@ pub use anyhow::{Result, anyhow};
 #[cfg_attr(docsrs, doc(cfg(feature = "port")))]
 pub use phoxal_port as port;
 
+/// Authoring helper for Protobuf build scripts.
+///
+/// Re-exports [`compile_protos`], [`compile_protos_with_dependencies`], the
+/// [`DependencyDescriptor`] input, the shared [`PORT_PROTO`] option
+/// definition, and the [`include_dir`] / [`descriptor_set_path`] lookups
+/// over the internal `phoxal-build` implementation helper.
+///
+/// Owner manifests declare `phoxal` with the `build` feature in
+/// `[build-dependencies]`; the standard contract authoring path does not
+/// name `phoxal-build` or `phoxal-port` directly. This module pulls in no
+/// runtime/transport/session/supervisor/native simulation dependencies.
+#[cfg(feature = "build")]
+#[cfg_attr(docsrs, doc(cfg(feature = "build")))]
+pub mod build;
+
 #[cfg(feature = "runtime")]
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime")))]
 pub use phoxal_macros::{Config, runtime};

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use mujoco_rs::prelude::{MjModel, MjtBias, MjtGain, MjtJoint, MjtObj, MjtSensor, MjtTrn};
 use mujoco_rs::wrappers::MjVfs;
-use phoxal_port::{PortDescriptor, PortKind, PortSignature};
+use phoxal::port::{PortDescriptor, PortKind, PortSignature};
 
 use crate::artifact::ClosedModel;
 use crate::error::ModelError;

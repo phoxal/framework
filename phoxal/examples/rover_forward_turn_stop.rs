@@ -19,7 +19,7 @@
 use phoxal::scenario::{
     Action, Capture, FixtureParticipant, Program, Quantum, ScheduleEntry, Validity,
 };
-use phoxal_port::{PortKind, PortSignature};
+use phoxal::port::{PortKind, PortSignature};
 
 fn setpoint_sig() -> PortSignature {
     PortSignature::new(

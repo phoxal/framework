@@ -582,12 +582,12 @@ fn port_signature(
     kind: &str,
     request: &str,
     response: &str,
-) -> Result<phoxal_port::PortSignature, ProgramError> {
+) -> Result<crate::port::PortSignature, ProgramError> {
     // `PortSignature::new_owned` owns the borrowed wire metadata and
     // delegates the lifetime promotion to the port crate. The decoder
     // does not reach for `Box::leak` directly; see Gate P1 #4 of
     // the scenario acceptance review.
-    Ok(phoxal_port::PortSignature::new_owned(
+    Ok(crate::port::PortSignature::new_owned(
         name,
         service,
         method,
@@ -597,15 +597,15 @@ fn port_signature(
     ))
 }
 
-fn decode_port_kind(kind: &str) -> Result<phoxal_port::PortKind, ProgramError> {
+fn decode_port_kind(kind: &str) -> Result<crate::port::PortKind, ProgramError> {
     match kind {
-        "state" => Ok(phoxal_port::PortKind::State),
-        "sample" => Ok(phoxal_port::PortKind::Sample),
-        "event" => Ok(phoxal_port::PortKind::Event),
-        "stream" => Ok(phoxal_port::PortKind::Stream),
-        "setpoint" => Ok(phoxal_port::PortKind::Setpoint),
-        "read" => Ok(phoxal_port::PortKind::Read),
-        "commands" => Ok(phoxal_port::PortKind::Commands),
+        "state" => Ok(crate::port::PortKind::State),
+        "sample" => Ok(crate::port::PortKind::Sample),
+        "event" => Ok(crate::port::PortKind::Event),
+        "stream" => Ok(crate::port::PortKind::Stream),
+        "setpoint" => Ok(crate::port::PortKind::Setpoint),
+        "read" => Ok(crate::port::PortKind::Read),
+        "commands" => Ok(crate::port::PortKind::Commands),
         other => Err(ProgramError::Other(format!(
             "decoded program declares unknown port kind `{other}`"
         ))),
@@ -636,15 +636,15 @@ fn check_target_instance(step_label: &str, target_instance: &str) -> Result<(), 
     Ok(())
 }
 
-fn port_kind_label(kind: phoxal_port::PortKind) -> &'static str {
+fn port_kind_label(kind: crate::port::PortKind) -> &'static str {
     match kind {
-        phoxal_port::PortKind::State => "state",
-        phoxal_port::PortKind::Sample => "sample",
-        phoxal_port::PortKind::Event => "event",
-        phoxal_port::PortKind::Stream => "stream",
-        phoxal_port::PortKind::Setpoint => "setpoint",
-        phoxal_port::PortKind::Read => "read",
-        phoxal_port::PortKind::Commands => "commands",
+        crate::port::PortKind::State => "state",
+        crate::port::PortKind::Sample => "sample",
+        crate::port::PortKind::Event => "event",
+        crate::port::PortKind::Stream => "stream",
+        crate::port::PortKind::Setpoint => "setpoint",
+        crate::port::PortKind::Read => "read",
+        crate::port::PortKind::Commands => "commands",
         _ => "unknown",
     }
 }
@@ -860,7 +860,7 @@ fn wire_capture(capture: &Capture) -> WireCapture {
 }
 
 fn sig_strings(
-    sig: &phoxal_port::PortSignature,
+    sig: &crate::port::PortSignature,
 ) -> (
     &'static str,
     &'static str,
@@ -896,12 +896,12 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn setpoint_sig() -> phoxal_port::PortSignature {
-        phoxal_port::PortSignature::new(
+    fn setpoint_sig() -> crate::port::PortSignature {
+        crate::port::PortSignature::new(
             "motion/cmd",
             "phoxal.motion",
             "Set",
-            phoxal_port::PortKind::Setpoint,
+            crate::port::PortKind::Setpoint,
             "SetpointRequest",
             "SetpointReply",
         )

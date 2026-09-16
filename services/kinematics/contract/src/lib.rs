@@ -170,7 +170,7 @@ fn validate_yaw(value: f64) -> Result<(), ValidationError> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_port::{PortDescriptor, PortKind};
+    use phoxal::port::{PortDescriptor, PortKind};
     use prost::Name;
 
     use super::*;
@@ -184,11 +184,11 @@ mod tests {
         assert_eq!(ports::STATUS.name(), "status");
         assert_eq!(ports::LOOKUP_FRAME.name(), "lookup_frame");
         assert_eq!(
-            <phoxal_port::Sample<EncoderSample> as PortDescriptor>::KIND,
+            <phoxal::port::Sample<EncoderSample> as PortDescriptor>::KIND,
             PortKind::Sample
         );
         assert_eq!(
-            <phoxal_port::Read<LookupFrameRequest, LookupFrameResponse> as PortDescriptor>::KIND,
+            <phoxal::port::Read<LookupFrameRequest, LookupFrameResponse> as PortDescriptor>::KIND,
             PortKind::Read
         );
         assert_eq!(OdometryState::PACKAGE, "phoxal.kinematics.v1");

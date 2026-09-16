@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use phoxal_port::PortSignature;
+use crate::port::PortSignature;
 
 /// One finite simulated experiment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,10 +253,10 @@ impl Action {
                 constructor: "Action::setpoint",
             });
         }
-        if descriptor.kind != phoxal_port::PortKind::Setpoint {
+        if descriptor.kind != crate::port::PortKind::Setpoint {
             return Err(PlanValidationError::WrongPortKind {
                 step_label: target_instance,
-                expected: phoxal_port::PortKind::Setpoint,
+                expected: crate::port::PortKind::Setpoint,
                 actual: descriptor.kind,
             });
         }
@@ -282,12 +282,12 @@ impl Action {
                 constructor: "Action::withdraw",
             });
         }
-        if producer_signature.kind != phoxal_port::PortKind::Setpoint
-            && producer_signature.kind != phoxal_port::PortKind::State
+        if producer_signature.kind != crate::port::PortKind::Setpoint
+            && producer_signature.kind != crate::port::PortKind::State
         {
             return Err(PlanValidationError::WrongPortKind {
                 step_label: target_instance,
-                expected: phoxal_port::PortKind::Setpoint,
+                expected: crate::port::PortKind::Setpoint,
                 actual: producer_signature.kind,
             });
         }
@@ -318,10 +318,10 @@ impl Action {
                 constructor: "Action::command",
             });
         }
-        if descriptor.kind != phoxal_port::PortKind::Commands {
+        if descriptor.kind != crate::port::PortKind::Commands {
             return Err(PlanValidationError::WrongPortKind {
                 step_label: target_instance,
-                expected: phoxal_port::PortKind::Commands,
+                expected: crate::port::PortKind::Commands,
                 actual: descriptor.kind,
             });
         }
@@ -373,10 +373,10 @@ impl Action {
                         constructor: "Action::Setpoint",
                     });
                 }
-                if consumer_signature.kind != phoxal_port::PortKind::Setpoint {
+                if consumer_signature.kind != crate::port::PortKind::Setpoint {
                     return Err(PlanValidationError::WrongPortKind {
                         step_label: step_label.to_owned(),
-                        expected: phoxal_port::PortKind::Setpoint,
+                        expected: crate::port::PortKind::Setpoint,
                         actual: consumer_signature.kind,
                     });
                 }
@@ -402,12 +402,12 @@ impl Action {
                         constructor: "Action::Withdraw",
                     });
                 }
-                if producer_signature.kind != phoxal_port::PortKind::Setpoint
-                    && producer_signature.kind != phoxal_port::PortKind::State
+                if producer_signature.kind != crate::port::PortKind::Setpoint
+                    && producer_signature.kind != crate::port::PortKind::State
                 {
                     return Err(PlanValidationError::WrongPortKind {
                         step_label: step_label.to_owned(),
-                        expected: phoxal_port::PortKind::Setpoint,
+                        expected: crate::port::PortKind::Setpoint,
                         actual: producer_signature.kind,
                     });
                 }
@@ -425,10 +425,10 @@ impl Action {
                         constructor: "Action::Command",
                     });
                 }
-                if service_signature.kind != phoxal_port::PortKind::Commands {
+                if service_signature.kind != crate::port::PortKind::Commands {
                     return Err(PlanValidationError::WrongPortKind {
                         step_label: step_label.to_owned(),
-                        expected: phoxal_port::PortKind::Commands,
+                        expected: crate::port::PortKind::Commands,
                         actual: service_signature.kind,
                     });
                 }
@@ -492,8 +492,8 @@ pub enum Capture {
 pub enum CaptureError {
     WrongPortKind {
         constructor: &'static str,
-        expected: phoxal_port::PortKind,
-        actual: phoxal_port::PortKind,
+        expected: crate::port::PortKind,
+        actual: crate::port::PortKind,
     },
 }
 
@@ -522,7 +522,7 @@ impl Capture {
     pub fn state(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
         require_kind(
             "Capture::state",
-            phoxal_port::PortKind::State,
+            crate::port::PortKind::State,
             signature.kind,
         )?;
         Ok(Self::State {
@@ -533,7 +533,7 @@ impl Capture {
     pub fn sample(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
         require_kind(
             "Capture::sample",
-            phoxal_port::PortKind::Sample,
+            crate::port::PortKind::Sample,
             signature.kind,
         )?;
         Ok(Self::Sample {
@@ -544,7 +544,7 @@ impl Capture {
     pub fn event(name: impl Into<String>, signature: PortSignature) -> Result<Self, CaptureError> {
         require_kind(
             "Capture::event",
-            phoxal_port::PortKind::Event,
+            crate::port::PortKind::Event,
             signature.kind,
         )?;
         Ok(Self::Event {
@@ -566,8 +566,8 @@ impl Capture {
         if units.is_empty() || frame.is_empty() {
             return Err(CaptureError::WrongPortKind {
                 constructor: "Capture::native_body",
-                expected: phoxal_port::PortKind::Stream,
-                actual: phoxal_port::PortKind::Stream,
+                expected: crate::port::PortKind::Stream,
+                actual: crate::port::PortKind::Stream,
             });
         }
         Ok(Self::NativeBody { name, units, frame })
@@ -576,8 +576,8 @@ impl Capture {
 
 fn require_kind(
     constructor: &'static str,
-    expected: phoxal_port::PortKind,
-    actual: phoxal_port::PortKind,
+    expected: crate::port::PortKind,
+    actual: crate::port::PortKind,
 ) -> Result<(), CaptureError> {
     if actual == expected {
         Ok(())
@@ -626,8 +626,8 @@ pub enum PlanValidationError {
     },
     WrongPortKind {
         step_label: String,
-        expected: phoxal_port::PortKind,
-        actual: phoxal_port::PortKind,
+        expected: crate::port::PortKind,
+        actual: crate::port::PortKind,
     },
     EmptyPayload {
         step_label: String,
@@ -740,7 +740,7 @@ mod tests {
             "motion/cmd",
             "phoxal.motion",
             "Set",
-            phoxal_port::PortKind::Setpoint,
+            crate::port::PortKind::Setpoint,
             "SetpointRequest",
             "SetpointReply",
         )
@@ -750,7 +750,7 @@ mod tests {
             "motion/cmd",
             "phoxal.motion",
             "Do",
-            phoxal_port::PortKind::Commands,
+            crate::port::PortKind::Commands,
             "CommandRequest",
             "CommandReply",
         )
@@ -760,7 +760,7 @@ mod tests {
             "motion/state",
             "phoxal.motion",
             "State",
-            phoxal_port::PortKind::State,
+            crate::port::PortKind::State,
             "State",
             "State",
         )

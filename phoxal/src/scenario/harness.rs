@@ -360,23 +360,23 @@ mod tests {
 
     use crate::scenario::results::{CaptureRecord, EvidenceCollector};
 
-    fn setpoint_signature() -> phoxal_port::PortSignature {
-        phoxal_port::PortSignature::new(
+    fn setpoint_signature() -> crate::port::PortSignature {
+        crate::port::PortSignature::new(
             "motion/setpoint",
             "phoxal.motion",
             "Setpoint",
-            phoxal_port::PortKind::Setpoint,
+            crate::port::PortKind::Setpoint,
             "SetpointRequest",
             "SetpointResponse",
         )
     }
 
-    fn state_capture_signature() -> phoxal_port::PortSignature {
-        phoxal_port::PortSignature::new(
+    fn state_capture_signature() -> crate::port::PortSignature {
+        crate::port::PortSignature::new(
             "motion/state",
             "phoxal.motion",
             "State",
-            phoxal_port::PortKind::State,
+            crate::port::PortKind::State,
             "State",
             "State",
         )

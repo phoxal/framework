@@ -53,7 +53,7 @@ mod tests {
     };
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal_port::PortKind;
+    use phoxal::port::PortKind;
 
     #[test]
     fn generated_range_port_has_a_retained_descriptor() {

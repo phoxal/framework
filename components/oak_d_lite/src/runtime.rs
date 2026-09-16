@@ -52,7 +52,7 @@ mod tests {
     };
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal_port::{PortDescriptor, PortKind};
+    use phoxal::port::{PortDescriptor, PortKind};
 
     #[test]
     fn generated_ports_cover_every_declared_capability() {

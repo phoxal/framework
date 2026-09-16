@@ -222,7 +222,7 @@ impl RecordBuilder {
         });
     }
 
-    const fn push_signature(&mut self, signature: Option<phoxal_port::PortSignature>) {
+    const fn push_signature(&mut self, signature: Option<crate::port::PortSignature>) {
         let Some(signature) = signature else {
             self.push_str("null");
             return;

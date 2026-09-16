@@ -230,7 +230,7 @@ fn validate_unavailable_reasons(reasons: &[i32]) -> Result<(), ValidationError> 
 
 #[cfg(test)]
 mod tests {
-    use phoxal_port::{PortDescriptor, PortKind};
+    use phoxal::port::{PortDescriptor, PortKind};
     use prost::Name;
 
     use super::*;
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(ports::FINISHED.name(), "finished");
         assert_eq!(ports::GET_GOAL_STATUS.name(), "get_goal_status");
         assert_eq!(
-            <phoxal_port::Read<GetGoalStatusRequest, GetGoalStatusResponse> as PortDescriptor>::KIND,
+            <phoxal::port::Read<GetGoalStatusRequest, GetGoalStatusResponse> as PortDescriptor>::KIND,
             PortKind::Read
         );
         assert_eq!(NavigationState::PACKAGE, "phoxal.navigation.v1");

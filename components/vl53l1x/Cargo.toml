@@ -25,19 +25,18 @@ required-features = ["runtime"]
 
 [features]
 default = ["runtime"]
-runtime = ["dep:phoxal", "dep:anyhow", "dep:serde"]
+runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 
 [dependencies]
 phoxal-robotics = { workspace = true }
-phoxal = { workspace = true, features = ["runtime"], optional = true }
+phoxal = { workspace = true, default-features = false, features = ["port"] }
 anyhow = { workspace = true, optional = true }
-phoxal-port = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [build-dependencies]
 phoxal-robotics = { workspace = true }
-phoxal-build = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["build"] }
 
 [lints]
 workspace = true
