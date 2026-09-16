@@ -72,6 +72,10 @@ fn prepare_scenarios_persists_manifest_and_writes_harness() {
         persisted.contains("scenario"),
         "scenario feature missing from dev-dep:\n{persisted}"
     );
+    assert!(
+        persisted.contains("phoxal-project"),
+        "scenario case-host dependency missing:\n{persisted}"
+    );
 
     let harness_path = robot_root.join(".phoxal/generated/scenarios/main.rs");
     assert!(harness_path.is_file(), "harness not generated");
@@ -295,6 +299,11 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         .expect("canonicalize supervisor dir")
         .to_string_lossy()
         .replace('\\', "/");
+    let project_path = framework_project_dir()
+        .canonicalize()
+        .expect("canonicalize project dir")
+        .to_string_lossy()
+        .replace('\\', "/");
     fs::write(
         robot_root.join("Cargo.toml"),
         format!(
@@ -307,6 +316,7 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
              \n\
              [dependencies]\n\
              phoxal-supervisor = {{ path = {supervisor_path:?} }}\n\
+             phoxal-project = {{ path = {project_path:?} }}\n\
              phoxal = {{ path = {phoxal_path:?}, features = [\"scenario\"] }}\n",
         ),
     )
@@ -512,12 +522,18 @@ fn prepare_scenarios_duplicate_struct_identities_rejected() {
         .expect("supervisor canonicalize")
         .to_string_lossy()
         .replace('\\', "/");
+    let project_path = framework_project_dir()
+        .canonicalize()
+        .expect("project canonicalize")
+        .to_string_lossy()
+        .replace('\\', "/");
     fs::write(
         robot_root.join("Cargo.toml"),
         format!(
             "[package]\nname = \"p1-robot\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
              publish = false\n\n[dependencies]\n\
              phoxal-supervisor = {{ path = {supervisor_path:?} }}\n\
+             phoxal-project = {{ path = {project_path:?} }}\n\
              phoxal = {{ path = {phoxal_path:?}, features = [\"scenario\"] }}\n"
         ),
     )
@@ -618,6 +634,11 @@ fn framework_phoxal_dir() -> std::path::PathBuf {
             candidate.join("Cargo.toml").is_file().then_some(candidate)
         })
         .expect("phoxal crate must be a sibling of crates/project")
+}
+
+#[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
+fn framework_project_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]

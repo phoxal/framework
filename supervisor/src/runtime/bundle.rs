@@ -184,7 +184,7 @@ pub(crate) struct SourceManifest {
     /// and program identity travel together so a tampered or partial
     /// shape cannot pass admission: there is no scenario_marker or
     /// scenario_program fallback field. See Gate A3 of
-    /// followup-24c026ed.md.
+    /// the scenario acceptance review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) scenario: Option<SourceScenarioSection>,
 }
@@ -199,6 +199,21 @@ pub(crate) struct SourceManifest {
 pub(crate) struct SourceScenarioSection {
     pub(crate) marker: String,
     pub(crate) program: ScenarioProgramRef,
+    #[serde(default)]
+    producers: Vec<SourceScenarioProducer>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SourceScenarioProducer {
+    instance: String,
+    port: String,
+    service_fqn: String,
+    method: String,
+    kind: String,
+    request_fqn: String,
+    response_fqn: String,
+    max_message_bytes: u32,
 }
 
 /// Scenario program identity recorded inside [`SourceScenarioSection`].
@@ -1461,7 +1476,7 @@ mod tests {
     /// Producer/consumer round-trip: the supervisor's nested
     /// `SourceScenarioSection` must deserialize the exact JSON the
     /// project's `BundleScenarioSection` writes. See Gate A3 of
-    /// followup-24c026ed.md: "Test producer output with the real
+    /// the scenario acceptance review: "Test producer output with the real
     /// consumer. Serializing and deserializing BundleScenarioSection
     /// with the same type does not prove supervisor compatibility."
     #[test]

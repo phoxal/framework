@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The example exercises plan authoring and program construction
     // only. The synthetic fixture `run` path is removed (Gate B1 of
-    // followup-24c026ed.md); the controlled phase driver that
+    // the scenario acceptance review); the controlled phase driver that
     // produces a real trace is the case-host lifecycle that lands in
     // Gate B1/B4. Until then, the example does not invoke the
     // participant beyond identity verification.

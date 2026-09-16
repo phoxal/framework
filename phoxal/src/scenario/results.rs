@@ -116,7 +116,7 @@ pub enum SealError {
     RunByteOverflow { bytes: usize, cap: usize },
     /// The seal was called without terminal evidence recorded by
     /// the actual execution lifecycle. See Gate P1 #2 of
-    /// followup-5d11cfc1.md.
+    /// the scenario acceptance review.
     MissingTerminalEvidence,
     /// The seal refused to record a second terminal-evidence call.
     DuplicateTerminalEvidence,
@@ -274,9 +274,9 @@ pub struct ScenarioRun {
     command_replies: BTreeMap<String, CommandReply>,
     /// Terminal evidence recorded by the actual execution lifecycle.
     /// `seal` refuses to finalize without it; the four collector
-    /// reproduction probes from followup-5d11cfc1.md all fail
+    /// reproduction probes from the scenario acceptance review all fail
     /// because they cannot synthesize this surface. See Gate P1 #2
-    /// of that follow-up.
+    /// of that review.
     terminal_evidence: Option<TerminalEvidence>,
     /// Whether the host considers the run successful. Computed by
     /// `seal`; the `verify` callback may reject on top of this.
@@ -372,15 +372,12 @@ impl TerminalEvidence {
 /// [`SealError::MissingFinalObservationCut`] /
 /// [`SealError::MissingFinalCaptureDrain`] / [`SealError::CleanupFailed`].
 ///
-/// The supervisor-driven lifecycle calls
-/// `with_terminal_quantum_ns` with the simulator's observed
-/// `quantum_ns`, and `with_completed_transitions` with the actual
-/// completed native transition boundary. Test-only fixtures that
-/// exercise the seal surface provide these from the program's known
-/// values; the public command path never reaches a seal through
-/// such a fixture (production `run_harness` returns
-/// [`crate::scenario::harness::HarnessError::Unsupported`] until the
-/// real lifecycle lands).
+/// The supervisor-driven lifecycle calls `with_terminal_quantum_ns` with the
+/// simulator's observed `quantum_ns`, and `with_completed_transitions` with
+/// the actual completed native transition boundary.
+/// Test-only fixtures that exercise the seal surface provide these from the
+/// program's known values; the public command path seals only supervisor and
+/// simulator evidence through the generated case host.
 pub struct TerminalEvidenceBuilder {
     execution_identity: String,
     /// Lifecycle-observed quantum in nanoseconds. The supervisor
@@ -608,7 +605,7 @@ pub struct EvidenceCollector {
     /// Terminal evidence recorded by the actual execution lifecycle.
     /// `seal` refuses without it; `record_terminal_evidence` is the
     /// only path that can install this field. See Gate P1 #2 of
-    /// followup-5d11cfc1.md.
+    /// the scenario acceptance review.
     terminal_evidence: Option<TerminalEvidence>,
 }
 
@@ -827,7 +824,7 @@ impl EvidenceCollector {
     /// rejects duplicate recordings, replies for undeclared command
     /// labels, and reply payloads that exceed the per-record or
     /// cumulative run byte caps. See Gate B3 of
-    /// followup-24c026ed.md: "Account for every retained payload,
+    /// the scenario acceptance review: "Account for every retained payload,
     /// including command replies, step error details, capture
     /// metadata, and nested interval entries."
     pub fn record_command_reply(
@@ -889,9 +886,9 @@ impl EvidenceCollector {
     /// simulator released.
     ///
     /// `seal` will refuse without terminal evidence. The four
-    /// collector reproduction probes from followup-5d11cfc1.md all
+    /// collector reproduction probes from the scenario acceptance review all
     /// fail because they cannot call this method. See Gate P1 #2
-    /// of that follow-up.
+    /// of that review.
     pub fn record_terminal_evidence(
         &mut self,
         evidence: TerminalEvidence,
@@ -912,7 +909,7 @@ impl EvidenceCollector {
         Ok(())
     }
 
-    /// Returns a [`TerminalEvidenceBuilder`] that owns the
+    /// Returns a `TerminalEvidenceBuilder` that owns the
     /// lifecycle-observed terminal facts. The structural fields
     /// (`quantum_ns`, `completed_transitions`) are **not** filled
     /// from this collector's program; the case-host lifecycle must
@@ -921,7 +918,7 @@ impl EvidenceCollector {
     /// The builder is the only path that constructs
     /// [`TerminalEvidence`]; external code cannot assemble the
     /// surface from arbitrary fields. See Gate P1 #2 of
-    /// followup-5d11cfc1.md.
+    /// the scenario acceptance review.
     pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
         TerminalEvidenceBuilder {
             execution_identity: String::new(),
@@ -996,7 +993,7 @@ impl EvidenceCollector {
         // surface. The collector cannot synthesize it; tests that call
         // the existing record_* helpers without going through the
         // lifecycle will seal as failed. See Gate P1 #2 of
-        // followup-5d11cfc1.md: the four collector reproduction probes
+        // the scenario acceptance review: the four collector reproduction probes
         // fail here.
         let terminal = self
             .terminal_evidence
@@ -1202,7 +1199,7 @@ mod tests {
 
     #[test]
     fn run_records_outcomes_captures_and_replies() {
-        // Gate B1 of followup-24c026ed.md removed the synthetic step
+        // Gate B1 of the scenario acceptance review removed the synthetic step
         // emitter and `FixtureTrace`. The collector-only construction
         // path is exercised by the sealed scenario run path elsewhere
         // in this module; this test now asserts the typed correlation
@@ -1688,7 +1685,7 @@ mod tests {
 
     #[test]
     fn seal_rejects_3000_transition_plan_with_only_boundary_zero() {
-        // Regression for followup-24c026ed.md line 333: "3000-transition
+        // Regression for the scenario acceptance review line 333: "3000-transition
         // program seals with only boundary zero: Ok(true)". A
         // 6-second plan with only a single setpoint at boundary 0
         // cannot finalize because the experiment did not run. With
@@ -1733,7 +1730,7 @@ mod tests {
 
     #[test]
     fn seal_rejects_oversized_command_reply_payload() {
-        // Regression for followup-24c026ed.md line 336: "duplicate
+        // Regression for the scenario acceptance review line 336: "duplicate
         // commands + wrong occurrence + 17MiB reply seal: Ok(true)".
         // A command reply whose payload exceeds MAX_RECORD_BYTES
         // must be refused at record time, never sealed as passed.
@@ -1789,7 +1786,7 @@ mod tests {
 
     #[test]
     fn seal_rejects_duplicate_command_label_pair() {
-        // Regression for followup-24c026ed.md line 336: duplicate
+        // Regression for the scenario acceptance review line 336: duplicate
         // commands with the same label. The plan-time validator must
         // refuse this before any collector is built so the test
         // cannot reach the seal path.
@@ -1808,7 +1805,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // Gate P1 #2 of followup-5d11cfc1.md: the four reproduction probes
+    // Gate P1 #2 of the scenario acceptance review: the four reproduction probes
     // from lines 166-173 plus the boundary / interruption / mismatch
     // / sparse-valid regressions required by line 195. These tests
     // exercise the public collector API directly, without going
@@ -1818,7 +1815,7 @@ mod tests {
 
     #[test]
     fn reproduction_no_action_3000_transition_run_refuses_without_terminal_evidence() {
-        // Probe 1 from followup-5d11cfc1.md line 169: "no-action
+        // Probe 1 from the scenario acceptance review line 169: "no-action
         // 3000-transition run without execution seals: Ok(true)".
         // An empty schedule of 3000 transitions cannot finalize;
         // the lifecycle never recorded any terminal evidence, so the
@@ -1852,7 +1849,7 @@ mod tests {
 
     #[test]
     fn reproduction_n_3000_seals_from_n_minus_1_receipt_refuses_without_terminal_evidence() {
-        // Probe 2 from followup-5d11cfc1.md line 170: "N=3000 seals
+        // Probe 2 from the scenario acceptance review line 170: "N=3000 seals
         // from N-1 receipt: Ok(true)". The previous design used the
         // maximum setpoint eligibility and accepted
         // `eligibility <= transition_count - 1`. The new design
@@ -1891,7 +1888,7 @@ mod tests {
 
     #[test]
     fn reproduction_n_1_seals_at_boundary_0_refuses_without_terminal_evidence() {
-        // Probe 3 from followup-5d11cfc1.md line 171: "N=1 seals at
+        // Probe 3 from the scenario acceptance review line 171: "N=1 seals at
         // boundary 0: Ok(true)". A 1-transition plan with a single
         // boundary-zero setpoint acknowledgement still needs terminal
         // evidence to seal; the lifecycle alone owns that surface.
@@ -1930,7 +1927,7 @@ mod tests {
     #[test]
     fn reproduction_command_only_3000_transition_run_with_reply_refuses_without_terminal_evidence()
     {
-        // Probe 4 from followup-5d11cfc1.md line 172: "command-only
+        // Probe 4 from the scenario acceptance review line 172: "command-only
         // 3000-transition run + reply before wrong-label issue seals:
         // Ok(true)". A command-only schedule with one command action
         // at boundary 0, an issued step outcome, and a recorded
@@ -1979,7 +1976,7 @@ mod tests {
 
     #[test]
     fn builder_enforces_completed_transitions_equals_program_transition_count() {
-        // Required regression from followup-5d11cfc1.md §2: the
+        // Required regression from the scenario acceptance review §2: the
         // builder must not derive `quantum_ns` or
         // `completed_transitions` from the program — those come
         // from the lifecycle-observed terminal facts. Without
@@ -2049,7 +2046,7 @@ mod tests {
 
     #[test]
     fn seal_rejects_interrupted_final_phase() {
-        // Required regression from followup-5d11cfc1.md line 195:
+        // Required regression from the scenario acceptance review line 195:
         // "an interrupted final phase must fail". The lifecycle
         // builder defaults the three lifecycle flags to `false`;
         // `record_terminal_evidence` refuses evidence that did not
@@ -2152,7 +2149,7 @@ mod tests {
 
     #[test]
     fn builder_enforces_quantum_ns_in_nanoseconds() {
-        // Required regression from followup-5d11cfc1.md §2: the
+        // Required regression from the scenario acceptance review §2: the
         // builder must not derive `quantum_ns` from the program;
         // the lifecycle supplies it via `with_terminal_quantum_ns`.
         // Absent that call, the field defaults to `0` and the
@@ -2205,7 +2202,7 @@ mod tests {
 
     #[test]
     fn seal_succeeds_for_sparse_valid_run_with_real_terminal_evidence() {
-        // Required regression from followup-5d11cfc1.md line 195:
+        // Required regression from the scenario acceptance review line 195:
         // "a sparse valid case with real terminal evidence must
         // pass". A 6 ms / 2 ms quantum program with one setpoint at
         // boundary 0 and one state capture acts once early and

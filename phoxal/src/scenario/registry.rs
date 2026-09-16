@@ -54,12 +54,12 @@ pub struct ScenarioOutcome {
 
 /// Carrier produced by the macro's per-type entry. The entry
 /// constructs the scenario via `Default::default()`, calls `plan()`,
-/// and hands the resulting [`ScenarioPlan`] back to the case host
+/// and hands the resulting [`crate::scenario::ScenarioPlan`] back to the case host
 /// together with the type identity. The case host retains the plan
 /// and the boxed scenario instance through execution and
 /// verification; only it may produce the final [`ScenarioOutcome`].
 ///
-/// See Gate P1 #3 of followup-5d11cfc1.md: the macro registers a
+/// See Gate P1 #3 of the scenario acceptance review: the macro registers a
 /// generic SDK case entry that plans and returns; the case host
 /// drives the lifecycle.
 pub struct PlannedScenario {
@@ -98,7 +98,7 @@ impl std::fmt::Debug for PlannedScenario {
 /// calls `plan()`, and hands the resulting [`PlannedScenario`] to
 /// the case host. The case host drives execution and verification
 /// and only it may produce the final [`ScenarioOutcome`]. See Gate
-/// P1 #3 of followup-5d11cfc1.md.
+/// P1 #3 of the scenario acceptance review.
 pub type ScenarioEntryFn = fn() -> crate::Result<PlannedScenario>;
 
 inventory::collect!(ScenarioDescriptor);

@@ -237,7 +237,7 @@ fn build_harness_binary(
 /// already passes the explicit `--package <root-id>` it resolved from
 /// the staged manifest; a user-supplied `--workspace`, `--package`,
 /// or `--exclude` would silently drop or override that owned
-/// selection. See Gate P2 of followup-5d11cfc1.md: validate
+/// selection. See Gate P2 of the scenario acceptance review: validate
 /// conflicting package/target selections before preparation writes
 /// anything.
 fn validate_options_for_case_host(options: &CargoOptions) -> Result<(), CaseHostOptionError> {
@@ -334,7 +334,7 @@ impl std::fmt::Display for CaseHostOptionError {
 /// rest of the project. Constructing an independent `MetadataCommand`
 /// here would let the user's `cargo_path`/`offline`/`CARGO_TARGET_DIR`
 /// settings be ignored at exactly the boundary the harness build
-/// requires. See Gate P2 of followup-5d11cfc1.md.
+/// requires. See Gate P2 of the scenario acceptance review.
 fn resolve_root_package_id(
     staged_manifest: &Path,
     current_dir: &Path,
@@ -608,13 +608,13 @@ mod parse_artifact_tests {
     /// alphabetically-sorted sibling (`a-helper`) would otherwise be
     /// picked by `packages.first()`; selecting by exact
     /// `manifest_path` must always return the package the staged
-    /// source tree owns. See Gate A2 of followup-24c026ed.md.
+    /// source tree owns. See Gate A2 of the scenario acceptance review.
     ///
     /// The temporary directory is wired up as a real workspace at
     /// the top level so the phoxal registry config plus
     /// `--manifest-path` invocation actually exercise the resolver
     /// rather than a sibling-only layout. See Gate P2 of
-    /// followup-5d11cfc1.md: the resolver previously constructed an
+    /// the scenario acceptance review: the resolver previously constructed an
     /// independent `MetadataCommand` without workspace context.
     #[test]
     fn resolver_picks_staged_manifest_not_first_package() {
@@ -655,7 +655,7 @@ mod parse_artifact_tests {
     }
 
     // ----------------------------------------------------------------
-    // Gate P2 of followup-5d11cfc1.md: prepared-Cargo-context
+    // Gate P2 of the scenario acceptance review: prepared-Cargo-context
     // propagation and selection-flag validation for `list_scenarios`.
     // ----------------------------------------------------------------
 

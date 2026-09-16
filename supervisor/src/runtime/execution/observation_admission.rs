@@ -176,9 +176,10 @@ mod tests {
             manifest,
             BTreeMap::from([("consumer.value".into(), serde_json::json!("sensor.value"))]),
         );
-        let protocol = RuntimeExecutionProtocol::open(bus.clone(), &source, ExecutionState::new())
-            .await
-            .unwrap();
+        let protocol =
+            RuntimeExecutionProtocol::open(bus.clone(), &source, ExecutionState::new(), None)
+                .await
+                .unwrap();
         let observations = vec![Observation {
             membership: Some(ProductMembership {
                 producer: "sensor".into(),

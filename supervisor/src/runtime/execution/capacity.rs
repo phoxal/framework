@@ -9,6 +9,7 @@ pub(super) fn validate_controlled_capacity(
         (String, String),
         super::super::bundle::SourceSimulationProvider,
     >,
+    scenario_program: Option<&Program>,
     quantum_ns: u64,
 ) -> Result<()> {
     let periods = instances
@@ -51,6 +52,33 @@ pub(super) fn validate_controlled_capacity(
             let (source_instance, source_port) = source
                 .split_once('.')
                 .with_context(|| format!("connection source `{source}` has no port separator"))?;
+            if source_instance == "scenario"
+                && let Some(program) = scenario_program
+            {
+                let maximum = program
+                    .steps()
+                    .iter()
+                    .filter_map(|step| match &step.action {
+                        ScenarioAction::Setpoint {
+                            consumer_signature,
+                            encoded_payload,
+                            ..
+                        } if consumer_signature.name == source_port => {
+                            u64::try_from(encoded_payload.len()).ok()
+                        }
+                        ScenarioAction::Withdraw {
+                            producer_signature, ..
+                        } if producer_signature.name == source_port => Some(0),
+                        _ => None,
+                    })
+                    .max()
+                    .with_context(|| {
+                        format!("scenario source `{source}` has no matching program action")
+                    })?;
+                required_items = required_items.max(1);
+                required_bytes = required_bytes.max(maximum.max(1));
+                continue;
+            }
             if let Some(provider) =
                 observation_providers.get(&(source_instance.to_owned(), source_port.to_owned()))
             {
@@ -179,6 +207,7 @@ mod tests {
                 &artifacts,
                 &connections,
                 &BTreeMap::new(),
+                None,
                 2_000_000,
             )
             .expect("keyed completions are bounded independently of publication cadence");

@@ -638,7 +638,9 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
 /// The validation is intentionally endpoint-first: kind and complete request /
 /// response identities are compared before any descriptor message-root
 /// filtering can remove service evidence.
-pub use connections::validate_connected_endpoints;
+pub use connections::{
+    validate_connected_endpoints, validate_connected_endpoints_with_virtual_producers,
+};
 
 mod connections;
 

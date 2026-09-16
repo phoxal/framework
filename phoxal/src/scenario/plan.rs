@@ -101,7 +101,7 @@ impl ScenarioPlan {
         // count below is computed from `duration / quantum_nanos` and
         // would otherwise fall back to zero (per the new
         // `transition_count` rule); an aligned duration is required
-        // by Gate B4 of followup-24c026ed.md.
+        // by Gate B4 of the scenario acceptance review.
         let quantum_nanos: u128 = 2_000_000;
         let total_nanos = self.duration.as_nanos();
         if !total_nanos.is_multiple_of(quantum_nanos) {
@@ -805,7 +805,7 @@ mod tests {
 
     #[test]
     fn rejects_unaligned_duration() {
-        // Regression for followup-24c026ed.md line 338: "unaligned
+        // Regression for the scenario acceptance review line 338: "unaligned
         // duration plan accepted with transition count=1". A
         // duration of 2_001 ns is not a multiple of the 2 ms (2_000_000 ns)
         // quantum. The validator must refuse it.

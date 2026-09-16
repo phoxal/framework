@@ -2,7 +2,7 @@
 //!
 //! A [`runtime::Runtime`] owns one synchronous state machine and exchanges
 //! generated Protobuf values through the execution protocol. Applications
-//! attach through [`session`] and the supervisor owns the transport and
+//! attach through the `session` module and the supervisor owns the transport and
 //! process lifecycle. Source preparation and immutable bundle assembly are
 //! owned by `phoxal-project`; this crate only exposes the runtime and public
 //! session boundaries that consume their completed products.

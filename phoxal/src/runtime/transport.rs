@@ -155,6 +155,13 @@ impl RuntimeWireMetadata {
         self.producer.as_deref().or(self.source.as_deref())
     }
 
+    /// Controlled boundary at which the record was produced, when the
+    /// supervisor required an exact delivery acknowledgement.
+    #[must_use]
+    pub const fn delivery_boundary(&self) -> Option<u64> {
+        self.boundary
+    }
+
     /// Metadata for an ordinary service-produced value.
     #[must_use]
     pub fn data(source: impl Into<String>, logical_time: ExecutionTime, sequence: u64) -> Self {

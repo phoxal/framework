@@ -166,6 +166,7 @@ pub struct RuntimeLaunchManifest {
     connections: BTreeMap<String, Vec<String>>,
     artifacts: BTreeMap<String, SourceRuntimeRecord>,
     observation_providers: BTreeMap<(String, String), SourceObservationProvider>,
+    scenario_producers: BTreeMap<(String, String), SourceScenarioProducer>,
 }
 
 impl RuntimeLaunchManifest {
@@ -330,6 +331,12 @@ impl RuntimeLaunchManifest {
                     )
                 })
                 .collect(),
+            scenario_producers: manifest
+                .scenario
+                .into_iter()
+                .flat_map(|scenario| scenario.producers)
+                .map(|producer| ((producer.instance.clone(), producer.port.clone()), producer))
+                .collect(),
         })
     }
 
@@ -469,7 +476,20 @@ impl RuntimeLaunchManifest {
                     .observation_providers
                     .get(&(source_instance.clone(), source_port.clone()));
                 let (binding, source_max_bytes, source_max_items, source_request_max_bytes) =
-                    if let Some(provider) = virtual_provider {
+                    if let Some(producer) = self
+                        .scenario_producers
+                        .get(&(source_instance.clone(), source_port.clone()))
+                    {
+                        if direction != InputDirection::Publication {
+                            anyhow::bail!("scenario producer `{source}` cannot serve requests");
+                        }
+                        (
+                            producer.binding()?,
+                            Some(u64::from(producer.max_message_bytes)),
+                            Some(1),
+                            None,
+                        )
+                    } else if let Some(provider) = virtual_provider {
                         if direction != InputDirection::Publication {
                             anyhow::bail!("simulation provider `{source}` cannot serve requests");
                         }
@@ -2056,6 +2076,40 @@ struct SourceBundleManifest {
     executables: Vec<SourceExecutable>,
     #[serde(default)]
     simulation: Option<SourceSimulation>,
+    #[serde(default)]
+    scenario: Option<SourceScenario>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceScenario {
+    #[serde(default)]
+    producers: Vec<SourceScenarioProducer>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct SourceScenarioProducer {
+    instance: String,
+    port: String,
+    service_fqn: String,
+    method: String,
+    kind: String,
+    request_fqn: String,
+    response_fqn: String,
+    max_message_bytes: u32,
+}
+
+impl SourceScenarioProducer {
+    fn binding(&self) -> crate::Result<super::transport::PortBinding> {
+        SourcePortSignature {
+            name: self.port.clone(),
+            service: self.service_fqn.clone(),
+            method: self.method.clone(),
+            kind: self.kind.clone(),
+            request: self.request_fqn.clone(),
+            response: self.response_fqn.clone(),
+        }
+        .to_binding()
+    }
 }
 
 #[derive(Debug, Deserialize)]

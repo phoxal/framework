@@ -11,6 +11,7 @@ use std::fs;
 
 use crate::artifact::{self, ArtifactContract};
 use crate::cargo;
+use crate::document::RobotDocument;
 use crate::{CargoOptions, Error, PreparedProject};
 
 pub(crate) type ArtifactKey = (String, String);
@@ -165,6 +166,23 @@ pub(crate) fn validate_connections(
     prepared: &PreparedProject,
     contracts: &BTreeMap<ArtifactKey, ArtifactContract>,
 ) -> Result<(), Error> {
+    validate_connections_for_document(prepared, contracts, prepared.document())
+}
+
+pub(crate) fn validate_connections_for_document(
+    prepared: &PreparedProject,
+    contracts: &BTreeMap<ArtifactKey, ArtifactContract>,
+    document: &RobotDocument,
+) -> Result<(), Error> {
+    validate_connections_for_document_with_virtual_producers(prepared, contracts, document, &[])
+}
+
+pub(crate) fn validate_connections_for_document_with_virtual_producers(
+    prepared: &PreparedProject,
+    contracts: &BTreeMap<ArtifactKey, ArtifactContract>,
+    document: &RobotDocument,
+    virtual_producers: &[&str],
+) -> Result<(), Error> {
     let mut instance_contracts = BTreeMap::new();
     for (instance, target) in prepared.assembly_targets() {
         let key = (target.package_id.clone(), target.target.clone());
@@ -172,10 +190,13 @@ pub(crate) fn validate_connections(
             instance_contracts.insert(instance, contract.clone());
         }
     }
-    artifact::validate_connected_endpoints(prepared.document(), &instance_contracts).map_err(
-        |error| Error::ArtifactInvalid {
-            path: prepared.layout().robot_manifest().to_owned(),
-            message: error.to_string(),
-        },
+    artifact::validate_connected_endpoints_with_virtual_producers(
+        document,
+        &instance_contracts,
+        virtual_producers,
     )
+    .map_err(|error| Error::ArtifactInvalid {
+        path: prepared.layout().robot_manifest().to_owned(),
+        message: error.to_string(),
+    })
 }

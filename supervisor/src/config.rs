@@ -35,6 +35,10 @@ pub(super) struct Cli {
     #[arg(long, value_name = "PATH", hide = true)]
     pub(super) ready_file: Option<PathBuf>,
 
+    /// Internal machine-readable scenario evidence handoff for local orchestration.
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub(super) scenario_result: Option<PathBuf>,
+
     /// Launch mode the supervisor runs under. `controlled` is the
     /// default for local development; `hardware` is the on-robot
     /// launch. Scenario bundles carry the `nondeployable` marker and

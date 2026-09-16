@@ -2,21 +2,16 @@
 //!
 //! A [`Scenario`](crate::scenario::Scenario) author declares one finite
 //! simulated experiment through a
-//! [`ScenarioPlan`](crate::scenario::ScenarioPlan) (P2 will land the
-//! plan/action/step types) and validates its outcome through
+//! [`ScenarioPlan`](crate::scenario::ScenarioPlan) and validates its outcome through
 //! [`Scenario::verify`](crate::scenario::Scenario::verify) over a
-//! [`ScenarioRun`](crate::scenario::ScenarioRun) of typed records and
-//! selected native samples (P3 will land the run types).
-//!
-//! The trait, registry, and case-host protocol skeleton ship in P1 so the
-//! `cargo phoxal simulation scenario list` and `run` commands have a
-//! compile-and-dispatch pipeline to land against before P2-P3 add the
-//! behaviour.
+//! [`ScenarioRun`](crate::scenario::ScenarioRun) of typed records and selected native
+//! samples.
 //!
 //! Public identity of a scenario is exactly `scenarios/<StructIdent>`. The
 //! filename or module path is intentionally not part of that identity: the
 //! registry reports it as diagnostics only.
 
+#[cfg(test)]
 mod harness;
 mod participant;
 mod plan;
@@ -26,7 +21,6 @@ mod registry;
 mod results;
 mod trait_def;
 
-pub use harness::{HarnessError, HarnessRun, run_harness};
 pub use participant::{
     FixtureError, FixtureMetadata, FixtureParticipant, HOST_DEADLINE_TICKS, SIM_DEADLINE_TICKS,
     StepOutcome,

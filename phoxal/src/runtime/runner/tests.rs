@@ -299,6 +299,7 @@ fn old_or_inexact_execution_semantics_are_refused_before_ready() {
         config: Value::Null,
         connections: BTreeMap::new(),
         artifacts: BTreeMap::new(),
+        scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
     };
     let mut request = execution_wire::AdmitExecutionRequest {
@@ -1659,6 +1660,7 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         config: Value::Object(serde_json::Map::new()),
         connections,
         artifacts,
+        scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
     };
 
@@ -1837,6 +1839,7 @@ async fn public_read_uses_authenticated_external_ingress() -> crate::Result<()> 
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
         artifacts: BTreeMap::new(),
+        scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
     };
     let mut input = ExecutionInputAdapter::<PublicReadRuntime>::unbound();
@@ -2086,6 +2089,7 @@ async fn generated_nonempty_state_transport_uses_manifest_connection() -> crate:
         config: Value::Object(serde_json::Map::new()),
         connections,
         artifacts,
+        scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
     };
     let mut input = ExecutionInputAdapter::<TypedStateRuntime>::unbound();
@@ -2263,6 +2267,7 @@ async fn controlled_read_pins_entry_state_and_waits_for_reply_receiver_admission
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::from([("caller.read".to_owned(), vec!["reader.read".to_owned()])]),
         artifacts: BTreeMap::new(),
+        scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
     };
     let mut input = ExecutionInputAdapter::<PublicReadRuntime>::unbound();
@@ -2394,6 +2399,7 @@ async fn immutable_reads_bound_busy_queries_and_retire_views_across_reset_and_st
         config: Value::Object(serde_json::Map::new()),
         connections: BTreeMap::new(),
         artifacts: BTreeMap::new(),
+        scenario_producers: BTreeMap::new(),
         observation_providers: BTreeMap::new(),
     };
     let mut input = ExecutionInputAdapter::<PublicReadRuntime>::unbound();

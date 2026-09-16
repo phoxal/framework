@@ -21,6 +21,7 @@ use tempfile::NamedTempFile;
 
 use crate::cargo::{CargoOptions, LockMode, PHOXAL_REGISTRY_INDEX};
 use crate::{CompiledBundle, Error, Project, SimulationModelFacts};
+use phoxal::scenario::Program;
 
 /// The official independently installed native simulation application.
 pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator-mujoco";
@@ -121,6 +122,7 @@ pub struct SimulationRunOptions {
     run_id: String,
     startup_timeout: Duration,
     cleanup_timeout: Duration,
+    auto_run: bool,
 }
 
 impl SimulationRunOptions {
@@ -145,6 +147,7 @@ impl SimulationRunOptions {
             run_id: "local-simulation".to_owned(),
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             cleanup_timeout: DEFAULT_CLEANUP_TIMEOUT,
+            auto_run: false,
         })
     }
 
@@ -219,6 +222,13 @@ impl SimulationRunOptions {
         self.cleanup_timeout = cleanup;
         self
     }
+
+    /// Start advancing immediately when the desktop presentation becomes ready.
+    #[must_use]
+    pub const fn with_auto_run(mut self) -> Self {
+        self.auto_run = true;
+        self
+    }
 }
 
 /// The exact simulator artifact selected for a run.
@@ -256,7 +266,7 @@ pub struct SimulationCleanup {
 }
 
 /// Terminal evidence retained by one local finite simulation run.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SimulationRunReport {
     /// Summary schema identifier.
     pub schema: String,
@@ -285,6 +295,51 @@ pub struct SimulationRunReport {
     pub simulator_stderr: String,
     /// Bounded supervisor cleanup evidence.
     pub cleanup: SimulationCleanup,
+    /// Runtime-observed scenario evidence, when this was a scenario run.
+    pub scenario: Option<ScenarioExecutionReport>,
+    /// Parsed terminal evidence emitted by the native simulator.
+    pub terminal: Option<SimulatorTerminalEvidence>,
+}
+
+/// Evidence observed by the supervisor while executing one scenario program.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioExecutionReport {
+    /// Evidence schema identifier.
+    pub schema: String,
+    /// Fully qualified scenario name.
+    pub scenario_name: String,
+    /// Acknowledged scenario actions.
+    pub steps: Vec<ScenarioStepEvidence>,
+    /// Captured runtime records.
+    pub captures: Vec<ScenarioCaptureEvidence>,
+    /// Command replies keyed by authored step label.
+    pub command_replies: std::collections::BTreeMap<String, Vec<u8>>,
+}
+
+/// One runtime-acknowledged scenario action.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioStepEvidence {
+    /// Authored step label.
+    pub label: String,
+    /// `setpoint`, `withdraw`, or `command`.
+    pub kind: String,
+    /// Boundary at which the action was published.
+    pub production_boundary: u64,
+    /// First boundary at which the action was eligible.
+    pub eligible_boundary: u64,
+}
+
+/// One typed capture stream drained by the supervisor.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScenarioCaptureEvidence {
+    /// Authored capture name.
+    pub name: String,
+    /// `state`, `sample`, or `event`.
+    pub kind: String,
+    /// Boundary of the most recently observed payload.
+    pub boundary: u64,
+    /// Ordered payload bytes. State captures retain only the latest value.
+    pub payloads: Vec<Vec<u8>>,
 }
 
 impl SimulationRunReport {
@@ -393,6 +448,7 @@ pub(crate) fn run(
     project: &Project,
     cargo_options: &CargoOptions,
     request: &SimulationRunOptions,
+    scenario: Option<&Program>,
 ) -> Result<SimulationRunReport, Error> {
     cargo_options.validate()?;
     validate_request(request)?;
@@ -404,7 +460,12 @@ pub(crate) fn run(
     let simulator = provision(project, cargo_options, request)?;
     let prepared = project.prepare(cargo_options)?;
     let probe_output = probe_bundle_path(&prepared);
-    let probe_bundle = prepared.build_bundle(cargo_options, &probe_output)?;
+    let probe_bundle = match scenario {
+        Some(program) => {
+            prepared.build_scenario_probe_bundle(cargo_options, &probe_output, program)?
+        }
+        None => prepared.build_bundle(cargo_options, &probe_output)?,
+    };
     let facts = probe(&simulator, &scene, probe_bundle.root(), request)?;
     request.bound.validate_for_quantum(facts.quantum_ns)?;
     let output = request.output.clone().unwrap_or_else(|| {
@@ -412,8 +473,13 @@ pub(crate) fn run(
             .default_bundle_path()
             .with_file_name("simulation-bundle")
     });
-    let bundle = prepared.build_simulation_bundle(cargo_options, &output, &facts)?;
-    launch(&simulator, &bundle, &scene, request)
+    let bundle = match scenario {
+        Some(program) => {
+            prepared.build_scenario_simulation_bundle(cargo_options, &output, &facts, program)?
+        }
+        None => prepared.build_simulation_bundle(cargo_options, &output, &facts)?,
+    };
+    launch(&simulator, &bundle, &scene, request, scenario.is_some())
 }
 
 fn validate_request(request: &SimulationRunOptions) -> Result<(), Error> {
@@ -627,6 +693,16 @@ fn build_registry_simulator(
             path: selector_manifest.clone(),
             source,
         }
+    })?;
+    let selector_source_root = source_root.join("src");
+    let selector_source = selector_source_root.join("main.rs");
+    fs::create_dir_all(&selector_source_root).map_err(|source| Error::ArtifactFile {
+        path: selector_source_root,
+        source,
+    })?;
+    fs::write(&selector_source, "fn main() {}\n").map_err(|source| Error::ArtifactFile {
+        path: selector_source,
+        source,
     })?;
     let target_root = root.join(BUILD_ROOT);
     fs::create_dir_all(&target_root).map_err(|source| Error::ArtifactFile {
@@ -939,6 +1015,7 @@ fn launch(
     bundle: &CompiledBundle,
     scene: &Path,
     request: &SimulationRunOptions,
+    scenario: bool,
 ) -> Result<SimulationRunReport, Error> {
     let supervisor_path = bundle.executable("supervisor");
     // Unix socket names must fit even when the source checkout path is long.
@@ -951,22 +1028,29 @@ fn launch(
             source,
         })?;
     let readiness_path = readiness_directory.path().join("ready.json");
+    let scenario_result_path = readiness_directory.path().join("scenario-result.json");
     let endpoint = format!(
         "unixsock-stream/{}",
         readiness_directory.path().join("router.sock").display()
     );
-    let mut supervisor = Command::new(&supervisor_path)
-        .arg(bundle.root())
-        .args([
-            "--scope",
-            &request.scope,
-            "--supervisor-id",
-            &request.supervisor_id,
-            "--ready-file",
-            &readiness_path.display().to_string(),
-            "--listen",
-            &endpoint,
-        ])
+    let mut supervisor_command = Command::new(&supervisor_path);
+    supervisor_command.arg(bundle.root()).args([
+        "--scope",
+        &request.scope,
+        "--supervisor-id",
+        &request.supervisor_id,
+        "--ready-file",
+        &readiness_path.display().to_string(),
+        "--listen",
+        &endpoint,
+    ]);
+    if scenario {
+        supervisor_command.args([
+            "--scenario-result",
+            &scenario_result_path.display().to_string(),
+        ]);
+    }
+    let mut supervisor = supervisor_command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -1024,6 +1108,9 @@ fn launch(
             simulator_command.args(["--duration", &duration.to_string()]);
         }
     }
+    if request.auto_run {
+        simulator_command.arg("--auto-run");
+    }
     let output = match simulator_command.output() {
         Ok(output) => output,
         Err(source) => {
@@ -1035,9 +1122,25 @@ fn launch(
             )));
         }
     };
-    let provider_contract_verified =
-        provider_contract_verified(&output.stdout, request.presentation);
+    let terminal = terminal_evidence(&output.stdout);
+    let provider_contract_verified = terminal
+        .as_ref()
+        .is_some_and(|evidence| terminal_evidence_verified(evidence, request.presentation));
     let cleanup = cleanup_process(&mut supervisor, request.cleanup_timeout);
+    let scenario = if scenario {
+        let bytes = fs::read(&scenario_result_path).map_err(|source| Error::ArtifactFile {
+            path: scenario_result_path.clone(),
+            source,
+        })?;
+        Some(serde_json::from_slice(&bytes).map_err(|source| {
+            simulation_error(format!(
+                "cannot parse scenario execution evidence {}: {source}",
+                scenario_result_path.display()
+            ))
+        })?)
+    } else {
+        None
+    };
     Ok(SimulationRunReport {
         schema: "phoxal/simulation-run/v0".to_owned(),
         scene: scene.to_owned(),
@@ -1052,29 +1155,66 @@ fn launch(
         simulator_stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         simulator_stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         cleanup,
+        scenario,
+        terminal,
     })
 }
 
-#[derive(Debug, Deserialize)]
-struct SimulatorTerminalEvidence {
-    schema: String,
+/// Native terminal evidence emitted by the simulator application.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct SimulatorTerminalEvidence {
+    /// Evidence schema.
+    pub schema: String,
     #[serde(rename = "provider_contract_verified")]
-    provider_contract_verified: bool,
-    outcome: String,
-    completed_steps: u64,
-    requested_steps: u64,
+    pub provider_contract_verified: bool,
+    /// `success` or `stopped`.
+    pub outcome: String,
+    /// Completed native transitions.
+    pub completed_steps: u64,
+    /// Requested native transitions.
+    pub requested_steps: u64,
+    /// Native quantum in nanoseconds.
+    #[serde(default)]
+    pub quantum_ns: u64,
+    /// Supervisor execution identity.
+    #[serde(default)]
+    pub execution_id: String,
+    /// Controlled timeline identity.
+    #[serde(default)]
+    pub timeline_id: String,
+    /// Native root-body samples at 20 ms and terminal boundaries.
+    #[serde(default)]
+    pub native_body: Vec<NativeBodySample>,
 }
 
+/// One native root-body sample in world coordinates.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct NativeBodySample {
+    pub boundary: u64,
+    pub position_m: [f64; 3],
+    pub orientation_wxyz: [f64; 4],
+    pub linear_velocity_mps: [f64; 3],
+    pub angular_velocity_radps: [f64; 3],
+}
+
+#[cfg(test)]
 fn provider_contract_verified(stdout: &[u8], presentation: SimulationPresentation) -> bool {
-    let Some(line) = stdout
+    terminal_evidence(stdout)
+        .as_ref()
+        .is_some_and(|evidence| terminal_evidence_verified(evidence, presentation))
+}
+
+fn terminal_evidence(stdout: &[u8]) -> Option<SimulatorTerminalEvidence> {
+    let line = stdout
         .split(|byte| *byte == b'\n')
-        .rfind(|line| !line.is_empty())
-    else {
-        return false;
-    };
-    let Ok(evidence) = serde_json::from_slice::<SimulatorTerminalEvidence>(line) else {
-        return false;
-    };
+        .rfind(|line| !line.is_empty())?;
+    serde_json::from_slice::<SimulatorTerminalEvidence>(line).ok()
+}
+
+fn terminal_evidence_verified(
+    evidence: &SimulatorTerminalEvidence,
+    presentation: SimulationPresentation,
+) -> bool {
     evidence.schema == "phoxal/simulation-run/v0"
         && evidence.provider_contract_verified
         && ((evidence.outcome == "success" && evidence.completed_steps == evidence.requested_steps)

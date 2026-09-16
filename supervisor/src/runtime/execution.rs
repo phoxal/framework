@@ -34,8 +34,12 @@ use phoxal::communication::simulation::{
     ResetRequest, TransitionKey,
 };
 use phoxal::communication_transport::PublicSimulationContext;
+use phoxal::runtime::ExecutionTime;
 use phoxal::runtime::connection::Connection;
 use phoxal::runtime::execution_protocol::{self, wire};
+use phoxal::runtime::transport::{self, RuntimeWireMetadata, WireControl, WireSample};
+use phoxal::scenario::{Action as ScenarioAction, Capture as ScenarioCapture, Program};
+use serde::Serialize;
 
 const CONTROL_CHANNEL_CAPACITY: usize = 64;
 const DEFAULT_RUNTIME_TIMEOUT: Duration = Duration::from_secs(5);
@@ -115,8 +119,66 @@ struct ProtocolInner {
     delivery_routes: BTreeMap<(String, String, String), BTreeSet<String>>,
     observation_acknowledgements: BTreeMap<String, Subscriber>,
     request_routes: RequestRoutes,
+    scenario: Option<ScenarioDriver>,
     boundary: Mutex<BoundaryState>,
     failed: CancellationToken,
+}
+
+struct ScenarioDriver {
+    program: Program,
+    delivery_ack: Subscriber,
+    captures: BTreeMap<String, ScenarioCaptureSubscription>,
+    command_replies: BTreeMap<(String, String), Subscriber>,
+    state: Mutex<ScenarioDriverState>,
+}
+
+struct ScenarioCaptureSubscription {
+    kind: &'static str,
+    subscriber: Subscriber,
+}
+
+struct ScenarioDeliveryExpectation<'a> {
+    label: &'a str,
+    timeline_id: &'a str,
+    target: String,
+    port: &'a str,
+    sequence: u64,
+    bytes: u64,
+    production_boundary: u64,
+    eligible_boundary: u64,
+}
+
+#[derive(Default)]
+struct ScenarioDriverState {
+    steps: Vec<ScenarioStepEvidence>,
+    captures: BTreeMap<String, ScenarioCaptureEvidence>,
+    command_labels: BTreeMap<u64, String>,
+    command_replies: BTreeMap<String, Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ScenarioExecutionReport {
+    pub(crate) schema: String,
+    pub(crate) scenario_name: String,
+    pub(crate) steps: Vec<ScenarioStepEvidence>,
+    pub(crate) captures: Vec<ScenarioCaptureEvidence>,
+    pub(crate) command_replies: BTreeMap<String, Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ScenarioStepEvidence {
+    pub(crate) label: String,
+    pub(crate) kind: String,
+    pub(crate) production_boundary: u64,
+    pub(crate) eligible_boundary: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ScenarioCaptureEvidence {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) boundary: u64,
+    pub(crate) payloads: Vec<Vec<u8>>,
 }
 
 /// Supervisor-side owner of private runtime admission and controlled progress.
@@ -135,12 +197,82 @@ impl std::fmt::Debug for RuntimeExecutionProtocol {
     }
 }
 
+impl ScenarioDriver {
+    async fn open(bus: &Connection, program: Program) -> Result<Self> {
+        let delivery_ack = declare(bus, "scenario", "delivery-ack").await?;
+        let mut captures = BTreeMap::new();
+        for capture in program.captures() {
+            let (name, signature, kind) = match capture {
+                ScenarioCapture::State { name, signature } => (name, signature, "state"),
+                ScenarioCapture::Sample { name, signature } => (name, signature, "sample"),
+                ScenarioCapture::Event { name, signature } => (name, signature, "event"),
+                ScenarioCapture::NativeBody { .. } => continue,
+            };
+            let (instance, _) = scenario_capture_target(name).with_context(|| {
+                format!("scenario capture `{name}` must be named `<instance>/<label>`")
+            })?;
+            let subscriber = bus
+                .session()?
+                .declare_subscriber(bus.full_key(&transport::port_key(
+                    instance,
+                    signature.name,
+                    "publish",
+                )))
+                .with(zenoh::handlers::FifoChannel::new(MAX_PRODUCT_RECEIPTS))
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            captures.insert(
+                name.clone(),
+                ScenarioCaptureSubscription { kind, subscriber },
+            );
+        }
+        let mut command_replies = BTreeMap::new();
+        for step in program.steps() {
+            let ScenarioAction::Command {
+                target_instance,
+                service_signature,
+                ..
+            } = &step.action
+            else {
+                continue;
+            };
+            let key = (target_instance.clone(), service_signature.name.to_owned());
+            if command_replies.contains_key(&key) {
+                continue;
+            }
+            let subscriber = bus
+                .session()?
+                .declare_subscriber(bus.full_key(&transport::port_key(
+                    target_instance,
+                    service_signature.name,
+                    "reply",
+                )))
+                .with(zenoh::handlers::FifoChannel::new(MAX_PRODUCT_RECEIPTS))
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            command_replies.insert(key, subscriber);
+        }
+        Ok(Self {
+            program,
+            delivery_ack,
+            captures,
+            command_replies,
+            state: Mutex::new(ScenarioDriverState::default()),
+        })
+    }
+}
+
+fn scenario_capture_target(name: &str) -> Option<(&str, &str)> {
+    name.split_once('/').or_else(|| name.split_once('.'))
+}
+
 impl RuntimeExecutionProtocol {
     /// Declare response subscribers before any child process is launched.
     pub(crate) async fn open(
         bus: Connection,
         source: &SourceBundle,
         state: ExecutionState,
+        scenario_program: Option<Program>,
     ) -> Result<Self> {
         let mut instances = Vec::new();
         let mut artifacts = BTreeMap::<String, ArtifactRuntime>::new();
@@ -284,6 +416,10 @@ impl RuntimeExecutionProtocol {
                 observation_acknowledgements.insert(provider.service_instance.clone(), subscriber);
             }
         }
+        let scenario = match scenario_program {
+            Some(program) => Some(ScenarioDriver::open(&bus, program).await?),
+            None => None,
+        };
         Ok(Self {
             inner: Arc::new(ProtocolInner {
                 execution_id: bus.execution().to_string(),
@@ -306,6 +442,7 @@ impl RuntimeExecutionProtocol {
                 delivery_routes,
                 observation_acknowledgements,
                 request_routes,
+                scenario,
                 boundary: Mutex::new(BoundaryState {
                     mode: RuntimeExecutionMode::Hardware,
                     quantum_ns: 0,
@@ -340,6 +477,10 @@ impl RuntimeExecutionProtocol {
                 &self.inner.artifacts,
                 &self.inner.connections,
                 &self.inner.observation_providers,
+                self.inner
+                    .scenario
+                    .as_ref()
+                    .map(|scenario| &scenario.program),
                 quantum_ns,
             )?;
         }
@@ -456,6 +597,265 @@ impl RuntimeExecutionProtocol {
         self.inner.boundary.lock().await.fault.clone()
     }
 
+    pub(crate) async fn scenario_report(&self) -> Option<ScenarioExecutionReport> {
+        let scenario = self.inner.scenario.as_ref()?;
+        self.drain_scenario_records().await;
+        let state = scenario.state.lock().await;
+        Some(ScenarioExecutionReport {
+            schema: "phoxal/scenario-execution/v0".to_owned(),
+            scenario_name: scenario.program.scenario_name().to_owned(),
+            steps: state.steps.clone(),
+            captures: state.captures.values().cloned().collect(),
+            command_replies: state.command_replies.clone(),
+        })
+    }
+
+    async fn publish_scenario_actions(
+        &self,
+        boundary: u64,
+        logical_time_ns: u64,
+        timeline_id: &str,
+    ) -> Result<(), String> {
+        let Some(scenario) = self.inner.scenario.as_ref() else {
+            return Ok(());
+        };
+        let quantum_ns = u64::from(scenario.program.quantum().micros()) * 1_000;
+        let valid_until_ns = u64::from(scenario.program.transition_count())
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(quantum_ns))
+            .ok_or_else(|| "scenario validity bound overflowed".to_owned())?;
+        for (ordinal, step) in scenario.program.steps().iter().enumerate() {
+            if u64::from(step.boundary) != boundary {
+                continue;
+            }
+            let sequence = u64::try_from(ordinal)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| "scenario action sequence overflowed".to_owned())?;
+            let eligible_boundary = boundary
+                .checked_add(1)
+                .ok_or_else(|| "scenario eligible boundary overflowed".to_owned())?;
+            match &step.action {
+                ScenarioAction::Setpoint {
+                    target_instance,
+                    consumer_signature,
+                    encoded_payload,
+                    ..
+                } => {
+                    let mut metadata = RuntimeWireMetadata::data(
+                        "scenario",
+                        ExecutionTime::from_nanos(logical_time_ns),
+                        sequence,
+                    )
+                    .with_delivery_identity(
+                        self.inner.execution_id.clone(),
+                        timeline_id.to_owned(),
+                        boundary,
+                        0,
+                    )
+                    .with_eligible_boundary(eligible_boundary);
+                    metadata.expires_at_nanos = Some(valid_until_ns);
+                    publish_scenario_sample(
+                        &self.inner.bus,
+                        "scenario",
+                        consumer_signature.name,
+                        "publish",
+                        encoded_payload,
+                        metadata,
+                        WireControl::Data,
+                    )
+                    .await?;
+                    self.wait_scenario_delivery(ScenarioDeliveryExpectation {
+                        label: &step.label,
+                        timeline_id,
+                        target: format!("{target_instance}.{}", consumer_signature.name),
+                        port: consumer_signature.name,
+                        sequence,
+                        bytes: encoded_payload.len() as u64,
+                        production_boundary: boundary,
+                        eligible_boundary,
+                    })
+                    .await?;
+                }
+                ScenarioAction::Withdraw {
+                    target_instance,
+                    producer_signature,
+                } => {
+                    let metadata = RuntimeWireMetadata::data(
+                        "scenario",
+                        ExecutionTime::from_nanos(logical_time_ns),
+                        sequence,
+                    )
+                    .with_delivery_identity(
+                        self.inner.execution_id.clone(),
+                        timeline_id.to_owned(),
+                        boundary,
+                        0,
+                    )
+                    .with_eligible_boundary(eligible_boundary);
+                    publish_scenario_sample(
+                        &self.inner.bus,
+                        "scenario",
+                        producer_signature.name,
+                        "publish",
+                        &[],
+                        metadata,
+                        WireControl::Withdraw,
+                    )
+                    .await?;
+                    self.wait_scenario_delivery(ScenarioDeliveryExpectation {
+                        label: &step.label,
+                        timeline_id,
+                        target: format!("{target_instance}.{}", producer_signature.name),
+                        port: producer_signature.name,
+                        sequence,
+                        bytes: 0,
+                        production_boundary: boundary,
+                        eligible_boundary,
+                    })
+                    .await?;
+                }
+                ScenarioAction::Command {
+                    target_instance,
+                    service_signature,
+                    request_encoded,
+                    label,
+                    ..
+                } => {
+                    let metadata = RuntimeWireMetadata::external_command(
+                        ExecutionTime::from_nanos(logical_time_ns),
+                        sequence,
+                        eligible_boundary,
+                        sequence,
+                    );
+                    publish_scenario_sample(
+                        &self.inner.bus,
+                        target_instance,
+                        service_signature.name,
+                        "request",
+                        request_encoded,
+                        metadata,
+                        WireControl::Data,
+                    )
+                    .await?;
+                    let mut state = scenario.state.lock().await;
+                    state.command_labels.insert(sequence, label.clone());
+                    state.steps.push(ScenarioStepEvidence {
+                        label: step.label.clone(),
+                        kind: "command".to_owned(),
+                        production_boundary: boundary,
+                        eligible_boundary,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn wait_scenario_delivery(
+        &self,
+        expectation: ScenarioDeliveryExpectation<'_>,
+    ) -> Result<(), String> {
+        let scenario = self
+            .inner
+            .scenario
+            .as_ref()
+            .ok_or_else(|| "scenario delivery requested without a scenario".to_owned())?;
+        let acknowledgement =
+            tokio::time::timeout(DEFAULT_RUNTIME_TIMEOUT, scenario.delivery_ack.recv_async())
+                .await
+                .map_err(|_| {
+                    format!(
+                        "scenario step `{}` delivery acknowledgement timed out",
+                        expectation.label
+                    )
+                })?
+                .map_err(|error| error.to_string())?;
+        let acknowledgement: wire::DeliveryAck =
+            decode(acknowledgement).map_err(|error| error.to_string())?;
+        if !scenario_delivery_ack_matches(
+            &acknowledgement,
+            &self.inner.execution_id,
+            expectation.timeline_id,
+            &expectation.target,
+            expectation.port,
+            expectation.sequence,
+            expectation.bytes,
+            expectation.production_boundary,
+        ) {
+            return Err(format!(
+                "scenario step `{}` received a mismatched or refused delivery acknowledgement: {}",
+                expectation.label,
+                acknowledgement
+                    .detail
+                    .unwrap_or_else(|| "identity mismatch".to_owned())
+            ));
+        }
+        scenario
+            .state
+            .lock()
+            .await
+            .steps
+            .push(ScenarioStepEvidence {
+                label: expectation.label.to_owned(),
+                kind: if expectation.bytes == 0 {
+                    "withdraw".to_owned()
+                } else {
+                    "setpoint".to_owned()
+                },
+                production_boundary: expectation.production_boundary,
+                eligible_boundary: expectation.eligible_boundary,
+            });
+        Ok(())
+    }
+
+    async fn drain_scenario_records(&self) {
+        let Some(scenario) = self.inner.scenario.as_ref() else {
+            return;
+        };
+        let mut state = scenario.state.lock().await;
+        for (name, capture) in &scenario.captures {
+            while let Ok(Some(sample)) = capture.subscriber.try_recv() {
+                let Ok(sample) = WireSample::from_zenoh(sample) else {
+                    continue;
+                };
+                let boundary = sample.metadata().delivery_boundary().unwrap_or_default();
+                let entry =
+                    state
+                        .captures
+                        .entry(name.clone())
+                        .or_insert_with(|| ScenarioCaptureEvidence {
+                            name: name.clone(),
+                            kind: capture.kind.to_owned(),
+                            boundary,
+                            payloads: Vec::new(),
+                        });
+                entry.boundary = boundary;
+                if capture.kind == "state" {
+                    entry.payloads.clear();
+                }
+                entry.payloads.push(sample.payload().to_vec());
+            }
+        }
+        for subscriber in scenario.command_replies.values() {
+            while let Ok(Some(sample)) = subscriber.try_recv() {
+                let Ok(sample) = WireSample::from_zenoh(sample) else {
+                    continue;
+                };
+                let Some(command_id) = sample.metadata().command_id else {
+                    continue;
+                };
+                let Some(label) = state.command_labels.get(&command_id).cloned() else {
+                    continue;
+                };
+                state
+                    .command_replies
+                    .entry(label)
+                    .or_insert_with(|| sample.payload().to_vec());
+            }
+        }
+    }
+
     async fn admit_initial_observations_inner(
         &self,
         context: PublicSimulationContext,
@@ -547,6 +947,12 @@ impl RuntimeExecutionProtocol {
         };
         if let Err(error) = self
             .pin_read_views(&boundary.timeline_id, key.boundary)
+            .await
+        {
+            return self.fail_boundary(&mut boundary, key.boundary, error);
+        }
+        if let Err(error) = self
+            .publish_scenario_actions(key.boundary, logical_time_ns, &boundary.timeline_id)
             .await
         {
             return self.fail_boundary(&mut boundary, key.boundary, error);
@@ -667,6 +1073,7 @@ impl RuntimeExecutionProtocol {
                 );
             }
         }
+        self.drain_scenario_records().await;
         let end_time_ns = target
             .checked_mul(boundary.quantum_ns)
             .ok_or("actuator validity boundary overflow")?;
@@ -850,6 +1257,30 @@ impl RuntimeExecutionProtocol {
         boundary.prepared_transition = None;
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scenario_delivery_ack_matches(
+    acknowledgement: &wire::DeliveryAck,
+    execution_id: &str,
+    timeline_id: &str,
+    target: &str,
+    port: &str,
+    sequence: u64,
+    bytes: u64,
+    production_boundary: u64,
+) -> bool {
+    acknowledgement.execution_id == execution_id
+        && acknowledgement.timeline_id == timeline_id
+        && acknowledgement.boundary == production_boundary
+        && acknowledgement.source == "scenario"
+        && acknowledgement.target == target
+        && acknowledgement.port == port
+        && acknowledgement.direction == "publish"
+        && acknowledgement.sequence == sequence
+        && acknowledgement.item == 0
+        && acknowledgement.bytes == bytes
+        && acknowledgement.admitted
 }
 
 fn input_sources(
@@ -1186,6 +1617,32 @@ async fn send<M: Message>(bus: &Connection, instance: &str, leg: &str, message: 
         ))
         .await
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(())
+}
+
+async fn publish_scenario_sample(
+    bus: &Connection,
+    instance: &str,
+    port: &str,
+    direction: &str,
+    payload: &[u8],
+    mut metadata: RuntimeWireMetadata,
+    control: WireControl,
+) -> Result<(), String> {
+    metadata.control = control as u32;
+    let attachment = metadata
+        .encode_bounded()
+        .map_err(|error| error.to_string())?;
+    bus.session()
+        .map_err(|error| error.to_string())?
+        .put(
+            bus.full_key(&transport::port_key(instance, port, direction)),
+            payload.to_vec(),
+        )
+        .encoding(Encoding::from(transport::PROTOBUF_ENCODING.to_owned()))
+        .attachment(attachment)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1890,6 +2347,43 @@ mod tests {
     }
 
     #[test]
+    fn scenario_delivery_acknowledgement_requires_exact_timeline_and_target() {
+        let mut acknowledgement = wire::DeliveryAck {
+            execution_id: "execution".to_owned(),
+            timeline_id: "timeline".to_owned(),
+            boundary: 7,
+            source: "scenario".to_owned(),
+            target: "motion.manual".to_owned(),
+            port: "manual".to_owned(),
+            direction: "publish".to_owned(),
+            sequence: 9,
+            item: 0,
+            bytes: 4,
+            admitted: true,
+            detail: None,
+        };
+        let matches = |acknowledgement: &wire::DeliveryAck| {
+            scenario_delivery_ack_matches(
+                acknowledgement,
+                "execution",
+                "timeline",
+                "motion.manual",
+                "manual",
+                9,
+                4,
+                7,
+            )
+        };
+
+        assert!(matches(&acknowledgement));
+        acknowledgement.timeline_id = "stale-timeline".to_owned();
+        assert!(!matches(&acknowledgement));
+        acknowledgement.timeline_id = "timeline".to_owned();
+        acknowledgement.target = "motion.autonomous".to_owned();
+        assert!(!matches(&acknowledgement));
+    }
+
+    #[test]
     fn delivery_ack_candidates_remove_out_of_order_items_without_loss() {
         let make = |item| ExpectedDelivery {
             source: "producer".to_owned(),
@@ -2104,7 +2598,7 @@ mod tests {
         );
         let state = ExecutionState::new();
         let protocol =
-            RuntimeExecutionProtocol::open(supervisor_bus.clone(), &source, state.clone())
+            RuntimeExecutionProtocol::open(supervisor_bus.clone(), &source, state.clone(), None)
                 .await
                 .expect("protocol opens");
         let producer_admit = super::declare(&producer_bus, "producer", "admit")
@@ -2470,7 +2964,7 @@ mod tests {
         });
         let state = ExecutionState::new();
         let protocol =
-            RuntimeExecutionProtocol::open(supervisor_bus.clone(), &source, state.clone())
+            RuntimeExecutionProtocol::open(supervisor_bus.clone(), &source, state.clone(), None)
                 .await
                 .expect("protocol opens");
         let admit = super::declare(&runtime_bus, "brain", "admit")

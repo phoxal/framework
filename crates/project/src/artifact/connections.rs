@@ -8,6 +8,14 @@ pub fn validate_connected_endpoints(
     document: &RobotDocument,
     contracts: &BTreeMap<String, ArtifactContract>,
 ) -> Result<(), Error> {
+    validate_connected_endpoints_with_virtual_producers(document, contracts, &[])
+}
+
+pub fn validate_connected_endpoints_with_virtual_producers(
+    document: &RobotDocument,
+    contracts: &BTreeMap<String, ArtifactContract>,
+    virtual_producers: &[&str],
+) -> Result<(), Error> {
     for (instance, contract) in contracts {
         for input in &contract.runtime.inputs {
             if matches!(input.kind, InputKind::Commands | InputKind::Operation) {
@@ -68,6 +76,9 @@ pub fn validate_connected_endpoints(
                     message: error.to_string(),
                 })?;
             let Some(producer_contract) = contracts.get(&producer.instance) else {
+                if virtual_producers.contains(&producer.instance.as_str()) {
+                    continue;
+                }
                 if document.robot.components.contains_key(&producer.instance) {
                     // Simulation providers are admitted from the selected
                     // component contracts during native bundle preparation.

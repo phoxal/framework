@@ -104,9 +104,10 @@ mod tests {
             ),
             BTreeMap::new(),
         );
-        let protocol = RuntimeExecutionProtocol::open(bus.clone(), &source, ExecutionState::new())
-            .await
-            .unwrap();
+        let protocol =
+            RuntimeExecutionProtocol::open(bus.clone(), &source, ExecutionState::new(), None)
+                .await
+                .unwrap();
         let requests = super::super::declare(&bus, "reader", "pin-read-views")
             .await
             .unwrap();

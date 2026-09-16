@@ -41,6 +41,16 @@ use process::ProcessSupervisor;
 use public_backend::{RuntimeExecutionCoordinator, RuntimePublicBackend, RuntimePublicSurface};
 use state::{ExecutionState, TimeMode};
 
+struct ExecutionLaunch {
+    runtime: Bundle,
+    endpoint: String,
+    target: DeploymentTarget,
+    ready_file: Option<PathBuf>,
+    scenario_result: Option<PathBuf>,
+    shutdown: CancellationToken,
+    scenario_program: Option<phoxal::scenario::Program>,
+}
+
 /// Execute one compiled source bundle and publish readiness atomically.
 ///
 /// The optional file is an internal local-orchestration handoff. It becomes
@@ -50,6 +60,7 @@ pub async fn run(
     requested_root: &Path,
     target: DeploymentTarget,
     ready_file: Option<&Path>,
+    scenario_result: Option<&Path>,
     listen: Option<&str>,
     launch_mode: ScenarioLaunchMode,
 ) -> Result<()> {
@@ -62,6 +73,7 @@ pub async fn run(
     let paths = RuntimeRendezvous::for_root(&bundle::owning_root(&canonical));
     let lock = lock::SupervisorLock::acquire(&paths.supervisor_lock())?;
     let runtime = bundle::open(&canonical)?;
+    let mut scenario_program = None;
     if let Some(marker_value) = runtime.scenario_marker() {
         // Scenario bundles must carry a validated program identity inside
         // the nested `scenario` section. Verify the bounded program
@@ -133,7 +145,7 @@ pub async fn run(
         // `program.quantum().micros() * 1_000` avoids the integer
         // truncation that would otherwise accept `2_000_001 ns`
         // against a `2_000 us` program. See Gate P1 #4 of
-        // followup-5d11cfc1.md.
+        // the scenario acceptance review.
         let simulation = runtime.simulation().ok_or_else(|| {
             anyhow::anyhow!("scenario bundle must declare a controlled simulation")
         })?;
@@ -155,6 +167,7 @@ pub async fn run(
                 "scenario bundle refused by supervisor admission policy: {diagnostic}"
             ));
         }
+        scenario_program = Some(decoded);
     }
     tracing::info!(
         bundle = %runtime.root().display(),
@@ -174,26 +187,32 @@ pub async fn run(
         None => router_endpoint(&paths.checked_supervisor_socket()?),
     };
     let outcome = execute(
-        runtime,
-        endpoint,
+        ExecutionLaunch {
+            runtime,
+            endpoint,
+            target,
+            ready_file: ready_file.map(Path::to_owned),
+            scenario_result: scenario_result.map(Path::to_owned),
+            shutdown: shutdown.clone(),
+            scenario_program,
+        },
         &state,
-        target,
-        ready_file.map(Path::to_owned),
-        shutdown.clone(),
     )
     .await;
     shutdown.cancel();
     outcome
 }
 
-async fn execute(
-    runtime: Bundle,
-    endpoint: String,
-    state: &ExecutionState,
-    target: DeploymentTarget,
-    ready_file: Option<PathBuf>,
-    shutdown: CancellationToken,
-) -> Result<()> {
+async fn execute(launch: ExecutionLaunch, state: &ExecutionState) -> Result<()> {
+    let ExecutionLaunch {
+        runtime,
+        endpoint,
+        target,
+        ready_file,
+        scenario_result,
+        shutdown,
+        scenario_program,
+    } = launch;
     let execution = ExecutionId::mint();
     let source = runtime
         .source()
@@ -247,7 +266,7 @@ async fn execute(
             .map_err(anyhow::Error::msg)?;
     }
     let protocol = Arc::new(
-        RuntimeExecutionProtocol::open(bus.clone(), source, state.clone())
+        RuntimeExecutionProtocol::open(bus.clone(), source, state.clone(), scenario_program)
             .await
             .context("failed to open Runtime execution protocol")?,
     );
@@ -376,6 +395,12 @@ async fn execute(
             }
         }
     };
+    let outcome = match (scenario_result.as_deref(), protocol.scenario_report().await) {
+        (Some(path), Some(report)) => publish_json(path, &report)
+            .context("failed to publish scenario execution evidence")
+            .and(outcome),
+        _ => outcome,
+    };
     finish_run(
         outcome,
         RunResources {
@@ -418,6 +443,40 @@ fn publish_readiness(path: &Path, execution: ExecutionId) -> Result<()> {
     fs::rename(&temporary, path).with_context(|| {
         format!(
             "failed to publish readiness from {} to {}",
+            temporary.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn publish_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
+    if path.exists() {
+        bail!("result path {} already exists", path.display());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("result path {} has no parent", path.display()))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("phoxal-result"),
+        std::process::id()
+    ));
+    let body = serde_json::to_vec(value).context("failed to encode result JSON")?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .with_context(|| format!("failed to create {}", temporary.display()))?;
+    file.write_all(&body)
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("failed to write {}", temporary.display()))?;
+    fs::rename(&temporary, path).with_context(|| {
+        format!(
+            "failed to publish result from {} to {}",
             temporary.display(),
             path.display()
         )
@@ -588,7 +647,7 @@ fn router_endpoint(socket: &Path) -> String {
 /// side. Returns a human-readable diagnostic naming the scenario,
 /// the program's quantum in both units, and the simulation's
 /// quantum in nanoseconds when the two disagree. See Gate P1 #4 of
-/// followup-5d11cfc1.md.
+/// the scenario acceptance review.
 fn validate_simulation_quantum(
     scenario_name: &str,
     program_quantum_micros: u32,

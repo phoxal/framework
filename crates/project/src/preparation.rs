@@ -24,6 +24,10 @@ pub const SUPERVISOR_DEPENDENCY_KEY: &str = "phoxal-supervisor";
 pub const SUPERVISOR_VERSION_REQUIREMENT: &str = "*";
 /// The configured registry containing official Phoxal packages.
 pub const SUPERVISOR_REGISTRY: &str = "phoxal";
+/// The project orchestration crate used by the generated scenario case host.
+pub const SCENARIO_PROJECT_DEPENDENCY_KEY: &str = "phoxal-project";
+/// Scenario preparation follows the selected official registry release.
+pub const SCENARIO_PROJECT_VERSION_REQUIREMENT: &str = "*";
 
 /// One visible change made by preparation.
 ///
@@ -51,6 +55,13 @@ pub enum PreparationChange {
         dependency: String,
         /// Feature gate that was added.
         feature: String,
+    },
+    /// Required scenario case-host dependency added to `[dev-dependencies]`.
+    DevDependencyAdded {
+        /// Exact dependency key added by preparation.
+        dependency: String,
+        /// Human-readable Cargo requirement written for the dependency.
+        requirement: String,
     },
     /// Harness source regenerated under the given path.
     HarnessWritten { path: String },
@@ -332,6 +343,7 @@ pub(crate) struct ScenarioChangePlan {
     pub discovered: Vec<crate::scenario::DiscoveredScenario>,
     pub add_test_target: bool,
     pub add_scenario_feature: bool,
+    pub add_project_dependency: bool,
     pub harness_changed: bool,
     /// `true` if any persistent setup (test target or feature) needs to be
     /// added — the case that locked/frozen modes must refuse.
@@ -380,13 +392,16 @@ pub(crate) fn compute_scenario_change_plan(
         lookup_scenario_test_target(document).is_some_and(|table| managed_target_matches(&table));
     let add_test_target = !has_managed_test_target;
     let add_scenario_feature = !dev_dependency_has_scenario_feature(document);
+    let add_project_dependency = !scenario_project_dependency_available(document);
     let harness_changed = harness_needs_write(robot_root, &discovered, has_managed_test_target);
     let needs_persistent_setup =
-        (add_test_target || add_scenario_feature) && !discovered.is_empty();
+        (add_test_target || add_scenario_feature || add_project_dependency)
+            && !discovered.is_empty();
     Ok(ScenarioChangePlan {
         discovered,
         add_test_target,
         add_scenario_feature,
+        add_project_dependency,
         harness_changed,
         needs_persistent_setup,
     })
@@ -407,7 +422,7 @@ fn harness_needs_write(
         // register (scenarios exist) or when a managed test
         // target is already declared (its generated harness was
         // removed externally and must be restored). See Gate C
-        // preparation cleanup in followup-24c026ed.md:
+        // preparation cleanup in the scenario acceptance review:
         // "Regenerate an empty harness for that retained target
         // before broad Cargo checks; preserve a no-op only when
         // there is no managed target to satisfy."
@@ -441,6 +456,15 @@ fn dev_dependency_has_scenario_feature(document: &DocumentMut) -> bool {
         .unwrap_or(false)
 }
 
+fn scenario_project_dependency_available(document: &DocumentMut) -> bool {
+    ["dependencies", "dev-dependencies"].iter().any(|table| {
+        document
+            .get(table)
+            .and_then(Item::as_table)
+            .is_some_and(|dependencies| dependencies.contains_key(SCENARIO_PROJECT_DEPENDENCY_KEY))
+    })
+}
+
 fn apply_scenario_change_plan(
     layout: &ProjectLayout,
     robot_root: &Path,
@@ -466,6 +490,17 @@ fn apply_scenario_change_plan(
     if plan.add_scenario_feature
         && let Some(change) =
             ensure_scenario_dev_dependency(layout, document).map_err(|message| {
+                Error::ManifestPreparation {
+                    path: robot_root.join("Cargo.toml"),
+                    message,
+                }
+            })?
+    {
+        changes.push(change);
+    }
+    if plan.add_project_dependency
+        && let Some(change) =
+            ensure_scenario_project_dependency(layout, document).map_err(|message| {
                 Error::ManifestPreparation {
                     path: robot_root.join("Cargo.toml"),
                     message,
@@ -508,8 +543,9 @@ pub(crate) fn prepare_scenario_target_in_transaction(
                 return Err(Error::ManifestPreparation {
                     path: manifest.to_owned(),
                     message: format!(
-                        "scenario setup needs to add `[[test]] {SCENARIO_TEST_TARGET_NAME}` and \
-                         `[dev-dependencies] phoxal.features = [\"scenario\"]`; refusing to \
+                        "scenario setup needs to add `[[test]] {SCENARIO_TEST_TARGET_NAME}`, \
+                         `[dev-dependencies] phoxal.features = [\"scenario\"]`, and the \
+                         `{SCENARIO_PROJECT_DEPENDENCY_KEY}` case-host dependency; refusing to \
                          mutate the manifest while {:?} is in effect. Re-run without \
                          --locked / --frozen.",
                         options.lock
@@ -703,6 +739,51 @@ fn ensure_scenario_dev_dependency(
     Ok(Some(PreparationChange::DevDependencyFeatureAdded {
         dependency: "phoxal".to_owned(),
         feature: "scenario".to_owned(),
+    }))
+}
+
+fn ensure_scenario_project_dependency(
+    layout: &ProjectLayout,
+    document: &mut DocumentMut,
+) -> Result<Option<PreparationChange>, String> {
+    if scenario_project_dependency_available(document) {
+        return Ok(None);
+    }
+
+    let workspace_owns_dependency = document
+        .get("workspace")
+        .and_then(Item::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(Item::as_table)
+        .is_some_and(|dependencies| dependencies.contains_key(SCENARIO_PROJECT_DEPENDENCY_KEY))
+        || load_workspace_document(layout).is_some_and(|workspace| {
+            workspace
+                .get("workspace")
+                .and_then(Item::as_table)
+                .and_then(|table| table.get("dependencies"))
+                .and_then(Item::as_table)
+                .is_some_and(|dependencies| {
+                    dependencies.contains_key(SCENARIO_PROJECT_DEPENDENCY_KEY)
+                })
+        });
+    let mut requirement = InlineTable::new();
+    let description = if workspace_owns_dependency {
+        requirement.insert("workspace", Value::from(true));
+        "workspace = true".to_owned()
+    } else {
+        requirement.insert("version", Value::from(SCENARIO_PROJECT_VERSION_REQUIREMENT));
+        requirement.insert("registry", Value::from(SUPERVISOR_REGISTRY));
+        format!(
+            "version = \"{SCENARIO_PROJECT_VERSION_REQUIREMENT}\", registry = \"{SUPERVISOR_REGISTRY}\""
+        )
+    };
+    ensure_dev_dependencies_table(document)?.insert(
+        SCENARIO_PROJECT_DEPENDENCY_KEY,
+        Item::Value(Value::InlineTable(requirement)),
+    );
+    Ok(Some(PreparationChange::DevDependencyAdded {
+        dependency: SCENARIO_PROJECT_DEPENDENCY_KEY.to_owned(),
+        requirement: description,
     }))
 }
 

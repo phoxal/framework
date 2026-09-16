@@ -170,7 +170,7 @@ impl FixtureParticipant {
 
     /// Runs the schedule to completion. Each `StepOutcome` is
     /// Synthetic outcome shape removed; see Gate B1 of
-    /// followup-24c026ed.md. The synthetic `run` method was a
+    /// the scenario acceptance review. The synthetic `run` method was a
     /// placeholder that fabricated boundary ticks, fake state
     /// captures, and command-issued outcomes without contacting a
     /// real consumer or running a child process. It is removed in
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn small_consumer_exchange_program_admits_into_collector_without_synthetic_preprocessing() {
         // Renamed from `real_phase_loop_seals_a_small_consumer_exchange`
-        // per Gate P1 #6 of followup-5d11cfc1.md: the previous test
+        // per Gate P1 #6 of the scenario acceptance review: the previous test
         // claimed a seal path that does not exist (the synthetic
         // emitter and `run_through_owned` were removed by Gate B1).
         // The real phase loop is the case-host lifecycle that

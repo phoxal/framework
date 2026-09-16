@@ -30,6 +30,7 @@ async fn main() -> ExitCode {
         &cli.bundle_root,
         target,
         cli.ready_file.as_deref(),
+        cli.scenario_result.as_deref(),
         cli.listen.as_deref(),
         launch_mode,
     )

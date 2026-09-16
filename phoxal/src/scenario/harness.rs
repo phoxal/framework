@@ -1,18 +1,10 @@
-//! Case-host protocol (P1 #3).
+//! Test-only scenario collector fixtures.
 //!
-//! The case host retains a scenario through planning, execution, and
-//! verification. The macro registers a per-type entry that returns
-//! the validated [`PlannedScenario`]; the public
-//! [`run_harness`] entry point drives the rest of the lifecycle.
-//!
-//! Until the production case-host driver lands (the real supervisor +
-//! fixture child + shared controlled transport + native simulator
-//! + owned lifecycle), [`run_harness`] returns an explicit
-//! [`HarnessError::Unsupported`] error. Production must fail closed:
-//! a missing piece is a non-pass, never a synthetic success.
-//! The collector-level fixtures that exercise the seal path are
-//! available behind `#[cfg(test)]` for the regression suite; they do
-//! not reach the public command.
+//! The production generated harness uses
+//! `phoxal_project::scenario::case_host::run_case_host` to retain the
+//! scenario through real supervisor and simulator execution.
+//! These local helpers exercise collector sealing and retained-instance
+//! verification without exposing a second production execution path.
 
 use thiserror::Error;
 
@@ -21,8 +13,6 @@ use thiserror::Error;
 pub enum HarnessError {
     #[error("scenario `{0}` is not registered")]
     UnknownScenario(String),
-    #[error("{0}")]
-    DuplicateIdentity(crate::scenario::registry::DuplicateScenarioError),
     #[error("scenario `{0}` failed: {1}")]
     ScenarioFailed(String, String),
     #[error("internal harness error: {0}")]
@@ -38,15 +28,12 @@ pub enum HarnessError {
     Unsupported(String),
 }
 
-/// Aggregated result of one harness invocation. `report_artifact_path`
-/// is populated once the case host materializes a sealed run artifact;
-/// it remains `None` until that boundary lands.
+/// Aggregated result of one test harness invocation.
 #[derive(Debug, Clone)]
 pub struct HarnessRun {
     pub name: String,
     pub passed: bool,
     pub detail: Option<String>,
-    pub report_artifact_path: Option<String>,
 }
 
 /// Drive one registered scenario through planning, execution, and
@@ -98,7 +85,7 @@ pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
 // The fixtures below exercise the case-host collector path through a
 // caller-supplied driver. They are intentionally private to the test
 // build: production code cannot reach them, so they cannot reintroduce
-// the synthetic success path the follow-up review required us to
+// the synthetic success path the scenario acceptance review required us to
 // remove. Their docstrings mark them as collector fixtures, not as a
 // production case-host pipeline.
 // =====================================================================
@@ -174,7 +161,6 @@ where
         name: planned.name,
         passed: true,
         detail: None,
-        report_artifact_path: None,
     })
 }
 
@@ -186,9 +172,9 @@ mod tests {
     /// Production `run_harness` must fail closed: it must never
     /// produce a passing [`HarnessRun`] for any registered
     /// descriptor until the supervisor-driven lifecycle lands. This
-    /// is the regression the follow-up review required: a missing
+    /// is the regression the scenario acceptance review required: a missing
     /// driver chain is a non-pass, not a synthetic success. See Gate
-    /// P1 #1 of followup-5d11cfc1.md.
+    /// P1 #1 of the scenario acceptance review.
     #[test]
     fn production_run_harness_rejects_unsupported_driver_chain() {
         let entries = crate::scenario::registry::list_scenarios().expect("list scenarios");
@@ -197,7 +183,7 @@ mod tests {
         // with no robot scenarios is fine. Probe every descriptor
         // when present.
         if let Some(entry) = entries.first() {
-            let result = super::run_harness(&entry.short_name);
+            let result = super::run_harness(entry.short_name);
             let message = format!("{:#}", result.expect_err("run_harness must refuse"));
             assert!(
                 message.contains("scenario execution is not implemented"),
@@ -226,7 +212,7 @@ mod tests {
 
     /// Panic in `Default::default` so any eager construction at
     /// listing or registration time would surface here. See Gate A1
-    /// of followup-24c026ed.md: "Listing invokes neither Default,
+    /// of the scenario acceptance review: "Listing invokes neither Default,
     /// plan, nor verify."
     #[derive(Debug)]
     #[allow(dead_code)]
@@ -249,7 +235,7 @@ mod tests {
     /// produced by the user's `plan()`. The case host drives the rest
     /// of the lifecycle; the entry itself never produces a passing
     /// outcome. Returning `ScenarioOutcome { passed: true, .. }` from
-    /// the entry would be a false success path: see followup-24c026ed
+    /// the entry would be a false success path: the scenario acceptance
     /// Gate A1 clause 3.
     #[test]
     fn entry_returns_planned_scenario_for_lifecycle_to_drive() {
@@ -309,7 +295,7 @@ mod tests {
     /// time. The inventory snapshot is already sorted by short name;
     /// we look up the descriptor by exact match so the test cannot
     /// silently accept another module's entry. See Gate P1 #6 of
-    /// followup-5d11cfc1.md.
+    /// the scenario acceptance review.
     #[allow(dead_code)]
     #[derive(Debug)]
     struct PanicOnDefaultScenario;
@@ -427,10 +413,8 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::State(vec![0x01, 0x02]))
             .map_err(|e| crate::anyhow!("record capture: {e}"))?;
-        let program_quantum_ns =
-            u64::from(collector.program().quantum().micros()) * 1_000;
-        let program_transition_count =
-            u64::from(collector.program().transition_count());
+        let program_quantum_ns = u64::from(collector.program().quantum().micros()) * 1_000;
+        let program_transition_count = u64::from(collector.program().transition_count());
         let evidence = {
             let mut builder = collector.terminal_evidence_builder();
             builder = builder
@@ -580,7 +564,7 @@ mod tests {
     /// `ScenarioFailed` before `verify()` runs. The fabricator's
     /// failure mode (sealing as passing without lifecycle evidence)
     /// must be rejected at this seam. See Gate P1 #1 of
-    /// followup-5d11cfc1.md.
+    /// the scenario acceptance review.
     #[test]
     fn case_host_rejects_sealed_run_that_did_not_pass() {
         use crate::scenario::Scenario;
@@ -669,9 +653,8 @@ mod tests {
                 result.map_err(|e| crate::anyhow!("seal: {e}"))
             },
         );
-        let err = result.expect_err(
-            "case host must reject a driver that cannot produce terminal evidence",
-        );
+        let err = result
+            .expect_err("case host must reject a driver that cannot produce terminal evidence");
         let message = format!("{err:#}");
         assert!(
             message.contains("RejectingSealedScenario"),
@@ -682,9 +665,9 @@ mod tests {
     /// Lifecycle ownership: the seal must refuse a run whose
     /// terminal evidence quantum does not match the program's
     /// quantum in nanoseconds. This is the regression the
-    /// follow-up review required: a driver that fabricates quantum
+    /// scenario acceptance review required: a driver that fabricates quantum
     /// or completed-transition counts cannot reach a passing
-    /// seal. See Gate P1 #2 of followup-5d11cfc1.md.
+    /// seal. See Gate P1 #2 of the scenario acceptance review.
     #[test]
     fn seal_rejects_terminal_evidence_with_mismatched_quantum() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
@@ -726,7 +709,7 @@ mod tests {
     /// Lifecycle ownership: the seal must refuse a run whose
     /// terminal evidence completed-transition count does not match
     /// the program's transition_count. See Gate P1 #2 of
-    /// followup-5d11cfc1.md.
+    /// the scenario acceptance review.
     #[test]
     fn seal_rejects_terminal_evidence_with_mismatched_completed_transitions() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
@@ -763,7 +746,7 @@ mod tests {
 
     /// Absent terminal native evidence: the seal must refuse a run
     /// whose lifecycle never recorded terminal evidence. The
-    /// follow-up review requires this regression: a driver that
+    /// scenario acceptance review requires this regression: a driver that
     /// skips the lifecycle cannot reach a passing seal.
     #[test]
     fn seal_rejects_absent_terminal_evidence() {
@@ -779,14 +762,17 @@ mod tests {
         let collector = EvidenceCollector::for_program(program);
         let result = collector.seal();
         assert!(
-            matches!(result, Err(crate::scenario::SealError::MissingTerminalEvidence)),
+            matches!(
+                result,
+                Err(crate::scenario::SealError::MissingTerminalEvidence)
+            ),
             "absent terminal evidence must surface as MissingTerminalEvidence; got {result:?}"
         );
     }
 
     /// The terminal evidence builder must refuse to construct
     /// evidence without lifecycle-observed quantum and completed
-    /// transitions. The follow-up review requires this regression:
+    /// transitions. The scenario acceptance review requires this regression:
     /// the structural fields cannot default from the program.
     #[test]
     fn terminal_evidence_builder_requires_lifecycle_observed_facts() {
@@ -878,10 +864,8 @@ mod tests {
                 )
                 .map_err(|e| crate::anyhow!("{e}"))?;
                 let mut collector = EvidenceCollector::for_program(program);
-                let program_quantum_ns =
-                    u64::from(collector.program().quantum().micros()) * 1_000;
-                let program_transition_count =
-                    u64::from(collector.program().transition_count());
+                let program_quantum_ns = u64::from(collector.program().quantum().micros()) * 1_000;
+                let program_transition_count = u64::from(collector.program().transition_count());
                 let evidence = {
                     let mut builder = collector.terminal_evidence_builder();
                     builder = builder

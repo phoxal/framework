@@ -54,8 +54,9 @@ pub use selection::{
 };
 pub use simulation::{
     DEFAULT_SIMULATOR_BINARY, DEFAULT_SIMULATOR_PACKAGE, DEFAULT_SIMULATOR_VERSION,
-    SIMULATION_PROTOCOL, SimulationBound, SimulationCleanup, SimulationPresentation,
-    SimulationRunOptions, SimulationRunReport, SimulatorArtifactSummary,
+    NativeBodySample, SIMULATION_PROTOCOL, SimulationBound, SimulationCleanup,
+    SimulationPresentation, SimulationRunOptions, SimulationRunReport, SimulatorArtifactSummary,
+    SimulatorTerminalEvidence,
 };
 pub use submission::{DeviceAuthorization, SubmissionResult, submit_publication};
 
@@ -272,7 +273,17 @@ impl Project {
         options: &CargoOptions,
         request: &SimulationRunOptions,
     ) -> Result<SimulationRunReport, Error> {
-        simulation::run(self, options, request)
+        simulation::run(self, options, request, None)
+    }
+
+    /// Run one validated scenario program through the controlled simulation.
+    pub fn run_scenario_simulation(
+        &self,
+        options: &CargoOptions,
+        request: &SimulationRunOptions,
+        program: &phoxal::scenario::Program,
+    ) -> Result<SimulationRunReport, Error> {
+        simulation::run(self, options, request, Some(program))
     }
 }
 
@@ -547,7 +558,7 @@ impl PreparedProject {
         output: impl AsRef<Path>,
     ) -> Result<CompiledBundle, Error> {
         let build_inputs = bundle::capture_build_inputs(self)?;
-        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs), None)
+        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs), None, None)
     }
 
     /// Builds the exact supervisor binary selected through the root Cargo
@@ -647,7 +658,59 @@ impl PreparedProject {
         facts: &SimulationModelFacts,
     ) -> Result<CompiledBundle, Error> {
         let build_inputs = bundle::capture_build_inputs(self)?;
-        bundle::assemble_with_inputs(self, options, output, Some(&build_inputs), Some(facts))
+        bundle::assemble_with_inputs(
+            self,
+            options,
+            output,
+            Some(&build_inputs),
+            Some(facts),
+            None,
+        )
+    }
+
+    /// Builds a nondeployable controlled-simulation bundle carrying one
+    /// immutable scenario program. Setpoint inputs selected by the program are
+    /// substituted only in the compiled bundle; the authored `robot.yaml`
+    /// remains unchanged.
+    pub fn build_scenario_simulation_bundle(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+        facts: &SimulationModelFacts,
+        program: &phoxal::scenario::Program,
+    ) -> Result<CompiledBundle, Error> {
+        let build_inputs = bundle::capture_build_inputs(self)?;
+        bundle::assemble_with_inputs(
+            self,
+            options,
+            output,
+            Some(&build_inputs),
+            Some(facts),
+            Some(bundle::ScenarioBundleInput {
+                program,
+                fixture_instance_id: "scenario",
+            }),
+        )
+    }
+
+    pub(crate) fn build_scenario_probe_bundle(
+        &self,
+        options: &CargoOptions,
+        output: impl AsRef<Path>,
+        program: &phoxal::scenario::Program,
+    ) -> Result<CompiledBundle, Error> {
+        let build_inputs = bundle::capture_build_inputs(self)?;
+        bundle::assemble_with_inputs(
+            self,
+            options,
+            output,
+            Some(&build_inputs),
+            None,
+            Some(bundle::ScenarioBundleInput {
+                program,
+                fixture_instance_id: "scenario",
+            }),
+        )
     }
 
     pub(crate) fn assembly_targets(&self) -> Vec<(String, &SelectedTarget)> {

@@ -472,6 +472,10 @@ fn print_preparation(prepared: &phoxal_project::PreparedProject) {
                 dependency,
                 feature,
             } => eprintln!("prepared dev-dep `{dependency}` feature `{feature}`"),
+            phoxal_project::PreparationChange::DevDependencyAdded {
+                dependency,
+                requirement,
+            } => eprintln!("prepared dev-dep `{dependency}` ({requirement})"),
             phoxal_project::PreparationChange::HarnessWritten { path } => {
                 eprintln!("prepared harness at {path}")
             }

@@ -22,6 +22,7 @@ use crate::cargo;
 use crate::selection::PackageSource;
 use crate::validation;
 use crate::{CargoOptions, Error, PreparedProject, RobotDocument};
+use phoxal::scenario::{Action, Program};
 
 /// The compiled project-bundle schema emitted by this source compiler.
 pub const BUNDLE_SCHEMA: &str = "phoxal/bundle/v0";
@@ -123,6 +124,23 @@ pub struct BundleScenarioSection {
     /// against `program_byte_length` and `program_digest` without
     /// leaving the bundle root.
     pub program: BundleScenarioProgram,
+    /// Typed virtual producers admitted from the immutable program.
+    #[serde(default)]
+    pub producers: Vec<BundleScenarioProducer>,
+}
+
+/// One supervisor-owned scenario producer exposed to Runtime input admission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleScenarioProducer {
+    pub instance: String,
+    pub port: String,
+    pub service_fqn: String,
+    pub method: String,
+    pub kind: String,
+    pub request_fqn: String,
+    pub response_fqn: String,
+    pub max_message_bytes: u32,
 }
 
 /// Validated scenario program identity. The supervisor rejects the
@@ -155,6 +173,17 @@ pub struct BundleScenarioProgram {
 #[allow(dead_code)]
 pub const DEFAULT_SCENARIO_PROGRAM_PATH: &str = "program.bin";
 
+/// Validated scenario program to embed in a controlled-simulation bundle.
+///
+/// The project compiler derives setpoint substitutions from the immutable
+/// program rather than asking authors to edit `robot.yaml`. Commands retain
+/// the supervisor-owned Commands ingress and therefore do not alter graph
+/// connections.
+pub(crate) struct ScenarioBundleInput<'a> {
+    pub(crate) program: &'a Program,
+    pub(crate) fixture_instance_id: &'a str,
+}
+
 impl BundleScenarioSection {
     /// Build a scenario section from an already-normalized program
     /// artifact. The caller is responsible for writing the bytes at
@@ -185,6 +214,7 @@ impl BundleScenarioSection {
                 fixture_instance_id: fixture_instance_id.into(),
                 controlled_execution: true,
             },
+            producers: Vec::new(),
         })
     }
 }
@@ -697,6 +727,7 @@ pub(crate) fn assemble_with_inputs(
     output: impl AsRef<Path>,
     expected_inputs: Option<&BuildInputs>,
     simulation_facts: Option<&SimulationModelFacts>,
+    scenario: Option<ScenarioBundleInput<'_>>,
 ) -> Result<CompiledBundle, Error> {
     options.validate()?;
     let output = output.as_ref();
@@ -820,8 +851,26 @@ pub(crate) fn assemble_with_inputs(
         .iter()
         .map(|(key, (_, _, _, contract))| (key.clone(), contract.clone()))
         .collect::<BTreeMap<_, _>>();
+    let mut document = prepared.document().clone();
+    if let Some(scenario) = scenario.as_ref() {
+        apply_scenario_substitutions(
+            &mut document,
+            scenario.program,
+            scenario.fixture_instance_id,
+            &simulation_contracts,
+        )?;
+    }
     validation::validate_configurations(prepared, &contract_map)?;
-    validation::validate_connections(prepared, &contract_map)?;
+    let virtual_producers = scenario
+        .as_ref()
+        .map(|scenario| vec![scenario.fixture_instance_id])
+        .unwrap_or_default();
+    validation::validate_connections_for_document_with_virtual_producers(
+        prepared,
+        &contract_map,
+        &document,
+        &virtual_producers,
+    )?;
     verify_build_inputs(prepared, &build_inputs)?;
 
     let mut components = prepared
@@ -873,10 +922,32 @@ pub(crate) fn assemble_with_inputs(
     let simulation = simulation_facts
         .map(|facts| build_simulation_definition(prepared, facts, &simulation_contracts))
         .transpose()?;
+    let scenario = scenario
+        .map(|scenario| {
+            let program_path = staged_root.join(DEFAULT_SCENARIO_PROGRAM_PATH);
+            scenario
+                .program
+                .write_to(&program_path)
+                .map_err(|error| Error::SimulationInvalid {
+                    message: format!(
+                        "cannot write scenario program `{}`: {error}",
+                        scenario.program.scenario_name()
+                    ),
+                })?;
+            let mut section = BundleScenarioSection::from_program_artifact(
+                scenario.program.scenario_name(),
+                scenario.fixture_instance_id,
+                DEFAULT_SCENARIO_PROGRAM_PATH,
+                scenario.program.program_bytes(),
+            )?;
+            section.producers = scenario_producers(scenario.program, scenario.fixture_instance_id)?;
+            Ok::<BundleScenarioSection, Error>(section)
+        })
+        .transpose()?;
     let manifest = BundleManifest {
         schema: BUNDLE_SCHEMA.to_owned(),
         robot_id: prepared.document().robot.id.clone(),
-        document: prepared.document().clone(),
+        document,
         root_package: BundlePackage {
             id: public_package_id(prepared, &prepared.cargo_root_package().id.to_string()),
             name: prepared.cargo_root_package().name.to_string(),
@@ -888,7 +959,7 @@ pub(crate) fn assemble_with_inputs(
         executables: executable_records,
         components,
         simulation,
-        scenario: None,
+        scenario,
     };
     let provenance = provenance(
         prepared,
@@ -911,6 +982,136 @@ pub(crate) fn assemble_with_inputs(
         manifest,
         provenance,
     })
+}
+
+fn scenario_producers(
+    program: &Program,
+    instance: &str,
+) -> Result<Vec<BundleScenarioProducer>, Error> {
+    let mut producers = BTreeMap::new();
+    for step in program.steps() {
+        let (signature, bytes) = match &step.action {
+            Action::Setpoint {
+                consumer_signature,
+                encoded_payload,
+                ..
+            } => (consumer_signature, encoded_payload.len()),
+            Action::Withdraw {
+                producer_signature, ..
+            } => (producer_signature, 0),
+            Action::Command { .. } => continue,
+        };
+        let bytes = u32::try_from(bytes).map_err(|_| {
+            simulation_error(format!(
+                "scenario producer `{instance}.{}` payload exceeds u32",
+                signature.name
+            ))
+        })?;
+        producers
+            .entry(signature.name.to_owned())
+            .and_modify(|producer: &mut BundleScenarioProducer| {
+                producer.max_message_bytes = producer.max_message_bytes.max(bytes);
+            })
+            .or_insert_with(|| BundleScenarioProducer {
+                instance: instance.to_owned(),
+                port: signature.name.to_owned(),
+                service_fqn: signature.service.to_owned(),
+                method: signature.method.to_owned(),
+                kind: signature.kind.as_str().to_owned(),
+                request_fqn: signature.request.to_owned(),
+                response_fqn: signature.response.to_owned(),
+                max_message_bytes: bytes,
+            });
+    }
+    Ok(producers.into_values().collect())
+}
+
+fn apply_scenario_substitutions(
+    document: &mut RobotDocument,
+    program: &Program,
+    fixture_instance_id: &str,
+    contracts: &BTreeMap<String, ArtifactSummary>,
+) -> Result<(), Error> {
+    if fixture_instance_id.is_empty() {
+        return Err(simulation_error(
+            "scenario fixture instance id must not be empty",
+        ));
+    }
+    let mut substitutions = BTreeMap::<String, (String, phoxal::port::PortSignature)>::new();
+    for step in program.steps() {
+        let (target_instance, signature) = match &step.action {
+            Action::Setpoint {
+                target_instance,
+                consumer_signature,
+                ..
+            } => (target_instance, consumer_signature),
+            Action::Withdraw {
+                target_instance,
+                producer_signature,
+            } => (target_instance, producer_signature),
+            Action::Command { .. } => continue,
+        };
+        let consumer = format!("{target_instance}.{}", signature.name);
+        let replacement = format!("{fixture_instance_id}.{}", signature.name);
+        if let Some(existing) =
+            substitutions.insert(consumer.clone(), (replacement.clone(), *signature))
+            && existing.0 != replacement
+        {
+            return Err(simulation_error(format!(
+                "scenario program maps `{consumer}` to competing fixture producers"
+            )));
+        }
+    }
+    for (consumer, (replacement, signature)) in substitutions {
+        let (target_instance, target_port) = consumer
+            .split_once('.')
+            .ok_or_else(|| simulation_error(format!("invalid scenario consumer `{consumer}`")))?;
+        let contract = contracts.get(target_instance).ok_or_else(|| {
+            simulation_error(format!(
+                "scenario target `{consumer}` has no compiled input contract"
+            ))
+        })?;
+        let input = contract
+            .runtime
+            .inputs
+            .iter()
+            .find(|input| input.name == target_port || input.port.as_deref() == Some(target_port))
+            .ok_or_else(|| {
+                simulation_error(format!(
+                    "scenario target `{consumer}` has no compiled input port `{target_port}`"
+                ))
+            })?;
+        if input.kind != crate::artifact::InputKind::Setpoint {
+            return Err(simulation_error(format!(
+                "scenario substitution `{consumer}` is not a setpoint input"
+            )));
+        }
+        let signature_matches = input
+            .port
+            .as_deref()
+            .is_none_or(|port| port == signature.name)
+            && input
+                .request_fqn
+                .as_deref()
+                .is_none_or(|request| request == signature.request)
+            && input.response_fqn.as_deref() == Some(signature.response)
+            && signature.kind == phoxal::port::PortKind::Setpoint;
+        if !signature_matches {
+            return Err(simulation_error(format!(
+                "scenario substitution `{consumer}` expects {} -> {}, compiled consumer records {:?} -> {:?} on port {:?}",
+                signature.request,
+                signature.response,
+                input.request_fqn,
+                input.response_fqn,
+                input.port
+            )));
+        }
+        document.connections.insert(
+            consumer,
+            crate::document::ConnectionSources::One(replacement),
+        );
+    }
+    Ok(())
 }
 
 fn build_simulation_definition(
