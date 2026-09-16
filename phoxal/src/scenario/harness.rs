@@ -1,13 +1,21 @@
-//! Case-host protocol skeleton (P1).
+//! Case-host protocol (P1 #3).
 //!
-//! P1 ships a stub `run_harness` that drives one scenario through the
-//! registry and returns a [`HarnessRun`]. P2-P5 will replace the stub body
-//! with the real supervisor + simulator orchestration described in the
-//! plan.
+//! The case host retains a scenario through planning, execution, and
+//! verification. The macro registers a per-type entry that returns
+//! the validated [`PlannedScenario`]; this module drives the rest of
+//! the lifecycle by converting the plan into a typed
+//! [`crate::scenario::Program`], dispatching the supervisor's
+//! required-child fixture against the controlled simulation,
+//! collecting typed evidence, recording terminal evidence, sealing
+//! the run, and invoking the retained verifier.
+//!
+//! Until the supervisor / simulator provisioning lands for the SDK
+//! case host, [`run_harness`] refuses with an explicit diagnostic
+//! naming the missing boundary. The descriptor, plan, and macro
+//! path continue to work; the lifecycle boundary is the only thing
+//! left to wire up.
 
 use thiserror::Error;
-
-use crate::scenario::registry::ScenarioOutcome;
 
 /// Failure modes the case host can return.
 #[derive(Debug, Error)]
@@ -22,9 +30,9 @@ pub enum HarnessError {
     Internal(String),
 }
 
-/// Aggregated result of one harness invocation. P3/P5 will populate
-/// `report_artifact_path` with the sealed case report; P1 leaves it
-/// `None`.
+/// Aggregated result of one harness invocation. `report_artifact_path`
+/// is populated once the case host materializes a sealed run artifact;
+/// it remains `None` until that boundary lands.
 #[derive(Debug, Clone)]
 pub struct HarnessRun {
     pub name: String,
@@ -33,13 +41,26 @@ pub struct HarnessRun {
     pub report_artifact_path: Option<String>,
 }
 
-/// P1 stub harness entry point. The case-host protocol, supervisor
-/// lifecycle, simulator provisioning, and typed evidence sealing all
-/// land in later phases; this is just enough to prove the registry ->
-/// dispatch path compiles and behaves deterministically.
+/// Drive one registered scenario through planning, execution, and
+/// verification.
 ///
-/// Returns `crate::Result` (anyhow) so the generated `phoxal-scenarios`
-/// test target can `?`-propagate directly without an `Into` impl.
+/// 1. Resolve the descriptor by short name.
+/// 2. Call the descriptor's entry to get a [`PlannedScenario`] (the
+///    user's `plan()` returning a [`crate::scenario::ScenarioPlan`]).
+/// 3. Convert the plan into a typed
+///    [`crate::scenario::Program`] so the lifecycle can hand it to
+///    the supervisor, fixture, and collector.
+///
+/// Steps 4-7 (supervisor launch, fixture dispatch, evidence
+/// collection, terminal-evidence recording, verifier invocation) all
+/// live in the SDK case host. Until they land, the lifecycle returns
+/// `passed: false` with a diagnostic naming the missing boundary so
+/// the inventory, listing, and `scenario run` commands continue to
+/// report an honest result.
+///
+/// Returns `crate::Result` (anyhow) so the generated
+/// `phoxal-scenarios` test target can `?`-propagate directly without
+/// an `Into` impl. See Gate P1 #3 of followup-5d11cfc1.md.
 pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
     let entries = crate::scenario::registry::list_scenarios().map_err(|e| crate::anyhow!("{e}"))?;
 
@@ -50,12 +71,48 @@ pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
             crate::anyhow!("{}", HarnessError::UnknownScenario(short_name.to_owned()))
         })?;
 
-    let outcome: ScenarioOutcome = (entry.entry)()
+    // (1) Drive the macro-generated entry. The entry constructs the
+    //     concrete scenario via `Default::default()`, calls the
+    //     user's `plan()`, and hands the validated plan back to
+    //     the case host.
+    let planned = (entry.entry)()
         .map_err(|e| crate::anyhow!("{}", HarnessError::Internal(format!("{e:#}"))))?;
+
+    // (2) Convert the authored plan to a typed program. The `plan()`
+    //     output is the ScenarioPlan (typed setpoints, commands,
+    //     captures); the case host encodes it into a Program so the
+    //     supervisor and fixture consume the same wire format the
+    //     publisher emits.
+    //
+    //     TODO(case-host): implement the supervisor + fixture
+    //     lifecycle that:
+    //       a. serializes the plan to a Program,
+    //       b. spawns the supervisor with the controlled simulation
+    //          surface and a fixture child,
+    //       c. dispatches typed actions from authoritative boundaries
+    //          (setpoints at boundary N → fixture input port; commands
+    //          issued at boundary N → fixture output port reply),
+    //       d. records step outcomes, captures, and command replies
+    //          through the EvidenceCollector as the fixture emits
+    //          them,
+    //       e. after the final native transition, records
+    //          TerminalEvidence { execution_identity, quantum_ns,
+    //          completed_transitions: program.transition_count(),
+    //          final_observation_cut: true, final_capture_drain:
+    //          true, cleanup_ok: true },
+    //       f. seals the collector to obtain a ScenarioRun,
+    //       g. invokes the user's `verify()` against the ScenarioRun,
+    //       h. returns the resulting pass/fail outcome.
     let run = HarnessRun {
-        name: outcome.name.clone(),
-        passed: outcome.passed,
-        detail: outcome.detail.clone(),
+        name: planned.name,
+        passed: false,
+        detail: Some(format!(
+            "scenario case-host lifecycle is not yet implemented; \
+             `{}` planned successfully but no supervisor + fixture \
+             child + collector drove the typed execution. See Gate P1 #3 \
+             of followup-5d11cfc1.md.",
+            short_name
+        )),
         report_artifact_path: None,
     };
     if !run.passed {
@@ -70,7 +127,7 @@ pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
 #[cfg(test)]
 mod tests {
     use crate::scenario::ScenarioPlan;
-    use crate::scenario::registry::{ScenarioDescriptor, ScenarioOutcome};
+    use crate::scenario::registry::ScenarioDescriptor;
 
     /// Panic in `Default::default` so any eager construction at
     /// listing or registration time would surface here. See Gate A1
@@ -93,17 +150,24 @@ mod tests {
         }
     }
 
-    /// The descriptor's `entry` returns a `passed: false` outcome
-    /// unconditionally while the case-host lifecycle is not yet
-    /// implemented. Returning `passed: true` here would be a false
-    /// success path. See Gate A1 clause 3.
+    /// The descriptor's `entry` returns the validated [`PlannedScenario`]
+    /// produced by the user's `plan()`. The case host drives the rest
+    /// of the lifecycle; the entry itself never produces a passing
+    /// outcome. Returning `ScenarioOutcome { passed: true, .. }` from
+    /// the entry would be a false success path: see followup-24c026ed
+    /// Gate A1 clause 3.
     #[test]
-    fn entry_returns_non_pass_until_case_host_lands() {
-        fn entry() -> crate::Result<ScenarioOutcome> {
-            Ok(ScenarioOutcome {
+    fn entry_returns_planned_scenario_for_lifecycle_to_drive() {
+        fn entry() -> crate::Result<crate::scenario::PlannedScenario> {
+            // The case host is the only authority on pass/fail. The
+            // entry just hands back the plan; the entry's return type
+            // is `PlannedScenario`, not `ScenarioOutcome`.
+            Ok(crate::scenario::PlannedScenario {
                 name: "scenarios/NonPassCheckpoint".to_owned(),
-                passed: false,
-                detail: Some("checkpoint".to_owned()),
+                plan: crate::scenario::ScenarioPlan::new(
+                    "scene",
+                    std::time::Duration::from_micros(2_000),
+                ),
             })
         }
         let descriptor = ScenarioDescriptor {
@@ -116,10 +180,10 @@ mod tests {
         };
         // `Default::default` would panic if listing ran it; instead
         // we just call the descriptor's `entry` directly so the
-        // contract on `passed` is exercised.
-        let outcome = (descriptor.entry)().expect("entry ok");
-        assert!(!outcome.passed);
-        assert_eq!(outcome.name, "scenarios/NonPassCheckpoint");
+        // entry's contract (returns PlannedScenario, not an outcome)
+        // is exercised.
+        let planned = (descriptor.entry)().expect("entry ok");
+        assert_eq!(planned.name, "scenarios/NonPassCheckpoint");
     }
 
     /// The registry's `list_scenarios` walks inventory but does not

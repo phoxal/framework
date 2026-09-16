@@ -34,8 +34,8 @@ pub use participant::{
 pub use plan::{Action, Capture, MAX_PAYLOAD, PlanValidationError, ScenarioPlan, Step, Validity};
 pub use program::{PROGRAM_SCHEMA_VERSION, Program, ProgramError, Quantum, ScheduleEntry};
 pub use registry::{
-    DuplicateLocation, DuplicateScenarioError, RegisteredScenario, ScenarioDescriptor,
-    ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,
+    DuplicateLocation, DuplicateScenarioError, PlannedScenario, RegisteredScenario,
+    ScenarioDescriptor, ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,
 };
 pub use results::{CaptureRecord, CommandReply, EvidenceCollector, ScenarioRun, SealError};
 pub use trait_def::Scenario;

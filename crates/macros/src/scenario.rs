@@ -84,48 +84,35 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
     let full_name = format!("scenarios/{short_name}");
     let entry_name = format_ident!("__phoxal_scenario_entry_{}", type_ident);
 
-    // (6) Build the expansion. The user's impl is preserved verbatim; the
-    //     entry function is monomorphized (one per impl block) and the
-    //     descriptor registers it. The entry constructs the scenario
-    //     through `Default::default()`, validates `plan()`, and returns
-    //     an explicit non-pass outcome. Author construction (typed
-    //     actions) lives in the user's `plan()` implementation; the
-    //     case-host process owns the lifecycle that turns a planned
-    //     scenario into a real controlled-runtime execution and only
-    //     that path may produce a passing `ScenarioOutcome`.
+    // (6) Build the expansion. The user's impl is preserved verbatim;
+    //     the entry function is monomorphized (one per impl block) and
+    //     the descriptor registers it. The entry constructs the
+    //     scenario through `Default::default()`, validates `plan()`,
+    //     and hands the validated plan back to the case host as a
+    //     [`PlannedScenario`](::phoxal::scenario::PlannedScenario).
+    //     The case host drives the lifecycle that turns the plan
+    //     into a real controlled-runtime execution and only it may
+    //     produce the final [`ScenarioOutcome`].
     //
-    //     Until the case-host lifecycle lands, the entry returns
-    //     `passed: false` with a diagnostic naming the missing
-    //     boundary. The descriptor is registered so inventory listing
-    //     continues to work, and the `plan()` call exercises the
-    //     author's typed constructors so regressions surface at compile
-    //     and at inventory time rather than at run time.
+    //     See Gate P1 #3 of followup-5d11cfc1.md: the macro now
+    //     registers a generic SDK case entry that plans and returns;
+    //     the case host executes and verifies.
     let expanded = quote! {
         #impl_block
 
         #[doc(hidden)]
         #[allow(non_snake_case)]
-        fn #entry_name() -> ::phoxal::Result<::phoxal::scenario::ScenarioOutcome> {
+        fn #entry_name() -> ::phoxal::Result<::phoxal::scenario::PlannedScenario> {
             // Construct through `Default`; `Scenario` does not provide
             // its own `default` method.
             let scenario = <#self_type as ::std::default::Default>::default();
             // Validate the user's plan so an authored impl that does
-            // not type-check or fails validation never registers.
-            let _plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
-            // Until the case-host lifecycle lands, registration-only
-            // expansion explicitly does not produce a passing trace.
-            // Constructing a `ScenarioOutcome { passed: true, .. }`
-            // here would be a false success path: see followup-24c026ed
-            // Gate A1 clause 3.
-            Ok(::phoxal::scenario::ScenarioOutcome {
+            // not type-check or fails validation never registers. The
+            // case host retains the validated plan and drives it.
+            let plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
+            Ok(::phoxal::scenario::PlannedScenario {
                 name: #full_name.to_owned(),
-                passed: false,
-                detail: Some(
-                    "scenario case-host lifecycle is not yet implemented; \
-                     #[phoxal::scenario] registers the plan but does not \
-                     execute it. See Gate B in followup-24c026ed.md."
-                        .to_owned(),
-                ),
+                plan,
             })
         }
 

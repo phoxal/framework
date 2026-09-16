@@ -38,26 +38,48 @@ pub struct ScenarioDescriptor {
     pub entry: ScenarioEntryFn,
 }
 
-/// Signature of the monomorphized case-host entry.
-///
-/// Each registered scenario type yields one `fn()` of this shape; the
-/// attribute emits the body which constructs the concrete type, calls
-/// `plan()`, runs the simulation, and finally invokes `verify()`. The
-/// return uses `phoxal::Result` (which is `anyhow::Result`) so the
-/// attribute can propagate user errors without coercing them through a
-/// boxed trait object.
-pub type ScenarioEntryFn = fn() -> crate::Result<ScenarioOutcome>;
-
-/// Outcome of a scenario run. P3 will replace the body with the typed
-/// [`ScenarioRun`](crate::scenario::ScenarioRun) carrying evidence; P1
-/// uses a placeholder so the harness skeleton compiles and the gate can
-/// verify discovery + dispatch.
+/// Outcome of a scenario run. The case host is the only authority
+/// that produces a [`ScenarioOutcome`]: the macro entry returns the
+/// planned scenario and the lifecycle decides pass/fail after
+/// driving execution, sealing the collector, and invoking the
+/// user's `verify()` against the typed [`crate::scenario::ScenarioRun`].
 #[derive(Debug, Clone)]
 pub struct ScenarioOutcome {
     pub name: String,
     pub passed: bool,
     pub detail: Option<String>,
 }
+
+/// Carrier produced by the macro's per-type entry. The entry
+/// constructs the scenario via `Default::default()`, calls `plan()`,
+/// and hands the resulting [`ScenarioPlan`] back to the case host
+/// together with the type identity. The case host retains the plan
+/// through execution and verification; only it may produce the
+/// final [`ScenarioOutcome`].
+///
+/// See Gate P1 #3 of followup-5d11cfc1.md: the macro registers a
+/// generic SDK case entry that plans and returns; the case host
+/// drives the lifecycle.
+#[derive(Debug, Clone)]
+pub struct PlannedScenario {
+    /// Public identity of the scenario that produced the plan. Always
+    /// `scenarios/<StructIdent>`.
+    pub name: String,
+    /// The validated plan from the user's `plan()` implementation.
+    /// The case host converts this to a typed [`crate::scenario::Program`]
+    /// before driving execution.
+    pub plan: crate::scenario::ScenarioPlan,
+}
+
+/// Signature of the monomorphized case-host entry.
+///
+/// Each registered scenario type yields one `fn()` of this shape; the
+/// attribute emits the body which constructs the concrete type,
+/// calls `plan()`, and hands the resulting [`PlannedScenario`] to
+/// the case host. The case host drives execution and verification
+/// and only it may produce the final [`ScenarioOutcome`]. See Gate
+/// P1 #3 of followup-5d11cfc1.md.
+pub type ScenarioEntryFn = fn() -> crate::Result<PlannedScenario>;
 
 inventory::collect!(ScenarioDescriptor);
 
