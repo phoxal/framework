@@ -38,7 +38,7 @@ pub use registry::{
     ScenarioDescriptor, ScenarioEntryFn, ScenarioOutcome, ScenarioRegistry, list_scenarios,
 };
 pub use results::{CaptureRecord, CommandReply, EvidenceCollector, ScenarioRun, SealError};
-pub use trait_def::Scenario;
+pub use trait_def::{Scenario, ScenarioBox};
 
 // Re-exports used by the `#[phoxal::scenario]` macro's expansion. Hidden so
 // end-users do not reach for them; the macro path is the only public entry.

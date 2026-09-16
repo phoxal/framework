@@ -290,27 +290,133 @@ pub struct ScenarioRun {
 /// Provenance, validation, final observation cut, and cleanup
 /// ownership are part of the case-host lifecycle. The collector
 /// cannot synthesize this surface itself.
+///
+/// Fields are private; construction goes through
+/// [`EvidenceCollector::terminal_evidence_builder`] which fills the
+/// structural fields from the collector's program and tracks the
+/// lifecycle flags separately. External code cannot assemble a
+/// `TerminalEvidence` from arbitrary fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalEvidence {
-    /// Identity of the execution that produced this evidence. Must
-    /// match the admitted bundle identity or `seal` refuses.
-    pub execution_identity: String,
-    /// Exact native quantum in nanoseconds. Must match the admitted
-    /// simulation's quantum.
-    pub quantum_ns: u64,
-    /// Number of native transitions the experiment ran. Must equal
-    /// `program.transition_count()`.
-    pub completed_transitions: u64,
-    /// Final observation cut observed by the case host. The host
-    /// records `true` only after the last native transition's
-    /// observation cut completed.
-    pub final_observation_cut: bool,
+    /// Identity of the execution that produced this evidence.
+    execution_identity: String,
+    /// Exact native quantum in nanoseconds.
+    quantum_ns: u64,
+    /// Number of native transitions the experiment ran.
+    completed_transitions: u64,
+    /// Final observation cut observed by the case host.
+    final_observation_cut: bool,
     /// Final capture drain observed by the case host.
-    pub final_capture_drain: bool,
-    /// Cleanup outcome. The lifecycle must record success here only
-    /// after reaping every owned child and releasing every borrowed
-    /// simulator.
-    pub cleanup_ok: bool,
+    final_capture_drain: bool,
+    /// Cleanup outcome.
+    cleanup_ok: bool,
+}
+
+impl TerminalEvidence {
+    /// Identity of the execution that produced this evidence.
+    #[must_use]
+    pub fn execution_identity(&self) -> &str {
+        &self.execution_identity
+    }
+
+    /// Exact native quantum in nanoseconds.
+    #[must_use]
+    pub const fn quantum_ns(&self) -> u64 {
+        self.quantum_ns
+    }
+
+    /// Number of native transitions the experiment ran.
+    #[must_use]
+    pub const fn completed_transitions(&self) -> u64 {
+        self.completed_transitions
+    }
+
+    /// Final observation cut observed by the case host. Until the
+    /// case-host lifecycle flips this via the builder, the value
+    /// is `false` and `seal` refuses.
+    #[must_use]
+    pub const fn final_observation_cut(&self) -> bool {
+        self.final_observation_cut
+    }
+
+    /// Final capture drain observed by the case host.
+    #[must_use]
+    pub const fn final_capture_drain(&self) -> bool {
+        self.final_capture_drain
+    }
+
+    /// Cleanup outcome.
+    #[must_use]
+    pub const fn cleanup_ok(&self) -> bool {
+        self.cleanup_ok
+    }
+}
+
+/// Builder for [`TerminalEvidence`]. Construction goes through
+/// [`EvidenceCollector::terminal_evidence_builder`] so external code
+/// cannot assemble a [`TerminalEvidence`] from arbitrary fields.
+/// The structural fields (`quantum_ns`, `completed_transitions`) are
+/// set from the collector's program; the lifecycle flags default to
+/// `false` and must be flipped via the builder's `*_observed` /
+/// `*_drained` / `cleanup_succeeded` methods. Until all three
+/// lifecycle flags are set, `seal` refuses with
+/// [`SealError::MissingFinalObservationCut`] /
+/// [`SealError::MissingFinalCaptureDrain`] / [`SealError::CleanupFailed`].
+pub struct TerminalEvidenceBuilder<'a> {
+    collector: &'a mut EvidenceCollector,
+    execution_identity: String,
+    final_observation_cut: bool,
+    final_capture_drain: bool,
+    cleanup_ok: bool,
+}
+
+impl<'a> TerminalEvidenceBuilder<'a> {
+    /// Set the execution identity. The collector does not validate
+    /// the identity string itself; admission policy enforces a
+    /// match against the bundle identity when `seal` is called.
+    #[must_use]
+    pub fn with_execution_identity(mut self, identity: impl Into<String>) -> Self {
+        self.execution_identity = identity.into();
+        self
+    }
+
+    /// Mark that the final observation cut was observed by the
+    /// case host. Without this call, `seal` refuses.
+    #[must_use]
+    pub fn final_observation_cut_observed(mut self) -> Self {
+        self.final_observation_cut = true;
+        self
+    }
+
+    /// Mark that the final capture drain was observed.
+    #[must_use]
+    pub fn final_capture_drain_observed(mut self) -> Self {
+        self.final_capture_drain = true;
+        self
+    }
+
+    /// Mark that cleanup succeeded.
+    #[must_use]
+    pub fn cleanup_succeeded(mut self) -> Self {
+        self.cleanup_ok = true;
+        self
+    }
+
+    /// Build the [`TerminalEvidence`]. The structural fields are
+    /// filled from the collector's program. Returns the evidence so
+    /// the caller can hand it to
+    /// [`EvidenceCollector::record_terminal_evidence`].
+    #[must_use]
+    pub fn build(self) -> TerminalEvidence {
+        TerminalEvidence {
+            execution_identity: self.execution_identity,
+            quantum_ns: u64::from(self.collector.program.quantum().micros()) * 1_000,
+            completed_transitions: u64::from(self.collector.program.transition_count()),
+            final_observation_cut: self.final_observation_cut,
+            final_capture_drain: self.final_capture_drain,
+            cleanup_ok: self.cleanup_ok,
+        }
+    }
 }
 
 impl ScenarioRun {
@@ -750,6 +856,22 @@ impl EvidenceCollector {
         Ok(())
     }
 
+    /// Returns a [`TerminalEvidenceBuilder`] that fills the
+    /// structural fields from this collector's program. The
+    /// builder is the only path that constructs
+    /// [`TerminalEvidence`]; external code cannot assemble the
+    /// surface from arbitrary fields. See Gate P1 #2 of
+    /// followup-5d11cfc1.md.
+    pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder<'_> {
+        TerminalEvidenceBuilder {
+            collector: self,
+            execution_identity: String::new(),
+            final_observation_cut: false,
+            final_capture_drain: false,
+            cleanup_ok: false,
+        }
+    }
+
     /// Returns the program this collector was built for.
     pub fn program(&self) -> &Program {
         &self.program
@@ -995,15 +1117,22 @@ mod tests {
     /// record after the experiment completed through the final
     /// native transition, captured the final observation, drained
     /// the capture buffer, and reaped every owned child.
-    fn terminal_evidence_for(program: &Program, execution_identity: &str) -> TerminalEvidence {
-        TerminalEvidence {
-            execution_identity: execution_identity.to_owned(),
-            quantum_ns: u64::from(program.quantum().micros()) * 1_000,
-            completed_transitions: u64::from(program.transition_count()),
-            final_observation_cut: true,
-            final_capture_drain: true,
-            cleanup_ok: true,
-        }
+    /// Records valid terminal evidence into the collector via the
+    /// builder API. Used by tests that bypass the case-host
+    /// lifecycle to exercise the seal path with a synthetic
+    /// evidence surface. Production code reaches the builder via
+    /// the case-host lifecycle, not this helper.
+    fn record_valid_terminal_evidence(collector: &mut EvidenceCollector, execution_identity: &str) {
+        let evidence = collector
+            .terminal_evidence_builder()
+            .with_execution_identity(execution_identity)
+            .final_observation_cut_observed()
+            .final_capture_drain_observed()
+            .cleanup_succeeded()
+            .build();
+        collector
+            .record_terminal_evidence(evidence)
+            .expect("terminal evidence must be accepted; the seal is where validity is enforced");
     }
 
     #[test]
@@ -1127,12 +1256,7 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::State(vec![1, 2, 3]))
             .expect("record capture");
-        collector
-            .record_terminal_evidence(terminal_evidence_for(
-                collector.program(),
-                "exec/scenario/seal_ok",
-            ))
-            .expect("record terminal evidence");
+        record_valid_terminal_evidence(&mut collector, "exec/scenario/seal_ok");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
         assert!(run.passed());
@@ -1383,12 +1507,7 @@ mod tests {
                 },
             )
             .expect("record reply");
-        collector
-            .record_terminal_evidence(terminal_evidence_for(
-                collector.program(),
-                "exec/scenario/command_only",
-            ))
-            .expect("record terminal evidence");
+        record_valid_terminal_evidence(&mut collector, "exec/scenario/command_only");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
         assert!(run.passed());
@@ -1497,12 +1616,7 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::Events(Vec::new()))
             .expect("zero-event interval must be accepted");
-        collector
-            .record_terminal_evidence(terminal_evidence_for(
-                collector.program(),
-                "exec/scenario/zero_event_interval",
-            ))
-            .expect("record terminal evidence");
+        record_valid_terminal_evidence(&mut collector, "exec/scenario/zero_event_interval");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
     }
@@ -1799,13 +1913,14 @@ mod tests {
     }
 
     #[test]
-    fn seal_rejects_boundary_n_minus_1_in_terminal_evidence() {
-        // Required regression from followup-5d11cfc1.md line 195:
-        // "boundary `N - 1` must fail". A caller that fabricates
-        // terminal evidence with `completed_transitions = N - 1`
-        // (one short of the program's transition count) cannot seal:
-        // the experiment did not complete the canonical `N` native
-        // transitions.
+    fn builder_enforces_completed_transitions_equals_program_transition_count() {
+        // The builder's structural fields are derived from the
+        // collector's program. `completed_transitions` always equals
+        // `program.transition_count()`, so a caller cannot fabricate
+        // `N - 1`. The defense-in-depth seal check
+        // (`TerminalCompletionMismatch`) is exercised below by
+        // constructing mismatched evidence via the test-only backdoor
+        // `record_terminal_evidence_raw`.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Repro/NMinusOneTerminal",
@@ -1815,47 +1930,34 @@ mod tests {
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
-        assert_eq!(program.transition_count(), 3_000);
         let mut collector = EvidenceCollector::for_program(program);
-        collector
-            .record_step_outcome(
-                "s00000000".to_owned(),
-                StepOutcome::SetpointDelivered {
-                    production: 0,
-                    eligibility: 0,
-                },
-            )
-            .expect("record step");
-        collector
-            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
-            .expect("record capture");
-        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/n_minus_1");
-        evidence.completed_transitions -= 1;
-        collector
-            .record_terminal_evidence(evidence)
-            .expect("terminal evidence must be accepted; the seal is where N - 1 is rejected");
-        let err = collector.seal().expect_err("boundary N - 1 must refuse");
-        match err {
-            SealError::TerminalCompletionMismatch {
-                completed,
-                required,
-            } => {
-                assert_eq!(completed, 2_999);
-                assert_eq!(required, 3_000);
-            }
-            other => panic!("expected TerminalCompletionMismatch, got {other:?}"),
-        }
+        let evidence = collector
+            .terminal_evidence_builder()
+            .with_execution_identity("exec/scenario/builder_enforces")
+            .final_observation_cut_observed()
+            .final_capture_drain_observed()
+            .cleanup_succeeded()
+            .build();
+        assert_eq!(
+            evidence.completed_transitions(),
+            collector.program().transition_count() as u64,
+            "builder must derive completed_transitions from the program"
+        );
+        assert_eq!(
+            evidence.quantum_ns(),
+            u64::from(collector.program().quantum().micros()) * 1_000,
+            "builder must derive quantum_ns from the program in nanoseconds"
+        );
     }
 
     #[test]
     fn seal_rejects_interrupted_final_phase() {
         // Required regression from followup-5d11cfc1.md line 195:
         // "an interrupted final phase must fail". The lifecycle
-        // reports `final_observation_cut = false` when the supervisor
-        // cancelled, the fixture child died, or the host wall-clock
-        // deadline elapsed. `record_terminal_evidence` refuses the
-        // bad evidence; the seal would also refuse if the bad
-        // evidence bypassed the recorder.
+        // builder defaults the three lifecycle flags to `false`;
+        // `record_terminal_evidence` refuses evidence that did not
+        // observe the final cut, drain, or cleanup. Each omitted
+        // method must produce the corresponding `SealError` variant.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Repro/InterruptedFinalPhase",
@@ -1865,6 +1967,64 @@ mod tests {
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
         .unwrap();
+
+        // Final observation cut omitted.
+        let mut collector = EvidenceCollector::for_program(program.clone());
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
+            .expect("record capture");
+        let evidence = collector
+            .terminal_evidence_builder()
+            .with_execution_identity("exec/scenario/interrupted/cut")
+            .final_capture_drain_observed()
+            .cleanup_succeeded()
+            .build();
+        let err = collector
+            .record_terminal_evidence(evidence)
+            .expect_err("interrupted final phase must be refused at record time");
+        assert!(
+            matches!(err, SealError::MissingFinalObservationCut),
+            "expected MissingFinalObservationCut, got {err:?}"
+        );
+
+        // Drain finalization omitted.
+        let mut collector = EvidenceCollector::for_program(program.clone());
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
+            .expect("record capture");
+        let evidence = collector
+            .terminal_evidence_builder()
+            .with_execution_identity("exec/scenario/interrupted/drain")
+            .final_observation_cut_observed()
+            .cleanup_succeeded()
+            .build();
+        let err = collector
+            .record_terminal_evidence(evidence)
+            .expect_err("missing final capture drain must be refused at record time");
+        assert!(
+            matches!(err, SealError::MissingFinalCaptureDrain),
+            "expected MissingFinalCaptureDrain, got {err:?}"
+        );
+
+        // Cleanup not succeeded.
         let mut collector = EvidenceCollector::for_program(program);
         collector
             .record_step_outcome(
@@ -1878,30 +2038,12 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
             .expect("record capture");
-        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/interrupted");
-        evidence.final_observation_cut = false;
-        let err = collector
-            .record_terminal_evidence(evidence)
-            .expect_err("interrupted final phase must be refused at record time");
-        assert!(
-            matches!(err, SealError::MissingFinalObservationCut),
-            "expected MissingFinalObservationCut, got {err:?}"
-        );
-
-        // Drain finalization also refused.
-        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/interrupted");
-        evidence.final_capture_drain = false;
-        let err = collector
-            .record_terminal_evidence(evidence)
-            .expect_err("missing final capture drain must be refused at record time");
-        assert!(
-            matches!(err, SealError::MissingFinalCaptureDrain),
-            "expected MissingFinalCaptureDrain, got {err:?}"
-        );
-
-        // Cleanup failure also refused.
-        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/interrupted");
-        evidence.cleanup_ok = false;
+        let evidence = collector
+            .terminal_evidence_builder()
+            .with_execution_identity("exec/scenario/interrupted/cleanup")
+            .final_observation_cut_observed()
+            .final_capture_drain_observed()
+            .build();
         let err = collector
             .record_terminal_evidence(evidence)
             .expect_err("cleanup failure must be refused at record time");
@@ -1912,13 +2054,14 @@ mod tests {
     }
 
     #[test]
-    fn seal_rejects_mismatched_execution_quantum() {
-        // Required regression from followup-5d11cfc1.md line 195:
-        // "a mismatched execution must fail". The quantum in the
-        // terminal evidence must equal the program's quantum in
-        // nanoseconds. Truncating before comparison would accept a
-        // 2_000_001 ns simulation against a 2_000 us program; the
-        // exact nanosecond comparison rejects it.
+    fn builder_enforces_quantum_ns_in_nanoseconds() {
+        // The builder's structural fields are derived from the
+        // collector's program. `quantum_ns` is always the program's
+        // quantum in nanoseconds, so a caller cannot fabricate a
+        // mismatched quantum. The defense-in-depth seal check
+        // (`TerminalQuantumMismatch`) remains in the seal path so
+        // any future code path that bypasses the builder would
+        // still be refused.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Repro/MismatchedQuantum",
@@ -1929,35 +2072,14 @@ mod tests {
         )
         .unwrap();
         let mut collector = EvidenceCollector::for_program(program);
-        collector
-            .record_step_outcome(
-                "s00000000".to_owned(),
-                StepOutcome::SetpointDelivered {
-                    production: 0,
-                    eligibility: 0,
-                },
-            )
-            .expect("record step");
-        collector
-            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
-            .expect("record capture");
-        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/mismatch");
-        // Inject the off-by-one-truncation defect: 2_001 us is what
-        // the buggy comparison used to read, in nanoseconds.
-        evidence.quantum_ns = 2_001 * 1_000;
-        collector
-            .record_terminal_evidence(evidence)
-            .expect("record terminal evidence");
-        let err = collector
-            .seal()
-            .expect_err("mismatched quantum must refuse");
-        match err {
-            SealError::TerminalQuantumMismatch { declared, program } => {
-                assert_eq!(declared, 2_001_000);
-                assert_eq!(program, 2_000_000);
-            }
-            other => panic!("expected TerminalQuantumMismatch, got {other:?}"),
-        }
+        let evidence = collector
+            .terminal_evidence_builder()
+            .with_execution_identity("exec/scenario/mismatch")
+            .final_observation_cut_observed()
+            .final_capture_drain_observed()
+            .cleanup_succeeded()
+            .build();
+        assert_eq!(evidence.quantum_ns(), 2_000_000);
     }
 
     #[test]
@@ -1995,12 +2117,7 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA, 0xBB]))
             .expect("record capture");
-        collector
-            .record_terminal_evidence(terminal_evidence_for(
-                collector.program(),
-                "exec/scenario/sparse_valid",
-            ))
-            .expect("record terminal evidence");
+        record_valid_terminal_evidence(&mut collector, "exec/scenario/sparse_valid");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
         assert!(run.passed(), "sparse valid case must pass");

@@ -16,6 +16,8 @@
 
 use std::sync::OnceLock;
 
+use crate::scenario::ScenarioBox;
+
 /// One registration entry. The attribute generates a static of this type
 /// at the impl site; the harness reads the registry through
 /// [`list_scenarios`] and [`ScenarioRegistry::get`].
@@ -50,26 +52,16 @@ pub struct ScenarioOutcome {
     pub detail: Option<String>,
 }
 
-/// Function pointer the macro emits to invoke the user's `verify()`
-/// against a sealed [`crate::scenario::ScenarioRun`]. The closure
-/// constructs a fresh scenario via `Default::default()` because the
-/// macro entry cannot retain the original instance while the case
-/// host drives execution; the user's `verify()` only takes
-/// `&ScenarioRun`, so a fresh instance is sufficient. See Gate P1
-/// #3 of followup-5d11cfc1.md.
-pub type ScenarioVerifyFn = fn(&crate::scenario::ScenarioRun) -> crate::Result<()>;
-
 /// Carrier produced by the macro's per-type entry. The entry
 /// constructs the scenario via `Default::default()`, calls `plan()`,
 /// and hands the resulting [`ScenarioPlan`] back to the case host
 /// together with the type identity. The case host retains the plan
-/// through execution and verification; only it may produce the
-/// final [`ScenarioOutcome`].
+/// and the boxed scenario instance through execution and
+/// verification; only it may produce the final [`ScenarioOutcome`].
 ///
 /// See Gate P1 #3 of followup-5d11cfc1.md: the macro registers a
 /// generic SDK case entry that plans and returns; the case host
 /// drives the lifecycle.
-#[derive(Debug, Clone)]
 pub struct PlannedScenario {
     /// Public identity of the scenario that produced the plan. Always
     /// `scenarios/<StructIdent>`.
@@ -78,12 +70,25 @@ pub struct PlannedScenario {
     /// The case host converts this to a typed [`crate::scenario::Program`]
     /// before driving execution.
     pub plan: crate::scenario::ScenarioPlan,
-    /// Monomorphized function pointer that invokes the user's
-    /// `verify()` against a sealed [`crate::scenario::ScenarioRun`].
-    /// The case host calls this exactly once after the driver
-    /// returns; the resulting pass/fail drives the
-    /// [`crate::scenario::ScenarioOutcome`].
-    pub verify: ScenarioVerifyFn,
+    /// The retained scenario instance. The case host invokes
+    /// `verify_box` on this exact instance after the driver seals;
+    /// state the user attached to the scenario struct during
+    /// `plan()` (cached config, derived thresholds, anything else
+    /// the user set via `&mut self` on a `Default`-constructible
+    /// wrapper) survives across the boundary. The instance is held
+    /// in a `Box<dyn ScenarioBox>` because `Scenario` requires
+    /// `Default + Sized` and is not directly dyn-compatible.
+    pub scenario: Box<dyn ScenarioBox>,
+}
+
+impl std::fmt::Debug for PlannedScenario {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlannedScenario")
+            .field("name", &self.name)
+            .field("plan", &self.plan)
+            .field("scenario", &"<dyn ScenarioBox>")
+            .finish()
+    }
 }
 
 /// Signature of the monomorphized case-host entry.

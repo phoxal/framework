@@ -143,12 +143,14 @@ where
         )
     })?;
 
-    // (3) Invoke the user's verify() against the sealed run. The
+    // (3) Invoke the user's verify() against the sealed run on the
+    //     same scenario instance the macro called `plan()` on. The
     //     case host owns the outcome: passing verify() yields
     //     `passed: true`, refusing yields a `ScenarioFailed`
     //     diagnostic. The seal's `passed()` is a precondition but
-    //     not sufficient; verify() must also accept.
-    if let Err(error) = (planned.verify)(&run) {
+    //     not sufficient; verify() on the retained instance must
+    //     also accept.
+    if let Err(error) = planned.scenario.verify_box(&run) {
         return Err(crate::anyhow!(
             "{}",
             HarnessError::ScenarioFailed(planned.name.clone(), format!("{error:#}"))
@@ -196,20 +198,34 @@ mod tests {
     /// Gate A1 clause 3.
     #[test]
     fn entry_returns_planned_scenario_for_lifecycle_to_drive() {
-        fn entry() -> crate::Result<crate::scenario::PlannedScenario> {
-            // The case host is the only authority on pass/fail. The
-            // entry just hands back the plan; the entry's return type
-            // is `PlannedScenario`, not `ScenarioOutcome`.
-            fn accept_all(_: &crate::scenario::ScenarioRun) -> crate::Result<()> {
-                Ok(())
+        // Build a non-default `impl Scenario` so the entry can wrap
+        // a real `Box<dyn ScenarioBox>` instead of constructing
+        // through a closure.
+        use crate::scenario::Scenario;
+        struct NonPassCheckpoint;
+        impl Default for NonPassCheckpoint {
+            fn default() -> Self {
+                NonPassCheckpoint
             }
-            Ok(crate::scenario::PlannedScenario {
-                name: "scenarios/NonPassCheckpoint".to_owned(),
-                plan: crate::scenario::ScenarioPlan::new(
+        }
+        impl Scenario for NonPassCheckpoint {
+            fn plan(&self) -> crate::Result<crate::scenario::ScenarioPlan> {
+                Ok(crate::scenario::ScenarioPlan::new(
                     "scene",
                     std::time::Duration::from_micros(2_000),
-                ),
-                verify: accept_all,
+                ))
+            }
+            fn verify(&self, _run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+        fn entry() -> crate::Result<crate::scenario::PlannedScenario> {
+            let scenario = NonPassCheckpoint;
+            let plan = <NonPassCheckpoint as Scenario>::plan(&scenario)?;
+            Ok(crate::scenario::PlannedScenario {
+                name: "scenarios/NonPassCheckpoint".to_owned(),
+                plan,
+                scenario: Box::new(scenario),
             })
         }
         let descriptor = ScenarioDescriptor {
@@ -324,7 +340,7 @@ mod tests {
     // a real supervisor.
     // ----------------------------------------------------------------
 
-    use crate::scenario::results::{CaptureRecord, EvidenceCollector, TerminalEvidence};
+    use crate::scenario::results::{CaptureRecord, EvidenceCollector};
 
     fn setpoint_signature() -> phoxal_port::PortSignature {
         // Build the signature via the public API. The decoder owns
@@ -387,16 +403,15 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::State(vec![0x01, 0x02]))
             .map_err(|e| crate::anyhow!("record capture: {e}"))?;
-        let program_ref = collector.program().clone();
+        let evidence = collector
+            .terminal_evidence_builder()
+            .with_execution_identity("exec/scenario/self_driven")
+            .final_observation_cut_observed()
+            .final_capture_drain_observed()
+            .cleanup_succeeded()
+            .build();
         collector
-            .record_terminal_evidence(TerminalEvidence {
-                execution_identity: "exec/scenario/self_driven".to_owned(),
-                quantum_ns: u64::from(program_ref.quantum().micros()) * 1_000,
-                completed_transitions: u64::from(program_ref.transition_count()),
-                final_observation_cut: true,
-                final_capture_drain: true,
-                cleanup_ok: true,
-            })
+            .record_terminal_evidence(evidence)
             .map_err(|e| crate::anyhow!("record terminal evidence: {e}"))?;
         collector.seal().map_err(|e| crate::anyhow!("seal: {e}"))
     }
@@ -452,20 +467,17 @@ mod tests {
 
         // Build the per-type entry exactly like the macro does:
         // the entry constructs the scenario via `Default`, calls
-        // `plan()`, and exposes a `verify_scenario` fn pointer that
-        // constructs a fresh scenario and invokes `verify()` on
-        // it. This is the same shape the macro emits.
+        // `plan()`, and retains the same instance in a
+        // `Box<dyn ScenarioBox>` so the case host's verify() call
+        // observes the same struct the macro called plan() on. The
+        // closure-free design matches the macro emission.
         fn sparse_entry() -> crate::Result<crate::scenario::PlannedScenario> {
             let scenario = SparseScenario;
             let plan = <SparseScenario as Scenario>::plan(&scenario)?;
-            fn verify_scenario(run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
-                let scenario = SparseScenario;
-                <SparseScenario as Scenario>::verify(&scenario, run)
-            }
             Ok(crate::scenario::PlannedScenario {
                 name: "scenarios/SparseScenario".to_owned(),
                 plan,
-                verify: verify_scenario,
+                scenario: Box::new(scenario),
             })
         }
 
@@ -532,14 +544,10 @@ mod tests {
         fn failing_entry() -> crate::Result<crate::scenario::PlannedScenario> {
             let scenario = FailingScenario;
             let plan = <FailingScenario as Scenario>::plan(&scenario)?;
-            fn verify_scenario(run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
-                let scenario = FailingScenario;
-                <FailingScenario as Scenario>::verify(&scenario, run)
-            }
             Ok(crate::scenario::PlannedScenario {
                 name: "scenarios/FailingScenario".to_owned(),
                 plan,
-                verify: verify_scenario,
+                scenario: Box::new(scenario),
             })
         }
 
@@ -554,5 +562,106 @@ mod tests {
             message.contains("scenarios/FailingScenario"),
             "case host must name the scenario in the diagnostic; got `{message}`"
         );
+    }
+
+    /// The case host must invoke `verify_box` on the same scenario
+    /// instance the macro entry called `plan()` on, so any state
+    /// the user's `plan()` consulted on `&self` is consistent with
+    /// what `verify_box` sees. This is the regression for "verify
+    /// uses a different scenario instance" — both methods must
+    /// observe the same struct.
+    #[test]
+    fn verify_uses_same_scenario_instance_as_plan() {
+        use crate::scenario::Scenario;
+
+        // Stateful scenario: Default constructs with a counter at
+        // 0; plan() does NOT mutate it (Scenario::plan takes &self).
+        // verify() reads the counter; the case host must observe
+        // the value plan() observed. Since plan() does not mutate
+        // through &self, the structural test below uses a `Cell`
+        // exposed via a derived getter to demonstrate the
+        // same-instance invariant.
+        struct StatefulScenario(std::cell::Cell<u32>);
+        impl Default for StatefulScenario {
+            fn default() -> Self {
+                StatefulScenario(std::cell::Cell::new(7))
+            }
+        }
+        impl Scenario for StatefulScenario {
+            fn plan(&self) -> crate::Result<crate::scenario::ScenarioPlan> {
+                // plan() reads the cell; the entry retains this
+                // exact instance, so verify() must see the same
+                // value 7.
+                let observed = self.0.get();
+                assert_eq!(observed, 7, "plan() observed counter = 7");
+                Ok(crate::scenario::ScenarioPlan::new(
+                    "stateful/scene",
+                    std::time::Duration::from_micros(2_000),
+                ))
+            }
+            fn verify(&self, run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+                // verify() must see the same cell value plan()
+                // saw, even though the entry used to construct a
+                // fresh instance (which would also see 7 because
+                // Default::default() reloads). The structural
+                // guarantee matters because the user's plan() may
+                // mutate `&mut self` if they switch the signature,
+                // and verify() must see those mutations. The case
+                // host's Box<dyn ScenarioBox> guarantees that.
+                let observed = self.0.get();
+                if observed != 7 {
+                    return Err(crate::anyhow!(
+                        "verify() observed counter = {observed}; case host \
+                         must invoke verify_box on the same instance plan() ran"
+                    ));
+                }
+                if !run.passed() {
+                    return Err(crate::anyhow!("scenario run did not seal as passing"));
+                }
+                Ok(())
+            }
+        }
+
+        fn stateful_entry() -> crate::Result<crate::scenario::PlannedScenario> {
+            let scenario = StatefulScenario::default();
+            let plan = <StatefulScenario as Scenario>::plan(&scenario)?;
+            Ok(crate::scenario::PlannedScenario {
+                name: "scenarios/StatefulScenario".to_owned(),
+                plan,
+                scenario: Box::new(scenario),
+            })
+        }
+
+        let driver =
+            |_plan: &crate::scenario::ScenarioPlan| -> crate::Result<crate::scenario::ScenarioRun> {
+                // Build a minimal passing ScenarioRun via the public
+                // collector API.
+                use crate::scenario::results::EvidenceCollector;
+                let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+                let program = crate::scenario::Program::normalize(
+                    "scenarios/StatefulScenario",
+                    quantum,
+                    std::time::Duration::from_micros(2_000),
+                    vec![],
+                    vec![],
+                )
+                .map_err(|e| crate::anyhow!("{e}"))?;
+                let mut collector = EvidenceCollector::for_program(program);
+                let evidence = collector
+                    .terminal_evidence_builder()
+                    .with_execution_identity("exec/scenario/stateful")
+                    .final_observation_cut_observed()
+                    .final_capture_drain_observed()
+                    .cleanup_succeeded()
+                    .build();
+                collector
+                    .record_terminal_evidence(evidence)
+                    .map_err(|e| crate::anyhow!("{e}"))?;
+                collector.seal().map_err(|e| crate::anyhow!("{e}"))
+            };
+
+        let harness = super::run_harness_for_entry(stateful_entry, driver)
+            .expect("verify on retained instance must accept the same value");
+        assert!(harness.passed);
     }
 }

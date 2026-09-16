@@ -104,27 +104,19 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
         #[allow(non_snake_case)]
         fn #entry_name() -> ::phoxal::Result<::phoxal::scenario::PlannedScenario> {
             // Construct through `Default`; `Scenario` does not provide
-            // its own `default` method.
+            // its own `default` method. The instance is retained in a
+            // `Box<dyn ScenarioBox>` so the case host invokes the
+            // user's `verify()` on the same struct the macro called
+            // `plan()` on. See Gate P1 #3 of followup-5d11cfc1.md.
             let scenario = <#self_type as ::std::default::Default>::default();
             // Validate the user's plan so an authored impl that does
             // not type-check or fails validation never registers. The
             // case host retains the validated plan and drives it.
             let plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
-            // The verify monomorphization: it constructs a fresh
-            // scenario via `Default` because the entry cannot retain
-            // the original instance while the case host drives
-            // execution. `verify()` only takes `&ScenarioRun`, so a
-            // fresh instance is sufficient.
-            fn verify_scenario(
-                run: &::phoxal::scenario::ScenarioRun,
-            ) -> ::phoxal::Result<()> {
-                let scenario = <#self_type as ::std::default::Default>::default();
-                <#self_type as ::phoxal::scenario::Scenario>::verify(&scenario, run)
-            }
             Ok(::phoxal::scenario::PlannedScenario {
                 name: #full_name.to_owned(),
                 plan,
-                verify: verify_scenario,
+                scenario: ::std::boxed::Box::new(scenario),
             })
         }
 
