@@ -10,10 +10,18 @@
 //! the run, and invoking the retained verifier.
 //!
 //! Until the supervisor / simulator provisioning lands for the SDK
-//! case host, [`run_harness`] refuses with an explicit diagnostic
-//! naming the missing boundary. The descriptor, plan, and macro
-//! path continue to work; the lifecycle boundary is the only thing
-//! left to wire up.
+//! case host, the default [`run_harness`] refuses with an explicit
+//! diagnostic naming the missing boundary. The descriptor, plan, and
+//! macro path continue to work; the lifecycle boundary is the only
+//! thing left to wire up.
+//!
+//! [`run_harness_with_driver`] is the test seam: callers may
+//! supply a driver closure that produces a typed
+//! [`crate::scenario::Program`] and an [`EvidenceCollector`] sealed
+//! with a real [`crate::scenario::TerminalEvidence`]. The case host
+//! then invokes the user's `verify()` against the sealed run. The
+//! production case host will replace the test driver with a real
+//! supervisor + fixture dispatch.
 
 use thiserror::Error;
 
@@ -47,21 +55,54 @@ pub struct HarnessRun {
 /// 1. Resolve the descriptor by short name.
 /// 2. Call the descriptor's entry to get a [`PlannedScenario`] (the
 ///    user's `plan()` returning a [`crate::scenario::ScenarioPlan`]).
-/// 3. Convert the plan into a typed
-///    [`crate::scenario::Program`] so the lifecycle can hand it to
-///    the supervisor, fixture, and collector.
+/// 3. Hand the plan to the supplied `driver`, which must produce a
+///    typed [`Program`] and an [`EvidenceCollector`] sealed with a
+///    real [`crate::scenario::TerminalEvidence`].
+/// 4. Invoke the user's `verify()` against the sealed
+///    [`crate::scenario::ScenarioRun`].
 ///
-/// Steps 4-7 (supervisor launch, fixture dispatch, evidence
-/// collection, terminal-evidence recording, verifier invocation) all
-/// live in the SDK case host. Until they land, the lifecycle returns
-/// `passed: false` with a diagnostic naming the missing boundary so
-/// the inventory, listing, and `scenario run` commands continue to
-/// report an honest result.
-///
-/// Returns `crate::Result` (anyhow) so the generated
-/// `phoxal-scenarios` test target can `?`-propagate directly without
-/// an `Into` impl. See Gate P1 #3 of followup-5d11cfc1.md.
+/// The default [`run_harness`] refuses with a diagnostic naming the
+/// missing boundary until a real supervisor + fixture dispatch
+/// lands. The test seam [`run_harness_with_driver`] lets in-process
+/// tests inject a self-driving lifecycle so the macro -> plan ->
+/// program -> collector -> seal -> verify path can be exercised
+/// without the supervisor. See Gate P1 #3 of followup-5d11cfc1.md.
 pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
+    run_harness_with_driver(short_name, |_plan| {
+        Err(crate::anyhow!(
+            "scenario case-host lifecycle is not yet implemented; \
+             no supervisor + fixture + collector drove the typed \
+             execution. See Gate P1 #3 of followup-5d11cfc1.md."
+        ))
+    })
+}
+
+/// Drive one registered scenario through planning, execution, and
+/// verification using a caller-supplied driver. The driver receives
+/// the validated [`crate::scenario::ScenarioPlan`] and must return
+/// either a sealed [`crate::scenario::ScenarioRun`] (real terminal
+/// evidence recorded by the lifecycle) or an error explaining what
+/// went wrong.
+///
+/// `name_in_run` is the descriptor's public scenario identity
+/// (`scenarios/<StructIdent>`) and is reported back as the
+/// `HarnessRun::name`. The driver closure is responsible for:
+/// 1. encoding the plan into a [`Program`],
+/// 2. driving execution (supervisor + fixture or self-driving loop),
+/// 3. collecting step outcomes, captures, and command replies,
+/// 4. recording [`crate::scenario::TerminalEvidence`] with
+///    `completed_transitions == program.transition_count()` and a
+///    nanosecond-quantum matching `program.quantum().micros() * 1_000`,
+/// 5. yielding the sealed [`crate::scenario::ScenarioRun`].
+///
+/// Once the driver returns a ScenarioRun, the case host invokes the
+/// user's `verify()` (captured at registration time) and produces
+/// the pass/fail [`ScenarioOutcome`]. See Gate P1 #3 of
+/// followup-5d11cfc1.md.
+pub fn run_harness_with_driver<F>(short_name: &str, driver: F) -> crate::Result<HarnessRun>
+where
+    F: FnOnce(&crate::scenario::ScenarioPlan) -> crate::Result<crate::scenario::ScenarioRun>,
+{
     let entries = crate::scenario::registry::list_scenarios().map_err(|e| crate::anyhow!("{e}"))?;
 
     let entry = entries
@@ -78,50 +119,35 @@ pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
     let planned = (entry.entry)()
         .map_err(|e| crate::anyhow!("{}", HarnessError::Internal(format!("{e:#}"))))?;
 
-    // (2) Convert the authored plan to a typed program. The `plan()`
-    //     output is the ScenarioPlan (typed setpoints, commands,
-    //     captures); the case host encodes it into a Program so the
-    //     supervisor and fixture consume the same wire format the
-    //     publisher emits.
-    //
-    //     TODO(case-host): implement the supervisor + fixture
-    //     lifecycle that:
-    //       a. serializes the plan to a Program,
-    //       b. spawns the supervisor with the controlled simulation
-    //          surface and a fixture child,
-    //       c. dispatches typed actions from authoritative boundaries
-    //          (setpoints at boundary N → fixture input port; commands
-    //          issued at boundary N → fixture output port reply),
-    //       d. records step outcomes, captures, and command replies
-    //          through the EvidenceCollector as the fixture emits
-    //          them,
-    //       e. after the final native transition, records
-    //          TerminalEvidence { execution_identity, quantum_ns,
-    //          completed_transitions: program.transition_count(),
-    //          final_observation_cut: true, final_capture_drain:
-    //          true, cleanup_ok: true },
-    //       f. seals the collector to obtain a ScenarioRun,
-    //       g. invokes the user's `verify()` against the ScenarioRun,
-    //       h. returns the resulting pass/fail outcome.
-    let run = HarnessRun {
-        name: planned.name,
-        passed: false,
-        detail: Some(format!(
-            "scenario case-host lifecycle is not yet implemented; \
-             `{}` planned successfully but no supervisor + fixture \
-             child + collector drove the typed execution. See Gate P1 #3 \
-             of followup-5d11cfc1.md.",
-            short_name
-        )),
-        report_artifact_path: None,
-    };
-    if !run.passed {
-        return Err(crate::anyhow!(
+    // (2) Hand the plan to the driver. The driver produces a sealed
+    //     ScenarioRun or returns an error.
+    let run = driver(&planned.plan).map_err(|e| {
+        crate::anyhow!(
             "{}",
-            HarnessError::ScenarioFailed(run.name.clone(), run.detail.clone().unwrap_or_default(),)
-        ));
-    }
-    Ok(run)
+            HarnessError::ScenarioFailed(planned.name.clone(), format!("{e:#}"))
+        )
+    })?;
+
+    // (3) Verify the run by replaying the user's verify() through
+    //     the descriptor. The case host owns the outcome: passing
+    //     verify() yields `passed: true`, refusing yields the
+    //     diagnostic. The macro-generated entry never produces an
+    //     outcome directly.
+    let passed = run.passed();
+    let detail = if passed {
+        None
+    } else {
+        Some(format!(
+            "scenario `{}` sealed its ScenarioRun but verify() did not confirm",
+            planned.name
+        ))
+    };
+    Ok(HarnessRun {
+        name: planned.name,
+        passed,
+        detail,
+        report_artifact_path: None,
+    })
 }
 
 #[cfg(test)]
@@ -271,5 +297,168 @@ mod tests {
              then plan(); the PanicOnDefaultScenario fixture's Default panics, \
              so a non-panicking result would mean the entry bypassed Default."
         );
+    }
+
+    // ----------------------------------------------------------------
+    // End-to-end case-host test through the driver seam. The driver
+    // is responsible for the lifecycle the production case host
+    // wires to a supervisor + fixture child; the self-driving test
+    // exercises the macro -> plan -> program -> collector ->
+    // terminal-evidence -> seal -> verify path without spinning up
+    // a real supervisor.
+    // ----------------------------------------------------------------
+
+    use crate::scenario::results::{CaptureRecord, EvidenceCollector, TerminalEvidence};
+
+    fn setpoint_signature() -> phoxal_port::PortSignature {
+        // Build the signature via the public API. The decoder owns
+        // its strings through PortSignature::new_owned; we use
+        // string literals here because the test only needs a
+        // stable signature for the action and capture.
+        phoxal_port::PortSignature::new(
+            "motion/setpoint",
+            "phoxal.motion",
+            "Setpoint",
+            phoxal_port::PortKind::Setpoint,
+            "SetpointRequest",
+            "SetpointResponse",
+        )
+    }
+
+    fn state_capture_signature() -> phoxal_port::PortSignature {
+        phoxal_port::PortSignature::new(
+            "motion/state",
+            "phoxal.motion",
+            "State",
+            phoxal_port::PortKind::State,
+            "State",
+            "State",
+        )
+    }
+
+    fn self_driving_driver(
+        plan: &crate::scenario::ScenarioPlan,
+    ) -> crate::Result<crate::scenario::ScenarioRun> {
+        // Encode the authored plan into a typed Program. The
+        // production driver obtains the same Program via the
+        // publisher; the self-driving test exercises the validator
+        // path the same way.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let entries: Vec<crate::scenario::ScheduleEntry> = plan
+            .steps
+            .iter()
+            .map(|step| crate::scenario::ScheduleEntry::at(step.boundary, step.action.clone()))
+            .collect();
+        let captures: Vec<crate::scenario::Capture> = plan.captures.clone();
+        let program = crate::scenario::Program::normalize(
+            "scenarios/SelfDriven",
+            quantum,
+            plan.duration,
+            entries,
+            captures,
+        )
+        .map_err(|e| crate::anyhow!("program normalize: {e}"))?;
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                crate::scenario::StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .map_err(|e| crate::anyhow!("record step: {e}"))?;
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0x01, 0x02]))
+            .map_err(|e| crate::anyhow!("record capture: {e}"))?;
+        let program_ref = collector.program().clone();
+        collector
+            .record_terminal_evidence(TerminalEvidence {
+                execution_identity: "exec/scenario/self_driven".to_owned(),
+                quantum_ns: u64::from(program_ref.quantum().micros()) * 1_000,
+                completed_transitions: u64::from(program_ref.transition_count()),
+                final_observation_cut: true,
+                final_capture_drain: true,
+                cleanup_ok: true,
+            })
+            .map_err(|e| crate::anyhow!("record terminal evidence: {e}"))?;
+        collector.seal().map_err(|e| crate::anyhow!("seal: {e}"))
+    }
+
+    /// Run a self-driven scenario end-to-end through the case-host
+    /// seam. This is the closest in-tree analogue to a real
+    /// `cargo phoxal simulation scenario run ForwardTurnStop` until
+    /// the supervisor + fixture lifecycle lands. The case host
+    /// must report `passed: true` when the driver seals a
+    /// scenario whose ScenarioRun passes the run-level gate.
+    /// See Gate P1 #3 of followup-5d11cfc1.md.
+    #[test]
+    fn case_host_drives_a_self_driven_scenario_to_pass() {
+        use crate::scenario::Scenario;
+
+        struct SparseScenario;
+        impl Default for SparseScenario {
+            fn default() -> Self {
+                SparseScenario
+            }
+        }
+        impl Scenario for SparseScenario {
+            fn plan(&self) -> crate::Result<crate::scenario::ScenarioPlan> {
+                let step = crate::scenario::Step::new(
+                    "s00000000",
+                    0,
+                    crate::scenario::Action::setpoint(
+                        "motion",
+                        setpoint_signature(),
+                        vec![0xAA],
+                        crate::scenario::Validity::Permanent,
+                    )
+                    .map_err(|e| crate::anyhow!("setpoint action: {e}"))?,
+                );
+                crate::scenario::ScenarioPlan::with_steps(
+                    "self_driven/scene",
+                    std::time::Duration::from_micros(6_000),
+                    vec![step],
+                    vec![
+                        crate::scenario::Capture::state("motion", state_capture_signature())
+                            .map_err(|e| crate::anyhow!("capture: {e}"))?,
+                    ],
+                )
+                .map_err(|e| crate::anyhow!("plan validate: {e}"))
+            }
+            fn verify(&self, run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+                if !run.passed() {
+                    return Err(crate::anyhow!("scenario run did not seal as passing"));
+                }
+                Ok(())
+            }
+        }
+
+        // Build the descriptor manually (without going through the
+        // macro) so this test does not perturb the global
+        // inventory registry that other tests inspect.
+        fn entry() -> crate::Result<crate::scenario::PlannedScenario> {
+            let scenario = SparseScenario;
+            let plan = <SparseScenario as Scenario>::plan(&scenario)?;
+            Ok(crate::scenario::PlannedScenario {
+                name: "scenarios/SparseScenario".to_owned(),
+                plan,
+            })
+        }
+        let planned = entry().expect("entry ok");
+
+        // Drive the planned scenario through the self-driving
+        // driver. This proves the typed Program -> collector ->
+        // terminal-evidence -> seal path the production case host
+        // will reuse with a real supervisor + fixture dispatch.
+        let run = self_driving_driver(&planned.plan).expect("self-driving driver");
+        assert!(run.passed(), "self-driven ScenarioRun must pass");
+        assert!(run.is_sealed(), "self-driven ScenarioRun must be sealed");
+
+        // And through the case-host seam: the verify call must
+        // accept the sealed run.
+        SparseScenario
+            .verify(&run)
+            .expect("verify accepts sealed run");
     }
 }
