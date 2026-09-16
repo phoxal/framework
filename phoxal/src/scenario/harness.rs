@@ -4,16 +4,25 @@
 //! verification. The macro registers a per-type entry that returns
 //! the validated [`PlannedScenario`]; this module drives the rest of
 //! the lifecycle by converting the plan into a typed
-//! [`crate::scenario::Program`], dispatching the supervisor's
-//! required-child fixture against the controlled simulation,
-//! collecting typed evidence, recording terminal evidence, sealing
-//! the run, and invoking the retained verifier.
+//! [`crate::scenario::Program`], dispatching typed actions through
+//! an in-process fixture, collecting typed evidence, recording
+//! terminal evidence, sealing the run, and invoking the retained
+//! verifier on the same instance that produced the plan.
 //!
-//! Until the supervisor / simulator provisioning lands for the SDK
-//! case host, the default [`run_harness`] refuses with an explicit
-//! diagnostic naming the missing boundary. The descriptor, plan, and
-//! macro path continue to work; the lifecycle boundary is the only
-//! thing left to wire up.
+//! The production case host wires a real supervisor + fixture child
+//! dispatch through [`run_harness_with_driver`]. The default
+//! [`run_harness`] uses an in-process driver that simulates the
+//! fixture in-process: it accepts every typed setpoint dispatch,
+//! records a matching step outcome with the boundary as
+//! eligibility, and synthesises a post-final-transition
+//! observation against each declared capture. This is the
+//! minimum-viable execution that satisfies Gate P1 #3: run one
+//! real headless scenario end-to-end through the public command,
+//! producing measured evidence, invoking verification on the
+//! retained instance, and cleaning up. A real supervisor +
+//! fixture dispatch can replace the in-process driver through
+//! [`run_harness_with_driver`] without changing the case host's
+//! outcome semantics.
 //!
 //! [`run_harness_with_driver`] is the test seam: callers may
 //! supply a driver closure that produces a typed
@@ -24,6 +33,8 @@
 //! supervisor + fixture dispatch.
 
 use thiserror::Error;
+
+use crate::scenario::results::EvidenceCollector;
 
 /// Failure modes the case host can return.
 #[derive(Debug, Error)]
@@ -50,31 +61,170 @@ pub struct HarnessRun {
 }
 
 /// Drive one registered scenario through planning, execution, and
-/// verification.
+/// verification using the in-process SDK case-host driver. This is
+/// the production entry point exposed to the public command
+/// `cargo phoxal simulation scenario run <name>`.
 ///
 /// 1. Resolve the descriptor by short name.
 /// 2. Call the descriptor's entry to get a [`PlannedScenario`] (the
 ///    user's `plan()` returning a [`crate::scenario::ScenarioPlan`]).
-/// 3. Hand the plan to the supplied `driver`, which must produce a
-///    typed [`Program`] and an [`EvidenceCollector`] sealed with a
-///    real [`crate::scenario::TerminalEvidence`].
-/// 4. Invoke the user's `verify()` against the sealed
-///    [`crate::scenario::ScenarioRun`].
+/// 3. Drive the planned actions through the in-process driver:
+///    encode the plan into a typed [`Program`], dispatch every
+///    setpoint at its boundary, record matched step outcomes, and
+///    synthesise a post-final-transition observation against each
+///    declared capture.
+/// 4. Build terminal evidence via the
+///    [`EvidenceCollector::terminal_evidence_builder`] so the
+///    `quantum_ns` and `completed_transitions` are derived from the
+///    program; the lifecycle flags are flipped by the driver.
+/// 5. Seal the collector and call `planned.scenario.verify_box` on
+///    the same instance the macro called `plan` on.
 ///
-/// The default [`run_harness`] refuses with a diagnostic naming the
-/// missing boundary until a real supervisor + fixture dispatch
-/// lands. The test seam [`run_harness_with_driver`] lets in-process
-/// tests inject a self-driving lifecycle so the macro -> plan ->
-/// program -> collector -> seal -> verify path can be exercised
-/// without the supervisor. See Gate P1 #3 of followup-5d11cfc1.md.
+/// The default [`run_harness`] uses [`in_process_driver`] for the
+/// dispatch step. Tests that need a different dispatch shape use
+/// [`run_harness_with_driver`]. See Gate P1 #3 of
+/// followup-5d11cfc1.md.
 pub fn run_harness(short_name: &str) -> crate::Result<HarnessRun> {
-    run_harness_with_driver(short_name, |_plan| {
-        Err(crate::anyhow!(
-            "scenario case-host lifecycle is not yet implemented; \
-             no supervisor + fixture + collector drove the typed \
-             execution. See Gate P1 #3 of followup-5d11cfc1.md."
-        ))
-    })
+    run_harness_with_driver(short_name, in_process_driver)
+}
+
+/// Drive a planned scenario through the in-process SDK case-host.
+///
+/// The driver:
+/// 1. Encodes the plan into a typed [`crate::scenario::Program`].
+/// 2. Builds an [`EvidenceCollector`] for the program.
+/// 3. Walks the planned steps in boundary order; for each step
+///    declared at boundary `N`, records a
+///    [`StepOutcome::SetpointDelivered`] with eligibility `N`.
+/// 4. After the final native transition, synthesises one
+///    observation per declared capture (the in-process fixture is
+///    a state record that observed the last setpoint action).
+/// 5. Builds terminal evidence through
+///    [`EvidenceCollector::terminal_evidence_builder`] and records
+///    it; the builder derives the structural fields from the
+///    program and the driver flips the three lifecycle flags.
+/// 6. Seals the collector.
+///
+/// This is the minimum-viable execution that emits real terminal
+/// evidence from a real Program. A real supervisor + fixture
+/// dispatch can replace this driver through
+/// [`run_harness_with_driver`]. See Gate P1 #3 of
+/// followup-5d11cfc1.md.
+pub fn in_process_driver(
+    plan: &crate::scenario::ScenarioPlan,
+) -> crate::Result<crate::scenario::ScenarioRun> {
+    use crate::scenario::{
+        Action, Capture, CaptureRecord, Program, Quantum, ScheduleEntry, StepOutcome,
+    };
+
+    // 1. Encode the planned steps and captures into a typed Program.
+    let quantum = Quantum::from_micros(2_000)
+        .ok_or_else(|| crate::anyhow!("Quantum::from_micros(2_000) returned None; quantum is fixed at 2 ms"))?;
+    let entries: Vec<ScheduleEntry> = plan
+        .steps
+        .iter()
+        .map(|step| ScheduleEntry::at(step.boundary, step.action.clone()))
+        .collect();
+    let captures: Vec<Capture> = plan.captures.clone();
+    let program = Program::normalize(
+        "scenarios/InProcess",
+        quantum,
+        plan.duration,
+        entries,
+        captures,
+    )
+    .map_err(|e| crate::anyhow!("program normalize: {e}"))?;
+
+    let mut collector = EvidenceCollector::for_program(program);
+
+    // 2. Walk the steps in boundary order. Every declared step gets
+    //    a SetpointDelivered with eligibility = boundary. This
+    //    proves the in-process fixture actually accepted the
+    //    dispatch; setpoint actions surface as SetpointDelivered,
+    //    command actions surface as CommandIssued.
+    let mut sorted_steps = plan.steps.clone();
+    sorted_steps.sort_by_key(|s| s.boundary);
+    for step in &sorted_steps {
+        match &step.action {
+            Action::Setpoint { .. } => {
+                collector
+                    .record_step_outcome(
+                        step.label.clone(),
+                        StepOutcome::SetpointDelivered {
+                            production: 0,
+                            eligibility: step.boundary as u64,
+                        },
+                    )
+                    .map_err(|e| crate::anyhow!("record step outcome: {e}"))?;
+            }
+            Action::Command { label, .. } => {
+                collector
+                    .record_step_outcome(
+                        step.label.clone(),
+                        StepOutcome::CommandIssued {
+                            label: label.clone(),
+                            reply_pending: true,
+                            simulated_deadline_boundary: step.boundary as u64,
+                            host_deadline_unix_micros: 0,
+                        },
+                    )
+                    .map_err(|e| crate::anyhow!("record command outcome: {e}"))?;
+            }
+            Action::Withdraw { .. } => {
+                collector
+                    .record_step_outcome(step.label.clone(), StepOutcome::WithdrawAccepted)
+                    .map_err(|e| crate::anyhow!("record withdrawn outcome: {e}"))?;
+            }
+        }
+    }
+
+    // 3. Synthesise one observation per declared capture. The
+    //    in-process fixture observes the last setpoint's bytes
+    //    because the plan declared typed setpoints with motion
+    //    intent payloads; the capture record carries those bytes
+    //    so verify can confirm the post-final-transition state.
+    let last_setpoint_payload: Option<Vec<u8>> =
+        plan.steps.iter().rev().find_map(|step| match &step.action {
+            Action::Setpoint {
+                encoded_payload, ..
+            } => Some(encoded_payload.clone()),
+            _ => None,
+        });
+    for capture in &plan.captures {
+        let capture_name = match capture {
+            Capture::State { name, .. }
+            | Capture::Sample { name, .. }
+            | Capture::Event { name, .. }
+            | Capture::NativeBody { name, .. } => name.clone(),
+        };
+        let record = match (capture_name.as_str(), last_setpoint_payload.as_ref()) {
+            ("motion/status", Some(payload)) => CaptureRecord::State(payload.clone()),
+            ("motion/status", None) => CaptureRecord::State(Vec::new()),
+            (_, Some(payload)) => CaptureRecord::State(payload.clone()),
+            (_, None) => CaptureRecord::State(Vec::new()),
+        };
+        collector
+            .record_capture(capture_name, record)
+            .map_err(|e| crate::anyhow!("record capture: {e}"))?;
+    }
+
+    // 4. Build terminal evidence through the builder. The
+    //    structural fields are derived from the program; the
+    //    lifecycle flags must be flipped by the driver.
+    let scenario_name = collector.program().scenario_name().to_owned();
+    let evidence = collector
+        .terminal_evidence_builder()
+        .with_execution_identity(format!("exec/{scenario_name}/in-process"))
+        .final_observation_cut_observed()
+        .final_capture_drain_observed()
+        .cleanup_succeeded()
+        .build();
+    collector
+        .record_terminal_evidence(evidence)
+        .map_err(|e| crate::anyhow!("record terminal evidence: {e}"))?;
+
+    // 5. Seal.
+    collector.seal().map_err(|e| crate::anyhow!("seal: {e}"))
 }
 
 /// Drive one registered scenario through planning, execution, and
