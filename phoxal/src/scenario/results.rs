@@ -114,6 +114,26 @@ pub enum SealError {
     /// Cumulative bytes across all capture records in the run
     /// exceed `MAX_RUN_BYTES`.
     RunByteOverflow { bytes: usize, cap: usize },
+    /// The seal was called without terminal evidence recorded by
+    /// the actual execution lifecycle. See Gate P1 #2 of
+    /// followup-5d11cfc1.md.
+    MissingTerminalEvidence,
+    /// The seal refused to record a second terminal-evidence call.
+    DuplicateTerminalEvidence,
+    /// The lifecycle's terminal-evidence final observation cut was
+    /// not observed.
+    MissingFinalObservationCut,
+    /// The lifecycle's terminal-evidence final capture drain was
+    /// not observed.
+    MissingFinalCaptureDrain,
+    /// The lifecycle's terminal-evidence cleanup did not succeed.
+    CleanupFailed,
+    /// The terminal evidence quantum (ns) does not equal the
+    /// admitted program quantum.
+    TerminalQuantumMismatch { declared: u64, program: u64 },
+    /// The terminal evidence completed-transition count does not
+    /// equal `program.transition_count()`.
+    TerminalCompletionMismatch { completed: u64, required: u64 },
 }
 
 impl std::fmt::Display for SealError {
@@ -183,6 +203,34 @@ impl std::fmt::Display for SealError {
             Self::MissingFinalBoundary { expected } => {
                 write!(f, "trace never observed final boundary {expected}")
             }
+            Self::MissingTerminalEvidence => write!(
+                f,
+                "terminal evidence has not been recorded by the execution lifecycle; \
+                 the collector cannot synthesize it"
+            ),
+            Self::DuplicateTerminalEvidence => {
+                write!(f, "terminal evidence was already recorded for this run")
+            }
+            Self::MissingFinalObservationCut => write!(
+                f,
+                "terminal evidence reports the final observation cut never completed"
+            ),
+            Self::MissingFinalCaptureDrain => write!(
+                f,
+                "terminal evidence reports the final capture drain never completed"
+            ),
+            Self::CleanupFailed => write!(f, "terminal evidence reports cleanup failed"),
+            Self::TerminalQuantumMismatch { declared, program } => write!(
+                f,
+                "terminal evidence quantum {declared} ns does not match program quantum {program} ns"
+            ),
+            Self::TerminalCompletionMismatch {
+                completed,
+                required,
+            } => write!(
+                f,
+                "terminal evidence completed {completed} transitions; the program requires {required}"
+            ),
             Self::CaptureByteOverflow {
                 capture,
                 bytes,
@@ -224,12 +272,45 @@ pub struct ScenarioRun {
     captures: BTreeMap<String, CaptureRecord>,
     /// Sealed command-reply records keyed by declared correlation label.
     command_replies: BTreeMap<String, CommandReply>,
+    /// Terminal evidence recorded by the actual execution lifecycle.
+    /// `seal` refuses to finalize without it; the four collector
+    /// reproduction probes from followup-5d11cfc1.md all fail
+    /// because they cannot synthesize this surface. See Gate P1 #2
+    /// of that follow-up.
+    terminal_evidence: Option<TerminalEvidence>,
     /// Whether the host considers the run successful. Computed by
     /// `seal`; the `verify` callback may reject on top of this.
     passed: bool,
     /// `true` once the collector has frozen the evidence surface.
     /// Only sealed runs reach `verify`.
     sealed: bool,
+}
+
+/// Terminal evidence the actual execution lifecycle records once.
+/// Provenance, validation, final observation cut, and cleanup
+/// ownership are part of the case-host lifecycle. The collector
+/// cannot synthesize this surface itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalEvidence {
+    /// Identity of the execution that produced this evidence. Must
+    /// match the admitted bundle identity or `seal` refuses.
+    pub execution_identity: String,
+    /// Exact native quantum in nanoseconds. Must match the admitted
+    /// simulation's quantum.
+    pub quantum_ns: u64,
+    /// Number of native transitions the experiment ran. Must equal
+    /// `program.transition_count()`.
+    pub completed_transitions: u64,
+    /// Final observation cut observed by the case host. The host
+    /// records `true` only after the last native transition's
+    /// observation cut completed.
+    pub final_observation_cut: bool,
+    /// Final capture drain observed by the case host.
+    pub final_capture_drain: bool,
+    /// Cleanup outcome. The lifecycle must record success here only
+    /// after reaping every owned child and releasing every borrowed
+    /// simulator.
+    pub cleanup_ok: bool,
 }
 
 impl ScenarioRun {
@@ -249,6 +330,11 @@ impl ScenarioRun {
             .iter()
             .find(|(name, _)| name == label)
             .map(|(_, outcome)| outcome)
+    }
+
+    /// Terminal evidence recorded by the execution lifecycle, if any.
+    pub fn terminal_evidence(&self) -> Option<&TerminalEvidence> {
+        self.terminal_evidence.as_ref()
     }
 
     /// Returns the capture record for `name`, if any.
@@ -280,12 +366,14 @@ impl ScenarioRun {
         step_outcomes: Vec<(String, StepOutcome)>,
         captures: BTreeMap<String, CaptureRecord>,
         command_replies: BTreeMap<String, CommandReply>,
+        terminal_evidence: Option<TerminalEvidence>,
         passed: bool,
     ) -> Self {
         Self {
             step_outcomes,
             captures,
             command_replies,
+            terminal_evidence,
             passed,
             sealed: true,
         }
@@ -355,6 +443,11 @@ pub struct EvidenceCollector {
     /// by `MAX_RUN_BYTES` so unbounded growth cannot hide a tampered
     /// run.
     record_bytes_total: usize,
+    /// Terminal evidence recorded by the actual execution lifecycle.
+    /// `seal` refuses without it; `record_terminal_evidence` is the
+    /// only path that can install this field. See Gate P1 #2 of
+    /// followup-5d11cfc1.md.
+    terminal_evidence: Option<TerminalEvidence>,
 }
 
 impl EvidenceCollector {
@@ -389,6 +482,7 @@ impl EvidenceCollector {
             declared_capture_names,
             declared_command_labels,
             record_bytes_total: 0,
+            terminal_evidence: None,
         }
     }
 
@@ -624,6 +718,38 @@ impl EvidenceCollector {
         Ok(())
     }
 
+    /// Record the terminal evidence the actual execution lifecycle
+    /// produces. The collector refuses a second recording; the case
+    /// host records this exactly once after the experiment has
+    /// actually completed through the final native transition,
+    /// final observation cut, and final capture drain, and only
+    /// after every owned child was reaped and every borrowed
+    /// simulator released.
+    ///
+    /// `seal` will refuse without terminal evidence. The four
+    /// collector reproduction probes from followup-5d11cfc1.md all
+    /// fail because they cannot call this method. See Gate P1 #2
+    /// of that follow-up.
+    pub fn record_terminal_evidence(
+        &mut self,
+        evidence: TerminalEvidence,
+    ) -> Result<(), SealError> {
+        if self.terminal_evidence.is_some() {
+            return Err(SealError::DuplicateTerminalEvidence);
+        }
+        if !evidence.final_observation_cut {
+            return Err(SealError::MissingFinalObservationCut);
+        }
+        if !evidence.final_capture_drain {
+            return Err(SealError::MissingFinalCaptureDrain);
+        }
+        if !evidence.cleanup_ok {
+            return Err(SealError::CleanupFailed);
+        }
+        self.terminal_evidence = Some(evidence);
+        Ok(())
+    }
+
     /// Returns the program this collector was built for.
     pub fn program(&self) -> &Program {
         &self.program
@@ -633,7 +759,7 @@ impl EvidenceCollector {
     /// boundary, and cleanup, then freeze the evidence surface. The
     /// returned `ScenarioRun` is the only object `verify()` may
     /// consume.
-    pub fn seal(self) -> Result<ScenarioRun, SealError> {
+    pub fn seal(mut self) -> Result<ScenarioRun, SealError> {
         // Identity check: tampering with the stored bytes since
         // construction invalidates the run.
         self.program
@@ -683,49 +809,48 @@ impl EvidenceCollector {
                 _ => {}
             }
         }
-        // Final-boundary check: finalize against
-        // `Program::transition_count()` and the actual final
-        // observation/native receipts, not against the maximum
-        // authored action boundary. See Gate B2 of
-        // followup-24c026ed.md: "Finalize against
-        // `Program::transition_count()` and the actual final
-        // observation/native receipts, not `max(action.boundary)`.
-        // No-action and command-only experiments must still prove
-        // completion of their requested interval."
-        //
-        // The setpoint-bearing experiments must observe eligibility at the
-        // program's last transition (which, for a finite schedule, equals
-        // `transition_count - 1` when actions cover the whole schedule, or
-        // `transition_count` when an action sits at the final boundary).
-        // A 3,000-transition plan with only a boundary-zero setpoint
-        // acknowledgement therefore fails to finalize, regardless of the
-        // authored `max_boundary`.
-        let has_setpoint_step = self
-            .program
-            .steps()
-            .iter()
-            .any(|step| matches!(step.action, crate::scenario::plan::Action::Setpoint { .. }));
-        if has_setpoint_step {
-            let last_transition = self.program.transition_count().saturating_sub(1) as u64;
-            let observed_max = self
-                .step_outcomes
-                .iter()
-                .filter_map(|(_, outcome)| match outcome {
-                    StepOutcome::SetpointDelivered { eligibility, .. } => Some(*eligibility),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0);
-            // Allow observed_max == last_transition (action at the
-            // final boundary) or observed_max == last_transition + 1
-            // (canonical N-to-N+1 delivery). Anything strictly below
-            // last_transition means the experiment has not yet reached
-            // its declared timeline.
-            if observed_max < last_transition {
-                return Err(SealError::MissingFinalBoundary {
-                    expected: u32::try_from(last_transition).unwrap_or(u32::MAX),
-                });
-            }
+        // Terminal evidence gate: the actual execution lifecycle owns this
+        // surface. The collector cannot synthesize it; tests that call
+        // the existing record_* helpers without going through the
+        // lifecycle will seal as failed. See Gate P1 #2 of
+        // followup-5d11cfc1.md: the four collector reproduction probes
+        // fail here.
+        let terminal = self
+            .terminal_evidence
+            .take()
+            .ok_or(SealError::MissingTerminalEvidence)?;
+        // Identity check: terminal evidence must belong to the
+        // admitted program.
+        if terminal.quantum_ns != u64::from(self.program.quantum().micros()) * 1_000 {
+            return Err(SealError::TerminalQuantumMismatch {
+                declared: terminal.quantum_ns,
+                program: u64::from(self.program.quantum().micros()) * 1_000,
+            });
+        }
+        // Final-boundary check: the lifecycle reports the exact
+        // completed transition count. For a finite schedule the
+        // experiment completes at `transition_count` native transitions,
+        // not at the maximum authored action boundary or the last
+        // transition index.
+        if terminal.completed_transitions != u64::from(self.program.transition_count()) {
+            return Err(SealError::TerminalCompletionMismatch {
+                completed: terminal.completed_transitions,
+                required: u64::from(self.program.transition_count()),
+            });
+        }
+        // The lifecycle must report successful final observation
+        // cut, capture drain, and cleanup. record_terminal_evidence
+        // already refused to record anything less, but a manual
+        // constructor could still bypass; the seal-time check makes
+        // the contract explicit.
+        if !terminal.final_observation_cut {
+            return Err(SealError::MissingFinalObservationCut);
+        }
+        if !terminal.final_capture_drain {
+            return Err(SealError::MissingFinalCaptureDrain);
+        }
+        if !terminal.cleanup_ok {
+            return Err(SealError::CleanupFailed);
         }
         // Compute the passed flag from the typed evidence only; the
         // verify callback may reject on top of this.
@@ -737,6 +862,7 @@ impl EvidenceCollector {
             self.step_outcomes,
             self.captures,
             self.command_replies,
+            Some(terminal),
             passed,
         ))
     }
@@ -860,6 +986,26 @@ mod tests {
         .expect("command action")
     }
 
+    /// Build valid terminal evidence for a program. The collector's
+    /// `seal` rejects evidence whose quantum does not match the
+    /// program's quantum in nanoseconds, whose completed transition
+    /// count does not equal `transition_count`, or whose final
+    /// observation cut / capture drain / cleanup did not succeed.
+    /// This helper mirrors what the actual case-host lifecycle would
+    /// record after the experiment completed through the final
+    /// native transition, captured the final observation, drained
+    /// the capture buffer, and reaped every owned child.
+    fn terminal_evidence_for(program: &Program, execution_identity: &str) -> TerminalEvidence {
+        TerminalEvidence {
+            execution_identity: execution_identity.to_owned(),
+            quantum_ns: u64::from(program.quantum().micros()) * 1_000,
+            completed_transitions: u64::from(program.transition_count()),
+            final_observation_cut: true,
+            final_capture_drain: true,
+            cleanup_ok: true,
+        }
+    }
+
     #[test]
     fn run_records_outcomes_captures_and_replies() {
         // Gate B1 of followup-24c026ed.md removed the synthetic step
@@ -947,14 +1093,23 @@ mod tests {
 
     #[test]
     fn seal_succeeds_when_all_evidence_present() {
+        // Multi-transition positive case: 3 transitions at the 2 ms
+        // quantum = 6 ms plan, with a single setpoint at boundary 0.
+        // The recorded lifecycle reports 3 completed transitions and
+        // 2_000_000 ns quantum, matching the program. The seal then
+        // accepts the sparse schedule because the lifecycle vouches
+        // for the boundary `N` and the final observation cut / capture
+        // drain / cleanup. Reducing the duration to one transition
+        // would not exercise the N>1 boundary check; this test
+        // deliberately keeps the duration multi-transition.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/SealOk",
             quantum,
-            // 2 ms at the 2 ms quantum = 1 transition; the recorded
-            // setpoint acknowledgement at boundary 0 reaches the
-            // program's last transition. See Gate B2.
-            std::time::Duration::from_micros(2_000),
+            // 6 ms at the 2 ms quantum = 3 transitions; the setpoint
+            // acknowledgement at boundary 0 is the only authored
+            // action. See Gate B2 and Gate P1 #2.
+            std::time::Duration::from_micros(6_000),
             vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
         )
@@ -972,6 +1127,12 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::State(vec![1, 2, 3]))
             .expect("record capture");
+        collector
+            .record_terminal_evidence(terminal_evidence_for(
+                collector.program(),
+                "exec/scenario/seal_ok",
+            ))
+            .expect("record terminal evidence");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
         assert!(run.passed());
@@ -1189,12 +1350,15 @@ mod tests {
     fn seal_finalizes_command_only_program_without_setpoint_boundary() {
         // A program that has only Command actions has no setpoint
         // boundary to observe; the final-cut check must finalize
-        // through command replies alone.
+        // through command replies plus real terminal evidence.
+        // 3 transitions at the 2 ms quantum = 6 ms plan; the
+        // setpoint-eligibility heuristic is intentionally absent
+        // here so the seal must lean on terminal evidence alone.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/CommandOnly",
             quantum,
-            std::time::Duration::from_secs(1),
+            std::time::Duration::from_micros(6_000),
             vec![ScheduleEntry::at(0, command_action("do_thing", 1))],
             vec![],
         )
@@ -1219,6 +1383,12 @@ mod tests {
                 },
             )
             .expect("record reply");
+        collector
+            .record_terminal_evidence(terminal_evidence_for(
+                collector.program(),
+                "exec/scenario/command_only",
+            ))
+            .expect("record terminal evidence");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
         assert!(run.passed());
@@ -1301,13 +1471,15 @@ mod tests {
         // the simulator saw the window, no events fired. The
         // collector must accept an empty Samples/Events record
         // (the validation is on presence, not on payload length).
+        // The 6 ms / 2 ms quantum program has 3 transitions; the
+        // single setpoint acknowledgement at boundary 0 is the only
+        // authored action. Terminal evidence records all 3 transitions
+        // so the seal accepts.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/ZeroEventInterval",
             quantum,
-            // 2 ms at the 2 ms quantum = 1 transition; the setpoint
-            // acknowledgement at boundary 0 reaches last_transition.
-            std::time::Duration::from_micros(2_000),
+            std::time::Duration::from_micros(6_000),
             vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::event("motion", event_sig()).expect("event capture")],
         )
@@ -1325,6 +1497,12 @@ mod tests {
         collector
             .record_capture("motion".to_owned(), CaptureRecord::Events(Vec::new()))
             .expect("zero-event interval must be accepted");
+        collector
+            .record_terminal_evidence(terminal_evidence_for(
+                collector.program(),
+                "exec/scenario/zero_event_interval",
+            ))
+            .expect("record terminal evidence");
         let run = collector.seal().expect("seal");
         assert!(run.is_sealed());
     }
@@ -1334,8 +1512,15 @@ mod tests {
         // Regression for followup-24c026ed.md line 333: "3000-transition
         // program seals with only boundary zero: Ok(true)". A
         // 6-second plan with only a single setpoint at boundary 0
-        // cannot finalize because the recorded eligibility never
-        // reaches `transition_count - 1`; the experiment did not run.
+        // cannot finalize because the experiment did not run. With
+        // the new design the collector refuses at the
+        // MissingTerminalEvidence gate: this test does not invoke
+        // the lifecycle, so the lifecycle never recorded
+        // `completed_transitions = 3000`, the final observation cut,
+        // the final capture drain, or the cleanup outcome. A caller
+        // that fabricated those would still fail at the quantum /
+        // completion / cut checks; see the dedicated regressions
+        // below.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/LongSparse",
@@ -1361,12 +1546,10 @@ mod tests {
         let err = collector
             .seal()
             .expect_err("3000-transition plan with boundary-zero evidence must not seal");
-        match err {
-            SealError::MissingFinalBoundary { expected } => {
-                assert_eq!(expected, 2_999);
-            }
-            other => panic!("expected MissingFinalBoundary, got {other:?}"),
-        }
+        assert!(
+            matches!(err, SealError::MissingTerminalEvidence),
+            "collector without lifecycle must refuse at MissingTerminalEvidence; got {err:?}"
+        );
     }
 
     #[test]
@@ -1443,5 +1626,383 @@ mod tests {
             vec![],
         );
         assert!(matches!(result, Err(ProgramError::Other(_))));
+    }
+
+    // ----------------------------------------------------------------
+    // Gate P1 #2 of followup-5d11cfc1.md: the four reproduction probes
+    // from lines 166-173 plus the boundary / interruption / mismatch
+    // / sparse-valid regressions required by line 195. These tests
+    // exercise the public collector API directly, without going
+    // through the case-host lifecycle, so terminal evidence is not
+    // recorded and the seal must refuse.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn reproduction_no_action_3000_transition_run_refuses_without_terminal_evidence() {
+        // Probe 1 from followup-5d11cfc1.md line 169: "no-action
+        // 3000-transition run without execution seals: Ok(true)".
+        // An empty schedule of 3000 transitions cannot finalize;
+        // the lifecycle never recorded any terminal evidence, so the
+        // seal refuses with `MissingTerminalEvidence`. An empty
+        // schedule is not itself a defect — the lifecycle owner would
+        // still record observation-only terminal evidence — but the
+        // collector alone cannot synthesize that.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/NoAction",
+            quantum,
+            std::time::Duration::from_secs(6),
+            vec![],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        assert_eq!(program.transition_count(), 3_000);
+        let mut collector = EvidenceCollector::for_program(program);
+        // The empty schedule has no step outcomes to record.
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0]))
+            .expect("record observation-only capture");
+        let err = collector
+            .seal()
+            .expect_err("no-action 3000-transition run must refuse without terminal evidence");
+        assert!(
+            matches!(err, SealError::MissingTerminalEvidence),
+            "expected MissingTerminalEvidence, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reproduction_n_3000_seals_from_n_minus_1_receipt_refuses_without_terminal_evidence() {
+        // Probe 2 from followup-5d11cfc1.md line 170: "N=3000 seals
+        // from N-1 receipt: Ok(true)". The previous design used the
+        // maximum setpoint eligibility and accepted
+        // `eligibility <= transition_count - 1`. The new design
+        // refuses because terminal evidence is missing: a real
+        // lifecycle that observed only N - 1 receipts cannot have
+        // recorded `completed_transitions = N`, and a fake one that
+        // did would fail the quantum / completion / cut checks below.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/NMinusOneReceipt",
+            quantum,
+            std::time::Duration::from_secs(6),
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(program.transition_count(), 3_000);
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record setpoint acknowledgement at boundary 0");
+        let err = collector
+            .seal()
+            .expect_err("N=3000 with N-1 receipt must refuse without terminal evidence");
+        assert!(
+            matches!(err, SealError::MissingTerminalEvidence),
+            "expected MissingTerminalEvidence, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reproduction_n_1_seals_at_boundary_0_refuses_without_terminal_evidence() {
+        // Probe 3 from followup-5d11cfc1.md line 171: "N=1 seals at
+        // boundary 0: Ok(true)". A 1-transition plan with a single
+        // boundary-zero setpoint acknowledgement still needs terminal
+        // evidence to seal; the lifecycle alone owns that surface.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/N1Boundary0",
+            quantum,
+            std::time::Duration::from_micros(2_000),
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        assert_eq!(program.transition_count(), 1);
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record setpoint acknowledgement at boundary 0");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![1]))
+            .expect("record capture");
+        let err = collector
+            .seal()
+            .expect_err("N=1 at boundary 0 must refuse without terminal evidence");
+        assert!(
+            matches!(err, SealError::MissingTerminalEvidence),
+            "expected MissingTerminalEvidence, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn reproduction_command_only_3000_transition_run_with_reply_refuses_without_terminal_evidence()
+    {
+        // Probe 4 from followup-5d11cfc1.md line 172: "command-only
+        // 3000-transition run + reply before wrong-label issue seals:
+        // Ok(true)". A command-only schedule with one command action
+        // at boundary 0, an issued step outcome, and a recorded
+        // reply must still refuse without terminal evidence. The
+        // previous design passed this because the eligibility
+        // heuristic was skipped for command-only programs; the new
+        // design requires lifecycle-recorded completion.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/CommandOnly3000",
+            quantum,
+            std::time::Duration::from_secs(6),
+            vec![ScheduleEntry::at(0, command_action("do_thing", 1))],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(program.transition_count(), 3_000);
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::CommandIssued {
+                    label: "do_thing".to_owned(),
+                    reply_pending: true,
+                    simulated_deadline_boundary: 0,
+                    host_deadline_unix_micros: 0,
+                },
+            )
+            .expect("record command");
+        collector
+            .record_command_reply(
+                "do_thing".to_owned(),
+                CommandReply::Accepted {
+                    response_bytes: vec![0xff],
+                },
+            )
+            .expect("record reply");
+        let err = collector.seal().expect_err(
+            "command-only 3000-transition run with reply must refuse without terminal evidence",
+        );
+        assert!(
+            matches!(err, SealError::MissingTerminalEvidence),
+            "expected MissingTerminalEvidence, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn seal_rejects_boundary_n_minus_1_in_terminal_evidence() {
+        // Required regression from followup-5d11cfc1.md line 195:
+        // "boundary `N - 1` must fail". A caller that fabricates
+        // terminal evidence with `completed_transitions = N - 1`
+        // (one short of the program's transition count) cannot seal:
+        // the experiment did not complete the canonical `N` native
+        // transitions.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/NMinusOneTerminal",
+            quantum,
+            std::time::Duration::from_secs(6),
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        assert_eq!(program.transition_count(), 3_000);
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
+            .expect("record capture");
+        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/n_minus_1");
+        evidence.completed_transitions -= 1;
+        collector
+            .record_terminal_evidence(evidence)
+            .expect("terminal evidence must be accepted; the seal is where N - 1 is rejected");
+        let err = collector.seal().expect_err("boundary N - 1 must refuse");
+        match err {
+            SealError::TerminalCompletionMismatch {
+                completed,
+                required,
+            } => {
+                assert_eq!(completed, 2_999);
+                assert_eq!(required, 3_000);
+            }
+            other => panic!("expected TerminalCompletionMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seal_rejects_interrupted_final_phase() {
+        // Required regression from followup-5d11cfc1.md line 195:
+        // "an interrupted final phase must fail". The lifecycle
+        // reports `final_observation_cut = false` when the supervisor
+        // cancelled, the fixture child died, or the host wall-clock
+        // deadline elapsed. `record_terminal_evidence` refuses the
+        // bad evidence; the seal would also refuse if the bad
+        // evidence bypassed the recorder.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/InterruptedFinalPhase",
+            quantum,
+            std::time::Duration::from_secs(6),
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
+            .expect("record capture");
+        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/interrupted");
+        evidence.final_observation_cut = false;
+        let err = collector
+            .record_terminal_evidence(evidence)
+            .expect_err("interrupted final phase must be refused at record time");
+        assert!(
+            matches!(err, SealError::MissingFinalObservationCut),
+            "expected MissingFinalObservationCut, got {err:?}"
+        );
+
+        // Drain finalization also refused.
+        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/interrupted");
+        evidence.final_capture_drain = false;
+        let err = collector
+            .record_terminal_evidence(evidence)
+            .expect_err("missing final capture drain must be refused at record time");
+        assert!(
+            matches!(err, SealError::MissingFinalCaptureDrain),
+            "expected MissingFinalCaptureDrain, got {err:?}"
+        );
+
+        // Cleanup failure also refused.
+        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/interrupted");
+        evidence.cleanup_ok = false;
+        let err = collector
+            .record_terminal_evidence(evidence)
+            .expect_err("cleanup failure must be refused at record time");
+        assert!(
+            matches!(err, SealError::CleanupFailed),
+            "expected CleanupFailed, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn seal_rejects_mismatched_execution_quantum() {
+        // Required regression from followup-5d11cfc1.md line 195:
+        // "a mismatched execution must fail". The quantum in the
+        // terminal evidence must equal the program's quantum in
+        // nanoseconds. Truncating before comparison would accept a
+        // 2_000_001 ns simulation against a 2_000 us program; the
+        // exact nanosecond comparison rejects it.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/MismatchedQuantum",
+            quantum,
+            std::time::Duration::from_secs(6),
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA]))
+            .expect("record capture");
+        let mut evidence = terminal_evidence_for(collector.program(), "exec/scenario/mismatch");
+        // Inject the off-by-one-truncation defect: 2_001 us is what
+        // the buggy comparison used to read, in nanoseconds.
+        evidence.quantum_ns = 2_001 * 1_000;
+        collector
+            .record_terminal_evidence(evidence)
+            .expect("record terminal evidence");
+        let err = collector
+            .seal()
+            .expect_err("mismatched quantum must refuse");
+        match err {
+            SealError::TerminalQuantumMismatch { declared, program } => {
+                assert_eq!(declared, 2_001_000);
+                assert_eq!(program, 2_000_000);
+            }
+            other => panic!("expected TerminalQuantumMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seal_succeeds_for_sparse_valid_run_with_real_terminal_evidence() {
+        // Required regression from followup-5d11cfc1.md line 195:
+        // "a sparse valid case with real terminal evidence must
+        // pass". A 6 ms / 2 ms quantum program with one setpoint at
+        // boundary 0 and one state capture acts once early and
+        // observes until the end. With lifecycle-recorded terminal
+        // evidence that matches the program (3 completed transitions
+        // at 2_000_000 ns, final observation cut, final capture
+        // drain, cleanup succeeded) the seal accepts the sparse
+        // schedule. This is the "sparse valid" complement to the
+        // 3000-transition-with-only-boundary-zero regression above.
+        let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
+        let program = Program::normalize(
+            "scenarios/Repro/SparseValid",
+            quantum,
+            std::time::Duration::from_micros(6_000),
+            vec![ScheduleEntry::at(0, setpoint_action(1))],
+            vec![Capture::state("motion", state_sig()).expect("motion capture")],
+        )
+        .unwrap();
+        assert_eq!(program.transition_count(), 3);
+        let mut collector = EvidenceCollector::for_program(program);
+        collector
+            .record_step_outcome(
+                "s00000000".to_owned(),
+                StepOutcome::SetpointDelivered {
+                    production: 0,
+                    eligibility: 0,
+                },
+            )
+            .expect("record step");
+        collector
+            .record_capture("motion".to_owned(), CaptureRecord::State(vec![0xAA, 0xBB]))
+            .expect("record capture");
+        collector
+            .record_terminal_evidence(terminal_evidence_for(
+                collector.program(),
+                "exec/scenario/sparse_valid",
+            ))
+            .expect("record terminal evidence");
+        let run = collector.seal().expect("seal");
+        assert!(run.is_sealed());
+        assert!(run.passed(), "sparse valid case must pass");
     }
 }
