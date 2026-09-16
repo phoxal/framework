@@ -355,28 +355,82 @@ impl TerminalEvidence {
 /// Builder for [`TerminalEvidence`]. Construction goes through
 /// [`EvidenceCollector::terminal_evidence_builder`] so external code
 /// cannot assemble a [`TerminalEvidence`] from arbitrary fields.
-/// The structural fields (`quantum_ns`, `completed_transitions`) are
-/// set from the collector's program; the lifecycle flags default to
-/// `false` and must be flipped via the builder's `*_observed` /
-/// `*_drained` / `cleanup_succeeded` methods. Until all three
-/// lifecycle flags are set, `seal` refuses with
+///
+/// The structural fields (`quantum_ns`, `completed_transitions`) come
+/// from the case-host lifecycle, **not** from the program. The
+/// builder must be called with `with_terminal_quantum_ns` and
+/// `with_completed_transitions`; absent those calls, the
+/// corresponding fields default to `0`. The lifecycle flags
+/// (`final_observation_cut`, `final_capture_drain`, `cleanup_ok`)
+/// default to `false` and must be flipped via `*_observed` /
+/// `*_drained` / `cleanup_succeeded`. The seal then validates the
+/// lifecycle-observed quantum and completed-transition count against
+/// the program: a quantum mismatch returns
+/// [`SealError::TerminalQuantumMismatch`] and a completed-transition
+/// mismatch returns [`SealError::TerminalCompletionMismatch`]. Until
+/// all three lifecycle flags are set, `seal` refuses with
 /// [`SealError::MissingFinalObservationCut`] /
 /// [`SealError::MissingFinalCaptureDrain`] / [`SealError::CleanupFailed`].
-pub struct TerminalEvidenceBuilder<'a> {
-    collector: &'a mut EvidenceCollector,
+///
+/// The supervisor-driven lifecycle calls
+/// `with_terminal_quantum_ns` with the simulator's observed
+/// `quantum_ns`, and `with_completed_transitions` with the actual
+/// completed native transition boundary. Test-only fixtures that
+/// exercise the seal surface provide these from the program's known
+/// values; the public command path never reaches a seal through
+/// such a fixture (production `run_harness` returns
+/// [`crate::scenario::harness::HarnessError::Unsupported`] until the
+/// real lifecycle lands).
+pub struct TerminalEvidenceBuilder {
     execution_identity: String,
+    /// Lifecycle-observed quantum in nanoseconds. The supervisor
+    /// reports this from the simulator's actual probe, not from the
+    /// program's declared quantum.
+    terminal_quantum_ns: Option<u64>,
+    /// Lifecycle-observed completed transition count. The supervisor
+    /// reports this from the actual native execution, not from the
+    /// program's `transition_count`.
+    completed_transitions: Option<u64>,
     final_observation_cut: bool,
     final_capture_drain: bool,
     cleanup_ok: bool,
 }
 
-impl<'a> TerminalEvidenceBuilder<'a> {
+impl TerminalEvidenceBuilder {
     /// Set the execution identity. The collector does not validate
     /// the identity string itself; admission policy enforces a
     /// match against the bundle identity when `seal` is called.
     #[must_use]
     pub fn with_execution_identity(mut self, identity: impl Into<String>) -> Self {
         self.execution_identity = identity.into();
+        self
+    }
+
+    /// Set the lifecycle-observed quantum in nanoseconds. The
+    /// supervisor-driven lifecycle calls this with the value the
+    /// simulator probed; test-only fixtures that exercise the seal
+    /// surface may call this with the program's quantum (only the
+    /// seal-time mismatch check then accepts the value). Absent
+    /// this call, the field defaults to `0` and the seal reports a
+    /// [`SealError::TerminalQuantumMismatch`] for any program whose
+    /// quantum is non-zero.
+    #[must_use]
+    pub fn with_terminal_quantum_ns(mut self, quantum_ns: u64) -> Self {
+        self.terminal_quantum_ns = Some(quantum_ns);
+        self
+    }
+
+    /// Set the lifecycle-observed completed transition count. The
+    /// supervisor-driven lifecycle calls this with the actual
+    /// completed native transition boundary; test-only fixtures
+    /// that exercise the seal surface may call this with the
+    /// program's `transition_count`. Absent this call, the field
+    /// defaults to `0` and the seal reports a
+    /// [`SealError::TerminalCompletionMismatch`] for any program
+    /// whose `transition_count` is non-zero.
+    #[must_use]
+    pub fn with_completed_transitions(mut self, completed: u64) -> Self {
+        self.completed_transitions = Some(completed);
         self
     }
 
@@ -402,16 +456,18 @@ impl<'a> TerminalEvidenceBuilder<'a> {
         self
     }
 
-    /// Build the [`TerminalEvidence`]. The structural fields are
-    /// filled from the collector's program. Returns the evidence so
-    /// the caller can hand it to
+    /// Build the [`TerminalEvidence`]. The structural fields come
+    /// from the lifecycle-observed values supplied to the builder;
+    /// absent those calls, the fields default to `0`. The seal
+    /// validates them against the program and refuses any mismatch.
+    /// Returns the evidence so the caller can hand it to
     /// [`EvidenceCollector::record_terminal_evidence`].
     #[must_use]
     pub fn build(self) -> TerminalEvidence {
         TerminalEvidence {
             execution_identity: self.execution_identity,
-            quantum_ns: u64::from(self.collector.program.quantum().micros()) * 1_000,
-            completed_transitions: u64::from(self.collector.program.transition_count()),
+            quantum_ns: self.terminal_quantum_ns.unwrap_or(0),
+            completed_transitions: self.completed_transitions.unwrap_or(0),
             final_observation_cut: self.final_observation_cut,
             final_capture_drain: self.final_capture_drain,
             cleanup_ok: self.cleanup_ok,
@@ -856,16 +912,21 @@ impl EvidenceCollector {
         Ok(())
     }
 
-    /// Returns a [`TerminalEvidenceBuilder`] that fills the
-    /// structural fields from this collector's program. The
-    /// builder is the only path that constructs
+    /// Returns a [`TerminalEvidenceBuilder`] that owns the
+    /// lifecycle-observed terminal facts. The structural fields
+    /// (`quantum_ns`, `completed_transitions`) are **not** filled
+    /// from this collector's program; the case-host lifecycle must
+    /// observe them from the supervisor / native execution and call
+    /// `with_terminal_quantum_ns` / `with_completed_transitions`.
+    /// The builder is the only path that constructs
     /// [`TerminalEvidence`]; external code cannot assemble the
     /// surface from arbitrary fields. See Gate P1 #2 of
     /// followup-5d11cfc1.md.
-    pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder<'_> {
+    pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
         TerminalEvidenceBuilder {
-            collector: self,
             execution_identity: String::new(),
+            terminal_quantum_ns: None,
+            completed_transitions: None,
             final_observation_cut: false,
             final_capture_drain: false,
             cleanup_ok: false,
@@ -1123,9 +1184,13 @@ mod tests {
     /// evidence surface. Production code reaches the builder via
     /// the case-host lifecycle, not this helper.
     fn record_valid_terminal_evidence(collector: &mut EvidenceCollector, execution_identity: &str) {
+        let program_quantum_ns = u64::from(collector.program().quantum().micros()) * 1_000;
+        let program_transition_count = u64::from(collector.program().transition_count());
         let evidence = collector
             .terminal_evidence_builder()
             .with_execution_identity(execution_identity)
+            .with_terminal_quantum_ns(program_quantum_ns)
+            .with_completed_transitions(program_transition_count)
             .final_observation_cut_observed()
             .final_capture_drain_observed()
             .cleanup_succeeded()
@@ -1914,13 +1979,15 @@ mod tests {
 
     #[test]
     fn builder_enforces_completed_transitions_equals_program_transition_count() {
-        // The builder's structural fields are derived from the
-        // collector's program. `completed_transitions` always equals
-        // `program.transition_count()`, so a caller cannot fabricate
-        // `N - 1`. The defense-in-depth seal check
-        // (`TerminalCompletionMismatch`) is exercised below by
-        // constructing mismatched evidence via the test-only backdoor
-        // `record_terminal_evidence_raw`.
+        // Required regression from followup-5d11cfc1.md §2: the
+        // builder must not derive `quantum_ns` or
+        // `completed_transitions` from the program — those come
+        // from the lifecycle-observed terminal facts. Without
+        // explicit `with_terminal_quantum_ns` /
+        // `with_completed_transitions` calls, the builder produces
+        // evidence with `0` for both fields, and the seal refuses
+        // any program whose quantum or transition count is
+        // non-zero.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Repro/NMinusOneTerminal",
@@ -1940,13 +2007,43 @@ mod tests {
             .build();
         assert_eq!(
             evidence.completed_transitions(),
-            collector.program().transition_count() as u64,
-            "builder must derive completed_transitions from the program"
+            0,
+            "builder must not derive completed_transitions from the program; \
+             the lifecycle must supply it via with_completed_transitions"
         );
         assert_eq!(
             evidence.quantum_ns(),
-            u64::from(collector.program().quantum().micros()) * 1_000,
-            "builder must derive quantum_ns from the program in nanoseconds"
+            0,
+            "builder must not derive quantum_ns from the program; \
+             the lifecycle must supply it via with_terminal_quantum_ns"
+        );
+
+        // Once the lifecycle calls `with_terminal_quantum_ns` and
+        // `with_completed_transitions` with the actual observed
+        // values, those values reach the evidence surface and the
+        // seal accepts when they match the program.
+        let program_quantum_ns = u64::from(collector.program().quantum().micros()) * 1_000;
+        let program_transition_count = u64::from(collector.program().transition_count());
+        let evidence = {
+            let mut builder = collector.terminal_evidence_builder();
+            builder = builder
+                .with_execution_identity("exec/scenario/builder_enforces_with_facts")
+                .with_terminal_quantum_ns(program_quantum_ns)
+                .with_completed_transitions(program_transition_count)
+                .final_observation_cut_observed()
+                .final_capture_drain_observed()
+                .cleanup_succeeded();
+            builder.build()
+        };
+        assert_eq!(
+            evidence.completed_transitions(),
+            program_transition_count,
+            "lifecycle-supplied completed_transitions must reach the evidence surface"
+        );
+        assert_eq!(
+            evidence.quantum_ns(),
+            program_quantum_ns,
+            "lifecycle-supplied quantum_ns must reach the evidence surface"
         );
     }
 
@@ -2055,13 +2152,13 @@ mod tests {
 
     #[test]
     fn builder_enforces_quantum_ns_in_nanoseconds() {
-        // The builder's structural fields are derived from the
-        // collector's program. `quantum_ns` is always the program's
-        // quantum in nanoseconds, so a caller cannot fabricate a
-        // mismatched quantum. The defense-in-depth seal check
-        // (`TerminalQuantumMismatch`) remains in the seal path so
-        // any future code path that bypasses the builder would
-        // still be refused.
+        // Required regression from followup-5d11cfc1.md §2: the
+        // builder must not derive `quantum_ns` from the program;
+        // the lifecycle supplies it via `with_terminal_quantum_ns`.
+        // Absent that call, the field defaults to `0` and the
+        // seal-time mismatch check rejects any program whose
+        // quantum is non-zero. With the call, the value reaches
+        // the evidence surface verbatim.
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = Program::normalize(
             "scenarios/Repro/MismatchedQuantum",
@@ -2074,12 +2171,36 @@ mod tests {
         let mut collector = EvidenceCollector::for_program(program);
         let evidence = collector
             .terminal_evidence_builder()
-            .with_execution_identity("exec/scenario/mismatch")
+            .with_execution_identity("exec/scenario/mismatch_default")
             .final_observation_cut_observed()
             .final_capture_drain_observed()
             .cleanup_succeeded()
             .build();
-        assert_eq!(evidence.quantum_ns(), 2_000_000);
+        assert_eq!(
+            evidence.quantum_ns(),
+            0,
+            "absent with_terminal_quantum_ns, the builder must default to 0 \
+             (not derive from the program); the seal then rejects the mismatch"
+        );
+
+        // Lifecycle-supplied value reaches the evidence surface.
+        let program_transition_count = u64::from(collector.program().transition_count());
+        let evidence = {
+            let mut builder = collector.terminal_evidence_builder();
+            builder = builder
+                .with_execution_identity("exec/scenario/mismatch_with_facts")
+                .with_terminal_quantum_ns(2_000_000)
+                .with_completed_transitions(program_transition_count)
+                .final_observation_cut_observed()
+                .final_capture_drain_observed()
+                .cleanup_succeeded();
+            builder.build()
+        };
+        assert_eq!(
+            evidence.quantum_ns(),
+            2_000_000,
+            "lifecycle-supplied quantum_ns must reach the evidence surface"
+        );
     }
 
     #[test]
