@@ -202,4 +202,74 @@ mod tests {
             let _ = (entry.name, entry.short_name);
         }
     }
+
+    /// A scenario registered via the real `#[phoxal::scenario]`
+    /// attribute with a `Default::default` impl that panics would
+    /// surface any eager construction at listing or registration
+    /// time. The inventory snapshot is already sorted by short name;
+    /// we look up the descriptor by exact match so the test cannot
+    /// silently accept another module's entry. See Gate P1 #6 of
+    /// followup-5d11cfc1.md.
+    #[allow(dead_code)]
+    #[derive(Debug)]
+    struct PanicOnDefaultScenario;
+
+    impl Default for PanicOnDefaultScenario {
+        fn default() -> Self {
+            panic!("listing must not construct the scenario");
+        }
+    }
+
+    #[phoxal::scenario]
+    impl crate::scenario::Scenario for PanicOnDefaultScenario {
+        fn plan(&self) -> crate::Result<ScenarioPlan> {
+            panic!("listing must not call plan()");
+        }
+        fn verify(&self, _run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+            panic!("listing must not call verify()");
+        }
+    }
+
+    /// Listing the registry must not invoke any registered scenario's
+    /// `Default::default`. The descriptor for `PanicOnDefaultScenario`
+    /// is registered by the macro at compile time; a real eager
+    /// construction would panic here.
+    #[test]
+    fn listing_does_not_invoke_registered_default_impl() {
+        // Touching the static metadata only — never call the entry.
+        let entries = crate::scenario::registry::list_scenarios().expect("list scenarios");
+        let registered = entries
+            .iter()
+            .find(|e| e.short_name == "PanicOnDefaultScenario")
+            .expect("macro must register PanicOnDefaultScenario");
+        assert_eq!(registered.name, "scenarios/PanicOnDefaultScenario");
+    }
+
+    /// The descriptor's `entry` function (the per-type monomorphized
+    /// function pointer) must construct the registered type via
+    /// `Default::default()` and call `plan()`. The
+    /// `PanicOnDefaultScenario` fixture's `Default` impl panics with
+    /// a deterministic diagnostic so any future regression that
+    /// bypasses the entry path (e.g. eager construction at listing
+    /// time) surfaces here as a panic instead of silently passing.
+    /// See Gate P1 #6 of followup-5d11cfc1.md.
+    #[test]
+    fn real_compiled_entry_constructs_via_default_then_plans() {
+        let entries = crate::scenario::registry::list_scenarios().expect("list scenarios");
+        let registered = entries
+            .iter()
+            .find(|e| e.short_name == "PanicOnDefaultScenario")
+            .expect("registered by macro");
+        // The macro-generated entry must call `Default::default()`
+        // first; that is the documented contract. We catch the
+        // fixture's deliberate panic so the test reports a useful
+        // message instead of failing the process.
+        let result = std::panic::catch_unwind(|| (registered.entry)());
+        assert!(
+            result.is_err(),
+            "the macro-generated entry should call Default::default() and \
+             then plan(); the PanicOnDefaultScenario fixture's Default panics, \
+             so a non-panicking result would mean the entry bypassed Default."
+        );
+    }
 }

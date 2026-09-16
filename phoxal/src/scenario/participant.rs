@@ -178,10 +178,6 @@ impl FixtureParticipant {
     /// The retained surface (correlations, deadlines, replies)
     /// stays intact because the controlled phase loop being
     /// extracted from the framework SDK runner will use the same
-    /// typed fields once it lands.
-    #[allow(dead_code)]
-    fn _removed_run_documentation_marker() {}
-
     /// Records a command reply observed by the case host. Returns
     /// `false` if no matching correlation id is outstanding.
     pub fn mark_command_reply(&mut self, label: &str) -> bool {
@@ -515,14 +511,19 @@ mod tests {
     }
 
     #[test]
-    fn real_phase_loop_seals_a_small_consumer_exchange() {
-        // Acceptance probe for item 7 replaced by Gate B1: the
-        // synthetic emitter and `run_through_owned` were removed; the
-        // real controlled phase driver is the case-host lifecycle
-        // that Gate B1/B4 extracts. This test now asserts the
-        // invariants the real driver must satisfy: a normalized
+    fn small_consumer_exchange_program_admits_into_collector_without_synthetic_preprocessing() {
+        // Renamed from `real_phase_loop_seals_a_small_consumer_exchange`
+        // per Gate P1 #6 of followup-5d11cfc1.md: the previous test
+        // claimed a seal path that does not exist (the synthetic
+        // emitter and `run_through_owned` were removed by Gate B1).
+        // The real phase loop is the case-host lifecycle that
+        // Section 3 lands; until then this test asserts the
+        // invariants the case host must satisfy: a normalized
         // program with declared steps and captures admits into a
-        // typed EvidenceCollector without any synthetic preprocessing.
+        // typed EvidenceCollector without any synthetic
+        // preprocessing. The collector MUST NOT be sealed here: the
+        // seal requires lifecycle-recorded terminal evidence that
+        // only the case host can record.
         use crate::scenario::Capture;
         use crate::scenario::results::{CaptureRecord, EvidenceCollector};
         fn capture_sig() -> PortSignature {
@@ -574,9 +575,6 @@ mod tests {
             vec![Capture::state("motion", capture_sig()).expect("motion capture")],
         )
         .expect("normalize");
-        // The fixture-side participant cannot synthesize outcomes
-        // anymore; the test asserts the program's invariants hold
-        // for the case host to drive against.
         program.verify_identity().expect("identity");
         let collector = EvidenceCollector::for_program(program.clone());
         let mut collector = collector;
@@ -594,5 +592,9 @@ mod tests {
                 )
                 .is_ok()
         );
+        // The collector must NOT be sealed here: that requires
+        // lifecycle-recorded terminal evidence that only the case
+        // host can record. Until Section 3 lands, attempting to seal
+        // would surface `MissingTerminalEvidence`.
     }
 }
