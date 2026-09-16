@@ -201,8 +201,12 @@ fn build_harness_binary(
     // Cargo executable, registry injection, and lock file as the
     // rest of the project. `include_selection` is forced false here
     // because the explicit `--package` already names the single
-    // robot package.
-    options.append_common(&mut command, true, false);
+    // robot package. `include_message_format` is forced false
+    // because the literal `--message-format json-render-diagnostics`
+    // above is required for the harness build to parse artifacts;
+    // `append_common` would add a second copy if the caller had set
+    // a non-default `message_format`.
+    options.append_common(&mut command, false, false);
     command.current_dir(&robot_root);
     let output = command
         .output()
