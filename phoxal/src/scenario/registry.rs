@@ -50,6 +50,15 @@ pub struct ScenarioOutcome {
     pub detail: Option<String>,
 }
 
+/// Function pointer the macro emits to invoke the user's `verify()`
+/// against a sealed [`crate::scenario::ScenarioRun`]. The closure
+/// constructs a fresh scenario via `Default::default()` because the
+/// macro entry cannot retain the original instance while the case
+/// host drives execution; the user's `verify()` only takes
+/// `&ScenarioRun`, so a fresh instance is sufficient. See Gate P1
+/// #3 of followup-5d11cfc1.md.
+pub type ScenarioVerifyFn = fn(&crate::scenario::ScenarioRun) -> crate::Result<()>;
+
 /// Carrier produced by the macro's per-type entry. The entry
 /// constructs the scenario via `Default::default()`, calls `plan()`,
 /// and hands the resulting [`ScenarioPlan`] back to the case host
@@ -69,6 +78,12 @@ pub struct PlannedScenario {
     /// The case host converts this to a typed [`crate::scenario::Program`]
     /// before driving execution.
     pub plan: crate::scenario::ScenarioPlan,
+    /// Monomorphized function pointer that invokes the user's
+    /// `verify()` against a sealed [`crate::scenario::ScenarioRun`].
+    /// The case host calls this exactly once after the driver
+    /// returns; the resulting pass/fail drives the
+    /// [`crate::scenario::ScenarioOutcome`].
+    pub verify: ScenarioVerifyFn,
 }
 
 /// Signature of the monomorphized case-host entry.

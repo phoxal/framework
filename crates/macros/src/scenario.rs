@@ -110,9 +110,21 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
             // not type-check or fails validation never registers. The
             // case host retains the validated plan and drives it.
             let plan = <#self_type as ::phoxal::scenario::Scenario>::plan(&scenario)?;
+            // The verify monomorphization: it constructs a fresh
+            // scenario via `Default` because the entry cannot retain
+            // the original instance while the case host drives
+            // execution. `verify()` only takes `&ScenarioRun`, so a
+            // fresh instance is sufficient.
+            fn verify_scenario(
+                run: &::phoxal::scenario::ScenarioRun,
+            ) -> ::phoxal::Result<()> {
+                let scenario = <#self_type as ::std::default::Default>::default();
+                <#self_type as ::phoxal::scenario::Scenario>::verify(&scenario, run)
+            }
             Ok(::phoxal::scenario::PlannedScenario {
                 name: #full_name.to_owned(),
                 plan,
+                verify: verify_scenario,
             })
         }
 

@@ -265,8 +265,8 @@ fn validate_options_for_case_host(options: &CargoOptions) -> Result<(), CaseHost
         let rendered = arg.to_string_lossy();
         if rendered == "--workspace"
             || rendered == "-w"
-            || rendered.starts_with("--package")
-            || rendered.starts_with("--exclude")
+            || is_package_selector(&rendered)
+            || is_exclude_selector(&rendered)
         {
             return Err(CaseHostOptionError::ConflictingSelection(
                 rendered.into_owned(),
@@ -274,6 +274,23 @@ fn validate_options_for_case_host(options: &CargoOptions) -> Result<(), CaseHost
         }
     }
     Ok(())
+}
+
+/// Returns `true` when `arg` is a cargo `--package` / `-p` selector
+/// followed by either `=` (combined form) or end-of-arg (separate
+/// form). The case-host validator uses this predicate so the
+/// check matches `--package` and `--package=<name>` / `-p` /
+/// `-p=<name>` while ignoring unrelated flags that happen to
+/// share the prefix (e.g. `--packages-all`).
+fn is_package_selector(arg: &str) -> bool {
+    arg == "--package" || arg == "-p" || arg.starts_with("--package=") || arg.starts_with("-p=")
+}
+
+/// Returns `true` when `arg` is a cargo `--exclude` selector
+/// followed by either `=` (combined form) or end-of-arg (separate
+/// form). See [`is_package_selector`] for the rationale.
+fn is_exclude_selector(arg: &str) -> bool {
+    arg == "--exclude" || arg.starts_with("--exclude=")
 }
 
 /// Errors raised by [`validate_options_for_case_host`]. The variant
@@ -700,6 +717,49 @@ mod parse_artifact_tests {
             .push(std::ffi::OsString::from("--package=other"));
         let err = super::validate_options_for_case_host(&options)
             .expect_err("raw --package override must be refused");
+        assert!(matches!(
+            err,
+            super::CaseHostOptionError::ConflictingSelection(_)
+        ));
+    }
+
+    #[test]
+    fn case_host_does_not_match_packages_all_prefix() {
+        // Regression: `starts_with("--package")` would incorrectly
+        // match `--packages-all`, `--package-foo`, etc. The
+        // validator must only refuse `--package` and `--package=`.
+        let mut options = crate::cargo::CargoOptions::default();
+        options
+            .cargo_args
+            .push(std::ffi::OsString::from("--packages-all"));
+        super::validate_options_for_case_host(&options)
+            .expect("--packages-all must not be flagged as a conflicting selector");
+        let mut options = crate::cargo::CargoOptions::default();
+        options
+            .cargo_args
+            .push(std::ffi::OsString::from("--package-foo"));
+        super::validate_options_for_case_host(&options)
+            .expect("--package-foo must not be flagged as a conflicting selector");
+    }
+
+    #[test]
+    fn case_host_accepts_short_package_form() {
+        // The validator must also accept the short `-p` form for
+        // `--package` and `-p=<name>` as the conflicting form.
+        let mut options = crate::cargo::CargoOptions::default();
+        options.cargo_args.push(std::ffi::OsString::from("-p"));
+        let err = super::validate_options_for_case_host(&options)
+            .expect_err("raw -p override must be refused");
+        assert!(matches!(
+            err,
+            super::CaseHostOptionError::ConflictingSelection(_)
+        ));
+        let mut options = crate::cargo::CargoOptions::default();
+        options
+            .cargo_args
+            .push(std::ffi::OsString::from("-p=other"));
+        let err = super::validate_options_for_case_host(&options)
+            .expect_err("-p= override must be refused");
         assert!(matches!(
             err,
             super::CaseHostOptionError::ConflictingSelection(_)

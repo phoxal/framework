@@ -112,12 +112,27 @@ where
             crate::anyhow!("{}", HarnessError::UnknownScenario(short_name.to_owned()))
         })?;
 
+    run_harness_for_entry(entry.entry, driver)
+}
+
+/// Drive a single entry function through the case-host pipeline
+/// without going through the inventory lookup. Useful for tests
+/// that build a `ScenarioDescriptor` locally instead of registering
+/// it through `inventory::submit!` (which is global and would race
+/// under cargo's default parallel test execution).
+pub(crate) fn run_harness_for_entry<F>(
+    entry: crate::scenario::ScenarioEntryFn,
+    driver: F,
+) -> crate::Result<HarnessRun>
+where
+    F: FnOnce(&crate::scenario::ScenarioPlan) -> crate::Result<crate::scenario::ScenarioRun>,
+{
     // (1) Drive the macro-generated entry. The entry constructs the
     //     concrete scenario via `Default::default()`, calls the
     //     user's `plan()`, and hands the validated plan back to
     //     the case host.
-    let planned = (entry.entry)()
-        .map_err(|e| crate::anyhow!("{}", HarnessError::Internal(format!("{e:#}"))))?;
+    let planned =
+        entry().map_err(|e| crate::anyhow!("{}", HarnessError::Internal(format!("{e:#}"))))?;
 
     // (2) Hand the plan to the driver. The driver produces a sealed
     //     ScenarioRun or returns an error.
@@ -128,24 +143,21 @@ where
         )
     })?;
 
-    // (3) Verify the run by replaying the user's verify() through
-    //     the descriptor. The case host owns the outcome: passing
-    //     verify() yields `passed: true`, refusing yields the
-    //     diagnostic. The macro-generated entry never produces an
-    //     outcome directly.
-    let passed = run.passed();
-    let detail = if passed {
-        None
-    } else {
-        Some(format!(
-            "scenario `{}` sealed its ScenarioRun but verify() did not confirm",
-            planned.name
-        ))
-    };
+    // (3) Invoke the user's verify() against the sealed run. The
+    //     case host owns the outcome: passing verify() yields
+    //     `passed: true`, refusing yields a `ScenarioFailed`
+    //     diagnostic. The seal's `passed()` is a precondition but
+    //     not sufficient; verify() must also accept.
+    if let Err(error) = (planned.verify)(&run) {
+        return Err(crate::anyhow!(
+            "{}",
+            HarnessError::ScenarioFailed(planned.name.clone(), format!("{error:#}"))
+        ));
+    }
     Ok(HarnessRun {
         name: planned.name,
-        passed,
-        detail,
+        passed: true,
+        detail: None,
         report_artifact_path: None,
     })
 }
@@ -188,12 +200,16 @@ mod tests {
             // The case host is the only authority on pass/fail. The
             // entry just hands back the plan; the entry's return type
             // is `PlannedScenario`, not `ScenarioOutcome`.
+            fn accept_all(_: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+                Ok(())
+            }
             Ok(crate::scenario::PlannedScenario {
                 name: "scenarios/NonPassCheckpoint".to_owned(),
                 plan: crate::scenario::ScenarioPlan::new(
                     "scene",
                     std::time::Duration::from_micros(2_000),
                 ),
+                verify: accept_all,
             })
         }
         let descriptor = ScenarioDescriptor {
@@ -390,7 +406,7 @@ mod tests {
     /// `cargo phoxal simulation scenario run ForwardTurnStop` until
     /// the supervisor + fixture lifecycle lands. The case host
     /// must report `passed: true` when the driver seals a
-    /// scenario whose ScenarioRun passes the run-level gate.
+    /// scenario whose `verify()` accepts the sealed run.
     /// See Gate P1 #3 of followup-5d11cfc1.md.
     #[test]
     fn case_host_drives_a_self_driven_scenario_to_pass() {
@@ -434,31 +450,109 @@ mod tests {
             }
         }
 
-        // Build the descriptor manually (without going through the
-        // macro) so this test does not perturb the global
-        // inventory registry that other tests inspect.
-        fn entry() -> crate::Result<crate::scenario::PlannedScenario> {
+        // Build the per-type entry exactly like the macro does:
+        // the entry constructs the scenario via `Default`, calls
+        // `plan()`, and exposes a `verify_scenario` fn pointer that
+        // constructs a fresh scenario and invokes `verify()` on
+        // it. This is the same shape the macro emits.
+        fn sparse_entry() -> crate::Result<crate::scenario::PlannedScenario> {
             let scenario = SparseScenario;
             let plan = <SparseScenario as Scenario>::plan(&scenario)?;
+            fn verify_scenario(run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+                let scenario = SparseScenario;
+                <SparseScenario as Scenario>::verify(&scenario, run)
+            }
             Ok(crate::scenario::PlannedScenario {
                 name: "scenarios/SparseScenario".to_owned(),
                 plan,
+                verify: verify_scenario,
             })
         }
-        let planned = entry().expect("entry ok");
 
-        // Drive the planned scenario through the self-driving
-        // driver. This proves the typed Program -> collector ->
-        // terminal-evidence -> seal path the production case host
-        // will reuse with a real supervisor + fixture dispatch.
-        let run = self_driving_driver(&planned.plan).expect("self-driving driver");
-        assert!(run.passed(), "self-driven ScenarioRun must pass");
-        assert!(run.is_sealed(), "self-driven ScenarioRun must be sealed");
+        // Drive the descriptor through the case-host seam. The
+        // self-driving driver builds a Program, records outcomes,
+        // records real terminal evidence, seals, and returns the
+        // run. The case host then invokes `verify_scenario` (which
+        // routes to `SparseScenario::verify` via the macro-style
+        // fn pointer) and reports `passed: true` only when
+        // verify() accepts the sealed run.
+        let harness = super::run_harness_for_entry(sparse_entry, self_driving_driver)
+            .expect("case host must report passed: true");
+        assert_eq!(harness.name, "scenarios/SparseScenario");
+        assert!(harness.passed, "self-driven ScenarioRun must pass");
+        assert!(harness.detail.is_none(), "passing run carries no detail");
+    }
 
-        // And through the case-host seam: the verify call must
-        // accept the sealed run.
-        SparseScenario
-            .verify(&run)
-            .expect("verify accepts sealed run");
+    /// The case host must propagate a `verify()` refusal as a
+    /// `ScenarioFailed` error. Without this the case host would
+    /// silently pass scenarios whose seal succeeded but whose
+    /// user-defined verification rejected the run.
+    #[test]
+    fn case_host_propagates_verify_failure() {
+        use crate::scenario::Scenario;
+
+        struct FailingScenario;
+        impl Default for FailingScenario {
+            fn default() -> Self {
+                FailingScenario
+            }
+        }
+        impl Scenario for FailingScenario {
+            fn plan(&self) -> crate::Result<crate::scenario::ScenarioPlan> {
+                // The plan must declare `s00000000` so the
+                // self-driving driver's `record_step_outcome`
+                // succeeds; verify() then rejects the sealed run.
+                let step = crate::scenario::Step::new(
+                    "s00000000",
+                    0,
+                    crate::scenario::Action::setpoint(
+                        "motion",
+                        setpoint_signature(),
+                        vec![0xAA],
+                        crate::scenario::Validity::Permanent,
+                    )
+                    .map_err(|e| crate::anyhow!("setpoint action: {e}"))?,
+                );
+                crate::scenario::ScenarioPlan::with_steps(
+                    "self_driven/scene",
+                    std::time::Duration::from_micros(6_000),
+                    vec![step],
+                    vec![
+                        crate::scenario::Capture::state("motion", state_capture_signature())
+                            .map_err(|e| crate::anyhow!("capture: {e}"))?,
+                    ],
+                )
+                .map_err(|e| crate::anyhow!("plan validate: {e}"))
+            }
+            fn verify(&self, _run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+                Err(crate::anyhow!("FailingScenario always rejects"))
+            }
+        }
+
+        fn failing_entry() -> crate::Result<crate::scenario::PlannedScenario> {
+            let scenario = FailingScenario;
+            let plan = <FailingScenario as Scenario>::plan(&scenario)?;
+            fn verify_scenario(run: &crate::scenario::ScenarioRun) -> crate::Result<()> {
+                let scenario = FailingScenario;
+                <FailingScenario as Scenario>::verify(&scenario, run)
+            }
+            Ok(crate::scenario::PlannedScenario {
+                name: "scenarios/FailingScenario".to_owned(),
+                plan,
+                verify: verify_scenario,
+            })
+        }
+
+        let result = super::run_harness_for_entry(failing_entry, self_driving_driver);
+        let err = result.expect_err("verify() must propagate as ScenarioFailed");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("FailingScenario always rejects"),
+            "case host must surface verify()'s diagnostic; got `{message}`"
+        );
+        assert!(
+            message.contains("scenarios/FailingScenario"),
+            "case host must name the scenario in the diagnostic; got `{message}`"
+        );
     }
 }
