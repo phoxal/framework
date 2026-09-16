@@ -12,9 +12,9 @@
 //!  * own cleanup (the caller discards the tempdir the project
 //!    lives in once the report is on disk).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use cargo_metadata::Message;
+use cargo_metadata::{Message, MetadataCommand};
 
 use crate::Project;
 use crate::cargo::CargoOptions;
@@ -178,9 +178,10 @@ fn build_harness_binary(
     project: &crate::Project,
     options: &CargoOptions,
 ) -> Result<std::path::PathBuf, String> {
+    validate_options_for_case_host(options).map_err(|error| error.to_string())?;
     let robot_root = project.layout.root().to_owned();
     let staged_manifest = project.layout.cargo_manifest().to_owned();
-    let package_id = resolve_root_package_id(&staged_manifest)
+    let package_id = resolve_root_package_id(&staged_manifest, &robot_root, options)
         .map_err(|error| format!("cannot resolve root package identity: {error}"))?;
     let mut command = std::process::Command::new(options.cargo_program());
     command
@@ -231,6 +232,72 @@ fn build_harness_binary(
     )
 }
 
+/// Reject `CargoOptions` whose selection flags conflict with the
+/// case host's ownership of the single robot package. The case host
+/// already passes the explicit `--package <root-id>` it resolved from
+/// the staged manifest; a user-supplied `--workspace`, `--package`,
+/// or `--exclude` would silently drop or override that owned
+/// selection. See Gate P2 of followup-5d11cfc1.md: validate
+/// conflicting package/target selections before preparation writes
+/// anything.
+fn validate_options_for_case_host(options: &CargoOptions) -> Result<(), CaseHostOptionError> {
+    if options.selection.workspace {
+        return Err(CaseHostOptionError::ConflictingSelection(
+            "--workspace".to_owned(),
+        ));
+    }
+    if let Some(package) = options.selection.packages.first() {
+        return Err(CaseHostOptionError::ConflictingSelection(format!(
+            "--package {package}"
+        )));
+    }
+    if let Some(exclude) = options.selection.excludes.first() {
+        return Err(CaseHostOptionError::ConflictingSelection(format!(
+            "--exclude {exclude}"
+        )));
+    }
+    if options.selection.has_target_selectors() {
+        return Err(CaseHostOptionError::ConflictingSelection(
+            "target selectors such as --lib, --bin, --test, --all-targets".to_owned(),
+        ));
+    }
+    for arg in &options.cargo_args {
+        let rendered = arg.to_string_lossy();
+        if rendered == "--workspace"
+            || rendered == "-w"
+            || rendered.starts_with("--package")
+            || rendered.starts_with("--exclude")
+        {
+            return Err(CaseHostOptionError::ConflictingSelection(
+                rendered.into_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Errors raised by [`validate_options_for_case_host`]. The variant
+/// carries the conflicting selector so the caller can render it back
+/// to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CaseHostOptionError {
+    /// A selection flag conflicts with the case host's owned
+    /// `--package <root-id>` selection.
+    ConflictingSelection(String),
+}
+
+impl std::fmt::Display for CaseHostOptionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConflictingSelection(selector) => write!(
+                f,
+                "scenario list/run selects the staged root package; \
+                 `{selector}` would silently override the owned selection and is not allowed"
+            ),
+        }
+    }
+}
+
 /// Resolve the root robot package's exact `PackageId` via Cargo's
 /// own resolver. The resolver walks the prepared manifest path and
 /// returns the opaque `PackageId` (which Cargo emits verbatim in its
@@ -243,12 +310,58 @@ fn build_harness_binary(
 /// the same Cargo graph, would otherwise be chosen. `resolve.nodes`
 /// likewise depends on Cargo's traversal order and is not stable
 /// across workspace layouts.
+///
+/// The metadata invocation reuses the prepared Cargo context
+/// (`CargoOptions`) so the configured Cargo executable, registered
+/// registry, lock/offline policy, and feature selection match the
+/// rest of the project. Constructing an independent `MetadataCommand`
+/// here would let the user's `cargo_path`/`offline`/`CARGO_TARGET_DIR`
+/// settings be ignored at exactly the boundary the harness build
+/// requires. See Gate P2 of followup-5d11cfc1.md.
 fn resolve_root_package_id(
-    staged_manifest: &std::path::Path,
+    staged_manifest: &Path,
+    current_dir: &Path,
+    options: &CargoOptions,
 ) -> Result<cargo_metadata::PackageId, String> {
-    let metadata = cargo_metadata::MetadataCommand::new()
+    let mut command = MetadataCommand::new();
+    command
+        .cargo_path(options.cargo_program())
         .manifest_path(staged_manifest)
-        .no_deps()
+        .current_dir(current_dir)
+        .features(cargo_metadata::CargoOpt::SomeFeatures(
+            options.features.clone(),
+        ));
+    if options.all_features {
+        command.features(cargo_metadata::CargoOpt::AllFeatures);
+    }
+    if options.no_default_features {
+        command.features(cargo_metadata::CargoOpt::NoDefaultFeatures);
+    }
+    let mut extra: Vec<String> = options
+        .lock
+        .flags()
+        .iter()
+        .map(|flag| (*flag).to_owned())
+        .collect();
+    // Inject the official Phoxal registry configuration so metadata
+    // resolves the same coordinates the rest of the project uses.
+    // The phoxal registry is not a private Cargo workspace registry;
+    // it must be present even when Cargo would otherwise use the
+    // caller's default.
+    extra.push("--config".to_owned());
+    extra.push(format!(
+        "registries.phoxal.index=\"{}\"",
+        crate::cargo::PHOXAL_REGISTRY_INDEX
+    ));
+    if options.offline {
+        extra.push("--offline".to_owned());
+    }
+    if let Some(target) = &options.target {
+        extra.push("--filter-platform".to_owned());
+        extra.push(target.clone());
+    }
+    command.other_options(extra);
+    let metadata = command
         .exec()
         .map_err(|error| format!("cargo metadata: {error}"))?;
     let canonical_manifest =
@@ -479,6 +592,13 @@ mod parse_artifact_tests {
     /// picked by `packages.first()`; selecting by exact
     /// `manifest_path` must always return the package the staged
     /// source tree owns. See Gate A2 of followup-24c026ed.md.
+    ///
+    /// The temporary directory is wired up as a real workspace at
+    /// the top level so the phoxal registry config plus
+    /// `--manifest-path` invocation actually exercise the resolver
+    /// rather than a sibling-only layout. See Gate P2 of
+    /// followup-5d11cfc1.md: the resolver previously constructed an
+    /// independent `MetadataCommand` without workspace context.
     #[test]
     fn resolver_picks_staged_manifest_not_first_package() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -486,6 +606,12 @@ mod parse_artifact_tests {
         let robot = directory.path().join("z-review-robot");
         std::fs::create_dir_all(helper.join("src")).expect("mkdir helper");
         std::fs::create_dir_all(robot.join("src")).expect("mkdir robot");
+        let workspace_root = directory.path();
+        std::fs::write(
+            workspace_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a-helper\", \"z-review-robot\"]\nresolver = \"2\"\n",
+        )
+        .expect("write workspace manifest");
         std::fs::write(
             helper.join("Cargo.toml"),
             "[package]\nname = \"a-helper\"\nedition = \"2024\"\nversion = \"0.1.0\"\n",
@@ -498,12 +624,94 @@ mod parse_artifact_tests {
         .expect("write robot manifest");
         std::fs::write(helper.join("src/lib.rs"), "pub fn x() {}").expect("helper src");
         std::fs::write(robot.join("src/lib.rs"), "pub fn x() {}").expect("robot src");
-        let resolved = super::resolve_root_package_id(robot.join("Cargo.toml").as_path())
-            .expect("resolve by exact manifest path");
+        let resolved = super::resolve_root_package_id(
+            robot.join("Cargo.toml").as_path(),
+            workspace_root,
+            &crate::cargo::CargoOptions::default(),
+        )
+        .expect("resolve by exact manifest path");
         let resolved_str = format!("{resolved}");
         assert!(
             resolved_str.contains("z-review-robot"),
             "resolver returned `{resolved_str}`; expected the manifest-owned package",
         );
+    }
+
+    // ----------------------------------------------------------------
+    // Gate P2 of followup-5d11cfc1.md: prepared-Cargo-context
+    // propagation and selection-flag validation for `list_scenarios`.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn case_host_validates_conflicting_package_selector() {
+        // Listing scenarios owns the single root package the staged
+        // manifest declared; a caller-supplied `--package` would
+        // silently override that ownership. The validator refuses
+        // the conflicting selection before preparation writes
+        // anything.
+        let mut options = crate::cargo::CargoOptions::default();
+        options
+            .selection
+            .packages
+            .push("some-other-crate".to_owned());
+        let err = super::validate_options_for_case_host(&options)
+            .expect_err("conflicting selection must be refused");
+        match err {
+            super::CaseHostOptionError::ConflictingSelection(selector) => {
+                assert!(
+                    selector.contains("some-other-crate"),
+                    "expected the conflicting selector to be named; got `{selector}`"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn case_host_validates_workspace_selector() {
+        let mut options = crate::cargo::CargoOptions::default();
+        options.selection.workspace = true;
+        let err = super::validate_options_for_case_host(&options)
+            .expect_err("workspace selector must be refused");
+        assert!(matches!(
+            err,
+            super::CaseHostOptionError::ConflictingSelection(_)
+        ));
+    }
+
+    #[test]
+    fn case_host_validates_target_selector() {
+        let mut options = crate::cargo::CargoOptions::default();
+        options.selection.tests = true;
+        let err = super::validate_options_for_case_host(&options)
+            .expect_err("--tests selector must be refused");
+        assert!(matches!(
+            err,
+            super::CaseHostOptionError::ConflictingSelection(_)
+        ));
+    }
+
+    #[test]
+    fn case_host_validates_raw_cargo_package_argument() {
+        // Raw arguments that override package selection are also
+        // refused; silently dropping them is not validation.
+        let mut options = crate::cargo::CargoOptions::default();
+        options
+            .cargo_args
+            .push(std::ffi::OsString::from("--package=other"));
+        let err = super::validate_options_for_case_host(&options)
+            .expect_err("raw --package override must be refused");
+        assert!(matches!(
+            err,
+            super::CaseHostOptionError::ConflictingSelection(_)
+        ));
+    }
+
+    #[test]
+    fn case_host_accepts_default_options() {
+        // Default options carry no conflicting selectors; the
+        // validator must accept them so listing works out of the
+        // box.
+        let options = crate::cargo::CargoOptions::default();
+        super::validate_options_for_case_host(&options).expect("default options must validate");
     }
 }

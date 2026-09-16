@@ -196,6 +196,16 @@ impl CargoSelection {
     }
 
     fn has_update_unsupported_targets(&self) -> bool {
+        self.has_target_selectors()
+    }
+
+    /// Returns `true` when the selection specifies any non-package
+    /// selector (target, example, test, bench, lib, bins). The
+    /// case-host validator shares this predicate because every
+    /// such selector conflicts with the owned `--package <root-id>`
+    /// selection the harness build emits. See Gate P2 of
+    /// followup-5d11cfc1.md.
+    pub(crate) fn has_target_selectors(&self) -> bool {
         self.all_targets
             || self.lib
             || self.bins
