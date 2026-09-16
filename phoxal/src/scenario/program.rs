@@ -583,18 +583,17 @@ fn port_signature(
     request: &str,
     response: &str,
 ) -> Result<phoxal_port::PortSignature, ProgramError> {
-    // PortSignature::new requires &'static str for its string fields.
-    // Decoded program metadata is bounded, finite, and lives for the
-    // duration of the run; leaking the small string set is a one-time
-    // cost and lets the decoder reuse the public constructor.
-    let leaked = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
-    Ok(phoxal_port::PortSignature::new(
-        leaked(name),
-        leaked(service),
-        leaked(method),
+    // `PortSignature::new_owned` owns the borrowed wire metadata and
+    // delegates the lifetime promotion to the port crate. The decoder
+    // does not reach for `Box::leak` directly; see Gate P1 #4 of
+    // followup-5d11cfc1.md.
+    Ok(phoxal_port::PortSignature::new_owned(
+        name,
+        service,
+        method,
         decode_port_kind(kind)?,
-        leaked(request),
-        leaked(response),
+        request,
+        response,
     ))
 }
 

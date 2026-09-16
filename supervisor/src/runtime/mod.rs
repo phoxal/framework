@@ -127,19 +127,22 @@ pub async fn run(
         // Validate quantum/bound alignment: the controlled
         // simulation's quantum and transition bounds must agree with
         // the decoded program. Presence alone is insufficient.
+        //
+        // The supervisor and program both reason about the quantum in
+        // nanoseconds: comparing the simulation's `quantum_ns` against
+        // `program.quantum().micros() * 1_000` avoids the integer
+        // truncation that would otherwise accept `2_000_001 ns`
+        // against a `2_000 us` program. See Gate P1 #4 of
+        // followup-5d11cfc1.md.
         let simulation = runtime.simulation().ok_or_else(|| {
             anyhow::anyhow!("scenario bundle must declare a controlled simulation")
         })?;
-        let declared_quantum_micros = simulation.quantum_ns / 1_000;
-        if u128::from(declared_quantum_micros) != u128::from(decoded.quantum().micros()) {
-            return Err(anyhow::anyhow!(
-                "scenario program `{}` declares quantum {} micros but the controlled \
-                 simulation provides {} micros; refusing to admit mismatched timing",
-                program.scenario_name,
-                decoded.quantum().micros(),
-                declared_quantum_micros,
-            ));
-        }
+        validate_simulation_quantum(
+            &program.scenario_name,
+            decoded.quantum().micros(),
+            simulation.quantum_ns,
+        )
+        .map_err(|mismatch| anyhow::anyhow!("{mismatch}"))?;
         let admission = evaluate_scenario_admission(
             launch_mode,
             &program.scenario_name,
@@ -578,6 +581,102 @@ fn notify_systemd(
 
 fn router_endpoint(socket: &Path) -> String {
     format!("unixsock-stream/{}", socket.display())
+}
+
+/// Compare the controlled simulation's declared quantum (ns) against
+/// the scenario program's quantum (us) without truncating either
+/// side. Returns a human-readable diagnostic naming the scenario,
+/// the program's quantum in both units, and the simulation's
+/// quantum in nanoseconds when the two disagree. See Gate P1 #4 of
+/// followup-5d11cfc1.md.
+fn validate_simulation_quantum(
+    scenario_name: &str,
+    program_quantum_micros: u32,
+    simulation_quantum_ns: u64,
+) -> Result<(), String> {
+    let required_ns = u128::from(program_quantum_micros)
+        .checked_mul(1_000)
+        .ok_or_else(|| {
+            format!(
+                "scenario program `{scenario_name}` declares quantum {program_quantum_micros} micros; \
+                 the converted nanosecond value overflows u128 and cannot be compared against \
+                 the simulation's quantum"
+            )
+        })?;
+    if u128::from(simulation_quantum_ns) != required_ns {
+        return Err(format!(
+            "scenario program `{scenario_name}` declares quantum {program_quantum_micros} \
+             micros ({required_ns} ns) but the controlled simulation provides \
+             {simulation_quantum_ns} ns; refusing to admit mismatched timing"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod quantum_validation_tests {
+    use super::validate_simulation_quantum;
+
+    /// 2 ms / 2 ms is the canonical equal case. The previous
+    /// integer-truncation comparison accepted the value because both
+    /// sides resolved to 2_000 micros; this regression ensures the
+    /// nanosecond-aware comparison still accepts it.
+    #[test]
+    fn equal_quantum_in_nanoseconds_is_accepted() {
+        validate_simulation_quantum("scenarios/Equal", 2_000, 2_000_000)
+            .expect("equal quantum must validate");
+    }
+
+    /// 1 ms / 1 ms is the second canonical equal case. The previous
+    /// unsigned-micros comparison admitted it; the new check must
+    /// do the same without silently dropping precision.
+    #[test]
+    fn one_millisecond_quantum_is_accepted() {
+        validate_simulation_quantum("scenarios/OneMs", 1_000, 1_000_000)
+            .expect("1 ms quantum must validate");
+    }
+
+    /// The truncation defect: 2_000_001 ns vs 2_000 us. The old
+    /// comparison divided simulation by 1_000 first, producing 2_000
+    /// micros on both sides and admitting the bundle. The
+    /// nanosecond-aware comparison refuses.
+    #[test]
+    fn mismatched_quantum_one_ns_over_is_refused() {
+        let err = validate_simulation_quantum("scenarios/OneNsOver", 2_000, 2_000_001)
+            .expect_err("2_000_001 ns vs 2_000 us must refuse");
+        let expected_actual = format!("{}", 2_000_001u64);
+        let expected_required = format!("{}", 2_000_000u64);
+        assert!(
+            err.contains(&expected_actual) && err.contains(&expected_required),
+            "diagnostic must name both sides in nanoseconds; got `{err}`"
+        );
+    }
+
+    /// 1_999_999 ns vs 2_000 us — the reverse truncation defect.
+    /// The old comparison would have produced 1_999 micros on the
+    /// simulation side, refused; this regression preserves that
+    /// refusal with a nanosecond diagnostic.
+    #[test]
+    fn mismatched_quantum_one_ns_under_is_refused() {
+        let err = validate_simulation_quantum("scenarios/OneNsUnder", 2_000, 1_999_999)
+            .expect_err("1_999_999 ns vs 2_000 us must refuse");
+        let expected_actual = format!("{}", 1_999_999u64);
+        let expected_required = format!("{}", 2_000_000u64);
+        assert!(
+            err.contains(&expected_actual) && err.contains(&expected_required),
+            "diagnostic must name both sides in nanoseconds; got `{err}`"
+        );
+    }
+
+    /// A 10_000_000 ns / 10_000 us case is exactly representable and
+    /// must validate, demonstrating that the new comparison does not
+    /// introduce a regression for values the previous truncation
+    /// handled correctly.
+    #[test]
+    fn ten_millisecond_quantum_is_accepted() {
+        validate_simulation_quantum("scenarios/TenMs", 10_000, 10_000_000)
+            .expect("10 ms quantum must validate");
+    }
 }
 
 async fn verify_router_identity(

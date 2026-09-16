@@ -9,6 +9,16 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+/// Promotes a borrowed `&str` to a `'static` lifetime by leaking the
+/// owned copy. Reserved for code paths that decode bounded,
+/// finite-lifetime wire metadata into a struct field that already
+/// requires `'static`; the leak is a one-time cost at decode time.
+/// See `PortSignature::new_owned` and Gate P1 #4 of
+/// followup-5d11cfc1.md.
+fn leak_str(value: &str) -> &'static str {
+    Box::leak(value.to_owned().into_boxed_str())
+}
+
 /// The semantic kind of a public service port.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
@@ -129,6 +139,38 @@ impl PortSignature {
             response,
             descriptor_set,
         }
+    }
+
+    /// Creates an identity that owns its descriptor strings. Used
+    /// when the signature is decoded from a wire artifact whose
+    /// lifetimes cannot be widened to `'static`. The descriptor
+    /// set is empty; an owner that already admitted a descriptor
+    /// must resolve the resulting signature against it instead of
+    /// embedding an unowned byte slice. See Gate P1 #4 of
+    /// followup-5d11cfc1.md.
+    ///
+    /// The decoded wire metadata is bounded and finite; the leak is
+    /// a one-time cost at decode time and is preferred over copying
+    /// the strings into every plan/Action/Capture node that holds a
+    /// `PortSignature` by value.
+    #[must_use]
+    pub fn new_owned(
+        name: &str,
+        service: &str,
+        method: &str,
+        kind: PortKind,
+        request: &str,
+        response: &str,
+    ) -> Self {
+        Self::with_descriptor(
+            leak_str(name),
+            leak_str(service),
+            leak_str(method),
+            kind,
+            leak_str(request),
+            leak_str(response),
+            &[],
+        )
     }
 
     /// Returns the framed original descriptor closure retained by the owner.
