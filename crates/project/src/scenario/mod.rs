@@ -16,6 +16,7 @@
 //! and `run.rs` (P4).
 
 mod bundle;
+pub mod case_host;
 mod discovery;
 mod harness;
 mod run;

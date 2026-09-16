@@ -34,15 +34,17 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
 
+# The case-host driver in `scenario::case_host` constructs SDK
+# scenario types (`ScenarioRun`, `TerminalEvidence`, `Program`,
+# `EvidenceCollector`, `Quantum`) to translate the supervised
+# `SimulationRunReport` into lifecycle-owned terminal evidence on
+# the planned scenario's program. The compile-and-list integration
+# test also exercises the generated scenario harness.
+phoxal = { workspace = true, features = ["scenario"] }
+
 [dev-dependencies]
 object = { workspace = true, features = ["write"] }
 tempfile = { workspace = true }
-
-# The compile-and-list integration test compiles the generated scenario
-# harness with `rustc --extern phoxal=...`; declaring `phoxal` here with
-# the `scenario` feature ensures `cargo test` builds a matching rlib in
-# `target/debug/deps` deterministically.
-phoxal = { workspace = true, features = ["scenario"] }
 
 [lints]
 workspace = true

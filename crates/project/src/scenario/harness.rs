@@ -50,9 +50,15 @@ pub fn generate_harness_source(
         );
     }
 
-    // The `main` is a minimal dispatch that prints the registered scenarios
-    // and forwards a `run <name>` invocation to the case host. P4 replaces
-    // this stub with the full protocol described in the plan.
+    // The `main` is a minimal dispatch that prints the registered
+    // scenarios and forwards a `run <name>` invocation to the case
+    // host. The case host lives in `phoxal_project::scenario::case_host`
+    // and owns the simulation lifecycle (provisioning, supervisor
+    // admission, native completion, bounded cleanup, lifecycle-owned
+    // terminal evidence). The harness binary is the only place that
+    // holds the planned scenario instance, so it owns the call to
+    // `verify_box` on the retained instance after the case host
+    // seals the run.
     source.push_str(
         r#"
 fn main() -> phoxal::Result<()> {
@@ -70,11 +76,44 @@ fn main() -> phoxal::Result<()> {
             let name = args
                 .get(2)
                 .ok_or_else(|| phoxal::anyhow!("usage: phoxal-scenarios run <name>"))?;
-            let _run = phoxal::scenario::run_harness(name)?;
-            Ok(())
+            run_scenario_case(name)
         }
         _ => Err(phoxal::anyhow!("usage: phoxal-scenarios [list | run <name>]")),
     }
+}
+
+fn run_scenario_case(name: &str) -> phoxal::Result<()> {
+    let entries = phoxal::scenario::list_scenarios()
+        .map_err(|e| phoxal::anyhow!("{e}"))?;
+    let entry = entries
+        .iter()
+        .find(|e| e.short_name == name || e.name == name)
+        .ok_or_else(|| phoxal::anyhow!("scenario `{name}` is not registered"))?;
+    let planned = (entry.entry)()
+        .map_err(|e| phoxal::anyhow!("scenario `{name}` planning failed: {e:#}"))?;
+
+    let cargo_options = phoxal_project::CargoOptions::default();
+    let run = phoxal_project::scenario::case_host::run_case_host(
+        &planned,
+        &cargo_options,
+    )
+    .map_err(|e| phoxal::anyhow!("scenario `{name}` case host failed: {e}"))?;
+
+    // The seal-time `passed` flag is the precondition contract. The
+    // case host enforces it before this point; an explicit check makes
+    // the contract visible at the call site.
+    if !run.passed() {
+        return Err(phoxal::anyhow!(
+            "scenario `{name}` case host sealed a non-passing run; verify is not invoked"
+        ));
+    }
+
+    planned
+        .scenario
+        .verify_box(&run)
+        .map_err(|e| phoxal::anyhow!("scenario `{name}` verify failed: {e:#}"))?;
+    println!("scenario {}: PASSED", planned.name);
+    Ok(())
 }
 "#,
     );
