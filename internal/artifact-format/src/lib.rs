@@ -36,5 +36,5 @@
 pub mod artifact;
 pub mod bundle;
 pub mod document;
-pub mod simulation;
 pub mod scenario;
+pub mod simulation;

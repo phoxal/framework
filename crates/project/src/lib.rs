@@ -37,7 +37,7 @@ pub use discovery::ProjectLayout;
 pub use document::{
     BrainSelection, COMPONENT_SCHEMA, CapabilityDeclaration, ComponentDocument, ComponentInstance,
     ComponentModel, ConnectionSources, NativeTarget, NativeTargetKind, PortReference,
-    PortReferenceError, ROBOT_SCHEMA, RobotDocument, RobotSection, ServiceSelection, is_identifier,
+    PortReferenceError, ROBOT_SCHEMA, RobotDocument, RobotSection, ServiceSelection,
 };
 pub use error::{
     DiscoveryError, Error, PublicationError, SourceError, ValidationError, ValidationErrors,

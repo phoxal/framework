@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use cargo_metadata::{DependencyKind, Metadata, Package, PackageId, Target};
 
-use crate::document::{BrainSelection, ComponentDocument, RobotDocument, ServiceSelection};
+use crate::document::{
+    BrainSelection, ComponentDocument, RobotDocument, ServiceSelection, ValidateComponentDocument,
+};
 use crate::error::SourceError;
 use crate::publication::{RuntimePackageRole, validate_runtime_package};
 

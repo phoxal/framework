@@ -61,7 +61,7 @@ pub(crate) const FACADE: &str = "phoxal";
 /// `crates/installation` is named here before its implementation lands so the
 /// policy keeps the planned owner classified when the package is added by the
 /// project-tooling cutover.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 19] = [
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 20] = [
     "phoxal",
     "supervisor",
     "crates/macros",
@@ -71,6 +71,11 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 19] = [
     "crates/project",
     "crates/installation",
     "crates/mujoco",
+    // The shared serialized artifact format. Owned by the framework but
+    // published through the Phoxal registry so external consumers can
+    // deserialize recorded bundles without depending on the project
+    // compiler.
+    "internal/artifact-format",
     "services/motion",
     "services/navigation",
     "services/kinematics",

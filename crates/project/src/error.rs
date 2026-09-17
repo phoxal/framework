@@ -934,3 +934,16 @@ impl std::fmt::Display for ValidationErrors {
         Ok(())
     }
 }
+
+/// Bridge between format-side construction errors and the project's top-level error.
+///
+/// `BundleScenarioSection::from_program_artifact` lives in
+/// `phoxal_artifact_format` and can fail with `ProgramArtifactError`.
+/// Project callers still receive a `crate::error::Error`.
+impl From<phoxal_artifact_format::bundle::ProgramArtifactError> for Error {
+    fn from(source: phoxal_artifact_format::bundle::ProgramArtifactError) -> Self {
+        Self::SimulationInvalid {
+            message: source.to_string(),
+        }
+    }
+}

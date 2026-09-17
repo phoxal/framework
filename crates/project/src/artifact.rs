@@ -3,6 +3,11 @@
 //! This module reads linker sections from ELF and Mach-O files through the
 //! object-file parser. It never executes an inspected binary and it does not
 //! parse Protobuf source into a second schema model.
+//!
+//! The inert record family (`ArtifactSummary`, `DescriptorSummary`,
+//! `RuntimeRecord`, `InputRecord`, `OutputRecord`, `PortKind`, `InputKind`,
+//! `OutputKind`, `PortSignature`) is owned by `phoxal-artifact-format` and
+//! re-exported here so internal call sites continue to compile unchanged.
 
 #[cfg(test)]
 use std::collections::BTreeMap;
@@ -12,11 +17,18 @@ use std::path::Path;
 
 use object::{Object, ObjectSection};
 use prost_reflect::DescriptorPool;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 use crate::document::RobotDocument;
+
+// Re-exports from the shared artifact format crate. The format crate is the
+// source of truth; this module re-exports the inert record family so
+// existing internal references continue to use `crate::artifact::*`.
+pub use phoxal_artifact_format::artifact::{
+    ARTIFACT_SCHEMA, ArtifactSummary, DescriptorSummary, InputKind, InputRecord, OutputKind,
+    OutputRecord, PortKind, PortSignature, RUNTIME_RECORD, RuntimeRecord,
+};
 
 const ARTIFACT_SECTION_NAMES: [&str; 2] = [".phoxal_art", "__phoxal_art"];
 const DESCRIPTOR_SECTION_NAMES: [&str; 2] = [".phoxal_desc", "__phoxal_desc"];
@@ -51,15 +63,6 @@ impl ArtifactContract {
     }
 }
 
-/// Manifest-safe artifact contract information.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactSummary {
-    /// Runtime metadata and checked bindings.
-    pub runtime: RuntimeRecord,
-    /// Digest and descriptor-file inventory for each retained closure.
-    pub descriptors: Vec<DescriptorSummary>,
-}
-
 /// One unchanged standard FileDescriptorSet retained by a contract owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescriptorInfo {
@@ -80,187 +83,6 @@ impl DescriptorInfo {
             files: self.files.clone(),
         }
     }
-}
-
-/// Manifest-safe descriptor inventory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DescriptorSummary {
-    /// SHA-256 digest of the original encoded descriptor bytes.
-    pub sha256: String,
-    /// Exact descriptor-set byte count.
-    pub bytes: u64,
-    /// File names retained in the descriptor closure.
-    pub files: Vec<String>,
-}
-
-/// Runtime timing, config-schema, and checked binding facts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeRecord {
-    /// Artifact schema discriminator.
-    pub schema: String,
-    /// Runtime record discriminator.
-    pub record: String,
-    /// Logical runtime period in milliseconds.
-    pub period_ms: u64,
-    /// Complete invocation deadline in milliseconds.
-    pub timeout_ms: u64,
-    /// Initialization deadline in milliseconds.
-    pub init_timeout_ms: u64,
-    /// The exact JSON Schema admitted by the runtime configuration type.
-    pub config_schema: serde_json::Value,
-    /// Runtime input bindings in source order.
-    pub inputs: Vec<InputRecord>,
-    /// Transient per-invocation outputs in source order.
-    pub transient_outputs: Vec<OutputRecord>,
-    /// Service projection and handler bindings in source order.
-    pub service_outputs: Vec<OutputRecord>,
-}
-
-/// One checked runtime input binding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InputRecord {
-    /// Private Rust input field name.
-    pub name: String,
-    /// Input semantic form.
-    pub kind: InputKind,
-    /// Optional latest-value age bound.
-    pub max_age_ms: Option<u64>,
-    /// Optional item-count bound.
-    pub max_items: Option<u64>,
-    /// Optional encoded-byte bound.
-    pub max_bytes: Option<u64>,
-    /// Public port name for an explicitly bound input.
-    pub port: Option<String>,
-    /// Complete generated port identity when one is bound.
-    pub signature: Option<PortSignature>,
-    /// Expected generated Protobuf request identity, when this input sends requests.
-    pub request_fqn: Option<String>,
-    /// Expected generated Protobuf publication or response identity.
-    pub response_fqn: Option<String>,
-}
-
-/// One checked runtime output binding.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OutputRecord {
-    /// Private Rust field or method name.
-    pub name: String,
-    /// Output role.
-    pub kind: OutputKind,
-    /// Public served port name.
-    pub port: Option<String>,
-    /// Complete generated port identity when one is served.
-    pub signature: Option<PortSignature>,
-    /// Input field selected by a reply, activation, or worker.
-    pub input: Option<String>,
-    /// Projection method selected by an offered read.
-    pub project: Option<String>,
-    /// Item-count bound.
-    pub max_items: Option<u64>,
-    /// Encoded-byte bound.
-    pub max_bytes: Option<u64>,
-    /// Encoded request bound.
-    pub max_request_bytes: Option<u64>,
-    /// Periodic projection cadence.
-    pub every_steps: Option<u64>,
-    /// Change-gated publication marker.
-    pub on_change: bool,
-    /// Bootstrap publication marker.
-    pub bootstrap: bool,
-    /// Setpoint validity duration.
-    pub valid_for_ms: Option<u64>,
-    /// Handler deadline.
-    pub timeout_ms: Option<u64>,
-    /// Operation retirement grace.
-    pub cancel_grace_ms: Option<u64>,
-}
-
-/// The seven public Protobuf port kinds.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PortKind {
-    /// Latest state projection.
-    State,
-    /// Captured sample publication.
-    Sample,
-    /// Discrete event publication.
-    Event,
-    /// Ordered stream publication.
-    Stream,
-    /// Replaceable setpoint publication.
-    Setpoint,
-    /// Unary immutable read.
-    Read,
-    /// Unary behavioral command.
-    Commands,
-}
-
-/// Input semantic forms recorded by the runtime macro.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum InputKind {
-    /// Latest value.
-    Latest,
-    /// Ordered samples.
-    Samples,
-    /// Ordered events.
-    Events,
-    /// Setpoint value.
-    Setpoint,
-    /// Ordered stream.
-    Stream,
-    /// Commands.
-    Commands,
-    /// Immutable read completion.
-    Read,
-    /// Behavioral request completion.
-    Request,
-    /// Local operation completion.
-    Operation,
-}
-
-/// Output roles recorded by the runtime macro.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputKind {
-    /// State projection.
-    State,
-    /// Sample batch.
-    Sample,
-    /// Event batch.
-    Event,
-    /// Stream batch.
-    Stream,
-    /// Setpoint projection.
-    Setpoint,
-    /// Read handler.
-    Read,
-    /// Command reply.
-    Reply,
-    /// Activation selector.
-    Activate,
-    /// Operation worker.
-    Operation,
-}
-
-/// Complete method identity for one generated public port.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PortSignature {
-    /// Public port name.
-    pub name: String,
-    /// Fully-qualified Protobuf service name.
-    pub service: String,
-    /// Protobuf method name.
-    pub method: String,
-    /// Semantic port kind.
-    pub kind: PortKind,
-    /// Fully-qualified request message name.
-    pub request: String,
-    /// Fully-qualified response message name.
-    pub response: String,
 }
 
 /// Why native artifact contract inspection or graph validation failed.
@@ -505,15 +327,15 @@ fn parse_descriptor_frames(section: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
 }
 
 fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
-    if runtime.schema != "phoxal/artifact/v0" {
+    if runtime.schema != ARTIFACT_SCHEMA {
         return Err(Error::InvalidContract(format!(
-            "schema '{}' is not phoxal/artifact/v0",
+            "schema '{}' is not {ARTIFACT_SCHEMA}",
             runtime.schema
         )));
     }
-    if runtime.record != "runtime" {
+    if runtime.record != RUNTIME_RECORD {
         return Err(Error::InvalidContract(format!(
-            "record '{}' is not runtime",
+            "record '{}' is not {RUNTIME_RECORD}",
             runtime.record
         )));
     }
@@ -736,8 +558,8 @@ connections:
         };
         let producer = ArtifactContract {
             runtime: RuntimeRecord {
-                schema: "phoxal/artifact/v0".to_owned(),
-                record: "runtime".to_owned(),
+                schema: ARTIFACT_SCHEMA.to_owned(),
+                record: RUNTIME_RECORD.to_owned(),
                 period_ms: 1,
                 timeout_ms: 1,
                 init_timeout_ms: 1,
@@ -766,8 +588,8 @@ connections:
         };
         let consumer = ArtifactContract {
             runtime: RuntimeRecord {
-                schema: "phoxal/artifact/v0".to_owned(),
-                record: "runtime".to_owned(),
+                schema: ARTIFACT_SCHEMA.to_owned(),
+                record: RUNTIME_RECORD.to_owned(),
                 period_ms: 1,
                 timeout_ms: 1,
                 init_timeout_ms: 1,
