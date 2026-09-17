@@ -717,6 +717,78 @@ fn ensure_target_features(
 mod tests {
     use super::*;
 
+    /// Build a `Package` from the JSON shape that `cargo metadata` emits so
+    /// the resolution helpers can be exercised end-to-end without a live
+    /// invocation. `cargo_metadata::Target` and `cargo_metadata::Package` are
+    /// `#[non_exhaustive]`; deserializing the same shape cargo emits is the
+    /// supported way to construct them in tests.
+    fn service_package(name: &str, binary_required_features: &[&str]) -> Package {
+        let library = serde_json::json!({
+            "name": name,
+            "kind": ["lib"],
+            "crate_types": ["lib"],
+            "required-features": [],
+            "src_path": format!("services/{name}/lib.rs"),
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true,
+        });
+        let binary = serde_json::json!({
+            "name": format!("phoxal-service-{name}"),
+            "kind": ["bin"],
+            "crate_types": ["bin"],
+            "required-features": binary_required_features,
+            "src_path": format!("services/{name}/src/main.rs"),
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": false,
+        });
+        let package = serde_json::json!({
+            "name": format!("phoxal-service-{name}"),
+            "version": "0.68.0",
+            "id": format!("path+http://example.invalid/{name}#0.68.0"),
+            "license": null,
+            "license_file": null,
+            "description": null,
+            "source": null,
+            "dependencies": [],
+            "targets": [library, binary],
+            "features": {},
+            "manifest_path": format!("services/{name}/Cargo.toml"),
+            "categories": [],
+            "keywords": [],
+            "readme": null,
+            "repository": null,
+            "homepage": null,
+            "documentation": null,
+            "edition": "2024",
+            "metadata": null,
+            "links": null,
+            "publish": null,
+            "default_run": null,
+            "rust_version": null,
+            "authors": [],
+        });
+        serde_json::from_value(package).expect("service-shaped package fixture")
+    }
+
+    fn extra_binary(name: &str, required_features: &[&str]) -> cargo_metadata::Target {
+        let target = serde_json::json!({
+            "name": name,
+            "kind": ["bin"],
+            "crate_types": ["bin"],
+            "required-features": required_features,
+            "src_path": format!("services/motion/src/bin/{name}.rs"),
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": false,
+        });
+        serde_json::from_value(target).expect("binary target fixture")
+    }
+
     #[test]
     fn package_source_classifies_cargo_sources_without_normalizing_them() {
         let local = PackageSource::Local {
@@ -734,11 +806,98 @@ mod tests {
     }
 
     #[test]
-    fn shorthand_uses_the_exact_instance_as_dependency_key() {
+    fn select_binary_picks_the_unique_target_when_none_is_requested() {
+        let package = service_package("motion", &["runtime"]);
+        let selected = select_binary(
+            TargetRole::Service,
+            "primary",
+            "phoxal-service-motion",
+            &package,
+            None,
+        )
+        .expect("single binary target resolves by default");
+        assert_eq!(selected.package, "phoxal-service-motion");
+        assert_eq!(selected.target, "phoxal-service-motion");
+        assert_eq!(selected.required_features, vec!["runtime".to_owned()]);
+    }
+
+    #[test]
+    fn select_binary_matches_the_requested_target_when_others_exist() {
+        let mut package = service_package("motion", &["runtime"]);
+        package
+            .targets
+            .push(extra_binary("phoxal-service-motion-headless", &["runtime", "headless"]));
+        let selected = select_binary(
+            TargetRole::Service,
+            "primary",
+            "phoxal-service-motion",
+            &package,
+            Some("phoxal-service-motion-headless"),
+        )
+        .expect("explicit binary selection overrides the default");
+        assert_eq!(selected.target, "phoxal-service-motion-headless");
+        assert_eq!(
+            selected.required_features,
+            vec!["runtime".to_owned(), "headless".to_owned()]
+        );
+    }
+
+    #[test]
+    fn select_binary_rejects_when_multiple_binaries_exist_without_a_choice() {
+        let mut package = service_package("motion", &["runtime"]);
+        package.targets.push(extra_binary("phoxal-service-motion-alt", &[]));
+        let error = select_binary(
+            TargetRole::Service,
+            "primary",
+            "phoxal-service-motion",
+            &package,
+            None,
+        )
+        .expect_err("ambiguous binary without explicit selection must fail");
+        assert!(
+            matches!(error, SourceError::AmbiguousBinary { .. }),
+            "expected AmbiguousBinary, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_target_features_succeeds_when_required_features_are_enabled() {
+        let target = SelectedTarget {
+            package_id: "phoxal-service-motion".to_owned(),
+            package: "phoxal-service-motion".to_owned(),
+            target: "phoxal-service-motion".to_owned(),
+            source_path: PathBuf::from("services/motion/src/main.rs"),
+            required_features: vec!["runtime".to_owned()],
+        };
+        let enabled = std::collections::BTreeSet::from(["runtime".to_owned()]);
+        ensure_target_features(TargetRole::Service, "primary", &target, &enabled)
+            .expect("feature is enabled in metadata");
+    }
+
+    #[test]
+    fn ensure_target_features_reports_missing_required_features() {
+        let target = SelectedTarget {
+            package_id: "phoxal-service-motion".to_owned(),
+            package: "phoxal-service-motion".to_owned(),
+            target: "phoxal-service-motion".to_owned(),
+            source_path: PathBuf::from("services/motion/src/main.rs"),
+            required_features: vec!["runtime".to_owned(), "scenario".to_owned()],
+        };
+        let enabled = std::collections::BTreeSet::from(["runtime".to_owned()]);
+        let error = ensure_target_features(TargetRole::Service, "primary", &target, &enabled)
+            .expect_err("missing required feature must surface UndefinedRequiredFeatures");
+        match error {
+            SourceError::UndefinedRequiredFeatures { features, .. } => {
+                assert_eq!(features, "scenario");
+            }
+            other => panic!("expected UndefinedRequiredFeatures, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn service_selection_default_has_no_implementation_override() {
         let selection = ServiceSelection::default();
-        assert_eq!(selection.implementation, None);
-        // The actual resolution path is exercised by project integration tests;
-        // this assertion documents that no fuzzy spelling helper exists.
-        assert_eq!("phoxal-service-navigation", "phoxal-service-navigation");
+        assert!(selection.implementation.is_none());
+        assert!(selection.binary.is_none());
     }
 }

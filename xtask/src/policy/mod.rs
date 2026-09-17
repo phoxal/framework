@@ -112,10 +112,11 @@ pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] = [
 ///
 /// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>`. The
 /// consolidated library-plus-binary service package is
-/// `phoxal-service-<suffix>` at `services/<suffix>` (the historical
-/// `services/<suffix>/contract/` shape is no longer produced and any
-/// directory matching that path is treated as the same package name for
-/// backwards-compatibility with vendored fixtures). The `phoxal/` facade
+/// `phoxal-service-<suffix>` at `services/<suffix>`. The historical
+/// `services/<suffix>/contract/` shape is not a recognized production
+/// layout — the artifact classifier rejects nested manifests and the
+/// dependency policy no longer permits two service crates for one
+/// service, so the helper does not map that path. The `phoxal/` facade
 /// and the `supervisor/` host live directly at their package names.
 ///
 /// This is the whole reason the directory can be shortened at all. `crates/`
@@ -134,15 +135,14 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
         return Some("phoxal-supervisor".to_owned());
     }
     if let Some(rest) = directory.strip_prefix("services/") {
-        // The consolidated service package is `services/<suffix>/` with the
-        // package name `phoxal-service-<suffix>`. The historical
-        // nested-contract shape `services/<suffix>/contract/` maps to the
-        // same package name; fixtures may still carry the old shape.
-        let service = rest
-            .strip_suffix("/contract")
-            .unwrap_or(rest);
-        if !service.is_empty() && !service.contains('/') {
-            return Some(format!("{FACADE}-service-{service}"));
+        // The consolidated service package is exactly `services/<suffix>/`
+        // with the package name `phoxal-service-<suffix>`. Nested paths
+        // such as `services/<suffix>/contract/` are deliberately not
+        // recognised here; the artifact classifier rejects them and the
+        // dependency policy refuses the parallel crate, so this helper
+        // would otherwise encode a conflicting rule.
+        if !rest.is_empty() && !rest.contains('/') {
+            return Some(format!("{FACADE}-service-{rest}"));
         }
         return None;
     }
@@ -506,10 +506,11 @@ mod tests {
             library_package_name("crates/macros").as_deref(),
             Some("phoxal-macros")
         );
-        assert_eq!(
-            library_package_name("services/motion/contract").as_deref(),
-            Some("phoxal-service-motion")
-        );
+        // Nested production paths are deliberately not recognised: the
+        // artifact classifier rejects them and the dependency policy
+        // refuses a parallel service crate. Negative fixture.
+        assert_eq!(library_package_name("services/motion/contract"), None);
+        assert_eq!(library_package_name("services/motion/contract/nested"), None);
         // The consolidated service directory map agrees with the historical
         // contract/ shape.
         assert_eq!(

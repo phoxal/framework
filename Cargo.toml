@@ -79,7 +79,7 @@ async-trait = "0.1.89"
 base64 = "0.22.1"
 # The workspace's own manifest reader, shared by the `cargo xtask policy` gate
 # and project tooling tests that inspect an authored workspace.
-cargo_metadata = "0.23.1"
+cargo_metadata = { version = "0.23.1", features = ["builder"] }
 clap = { version = "4.6.1", features = ["derive", "env"] }
 const_format = "0.2"
 ctrlc = { version = "3.5.2", features = ["termination"] }
