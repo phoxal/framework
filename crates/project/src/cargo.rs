@@ -590,6 +590,59 @@ fn append_target_selection(
     }
     command.args(["--package", target.package_id.as_str()]);
     command.args(["--bin", target.target.as_str()]);
+    // The selected binary's `required-features` gate makes the target
+    // eligible only when those features are already enabled. The runtime
+    // cleanup consolidated each service into a package with empty defaults,
+    // so the binary needs `runtime` (and any other declared features) to be
+    // passed to `--features` or Cargo silently skips it and the project's
+    // artifact stream records no executable. Auto-merge the gate into any
+    // `--features` already on the command so the project's selection stays
+    // the source of truth while still respecting an explicit caller list.
+    if !target.required_features.is_empty() {
+        let mut features = collect_existing_features(command);
+        for feature in &target.required_features {
+            if !features.iter().any(|existing| existing == feature) {
+                features.push(feature.clone());
+            }
+        }
+        command.args(["--features", &features.join(",")]);
+    }
+}
+
+/// Pull every comma-separated feature already present on `command` so the
+/// auto-merge in `append_target_selection` does not duplicate an explicit
+/// caller list.
+fn collect_existing_features(command: &Command) -> Vec<String> {
+    let arguments: Vec<std::ffi::OsString> = command
+        .get_args()
+        .map(|argument| argument.to_os_string())
+        .collect();
+    let mut features = Vec::new();
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        let value = argument.to_string_lossy();
+        if value == "--features" {
+            if let Some(next) = arguments.get(index + 1) {
+                for piece in next.to_string_lossy().split(',') {
+                    let trimmed = piece.trim();
+                    if !trimmed.is_empty() && !features.iter().any(|f| f == trimmed) {
+                        features.push(trimmed.to_owned());
+                    }
+                }
+                index += 2;
+                continue;
+            }
+        } else if let Some(rest) = value.strip_prefix("--features=") {
+            for piece in rest.split(',') {
+                let trimmed = piece.trim();
+                if !trimmed.is_empty() && !features.iter().any(|f| f == trimmed) {
+                    features.push(trimmed.to_owned());
+                }
+            }
+        }
+        index += 1;
+    }
+    features
 }
 
 /// Extracts one selected executable from Cargo's JSON compiler-artifact stream.
@@ -650,4 +703,30 @@ fn status_string(status: ExitStatus) -> String {
         .code()
         .map(|code| code.to_string())
         .unwrap_or_else(|| "terminated by signal".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_existing_features_reads_space_and_equals_forms() {
+        let mut command = Command::new("cargo");
+        command.args(["--features", "scenario,imu"]);
+        command.args(["--features=vision"]);
+        let features = collect_existing_features(&command);
+        assert_eq!(
+            features,
+            vec!["scenario".to_owned(), "imu".to_owned(), "vision".to_owned()]
+        );
+    }
+
+    #[test]
+    fn collect_existing_features_dedupes_overlapping_entries() {
+        let mut command = Command::new("cargo");
+        command.args(["--features", "scenario,imu"]);
+        command.args(["--features=scenario"]);
+        let features = collect_existing_features(&command);
+        assert_eq!(features, vec!["scenario".to_owned(), "imu".to_owned()]);
+    }
 }
