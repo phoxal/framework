@@ -11,7 +11,6 @@
 
 pub use phoxal::communication as communication;
 pub use phoxal::communication::{DeploymentTarget, session, simulation};
-pub use phoxal::communication_transport as communication_transport;
 pub use phoxal::identity as identity;
 
 // P2.6 scenario admission policy. Lifted into the supervisor's lib
