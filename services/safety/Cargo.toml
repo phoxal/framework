@@ -30,7 +30,7 @@ runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 phoxal = { workspace = true, default-features = false, features = ["port"] }
 phoxal-robotics = { workspace = true }
 phoxal-motion = { workspace = true }
-phoxal-world = { workspace = true }
+phoxal-service-world = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true, optional = true }
@@ -40,7 +40,7 @@ serde = { workspace = true, optional = true }
 phoxal = { workspace = true, default-features = false, features = ["build"] }
 phoxal-robotics = { workspace = true }
 phoxal-motion = { workspace = true }
-phoxal-world = { workspace = true }
+phoxal-service-world = { workspace = true }
 
 [lints]
 workspace = true

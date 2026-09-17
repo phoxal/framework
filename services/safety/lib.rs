@@ -23,7 +23,7 @@ pub use phoxal_motion::{Constraint, ConstraintReason, MotionConstraints, Permiss
 /// callers can match it without depending on `phoxal_motion` directly.
 pub use phoxal_motion::ConstraintValidationError;
 /// Canonical world products consumed by the safety assessment.
-pub use phoxal_world::{WorldBelief, WorldRevision};
+pub use phoxal_service_world::{WorldBelief, WorldRevision};
 
 /// Public typed ports owned by the Safety Protobuf service.
 pub use safety::ports;

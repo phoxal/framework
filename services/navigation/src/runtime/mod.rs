@@ -14,7 +14,7 @@ use phoxal_navigation::{
     ports,
 };
 #[cfg(test)]
-use phoxal_world::WorldRevision;
+use phoxal_service_world::WorldRevision;
 use std::collections::VecDeque;
 
 const LOCALIZATION_MAX_AGE_MS: u64 = 100;

@@ -49,7 +49,7 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     ("phoxal-motion", "phoxal"),
     ("phoxal-navigation", "phoxal"),
     ("phoxal-service-kinematics", "phoxal"),
-    ("phoxal-world", "phoxal"),
+    ("phoxal-service-world", "phoxal"),
     ("phoxal-safety", "phoxal"),
     // The shared robotics vocabulary crate re-exports typed ports through the
     // facade so generated descriptors and inert port types resolve uniformly.
@@ -58,10 +58,10 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     // design. Motion owns the protective-constraint payload, so Safety depends
     // on Motion for both `MotionStatus` and the canonical constraint input.
     ("phoxal-service-kinematics", "phoxal-robotics"),
-    ("phoxal-world", "phoxal-service-kinematics"),
+    ("phoxal-service-world", "phoxal-service-kinematics"),
     ("phoxal-safety", "phoxal-robotics"),
     ("phoxal-safety", "phoxal-motion"),
-    ("phoxal-safety", "phoxal-world"),
+    ("phoxal-safety", "phoxal-service-world"),
 ];
 
 /// The edges a canonical crate may never grow, whatever the dependency kind.

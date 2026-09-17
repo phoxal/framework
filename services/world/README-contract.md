@@ -1,4 +1,4 @@
-# phoxal-world
+# phoxal-service-world
 
 Generated messages and typed public ports for the official world service.
 

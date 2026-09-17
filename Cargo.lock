@@ -2437,7 +2437,7 @@ dependencies = [
  "anyhow",
  "phoxal",
  "phoxal-service-kinematics",
- "phoxal-world",
+ "phoxal-service-world",
  "prost",
  "serde",
  "thiserror 2.0.19",
@@ -2497,7 +2497,7 @@ dependencies = [
  "phoxal",
  "phoxal-motion",
  "phoxal-robotics",
- "phoxal-world",
+ "phoxal-service-world",
  "prost",
  "serde",
  "thiserror 2.0.19",
@@ -2510,6 +2510,18 @@ dependencies = [
  "anyhow",
  "phoxal",
  "phoxal-robotics",
+ "prost",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "phoxal-service-world"
+version = "0.68.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-service-kinematics",
  "prost",
  "serde",
  "thiserror 2.0.19",
@@ -2537,18 +2549,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zenoh",
-]
-
-[[package]]
-name = "phoxal-world"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-service-kinematics",
- "prost",
- "serde",
- "thiserror 2.0.19",
 ]
 
 [[package]]

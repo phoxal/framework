@@ -1,7 +1,7 @@
 use phoxal::runtime::input::{Commands, Latest};
 use phoxal_service_kinematics::OdometryState;
 use phoxal_navigation::{ApplyCommandRequest, ApplyCommandResponse, ports};
-use phoxal_world::WorldRevision;
+use phoxal_service_world::WorldRevision;
 
 /// One immutable input cut for Navigation.
 #[phoxal::runtime::inputs]

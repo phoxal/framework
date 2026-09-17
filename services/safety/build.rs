@@ -12,14 +12,14 @@ fn main() -> Result<(), phoxal::build::Error> {
                 phoxal_motion::FILE_DESCRIPTOR_SET,
             ),
             phoxal::build::DependencyDescriptor::new(
-                "phoxal-world",
-                phoxal_world::FILE_DESCRIPTOR_SET,
+                "phoxal-service-world",
+                phoxal_service_world::FILE_DESCRIPTOR_SET,
             ),
         ],
         &[
             (".phoxal.robotics.v1", "::phoxal_robotics"),
             (".phoxal.motion.v1", "::phoxal_motion"),
-            (".phoxal.world.v1", "::phoxal_world"),
+            (".phoxal.world.v1", "::phoxal_service_world"),
         ],
     )
 }

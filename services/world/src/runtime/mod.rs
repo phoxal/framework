@@ -6,7 +6,7 @@ use phoxal::runtime::input::Latest;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 #[cfg(test)]
 use phoxal_service_kinematics::OdometryState;
-use phoxal_world::{
+use phoxal_service_world::{
     Bounds, GridWindow, Occupancy, UnavailableReason, WindowRequest, WindowResponse,
     WindowUnavailable, WindowUnavailableReason, WorldBelief, WorldRevision, WorldStatus, ports,
     window_response,
