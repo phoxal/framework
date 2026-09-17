@@ -1,4 +1,11 @@
 //! Generated motion messages, typed ports, and domain validation.
+//!
+//! Motion owns the protective-constraint payload
+//! (`ConstraintReason`, `Constraint`, `Permission`, `MotionConstraints`) after
+//! the protective-constraint ownership change. The pure validation logic for
+//! that payload therefore lives here, alongside the actuator validation. Safety
+//! imports these types through its `extern_path` mapping and adds its own
+//! assessment on top without redefining the payload.
 
 use std::collections::HashSet;
 
@@ -185,6 +192,116 @@ fn validate_finite(
     Ok(())
 }
 
+/// A protective-constraint payload violates the version-one domain contract.
+///
+/// The constraint payload lives in the Motion owner because Motion is the
+/// final actuator authority; payload validation is part of the Motion boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ConstraintValidationError {
+    /// A constraint has an invalid reason or limit shape.
+    #[error("safety constraint is invalid")]
+    InvalidConstraint,
+    /// A constraints product has contradictory permission or validity.
+    #[error("safety constraints are incoherent")]
+    InvalidProduct,
+}
+
+impl Constraint {
+    /// Validates one protective constraint's finite optional limits.
+    pub fn validate(&self) -> Result<(), ConstraintValidationError> {
+        let reason = ConstraintReason::try_from(self.reason)
+            .ok()
+            .filter(|reason| *reason != ConstraintReason::Unspecified)
+            .ok_or(ConstraintValidationError::InvalidConstraint)?;
+        let _ = reason;
+        for value in [
+            self.max_linear_speed_mps,
+            self.max_angular_speed_radps,
+            self.observed_value,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !value.is_finite() || value < 0.0 {
+                return Err(ConstraintValidationError::InvalidConstraint);
+            }
+        }
+        if matches!(
+            reason,
+            ConstraintReason::ObstacleProximity
+                | ConstraintReason::RangeUnavailable
+                | ConstraintReason::RangeFault
+                | ConstraintReason::WorldUnavailable
+                | ConstraintReason::LocalizationUncertain
+                | ConstraintReason::MapUnavailable
+                | ConstraintReason::MapBlocked
+                | ConstraintReason::MotionUnavailable
+                | ConstraintReason::MotionFault
+        ) && self.max_linear_speed_mps.is_none()
+            && self.max_angular_speed_radps.is_none()
+            && self.observed_value.is_none()
+        {
+            return Err(ConstraintValidationError::InvalidConstraint);
+        }
+        Ok(())
+    }
+}
+
+impl MotionConstraints {
+    /// Validates permission, bounded reasons, the expiry interval, and the
+    /// fail-closed invariants around Motion's protective evidence.
+    pub fn validate(&self) -> Result<(), ConstraintValidationError> {
+        let permission = Permission::try_from(self.permission)
+            .ok()
+            .filter(|permission| *permission != Permission::Unspecified)
+            .ok_or(ConstraintValidationError::InvalidProduct)?;
+        if permission != Permission::Stopped
+            && self
+                .oldest_capture_time_nanos
+                .is_none_or(|capture| capture > self.valid_from_nanos)
+        {
+            return Err(ConstraintValidationError::InvalidProduct);
+        }
+        if self.expires_at_nanos < self.valid_from_nanos {
+            return Err(ConstraintValidationError::InvalidProduct);
+        }
+        if self.constraints.len() > 16 {
+            return Err(ConstraintValidationError::InvalidProduct);
+        }
+        let mut reasons = HashSet::with_capacity(self.constraints.len());
+        let mut has_limit = false;
+        for constraint in &self.constraints {
+            constraint.validate()?;
+            let reason = ConstraintReason::try_from(constraint.reason)
+                .map_err(|_| ConstraintValidationError::InvalidConstraint)?;
+            if !reasons.insert(reason) {
+                return Err(ConstraintValidationError::InvalidProduct);
+            }
+            if permission == Permission::Limited
+                && (reason != ConstraintReason::ObstacleProximity
+                    || (constraint.max_linear_speed_mps.is_none()
+                        && constraint.max_angular_speed_radps.is_none()))
+            {
+                return Err(ConstraintValidationError::InvalidProduct);
+            }
+            has_limit |= constraint.max_linear_speed_mps.is_some()
+                || constraint.max_angular_speed_radps.is_some();
+        }
+        match permission {
+            Permission::Clear if !self.constraints.is_empty() => {
+                Err(ConstraintValidationError::InvalidProduct)
+            }
+            Permission::Limited if self.constraints.is_empty() || !has_limit => {
+                Err(ConstraintValidationError::InvalidProduct)
+            }
+            Permission::Stopped if self.constraints.is_empty() => {
+                Err(ConstraintValidationError::InvalidProduct)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use phoxal::port::{PortDescriptor, PortKind};
@@ -306,5 +423,109 @@ mod tests {
             ApplyEmergencyResponse { decision: None }.validate(),
             Err(ValidationError::Missing("decision"))
         );
+    }
+
+    #[test]
+    fn constraint_validation_matches_the_published_contract() {
+        MotionConstraints {
+            sequence: 1,
+            permission: Permission::Clear as i32,
+            constraints: Vec::new(),
+            oldest_capture_time_nanos: Some(0),
+            valid_from_nanos: 10,
+            expires_at_nanos: 20,
+        }
+        .validate()
+        .expect("clear has no constraints");
+        let bad = MotionConstraints {
+            sequence: 1,
+            permission: Permission::Clear as i32,
+            constraints: vec![Constraint {
+                reason: ConstraintReason::MapUnavailable as i32,
+                max_linear_speed_mps: None,
+                max_angular_speed_radps: None,
+                observed_value: Some(0.0),
+            }],
+            oldest_capture_time_nanos: Some(0),
+            valid_from_nanos: 10,
+            expires_at_nanos: 20,
+        };
+        assert_eq!(
+            bad.validate(),
+            Err(ConstraintValidationError::InvalidProduct)
+        );
+    }
+
+    #[test]
+    fn rejects_stale_or_expired_protective_evidence() {
+        // Missing constraint with a non-stopped permission is fail-closed.
+        let missing = MotionConstraints {
+            sequence: 1,
+            permission: Permission::Limited as i32,
+            constraints: Vec::new(),
+            oldest_capture_time_nanos: Some(0),
+            valid_from_nanos: 10,
+            expires_at_nanos: 20,
+        };
+        assert_eq!(
+            missing.validate(),
+            Err(ConstraintValidationError::InvalidProduct)
+        );
+        // Future-dated capture provenance (capture > valid_from) is rejected
+        // for non-stopped permissions. Clear-with-empty is the only
+        // permission that validates without constraints, so use it to
+        // exercise the capture-time check in isolation.
+        let future_capture = MotionConstraints {
+            sequence: 1,
+            permission: Permission::Clear as i32,
+            constraints: Vec::new(),
+            oldest_capture_time_nanos: Some(10),
+            valid_from_nanos: 5,
+            expires_at_nanos: 20,
+        };
+        assert_eq!(
+            future_capture.validate(),
+            Err(ConstraintValidationError::InvalidProduct)
+        );
+        // Future-dated capture provenance is also rejected for Limited
+        // payloads that carry a constraint.
+        let future_capture_limited = MotionConstraints {
+            sequence: 1,
+            permission: Permission::Limited as i32,
+            constraints: vec![Constraint {
+                reason: ConstraintReason::ObstacleProximity as i32,
+                max_linear_speed_mps: Some(0.2),
+                max_angular_speed_radps: None,
+                observed_value: None,
+            }],
+            oldest_capture_time_nanos: Some(10),
+            valid_from_nanos: 5,
+            expires_at_nanos: 20,
+        };
+        assert_eq!(
+            future_capture_limited.validate(),
+            Err(ConstraintValidationError::InvalidProduct)
+        );
+        // Expires-at before valid-from is rejected regardless of permission.
+        let expired = MotionConstraints {
+            sequence: 1,
+            permission: Permission::Stopped as i32,
+            constraints: Vec::new(),
+            oldest_capture_time_nanos: None,
+            valid_from_nanos: 10,
+            expires_at_nanos: 5,
+        };
+        assert_eq!(
+            expired.validate(),
+            Err(ConstraintValidationError::InvalidProduct)
+        );
+    }
+
+    #[test]
+    fn constraint_messages_retain_their_owner_package_identity() {
+        assert_eq!(MotionConstraints::PACKAGE, "phoxal.motion.v1");
+        assert_eq!(Constraint::PACKAGE, "phoxal.motion.v1");
+        assert_eq!(ConstraintReason::Unspecified as i32, 0);
+        assert_eq!(Permission::Stopped as i32, 3);
     }
 }

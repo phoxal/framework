@@ -1,4 +1,12 @@
 //! Generated safety messages, typed ports, and domain validation.
+//!
+//! Safety owns `SafetyStatus` and the assessment algorithms that publish the
+//! constraints endpoint. The protective-constraint payload
+//! (`ConstraintReason`, `Constraint`, `Permission`, `MotionConstraints`) is
+//! owned by Motion and re-exported here from `phoxal_motion`; its pure
+//! validation lives in the Motion contract crate, where the orphan rules
+//! permit it. Safety composes those types with world/range evidence and
+//! validates the resulting `SafetyStatus`.
 
 use std::collections::HashSet;
 
@@ -9,6 +17,11 @@ pub use phoxal_robotics::RangeSample;
 
 /// Canonical motion status consumed by the safety assessment.
 pub use phoxal_motion::MotionStatus;
+/// Canonical protective-constraint payload owned by Motion.
+pub use phoxal_motion::{Constraint, ConstraintReason, MotionConstraints, Permission};
+/// Re-export the constraint-validation error from the Motion contract so
+/// callers can match it without depending on `phoxal_motion` directly.
+pub use phoxal_motion::ConstraintValidationError;
 /// Canonical world products consumed by the safety assessment.
 pub use phoxal_world::{WorldBelief, WorldRevision};
 
@@ -22,114 +35,21 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// A safety message violates the version-one domain contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ValidationError {
-    /// A constraint has an invalid reason or limit shape.
-    #[error("safety constraint is invalid")]
-    InvalidConstraint,
-    /// A constraints product has contradictory permission or validity.
-    #[error("safety constraints are incoherent")]
-    InvalidProduct,
     /// Reasons contain an unspecified or duplicate value.
     #[error("safety reasons must be known, distinct, and bounded")]
     InvalidReasons,
-}
-
-impl Constraint {
-    /// Validates one protective constraint's finite optional limits.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        let reason = ConstraintReason::try_from(self.reason)
-            .ok()
-            .filter(|reason| *reason != ConstraintReason::Unspecified)
-            .ok_or(ValidationError::InvalidConstraint)?;
-        let _ = reason;
-        for value in [
-            self.max_linear_speed_mps,
-            self.max_angular_speed_radps,
-            self.observed_value,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if !value.is_finite() || value < 0.0 {
-                return Err(ValidationError::InvalidConstraint);
-            }
-        }
-        if matches!(
-            reason,
-            ConstraintReason::ObstacleProximity
-                | ConstraintReason::RangeUnavailable
-                | ConstraintReason::RangeFault
-                | ConstraintReason::WorldUnavailable
-                | ConstraintReason::LocalizationUncertain
-                | ConstraintReason::MapUnavailable
-                | ConstraintReason::MapBlocked
-                | ConstraintReason::MotionUnavailable
-                | ConstraintReason::MotionFault
-        ) && self.max_linear_speed_mps.is_none()
-            && self.max_angular_speed_radps.is_none()
-            && self.observed_value.is_none()
-        {
-            return Err(ValidationError::InvalidConstraint);
-        }
-        Ok(())
-    }
-}
-
-impl MotionConstraints {
-    /// Validates permission, bounded reasons, and the expiry interval.
-    pub fn validate(&self) -> Result<(), ValidationError> {
-        let permission = Permission::try_from(self.permission)
-            .ok()
-            .filter(|permission| *permission != Permission::Unspecified)
-            .ok_or(ValidationError::InvalidProduct)?;
-        if permission != Permission::Stopped
-            && self
-                .oldest_capture_time_nanos
-                .is_none_or(|capture| capture > self.valid_from_nanos)
-        {
-            return Err(ValidationError::InvalidProduct);
-        }
-        if self.expires_at_nanos < self.valid_from_nanos {
-            return Err(ValidationError::InvalidProduct);
-        }
-        if self.constraints.len() > 16 {
-            return Err(ValidationError::InvalidProduct);
-        }
-        let mut reasons = HashSet::with_capacity(self.constraints.len());
-        let mut has_limit = false;
-        for constraint in &self.constraints {
-            constraint.validate()?;
-            let reason = ConstraintReason::try_from(constraint.reason)
-                .map_err(|_| ValidationError::InvalidConstraint)?;
-            if !reasons.insert(reason) {
-                return Err(ValidationError::InvalidProduct);
-            }
-            if permission == Permission::Limited
-                && (reason != ConstraintReason::ObstacleProximity
-                    || (constraint.max_linear_speed_mps.is_none()
-                        && constraint.max_angular_speed_radps.is_none()))
-            {
-                return Err(ValidationError::InvalidProduct);
-            }
-            has_limit |= constraint.max_linear_speed_mps.is_some()
-                || constraint.max_angular_speed_radps.is_some();
-        }
-        match permission {
-            Permission::Clear if !self.constraints.is_empty() => {
-                Err(ValidationError::InvalidProduct)
-            }
-            Permission::Limited if self.constraints.is_empty() || !has_limit => {
-                Err(ValidationError::InvalidProduct)
-            }
-            Permission::Stopped if self.constraints.is_empty() => {
-                Err(ValidationError::InvalidProduct)
-            }
-            _ => Ok(()),
-        }
-    }
+    /// A reason set contradicts the protective state.
+    #[error("safety status contradicts its protective state")]
+    Inconsistent,
+    /// The Motion-owned payload failed its own validation.
+    #[error("motion constraints payload is invalid: {0}")]
+    ConstraintPayload(#[from] ConstraintValidationError),
 }
 
 impl SafetyStatus {
-    /// Validates the status reason set.
+    /// Validates the status reason set and its consistency with the
+    /// declared protective state. The constraint-side validation lives on
+    /// `MotionConstraints` in the Motion contract crate.
     pub fn validate(&self) -> Result<(), ValidationError> {
         if self.reasons.len() > 16 {
             return Err(ValidationError::InvalidReasons);
@@ -145,7 +65,7 @@ impl SafetyStatus {
             }
         }
         if self.protective_state_clear && !self.reasons.is_empty() {
-            return Err(ValidationError::InvalidReasons);
+            return Err(ValidationError::Inconsistent);
         }
         Ok(())
     }
@@ -176,34 +96,47 @@ mod tests {
         );
         assert_eq!(WorldBelief::PACKAGE, "phoxal.world.v1");
         assert_eq!(MotionStatus::PACKAGE, "phoxal.motion.v1");
+        // The Motion-owned payload remains in its owner proto package after
+        // the protective-constraint ownership move.
+        assert_eq!(MotionConstraints::PACKAGE, "phoxal.motion.v1");
+        assert_eq!(ConstraintReason::Unspecified as i32, 0);
+        assert_eq!(Permission::Stopped as i32, 3);
         assert!(!FILE_DESCRIPTOR_SET.is_empty());
     }
 
     #[test]
-    fn accepts_a_clear_product_and_rejects_a_contradictory_one() {
-        MotionConstraints {
-            sequence: 1,
-            permission: Permission::Clear as i32,
-            constraints: Vec::new(),
-            oldest_capture_time_nanos: Some(0),
-            valid_from_nanos: 10,
-            expires_at_nanos: 20,
+    fn safety_status_validation_runs_independently_of_payload_validation() {
+        SafetyStatus {
+            protective_state_clear: true,
+            sequence: 0,
+            reasons: Vec::new(),
         }
         .validate()
-        .expect("clear has no constraints");
-        let bad = MotionConstraints {
-            sequence: 1,
-            permission: Permission::Clear as i32,
-            constraints: vec![Constraint {
-                reason: ConstraintReason::MapUnavailable as i32,
-                max_linear_speed_mps: None,
-                max_angular_speed_radps: None,
-                observed_value: Some(0.0),
-            }],
-            oldest_capture_time_nanos: Some(0),
-            valid_from_nanos: 10,
-            expires_at_nanos: 20,
+        .expect("clear state has no reasons");
+        let inconsistent = SafetyStatus {
+            protective_state_clear: true,
+            sequence: 0,
+            reasons: vec![ConstraintReason::MapUnavailable as i32],
         };
-        assert_eq!(bad.validate(), Err(ValidationError::InvalidProduct));
+        assert_eq!(inconsistent.validate(), Err(ValidationError::Inconsistent));
+    }
+
+    #[test]
+    fn rejects_duplicate_or_unspecified_status_reasons() {
+        let dup = SafetyStatus {
+            protective_state_clear: false,
+            sequence: 1,
+            reasons: vec![
+                ConstraintReason::MapUnavailable as i32,
+                ConstraintReason::MapUnavailable as i32,
+            ],
+        };
+        assert_eq!(dup.validate(), Err(ValidationError::InvalidReasons));
+        let unknown = SafetyStatus {
+            protective_state_clear: false,
+            sequence: 1,
+            reasons: vec![ConstraintReason::Unspecified as i32],
+        };
+        assert_eq!(unknown.validate(), Err(ValidationError::InvalidReasons));
     }
 }

@@ -3,53 +3,19 @@ syntax = "proto3";
 package phoxal.safety.v1;
 
 import "google/protobuf/empty.proto";
+import "phoxal/motion/v1/constraints.proto";
 import "phoxal/motion/v1/motion.proto";
 import "phoxal/port.proto";
 import "phoxal/robotics/v1/robotics.proto";
 import "phoxal/world/v1/world.proto";
 
-enum ConstraintReason {
-  CONSTRAINT_REASON_UNSPECIFIED = 0;
-  CONSTRAINT_REASON_WORLD_UNAVAILABLE = 1;
-  CONSTRAINT_REASON_LOCALIZATION_UNCERTAIN = 2;
-  CONSTRAINT_REASON_MAP_UNAVAILABLE = 3;
-  CONSTRAINT_REASON_MAP_BLOCKED = 4;
-  CONSTRAINT_REASON_RANGE_UNAVAILABLE = 5;
-  CONSTRAINT_REASON_RANGE_FAULT = 6;
-  CONSTRAINT_REASON_OBSTACLE_PROXIMITY = 7;
-  CONSTRAINT_REASON_MOTION_UNAVAILABLE = 8;
-  CONSTRAINT_REASON_MOTION_FAULT = 9;
-}
-
-message Constraint {
-  ConstraintReason reason = 1;
-  optional double max_linear_speed_mps = 2;
-  optional double max_angular_speed_radps = 3;
-  optional double observed_value = 4;
-}
-
-enum Permission {
-  PERMISSION_UNSPECIFIED = 0;
-  PERMISSION_CLEAR = 1;
-  PERMISSION_LIMITED = 2;
-  PERMISSION_STOPPED = 3;
-}
-
-message MotionConstraints {
-  uint64 sequence = 1;
-  Permission permission = 2;
-  repeated Constraint constraints = 3;
-  uint64 valid_from_nanos = 4;
-  uint64 expires_at_nanos = 5;
-  // Oldest source capture supporting this product, in the execution timeline.
-  // Republishing or deriving state must preserve this time.
-  optional uint64 oldest_capture_time_nanos = 6;
-}
-
+// SafetyStatus now references the canonical Motion-owned `ConstraintReason`
+// from `phoxal.motion.v1.constraints` after the protective-constraint payload
+// ownership move. The `SafetyStatus` message itself remains Safety-owned.
 message SafetyStatus {
   bool protective_state_clear = 1;
   uint64 sequence = 2;
-  repeated ConstraintReason reasons = 3;
+  repeated phoxal.motion.v1.ConstraintReason reasons = 3;
 }
 
 service Safety {
@@ -69,7 +35,9 @@ service Safety {
     option (phoxal.port.kind) = STATE;
   }
 
-  rpc Constraints(google.protobuf.Empty) returns (stream MotionConstraints) {
+  // The Constraints endpoint publishes the canonical Motion-owned
+  // `MotionConstraints` payload after the protective-constraint ownership move.
+  rpc Constraints(google.protobuf.Empty) returns (stream phoxal.motion.v1.MotionConstraints) {
     option (phoxal.port.kind) = STATE;
   }
 
