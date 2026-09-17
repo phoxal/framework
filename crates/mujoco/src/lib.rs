@@ -49,8 +49,6 @@ pub use provider::{
 #[cfg(feature = "rendering")]
 pub use scene::RenderedCamera;
 #[cfg(feature = "rendering")]
-pub use scene::RenderedCamera;
+pub use scene::ViewCamera;
 #[cfg(feature = "native")]
 pub use scene::{PhysicsQuantum, Scene, ScenePhase, SceneStep, StateSnapshot, Workspace};
-#[cfg(feature = "rendering")]
-pub use scene::{RenderedCamera, ViewCamera};

@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package phoxal.motion.v1;
 
-import "phoxal/port.proto";
-
 enum ConstraintReason {
   CONSTRAINT_REASON_UNSPECIFIED = 0;
   CONSTRAINT_REASON_WORLD_UNAVAILABLE = 1;

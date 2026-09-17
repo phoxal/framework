@@ -510,7 +510,10 @@ mod tests {
         // artifact classifier rejects them and the dependency policy
         // refuses a parallel service crate. Negative fixture.
         assert_eq!(library_package_name("services/motion/contract"), None);
-        assert_eq!(library_package_name("services/motion/contract/nested"), None);
+        assert_eq!(
+            library_package_name("services/motion/contract/nested"),
+            None
+        );
         // The consolidated service directory map agrees with the historical
         // contract/ shape.
         assert_eq!(

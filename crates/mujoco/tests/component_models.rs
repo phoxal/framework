@@ -11,8 +11,8 @@ use phoxal_component_ddsm115 as ddsm115_contract;
 use phoxal_component_oak_d_lite as oak_contract;
 use phoxal_component_vl53l1x as vl53l1x_contract;
 use phoxal_component_zed_f9p as zed_contract;
-use phoxal_service_motion as motion_contract;
 use phoxal_mujoco::{Model, Scene};
+use phoxal_service_motion as motion_contract;
 
 fn assert_sensor_binding<P: PortDescriptor>(model: &Model, port: P, native_sensor: &str) {
     let binding = model

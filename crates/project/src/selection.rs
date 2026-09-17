@@ -824,9 +824,10 @@ mod tests {
     #[test]
     fn select_binary_matches_the_requested_target_when_others_exist() {
         let mut package = service_package("motion", &["runtime"]);
-        package
-            .targets
-            .push(extra_binary("phoxal-service-motion-headless", &["runtime", "headless"]));
+        package.targets.push(extra_binary(
+            "phoxal-service-motion-headless",
+            &["runtime", "headless"],
+        ));
         let selected = select_binary(
             TargetRole::Service,
             "primary",
@@ -845,7 +846,9 @@ mod tests {
     #[test]
     fn select_binary_rejects_when_multiple_binaries_exist_without_a_choice() {
         let mut package = service_package("motion", &["runtime"]);
-        package.targets.push(extra_binary("phoxal-service-motion-alt", &[]));
+        package
+            .targets
+            .push(extra_binary("phoxal-service-motion-alt", &[]));
         let error = select_binary(
             TargetRole::Service,
             "primary",

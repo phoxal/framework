@@ -15,13 +15,13 @@ include!(concat!(env!("OUT_DIR"), "/phoxal.safety.v1.rs"));
 /// Canonical metric range consumed directly from sensor owners.
 pub use phoxal_robotics::RangeSample;
 
+/// Re-export the constraint-validation error from the Motion contract so
+/// callers can match it without depending on `phoxal_service_motion` directly.
+pub use phoxal_service_motion::ConstraintValidationError;
 /// Canonical motion status consumed by the safety assessment.
 pub use phoxal_service_motion::MotionStatus;
 /// Canonical protective-constraint payload owned by Motion.
 pub use phoxal_service_motion::{Constraint, ConstraintReason, MotionConstraints, Permission};
-/// Re-export the constraint-validation error from the Motion contract so
-/// callers can match it without depending on `phoxal_service_motion` directly.
-pub use phoxal_service_motion::ConstraintValidationError;
 /// Canonical world products consumed by the safety assessment.
 pub use phoxal_service_world::{WorldBelief, WorldRevision};
 

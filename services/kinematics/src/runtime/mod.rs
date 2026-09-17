@@ -8,12 +8,12 @@ use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
+#[cfg(test)]
+use phoxal_robotics::EncoderSample;
 use phoxal_service_kinematics::{
     FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
     OdometryState, UnavailableReason, ports,
 };
-#[cfg(test)]
-use phoxal_robotics::EncoderSample;
 use std::collections::VecDeque;
 
 /// Private state retained by the serialized kinematics owner.
