@@ -68,7 +68,7 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 20] = [
     "crates/build",
     "crates/port",
     "crates/robotics",
-    "crates/project",
+    "tools/cargo-phoxal/project",
     "crates/installation",
     "crates/mujoco",
     // The shared serialized artifact format. Owned by the framework but
@@ -131,6 +131,19 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
     match directory {
         "tests/fixtures/contracts/producer" => return Some("phoxal-contract-owner-fixture".into()),
         "tests/fixtures/hardware/driver" => return Some("phoxal-hardware-driver-fixture".into()),
+        // The shared serialized artifact format is owned by the framework
+        // but lives one directory deeper than `crates/<name>/` so the
+        // crate prefix rule does not match. The package name is the
+        // kebab-case mirror of the directory suffix.
+        "internal/artifact-format" => return Some("phoxal-artifact-format".into()),
+        // Tool implementation crates live under `tools/cargo-phoxal/<name>/`
+        // and publish under `phoxal-<name>`. They are owned by the
+        // `cargo-phoxal` binary, not by the framework runtime. Their
+        // directory name is the canonical owner and the published package
+        // name is `phoxal-<dir>`. Adding a new tool implementation package
+        // means declaring it here and in `LIBRARY_CRATE_DIRS`.
+        "tools/cargo-phoxal/project" => return Some("phoxal-project".into()),
+        "tools/cargo-phoxal/installation" => return Some("phoxal-installation".into()),
         _ => {}
     }
     if directory == FACADE {
@@ -536,10 +549,18 @@ mod tests {
         assert_eq!(library_package_name("crates/"), None);
         assert_eq!(library_package_name("crates/macros/inner"), None);
         assert_eq!(library_package_name("phoxal-macros"), None);
-        assert_eq!(library_package_name("services/drive"), None);
         assert_eq!(library_package_name("contracts"), None);
         assert_eq!(library_package_name("services/motion/contract/inner"), None);
         assert_eq!(library_package_name("cratesfoo"), None);
+        // Tool implementation crates under `tools/cargo-phoxal/<name>/`
+        // map to `phoxal-<name>`. A deeper nesting is rejected so a hidden
+        // second package cannot share the directory.
+        assert_eq!(
+            library_package_name("tools/cargo-phoxal/project").as_deref(),
+            Some("phoxal-project")
+        );
+        assert_eq!(library_package_name("tools/cargo-phoxal/project/inner"), None);
+        assert_eq!(library_package_name("tools/cargo-phoxal"), None);
     }
 
     /// Every listed directory must satisfy the rule, so neither list can
@@ -566,7 +587,7 @@ mod tests {
             ("crates/build", "phoxal-build"),
             ("crates/port", "phoxal-port"),
             ("crates/robotics", "phoxal-robotics"),
-            ("crates/project", "phoxal-project"),
+            ("tools/cargo-phoxal/project", "phoxal-project"),
             ("crates/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
             ("services/motion", "phoxal-service-motion"),

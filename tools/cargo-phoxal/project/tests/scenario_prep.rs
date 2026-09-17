@@ -770,7 +770,7 @@ fn framework_phoxal_dir() -> std::path::PathBuf {
             let candidate = ancestor.join("phoxal");
             candidate.join("Cargo.toml").is_file().then_some(candidate)
         })
-        .expect("phoxal crate must be a sibling of crates/project")
+        .expect("phoxal crate must be a sibling of tools/cargo-phoxal/project")
 }
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
@@ -787,7 +787,7 @@ fn framework_supervisor_dir() -> std::path::PathBuf {
             let candidate = ancestor.join("supervisor");
             candidate.join("Cargo.toml").is_file().then_some(candidate)
         })
-        .expect("supervisor crate must be a sibling of crates/project")
+        .expect("supervisor crate must be a sibling of tools/cargo-phoxal/project")
 }
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
@@ -803,7 +803,7 @@ fn framework_registry_dir() -> std::path::PathBuf {
             let candidate = ancestor.join("registry");
             candidate.join("config.json").is_file().then_some(candidate)
         })
-        .expect("registry directory must be a sibling of crates/project")
+        .expect("registry directory must be a sibling of tools/cargo-phoxal/project")
 }
 
 #[allow(dead_code, clippy::unwrap_used)]

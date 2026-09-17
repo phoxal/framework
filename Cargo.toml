@@ -10,13 +10,14 @@ repository = "https://github.com/phoxal/framework"
 
 [workspace]
 resolver = "3"
-# The framework runtime, its proc-macros, the project compiler, official
-# services, and suite component crates.
+# The framework runtime, its proc-macros, official services, and suite
+# component crates. Tool implementation packages (project compiler,
+# installation helper) live under `tools/cargo-phoxal/<package>/` so
+# ownership is obvious from the file system layout.
 members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
-    "crates/project",
     "crates/installation",
     "crates/mujoco",
     "tests/fixtures/contracts/producer",
@@ -39,6 +40,7 @@ members = [
     "services/world",
     "xtask",
     "tools/cargo-phoxal",
+    "tools/cargo-phoxal/project",
     "internal/artifact-format",
 ]
 # Keep the workspace's command runner out of plain root cargo builds: `xtask`
@@ -52,7 +54,6 @@ default-members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
-    "crates/project",
     "crates/installation",
     "crates/mujoco",
     "tests/fixtures/contracts/producer",
@@ -74,6 +75,7 @@ default-members = [
     "services/safety",
     "services/world",
     "tools/cargo-phoxal",
+    "tools/cargo-phoxal/project",
     "internal/artifact-format",
 ]
 
@@ -172,7 +174,7 @@ phoxal-service-kinematics = { path = "services/kinematics", version = "0.68.0", 
 phoxal-service-world = { path = "services/world", version = "0.68.0", registry = "phoxal" }
 phoxal-service-safety = { path = "services/safety", version = "0.68.0", registry = "phoxal" }
 phoxal-service-navigation = { path = "services/navigation", version = "0.68.0", registry = "phoxal" }
-phoxal-project = { path = "crates/project", version = "0.1.0", registry = "phoxal" }
+phoxal-project = { path = "tools/cargo-phoxal/project", version = "0.1.0", registry = "phoxal" }
 phoxal-installation = { path = "crates/installation", version = "0.1.0", registry = "phoxal" }
 phoxal-artifact-format = { path = "internal/artifact-format", version = "0.1.0", registry = "phoxal" }
 
