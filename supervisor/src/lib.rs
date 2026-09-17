@@ -17,7 +17,9 @@ pub use phoxal::communication::{DeploymentTarget, session, simulation};
 pub mod scenario_admission {
     //! Stable marker every scenario bundle carries on disk. Matches the
     //! `SCENARIO_NONDEPLOYABLE` constant in
-    //! `phoxal_project::scenario::bundle`.
+    //! `cargo_phoxal::project::scenario::bundle` (formerly
+    //! `phoxal_project::scenario::bundle` before the compiler module was
+    //! folded into cargo-phoxal).
     pub const SCENARIO_NONDEPLOYABLE: &str = "phoxal/scenario/nondeployable@1";
 
     /// Launch mode the case host asks the supervisor to admit a bundle

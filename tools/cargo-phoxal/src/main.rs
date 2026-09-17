@@ -3,11 +3,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use phoxal_project::{
-    CargoOperation, CargoOptions, CargoSelection, LockMode, Project, PublicationKind,
-    PublicationOptions, SimulationBound, SimulationPresentation, SimulationRunOptions,
-    SubmissionResult, prepare_publication, submit_publication,
-};
+
+mod installation;
+mod project;
+
+// Re-export the public project surface so that paths like
+// `crate::ProjectLayout` continue to work for the module's own internal
+// call sites the same way they did when phoxal-project was an external
+// crate. The project module owns its `pub use` list; this mirrors it
+// at the cargo-phoxal root.
+pub use project::*;
 
 fn main() -> ExitCode {
     let cli = Cli::parse_from(cargo_arguments(std::env::args_os()));
@@ -33,7 +38,7 @@ fn cargo_arguments(arguments: impl IntoIterator<Item = OsString>) -> Vec<OsStrin
     arguments
 }
 
-fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
+fn run(cli: Cli) -> Result<(), crate::project::Error> {
     let command = cli.command;
     match command {
         Command::Publish(arguments) => run_publication(arguments),
@@ -46,7 +51,7 @@ fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
         },
         command => {
             let project = Project::discover(std::env::current_dir().map_err(|source| {
-                phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+                crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
                     path: ".".into(),
                     source,
                 })
@@ -106,7 +111,7 @@ fn run(cli: Cli) -> Result<(), phoxal_project::Error> {
     }
 }
 
-fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Error> {
+fn run_simulation(arguments: SimulationRunArgs) -> Result<(), crate::project::Error> {
     let SimulationRunArgs {
         scene,
         headless,
@@ -130,7 +135,7 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
         (None, Some(duration)) => SimulationBound::Duration(duration),
         (None, None) => SimulationBound::Steps(1),
         (Some(_), Some(_)) => {
-            return Err(phoxal_project::Error::SimulationInvalid {
+            return Err(crate::project::Error::SimulationInvalid {
                 message: "choose either --steps or --duration".to_owned(),
             });
         }
@@ -151,7 +156,7 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
     }
     let cargo_options = options.into_options(Vec::new(), Vec::new());
     let project = Project::discover(std::env::current_dir().map_err(|source| {
-        phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+        crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
             path: ".".into(),
             source,
         })
@@ -166,7 +171,7 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
     println!(
         "{}",
         serde_json::to_string(&report).map_err(|source| {
-            phoxal_project::Error::SimulationInvalid {
+            crate::project::Error::SimulationInvalid {
                 message: format!("cannot encode simulation terminal report: {source}"),
             }
         })?
@@ -192,7 +197,7 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
     if report.success() {
         Ok(())
     } else {
-        Err(phoxal_project::Error::SimulationInvalid {
+        Err(crate::project::Error::SimulationInvalid {
             message: format!(
                 "simulation did not complete successfully (exit={}, supervisor_ready={}, provider_contract_verified={}, cleanup={})",
                 report
@@ -210,16 +215,16 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), phoxal_project::Er
     }
 }
 
-fn run_scenario_list(arguments: ScenarioListArgs) -> Result<(), phoxal_project::Error> {
+fn run_scenario_list(arguments: ScenarioListArgs) -> Result<(), crate::project::Error> {
     let ScenarioListArgs { filter, options } = arguments;
     let project = Project::discover(std::env::current_dir().map_err(|source| {
-        phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+        crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
             path: ".".into(),
             source,
         })
     })?)?;
     let cargo_options = options.into_options(Vec::new(), Vec::new());
-    let entries = phoxal_project::scenario::list_scenarios(&project, &cargo_options)?;
+    let entries = crate::project::scenario::list_scenarios(&project, &cargo_options)?;
     for entry in entries {
         if filter
             .as_deref()
@@ -231,16 +236,16 @@ fn run_scenario_list(arguments: ScenarioListArgs) -> Result<(), phoxal_project::
     Ok(())
 }
 
-fn run_scenario_case(arguments: ScenarioRunArgs) -> Result<(), phoxal_project::Error> {
+fn run_scenario_case(arguments: ScenarioRunArgs) -> Result<(), crate::project::Error> {
     let ScenarioRunArgs { scenario, options } = arguments;
     let project = Project::discover(std::env::current_dir().map_err(|source| {
-        phoxal_project::Error::Discovery(phoxal_project::DiscoveryError::Resolve {
+        crate::project::Error::Discovery(crate::project::DiscoveryError::Resolve {
             path: ".".into(),
             source,
         })
     })?)?;
     let cargo_options = options.into_options(Vec::new(), Vec::new());
-    let outcome = phoxal_project::scenario::run_scenario(&project, &cargo_options, &scenario)?;
+    let outcome = crate::project::scenario::run_scenario(&project, &cargo_options, &scenario)?;
     println!(
         "scenario {}: {}",
         outcome.scenario_name,
@@ -265,7 +270,7 @@ fn run_scenario_case(arguments: ScenarioRunArgs) -> Result<(), phoxal_project::E
     Ok(())
 }
 
-fn run_publication(arguments: PublishArgs) -> Result<(), phoxal_project::Error> {
+fn run_publication(arguments: PublishArgs) -> Result<(), crate::project::Error> {
     let (kind, package) = match arguments.package {
         PublishPackage::Component(package) => (PublicationKind::Component, package),
         PublishPackage::Service(package) => (PublicationKind::Service, package),
@@ -327,7 +332,7 @@ fn run_cargo(
     project: &Project,
     operation: CargoOperation,
     options: CargoOptions,
-) -> Result<(), phoxal_project::Error> {
+) -> Result<(), crate::project::Error> {
     let json = json_requested(&options);
     let prepared = project.prepare(&options)?;
     print_preparation(&prepared);
@@ -383,7 +388,7 @@ fn json_format(explicit: Option<&str>, arguments: &[OsString]) -> bool {
     false
 }
 
-fn print_error(error: &phoxal_project::Error, json: bool) {
+fn print_error(error: &crate::project::Error, json: bool) {
     if !json {
         eprintln!("error: {error:#}");
         return;
@@ -412,67 +417,67 @@ fn print_error(error: &phoxal_project::Error, json: bool) {
     eprintln!("{diagnostic}");
 }
 
-fn diagnostic_path(error: &phoxal_project::Error) -> Option<PathBuf> {
+fn diagnostic_path(error: &crate::project::Error) -> Option<PathBuf> {
     match error {
-        phoxal_project::Error::Discovery(error) => match error {
-            phoxal_project::DiscoveryError::Resolve { path, .. }
-            | phoxal_project::DiscoveryError::MissingRobot { start: path }
-            | phoxal_project::DiscoveryError::MissingManifest { root: path } => Some(path.clone()),
+        crate::project::Error::Discovery(error) => match error {
+            crate::project::DiscoveryError::Resolve { path, .. }
+            | crate::project::DiscoveryError::MissingRobot { start: path }
+            | crate::project::DiscoveryError::MissingManifest { root: path } => Some(path.clone()),
         },
-        phoxal_project::Error::ReadRobot { path, .. }
-        | phoxal_project::Error::ParseRobot { path, .. }
-        | phoxal_project::Error::InvalidRobot { path, .. }
-        | phoxal_project::Error::ReadManifest { path, .. }
-        | phoxal_project::Error::ParseManifest { path, .. }
-        | phoxal_project::Error::VirtualManifest { path }
-        | phoxal_project::Error::MissingInitialization { path, .. }
-        | phoxal_project::Error::ManifestPreparation { path, .. }
-        | phoxal_project::Error::ManifestWrite { path, .. }
-        | phoxal_project::Error::CargoLockWrite { path, .. }
-        | phoxal_project::Error::CargoLockRead { path, .. }
-        | phoxal_project::Error::ManifestRestore { path, .. }
-        | phoxal_project::Error::CargoMetadata { manifest: path, .. } => Some(path.clone()),
-        phoxal_project::Error::ConfigurationInvalid { .. }
-        | phoxal_project::Error::Source(_)
-        | phoxal_project::Error::CargoCommand { .. }
-        | phoxal_project::Error::CargoSpawn { .. }
-        | phoxal_project::Error::InvalidOptions { .. }
-        | phoxal_project::Error::ArtifactCapture { .. }
-        | phoxal_project::Error::MissingArtifactContract { .. }
-        | phoxal_project::Error::SimulationInvalid { .. }
-        | phoxal_project::Error::BundleSourceChanged { .. }
-        | phoxal_project::Error::SupervisorLaunch { .. }
-        | phoxal_project::Error::ArtifactInvalid { .. }
-        | phoxal_project::Error::ArtifactFile { .. }
-        | phoxal_project::Error::BundleDirectory { .. }
-        | phoxal_project::Error::BundleCopy { .. }
-        | phoxal_project::Error::BundleJson { .. }
-        | phoxal_project::Error::BundleWrite { .. }
-        | phoxal_project::Error::BundleBusy { .. }
-        | phoxal_project::Error::BundleLock { .. }
-        | phoxal_project::Error::BundlePublish { .. }
-        | phoxal_project::Error::BundleCleanup { .. }
-        | phoxal_project::Error::InvalidExecutionIdentity { .. }
-        | phoxal_project::Error::Publication(_) => None,
-        phoxal_project::Error::ScenarioRun(_) => None,
+        crate::project::Error::ReadRobot { path, .. }
+        | crate::project::Error::ParseRobot { path, .. }
+        | crate::project::Error::InvalidRobot { path, .. }
+        | crate::project::Error::ReadManifest { path, .. }
+        | crate::project::Error::ParseManifest { path, .. }
+        | crate::project::Error::VirtualManifest { path }
+        | crate::project::Error::MissingInitialization { path, .. }
+        | crate::project::Error::ManifestPreparation { path, .. }
+        | crate::project::Error::ManifestWrite { path, .. }
+        | crate::project::Error::CargoLockWrite { path, .. }
+        | crate::project::Error::CargoLockRead { path, .. }
+        | crate::project::Error::ManifestRestore { path, .. }
+        | crate::project::Error::CargoMetadata { manifest: path, .. } => Some(path.clone()),
+        crate::project::Error::ConfigurationInvalid { .. }
+        | crate::project::Error::Source(_)
+        | crate::project::Error::CargoCommand { .. }
+        | crate::project::Error::CargoSpawn { .. }
+        | crate::project::Error::InvalidOptions { .. }
+        | crate::project::Error::ArtifactCapture { .. }
+        | crate::project::Error::MissingArtifactContract { .. }
+        | crate::project::Error::SimulationInvalid { .. }
+        | crate::project::Error::BundleSourceChanged { .. }
+        | crate::project::Error::SupervisorLaunch { .. }
+        | crate::project::Error::ArtifactInvalid { .. }
+        | crate::project::Error::ArtifactFile { .. }
+        | crate::project::Error::BundleDirectory { .. }
+        | crate::project::Error::BundleCopy { .. }
+        | crate::project::Error::BundleJson { .. }
+        | crate::project::Error::BundleWrite { .. }
+        | crate::project::Error::BundleBusy { .. }
+        | crate::project::Error::BundleLock { .. }
+        | crate::project::Error::BundlePublish { .. }
+        | crate::project::Error::BundleCleanup { .. }
+        | crate::project::Error::InvalidExecutionIdentity { .. }
+        | crate::project::Error::Publication(_) => None,
+        crate::project::Error::ScenarioRun(_) => None,
     }
 }
 
-fn print_preparation(prepared: &phoxal_project::PreparedProject) {
+fn print_preparation(prepared: &crate::project::PreparedProject) {
     for change in prepared.preparation_changes() {
         match change {
-            phoxal_project::PreparationChange::SupervisorDependencyAdded {
+            crate::project::PreparationChange::SupervisorDependencyAdded {
                 dependency,
                 requirement,
             } => eprintln!("prepared dependency {dependency} ({requirement})"),
-            phoxal_project::PreparationChange::TestTargetAdded { name, path } => {
+            crate::project::PreparationChange::TestTargetAdded { name, path } => {
                 eprintln!("prepared test target `{name}` at {path}")
             }
-            phoxal_project::PreparationChange::DevDependencyFeatureAdded {
+            crate::project::PreparationChange::DevDependencyFeatureAdded {
                 dependency,
                 feature,
             } => eprintln!("prepared dev-dep `{dependency}` feature `{feature}`"),
-            phoxal_project::PreparationChange::HarnessWritten { path } => {
+            crate::project::PreparationChange::HarnessWritten { path } => {
                 eprintln!("prepared harness at {path}")
             }
         }

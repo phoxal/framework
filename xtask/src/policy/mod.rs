@@ -38,6 +38,7 @@ mod dependencies;
 mod executable;
 mod feature_gate;
 mod framework_executable;
+mod nested_package;
 mod registry;
 mod test_module_ownership;
 mod tracked_source;
@@ -58,19 +59,18 @@ pub(crate) const FACADE: &str = "phoxal";
 /// release-owner decision, not an accidental consequence of placing a library
 /// under `crates/` or a service owner.
 ///
-/// `tools/cargo-phoxal/installation` is the tool-implementation package
-/// for the installation helper; its canonical name `phoxal-installation`
-/// is recognised through the `tools/cargo-phoxal/<name>` rule in
-/// `library_package_name` rather than the `crates/<name>` rule.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 20] = [
+/// Tool-owned private implementation that exists only to implement the
+/// `cargo-phoxal` binary must live as a Rust module of that binary, not as
+/// a nested Cargo package underneath it. Adding `tools/cargo-phoxal/<name>`
+/// here would re-introduce the prohibited shape; the no-nested-Cargo.toml
+/// rule below guards against that pattern.
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 18] = [
     "phoxal",
     "supervisor",
     "crates/macros",
     "crates/build",
     "crates/port",
     "crates/robotics",
-    "tools/cargo-phoxal/project",
-    "tools/cargo-phoxal/installation",
     "crates/mujoco",
     // The shared serialized artifact format. Owned by the framework but
     // published through the Phoxal registry so external consumers can
@@ -137,14 +137,6 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
         // crate prefix rule does not match. The package name is the
         // kebab-case mirror of the directory suffix.
         "internal/artifact-format" => return Some("phoxal-artifact-format".into()),
-        // Tool implementation crates live under `tools/cargo-phoxal/<name>/`
-        // and publish under `phoxal-<name>`. They are owned by the
-        // `cargo-phoxal` binary, not by the framework runtime. Their
-        // directory name is the canonical owner and the published package
-        // name is `phoxal-<dir>`. Adding a new tool implementation package
-        // means declaring it here and in `LIBRARY_CRATE_DIRS`.
-        "tools/cargo-phoxal/project" => return Some("phoxal-project".into()),
-        "tools/cargo-phoxal/installation" => return Some("phoxal-installation".into()),
         _ => {}
     }
     if directory == FACADE {
@@ -276,7 +268,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 11] = [
+const RULES: [Rule; 12] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -321,6 +313,10 @@ const RULES: [Rule; 11] = [
     Rule {
         name: "comments carry no issue or decision references",
         check: comment_reference::comments_carry_no_issue_or_decision_references,
+    },
+    Rule {
+        name: "tools keep their private implementation as Rust modules",
+        check: nested_package::no_nested_private_cargo_package_under_a_tool,
     },
 ];
 
@@ -553,13 +549,12 @@ mod tests {
         assert_eq!(library_package_name("contracts"), None);
         assert_eq!(library_package_name("services/motion/contract/inner"), None);
         assert_eq!(library_package_name("cratesfoo"), None);
-        // Tool implementation crates under `tools/cargo-phoxal/<name>/`
-        // map to `phoxal-<name>`. A deeper nesting is rejected so a hidden
-        // second package cannot share the directory.
-        assert_eq!(
-            library_package_name("tools/cargo-phoxal/project").as_deref(),
-            Some("phoxal-project")
-        );
+        // Tool implementation that exists only to implement one tool must
+        // be a Rust module of that tool, not a Cargo package nested under
+        // it. The directories under `tools/cargo-phoxal/<name>/` therefore
+        // carry no canonical package identity.
+        assert_eq!(library_package_name("tools/cargo-phoxal/project"), None);
+        assert_eq!(library_package_name("tools/cargo-phoxal/installation"), None);
         assert_eq!(library_package_name("tools/cargo-phoxal/project/inner"), None);
         assert_eq!(library_package_name("tools/cargo-phoxal"), None);
     }
@@ -588,8 +583,6 @@ mod tests {
             ("crates/build", "phoxal-build"),
             ("crates/port", "phoxal-port"),
             ("crates/robotics", "phoxal-robotics"),
-            ("tools/cargo-phoxal/project", "phoxal-project"),
-            ("tools/cargo-phoxal/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
             ("services/motion", "phoxal-service-motion"),
             ("services/navigation", "phoxal-service-navigation"),
@@ -604,6 +597,15 @@ mod tests {
             );
         }
         assert!(!is_library_package("phoxal-contract-owner-fixture"));
+        // Tool implementation that exists only to implement one tool must
+        // be a Rust module of that tool, not a Cargo package nested under
+        // it. There is no canonical `phoxal-<name>` package for these
+        // directories and the library name lookup returns None.
+        assert_eq!(library_package_name("tools/cargo-phoxal/project"), None);
+        assert_eq!(
+            library_package_name("tools/cargo-phoxal/installation"),
+            None
+        );
     }
 
     /// A rule that holds prints as a single PASS line; one that does not names

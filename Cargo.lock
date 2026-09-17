@@ -311,9 +311,28 @@ dependencies = [
 name = "cargo-phoxal"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "cargo_metadata",
  "clap",
- "phoxal-project",
+ "flate2",
+ "fs4",
+ "jsonschema",
+ "keyring",
+ "libc",
+ "object",
+ "phoxal",
+ "phoxal-artifact-format",
+ "prost-reflect",
+ "reqwest",
+ "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.19",
+ "toml 1.1.3+spec-1.1.0",
+ "toml_edit",
 ]
 
 [[package]]
@@ -2336,7 +2355,6 @@ dependencies = [
  "phoxal-build",
  "phoxal-macros",
  "phoxal-port",
- "phoxal-project",
  "prost",
  "schemars 1.2.1",
  "serde",
@@ -2461,18 +2479,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-installation"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "phoxal-macros"
 version = "0.68.0"
 dependencies = [
@@ -2512,33 +2518,6 @@ name = "phoxal-port-consumer-fixture"
 version = "0.1.0"
 dependencies = [
  "phoxal",
-]
-
-[[package]]
-name = "phoxal-project"
-version = "0.1.0"
-dependencies = [
- "base64",
- "cargo_metadata",
- "flate2",
- "fs4",
- "jsonschema",
- "keyring",
- "libc",
- "object",
- "phoxal",
- "phoxal-artifact-format",
- "prost-reflect",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tar",
- "tempfile",
- "thiserror 2.0.19",
- "toml 1.1.3+spec-1.1.0",
- "toml_edit",
 ]
 
 [[package]]
@@ -2629,7 +2608,6 @@ dependencies = [
  "ctrlc",
  "libc",
  "phoxal",
- "phoxal-project",
  "prost",
  "serde",
  "serde_json",

@@ -1,4 +1,5 @@
 use phoxal::runtime::input::{Events, Read, ReadError, ReadStatus};
+use phoxal_artifact_format::artifact::RuntimeRecord;
 use phoxal::runtime::{
     Activation, ExecutionDuration, ExecutionTime, InitContext, ObservationStamp, Runtime,
     StepContext, initialize, invoke,
@@ -522,7 +523,7 @@ fn read_status_distinguishes_pending_and_completed_inputs() {
 #[test]
 fn compiled_input_records_retain_concrete_owner_message_names() {
     let bytes = __PHOXAL_RUNTIME_ARTIFACT_periodic_reader.as_bytes();
-    let record: phoxal_project::RuntimeRecord = serde_json::from_slice(&bytes[12..]).unwrap();
+    let record: RuntimeRecord = serde_json::from_slice(&bytes[12..]).unwrap();
     let input = &record.inputs[0];
     assert_eq!(
         input.request_fqn.as_deref(),
@@ -532,7 +533,7 @@ fn compiled_input_records_retain_concrete_owner_message_names() {
         input.response_fqn.as_deref(),
         Some("phoxal.examples.runtime.CounterReadResponse")
     );
-    let counter: phoxal_project::RuntimeRecord =
+    let counter: RuntimeRecord =
         serde_json::from_slice(&__PHOXAL_RUNTIME_ARTIFACT_counter.as_bytes()[12..]).unwrap();
     assert_eq!(
         counter.inputs[0].response_fqn.as_deref(),

@@ -156,7 +156,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dev-dependencies]
 tempfile.workspace = true
 
-phoxal-project = { workspace = true }
+# The runtime reference example previously read its records back through
+# `phoxal_project::RuntimeRecord`, which was the old compiler re-export
+# of the serialized artifact record. The collapse of phoxal-project
+# into cargo-phoxal removes that re-export; the canonical owner is now
+# `phoxal-artifact-format::RuntimeRecord`, and the test reads it
+# directly from there.
+phoxal-artifact-format = { workspace = true }
 # The Config derive test compares the emitted schema with the independent
 # schemars oracle without making schemars a runtime dependency.
 schemars = { workspace = true }

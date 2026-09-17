@@ -5,7 +5,8 @@
 //! The dependency facts that need the framework *linked* are not here and
 //! cannot be: the wire protocol version the transport actually speaks is proved
 //! against the owning protocol contract, while project preparation and source
-//! validation are proved in `phoxal-project`'s own tests.
+//! validation are proved in `cargo-phoxal`'s own tests under
+//! `tools/cargo-phoxal/src/project/tests/`.
 
 use std::fs;
 
@@ -31,7 +32,7 @@ use super::{Subject, Violation, is_library_package};
 /// `phoxal-mujoco` is a framework library that depends on the facade's port
 /// surface plus its owned component contract crates; component crates
 /// themselves are not libraries for this rule and so are checked elsewhere.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 30] = [
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 28] = [
     // The facade re-exports typed ports, the typed-port macros, and the
     // internal build helper behind the optional `port`/`build`/`runtime`
     // features. These are the three edges the facade grows itself.
@@ -44,10 +45,6 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 30] = [
     // Framework host binaries that own the rest of the runtime / authoring
     // graph.
     ("phoxal-supervisor", "phoxal"),
-    // The project compiler re-exports the format records so internal call
-    // sites continue to use `crate::artifact::*` and `crate::bundle::*`.
-    ("phoxal-project", "phoxal"),
-    ("phoxal-project", "phoxal-artifact-format"),
     // The native engine binding consumes the facade's port vocabulary.
     ("phoxal-mujoco", "phoxal"),
     // Service-owned contract libraries reach the facade through its `port`

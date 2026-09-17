@@ -18,9 +18,39 @@ name = "cargo-phoxal"
 path = "src/main.rs"
 
 [dependencies]
+# Public CLI surface.
 clap = { workspace = true }
-phoxal-project = { workspace = true }
 serde_json = { workspace = true }
+
+# Project compiler implementation (private module).
+base64 = { workspace = true }
+cargo_metadata = { workspace = true }
+flate2 = { workspace = true }
+fs4 = { workspace = true }
+jsonschema = { workspace = true }
+keyring = { workspace = true }
+libc = { workspace = true }
+reqwest = { workspace = true }
+object = { workspace = true, features = ["write_core", "read_core", "elf", "pe"] }
+prost-reflect = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+
+# Shared serialized artifact format. The project compiler and the
+# installation helper both consume the same inert record family
+# (RuntimeRecord, BundleManifest, NativeBodySample, etc.).
+phoxal-artifact-format = { workspace = true }
+
+# The case host drives the supervised lifecycle from the harness. The
+# harness binary itself depends only on the SDK, but the case-host
+# protocol in `scenario::__harness` requires the scenario feature.
+phoxal = { workspace = true, features = ["scenario"] }
 
 [lints]
 workspace = true

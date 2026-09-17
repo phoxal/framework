@@ -3,7 +3,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use phoxal_project::{ComponentDocument, NativeTargetKind, RobotDocument};
+    use phoxal_artifact_format::{ComponentDocument, NativeTargetKind, RobotDocument};
 
     fn fixture_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()

@@ -128,9 +128,6 @@ fn build_bundle() -> TestBundle {
         .expect("make compiled Runtime fixture executable");
     let bytes = fs::read(&executable).expect("read copied Runtime fixture");
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
-    let artifact = phoxal_project::artifact::inspect_file(&executable)
-        .expect("inspect compiled Runtime fixture")
-        .summary();
     let manifest = serde_json::json!({
         "schema": "phoxal/bundle/v0",
         "robot_id": "session-attachment",
@@ -161,8 +158,7 @@ fn build_bundle() -> TestBundle {
             "target": "phoxal-runtime-reference",
             "path": "bin/brain",
             "bytes": bytes.len(),
-            "sha256": sha256,
-            "artifact": artifact
+            "sha256": sha256
         }],
         "components": []
     });

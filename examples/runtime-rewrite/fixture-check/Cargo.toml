@@ -7,7 +7,7 @@ license = "AGPL-3.0-only"
 description = "Authoring-shape checks for the maintained MuJoCo fixture."
 
 [dependencies]
-phoxal-project = { path = "../../../tools/cargo-phoxal/project", version = "0.1.0" }
+phoxal-artifact-format = { path = "../../../internal/artifact-format", version = "0.1.0" }
 
 [lints]
 workspace = true

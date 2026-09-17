@@ -43,7 +43,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zenoh = { workspace = true, features = ["unstable"] }
 
 [dev-dependencies]
-phoxal-project.workspace = true
 serial_test.workspace = true
 
 [lints]
