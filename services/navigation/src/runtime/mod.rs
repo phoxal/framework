@@ -7,7 +7,7 @@ use phoxal::runtime::Sample;
 use phoxal::runtime::input::{Commands, Latest};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
 use phoxal_service_kinematics::OdometryState;
-use phoxal_navigation::{
+use phoxal_service_navigation::{
     ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
     GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,
     UnavailableReason, apply_command_request, apply_command_response, get_goal_status_response,
@@ -54,7 +54,7 @@ impl PlannerState {
         !self.unavailable_reasons.is_empty()
     }
 
-    fn set_active_goal(&mut self, goal: &phoxal_navigation::StartGoal, map_revision: u64) {
+    fn set_active_goal(&mut self, goal: &phoxal_service_navigation::StartGoal, map_revision: u64) {
         self.phase = Phase::Searching;
         self.active_goal_id = Some(goal.goal_id.clone());
         self.target = goal.target.clone();
@@ -71,7 +71,7 @@ impl PlannerState {
     }
 
     fn retain_terminal(&mut self, finished: GoalFinished) {
-        if self.terminal_results.len() == phoxal_navigation::TERMINAL_RESULT_RETENTION {
+        if self.terminal_results.len() == phoxal_service_navigation::TERMINAL_RESULT_RETENTION {
             self.terminal_results.pop_front();
         }
         self.terminal_results.push_back(finished);
@@ -197,7 +197,7 @@ impl Navigation {
         if view.status.active_goal_id.as_deref() == Some(request.goal_id.as_str()) {
             return GetGoalStatusResponse {
                 status: Some(get_goal_status_response::Status::Running(
-                    phoxal_navigation::GoalRunning {
+                    phoxal_service_navigation::GoalRunning {
                         goal_id: request.goal_id.clone(),
                     },
                 )),
@@ -214,7 +214,7 @@ impl Navigation {
         }
         GetGoalStatusResponse {
             status: Some(get_goal_status_response::Status::UnknownOrNoLongerRetained(
-                phoxal_navigation::GoalUnknownOrNoLongerRetained {
+                phoxal_service_navigation::GoalUnknownOrNoLongerRetained {
                     goal_id: request.goal_id.clone(),
                 },
             )),
@@ -284,7 +284,7 @@ fn fresh_map_revision(inputs: &NavigationInputs, now: ExecutionTime) -> Option<u
 fn unavailable_response(reasons: &[i32]) -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Refused(
-            phoxal_navigation::Refused {
+            phoxal_service_navigation::Refused {
                 reason: RefusalReason::Unavailable.into(),
                 unavailable_reasons: reasons.to_vec(),
             },
@@ -295,7 +295,7 @@ fn unavailable_response(reasons: &[i32]) -> ApplyCommandResponse {
 fn refused(reason: RefusalReason) -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Refused(
-            phoxal_navigation::Refused {
+            phoxal_service_navigation::Refused {
                 reason: reason.into(),
                 unavailable_reasons: Vec::new(),
             },
@@ -306,7 +306,7 @@ fn refused(reason: RefusalReason) -> ApplyCommandResponse {
 fn accepted() -> ApplyCommandResponse {
     ApplyCommandResponse {
         decision: Some(apply_command_response::Decision::Accepted(
-            phoxal_navigation::Accepted {},
+            phoxal_service_navigation::Accepted {},
         )),
     }
 }
@@ -325,7 +325,7 @@ fn apply_command(
                 .as_ref()
                 .is_none_or(|target| target.validate().is_err())
                 || goal.goal_id.is_empty()
-                || goal.goal_id.len() > phoxal_navigation::MAX_ID_BYTES
+                || goal.goal_id.len() > phoxal_service_navigation::MAX_ID_BYTES
             {
                 return (refused(RefusalReason::InvalidGoal), None);
             }
@@ -436,7 +436,7 @@ mod tests {
     fn start(goal_id: &str, x_m: f64, y_m: f64) -> ApplyCommandRequest {
         ApplyCommandRequest {
             command: Some(apply_command_request::Command::Start(
-                phoxal_navigation::StartGoal {
+                phoxal_service_navigation::StartGoal {
                     goal_id: goal_id.to_owned(),
                     target: Some(GoalTarget {
                         frame_id: "map".to_owned(),
@@ -452,7 +452,7 @@ mod tests {
     fn cancel(goal_id: &str) -> ApplyCommandRequest {
         ApplyCommandRequest {
             command: Some(apply_command_request::Command::Cancel(
-                phoxal_navigation::CancelGoal {
+                phoxal_service_navigation::CancelGoal {
                     goal_id: goal_id.to_owned(),
                 },
             )),

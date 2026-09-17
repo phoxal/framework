@@ -2419,19 +2419,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-navigation"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-service-kinematics",
- "phoxal-service-world",
- "prost",
- "serde",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "phoxal-port"
 version = "0.1.0"
 
@@ -2496,6 +2483,19 @@ dependencies = [
  "anyhow",
  "phoxal",
  "phoxal-service-kinematics",
+ "prost",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "phoxal-service-navigation"
+version = "0.68.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-service-kinematics",
+ "phoxal-service-world",
  "prost",
  "serde",
  "thiserror 2.0.19",

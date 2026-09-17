@@ -1,4 +1,4 @@
-# phoxal-navigation
+# phoxal-service-navigation
 
 Generated messages and typed public ports for the official navigation service.
 

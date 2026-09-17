@@ -739,6 +739,6 @@ mod tests {
         assert_eq!(selection.implementation, None);
         // The actual resolution path is exercised by project integration tests;
         // this assertion documents that no fuzzy spelling helper exists.
-        assert_eq!("phoxal-navigation", "phoxal-navigation");
+        assert_eq!("phoxal-service-navigation", "phoxal-service-navigation");
     }
 }

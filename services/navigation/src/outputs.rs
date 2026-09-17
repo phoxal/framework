@@ -1,4 +1,4 @@
-use phoxal_navigation::{ApplyCommandResponse, GoalFinished, ports};
+use phoxal_service_navigation::{ApplyCommandResponse, GoalFinished, ports};
 
 /// Fresh per-invocation Navigation products.
 #[phoxal::runtime::outputs]
