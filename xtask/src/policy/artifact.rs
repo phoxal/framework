@@ -336,6 +336,12 @@ pub(crate) fn discover_package(
     let manifest = ManifestClassification::classify(root, &manifest_path)
         .with_context(|| format!("failed to classify {}", manifest_path.display()))?;
     let ManifestClassification::Artifact { kind, id } = manifest else {
+        // An `Excluded` package is a pure library or a workspace-internal
+        // fixture that the artifact grammar deliberately does not cover.
+        // Those names never carry an artifact prefix (e.g. `phoxal-build`,
+        // `phoxal-port`), so the classification is unambiguous and we return
+        // Ok(None) to skip them. An artifact-prefixed name that classifies as
+        // Excluded is a grammar violation.
         if let Some((prefix_kind, prefix_id)) = ArtifactKind::from_package_name(&package_name) {
             bail!(
                 "{package_name} uses the {prefix_kind} artifact package prefix with id \
@@ -479,9 +485,16 @@ const OFFICIAL_ARTIFACT_RELEASE_SCOPE: [&str; 10] = [
 ];
 
 /// Whether a workspace directory is an exact official artifact package
-/// directory. Artifact libraries are implementation targets, not reusable
-/// library crates, so the library-directory completeness rule excludes them
-/// after artifact discovery has validated their own lib+bin grammar.
+/// directory. The artifact-discovery rule itself discovers the same set; this
+/// helper is kept for callers that need to recognize an artifact directory
+/// without performing the full discovery. After the runtime cleanup, services
+/// own their contract library and executable in one package, so the library
+/// completeness rule no longer skips directories that match this predicate.
+///
+/// `#[allow(dead_code)]` is used because the only remaining call sites are
+/// tools that classify artifacts in ad-hoc inspection (artifact discovery's
+/// own enumeration is what the policy uses in practice).
+#[allow(dead_code)]
 pub(crate) fn is_official_artifact_directory(directory: &str) -> bool {
     let Some((kind, id)) = directory.split_once('/') else {
         return false;

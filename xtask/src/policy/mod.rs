@@ -61,7 +61,7 @@ pub(crate) const FACADE: &str = "phoxal";
 /// `crates/installation` is named here before its implementation lands so the
 /// policy keeps the planned owner classified when the package is added by the
 /// project-tooling cutover.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 19] = [
     "phoxal",
     "supervisor",
     "crates/macros",
@@ -76,6 +76,14 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
     "services/kinematics",
     "services/world",
     "services/safety",
+    // Components combine a published library with a private executable; the
+    // library half is reusable (e.g. `phoxal-mujoco` consumes component
+    // types directly), so the package is recognized here.
+    "components/bno085",
+    "components/ddsm115",
+    "components/oak_d_lite",
+    "components/vl53l1x",
+    "components/zed_f9p",
 ];
 
 /// Workspace-only package directories that are intentionally outside the
@@ -102,8 +110,13 @@ pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] = [
 /// The package a library crate directory must hold, or `None` for a directory
 /// that names no library crate location.
 ///
-/// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>` or
-/// `services/<suffix>/contract`, except for the `phoxal/` facade.
+/// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>` or at
+/// `services/<suffix>` (the consolidated library-plus-binary service
+/// package; the historical `services/<suffix>/contract/` shape is no
+/// longer produced and any directory matching that path is treated as
+/// the same package name for backwards-compatibility with vendored
+/// fixtures). The `phoxal/` facade and the `supervisor/` host live
+/// directly at their package names.
 ///
 /// This is the whole reason the directory can be shortened at all. `crates/`
 /// already says `phoxal`, so repeating it in every child would be the
@@ -120,12 +133,28 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
     if directory == "supervisor" {
         return Some("phoxal-supervisor".to_owned());
     }
-    if let Some(service) = directory
-        .strip_prefix("services/")
-        .and_then(|path| path.strip_suffix("/contract"))
-    {
-        return (!service.is_empty() && !service.contains('/'))
-            .then(|| format!("{FACADE}-{service}"));
+    if let Some(rest) = directory.strip_prefix("services/") {
+        // The consolidated service package is `services/<suffix>/`. The
+        // historical nested-contract shape `services/<suffix>/contract/`
+        // maps to the same package name; fixtures may still carry the old
+        // shape.
+        let service = rest
+            .strip_suffix("/contract")
+            .unwrap_or(rest);
+        if !service.is_empty() && !service.contains('/') {
+            return Some(format!("{FACADE}-{service}"));
+        }
+        return None;
+    }
+    if let Some(component) = directory.strip_prefix("components/") {
+        // A component driver owns its library and binary in one package
+        // (`phoxal-component-<id>` at `components/<id>/`). The library is
+        // part of the artifact package; the library completeness rule
+        // counts it as a discovered workspace library target.
+        if !component.is_empty() && !component.contains('/') {
+            return Some(format!("{FACADE}-component-{component}"));
+        }
+        return None;
     }
     let suffix = directory
         .strip_prefix(LIBRARY_CRATE_ROOT)?
@@ -395,14 +424,12 @@ fn the_library_crate_list_matches_the_workspace_members(
         let directory = relative
             .to_str()
             .with_context(|| format!("{} is not a UTF-8 workspace path", relative.display()))?;
-        // Official artifact libraries are implementation targets of their
-        // artifact packages, not separately released framework libraries.
-        // Artifact discovery validates their paired lib+bin shape before this
-        // rule runs, so this rule must not classify those libs as rogue
-        // reusable crates.
-        if artifact::is_official_artifact_directory(directory) {
-            continue;
-        }
+        // After the runtime cleanup, services own their contract library and
+        // executable in one package: `services/<id>/` is both an artifact
+        // and a reusable library crate. The artifact-discovery rule still
+        // runs separately and validates the lib+bin shape; the library
+        // completeness rule must keep counting these directories so the
+        // LIBRARY_CRATE_DIRS list reflects the post-consolidation layout.
         if library_package_name(directory).as_deref() != Some(package.name.as_str()) {
             violations.push(Violation::new(format!(
                 "library crate {directory} does not hold the package its directory names; a \
@@ -481,6 +508,12 @@ mod tests {
         );
         assert_eq!(
             library_package_name("services/motion/contract").as_deref(),
+            Some("phoxal-motion")
+        );
+        // The consolidated service directory map agrees with the historical
+        // contract/ shape.
+        assert_eq!(
+            library_package_name("services/motion").as_deref(),
             Some("phoxal-motion")
         );
         // A hyphenated suffix maps through unchanged; no such crate exists
