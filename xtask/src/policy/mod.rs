@@ -527,11 +527,11 @@ mod tests {
             ("crates/project", "phoxal-project"),
             ("crates/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
-            ("services/motion", "phoxal-motion"),
-            ("services/navigation", "phoxal-navigation"),
+            ("services/motion/contract", "phoxal-motion"),
+            ("services/navigation/contract", "phoxal-navigation"),
             ("services/kinematics", "phoxal-kinematics"),
             ("services/world", "phoxal-world"),
-            ("services/safety", "phoxal-safety"),
+            ("services/safety/contract", "phoxal-safety"),
         ] {
             assert_eq!(library_package_name(directory).as_deref(), Some(package));
             assert!(

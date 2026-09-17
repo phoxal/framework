@@ -1,28 +1,42 @@
 [package]
-name = "phoxal-service-world"
+name = "phoxal-world"
 version = "0.68.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Phoxal official service: world - bounded spatial belief and revisioned windows."
+description = "Public world estimation contract and private world service executable for Phoxal."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
+include = ["build.rs", "lib.rs", "validation.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
 
 [package.metadata.phoxal]
 kind = "service"
 
+[lib]
+path = "lib.rs"
+
 [[bin]]
 name = "phoxal-service-world"
 path = "src/main.rs"
+required-features = ["runtime"]
+
+[features]
+default = []
+runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 
 [dependencies]
-anyhow = { workspace = true }
-phoxal = { workspace = true, features = ["runtime"] }
+phoxal = { workspace = true, default-features = false, features = ["port"] }
 phoxal-kinematics = { workspace = true }
-phoxal-world = { workspace = true }
-serde = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+phoxal-kinematics = { workspace = true }
 
 [lints]
 workspace = true
