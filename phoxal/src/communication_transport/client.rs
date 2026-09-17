@@ -39,7 +39,6 @@ use crate::communication::validation::{
     validate_session_offers, BootstrapError, DeploymentTarget, SESSION_PROTOCOL,
 };
 
-use super::simulation::MAX_SIMULATION_CUT_BYTES;
 use super::{
     bounded_error_detail, decode_message, encode_message, malformed_client, operation_key_expression, subscription_key,
     validate_subscription_admission, validate_subscription_request,
@@ -48,6 +47,13 @@ use super::{
     DEFAULT_PUBLIC_QUERY_CAPACITY, MAX_PUBLIC_DEADLINE, MAX_PUBLIC_ERROR_BYTES,
     MAX_PUBLIC_SUBSCRIPTION_ID_BYTES, PUBLIC_PROTOBUF_ENCODING,
 };
+
+/// Upper bound for a single simulation observation cut, in bytes. The client
+/// uses this as the cap on its own buffer limits; the supervisor uses the
+/// same numeric cap as `MAX_CLIENT_SIMULATION_CUT_BYTES` inside the simulation
+/// authority. The values must agree — both are the "one bounded native
+/// physics cut" envelope — but they are owned by their respective crates.
+const MAX_CLIENT_SIMULATION_CUT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicTransportLimits {
@@ -130,7 +136,7 @@ impl PublicTransportLimits {
     #[must_use]
     pub fn request_limit(&self, operation: &str) -> usize {
         if is_simulation_operation(operation) {
-            MAX_SIMULATION_CUT_BYTES
+            MAX_CLIENT_SIMULATION_CUT_BYTES
         } else {
             self.max_request_bytes
         }
@@ -140,13 +146,13 @@ impl PublicTransportLimits {
     #[must_use]
     pub fn response_limit(&self, operation: &str) -> usize {
         if is_simulation_operation(operation) {
-            MAX_SIMULATION_CUT_BYTES
+            MAX_CLIENT_SIMULATION_CUT_BYTES
         } else {
             self.max_response_bytes
         }
     }
 
-    pub(crate) fn validate(&self) -> Result<(), PublicTransportError> {
+    pub fn validate(&self) -> Result<(), PublicTransportError> {
         if self.max_request_bytes == 0
             || self.max_response_bytes == 0
             || self.max_reply_count == 0
@@ -1117,7 +1123,7 @@ impl PublicSessionConnection {
             });
         }
         let session_id = open_response.session_id;
-        if crate::communication::SessionId::from_bytes(&session_id).is_err() {
+        if session_id.len() != 32 {
             return Err(PublicTransportError::Malformed {
                 operation: "open".to_owned(),
                 detail: "server returned an invalid session identifier".to_owned(),

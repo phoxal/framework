@@ -3,7 +3,7 @@
 use super::phases::retained_phase_progress;
 use super::*;
 
-pub(in crate::communication_transport) async fn acquire_simulation_authority(
+pub(crate) async fn acquire_simulation_authority(
     route: &PublicRoute,
     request: AcquireAuthorityRequest,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -108,12 +108,12 @@ pub(in crate::communication_transport) async fn acquire_simulation_authority(
     }
     let definition_model_identity = definition.model_identity().to_owned();
     let definition_quantum_ns = definition.quantum_ns();
-    let state = crate::communication::session::ExecutionState::try_from(summary.state)
+    let state = phoxal::communication::session::ExecutionState::try_from(summary.state)
         .map_err(|_| simulation_rejected("execution state is unknown"))?;
     if !matches!(
         state,
-        crate::communication::session::ExecutionState::Ready
-            | crate::communication::session::ExecutionState::Active
+        phoxal::communication::session::ExecutionState::Ready
+            | phoxal::communication::session::ExecutionState::Active
     ) {
         return Err(simulation_rejected(
             "simulation authority requires a ready or active execution",
@@ -229,7 +229,7 @@ pub(in crate::communication_transport) async fn acquire_simulation_authority(
     })
 }
 
-pub(in crate::communication_transport) async fn revoke_simulation_for_session(
+pub(crate) async fn revoke_simulation_for_session(
     route: &PublicRoute,
     session_id: &[u8],
     _adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -250,7 +250,7 @@ pub(in crate::communication_transport) async fn revoke_simulation_for_session(
     release_backend_authority(current, simulation_backend).await;
 }
 
-pub(in crate::communication_transport) async fn revoke_simulation_authority(
+pub(crate) async fn revoke_simulation_authority(
     authority: &Arc<Mutex<Option<SimulationAuthority>>>,
     simulation_backend: &Arc<dyn PublicSimulationBackend>,
 ) {
@@ -260,7 +260,7 @@ pub(in crate::communication_transport) async fn revoke_simulation_authority(
     }
 }
 
-pub(in crate::communication_transport) async fn release_backend_authority(
+pub(crate) async fn release_backend_authority(
     current: SimulationAuthority,
     simulation_backend: &Arc<dyn PublicSimulationBackend>,
 ) {
@@ -289,7 +289,7 @@ pub(in crate::communication_transport) async fn release_backend_authority(
     .await;
 }
 
-pub(in crate::communication_transport) async fn reset_simulation(
+pub(crate) async fn reset_simulation(
     route: &PublicRoute,
     request: ResetRequest,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -369,7 +369,7 @@ pub(in crate::communication_transport) async fn reset_simulation(
         ));
     }
     drop(adapter_guard);
-    let next_timeline_id = crate::identity::TimelineId::mint().to_string();
+    let next_timeline_id = phoxal::identity::TimelineId::mint().to_string();
     let context = PublicSimulationContext {
         principal: current.principal.clone(),
         session_id: current.session_id.clone(),
@@ -449,7 +449,7 @@ pub(in crate::communication_transport) async fn reset_simulation(
     Ok(response)
 }
 
-pub(in crate::communication_transport) async fn release_simulation(
+pub(crate) async fn release_simulation(
     route: &PublicRoute,
     request: ReleaseAuthorityRequest,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -526,7 +526,7 @@ pub(in crate::communication_transport) async fn release_simulation(
     })
 }
 
-pub(in crate::communication_transport) async fn progress_simulation(
+pub(crate) async fn progress_simulation(
     route: &PublicRoute,
     request: ProgressRequest,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -592,7 +592,7 @@ pub(in crate::communication_transport) async fn progress_simulation(
             session_id: current.session_id.clone(),
             authority_grant: current.grant.clone(),
             correlation_id: request.correlation_id.clone(),
-            phase_status: crate::communication::simulation::PhaseStatus::Failed as i32,
+            phase_status: phoxal::communication::simulation::PhaseStatus::Failed as i32,
             accepted_sequence_watermark: current.accepted_sequence_watermark,
             ..Default::default()
         });
@@ -651,9 +651,9 @@ pub(in crate::communication_transport) async fn progress_simulation(
     response.authority_grant = current.grant.clone();
     response.correlation_id = request.correlation_id;
     response.completed_boundary = current.boundary;
-    if response.phase_status == crate::communication::simulation::PhaseStatus::Unspecified as i32 {
+    if response.phase_status == phoxal::communication::simulation::PhaseStatus::Unspecified as i32 {
         response.phase_status = current.phase_receipts.back().map_or(
-            crate::communication::simulation::PhaseStatus::Unknown as i32,
+            phoxal::communication::simulation::PhaseStatus::Unknown as i32,
             |phase| phase.status as i32,
         );
     }
@@ -670,7 +670,7 @@ pub(in crate::communication_transport) async fn progress_simulation(
 }
 
 /// Cached receipts carry the same session and generation authority as new work.
-pub(super) async fn authorize_live_simulation_grant(
+pub(crate) async fn authorize_live_simulation_grant(
     route: &PublicRoute,
     grant: &[u8],
     current: &SimulationAuthority,
@@ -696,7 +696,7 @@ pub(super) async fn authorize_live_simulation_grant(
     Ok(())
 }
 
-pub(super) fn authorize_simulation_grant(
+pub(crate) fn authorize_simulation_grant(
     route: &PublicRoute,
     grant: &[u8],
     authority: &SimulationAuthority,
@@ -712,7 +712,7 @@ pub(super) fn authorize_simulation_grant(
     Ok(())
 }
 
-pub(super) fn validate_simulation_correlation(
+pub(crate) fn validate_simulation_correlation(
     correlation_id: &[u8],
 ) -> Result<(), PublicTransportError> {
     if correlation_id.is_empty() || correlation_id.len() > MAX_SIMULATION_CORRELATION_BYTES {
@@ -723,7 +723,7 @@ pub(super) fn validate_simulation_correlation(
     Ok(())
 }
 
-pub(super) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }
@@ -735,14 +735,14 @@ pub(super) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
-pub(super) fn simulation_rejected(detail: &str) -> PublicTransportError {
+pub(crate) fn simulation_rejected(detail: &str) -> PublicTransportError {
     PublicTransportError::Rejected {
         operation: "simulation".to_owned(),
         detail: detail.to_owned(),
     }
 }
 
-pub(super) fn simulation_adapter_error(
+pub(crate) fn simulation_adapter_error(
     operation: &str,
     error: SupervisorAdapterError,
 ) -> PublicTransportError {
@@ -752,7 +752,7 @@ pub(super) fn simulation_adapter_error(
     }
 }
 
-pub(super) fn simulation_backend_error(
+pub(crate) fn simulation_backend_error(
     operation: &str,
     error: PublicBackendError,
 ) -> PublicTransportError {

@@ -11,10 +11,9 @@ mod error;
 mod public;
 
 pub use crate::communication_transport::{
-    DiscoveryEvent, PrincipalPolicy, PublicSessionBackend, PublicSessionConfig,
-    PublicSessionConnection, PublicSessionTransport, PublicSimulationBackend,
-    PublicSimulationContext, PublicSubscription, PublicTlsCredentials, PublicTransportError,
-    PublicTransportLimits, PublicTransportSecurity, SupervisorWatch,
+    DiscoveryEvent, PublicSessionConfig, PublicSessionConnection, PublicSessionTransport,
+    PublicSubscription, PublicTlsCredentials, PublicTransportError, PublicTransportLimits,
+    PublicTransportSecurity, SupervisorWatch,
 };
 pub use error::SessionError;
 pub use public::{

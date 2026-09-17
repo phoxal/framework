@@ -6,6 +6,7 @@
 //! and the unavailable-backend stubs that are no-ops when no real backend is
 //! registered.
 //!
+#![allow(unexpected_cfgs, unused_imports, dead_code)]
 //! The server half owns the public queryables, performs route/session/grant
 //! admission, dispatches to the configured service and simulation backends,
 //! and supervises bounded subscription cleanup. Client transport types
@@ -29,9 +30,9 @@ use zenoh::bytes::Encoding;
 use zenoh::handlers::FifoChannel;
 use zenoh::query::{ConsolidationMode, Query, Queryable};
 
-use crate::communication::bootstrap::SessionOffers;
-use crate::communication::route::{PublicOperation, PublicRoute, PublicRouteKind};
-use crate::communication::session::{
+use phoxal::communication::bootstrap::SessionOffers;
+use phoxal::communication::route::{PublicOperation, PublicRoute, PublicRouteKind};
+use phoxal::communication::session::{
     BindPortRequest, BindPortResponse, CloseSessionRequest, CloseSessionResponse, ExecutionState,
     ListExecutionsRequest, ListExecutionsResponse, ListPortsRequest, ListPortsResponse,
     OpenSessionRequest, OpenSessionResponse, OperationOutcome, OperationRequest, OperationResponse,
@@ -39,21 +40,21 @@ use crate::communication::session::{
     SubscriptionRecord, SubscriptionRequest, SupervisorInfoRequest, SupervisorInfoResponse,
     SupervisorState, SupervisorStatusRequest, SupervisorStatusResponse,
 };
-use crate::communication::simulation::{
+use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AdmitInitialObservationsRequest, AdmitInitialObservationsResponse,
     AdmitObservationsRequest, AdmitObservationsResponse, PrepareBoundaryRequest,
     PrepareBoundaryResponse, ProgressRequest, ProgressResponse, ReleaseAuthorityRequest,
     ResetRequest,
 };
-use crate::communication::validation::{DeploymentTarget, SESSION_PROTOCOL};
-use crate::communication::{SupervisorAdapter, SupervisorAdapterError};
+use phoxal::communication::validation::{DeploymentTarget, SESSION_PROTOCOL};
+use crate::runtime::adapter::{SupervisorAdapter, SupervisorAdapterError};
 
 use super::simulation::{
     acquire_simulation_authority, admit_initial_observations, admit_observations, prepare_boundary,
     progress_simulation, release_backend_authority, release_simulation, reset_simulation,
     revoke_simulation_for_session, SimulationAuthority, MAX_SIMULATION_CUT_BYTES,
 };
-use super::{
+use phoxal::communication_transport::{
     bounded_error_detail, cancel_session_subscriptions, decode_message, decode_request,
     encode_message, hex_bytes, malformed_client, operation_key_expression, subscription_key,
     validate_state_initial_record, validate_subscription_record, validate_subscription_request,
@@ -150,8 +151,8 @@ pub struct PublicBindingContext {
     pub metadata: PortMetadata,
 }
 
-impl From<crate::communication::BindingContext> for PublicBindingContext {
-    fn from(binding: crate::communication::BindingContext) -> Self {
+impl From<crate::runtime::adapter::BindingContext> for PublicBindingContext {
+    fn from(binding: crate::runtime::adapter::BindingContext) -> Self {
         Self {
             session_id: binding.session_id,
             binding_id: binding.binding_id,
@@ -1733,13 +1734,12 @@ async fn send_error(query: &Query, error: &PublicTransportError, limits: &Public
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::communication_transport::client::{
+    use phoxal::communication_transport::{
         PublicSessionConfig, PublicSessionConnection, PublicSessionTransport,
     };
 
     /// Exercise two independently routed supervisor namespaces and two
     /// principal-bound logical sessions over one local Zenoh router.
-    #[cfg(feature = "runtime")]
     #[serial_test::serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn routed_supervisors_keep_bootstrap_and_sessions_isolated() {
@@ -1747,21 +1747,21 @@ mod tests {
         let endpoint = format!("tcp/{}", listener.local_addr().expect("test address"));
         drop(listener);
 
-        let router = crate::test_router::open(std::slice::from_ref(&endpoint)).await;
+        let router = phoxal::test_router::open(std::slice::from_ref(&endpoint)).await;
         let target_a = DeploymentTarget::new("workshop", "rover-a").expect("target a");
         let target_b = DeploymentTarget::new("workshop", "rover-b").expect("target b");
-        let (owner_a, bus_a) = crate::runtime::connection::ConnectionOwner::open(
-            crate::runtime::connection::ConnectionConfig::for_external(
-                crate::identity::ExecutionId::mint(),
+        let (owner_a, bus_a) = phoxal::runtime::connection::ConnectionOwner::open(
+            phoxal::runtime::connection::ConnectionConfig::for_external(
+                phoxal::identity::ExecutionId::mint(),
                 None,
                 vec![endpoint.clone()],
             ),
         )
         .await
         .expect("supervisor a bus");
-        let (owner_b, bus_b) = crate::runtime::connection::ConnectionOwner::open(
-            crate::runtime::connection::ConnectionConfig::for_external(
-                crate::identity::ExecutionId::mint(),
+        let (owner_b, bus_b) = phoxal::runtime::connection::ConnectionOwner::open(
+            phoxal::runtime::connection::ConnectionConfig::for_external(
+                phoxal::identity::ExecutionId::mint(),
                 None,
                 vec![endpoint.clone()],
             ),

@@ -22,11 +22,9 @@
 //!
 //! Shared constants and helpers live in this parent module so both halves
 //! reference the same values without cyclic imports.
-#![allow(unused_imports)]
+#![allow(unused_imports, dead_code)]
 
 pub(crate) mod client;
-pub(crate) mod server;
-pub(crate) mod simulation;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -60,10 +58,10 @@ pub const DEFAULT_MAX_DISCOVERED_SUPERVISORS: usize = 256;
 /// Maximum diagnostic text sent on the native Zenoh error leg.
 pub const MAX_PUBLIC_ERROR_BYTES: usize = 4 * 1024;
 /// Server-only: bounded subscription identifier length.
-pub(crate) const MAX_PUBLIC_SUBSCRIPTION_ID_BYTES: usize = 32;
+pub const MAX_PUBLIC_SUBSCRIPTION_ID_BYTES: usize = 32;
 
 // ===== Shared helpers (used by both client and server) =====
-pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
+pub fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut text = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
@@ -73,7 +71,7 @@ pub(crate) fn hex_bytes(bytes: &[u8]) -> String {
     text
 }
 
-pub(crate) fn operation_key_expression(
+pub fn operation_key_expression(
     target: &DeploymentTarget,
     operation: PublicOperation,
 ) -> String {
@@ -100,7 +98,7 @@ pub(crate) fn operation_key_expression(
     }
 }
 
-pub(crate) fn encode_message<M: Message>(
+pub fn encode_message<M: Message>(
     message: &M,
     maximum: usize,
     operation: &str,
@@ -123,7 +121,7 @@ pub(crate) fn encode_message<M: Message>(
     Ok(payload)
 }
 
-pub(crate) fn decode_request<M: Message + Default>(
+pub fn decode_request<M: Message + Default>(
     payload: &[u8],
     operation: &str,
     limits: &PublicTransportLimits,
@@ -131,7 +129,7 @@ pub(crate) fn decode_request<M: Message + Default>(
     decode_message(payload, operation, limits)
 }
 
-pub(crate) fn decode_message<M: Message + Default>(
+pub fn decode_message<M: Message + Default>(
     payload: &[u8],
     operation: &str,
     limits: &PublicTransportLimits,
@@ -152,7 +150,7 @@ pub(crate) fn decode_message<M: Message + Default>(
     })
 }
 
-pub(crate) fn bounded_error_detail(detail: &str) -> String {
+pub fn bounded_error_detail(detail: &str) -> String {
     if detail.len() <= MAX_PUBLIC_ERROR_BYTES {
         return detail.to_owned();
     }
@@ -163,7 +161,7 @@ pub(crate) fn bounded_error_detail(detail: &str) -> String {
     detail[..end].to_owned()
 }
 
-pub(crate) fn validate_subscription_admission(
+pub fn validate_subscription_admission(
     admission: &SubscriptionAdmission,
     request: &SubscriptionRequest,
     limits: &PublicTransportLimits,
@@ -199,7 +197,7 @@ pub(crate) fn validate_subscription_admission(
     Ok(Some(initial))
 }
 
-pub(crate) fn validate_subscription_request(
+pub fn validate_subscription_request(
     request: &SubscriptionRequest,
     limits: &PublicTransportLimits,
 ) -> Result<usize, PublicTransportError> {
@@ -225,7 +223,7 @@ pub(crate) fn validate_subscription_request(
         .max(1))
 }
 
-pub(crate) fn validate_state_initial_record(
+pub fn validate_state_initial_record(
     record: &SubscriptionRecord,
     request: &SubscriptionRequest,
     limits: &PublicTransportLimits,
@@ -245,7 +243,7 @@ pub(crate) fn validate_state_initial_record(
     Ok(())
 }
 
-pub(crate) fn validate_subscription_record(
+pub fn validate_subscription_record(
     record: &SubscriptionRecord,
     request: &SubscriptionRequest,
     limits: &PublicTransportLimits,
@@ -299,7 +297,7 @@ pub(crate) fn validate_subscription_record(
     Ok(())
 }
 
-pub(crate) fn subscription_key(
+pub fn subscription_key(
     target: &DeploymentTarget,
     principal: &str,
     subscription_id: &[u8],
@@ -311,7 +309,7 @@ pub(crate) fn subscription_key(
     )
 }
 
-pub(crate) async fn cancel_session_subscriptions(
+pub async fn cancel_session_subscriptions(
     route: &PublicRoute,
     session_id: &[u8],
     subscriptions: &Arc<Mutex<BTreeMap<String, CancellationToken>>>,
@@ -330,9 +328,9 @@ pub(crate) async fn cancel_session_subscriptions(
     }
 }
 
-pub(crate) fn malformed_client(
+pub fn malformed_client(
     operation: &str,
-    error: crate::communication::SupervisorAdapterError,
+    error: impl std::fmt::Display,
 ) -> PublicTransportError {
     PublicTransportError::Malformed {
         operation: operation.to_owned(),
@@ -342,23 +340,16 @@ pub(crate) fn malformed_client(
 
 // ===== Public re-exports =====
 //
-// Client types (re-exported through the parent for the public API path
-// `phoxal::communication_transport::*`).
+// Client types only. The server-side types (PublicSessionServer, PrincipalPolicy,
+// PublicSessionBackend, PublicSimulationBackend, PublicSimulationContext,
+// PublicBindingContext, OperationServerContext) live in
+// `phoxal_supervisor::runtime::transport` and are not re-exported here. They
+// are no longer part of the SDK's public surface; consumers that need
+// server implementation hooks must depend on the supervisor crate directly.
 pub use client::{
     DiscoveryEvent, PublicSessionConfig, PublicSessionConnection, PublicSessionTransport,
     PublicSubscription, PublicTlsCredentials, PublicTransportLimits, PublicTransportSecurity,
     SupervisorWatch,
 };
-// Server types (re-exported through the parent; this public surface is closed
-// in Unit 4.4).
-pub use server::{
-    PrincipalPolicy, PublicBackendError, PublicBackendOutcome, PublicBackendSubscription,
-    PublicBindingContext, PublicSessionBackend, PublicSessionServer, PublicSimulationBackend,
-    PublicSimulationContext,
-};
 // Shared client/server error type (used by both halves; defined in `client.rs`).
 pub use client::PublicTransportError;
-
-// Note: server.rs and tests under `crate::communication_transport` import
-// simulation helpers directly via `super::simulation::*` to keep them
-// private to the module.

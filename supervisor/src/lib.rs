@@ -7,8 +7,12 @@
 //! types and the scenario admission policy so other binaries
 //! (notably `phoxal`) can speak the same language without dragging
 //! in the supervisor's runtime.
+#![allow(unused_imports, dead_code)]
 
+pub use phoxal::communication as communication;
 pub use phoxal::communication::{DeploymentTarget, session, simulation};
+pub use phoxal::communication_transport as communication_transport;
+pub use phoxal::identity as identity;
 
 // P2.6 scenario admission policy. Lifted into the supervisor's lib
 // crate so the integration tests and any future case host binary can

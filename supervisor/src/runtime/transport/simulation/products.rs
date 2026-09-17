@@ -4,7 +4,7 @@ use super::authority::{simulation_adapter_error, simulation_rejected};
 use super::*;
 
 pub(super) fn canonical_membership_digest(
-    memberships: &[crate::communication::simulation::ProductMembership],
+    memberships: &[phoxal::communication::simulation::ProductMembership],
 ) -> Result<[u8; 32], PublicTransportError> {
     let mut encoded = memberships
         .iter()
@@ -22,8 +22,8 @@ pub(super) fn canonical_membership_digest(
 }
 
 pub(super) fn observation_memberships(
-    observations: &[crate::communication::simulation::Observation],
-) -> Result<Vec<crate::communication::simulation::ProductMembership>, PublicTransportError> {
+    observations: &[phoxal::communication::simulation::Observation],
+) -> Result<Vec<phoxal::communication::simulation::ProductMembership>, PublicTransportError> {
     observations
         .iter()
         .map(|observation| {
@@ -36,9 +36,9 @@ pub(super) fn observation_memberships(
 }
 
 pub(super) fn validate_actuation_cut(
-    actuation: &[crate::communication::simulation::Actuation],
+    actuation: &[phoxal::communication::simulation::Actuation],
     prepared_boundary: u64,
-) -> Result<Vec<crate::communication::simulation::ProductMembership>, PublicTransportError> {
+) -> Result<Vec<phoxal::communication::simulation::ProductMembership>, PublicTransportError> {
     let mut memberships = Vec::with_capacity(actuation.len());
     let mut seen = BTreeSet::new();
     for item in actuation {
@@ -53,7 +53,7 @@ pub(super) fn validate_actuation_cut(
             || membership.sequence == 0
             || membership.capture_boundary > prepared_boundary
             || membership.disposition
-                != crate::communication::simulation::ProductDisposition::Present as i32
+                != phoxal::communication::simulation::ProductDisposition::Present as i32
             || membership.item_count != 1
             || membership.encoded_bytes != item.payload.len() as u64
             || membership.payload_digest != digest
@@ -70,9 +70,9 @@ pub(super) fn validate_actuation_cut(
 }
 
 pub(super) async fn validate_observation_cut(
-    observations: &[crate::communication::simulation::Observation],
+    observations: &[phoxal::communication::simulation::Observation],
     expected_boundary: u64,
-    definition: &crate::communication::SimulationDefinition,
+    definition: &crate::runtime::adapter::SimulationDefinition,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
     execution_id: &str,
     limits: (usize, usize),
@@ -104,11 +104,11 @@ pub(super) async fn validate_observation_cut(
             ));
         }
         let disposition =
-            crate::communication::simulation::ProductDisposition::try_from(membership.disposition)
+            phoxal::communication::simulation::ProductDisposition::try_from(membership.disposition)
                 .map_err(|_| {
                     simulation_rejected("simulation observation disposition is unknown")
                 })?;
-        if disposition == crate::communication::simulation::ProductDisposition::Unspecified {
+        if disposition == phoxal::communication::simulation::ProductDisposition::Unspecified {
             return Err(simulation_rejected(
                 "simulation observation disposition is unspecified",
             ));
@@ -122,7 +122,7 @@ pub(super) async fn validate_observation_cut(
             })
             .ok_or_else(|| simulation_rejected("observation has no agreed provider"))?;
         let due = provider.due(expected_boundary, definition.quantum_ns());
-        if due == (disposition == crate::communication::simulation::ProductDisposition::NotDue) {
+        if due == (disposition == phoxal::communication::simulation::ProductDisposition::NotDue) {
             return Err(simulation_rejected(
                 "observation disposition disagrees with the immutable source cadence",
             ));
@@ -136,15 +136,15 @@ pub(super) async fn validate_observation_cut(
             ));
         }
         match disposition {
-            crate::communication::simulation::ProductDisposition::Present
+            phoxal::communication::simulation::ProductDisposition::Present
                 if membership.item_count == 0 =>
             {
                 return Err(simulation_rejected(
                     "present simulation observations must contain an item",
                 ));
             }
-            crate::communication::simulation::ProductDisposition::Empty
-            | crate::communication::simulation::ProductDisposition::NotDue
+            phoxal::communication::simulation::ProductDisposition::Empty
+            | phoxal::communication::simulation::ProductDisposition::NotDue
                 if membership.item_count != 0 || !observation.payload.is_empty() =>
             {
                 return Err(simulation_rejected(
@@ -197,11 +197,11 @@ pub(super) async fn validate_observation_cut(
 }
 
 pub(super) fn normalize_receipt(
-    receipt: &mut Option<crate::communication::simulation::CutReceipt>,
+    receipt: &mut Option<phoxal::communication::simulation::CutReceipt>,
     admission: &SimulationPhaseAdmission,
     correlation_id: &[u8],
-    status: crate::communication::simulation::PhaseStatus,
-    memberships: Vec<crate::communication::simulation::ProductMembership>,
+    status: phoxal::communication::simulation::PhaseStatus,
+    memberships: Vec<phoxal::communication::simulation::ProductMembership>,
     admitted_observation_boundary: u64,
 ) -> Result<[u8; 32], PublicTransportError> {
     let digest = canonical_membership_digest(&memberships)?;

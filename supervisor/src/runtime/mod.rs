@@ -6,15 +6,18 @@
 //! There is no legacy observer, MessagePack control plane, or second serving
 //! path.
 
+pub(crate) mod adapter;
 pub(crate) mod bundle;
 pub(crate) mod execution;
 pub(crate) mod lock;
 pub(crate) mod process;
 pub(crate) mod public_backend;
 pub(crate) mod router;
+pub(crate) mod session_table;
 pub(crate) mod signal;
 pub(crate) mod state;
 pub(crate) mod systemd;
+pub(crate) mod transport;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -24,10 +27,11 @@ use std::sync::{Arc, OnceLock};
 use crate::rendezvous::RuntimeRendezvous;
 use anyhow::{Context, Result, bail};
 use phoxal::communication::session::ExecutionState as PublicExecutionState;
-use phoxal::communication::{DeploymentTarget, SupervisorAdapter};
-use phoxal::communication_transport::{
-    PrincipalPolicy, PublicSessionServer, PublicTransportLimits,
-};
+use phoxal::communication::DeploymentTarget;
+use phoxal::communication_transport::PublicTransportLimits;
+
+use self::adapter::SupervisorAdapter;
+use self::transport::server::{PrincipalPolicy, PublicSessionServer};
 use phoxal::identity::ExecutionId;
 use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner};
 use phoxal_supervisor::scenario_admission::{

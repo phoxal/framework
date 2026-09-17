@@ -1,12 +1,12 @@
 use super::products::{canonical_membership_digest, observation_memberships};
 use super::*;
-use crate::communication::DeploymentTarget;
-use crate::communication::session::OpenSessionRequest;
-use crate::communication::session::{ExecutionState, ExecutionSummary, PortKind, PortMetadata};
-use crate::communication::simulation::{
+use phoxal::communication::DeploymentTarget;
+use phoxal::communication::session::OpenSessionRequest;
+use phoxal::communication::session::{ExecutionState, ExecutionSummary, PortKind, PortMetadata};
+use phoxal::communication::simulation::{
     CutReceipt, Observation, ProductDisposition, ProductMembership, ProviderRequirement,
 };
-use crate::communication::{
+use crate::runtime::adapter::{
     ExecutionDefinition, ServicePorts, SimulationDefinition, SimulationProviderDefinition,
 };
 use std::future::Future;
@@ -154,7 +154,7 @@ impl Fixture {
             .open(
                 &open,
                 &OpenSessionRequest {
-                    protocol: crate::communication::SESSION_PROTOCOL.into(),
+                    protocol: phoxal::communication::SESSION_PROTOCOL.into(),
                 },
                 0,
             )
@@ -560,7 +560,7 @@ async fn retained_phase_and_progress_require_a_live_session_and_timeline() {
                 .await
                 .close(
                     &route,
-                    &crate::communication::session::CloseSessionRequest {
+                    &phoxal::communication::session::CloseSessionRequest {
                         session_id: fixture.key.session_id.clone(),
                     },
                     0,

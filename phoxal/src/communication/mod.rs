@@ -25,21 +25,9 @@ pub mod simulation {
     include!(concat!(env!("OUT_DIR"), "/phoxal.simulation.v1.rs"));
 }
 
-pub(crate) mod route;
-mod session_state;
-mod supervisor_adapter;
-pub(crate) mod validation;
-pub use route::{PublicOperation, PublicRoute, PublicRouteKind};
-pub use session_state::{
-    DEFAULT_LEASE_MS, DEFAULT_MAX_SESSIONS, LogicalSession, SessionId, SessionTable,
-    SessionTableError,
-};
-pub use supervisor_adapter::{
-    AdapterLimits, BindingContext, BindingId, DEFAULT_MAX_DETAIL_BYTES, DEFAULT_MAX_EXECUTIONS,
-    DEFAULT_MAX_PORTS, DEFAULT_MAX_SESSIONS_PER_ADAPTER, DEFAULT_PAGE_SIZE, ExecutionDefinition,
-    Invalidation, MAX_PAGE_TOKEN_BYTES, ServicePorts, SimulationDefinition,
-    SimulationProviderDefinition, SupervisorAdapter, SupervisorAdapterError,
-};
+pub mod route;
+pub mod validation;
+pub use route::{PublicOperation, PublicRoute, PublicRouteKind, RouteError};
 pub use validation::{
     BootstrapError, DeploymentTarget, MAX_BOOTSTRAP_BYTES, MAX_KEY_PREFIX_BYTES,
     MAX_PROTOCOL_BYTES, MAX_SESSION_OFFERS, SESSION_PROTOCOL, validate_session_offers,

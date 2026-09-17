@@ -33,7 +33,7 @@ use phoxal::communication::simulation::{
     PrepareBoundaryResponse, ProgressRequest, ProgressResponse, ReleaseAuthorityRequest,
     ResetRequest, TransitionKey,
 };
-use phoxal::communication_transport::PublicSimulationContext;
+use crate::runtime::transport::server::PublicSimulationContext;
 use phoxal::runtime::ExecutionTime;
 use phoxal::runtime::connection::Connection;
 use phoxal::runtime::execution_protocol::{self, wire};

@@ -12,8 +12,26 @@
 //! helpers are kept.
 
 use super::bootstrap::{SessionOffer, SessionOffers};
-use super::supervisor_adapter::SupervisorAdapterError;
 use super::validation::{valid_identifier, DeploymentTarget, SESSION_PROTOCOL};
+
+// `SupervisorAdapterError` is the supervisor's error type; the route grammar
+// only needs to return a typed error, so we model it locally to keep the SDK
+// free of supervisor state. The supervisor implements `From<RouteError> for
+// SupervisorAdapterError` if it ever needs to convert.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RouteError {
+    #[error("route principal is not a valid protected route segment")]
+    InvalidPrincipal,
+    #[error("route kind does not match the requested operation")]
+    RouteKindMismatch {
+        expected: super::PublicRouteKind,
+        actual: super::PublicRouteKind,
+    },
+    #[error("route is not an exact public session route")]
+    MalformedRoute,
+    #[error("key does not address the supplied supervisor")]
+    WrongRoute,
+}
 
 /// The protected public route class used by a session request.
 ///
@@ -206,16 +224,16 @@ impl PublicRoute {
     ///
     /// # Errors
     ///
-    /// Returns [`SupervisorAdapterError::InvalidPrincipal`] when the principal
+    /// Returns [`RouteError::InvalidPrincipal`] when the principal
     /// is not a valid protected route segment.
     pub fn new(
         target: &DeploymentTarget,
         principal: impl Into<String>,
         kind: PublicRouteKind,
-    ) -> Result<Self, SupervisorAdapterError> {
+    ) -> Result<Self, RouteError> {
         let principal = principal.into();
         if !valid_identifier(&principal) {
-            return Err(SupervisorAdapterError::InvalidPrincipal);
+            return Err(RouteError::InvalidPrincipal);
         }
         Ok(Self {
             target: target.clone(),
@@ -233,7 +251,7 @@ impl PublicRoute {
         target: &DeploymentTarget,
         principal: impl Into<String>,
         operation: PublicOperation,
-    ) -> Result<Self, SupervisorAdapterError> {
+    ) -> Result<Self, RouteError> {
         let route = Self::new(target, principal, operation.kind())?;
         Ok(Self { operation, ..route })
     }
@@ -242,9 +260,9 @@ impl PublicRoute {
     pub fn with_operation(
         self,
         operation: PublicOperation,
-    ) -> Result<Self, SupervisorAdapterError> {
+    ) -> Result<Self, RouteError> {
         if operation.kind() != self.kind {
-            return Err(SupervisorAdapterError::RouteKindMismatch {
+            return Err(RouteError::RouteKindMismatch {
                 expected: operation.kind(),
                 actual: self.kind,
             });
@@ -261,27 +279,27 @@ impl PublicRoute {
     /// `{P}/simulation/v1/clients/{principal}/{operation}`.
     /// Wildcards, query expressions, extra path segments, redirects, and
     /// another supervisor's prefix are rejected.
-    pub fn parse(target: &DeploymentTarget, key: &str) -> Result<Self, SupervisorAdapterError> {
+    pub fn parse(target: &DeploymentTarget, key: &str) -> Result<Self, RouteError> {
         let session_prefix = format!("{}/clients/", target.session_prefix());
         if let Some(suffix) = key.strip_prefix(&session_prefix) {
             let mut segments = suffix.split('/');
             let principal = segments
                 .next()
-                .ok_or(SupervisorAdapterError::MalformedRoute)?;
+                .ok_or(RouteError::MalformedRoute)?;
             let kind = segments
                 .next()
                 .and_then(PublicRouteKind::from_segment)
-                .ok_or(SupervisorAdapterError::MalformedRoute)?;
+                .ok_or(RouteError::MalformedRoute)?;
             let operation = segments
                 .next()
                 .and_then(PublicOperation::from_segment)
-                .ok_or(SupervisorAdapterError::MalformedRoute)?;
+                .ok_or(RouteError::MalformedRoute)?;
             if segments.next().is_some()
                 || !valid_identifier(principal)
                 || operation.kind() != kind
                 || kind == PublicRouteKind::Simulation
             {
-                return Err(SupervisorAdapterError::MalformedRoute);
+                return Err(RouteError::MalformedRoute);
             }
             return Self::for_operation(target, principal, operation);
         }
@@ -289,20 +307,20 @@ impl PublicRoute {
         let simulation_prefix = format!("{}/clients/", target.simulation_prefix());
         let suffix = key
             .strip_prefix(&simulation_prefix)
-            .ok_or(SupervisorAdapterError::WrongRoute)?;
+            .ok_or(RouteError::WrongRoute)?;
         let mut segments = suffix.split('/');
         let principal = segments
             .next()
-            .ok_or(SupervisorAdapterError::MalformedRoute)?;
+            .ok_or(RouteError::MalformedRoute)?;
         let operation = segments
             .next()
             .and_then(PublicOperation::from_segment)
-            .ok_or(SupervisorAdapterError::MalformedRoute)?;
+            .ok_or(RouteError::MalformedRoute)?;
         if segments.next().is_some()
             || !valid_identifier(principal)
             || operation.kind() != PublicRouteKind::Simulation
         {
-            return Err(SupervisorAdapterError::MalformedRoute);
+            return Err(RouteError::MalformedRoute);
         }
         Self::for_operation(target, principal, operation)
     }
@@ -369,7 +387,7 @@ impl DeploymentTarget {
         &self,
         principal: impl Into<String>,
         kind: PublicRouteKind,
-    ) -> Result<PublicRoute, SupervisorAdapterError> {
+    ) -> Result<PublicRoute, RouteError> {
         PublicRoute::new(self, principal, kind)
     }
 

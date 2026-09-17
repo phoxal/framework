@@ -2606,6 +2606,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ctrlc",
+ "getrandom 0.3.4",
  "libc",
  "phoxal",
  "prost",

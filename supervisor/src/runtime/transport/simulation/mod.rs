@@ -3,19 +3,20 @@ mod authority;
 mod phases;
 mod products;
 
-use super::{
-    cancel_session_subscriptions, DEFAULT_PUBLIC_DEADLINE, PublicBackendError,
-    PublicSimulationBackend, PublicSimulationContext, PublicTransportError, bounded_error_detail,
+use phoxal::communication_transport::{
+    cancel_session_subscriptions, DEFAULT_PUBLIC_DEADLINE,
+    PublicTransportError, bounded_error_detail,
 };
-use crate::communication::simulation::{
+
+use super::server::{PublicBackendError, PublicSimulationBackend, PublicSimulationContext};
+use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AcquireAuthorityResponse, AdmitInitialObservationsRequest,
     AdmitInitialObservationsResponse, AdmitObservationsRequest, AdmitObservationsResponse,
     PrepareBoundaryRequest, PrepareBoundaryResponse, ProgressRequest, ProgressResponse,
     ReleaseAuthorityRequest, ReleaseAuthorityResponse, ResetRequest, ResetResponse, TransitionKey,
 };
-use crate::communication::{
-    PublicOperation, PublicRoute, SupervisorAdapter, SupervisorAdapterError,
-};
+use phoxal::communication::{PublicOperation, PublicRoute};
+use crate::runtime::adapter::{SupervisorAdapter, SupervisorAdapterError};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -24,11 +25,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-pub(super) use authority::{
+pub(crate) use authority::{
     acquire_simulation_authority, progress_simulation, release_backend_authority,
     release_simulation, reset_simulation, revoke_simulation_for_session,
 };
-pub(super) use phases::{admit_initial_observations, admit_observations, prepare_boundary};
+pub(crate) use phases::{admit_initial_observations, admit_observations, prepare_boundary};
 
 /// One exclusive, lease-bound simulation authority held by this supervisor.
 ///
@@ -37,7 +38,7 @@ pub(super) use phases::{admit_initial_observations, admit_observations, prepare_
 /// mutates the boundary, so an old grant cannot become valid after release,
 /// reset, or a later acquisition.
 #[derive(Clone, Debug)]
-pub(super) struct SimulationAuthority {
+pub(crate) struct SimulationAuthority {
     principal: String,
     session_id: Vec<u8>,
     grant: Vec<u8>,
@@ -70,7 +71,7 @@ struct RetainedSimulationPhase {
     correlation_id: Vec<u8>,
     request_digest: [u8; 32],
     response: Vec<u8>,
-    status: crate::communication::simulation::PhaseStatus,
+    status: phoxal::communication::simulation::PhaseStatus,
     bytes: usize,
 }
 
@@ -90,7 +91,7 @@ struct SimulationPhaseAdmission {
     context: PublicSimulationContext,
     transition_key: TransitionKey,
     request_digest: [u8; 32],
-    definition: crate::communication::SimulationDefinition,
+    definition: crate::runtime::adapter::SimulationDefinition,
     operation: PublicOperation,
 }
 

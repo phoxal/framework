@@ -13,16 +13,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::route::{PublicOperation, PublicRoute, PublicRouteKind};
-use super::session::{
+use phoxal::communication::route::{PublicOperation, PublicRoute, PublicRouteKind};
+use phoxal::communication::session::{
     BindPortRequest, BindPortResponse, ExecutionState, ExecutionSummary, ListExecutionsRequest,
     ListExecutionsResponse, ListPortsRequest, ListPortsResponse, OpenSessionRequest,
     OpenSessionResponse, PortKind, PortMetadata, RenewSessionRequest, RenewSessionResponse,
     SupervisorInfoRequest, SupervisorInfoResponse, SupervisorState, SupervisorStatusRequest,
     SupervisorStatusResponse,
 };
-use super::session_state::{SessionId, SessionTable, SessionTableError};
-use super::validation::{valid_identifier, DeploymentTarget};
+use crate::runtime::session_table::{SessionId, SessionTable, SessionTableError};
+use phoxal::communication::validation::{valid_identifier, DeploymentTarget};
 
 /// Default maximum number of execution records retained by one adapter.
 pub const DEFAULT_MAX_EXECUTIONS: usize = 256;
@@ -34,7 +34,7 @@ pub const DEFAULT_PAGE_SIZE: usize = 64;
 pub const DEFAULT_MAX_DETAIL_BYTES: usize = 4 * 1024;
 /// Default maximum active sessions for an adapter, named to make the adapter
 /// bound visible without requiring callers to import the session table.
-pub const DEFAULT_MAX_SESSIONS_PER_ADAPTER: usize = super::session_state::DEFAULT_MAX_SESSIONS;
+pub const DEFAULT_MAX_SESSIONS_PER_ADAPTER: usize = crate::runtime::session_table::DEFAULT_MAX_SESSIONS;
 /// The fixed byte length of an opaque binding identifier.
 pub const BINDING_ID_BYTES: usize = 32;
 /// Page tokens are one bounded big-endian `u64` offset.
@@ -558,7 +558,7 @@ impl SupervisorAdapter {
         validate_version(&supervisor_version, "supervisor version")?;
         validate_version(&framework_version, "framework version")?;
         let sessions =
-            SessionTable::with_limits(super::session_state::DEFAULT_LEASE_MS, limits.max_sessions)?;
+            SessionTable::with_limits(crate::runtime::session_table::DEFAULT_LEASE_MS, limits.max_sessions)?;
         Ok(Self {
             target,
             info: SupervisorInfoResponse {
@@ -770,14 +770,14 @@ impl SupervisorAdapter {
     pub fn close(
         &mut self,
         route: &PublicRoute,
-        request: &super::session::CloseSessionRequest,
+        request: &phoxal::communication::session::CloseSessionRequest,
         now_ms: u64,
-    ) -> Result<super::session::CloseSessionResponse, SupervisorAdapterError> {
+    ) -> Result<phoxal::communication::session::CloseSessionResponse, SupervisorAdapterError> {
         self.require_operation(route, PublicOperation::Close)?;
         let id = SessionId::from_bytes(&request.session_id)?;
         self.sessions.close(id, route.principal(), now_ms)?;
         self.remove_bindings_for_session(id);
-        Ok(super::session::CloseSessionResponse {})
+        Ok(phoxal::communication::session::CloseSessionResponse {})
     }
 
     /// Serve static supervisor package/framework version information.
@@ -1106,7 +1106,7 @@ impl SupervisorAdapter {
     pub fn validate_binding(
         &mut self,
         route: &PublicRoute,
-        request: &super::session::OperationRequest,
+        request: &phoxal::communication::session::OperationRequest,
         now_ms: u64,
     ) -> Result<PortMetadata, SupervisorAdapterError> {
         Ok(self
@@ -1119,7 +1119,7 @@ impl SupervisorAdapter {
     pub fn validate_operation_binding(
         &mut self,
         route: &PublicRoute,
-        request: &super::session::OperationRequest,
+        request: &phoxal::communication::session::OperationRequest,
         operation: PublicOperation,
         now_ms: u64,
     ) -> Result<BindingContext, SupervisorAdapterError> {
@@ -1144,7 +1144,7 @@ impl SupervisorAdapter {
     fn validate_binding_context(
         &mut self,
         route: &PublicRoute,
-        request: &super::session::OperationRequest,
+        request: &phoxal::communication::session::OperationRequest,
         now_ms: u64,
     ) -> Result<BindingContext, SupervisorAdapterError> {
         let session = SessionId::from_bytes(&request.session_id)?;
@@ -1673,7 +1673,7 @@ mod tests {
             .open(
                 &route,
                 &OpenSessionRequest {
-                    protocol: super::super::SESSION_PROTOCOL.to_owned(),
+                    protocol: phoxal::communication::SESSION_PROTOCOL.to_owned(),
                 },
                 100,
             )
@@ -1798,7 +1798,7 @@ mod tests {
                     .public_route("operator-a", PublicRouteKind::Control)
                     .and_then(|route| route.with_operation(PublicOperation::Close))
                     .expect("route"),
-                &super::super::session::CloseSessionRequest {
+                &phoxal::communication::session::CloseSessionRequest {
                     session_id: session.clone(),
                 },
                 105,
@@ -1927,7 +1927,7 @@ mod tests {
                 101,
             )
             .expect("bind");
-        let request = super::super::session::OperationRequest {
+        let request = phoxal::communication::session::OperationRequest {
             session_id: session.clone(),
             binding_id: binding.binding_id.clone(),
             correlation_id: vec![1],
@@ -2033,7 +2033,7 @@ mod tests {
             adapter.open(
                 &inspect,
                 &OpenSessionRequest {
-                    protocol: super::super::SESSION_PROTOCOL.to_owned(),
+                    protocol: phoxal::communication::SESSION_PROTOCOL.to_owned(),
                 },
                 101,
             ),

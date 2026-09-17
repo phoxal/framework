@@ -180,8 +180,7 @@ pub mod __private {
     }
 }
 
-#[cfg(all(test, feature = "runtime", feature = "session"))]
-mod test_router;
+pub mod test_router;
 
 /// Linked framework package version for executable information responses.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

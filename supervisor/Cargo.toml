@@ -27,6 +27,7 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true, features = ["runtime", "scenario", "session"] }
 anyhow.workspace = true
+getrandom.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
 libc.workspace = true

@@ -8,7 +8,7 @@ use super::authority::{
 use super::products::*;
 use super::*;
 
-pub(super) async fn begin_simulation_phase(
+pub(crate) async fn begin_simulation_phase(
     route: &PublicRoute,
     transition_key: &TransitionKey,
     correlation_id: &[u8],
@@ -192,7 +192,7 @@ pub(super) async fn begin_simulation_phase(
     })
 }
 
-pub(super) fn retained_phase_response<Response: Message + Default>(
+pub(crate) fn retained_phase_response<Response: Message + Default>(
     current: &SimulationAuthority,
     operation: PublicOperation,
     transition_key: &TransitionKey,
@@ -221,7 +221,7 @@ pub(super) fn retained_phase_response<Response: Message + Default>(
         })
 }
 
-pub(in crate::communication_transport) async fn admit_initial_observations(
+pub(crate) async fn admit_initial_observations(
     route: &PublicRoute,
     request: AdmitInitialObservationsRequest,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -299,7 +299,7 @@ pub(in crate::communication_transport) async fn admit_initial_observations(
             &mut response.receipt,
             &admission,
             &request.correlation_id,
-            crate::communication::simulation::PhaseStatus::InitialAdmitted,
+            phoxal::communication::simulation::PhaseStatus::InitialAdmitted,
             memberships,
             0,
         ),
@@ -312,13 +312,13 @@ pub(in crate::communication_transport) async fn admit_initial_observations(
         &admission,
         &request.correlation_id,
         response.clone(),
-        crate::communication::simulation::PhaseStatus::InitialAdmitted,
+        phoxal::communication::simulation::PhaseStatus::InitialAdmitted,
         false,
     )
     .await
 }
 
-pub(in crate::communication_transport) async fn prepare_boundary(
+pub(crate) async fn prepare_boundary(
     route: &PublicRoute,
     request: PrepareBoundaryRequest,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -380,7 +380,7 @@ pub(in crate::communication_transport) async fn prepare_boundary(
             &mut response.receipt,
             &admission,
             &request.correlation_id,
-            crate::communication::simulation::PhaseStatus::Prepared,
+            phoxal::communication::simulation::PhaseStatus::Prepared,
             memberships,
             key.boundary,
         ),
@@ -393,13 +393,13 @@ pub(in crate::communication_transport) async fn prepare_boundary(
         &admission,
         &request.correlation_id,
         response.clone(),
-        crate::communication::simulation::PhaseStatus::Prepared,
+        phoxal::communication::simulation::PhaseStatus::Prepared,
         false,
     )
     .await
 }
 
-pub(in crate::communication_transport) async fn admit_observations(
+pub(crate) async fn admit_observations(
     route: &PublicRoute,
     request: AdmitObservationsRequest,
     adapter: &Arc<Mutex<SupervisorAdapter>>,
@@ -481,7 +481,7 @@ pub(in crate::communication_transport) async fn admit_observations(
             &mut response.receipt,
             &admission,
             &request.correlation_id,
-            crate::communication::simulation::PhaseStatus::ObservationsAdmitted,
+            phoxal::communication::simulation::PhaseStatus::ObservationsAdmitted,
             memberships,
             expected_boundary,
         ),
@@ -494,13 +494,13 @@ pub(in crate::communication_transport) async fn admit_observations(
         &admission,
         &request.correlation_id,
         response.clone(),
-        crate::communication::simulation::PhaseStatus::ObservationsAdmitted,
+        phoxal::communication::simulation::PhaseStatus::ObservationsAdmitted,
         true,
     )
     .await
 }
 
-pub(super) async fn clear_phase_admission(
+pub(crate) async fn clear_phase_admission(
     authority: &Arc<Mutex<Option<SimulationAuthority>>>,
     admission: &SimulationPhaseAdmission,
 ) {
@@ -514,7 +514,7 @@ pub(super) async fn clear_phase_admission(
     }
 }
 
-pub(super) async fn phase_backend_result<T>(
+pub(crate) async fn phase_backend_result<T>(
     result: Result<Result<T, PublicBackendError>, tokio::time::error::Elapsed>,
     authority: &Arc<Mutex<Option<SimulationAuthority>>>,
     admission: &SimulationPhaseAdmission,
@@ -563,12 +563,12 @@ async fn phase_validation_result<T>(
     result
 }
 
-pub(super) async fn retain_phase_response<Response: Message>(
+pub(crate) async fn retain_phase_response<Response: Message>(
     authority: &Arc<Mutex<Option<SimulationAuthority>>>,
     admission: &SimulationPhaseAdmission,
     correlation_id: &[u8],
     response: Response,
-    status: crate::communication::simulation::PhaseStatus,
+    status: phoxal::communication::simulation::PhaseStatus,
     completes_transition: bool,
 ) -> Result<Response, PublicTransportError> {
     let encoded = response.encode_to_vec();
@@ -653,7 +653,7 @@ pub(super) async fn retain_phase_response<Response: Message>(
     Ok(response)
 }
 
-pub(super) fn retained_phase_progress(
+pub(crate) fn retained_phase_progress(
     current: &SimulationAuthority,
     request: &ProgressRequest,
 ) -> Result<ProgressResponse, PublicTransportError> {
@@ -661,11 +661,11 @@ pub(super) fn retained_phase_progress(
         .transition_key
         .as_ref()
         .ok_or_else(|| simulation_rejected("progress transition query has no transition key"))?;
-    let requested_phase = crate::communication::simulation::PhaseStatus::try_from(request.phase)
-        .unwrap_or(crate::communication::simulation::PhaseStatus::Unspecified);
+    let requested_phase = phoxal::communication::simulation::PhaseStatus::try_from(request.phase)
+        .unwrap_or(phoxal::communication::simulation::PhaseStatus::Unspecified);
     let retained = current.phase_receipts.iter().find(|phase| {
         phase.transition_key == *key
-            && (requested_phase == crate::communication::simulation::PhaseStatus::Unspecified
+            && (requested_phase == phoxal::communication::simulation::PhaseStatus::Unspecified
                 || phase.status == requested_phase)
     });
     let mut response = ProgressResponse {
@@ -677,7 +677,7 @@ pub(super) fn retained_phase_progress(
         session_id: current.session_id.clone(),
         authority_grant: current.grant.clone(),
         correlation_id: request.correlation_id.clone(),
-        phase_status: crate::communication::simulation::PhaseStatus::Unknown as i32,
+        phase_status: phoxal::communication::simulation::PhaseStatus::Unknown as i32,
         prepared_boundary: current.boundary,
         admitted_observation_boundary: current.boundary,
         accepted_sequence_watermark: current.accepted_sequence_watermark,
@@ -686,12 +686,12 @@ pub(super) fn retained_phase_progress(
     };
     let Some(retained) = retained else {
         response.phase_status = if key.operation_sequence <= current.accepted_sequence_watermark {
-            crate::communication::simulation::PhaseStatus::Stale as i32
+            phoxal::communication::simulation::PhaseStatus::Stale as i32
         } else {
-            crate::communication::simulation::PhaseStatus::Unknown as i32
+            phoxal::communication::simulation::PhaseStatus::Unknown as i32
         };
         response.detail = Some(
-            if response.phase_status == crate::communication::simulation::PhaseStatus::Stale as i32
+            if response.phase_status == phoxal::communication::simulation::PhaseStatus::Stale as i32
             {
                 "simulation phase receipt was evicted; its sequence watermark is retained"
                     .to_owned()
@@ -710,9 +710,9 @@ pub(super) fn retained_phase_progress(
     Ok(response)
 }
 
-pub(super) fn retained_receipt(
+pub(crate) fn retained_receipt(
     retained: &RetainedSimulationPhase,
-) -> Result<crate::communication::simulation::CutReceipt, PublicTransportError> {
+) -> Result<phoxal::communication::simulation::CutReceipt, PublicTransportError> {
     let receipt = match retained.operation {
         PublicOperation::AdmitInitialObservations => {
             AdmitInitialObservationsResponse::decode(retained.response.as_slice())

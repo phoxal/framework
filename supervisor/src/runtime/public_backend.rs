@@ -30,11 +30,14 @@ use phoxal::communication::simulation::{
     PrepareBoundaryResponse, ProgressRequest, ProgressResponse, ReleaseAuthorityRequest,
     ResetRequest,
 };
-use phoxal::communication::{
-    ExecutionDefinition, PublicOperation, ServicePorts, SimulationDefinition,
-    SimulationProviderDefinition,
+use phoxal::communication::PublicOperation;
+
+use crate::runtime::adapter::{
+    ExecutionDefinition, ServicePorts, SimulationDefinition, SimulationProviderDefinition,
 };
-use phoxal::communication_transport::{
+use phoxal::communication_transport::PublicTransportLimits;
+
+use crate::runtime::transport::server::{
     PublicBackendError, PublicBackendOutcome, PublicBackendSubscription, PublicBindingContext,
     PublicSessionBackend, PublicSimulationBackend, PublicSimulationContext,
 };
@@ -2231,7 +2234,7 @@ mod tests {
             "model-digest",
             1_000,
             vec![
-                phoxal::communication::SimulationProviderDefinition::new(
+                SimulationProviderDefinition::new(
                     "sensor",
                     "state",
                     PortKind::State,

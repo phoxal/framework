@@ -1,4 +1,5 @@
 //! Launch the execution supervisor for one immutable bundle.
+#![allow(unused_imports, dead_code)]
 
 mod config;
 mod rendezvous;
