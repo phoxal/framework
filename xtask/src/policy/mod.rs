@@ -531,7 +531,7 @@ mod tests {
             ("services/navigation/contract", "phoxal-navigation"),
             ("services/kinematics", "phoxal-kinematics"),
             ("services/world", "phoxal-world"),
-            ("services/safety/contract", "phoxal-safety"),
+            ("services/safety", "phoxal-safety"),
         ] {
             assert_eq!(library_package_name(directory).as_deref(), Some(package));
             assert!(

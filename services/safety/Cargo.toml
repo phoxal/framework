@@ -1,29 +1,46 @@
 [package]
-name = "phoxal-service-safety"
+name = "phoxal-safety"
 version = "0.68.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Phoxal official service: bounded measured/world safety assessment."
+description = "Public safety assessment contract and private safety service executable for Phoxal."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
+include = ["build.rs", "lib.rs", "validation.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
 
 [package.metadata.phoxal]
 kind = "service"
 
+[lib]
+path = "lib.rs"
+
 [[bin]]
 name = "phoxal-service-safety"
 path = "src/main.rs"
+required-features = ["runtime"]
+
+[features]
+default = []
+runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 
 [dependencies]
-phoxal = { workspace = true, features = ["runtime"] }
+phoxal = { workspace = true, default-features = false, features = ["port"] }
+phoxal-robotics = { workspace = true }
 phoxal-motion = { workspace = true }
-phoxal-safety = { workspace = true }
 phoxal-world = { workspace = true }
-anyhow = { workspace = true }
-serde = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[build-dependencies]
+phoxal = { workspace = true, default-features = false, features = ["build"] }
+phoxal-robotics = { workspace = true }
+phoxal-motion = { workspace = true }
+phoxal-world = { workspace = true }
 
 [lints]
 workspace = true
