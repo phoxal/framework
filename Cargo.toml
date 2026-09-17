@@ -11,9 +11,9 @@ repository = "https://github.com/phoxal/framework"
 [workspace]
 resolver = "3"
 # The framework runtime, its proc-macros, official services, and suite
-# component crates. Tool implementation packages (project compiler,
-# installation helper) live under `tools/cargo-phoxal/<package>/` so
-# ownership is obvious from the file system layout.
+# component crates. The project compiler and installation helper are
+# private Rust modules of `tools/cargo-phoxal`; they are not
+# independent workspace packages.
 members = [
     "crates/build",
     "crates/port",

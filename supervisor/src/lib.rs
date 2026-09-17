@@ -15,11 +15,9 @@ pub use phoxal::communication::{DeploymentTarget, session, simulation};
 // quote the same nondeployable marker without depending on the
 // supervisor's binary entry point.
 pub mod scenario_admission {
-    //! Stable marker every scenario bundle carries on disk. Matches the
-    //! `SCENARIO_NONDEPLOYABLE` constant in
-    //! `cargo_phoxal::project::scenario::bundle` (formerly
-    //! `phoxal_project::scenario::bundle` before the compiler module was
-    //! folded into cargo-phoxal).
+    //! Stable marker carried by controlled scenario bundles. The bundle
+    //! producer and the supervisor admission logic must use the same
+    //! value.
     pub const SCENARIO_NONDEPLOYABLE: &str = "phoxal/scenario/nondeployable@1";
 
     /// Launch mode the case host asks the supervisor to admit a bundle
