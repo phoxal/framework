@@ -1,10 +1,10 @@
 //! Test-only scenario collector fixtures.
 //!
-//! The production generated harness uses
-//! `phoxal_project::scenario::case_host::run_case_host` to retain the
-//! scenario through real supervisor and simulator execution.
-//! These local helpers exercise collector sealing and retained-instance
-//! verification without exposing a second production execution path.
+//! The production generated harness talks to the tool's case host
+//! over the private control channel described in plan §9
+//! (`phoxal::scenario::__harness`). These local helpers exercise
+//! collector sealing and retained-instance verification without
+//! exposing a second production execution path.
 
 use thiserror::Error;
 

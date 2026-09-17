@@ -22,7 +22,12 @@ use crate::scenario::program::Program;
 /// One quantum-aligned outcome captured during execution. P3 fills
 /// the contents with native samples and service histories; P2
 /// records the structural result only.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The wire-format derives let the case-host control channel forward
+/// observed outcomes verbatim. The harness-side decoder requires the
+/// same shape on both sides, so changing the variants is a
+/// wire-incompatible change.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StepOutcome {
     /// Setpoint payload was delivered to the documented consumer
     /// boundary; `production` is the controlling boundary tick

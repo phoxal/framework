@@ -285,6 +285,18 @@ impl Project {
     ) -> Result<SimulationRunReport, Error> {
         simulation::run(self, options, request, Some(program))
     }
+
+    /// Probe the requested scene with the simulator and return its
+    /// model identity and quantum. Used by the case-host protocol
+    /// (plan §9) so the tool can hand the probed quantum to the
+    /// harness before the harness builds its `Program`.
+    pub fn probe_simulation_scene(
+        &self,
+        options: &CargoOptions,
+        request: &SimulationRunOptions,
+    ) -> Result<SimulationModelFacts, Error> {
+        simulation::probe_simulation_scene(self, options, request)
+    }
 }
 
 fn reject_direct_targetless_git(metadata: &cargo_metadata::Metadata) -> Result<(), Error> {

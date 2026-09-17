@@ -460,6 +460,27 @@ pub(crate) fn run(
     launch(&simulator, &bundle, &scene, request, scenario.is_some())
 }
 
+/// Run only the simulator probe step. Used by the case-host protocol
+/// (plan §9) so the tool can hand the probed quantum to the harness
+/// before the harness builds its `Program`. The bundle that ships
+/// with the probe is built from the project's regular target (no
+/// scenario program embedded) — the lifecycle step that follows the
+/// probe uses the harness's program, not this probe bundle.
+pub fn probe_simulation_scene(
+    project: &Project,
+    cargo_options: &CargoOptions,
+    request: &SimulationRunOptions,
+) -> Result<SimulationModelFacts, Error> {
+    cargo_options.validate()?;
+    validate_request(request)?;
+    let scene = canonical_scene(request.scene())?;
+    let simulator = provision(project, cargo_options, request)?;
+    let prepared = project.prepare(cargo_options)?;
+    let probe_output = probe_bundle_path(&prepared);
+    let probe_bundle = prepared.build_bundle(cargo_options, &probe_output)?;
+    probe(&simulator, &scene, probe_bundle.root(), request)
+}
+
 fn validate_request(request: &SimulationRunOptions) -> Result<(), Error> {
     request.bound.validate()?;
     validate_identity_part("scope", &request.scope)?;

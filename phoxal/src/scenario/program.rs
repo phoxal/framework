@@ -125,9 +125,28 @@ impl Quantum {
         }
     }
 
+    /// Build a quantum from a positive nanosecond value. Sub-microsecond
+    /// quanta are rejected because [`Quantum`] stores microseconds and
+    /// the SDK cannot represent finer-grained ticks through the
+    /// [`crate::scenario::results::EvidenceCollector`] path. The tool's
+    /// harness-support protocol uses this constructor to bridge the
+    /// simulator-probed `quantum_ns` to the SDK-side [`Quantum`].
+    pub fn from_nanos(nanos: u64) -> Option<Self> {
+        if nanos == 0 || nanos % 1_000 != 0 {
+            return None;
+        }
+        let micros = u32::try_from(nanos / 1_000).ok()?;
+        Self::from_micros(micros)
+    }
+
     /// The quantum as a positive microsecond count.
     pub const fn micros(self) -> u32 {
         self.0
+    }
+
+    /// The quantum as a positive nanosecond count.
+    pub fn nanos(self) -> u64 {
+        u64::from(self.0) * 1_000
     }
 
     /// Resolve a duration to an exact, checked transition count. Returns

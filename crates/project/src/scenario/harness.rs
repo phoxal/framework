@@ -10,6 +10,12 @@
 //! unit. The `inventory::submit!` calls in those sources therefore
 //! register the scenarios into the static
 //! [`phoxal::scenario::ScenarioRegistry`] that the harness queries.
+//!
+//! Plan §9 moves the case host orchestration out of `phoxal-project`
+//! into the tool. The generated harness binary depends only on the
+//! SDK; the tool drives the lifecycle over a private control channel
+//! that the harness speaks through `phoxal::scenario::__harness`. No
+//! `phoxal_project` import is present in the generated source.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -52,13 +58,16 @@ pub fn generate_harness_source(
 
     // The `main` is a minimal dispatch that prints the registered
     // scenarios and forwards a `run <name>` invocation to the case
-    // host. The case host lives in `phoxal_project::scenario::case_host`
-    // and owns the simulation lifecycle (provisioning, supervisor
-    // admission, native completion, bounded cleanup, lifecycle-owned
-    // terminal evidence). The harness binary is the only place that
-    // holds the planned scenario instance, so it owns the call to
-    // `verify_box` on the retained instance after the case host
-    // seals the run.
+    // host over the private control channel. The case host lives in
+    // the tool (`tools/case-host`) and owns the simulation lifecycle
+    // (provisioning, supervisor admission, native completion, bounded
+    // cleanup, lifecycle-owned terminal evidence). The harness binary
+    // depends only on the SDK; the tool drives the protocol through
+    // `phoxal::scenario::__harness`. The harness retains the planned
+    // scenario instance and runs `verify_box` on it after the tool
+    // sends the lifecycle-observed evidence; the tool only reports
+    // success when lifecycle, evidence validation, and author
+    // verification all succeed.
     source.push_str(
         r#"
 fn main() -> phoxal::Result<()> {
@@ -76,44 +85,15 @@ fn main() -> phoxal::Result<()> {
             let name = args
                 .get(2)
                 .ok_or_else(|| phoxal::anyhow!("usage: phoxal-scenarios run <name>"))?;
-            run_scenario_case(name)
+            // The tool pre-positions two file descriptors in the
+            // environment (PHOXAL_HARNESS_CTL_IN / _OUT) before
+            // launching this binary. The SDK's hidden __harness
+            // module reads them and walks the eight-step protocol.
+            phoxal::scenario::__harness::run_harness_case(name)
+                .map_err(|e| phoxal::anyhow!("scenario `{name}` case host failed: {e:#}"))
         }
         _ => Err(phoxal::anyhow!("usage: phoxal-scenarios [list | run <name>]")),
     }
-}
-
-fn run_scenario_case(name: &str) -> phoxal::Result<()> {
-    let entries = phoxal::scenario::list_scenarios()
-        .map_err(|e| phoxal::anyhow!("{e}"))?;
-    let entry = entries
-        .iter()
-        .find(|e| e.short_name == name || e.name == name)
-        .ok_or_else(|| phoxal::anyhow!("scenario `{name}` is not registered"))?;
-    let planned = (entry.entry)()
-        .map_err(|e| phoxal::anyhow!("scenario `{name}` planning failed: {e:#}"))?;
-
-    let cargo_options = phoxal_project::CargoOptions::default();
-    let run = phoxal_project::scenario::case_host::run_case_host(
-        &planned,
-        &cargo_options,
-    )
-    .map_err(|e| phoxal::anyhow!("scenario `{name}` case host failed: {e}"))?;
-
-    // The seal-time `passed` flag is the precondition contract. The
-    // case host enforces it before this point; an explicit check makes
-    // the contract visible at the call site.
-    if !run.passed() {
-        return Err(phoxal::anyhow!(
-            "scenario `{name}` case host sealed a non-passing run; verify is not invoked"
-        ));
-    }
-
-    planned
-        .scenario
-        .verify_box(&run)
-        .map_err(|e| phoxal::anyhow!("scenario `{name}` verify failed: {e:#}"))?;
-    println!("scenario {}: PASSED", planned.name);
-    Ok(())
 }
 "#,
     );

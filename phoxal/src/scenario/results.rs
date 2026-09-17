@@ -542,7 +542,10 @@ impl ScenarioRun {
 /// One captured observation. The flavour is recorded alongside the
 /// raw bytes so the case host can demultiplex state, sample, and
 /// event records without re-parsing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The wire-format derives let the case-host control channel forward
+/// observed captures verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CaptureRecord {
     /// Latest value published by a state port.
     State(Vec<u8>),
@@ -566,7 +569,10 @@ pub const MAX_INTERVAL_ENTRIES: usize = 4096;
 pub const MAX_RUN_BYTES: usize = 16 * 1024 * 1024;
 
 /// One command reply acknowledgement.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The wire-format derives let the case-host control channel forward
+/// observed replies verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CommandReply {
     /// The transport accepted the reply. `response_bytes` are the
     /// application's decoded protobuf payload (if any).

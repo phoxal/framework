@@ -41,12 +41,13 @@ toml_edit = { workspace = true }
 # use `crate::simulation::NativeBodySample` etc.
 phoxal-artifact-format = { workspace = true }
 
-# The case-host driver in `scenario::case_host` constructs SDK
-# scenario types (`ScenarioRun`, `TerminalEvidence`, `Program`,
-# `EvidenceCollector`, `Quantum`) to translate the supervised
-# `SimulationRunReport` into lifecycle-owned terminal evidence on
-# the planned scenario's program. The compile-and-list integration
-# test also exercises the generated scenario harness.
+# The tool owns the project preparation, simulator/simulator provisioning,
+# supervisor lifecycle, and case-host orchestration. The tool also
+# generates the harness `main.rs` (under
+# `<robot>/.phoxal/generated/scenarios/main.rs`) which depends on the
+# SDK only. The SDK supplies `scenario::__harness` for the harness side
+# of the case-host protocol. The compile-and-list integration test
+# exercises the generated scenario harness through that surface.
 phoxal = { workspace = true, features = ["scenario"] }
 
 [dev-dependencies]

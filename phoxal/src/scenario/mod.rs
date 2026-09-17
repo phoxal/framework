@@ -13,6 +13,7 @@
 
 #[cfg(test)]
 mod harness;
+pub mod harness_support;
 mod participant;
 mod plan;
 mod program;
@@ -45,4 +46,25 @@ pub use trait_def::{Scenario, ScenarioBox};
 #[doc(hidden)]
 pub mod __macro {
     pub use inventory;
+}
+
+/// Hidden cross-crate surface for generated scenario harnesses.
+///
+/// The generated `main.rs` the tool writes under
+/// `<robot>/.phoxal/generated/scenarios/main.rs` imports this module to
+/// drive the case-host control channel. It is intentionally hidden so
+/// end-user code never reaches for it directly; it is a small
+/// generated-harness entry point, not a place for Cargo, keyring,
+/// process spawning, or provisioning (those belong to the tool).
+///
+/// The tool never sees this module; the harness side never sees the
+/// tool. The two communicate over a length-prefixed JSON channel
+/// passed in via `PHOXAL_HARNESS_CTL_IN` and `PHOXAL_HARNESS_CTL_OUT`.
+#[doc(hidden)]
+pub mod __harness {
+    pub use crate::scenario::harness_support::{
+        Channel, ENV_CTL_IN, ENV_CTL_OUT, HarnessError, HarnessRequest, HarnessResponse,
+        MAX_FRAME_BYTES, ScenarioSummary, Verdict, decode_program_envelope,
+        encode_program_envelope, run_harness_case,
+    };
 }
