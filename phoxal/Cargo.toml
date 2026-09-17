@@ -83,6 +83,7 @@ scenario = [
     "protocol",
     "port",
     "dep:phoxal-macros",
+    "dep:phoxal-artifact-format",
     "dep:base64",
     "dep:inventory",
     "dep:serde",
@@ -130,6 +131,7 @@ zenoh = { workspace = true, optional = true }
 
 phoxal-port = { workspace = true, optional = true }
 phoxal-build = { workspace = true, optional = true }
+phoxal-artifact-format = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 
 # Scenario surface deps. `inventory` is the link-time registration mechanism

@@ -302,45 +302,23 @@ pub struct SimulationRunReport {
 }
 
 /// Evidence observed by the supervisor while executing one scenario program.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ScenarioExecutionReport {
-    /// Evidence schema identifier.
-    pub schema: String,
-    /// Fully qualified scenario name.
-    pub scenario_name: String,
-    /// Acknowledged scenario actions.
-    pub steps: Vec<ScenarioStepEvidence>,
-    /// Captured runtime records.
-    pub captures: Vec<ScenarioCaptureEvidence>,
-    /// Command replies keyed by authored step label.
-    pub command_replies: std::collections::BTreeMap<String, Vec<u8>>,
-}
+///
+/// Re-exported from `phoxal_artifact_format::simulation`. The format
+/// crate is the source of truth; this alias keeps every existing
+/// internal call site compiling unchanged.
+pub use phoxal_artifact_format::simulation::ScenarioExecutionReport;
 
 /// One runtime-acknowledged scenario action.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ScenarioStepEvidence {
-    /// Authored step label.
-    pub label: String,
-    /// `setpoint`, `withdraw`, or `command`.
-    pub kind: String,
-    /// Boundary at which the action was published.
-    pub production_boundary: u64,
-    /// First boundary at which the action was eligible.
-    pub eligible_boundary: u64,
-}
+///
+/// Re-exported from `phoxal_artifact_format::simulation`.
+#[allow(unused_imports)]
+pub use phoxal_artifact_format::simulation::ScenarioStepEvidence;
 
 /// One typed capture stream drained by the supervisor.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ScenarioCaptureEvidence {
-    /// Authored capture name.
-    pub name: String,
-    /// `state`, `sample`, or `event`.
-    pub kind: String,
-    /// Boundary of the most recently observed payload.
-    pub boundary: u64,
-    /// Ordered payload bytes. State captures retain only the latest value.
-    pub payloads: Vec<Vec<u8>>,
-}
+///
+/// Re-exported from `phoxal_artifact_format::simulation`.
+#[allow(unused_imports)]
+pub use phoxal_artifact_format::simulation::ScenarioCaptureEvidence;
 
 impl SimulationRunReport {
     /// Whether the simulator exited successfully and cleanup completed.
@@ -1161,41 +1139,18 @@ fn launch(
 }
 
 /// Native terminal evidence emitted by the simulator application.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct SimulatorTerminalEvidence {
-    /// Evidence schema.
-    pub schema: String,
-    #[serde(rename = "provider_contract_verified")]
-    pub provider_contract_verified: bool,
-    /// `success` or `stopped`.
-    pub outcome: String,
-    /// Completed native transitions.
-    pub completed_steps: u64,
-    /// Requested native transitions.
-    pub requested_steps: u64,
-    /// Native quantum in nanoseconds.
-    #[serde(default)]
-    pub quantum_ns: u64,
-    /// Supervisor execution identity.
-    #[serde(default)]
-    pub execution_id: String,
-    /// Controlled timeline identity.
-    #[serde(default)]
-    pub timeline_id: String,
-    /// Native root-body samples at 20 ms and terminal boundaries.
-    #[serde(default)]
-    pub native_body: Vec<NativeBodySample>,
-}
+///
+/// Re-exported from `phoxal_artifact_format::simulation`. The format
+/// crate is the source of truth.
+pub use phoxal_artifact_format::simulation::SimulatorTerminalEvidence;
 
 /// One native root-body sample in world coordinates.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct NativeBodySample {
-    pub boundary: u64,
-    pub position_m: [f64; 3],
-    pub orientation_wxyz: [f64; 4],
-    pub linear_velocity_mps: [f64; 3],
-    pub angular_velocity_radps: [f64; 3],
-}
+///
+/// Re-exported from `phoxal_artifact_format::simulation`. The canonical
+/// wire type is also re-exported by the SDK at `phoxal::scenario::NativeBodySample`
+/// so scenario authors can construct and consume it without importing
+/// the compiler or the format crate directly.
+pub use phoxal_artifact_format::simulation::NativeBodySample;
 
 #[cfg(test)]
 fn provider_contract_verified(stdout: &[u8], presentation: SimulationPresentation) -> bool {

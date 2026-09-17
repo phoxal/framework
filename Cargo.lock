@@ -2332,6 +2332,7 @@ dependencies = [
  "getrandom 0.3.4",
  "inventory",
  "jsonschema",
+ "phoxal-artifact-format",
  "phoxal-build",
  "phoxal-macros",
  "phoxal-port",
@@ -2350,6 +2351,16 @@ dependencies = [
  "tracing",
  "trybuild",
  "zenoh",
+]
+
+[[package]]
+name = "phoxal-artifact-format"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -2515,6 +2526,7 @@ dependencies = [
  "libc",
  "object",
  "phoxal",
+ "phoxal-artifact-format",
  "prost-reflect",
  "reqwest",
  "serde",

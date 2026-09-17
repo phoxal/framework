@@ -34,6 +34,10 @@ pub use registry::{
 pub use results::{
     CaptureRecord, CommandReply, EvidenceCollector, ScenarioRun, SealError, TerminalEvidence,
 };
+// Re-export the canonical native-body wire type from the shared artifact
+// format crate so scenario authors never have to import the compiler to
+// read simulator terminal evidence.
+pub use phoxal_artifact_format::simulation::NativeBodySample;
 pub use trait_def::{Scenario, ScenarioBox};
 
 // Re-exports used by the `#[phoxal::scenario]` macro's expansion. Hidden so

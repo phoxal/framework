@@ -38,6 +38,7 @@ members = [
     "services/world",
     "xtask",
     "tools/cargo-phoxal",
+    "internal/artifact-format",
 ]
 # Keep the workspace's command runner out of plain root cargo builds: `xtask`
 # is the runner a maintainer invokes by name (`cargo xtask <verb>`), not part of
@@ -71,6 +72,7 @@ default-members = [
     "services/safety",
     "services/world",
     "tools/cargo-phoxal",
+    "internal/artifact-format",
 ]
 
 [workspace.dependencies]
@@ -170,6 +172,7 @@ phoxal-service-safety = { path = "services/safety", version = "0.68.0", registry
 phoxal-service-navigation = { path = "services/navigation", version = "0.68.0", registry = "phoxal" }
 phoxal-project = { path = "crates/project", version = "0.1.0", registry = "phoxal" }
 phoxal-installation = { path = "crates/installation", version = "0.1.0", registry = "phoxal" }
+phoxal-artifact-format = { path = "internal/artifact-format", version = "0.1.0", registry = "phoxal" }
 
 [workspace.lints.rust]
 unused = "warn"
