@@ -58,9 +58,10 @@ pub(crate) const FACADE: &str = "phoxal";
 /// release-owner decision, not an accidental consequence of placing a library
 /// under `crates/` or a service owner.
 ///
-/// `crates/installation` is named here before its implementation lands so the
-/// policy keeps the planned owner classified when the package is added by the
-/// project-tooling cutover.
+/// `tools/cargo-phoxal/installation` is the tool-implementation package
+/// for the installation helper; its canonical name `phoxal-installation`
+/// is recognised through the `tools/cargo-phoxal/<name>` rule in
+/// `library_package_name` rather than the `crates/<name>` rule.
 pub(crate) const LIBRARY_CRATE_DIRS: [&str; 20] = [
     "phoxal",
     "supervisor",
@@ -69,7 +70,7 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 20] = [
     "crates/port",
     "crates/robotics",
     "tools/cargo-phoxal/project",
-    "crates/installation",
+    "tools/cargo-phoxal/installation",
     "crates/mujoco",
     // The shared serialized artifact format. Owned by the framework but
     // published through the Phoxal registry so external consumers can
@@ -588,7 +589,7 @@ mod tests {
             ("crates/port", "phoxal-port"),
             ("crates/robotics", "phoxal-robotics"),
             ("tools/cargo-phoxal/project", "phoxal-project"),
-            ("crates/installation", "phoxal-installation"),
+            ("tools/cargo-phoxal/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
             ("services/motion", "phoxal-service-motion"),
             ("services/navigation", "phoxal-service-navigation"),

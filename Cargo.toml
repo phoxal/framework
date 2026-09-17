@@ -18,7 +18,6 @@ members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
-    "crates/installation",
     "crates/mujoco",
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
@@ -41,6 +40,7 @@ members = [
     "xtask",
     "tools/cargo-phoxal",
     "tools/cargo-phoxal/project",
+    "tools/cargo-phoxal/installation",
     "internal/artifact-format",
 ]
 # Keep the workspace's command runner out of plain root cargo builds: `xtask`
@@ -54,7 +54,6 @@ default-members = [
     "crates/build",
     "crates/port",
     "crates/robotics",
-    "crates/installation",
     "crates/mujoco",
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
@@ -175,7 +174,7 @@ phoxal-service-world = { path = "services/world", version = "0.68.0", registry =
 phoxal-service-safety = { path = "services/safety", version = "0.68.0", registry = "phoxal" }
 phoxal-service-navigation = { path = "services/navigation", version = "0.68.0", registry = "phoxal" }
 phoxal-project = { path = "tools/cargo-phoxal/project", version = "0.1.0", registry = "phoxal" }
-phoxal-installation = { path = "crates/installation", version = "0.1.0", registry = "phoxal" }
+phoxal-installation = { path = "tools/cargo-phoxal/installation", version = "0.1.0", registry = "phoxal" }
 phoxal-artifact-format = { path = "internal/artifact-format", version = "0.1.0", registry = "phoxal" }
 
 [workspace.lints.rust]
