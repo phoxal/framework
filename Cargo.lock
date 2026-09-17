@@ -2551,6 +2551,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-scenario-fixture"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+]
+
+[[package]]
 name = "phoxal-service-kinematics"
 version = "0.68.0"
 dependencies = [
