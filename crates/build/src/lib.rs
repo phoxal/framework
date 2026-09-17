@@ -858,7 +858,13 @@ mod tests {
         let generated = fs::read_to_string(output.path().join("example.vocabulary.v1.rs"))
             .expect("generated Rust");
         assert!(generated.contains("pub struct Measurement"));
+        // A messages-only owner must not pull the typed-port vocabulary into
+        // its generated code. Both the legacy bare-crate spelling and the
+        // current `phoxal::port` SDK path are absent; a regression that
+        // silently added a port annotation would fail at least one of these.
         assert!(!generated.contains("phoxal_port"));
+        assert!(!generated.contains("phoxal::port"));
+        assert!(!generated.contains("descriptor_frame"));
         assert!(output.path().join(DESCRIPTOR_FILE).is_file());
     }
 

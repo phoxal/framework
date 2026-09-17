@@ -52,10 +52,10 @@ mod tests {
         BACKEND_UNAVAILABLE, Ddsm115, Ddsm115Config, Ddsm115Inputs, Ddsm115Outputs,
         FILE_DESCRIPTOR_SET, ports,
     };
+    use phoxal::port::{PortDescriptor, PortKind};
     use phoxal::runtime::input::InputSet;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal::port::{PortDescriptor, PortKind};
 
     #[test]
     fn generated_encoder_port_uses_the_shared_robotics_payload() {

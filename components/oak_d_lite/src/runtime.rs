@@ -50,9 +50,9 @@ mod tests {
     use super::{
         BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, OakDLite, OakDLiteConfig, OakDLiteOutputs, ports,
     };
+    use phoxal::port::{PortDescriptor, PortKind};
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal::port::{PortDescriptor, PortKind};
 
     #[test]
     fn generated_ports_cover_every_declared_capability() {

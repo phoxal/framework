@@ -1096,10 +1096,10 @@ fn capture_name(capture: &crate::scenario::plan::Capture) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::port::PortSignature;
     use crate::scenario::participant::FixtureParticipant;
     use crate::scenario::plan::{Action, Capture, Validity};
     use crate::scenario::program::{Program, ScheduleEntry};
-    use crate::port::PortSignature;
 
     fn setpoint_sig() -> PortSignature {
         PortSignature::new(

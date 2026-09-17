@@ -1,12 +1,12 @@
 use prost::Name;
 
+use phoxal::port::{
+    Commands, Event, PortDescriptor, PortKind, Read, Sample, Setpoint, State, Stream,
+};
 use phoxal_contract_owner_fixture::{
     InspectionCommandRequest, InspectionCommandResponse, InspectionEvent, InspectionReadRequest,
     InspectionReadResponse, InspectionSample, InspectionSetpoint, InspectionState,
     InspectionStream, inspection,
-};
-use phoxal::port::{
-    Commands, Event, PortDescriptor, PortKind, Read, Sample, Setpoint, State, Stream,
 };
 
 const _: State<InspectionState> = inspection::STATUS;

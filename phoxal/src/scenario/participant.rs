@@ -292,9 +292,9 @@ impl From<crate::scenario::program::ProgramError> for FixtureError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::port::PortSignature;
     use crate::scenario::plan::{Action, Step, Validity};
     use crate::scenario::program::ScheduleEntry;
-    use crate::port::PortSignature;
 
     fn setpoint_sig() -> PortSignature {
         PortSignature::new(

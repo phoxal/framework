@@ -56,7 +56,7 @@ The tool supplies the Phoxal registry index to the Cargo commands it owns, so a 
 
 ### 4. Install contract and native tools only when their owner requires them
 
-Every contract owner uses `phoxal-build`, which supplies a pinned `protoc-bin-vendored` compiler during Cargo builds.
+Every contract owner uses the lightweight `phoxal::build` facade over `phoxal-build`, which supplies a pinned `protoc-bin-vendored` compiler during Cargo builds. Owner build manifests declare `phoxal` with the `build` feature in `[build-dependencies]` and do not name `phoxal-build` directly.
 
 Normal Runtime, hardware, and `cargo-phoxal` workflows therefore do not require a system `protoc` installation.
 
@@ -107,7 +107,7 @@ The check discovers this `robot.yaml`, resolves the root package, validates its 
 
 ### Reusable service
 
-`services/counter/contract/` owns `proto/example/counter/v1/counter.proto` and uses `phoxal-build` from its build script.
+`services/counter/contract/` owns `proto/example/counter/v1/counter.proto` and uses `phoxal::build::compile_protos` from its build script.
 
 The service re-exports the generated `counter::STATE` descriptor and `CounterState` message from that canonical contract package.
 

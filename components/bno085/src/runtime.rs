@@ -53,9 +53,9 @@ mod tests {
     use super::{
         BACKEND_UNAVAILABLE, Bno085, Bno085Config, Bno085Outputs, FILE_DESCRIPTOR_SET, ports,
     };
+    use phoxal::port::PortKind;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal::port::PortKind;
 
     #[test]
     fn generated_ports_cover_every_declared_capability() {

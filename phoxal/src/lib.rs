@@ -1,6 +1,6 @@
 //! Phoxal's current runtime and public-session boundary.
 //!
-//! A [`runtime::Runtime`] owns one synchronous state machine and exchanges
+//! A `runtime::Runtime` (available with the `runtime` feature) owns one synchronous state machine and exchanges
 //! generated Protobuf values through the execution protocol. Applications
 //! attach through the `session` module and the supervisor owns the transport and
 //! process lifecycle. Source preparation and immutable bundle assembly are
@@ -60,10 +60,10 @@ pub use phoxal_port as port;
 
 /// Authoring helper for Protobuf build scripts.
 ///
-/// Re-exports [`compile_protos`], [`compile_protos_with_dependencies`], the
-/// [`DependencyDescriptor`] input, the shared [`PORT_PROTO`] option
-/// definition, and the [`include_dir`] / [`descriptor_set_path`] lookups
-/// over the internal `phoxal-build` implementation helper.
+/// Re-exports `compile_protos`, `compile_protos_with_dependencies`, the
+/// `DependencyDescriptor` input, the shared `PORT_PROTO` option definition,
+/// and the `include_dir` / `descriptor_set_path` lookups over the internal
+/// `phoxal-build` implementation helper.
 ///
 /// Owner manifests declare `phoxal` with the `build` feature in
 /// `[build-dependencies]`; the standard contract authoring path does not

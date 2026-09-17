@@ -20,22 +20,46 @@ use super::{Subject, Violation, is_library_package};
 /// Stated as the complete list rather than as a set of bans: a graph that is
 /// only forbidden from growing particular edges says nothing about the one it
 /// grows next. The reusable library graph is explicit. The facade owns the
-/// optional typed port surface, while service-owned contract crates consume
-/// that same port vocabulary. Build-time generators are checked separately by
-/// Cargo's graph and are not normal runtime edges.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 14] = [
+/// optional typed port surface and the `phoxal::build` authoring helper; both
+/// are re-exported over the canonical `phoxal-port` and `phoxal-build` owner
+/// crates. Service-owned contract crates consume the typed port vocabulary
+/// through the `phoxal` facade's `port` feature, never directly. Build-time
+/// generators live behind `phoxal::build`; the generator's host build-script
+/// edge to `phoxal-build` stays inside Cargo's build-dependency graph and is
+/// not a normal runtime edge.
+///
+/// `phoxal-mujoco` is a framework library that depends on the facade's port
+/// surface plus its owned component contract crates; component crates
+/// themselves are not libraries for this rule and so are checked elsewhere.
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
+    // The facade re-exports typed ports, the typed-port macros, and the
+    // internal build helper behind the optional `port`/`build`/`runtime`
+    // features. These are the three edges the facade grows itself.
     ("phoxal", "phoxal-macros"),
     ("phoxal", "phoxal-port"),
+    ("phoxal", "phoxal-build"),
+    // Framework host binaries that own the rest of the runtime / authoring
+    // graph.
     ("phoxal-supervisor", "phoxal"),
-    ("phoxal-mujoco", "phoxal-port"),
-    ("phoxal-motion", "phoxal-port"),
-    ("phoxal-navigation", "phoxal-port"),
-    ("phoxal-kinematics", "phoxal-port"),
-    ("phoxal-world", "phoxal-port"),
-    ("phoxal-safety", "phoxal-port"),
-    ("phoxal-safety", "phoxal-robotics"),
+    ("phoxal-project", "phoxal"),
+    // The native engine binding consumes the facade's port vocabulary.
+    ("phoxal-mujoco", "phoxal"),
+    // Service-owned contract libraries reach the facade through its `port`
+    // feature; they never declare `phoxal-port` directly.
+    ("phoxal-motion", "phoxal"),
+    ("phoxal-navigation", "phoxal"),
+    ("phoxal-kinematics", "phoxal"),
+    ("phoxal-world", "phoxal"),
+    ("phoxal-safety", "phoxal"),
+    // The shared robotics vocabulary crate re-exports typed ports through the
+    // facade so generated descriptors and inert port types resolve uniformly.
+    ("phoxal-robotics", "phoxal"),
+    // Cross-service and shared-vocabulary edges retained from the prior
+    // design. Motion owns the protective-constraint payload, so Safety depends
+    // on Motion for both `MotionStatus` and the canonical constraint input.
     ("phoxal-kinematics", "phoxal-robotics"),
     ("phoxal-world", "phoxal-kinematics"),
+    ("phoxal-safety", "phoxal-robotics"),
     ("phoxal-safety", "phoxal-motion"),
     ("phoxal-safety", "phoxal-world"),
 ];

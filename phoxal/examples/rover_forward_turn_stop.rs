@@ -16,10 +16,10 @@
 //! cargo run --example rover_forward_turn_stop --features scenario
 //! ```
 
+use phoxal::port::{PortKind, PortSignature};
 use phoxal::scenario::{
     Action, Capture, FixtureParticipant, Program, Quantum, ScheduleEntry, Validity,
 };
-use phoxal::port::{PortKind, PortSignature};
 
 fn setpoint_sig() -> PortSignature {
     PortSignature::new(

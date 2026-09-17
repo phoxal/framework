@@ -51,9 +51,9 @@ mod tests {
     use super::{
         BACKEND_UNAVAILABLE, FILE_DESCRIPTOR_SET, ZedF9p, ZedF9pConfig, ZedF9pOutputs, ports,
     };
+    use phoxal::port::PortKind;
     use phoxal::runtime::outputs::OutputSet;
     use phoxal::runtime::{ExecutionTime, initialize};
-    use phoxal::port::PortKind;
 
     #[test]
     fn generated_gnss_port_has_a_retained_descriptor() {

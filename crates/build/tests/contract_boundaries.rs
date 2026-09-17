@@ -44,10 +44,31 @@ fn assert_absent(tree: &str, forbidden: &[&str]) {
 }
 
 #[test]
-fn contract_consumer_has_no_sdk_runtime_dependencies() {
+fn contract_consumer_uses_lightweight_phoxal_facade_without_runtime() {
     let tree = dependency_tree("contracts/consumer");
-    assert!(tree.lines().any(|line| line.starts_with("phoxal-port v")));
-    assert_absent(&tree, &["phoxal v", "tokio v", "zenoh v"]);
+    // The contract consumer pulls in the lightweight phoxal facade (re-exporting
+    // phoxal-port behind its `port` feature) so generated messages and typed
+    // port references resolve. The facade must not drag in the runtime runner,
+    // session/transport, project compiler, supervisor, or native simulation
+    // dependencies.
+    assert!(
+        tree.lines().any(|line| line.starts_with("phoxal v")),
+        "lightweight phoxal facade must be reachable: {tree}"
+    );
+    assert!(
+        tree.lines().any(|line| line.starts_with("phoxal-port v")),
+        "phoxal-port types must be reachable through the facade: {tree}"
+    );
+    assert_absent(
+        &tree,
+        &[
+            "tokio v",
+            "zenoh v",
+            "zenoh-link v",
+            "zenoh-transport v",
+            "tracing-subscriber v",
+        ],
+    );
 }
 
 #[test]
@@ -55,5 +76,14 @@ fn sdk_port_feature_has_an_isolated_dependency_closure() {
     let tree = dependency_tree("ports/consumer");
     assert!(tree.lines().any(|line| line.starts_with("phoxal v")));
     assert!(tree.lines().any(|line| line.starts_with("phoxal-port v")));
-    assert_absent(&tree, &["tokio v", "zenoh v"]);
+    assert_absent(
+        &tree,
+        &[
+            "tokio v",
+            "zenoh v",
+            "zenoh-link v",
+            "zenoh-transport v",
+            "tracing-subscriber v",
+        ],
+    );
 }
