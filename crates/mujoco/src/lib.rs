@@ -46,6 +46,8 @@ pub use provider::{
     ExecutionId, HoldProvider, ObservationReceipt, PrepareRequest, ProviderReset,
     SimulationProvider, SourceId, TimelineId,
 };
+#[cfg(feature = "rendering")]
+pub use scene::RenderedCamera;
 #[cfg(feature = "native")]
 pub use scene::{PhysicsQuantum, Scene, ScenePhase, SceneStep, StateSnapshot, Workspace};
 #[cfg(feature = "rendering")]

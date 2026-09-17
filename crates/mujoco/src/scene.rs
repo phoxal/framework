@@ -165,6 +165,44 @@ pub struct Workspace {
     _thread_affine: PhantomData<Rc<()>>,
 }
 
+#[cfg(feature = "rendering")]
+#[derive(Debug)]
+struct RendererState {
+    renderer: MjRenderer,
+    resolution: [usize; 2],
+    camera_index: usize,
+}
+
+/// A copied RGB/depth result from one model-authored camera.
+#[cfg(feature = "rendering")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderedCamera {
+    resolution: [usize; 2],
+    rgb: Box<[u8]>,
+    depth_m: Box<[f32]>,
+}
+
+#[cfg(feature = "rendering")]
+impl RenderedCamera {
+    /// Returns the rendered image resolution as `[width, height]` pixels.
+    #[must_use]
+    pub const fn resolution(&self) -> [usize; 2] {
+        self.resolution
+    }
+
+    /// Returns RGB bytes in row-major top-to-bottom RGB8 order.
+    #[must_use]
+    pub fn rgb(&self) -> &[u8] {
+        &self.rgb
+    }
+
+    /// Returns linearized geometric depth in metres in row-major top-to-bottom order.
+    #[must_use]
+    pub fn depth_m(&self) -> &[f32] {
+        &self.depth_m
+    }
+}
+
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = formatter.debug_struct("Workspace");
@@ -288,6 +326,11 @@ impl Workspace {
     /// Steps this private workspace once.
     pub fn step(&mut self) -> Result<(), WorkspaceError> {
         self.data.step();
+        // `mj_step` normally performs a forward pass internally, but keep the
+        // post-transition observation boundary explicit.  Providers and
+        // snapshots must read fields refreshed for the completed state, never
+        // a partially updated native data buffer.
+        self.data.forward();
         self.ensure_finite_state()
     }
 
