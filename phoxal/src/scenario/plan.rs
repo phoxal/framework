@@ -62,68 +62,35 @@ impl ScenarioPlan {
         Ok(plan)
     }
 
-    /// Returns the total transition count of the schedule. The
-    /// transition count is derived from the schedule's effective
-    /// quantum and its declared duration: a six-second experiment at
-    /// the rover's two millisecond quantum yields 3,000 transitions,
+    /// Returns the total transition count of the schedule, given a probed
+    /// quantum. The transition count is `duration / quantum`: a six-second
+    /// experiment at a five-millisecond quantum yields 1,200 transitions,
     /// independent of how many actions the author wrote.
     ///
-    /// This replaces the previous action-count-based timing where
-    /// `transition_count()` returned `steps.len()`; that conflated
-    /// authoring density with experiment length and made a six-second
-    /// experiment with one setpoint look like a single-transition
-    /// program.
+    /// Returns `None` when:
+    /// - the duration does not align to the quantum;
+    /// - the duration is zero (`ZeroDuration` is its own error);
+    /// - the resulting transition count would not fit in a `u32`.
     ///
-    /// Uses checked nanosecond arithmetic so sub-microsecond
-    /// durations cannot be silently truncated to a whole-microsecond
-    /// multiple. Unaligned durations fall back to zero transitions;
-    /// `validate` rejects unaligned durations at construction, so
-    /// this only fires for callers that bypass the validator.
-    pub fn transition_count(&self) -> u32 {
-        let quantum_nanos: u128 = 2_000_000; // 2 ms rover quantum
-        let total_nanos = self.duration.as_nanos();
-        if total_nanos == 0 || !total_nanos.is_multiple_of(quantum_nanos) {
-            return 0;
-        }
-        let transitions = total_nanos / quantum_nanos;
-        u32::try_from(transitions).unwrap_or(u32::MAX)
+    /// Uses checked nanosecond arithmetic so sub-microsecond durations
+    /// cannot be silently truncated to a whole-microsecond multiple.
+    pub fn transition_count(&self, quantum: crate::scenario::Quantum) -> Option<u32> {
+        quantum.transition_count(self.duration)
     }
 
-    /// Validate the plan in place. Checks unique labels, command-label
-    /// uniqueness across the schedule, quantum indices inside the
-    /// transition count, finite duration, and that every encoded
-    /// payload is bounded.
+    /// Validate the plan in place for authoring-shape checks only.
+    /// Use [`Self::validate_for_quantum`] to check alignment and
+    /// boundary-range against the simulator-probed quantum.
     pub fn validate(&self) -> Result<(), PlanValidationError> {
         if self.duration.is_zero() {
             return Err(PlanValidationError::ZeroDuration);
         }
-        // Reject unaligned durations at construction. The transition
-        // count below is computed from `duration / quantum_nanos` and
-        // would otherwise fall back to zero (per the new
-        // `transition_count` rule); an aligned duration is required
-        // by Gate B4 of the scenario acceptance review.
-        let quantum_nanos: u128 = 2_000_000;
-        let total_nanos = self.duration.as_nanos();
-        if !total_nanos.is_multiple_of(quantum_nanos) {
-            return Err(PlanValidationError::DurationNotAligned {
-                nanos: total_nanos,
-                quantum_nanos,
-            });
-        }
         if self.steps.len() > u32::MAX as usize {
             return Err(PlanValidationError::TooManySteps(self.steps.len()));
         }
-        let transition_count = self.transition_count();
         let mut seen_labels: BTreeMap<&str, &Step> = BTreeMap::new();
         let mut seen_commands: BTreeMap<&str, &Step> = BTreeMap::new();
         for step in &self.steps {
-            if step.boundary >= transition_count {
-                return Err(PlanValidationError::QuantumOutOfRange {
-                    label: step.label.clone(),
-                    quantum: step.boundary,
-                    transitions: transition_count,
-                });
-            }
             if let Some(prior) = seen_labels.get(step.label.as_str()) {
                 return Err(PlanValidationError::DuplicateStepLabel {
                     label: step.label.clone(),
@@ -144,6 +111,47 @@ impl ScenarioPlan {
             }
             if let Action::Command { label, .. } = &step.action {
                 seen_commands.insert(label.as_str(), step);
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate the plan against the simulator-probed quantum.
+    ///
+    /// Combines an alignment check on `duration` with a boundary-range
+    /// check on every step's `boundary`. The probe quantum must arrive
+    /// from the tool, not a framework rover constant: any robot with a
+    /// different physics tick must carry its own quantum through this
+    /// path. Returns `None`-equivalent errors through [`PlanValidationError`].
+    pub fn validate_for_quantum(
+        &self,
+        quantum: crate::scenario::Quantum,
+    ) -> Result<(), PlanValidationError> {
+        let quantum_nanos = u128::from(quantum.micros()) * 1_000;
+        let total_nanos = self.duration.as_nanos();
+        if total_nanos == 0 {
+            return Err(PlanValidationError::ZeroDuration);
+        }
+        if !total_nanos.is_multiple_of(quantum_nanos) {
+            return Err(PlanValidationError::DurationNotAligned {
+                nanos: total_nanos,
+                quantum_nanos,
+            });
+        }
+        let transitions =
+            self.transition_count(quantum)
+                .ok_or(PlanValidationError::TransitionCountOverflow {
+                    transitions: u128::from(u32::MAX) + 1,
+                    quantum_nanos,
+                    total_nanos,
+                })?;
+        for step in &self.steps {
+            if step.boundary >= transitions {
+                return Err(PlanValidationError::QuantumOutOfRange {
+                    label: step.label.clone(),
+                    quantum: step.boundary,
+                    transitions,
+                });
             }
         }
         Ok(())
@@ -600,10 +608,11 @@ pub const MAX_PAYLOAD: usize = 256 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanValidationError {
     ZeroDuration,
-    /// The plan's duration is not an exact multiple of the 2 ms
-    /// quantum. Authoring schedules that don't align to the quantum
-    /// cannot be admitted: a 1 ns slippage could truncate to a
-    /// whole-microsecond boundary that looks aligned. See Gate B4.
+    /// The plan's duration is not an exact multiple of the
+    /// simulator-probed quantum. Authoring schedules that don't
+    /// align to the quantum cannot be admitted: a 1 ns slippage
+    /// could truncate to a whole-microsecond boundary that looks
+    /// aligned. See Gate B4.
     DurationNotAligned {
         nanos: u128,
         quantum_nanos: u128,
@@ -656,6 +665,14 @@ pub enum PlanValidationError {
     /// budget would make every command expire instantly.
     ZeroHostDeadline {
         step_label: String,
+    },
+    /// `duration / quantum` would not fit in a `u32`. Saturating to
+    /// `u32::MAX` hides the overflow from the harness; reject it
+    /// instead so the tool reports the actual reason.
+    TransitionCountOverflow {
+        transitions: u128,
+        quantum_nanos: u128,
+        total_nanos: u128,
     },
 }
 
@@ -724,6 +741,15 @@ impl std::fmt::Display for PlanValidationError {
             Self::ZeroHostDeadline { step_label } => write!(
                 f,
                 "step `{step_label}` declares a zero host deadline for a command action"
+            ),
+            Self::TransitionCountOverflow {
+                transitions,
+                quantum_nanos,
+                total_nanos,
+            } => write!(
+                f,
+                "scenario plan duration {total_nanos} ns would map to {transitions} transitions \
+                 at a {quantum_nanos} ns quantum; u32 cap exceeded"
             ),
         }
     }
@@ -808,15 +834,24 @@ mod tests {
         // Regression for the scenario acceptance review line 338: "unaligned
         // duration plan accepted with transition count=1". A
         // duration of 2_001 ns is not a multiple of the 2 ms (2_000_000 ns)
-        // quantum. The validator must refuse it.
+        // rover quantum. The quantum-aware validator must refuse it; the
+        // shape validator alone accepts it because shape is independent
+        // of a scene.
         let plan = ScenarioPlan::with_steps(
             "scene",
             Duration::from_nanos(2_001),
             vec![Step::new("a", 0, setpoint_action(1))],
             vec![],
-        );
+        )
+        .expect("shape validator alone accepts unaligned durations");
+        let rover_quantum =
+            crate::scenario::Quantum::from_micros(crate::scenario::Quantum::DEFAULT_MICROS)
+                .expect("default quantum");
+        let error = plan
+            .validate_for_quantum(rover_quantum)
+            .expect_err("quantum validator must reject an unaligned duration");
         assert!(matches!(
-            plan.unwrap_err(),
+            error,
             PlanValidationError::DurationNotAligned {
                 nanos: 2_001,
                 quantum_nanos: 2_000_000,
@@ -828,13 +863,22 @@ mod tests {
     fn rejects_quantum_at_or_beyond_final_transition() {
         // Two seconds at 2 ms = 1_000 transitions; quantum at the final
         // transition index (`transition_count`) is rejected because the
-        // valid range is `[0, transition_count)`.
+        // valid range is `[0, transition_count)`. The shape validator
+        // passes step shapes, so the quantum validator is what catches
+        // the out-of-range bound.
         let steps = vec![
             Step::new("a", 0, setpoint_action(1)),
             Step::new("b", 1_000, setpoint_action(2)),
         ];
-        let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(2), steps, vec![]);
-        match plan.unwrap_err() {
+        let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(2), steps, vec![])
+            .expect("shape validator alone accepts");
+        let rover_quantum =
+            crate::scenario::Quantum::from_micros(crate::scenario::Quantum::DEFAULT_MICROS)
+                .expect("default quantum");
+        match plan
+            .validate_for_quantum(rover_quantum)
+            .expect_err("quantum validator must reject out-of-range quantum")
+        {
             PlanValidationError::QuantumOutOfRange {
                 label,
                 quantum,
@@ -977,11 +1021,13 @@ mod tests {
             ScenarioPlan::with_steps("scene", Duration::from_secs(2), steps, vec![]).unwrap();
         assert_eq!(plan.steps[0].label, "first");
         assert_eq!(plan.steps[1].label, "second");
-        // transition_count is derived from duration and the
-        // 2 ms quantum, not from the action count. Two seconds at
-        // 2 ms = 1,000 transitions regardless of how many actions
-        // the author wrote.
-        assert_eq!(plan.transition_count(), 1_000);
+        // transition_count is derived from duration and the probed
+        // quantum. With the rover's 2 ms quantum, two seconds yield
+        // 1,000 transitions regardless of how many actions the
+        // author wrote.
+        let quantum = crate::scenario::Quantum::DEFAULT_MICROS;
+        let rover_quantum = crate::scenario::Quantum::from_micros(quantum).expect("rover quantum");
+        assert_eq!(plan.transition_count(rover_quantum), Some(1_000));
     }
 
     #[test]
@@ -989,5 +1035,144 @@ mod tests {
         let steps = vec![Step::new("withdraw", 0, withdraw_action())];
         let plan = ScenarioPlan::with_steps("scene", Duration::from_secs(1), steps, vec![]);
         assert!(plan.is_ok());
+    }
+
+    // ---- Generic quantum correction tests (plan §9) --------------------
+    //
+    // These cover two non-rover quanta, unaligned durations against
+    // those quanta, zero duration/quantum, overflow past the u32 cap,
+    // and the boundary-zero semantics for the very first transition.
+
+    fn five_ms_quantum() -> crate::scenario::Quantum {
+        crate::scenario::Quantum::from_micros(5_000).expect("5 ms")
+    }
+
+    fn ten_ms_quantum() -> crate::scenario::Quantum {
+        crate::scenario::Quantum::from_micros(10_000).expect("10 ms")
+    }
+
+    #[test]
+    fn non_rover_quantum_yields_correct_transition_count() {
+        // Six seconds at 5 ms = 1_200 transitions.
+        let plan = ScenarioPlan::with_steps(
+            "scene",
+            Duration::from_secs(6),
+            vec![Step::new("a", 0, setpoint_action(1))],
+            vec![],
+        )
+        .expect("shape validator accepts aligned duration");
+        assert_eq!(plan.transition_count(five_ms_quantum()), Some(1_200));
+        // Same six seconds at 10 ms = 600 transitions; the rover
+        // constant must not be applied.
+        assert_eq!(plan.transition_count(ten_ms_quantum()), Some(600));
+    }
+
+    #[test]
+    fn non_rover_quantum_rejects_unaligned_duration() {
+        // 6.001 s at 5 ms (5_000_000 ns) is not a multiple; reject.
+        let plan = ScenarioPlan::with_steps(
+            "scene",
+            Duration::from_nanos(6_001_000_000),
+            vec![Step::new("a", 0, setpoint_action(1))],
+            vec![],
+        )
+        .expect("shape validator accepts unaligned duration");
+        let error = plan
+            .validate_for_quantum(five_ms_quantum())
+            .expect_err("5 ms quantum must reject 6.001 s");
+        assert!(matches!(
+            error,
+            PlanValidationError::DurationNotAligned {
+                quantum_nanos: 5_000_000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn validate_for_quantum_rejects_zero_duration() {
+        // Duration of zero cannot meaningfully align to any quantum.
+        // Construct via the raw enum variant to bypass `with_steps`
+        // which would have enforced a positive duration through the
+        // shape validator.
+        let mut plan = ScenarioPlan::new("scene", Duration::ZERO);
+        plan.steps.push(Step::new("a", 0, setpoint_action(1)));
+        let error = plan
+            .validate_for_quantum(ten_ms_quantum())
+            .expect_err("zero duration must be rejected");
+        assert!(matches!(error, PlanValidationError::ZeroDuration));
+    }
+
+    #[test]
+    fn validate_for_quantum_rejects_zero_quantum() {
+        // Zero microseconds cannot form a quantum; `from_micros`
+        // already returns `None` at construction. Synthesize the
+        // transition-count path with a 1-microsecond quantum to keep
+        // the test self-contained and verify that the alignment
+        // check refuses durations that are sub-quantum.
+        let quantum = crate::scenario::Quantum::from_micros(1).expect("1 µs");
+        let plan = ScenarioPlan::with_steps(
+            "scene",
+            Duration::from_nanos(999), // not a multiple of 1_000 ns
+            vec![Step::new("a", 0, setpoint_action(1))],
+            vec![],
+        )
+        .expect("shape validator accepts sub-quantum duration");
+        let error = plan
+            .validate_for_quantum(quantum)
+            .expect_err("999 ns duration at 1 µs must be rejected");
+        assert!(matches!(
+            error,
+            PlanValidationError::DurationNotAligned {
+                quantum_nanos: 1_000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn transition_count_overflow_is_rejected_not_saturated() {
+        // Build a duration that overflows u32 at the chosen quantum.
+        // (2^32 + 1) * 5 ms = ~596 hours, which exceeds any sane run
+        // length but stays well below the u128 nanos cap.
+        let nanos_per_transition: u128 = 5_000_000;
+        let overflow_count: u128 = u32::MAX as u128 + 1; // = 2^32
+        // `overflow_count + 1` would wrap a u32; we widen first to u128.
+        let duration_nanos: u128 = (overflow_count + 1) * nanos_per_transition;
+        let duration = std::time::Duration::from_nanos(duration_nanos as u64);
+        let plan = ScenarioPlan::with_steps(
+            "scene",
+            duration,
+            vec![Step::new("a", 0, setpoint_action(1))],
+            vec![],
+        )
+        .expect("shape validator accepts the long duration");
+        assert_eq!(plan.transition_count(five_ms_quantum()), None);
+        let error = plan
+            .validate_for_quantum(five_ms_quantum())
+            .expect_err("overflow must surface as TransitionCountOverflow, not saturate");
+        assert!(matches!(
+            error,
+            PlanValidationError::TransitionCountOverflow { .. }
+        ));
+    }
+
+    #[test]
+    fn boundary_zero_quantum_is_valid_when_duration_aligns() {
+        // boundary == 0 is the first transition; it is inside
+        // `[0, transitions)` whenever transitions > 0.
+        let plan = ScenarioPlan::with_steps(
+            "scene",
+            Duration::from_secs(1),
+            vec![Step::new("start", 0, setpoint_action(1))],
+            vec![],
+        )
+        .expect("shape validator accepts");
+        let rover_quantum =
+            crate::scenario::Quantum::from_micros(crate::scenario::Quantum::DEFAULT_MICROS)
+                .expect("default");
+        plan.validate_for_quantum(rover_quantum)
+            .expect("boundary zero must validate against a 1 s / 2 ms plan");
+        assert_eq!(plan.transition_count(rover_quantum), Some(500));
     }
 }

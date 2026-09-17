@@ -76,15 +76,11 @@ pub fn run_case_host(
     //    not consulted; the simulator runs `transition_count`
     //    quanta and reports back the actual quantum it observed via
     //    the supervisor's `quantum_ns` validation seam.
-    let transition_count = plan.transition_count();
-    if transition_count == 0 {
-        return Err(Error::SimulationInvalid {
-            message: format!(
-                "scenario `{scenario_name}` plan declares zero transitions at quantum \
-                 {ROVER_QUANTUM_NANOS} ns; refusing to launch an empty supervised experiment"
-            ),
-        });
-    }
+    //
+    //    Phase-specific quantum constants live in the rover-owned scene
+    //    or scenario test data, not the case host. The case host
+    //    currently drives the rover fixture, so the 2 ms rover quantum
+    //    remains here; a future fixture brings its own quantum.
     let quantum =
         Quantum::from_micros(ROVER_QUANTUM_MICROS).ok_or_else(|| Error::SimulationInvalid {
             message: format!(
@@ -92,6 +88,15 @@ pub fn run_case_host(
                  {ROVER_QUANTUM_MICROS} µs; Quantum::from_micros returned None"
             ),
         })?;
+    let transition_count =
+        plan.transition_count(quantum)
+            .ok_or_else(|| Error::SimulationInvalid {
+                message: format!(
+                    "scenario `{scenario_name}` plan declares zero transitions or an overflowing \
+                 duration at quantum {ROVER_QUANTUM_NANOS} ns; refusing to launch an empty or \
+                 overflowing supervised experiment"
+                ),
+            })?;
     let entries = plan
         .steps
         .iter()
