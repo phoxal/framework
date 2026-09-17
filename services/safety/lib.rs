@@ -3,7 +3,7 @@
 //! Safety owns `SafetyStatus` and the assessment algorithms that publish the
 //! constraints endpoint. The protective-constraint payload
 //! (`ConstraintReason`, `Constraint`, `Permission`, `MotionConstraints`) is
-//! owned by Motion and re-exported here from `phoxal_motion`; its pure
+//! owned by Motion and re-exported here from `phoxal_service_motion`; its pure
 //! validation lives in the Motion contract crate, where the orphan rules
 //! permit it. Safety composes those types with world/range evidence and
 //! validates the resulting `SafetyStatus`.
@@ -16,12 +16,12 @@ include!(concat!(env!("OUT_DIR"), "/phoxal.safety.v1.rs"));
 pub use phoxal_robotics::RangeSample;
 
 /// Canonical motion status consumed by the safety assessment.
-pub use phoxal_motion::MotionStatus;
+pub use phoxal_service_motion::MotionStatus;
 /// Canonical protective-constraint payload owned by Motion.
-pub use phoxal_motion::{Constraint, ConstraintReason, MotionConstraints, Permission};
+pub use phoxal_service_motion::{Constraint, ConstraintReason, MotionConstraints, Permission};
 /// Re-export the constraint-validation error from the Motion contract so
-/// callers can match it without depending on `phoxal_motion` directly.
-pub use phoxal_motion::ConstraintValidationError;
+/// callers can match it without depending on `phoxal_service_motion` directly.
+pub use phoxal_service_motion::ConstraintValidationError;
 /// Canonical world products consumed by the safety assessment.
 pub use phoxal_service_world::{WorldBelief, WorldRevision};
 

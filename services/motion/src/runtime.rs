@@ -9,15 +9,15 @@ use phoxal::runtime::input::{Latest, Setpoint};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
 use phoxal_service_kinematics::OdometryState;
 #[cfg(test)]
-use phoxal_motion::actuator_target;
-use phoxal_motion::{
+use phoxal_service_motion::actuator_target;
+use phoxal_service_motion::{
     ActuatorSetpoint, ApplyEmergencyRequest, ApplyEmergencyResponse, Arm, ControlMode,
     EmergencyAccepted, EmergencyRefusalReason, EmergencyRefused, MotionIntent, MotionStatus,
     apply_emergency_request, apply_emergency_response, ports,
 };
 #[cfg(test)]
-use phoxal_motion::{Constraint, ConstraintReason};
-use phoxal_motion::{MotionConstraints, Permission};
+use phoxal_service_motion::{Constraint, ConstraintReason};
+use phoxal_service_motion::{MotionConstraints, Permission};
 
 const INPUT_MAX_AGE_MS: u64 = 100;
 
@@ -506,7 +506,7 @@ mod tests {
     fn engage() -> ApplyEmergencyRequest {
         ApplyEmergencyRequest {
             command: Some(apply_emergency_request::Command::Engage(
-                phoxal_motion::EngageEmergency {},
+                phoxal_service_motion::EngageEmergency {},
             )),
         }
     }
@@ -514,7 +514,7 @@ mod tests {
     fn release() -> ApplyEmergencyRequest {
         ApplyEmergencyRequest {
             command: Some(apply_emergency_request::Command::Release(
-                phoxal_motion::ReleaseEmergency {
+                phoxal_service_motion::ReleaseEmergency {
                     reset_token: "physical-reset".into(),
                 },
             )),

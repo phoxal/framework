@@ -70,7 +70,7 @@ mod tests {
         let actuator = &Ddsm115Inputs::FIELDS[0];
         assert_eq!(actuator.name, "actuator");
         assert_eq!(
-            <phoxal::port::Setpoint<phoxal_motion::ActuatorSetpoint> as PortDescriptor>::KIND,
+            <phoxal::port::Setpoint<phoxal_service_motion::ActuatorSetpoint> as PortDescriptor>::KIND,
             PortKind::Setpoint
         );
         assert_eq!(

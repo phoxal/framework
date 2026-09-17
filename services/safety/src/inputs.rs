@@ -1,5 +1,5 @@
 use phoxal::runtime::input::{Latest, Samples};
-use phoxal_motion::MotionStatus;
+use phoxal_service_motion::MotionStatus;
 use phoxal_safety::{RangeSample, WorldBelief, WorldRevision};
 
 /// One immutable input cut for Safety.

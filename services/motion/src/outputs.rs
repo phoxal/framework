@@ -1,4 +1,4 @@
-use phoxal_motion::ApplyEmergencyResponse;
+use phoxal_service_motion::ApplyEmergencyResponse;
 
 /// Fresh per-invocation Motion products.
 #[phoxal::runtime::outputs]

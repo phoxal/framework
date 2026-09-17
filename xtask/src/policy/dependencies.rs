@@ -46,7 +46,7 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     ("phoxal-mujoco", "phoxal"),
     // Service-owned contract libraries reach the facade through its `port`
     // feature; they never declare `phoxal-port` directly.
-    ("phoxal-motion", "phoxal"),
+    ("phoxal-service-motion", "phoxal"),
     ("phoxal-navigation", "phoxal"),
     ("phoxal-service-kinematics", "phoxal"),
     ("phoxal-service-world", "phoxal"),
@@ -60,7 +60,7 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     ("phoxal-service-kinematics", "phoxal-robotics"),
     ("phoxal-service-world", "phoxal-service-kinematics"),
     ("phoxal-safety", "phoxal-robotics"),
-    ("phoxal-safety", "phoxal-motion"),
+    ("phoxal-safety", "phoxal-service-motion"),
     ("phoxal-safety", "phoxal-service-world"),
 ];
 

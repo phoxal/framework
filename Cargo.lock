@@ -2309,8 +2309,8 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-motion",
  "phoxal-robotics",
+ "phoxal-service-motion",
  "prost",
  "serde",
  "serde_json",
@@ -2400,18 +2400,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-motion"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-service-kinematics",
- "prost",
- "serde",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "phoxal-mujoco"
 version = "0.1.0"
 dependencies = [
@@ -2424,7 +2412,7 @@ dependencies = [
  "phoxal-component-oak_d_lite",
  "phoxal-component-vl53l1x",
  "phoxal-component-zed_f9p",
- "phoxal-motion",
+ "phoxal-service-motion",
  "sha2",
  "tempfile",
  "thiserror 2.0.19",
@@ -2495,8 +2483,8 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-motion",
  "phoxal-robotics",
+ "phoxal-service-motion",
  "phoxal-service-world",
  "prost",
  "serde",
@@ -2510,6 +2498,18 @@ dependencies = [
  "anyhow",
  "phoxal",
  "phoxal-robotics",
+ "prost",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "phoxal-service-motion"
+version = "0.68.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-service-kinematics",
  "prost",
  "serde",
  "thiserror 2.0.19",

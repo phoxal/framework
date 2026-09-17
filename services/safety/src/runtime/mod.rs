@@ -9,7 +9,7 @@ use phoxal::runtime::input::Latest;
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{ExecutionTime, InitContext, ObservationStamp, Runtime, StepContext};
 #[cfg(test)]
-use phoxal_motion::MotionStatus;
+use phoxal_service_motion::MotionStatus;
 use phoxal_safety::{
     Constraint, ConstraintReason, MotionConstraints, Permission, RangeSample, SafetyStatus, ports,
 };

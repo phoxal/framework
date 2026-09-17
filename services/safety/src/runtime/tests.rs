@@ -44,7 +44,7 @@ fn world_revision(at_ms: u64) -> Latest<WorldRevision> {
 fn motion(at_ms: u64) -> Latest<MotionStatus> {
     Latest::from_sample(Sample::new(
         MotionStatus {
-            mode: phoxal_motion::ControlMode::Disarmed as i32,
+            mode: phoxal_service_motion::ControlMode::Disarmed as i32,
             emergency_latched: false,
             selected_owner_id: None,
             protective_state_clear: false,

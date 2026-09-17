@@ -508,7 +508,7 @@ mod tests {
         );
         assert_eq!(
             library_package_name("services/motion/contract").as_deref(),
-            Some("phoxal-motion")
+            Some("phoxal-service-motion")
         );
         // The consolidated service directory map agrees with the historical
         // contract/ shape.

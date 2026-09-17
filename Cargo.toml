@@ -163,7 +163,7 @@ phoxal-macros = { path = "crates/macros", version = "=0.68.0", registry = "phoxa
 phoxal-build = { path = "crates/build", version = "0.1.0", registry = "phoxal" }
 phoxal-port = { path = "crates/port", version = "0.1.0", registry = "phoxal" }
 phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "phoxal" }
-phoxal-motion = { path = "services/motion", version = "0.68.0", registry = "phoxal" }
+phoxal-service-motion = { path = "services/motion", version = "0.68.0", registry = "phoxal" }
 phoxal-service-kinematics = { path = "services/kinematics", version = "0.68.0", registry = "phoxal" }
 phoxal-service-world = { path = "services/world", version = "0.68.0", registry = "phoxal" }
 phoxal-safety = { path = "services/safety", version = "0.68.0", registry = "phoxal" }

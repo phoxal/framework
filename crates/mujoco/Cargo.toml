@@ -44,7 +44,7 @@ phoxal-component-ddsm115 = { path = "../../components/ddsm115", default-features
 phoxal-component-oak_d_lite = { path = "../../components/oak_d_lite", default-features = false }
 phoxal-component-vl53l1x = { path = "../../components/vl53l1x", default-features = false }
 phoxal-component-zed_f9p = { path = "../../components/zed_f9p", default-features = false }
-phoxal-motion = { workspace = true }
+phoxal-service-motion = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

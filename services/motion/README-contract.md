@@ -1,4 +1,4 @@
-# phoxal-motion
+# phoxal-service-motion
 
 Generated messages and typed public ports for the official final motion service.
 

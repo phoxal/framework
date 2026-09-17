@@ -1,6 +1,6 @@
 //! Differential-drive body twist to motor shaft velocity, in SI units.
 use crate::config::MotionConfig;
-use phoxal_motion::{ActuatorSetpoint, ActuatorTarget, MotionIntent, actuator_target};
+use phoxal_service_motion::{ActuatorSetpoint, ActuatorTarget, MotionIntent, actuator_target};
 
 pub(super) fn stopped_setpoint(config: &MotionConfig) -> ActuatorSetpoint {
     setpoint_from_twist(0.0, 0.0, config)
