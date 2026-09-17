@@ -1,4 +1,9 @@
-//! Generated kinematics messages, typed ports, and domain validation.
+//! Public kinematics contract library.
+//!
+//! Generated Protobuf messages, the original descriptor closure, the typed
+//! public port references, and the pure validation of the public payload all
+//! live here. The executable Runtime state, the parsed validator inputs, and
+//! the launched process live behind the binary target and are not re-exported.
 
 use std::collections::HashSet;
 

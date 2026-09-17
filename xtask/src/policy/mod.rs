@@ -71,11 +71,11 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 14] = [
     "crates/project",
     "crates/installation",
     "crates/mujoco",
-    "services/motion/contract",
-    "services/navigation/contract",
-    "services/kinematics/contract",
-    "services/world/contract",
-    "services/safety/contract",
+    "services/motion",
+    "services/navigation",
+    "services/kinematics",
+    "services/world",
+    "services/safety",
 ];
 
 /// Workspace-only package directories that are intentionally outside the
@@ -527,11 +527,11 @@ mod tests {
             ("crates/project", "phoxal-project"),
             ("crates/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
-            ("services/motion/contract", "phoxal-motion"),
-            ("services/navigation/contract", "phoxal-navigation"),
-            ("services/kinematics/contract", "phoxal-kinematics"),
-            ("services/world/contract", "phoxal-world"),
-            ("services/safety/contract", "phoxal-safety"),
+            ("services/motion", "phoxal-motion"),
+            ("services/navigation", "phoxal-navigation"),
+            ("services/kinematics", "phoxal-kinematics"),
+            ("services/world", "phoxal-world"),
+            ("services/safety", "phoxal-safety"),
         ] {
             assert_eq!(library_package_name(directory).as_deref(), Some(package));
             assert!(

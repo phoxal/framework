@@ -2389,11 +2389,13 @@ dependencies = [
 
 [[package]]
 name = "phoxal-kinematics"
-version = "0.1.0"
+version = "0.68.0"
 dependencies = [
+ "anyhow",
  "phoxal",
  "phoxal-robotics",
  "prost",
+ "serde",
  "thiserror 2.0.19",
 ]
 
@@ -2502,17 +2504,6 @@ dependencies = [
  "phoxal-world",
  "prost",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "phoxal-service-kinematics"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-kinematics",
- "phoxal-robotics",
- "serde",
 ]
 
 [[package]]
