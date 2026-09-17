@@ -1733,6 +1733,9 @@ async fn send_error(query: &Query, error: &PublicTransportError, limits: &Public
 
 #[cfg(test)]
 mod tests {
+    #[path = "support/router.rs"]
+    mod support;
+
     use super::*;
     use phoxal::communication_transport::{
         PublicSessionConfig, PublicSessionConnection, PublicSessionTransport,
@@ -1747,7 +1750,7 @@ mod tests {
         let endpoint = format!("tcp/{}", listener.local_addr().expect("test address"));
         drop(listener);
 
-        let router = phoxal::test_router::open(std::slice::from_ref(&endpoint)).await;
+        let router = support::open(std::slice::from_ref(&endpoint)).await;
         let target_a = DeploymentTarget::new("workshop", "rover-a").expect("target a");
         let target_b = DeploymentTarget::new("workshop", "rover-b").expect("target b");
         let (owner_a, bus_a) = phoxal::runtime::connection::ConnectionOwner::open(

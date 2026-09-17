@@ -180,7 +180,5 @@ pub mod __private {
     }
 }
 
-pub mod test_router;
-
 /// Linked framework package version for executable information responses.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
