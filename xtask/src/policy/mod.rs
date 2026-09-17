@@ -40,6 +40,7 @@ mod feature_gate;
 mod framework_executable;
 mod nested_package;
 mod registry;
+mod sdk_surface;
 mod test_module_ownership;
 mod tracked_source;
 
@@ -268,7 +269,7 @@ struct Rule {
 /// Every rule this gate enforces, in the order the report prints them:
 /// workspace shape first, then what the crates may depend on, then what the
 /// committed source may say.
-const RULES: [Rule; 12] = [
+const RULES: [Rule; 13] = [
     Rule {
         name: "the library crate list matches the workspace members",
         check: the_library_crate_list_matches_the_workspace_members,
@@ -317,6 +318,10 @@ const RULES: [Rule; 12] = [
     Rule {
         name: "tools keep their private implementation as Rust modules",
         check: nested_package::no_nested_private_cargo_package_under_a_tool,
+    },
+    Rule {
+        name: "the SDK keeps server-state out of its public surface",
+        check: sdk_surface::the_sdk_keeps_server_state_out_of_its_public_surface,
     },
 ];
 
