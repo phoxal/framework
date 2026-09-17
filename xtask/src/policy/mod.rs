@@ -528,7 +528,7 @@ mod tests {
             ("crates/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
             ("services/motion", "phoxal-motion"),
-            ("services/navigation/contract", "phoxal-navigation"),
+            ("services/navigation", "phoxal-navigation"),
             ("services/kinematics", "phoxal-kinematics"),
             ("services/world", "phoxal-world"),
             ("services/safety", "phoxal-safety"),
