@@ -1,5 +1,5 @@
 use phoxal::runtime::input::Latest;
-use phoxal_kinematics::OdometryState;
+use phoxal_service_kinematics::OdometryState;
 
 /// One immutable pose cut for World.
 #[phoxal::runtime::inputs]

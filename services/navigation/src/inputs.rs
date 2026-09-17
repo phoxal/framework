@@ -1,5 +1,5 @@
 use phoxal::runtime::input::{Commands, Latest};
-use phoxal_kinematics::OdometryState;
+use phoxal_service_kinematics::OdometryState;
 use phoxal_navigation::{ApplyCommandRequest, ApplyCommandResponse, ports};
 use phoxal_world::WorldRevision;
 

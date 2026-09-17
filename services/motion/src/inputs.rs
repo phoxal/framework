@@ -1,5 +1,5 @@
 use phoxal::runtime::input::{Commands, Latest, Setpoint};
-use phoxal_kinematics::OdometryState;
+use phoxal_service_kinematics::OdometryState;
 use phoxal_motion::{ApplyEmergencyRequest, ApplyEmergencyResponse, MotionIntent, ports};
 use phoxal_motion::MotionConstraints;
 

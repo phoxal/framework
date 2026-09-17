@@ -1,5 +1,5 @@
 use phoxal::runtime::Sample;
-use phoxal_kinematics::{JointState, ports};
+use phoxal_service_kinematics::{JointState, ports};
 
 /// Fresh measured joint products.
 #[phoxal::runtime::outputs]

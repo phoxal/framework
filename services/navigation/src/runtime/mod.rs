@@ -6,7 +6,7 @@ use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::{Commands, Latest};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
-use phoxal_kinematics::OdometryState;
+use phoxal_service_kinematics::OdometryState;
 use phoxal_navigation::{
     ApplyCommandRequest, ApplyCommandResponse, GetGoalStatusRequest, GetGoalStatusResponse,
     GoalFinished, GoalOutcome, GoalTarget, NavigationState, Phase, RefusalReason,

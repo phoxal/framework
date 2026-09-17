@@ -91,12 +91,12 @@ pub(super) fn validate_config(config: &KinematicsConfig) -> phoxal::Result<()> {
     let mut ids = BTreeSet::new();
     let mut id = |value: &String| -> phoxal::Result<()> {
         if value.is_empty()
-            || value.len() > phoxal_kinematics::MAX_ID_BYTES
+            || value.len() > phoxal_service_kinematics::MAX_ID_BYTES
             || !ids.insert(value.clone())
         {
             return Err(anyhow::anyhow!(
                 "encoder, joint, and frame IDs must be distinct and contain 1 to {} bytes",
-                phoxal_kinematics::MAX_ID_BYTES
+                phoxal_service_kinematics::MAX_ID_BYTES
             ));
         }
         Ok(())

@@ -7,7 +7,7 @@ use crate::outputs::MotionOutputs;
 #[cfg(test)]
 use phoxal::runtime::input::{Latest, Setpoint};
 use phoxal::runtime::{ExecutionTime, InitContext, Runtime, StepContext};
-use phoxal_kinematics::OdometryState;
+use phoxal_service_kinematics::OdometryState;
 #[cfg(test)]
 use phoxal_motion::actuator_target;
 use phoxal_motion::{

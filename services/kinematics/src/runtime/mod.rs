@@ -8,7 +8,7 @@ use phoxal::runtime::Sample;
 #[cfg(test)]
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
-use phoxal_kinematics::{
+use phoxal_service_kinematics::{
     FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
     OdometryState, UnavailableReason, ports,
 };

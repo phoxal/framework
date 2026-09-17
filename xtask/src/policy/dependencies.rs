@@ -48,7 +48,7 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     // feature; they never declare `phoxal-port` directly.
     ("phoxal-motion", "phoxal"),
     ("phoxal-navigation", "phoxal"),
-    ("phoxal-kinematics", "phoxal"),
+    ("phoxal-service-kinematics", "phoxal"),
     ("phoxal-world", "phoxal"),
     ("phoxal-safety", "phoxal"),
     // The shared robotics vocabulary crate re-exports typed ports through the
@@ -57,8 +57,8 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     // Cross-service and shared-vocabulary edges retained from the prior
     // design. Motion owns the protective-constraint payload, so Safety depends
     // on Motion for both `MotionStatus` and the canonical constraint input.
-    ("phoxal-kinematics", "phoxal-robotics"),
-    ("phoxal-world", "phoxal-kinematics"),
+    ("phoxal-service-kinematics", "phoxal-robotics"),
+    ("phoxal-world", "phoxal-service-kinematics"),
     ("phoxal-safety", "phoxal-robotics"),
     ("phoxal-safety", "phoxal-motion"),
     ("phoxal-safety", "phoxal-world"),

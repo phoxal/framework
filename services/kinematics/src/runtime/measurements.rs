@@ -2,7 +2,7 @@
 use crate::config::KinematicsConfig;
 use crate::inputs::KinematicsInputs;
 use phoxal::runtime::{ExecutionTime, ObservationStamp, Sample};
-use phoxal_kinematics::{JointState, UnavailableReason};
+use phoxal_service_kinematics::{JointState, UnavailableReason};
 use phoxal_robotics::EncoderSample;
 use std::collections::{BTreeMap, BTreeSet};
 

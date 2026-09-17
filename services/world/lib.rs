@@ -10,7 +10,7 @@ use std::collections::HashSet;
 include!(concat!(env!("OUT_DIR"), "/phoxal.world.v1.rs"));
 
 /// The kinematics-owned odometry payload admitted at the world boundary.
-pub use phoxal_kinematics::OdometryState;
+pub use phoxal_service_kinematics::OdometryState;
 
 /// Public typed ports owned by the World Protobuf service.
 pub use world::ports;

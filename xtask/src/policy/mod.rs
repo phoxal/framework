@@ -110,13 +110,13 @@ pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] = [
 /// The package a library crate directory must hold, or `None` for a directory
 /// that names no library crate location.
 ///
-/// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>` or at
-/// `services/<suffix>` (the consolidated library-plus-binary service
-/// package; the historical `services/<suffix>/contract/` shape is no
-/// longer produced and any directory matching that path is treated as
-/// the same package name for backwards-compatibility with vendored
-/// fixtures). The `phoxal/` facade and the `supervisor/` host live
-/// directly at their package names.
+/// Framework libraries are `phoxal-<suffix>` at `crates/<suffix>`. The
+/// consolidated library-plus-binary service package is
+/// `phoxal-service-<suffix>` at `services/<suffix>` (the historical
+/// `services/<suffix>/contract/` shape is no longer produced and any
+/// directory matching that path is treated as the same package name for
+/// backwards-compatibility with vendored fixtures). The `phoxal/` facade
+/// and the `supervisor/` host live directly at their package names.
 ///
 /// This is the whole reason the directory can be shortened at all. `crates/`
 /// already says `phoxal`, so repeating it in every child would be the
@@ -134,15 +134,15 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
         return Some("phoxal-supervisor".to_owned());
     }
     if let Some(rest) = directory.strip_prefix("services/") {
-        // The consolidated service package is `services/<suffix>/`. The
-        // historical nested-contract shape `services/<suffix>/contract/`
-        // maps to the same package name; fixtures may still carry the old
-        // shape.
+        // The consolidated service package is `services/<suffix>/` with the
+        // package name `phoxal-service-<suffix>`. The historical
+        // nested-contract shape `services/<suffix>/contract/` maps to the
+        // same package name; fixtures may still carry the old shape.
         let service = rest
             .strip_suffix("/contract")
             .unwrap_or(rest);
         if !service.is_empty() && !service.contains('/') {
-            return Some(format!("{FACADE}-{service}"));
+            return Some(format!("{FACADE}-service-{service}"));
         }
         return None;
     }
@@ -514,7 +514,7 @@ mod tests {
         // contract/ shape.
         assert_eq!(
             library_package_name("services/motion").as_deref(),
-            Some("phoxal-motion")
+            Some("phoxal-service-motion")
         );
         // A hyphenated suffix maps through unchanged; no such crate exists
         // today, and the rule has to hold for the one that might.
@@ -560,11 +560,11 @@ mod tests {
             ("crates/project", "phoxal-project"),
             ("crates/installation", "phoxal-installation"),
             ("crates/mujoco", "phoxal-mujoco"),
-            ("services/motion", "phoxal-motion"),
-            ("services/navigation", "phoxal-navigation"),
-            ("services/kinematics", "phoxal-kinematics"),
-            ("services/world", "phoxal-world"),
-            ("services/safety", "phoxal-safety"),
+            ("services/motion", "phoxal-service-motion"),
+            ("services/navigation", "phoxal-service-navigation"),
+            ("services/kinematics", "phoxal-service-kinematics"),
+            ("services/world", "phoxal-service-world"),
+            ("services/safety", "phoxal-service-safety"),
         ] {
             assert_eq!(library_package_name(directory).as_deref(), Some(package));
             assert!(

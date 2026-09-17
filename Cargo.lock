@@ -2388,18 +2388,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-kinematics"
-version = "0.68.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-robotics",
- "prost",
- "serde",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "phoxal-macros"
 version = "0.68.0"
 dependencies = [
@@ -2417,7 +2405,7 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-kinematics",
+ "phoxal-service-kinematics",
  "prost",
  "serde",
  "thiserror 2.0.19",
@@ -2448,7 +2436,7 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-kinematics",
+ "phoxal-service-kinematics",
  "phoxal-world",
  "prost",
  "serde",
@@ -2516,6 +2504,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-service-kinematics"
+version = "0.68.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-robotics",
+ "prost",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "phoxal-supervisor"
 version = "0.68.0"
 dependencies = [
@@ -2545,7 +2545,7 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-kinematics",
+ "phoxal-service-kinematics",
  "prost",
  "serde",
  "thiserror 2.0.19",

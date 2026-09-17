@@ -28,7 +28,7 @@ runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 
 [dependencies]
 phoxal = { workspace = true, default-features = false, features = ["port"] }
-phoxal-kinematics = { workspace = true }
+phoxal-service-kinematics = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true, optional = true }
@@ -36,7 +36,7 @@ serde = { workspace = true, optional = true }
 
 [build-dependencies]
 phoxal = { workspace = true, default-features = false, features = ["build"] }
-phoxal-kinematics = { workspace = true }
+phoxal-service-kinematics = { workspace = true }
 
 [lints]
 workspace = true
