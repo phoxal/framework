@@ -31,7 +31,7 @@ use super::{Subject, Violation, is_library_package};
 /// `phoxal-mujoco` is a framework library that depends on the facade's port
 /// surface plus its owned component contract crates; component crates
 /// themselves are not libraries for this rule and so are checked elsewhere.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 28] = [
     // The facade re-exports typed ports, the typed-port macros, and the
     // internal build helper behind the optional `port`/`build`/`runtime`
     // features. These are the three edges the facade grows itself.
@@ -59,9 +59,23 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 17] = [
     // on Motion for both `MotionStatus` and the canonical constraint input.
     ("phoxal-service-kinematics", "phoxal-robotics"),
     ("phoxal-service-world", "phoxal-service-kinematics"),
+    ("phoxal-service-motion", "phoxal-service-kinematics"),
+    ("phoxal-service-navigation", "phoxal-service-kinematics"),
+    ("phoxal-service-navigation", "phoxal-service-world"),
     ("phoxal-service-safety", "phoxal-robotics"),
     ("phoxal-service-safety", "phoxal-service-motion"),
     ("phoxal-service-safety", "phoxal-service-world"),
+    // Component libraries reach the facade for typed ports and the shared
+    // robotics vocabulary; the DDS-115 driver consumes the Motion actuator
+    // setpoint vocabulary directly.
+    ("phoxal-component-bno085", "phoxal"),
+    ("phoxal-component-ddsm115", "phoxal"),
+    ("phoxal-component-ddsm115", "phoxal-robotics"),
+    ("phoxal-component-ddsm115", "phoxal-service-motion"),
+    ("phoxal-component-oak_d_lite", "phoxal"),
+    ("phoxal-component-vl53l1x", "phoxal"),
+    ("phoxal-component-vl53l1x", "phoxal-robotics"),
+    ("phoxal-component-zed_f9p", "phoxal"),
 ];
 
 /// The edges a canonical crate may never grow, whatever the dependency kind.

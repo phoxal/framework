@@ -256,12 +256,23 @@ impl OfficialArtifact {
         let package_relative = package_directory
             .strip_prefix(root)
             .unwrap_or(package_directory);
+        // Service packages consolidated their contract library to the package
+        // root (`lib.rs` alongside `build.rs`, `proto/`, and `Cargo.toml`) so
+        // the executable implementation under `src/` owns only the private
+        // service modules. Component packages still keep their `lib.rs` under
+        // `src/`: their executable is a thin driver around the contract
+        // library, so the same convention as Cargo's default `src/lib.rs`
+        // applies and the contract library stays adjacent to the executable
+        // entry point.
         let relative_source = |name: &str| package_relative.join("src").join(name);
+        let expected_lib_source = match kind {
+            ArtifactKind::Service => package_relative.join("lib.rs"),
+            ArtifactKind::Component => relative_source("lib.rs"),
+        };
+        let expected_bin_source = relative_source("main.rs");
         match kind {
             ArtifactKind::Service => {
                 let expected_lib = package_name.replace('-', "_");
-                let expected_bin_source = relative_source("main.rs");
-                let expected_lib_source = relative_source("lib.rs");
                 validate_service_targets(
                     package_name,
                     "an official service package",
@@ -277,8 +288,6 @@ impl OfficialArtifact {
             }
             ArtifactKind::Component => {
                 let expected_lib = package_name.replace('-', "_");
-                let expected_bin_source = relative_source("main.rs");
-                let expected_lib_source = relative_source("lib.rs");
                 validate_service_targets(
                     package_name,
                     "an official component package",
@@ -406,6 +415,27 @@ impl ManifestClassification {
             );
         };
         let directory = directory.join("/");
+        // Component packages combine a published library with a private
+        // executable; their contract library is consumed directly by
+        // `phoxal-mujoco` and other framework libraries, so they appear in
+        // `LIBRARY_CRATE_DIRS` as well as in the artifact grammar. The
+        // artifact classification wins: a path under `components/<id>/` is
+        // an artifact of kind Component regardless of its library listing.
+        // The library half is checked by the library-completeness rule.
+        if let Ok(kind) = ArtifactKind::try_from(top_level) {
+            let [_top, id, "Cargo.toml"] = components.as_slice() else {
+                bail!(
+                    "workspace package manifest {} is nested under artifact root '{top_level}'; \
+                     official artifacts must live exactly at {{{}}}/<id>/Cargo.toml",
+                    relative.display(),
+                    ArtifactKind::ALL.map(ArtifactKind::directory).join(",")
+                );
+            };
+            return Ok(Self::Artifact {
+                kind,
+                id: ArtifactId::new(id)?,
+            });
+        }
         if is_library_directory(&directory) || is_internal_package_directory(&directory) {
             return Ok(Self::Excluded);
         }
@@ -427,22 +457,10 @@ impl ManifestClassification {
             );
         }
 
-        let Ok(kind) = ArtifactKind::try_from(top_level) else {
-            return Ok(Self::NonArtifact);
-        };
-        let [_, id, "Cargo.toml"] = components.as_slice() else {
-            bail!(
-                "workspace package manifest {} is nested under artifact root '{top_level}'; \
-                 official artifacts must live exactly at {{{}}}/<id>/Cargo.toml",
-                relative.display(),
-                ArtifactKind::ALL.map(ArtifactKind::directory).join(",")
-            );
-        };
-
-        Ok(Self::Artifact {
-            kind,
-            id: ArtifactId::new(id)?,
-        })
+        // Anything left here is a path the grammar deliberately says nothing
+        // about (e.g. an independent simulator tree outside this workspace's
+        // catalogue).
+        Ok(Self::NonArtifact)
     }
 }
 
