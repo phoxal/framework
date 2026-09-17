@@ -16,8 +16,8 @@ use phoxal_motion::{
     apply_emergency_request, apply_emergency_response, ports,
 };
 #[cfg(test)]
-use phoxal_safety::{Constraint, ConstraintReason};
-use phoxal_safety::{MotionConstraints, Permission};
+use phoxal_motion::{Constraint, ConstraintReason};
+use phoxal_motion::{MotionConstraints, Permission};
 
 const INPUT_MAX_AGE_MS: u64 = 100;
 

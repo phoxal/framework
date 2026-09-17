@@ -1,7 +1,7 @@
 use phoxal::runtime::input::{Commands, Latest, Setpoint};
 use phoxal_kinematics::OdometryState;
 use phoxal_motion::{ApplyEmergencyRequest, ApplyEmergencyResponse, MotionIntent, ports};
-use phoxal_safety::MotionConstraints;
+use phoxal_motion::MotionConstraints;
 
 /// One immutable input cut for Motion.
 #[phoxal::runtime::inputs]

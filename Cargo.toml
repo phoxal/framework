@@ -19,7 +19,6 @@ members = [
     "crates/project",
     "crates/installation",
     "crates/mujoco",
-    "services/motion/contract",
     "services/navigation/contract",
     "services/safety/contract",
     "tests/fixtures/contracts/producer",
@@ -56,7 +55,6 @@ default-members = [
     "crates/project",
     "crates/installation",
     "crates/mujoco",
-    "services/motion/contract",
     "services/navigation/contract",
     "services/safety/contract",
     "tests/fixtures/contracts/producer",
@@ -169,7 +167,7 @@ phoxal-macros = { path = "crates/macros", version = "=0.68.0", registry = "phoxa
 phoxal-build = { path = "crates/build", version = "0.1.0", registry = "phoxal" }
 phoxal-port = { path = "crates/port", version = "0.1.0", registry = "phoxal" }
 phoxal-robotics = { path = "crates/robotics", version = "0.1.0", registry = "phoxal" }
-phoxal-motion = { path = "services/motion/contract", version = "0.1.0", registry = "phoxal" }
+phoxal-motion = { path = "services/motion", version = "0.68.0", registry = "phoxal" }
 phoxal-navigation = { path = "services/navigation/contract", version = "0.1.0", registry = "phoxal" }
 phoxal-kinematics = { path = "services/kinematics", version = "0.68.0", registry = "phoxal" }
 phoxal-world = { path = "services/world", version = "0.68.0", registry = "phoxal" }
