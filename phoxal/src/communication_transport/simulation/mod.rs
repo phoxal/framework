@@ -4,8 +4,8 @@ mod phases;
 mod products;
 
 use super::{
-    DEFAULT_PUBLIC_DEADLINE, PublicBackendError, PublicSimulationBackend, PublicSimulationContext,
-    PublicTransportError, bounded_error_detail, cancel_session_subscriptions,
+    cancel_session_subscriptions, DEFAULT_PUBLIC_DEADLINE, PublicBackendError,
+    PublicSimulationBackend, PublicSimulationContext, PublicTransportError, bounded_error_detail,
 };
 use crate::communication::simulation::{
     AcquireAuthorityRequest, AcquireAuthorityResponse, AdmitInitialObservationsRequest,
@@ -79,7 +79,7 @@ const SIMULATION_GRANT_BYTES: usize = 32;
 const MAX_SIMULATION_CORRELATION_BYTES: usize = 64;
 const MAX_RETAINED_SIMULATION_PHASES: usize = 64;
 const MAX_SIMULATION_PRODUCT_BYTES: usize = 4 * 1024 * 1024;
-pub(super) const MAX_SIMULATION_CUT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_SIMULATION_CUT_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_SIMULATION_RECEIPT_BYTE_CAP: usize = 512 * 1024;
 #[derive(Clone, Debug)]
 struct SimulationPhaseAdmission {

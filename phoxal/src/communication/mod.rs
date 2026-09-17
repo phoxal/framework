@@ -25,10 +25,10 @@ pub mod simulation {
     include!(concat!(env!("OUT_DIR"), "/phoxal.simulation.v1.rs"));
 }
 
-mod route;
+pub(crate) mod route;
 mod session_state;
 mod supervisor_adapter;
-mod validation;
+pub(crate) mod validation;
 pub use route::{PublicOperation, PublicRoute, PublicRouteKind};
 pub use session_state::{
     DEFAULT_LEASE_MS, DEFAULT_MAX_SESSIONS, LogicalSession, SessionId, SessionTable,
