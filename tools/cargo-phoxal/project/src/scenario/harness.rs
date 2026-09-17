@@ -58,11 +58,13 @@ pub fn generate_harness_source(
 
     // The `main` is a minimal dispatch that prints the registered
     // scenarios and forwards a `run <name>` invocation to the case
-    // host over the private control channel. The case host lives in
-    // the tool (`tools/case-host`) and owns the simulation lifecycle
-    // (provisioning, supervisor admission, native completion, bounded
-    // cleanup, lifecycle-owned terminal evidence). The harness binary
-    // depends only on the SDK; the tool drives the protocol through
+    // host over the private control channel. The case host is owned
+    // by the cargo-phoxal project implementation
+    // (`tools/cargo-phoxal/project/src/scenario/case_host.rs`) and
+    // owns the simulation lifecycle (provisioning, supervisor
+    // admission, native completion, bounded cleanup, lifecycle-owned
+    // terminal evidence). The harness binary depends only on the SDK;
+    // the tool drives the protocol through
     // `phoxal::scenario::__harness`. The harness retains the planned
     // scenario instance and runs `verify_box` on it after the tool
     // sends the lifecycle-observed evidence; the tool only reports
