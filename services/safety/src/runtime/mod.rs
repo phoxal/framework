@@ -10,11 +10,11 @@ use phoxal::runtime::input::Samples;
 use phoxal::runtime::{ExecutionTime, InitContext, ObservationStamp, Runtime, StepContext};
 #[cfg(test)]
 use phoxal_service_motion::MotionStatus;
-use phoxal_safety::{
+use phoxal_service_safety::{
     Constraint, ConstraintReason, MotionConstraints, Permission, RangeSample, SafetyStatus, ports,
 };
 #[cfg(test)]
-use phoxal_safety::{WorldBelief, WorldRevision};
+use phoxal_service_safety::{WorldBelief, WorldRevision};
 use std::collections::BTreeMap;
 
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;

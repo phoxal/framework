@@ -1,4 +1,4 @@
-# phoxal-safety
+# phoxal-service-safety
 
 Generated messages and typed public ports for the official safety service.
 
