@@ -93,8 +93,11 @@ pub fn list_scenarios(
 }
 
 /// Run one scenario by struct identity (e.g. `scenarios/First`). The
-/// project is prepared, the harness compiled, and the binary
-/// executed with `run <name>`.
+/// project is prepared, the harness compiled, and the case host
+/// drives the harness binary over the private control channel
+/// described in plan §9. The case host owns the simulator/supervisor
+/// lifecycle; the harness only retains the planned scenario for
+/// sealing and verification.
 pub fn run_scenario(
     project: &Project,
     options: &CargoOptions,
@@ -105,24 +108,27 @@ pub fn run_scenario(
         .map_err(|error| ScenarioRunError::PreparationFailed(error.to_string()))?;
     let harness_binary = build_harness_binary(project, options)
         .map_err(ScenarioRunError::HarnessCompilationFailed)?;
-    let run_output = std::process::Command::new(&harness_binary)
-        .arg("run")
-        .arg(scenario_name)
-        .output()
-        .map_err(|error| ScenarioRunError::HarnessExecutionFailed(error.to_string()))?;
-    let stdout = String::from_utf8_lossy(&run_output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&run_output.stderr).into_owned();
-    if !run_output.status.success() {
-        return Err(ScenarioRunError::HarnessExecutionFailed(format!(
-            "run command exited non-zero: {:?}\nstderr: {}",
-            run_output.status, stderr,
-        )));
-    }
+    let tool_report = crate::scenario::case_host::run_case_host(
+        project,
+        options,
+        &harness_binary,
+        scenario_name,
+    )
+    .map_err(|error| ScenarioRunError::HarnessExecutionFailed(error.to_string()))?;
+    let detail = tool_report.detail.clone().unwrap_or_default();
+    let stdout = if tool_report.passed {
+        format!("scenario {}: PASSED\n{detail}", tool_report.scenario_name)
+    } else {
+        format!(
+            "scenario {}: FAILED\n{detail}",
+            tool_report.scenario_name
+        )
+    };
     Ok(ScenarioRunReport {
-        scenario_name: scenario_name.to_owned(),
-        passed: true,
+        scenario_name: tool_report.scenario_name,
+        passed: tool_report.passed,
         stdout,
-        stderr,
+        stderr: String::new(),
         report_artifact_path: None,
     })
 }

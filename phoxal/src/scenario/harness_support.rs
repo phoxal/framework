@@ -294,6 +294,14 @@ pub fn run_harness_case(scenario_name: &str) -> Result<(), HarnessError> {
     // tool, build/validate the typed `ScenarioRun`, reject
     // inconsistent evidence, call `verify_box` on the retained
     // scenario instance, and send the verdict back.
+    //
+    // The seal is strict: if the lifecycle admission was refused
+    // (lifecycle_passing=false) or the cleanup errored
+    // (cleanup_succeeded=false), the typed `ScenarioRun` cannot
+    // seal as passing. We catch that case here and emit a verdict
+    // instead of bubbling the error to the tool as an EOF — every
+    // case ends with a verdict frame so the tool never misreads
+    // an admission refusal as success.
     let evidence = channel.read_message()?;
     let HarnessRequest::Evidence {
         report,
@@ -306,30 +314,54 @@ pub fn run_harness_case(scenario_name: &str) -> Result<(), HarnessError> {
             message: format!("expected Evidence, got `{}`", request_name(&evidence)),
         });
     };
-    let run = build_scenario_run(&planned, &program, &report, cleanup_succeeded, lifecycle_passing)?;
-
-    let verdict = if !lifecycle_passing || !run.passed() {
-        let detail = if run.passed() {
-            Some(format!(
-                "scenario `{}` lifecycle reported non-passing: {}",
-                planned.name,
-                report_summary(&report, cleanup_succeeded, lifecycle_passing)
-            ))
-        } else {
-            Some(format!(
-                "scenario `{}` did not seal as passing: lifecycle or evidence mismatch",
-                planned.name
-            ))
-        };
-        Verdict::fail(detail)
-    } else {
-        match planned.scenario.verify_box(&run) {
-            Ok(()) => Verdict::pass(None),
-            Err(source) => Verdict::fail(Some(format!("verify_box: {source:#}"))),
-        }
-    };
+    let verdict = seal_and_verify(&planned, &program, &report, cleanup_succeeded, lifecycle_passing);
     channel.write_message(&HarnessResponse::Verdict(verdict))?;
     Ok(())
+}
+
+/// Build the typed run, then either seal and call `verify_box` or
+/// surface a typed failure verdict. Every path that reaches this
+/// function emits a verdict; none of them exit through `?`.
+fn seal_and_verify(
+    planned: &PlannedScenario,
+    program: &Program,
+    report: &messages::LifecycleReport,
+    cleanup_succeeded: bool,
+    lifecycle_passing: bool,
+) -> messages::Verdict {
+    let run_result = build_scenario_run(planned, program, report, cleanup_succeeded, lifecycle_passing);
+    match run_result {
+        Ok(run) if !lifecycle_passing || !run.passed() => {
+            let detail = if run.passed() {
+                format!(
+                    "scenario `{}` lifecycle reported non-passing: {}",
+                    planned.name,
+                    report_summary(report, cleanup_succeeded, lifecycle_passing)
+                )
+            } else {
+                format!(
+                    "scenario `{}` did not seal as passing: lifecycle or evidence mismatch",
+                    planned.name
+                )
+            };
+            messages::Verdict::fail(Some(detail))
+        }
+        Ok(run) => match planned.scenario.verify_box(&run) {
+            Ok(()) => messages::Verdict::pass(None),
+            Err(source) => {
+                messages::Verdict::fail(Some(format!("verify_box: {source:#}")))
+            }
+        },
+        Err(error) => {
+            // The seal rejected the evidence. This is the evidence
+            // mismatch path: the tool sent terminal evidence the
+            // harness could not bind to the user's program.
+            messages::Verdict::fail(Some(format!(
+                "scenario `{}` evidence rejected by seal: {error}",
+                planned.name
+            )))
+        }
+    }
 }
 
 fn plan_scenario(name: &str) -> Result<PlannedScenario, HarnessError> {
@@ -628,22 +660,13 @@ mod tests {
             else {
                 panic!("expected Evidence");
             };
-            let run = build_scenario_run(
+            let verdict = seal_and_verify(
                 &planned,
                 &program,
                 &report,
                 cleanup_succeeded,
                 lifecycle_passing,
-            )
-            .expect("build run");
-            let verdict = if !run.passed() || !lifecycle_passing {
-                Verdict::fail(Some("non-passing".to_owned()))
-            } else {
-                match planned.scenario.verify_box(&run) {
-                    Ok(()) => Verdict::pass(None),
-                    Err(e) => Verdict::fail(Some(format!("{e:#}"))),
-                }
-            };
+            );
             verdict_tx.send(verdict.clone()).expect("send verdict");
             channel
                 .write_message(&HarnessResponse::Verdict(verdict))
@@ -692,6 +715,229 @@ mod tests {
         assert!(verdict.passed, "verdict should pass: {:?}", verdict);
         let _ = tool.join();
         let _ = driver.join();
+    }
+
+    /// Rejection path: failed admission. The tool signals that the
+    /// supervisor refused the bundle by sending
+    /// `lifecycle_passing: false`. The harness must report a failing
+    /// verdict; the verdict detail must mention the lifecycle or the
+    /// seal rejection (the strict seal rejects incomplete terminal
+    /// evidence, which is the same observable condition).
+    #[test]
+    fn harness_rejects_failed_lifecycle_admission_with_failing_verdict() {
+        let verdict = drive_protocol_outcome(LifecycleOutcome::AdmissionRefused);
+        assert!(!verdict.passed, "verdict must fail: {:?}", verdict);
+        let detail = verdict.detail.unwrap_or_default();
+        assert!(
+            detail.contains("lifecycle reported non-passing")
+                || detail.contains("did not seal as passing")
+                || detail.contains("evidence rejected by seal"),
+            "verdict detail should explain why the case failed: {detail}"
+        );
+    }
+
+    /// Rejection path: cleanup failure. The lifecycle completed but
+    /// the supervisor's cleanup step errored. The tool sends
+    /// `cleanup_succeeded: false` while keeping `lifecycle_passing`
+    /// at `true`. The harness must still report a failing verdict
+    /// because the seal's `cleanup_ok` flag is unset.
+    #[test]
+    fn harness_rejects_lifecycle_cleanup_failure_with_failing_verdict() {
+        let verdict = drive_protocol_outcome(LifecycleOutcome::CleanupFailed);
+        assert!(!verdict.passed, "verdict must fail: {:?}", verdict);
+    }
+
+    /// Rejection path: evidence mismatch. The tool's lifecycle
+    /// reports `lifecycle_passing: true` and `cleanup_succeeded: true`
+    /// but supplies step outcomes that contradict the user's plan.
+    /// The harness seal must reject the run and return a failing
+    /// verdict.
+    #[test]
+    fn harness_rejects_evidence_mismatch_with_failing_verdict() {
+        let verdict = drive_protocol_outcome(LifecycleOutcome::EvidenceMismatch);
+        assert!(!verdict.passed, "verdict must fail: {:?}", verdict);
+    }
+
+    /// Rejection path: child failure (the harness binary exits
+    /// mid-protocol). The tool's read returns zero bytes (EOF) and
+    /// the case host surfaces a non-passing verdict without the
+    /// harness ever replying. We exercise this path directly via the
+    /// typed harness error rather than the verdict to mirror what the
+    /// tool reports to the user.
+    #[test]
+    fn harness_protocol_reads_report_channel_close_when_child_dies() {
+        // Drive the harness side with a closed read end: the harness
+        // call must surface an i/o error describing the closed
+        // channel rather than fabricating a passing verdict.
+        let pair = pipe_pair().expect("pipe pair");
+        let (tool_write, harness_read) = (pair[0], pair[1]);
+        let pair = pipe_pair().expect("pipe pair");
+        let (harness_write, _tool_read) = (pair[0], pair[1]);
+        let harness_read_file = unsafe { File::from_raw_fd(harness_read) };
+        // Drop the tool write side so the harness reads EOF.
+        let _ = tool_write;
+        let mut channel = Channel::from_fds(
+            OwnedFd::from(harness_read_file),
+            unsafe { OwnedFd::from(File::from_raw_fd(harness_write)) },
+        );
+        let err = channel.read_message().expect_err("EOF must fail");
+        match err {
+            HarnessError::Io { .. } => {}
+            other => panic!("expected Io error, got {other:?}"),
+        }
+    }
+
+    fn drive_protocol_outcome(outcome: LifecycleOutcome) -> messages::Verdict {
+        let pair = pipe_pair().expect("pipe pair");
+        let (harness_read, tool_write) = (pair[0], pair[1]);
+        let pair = pipe_pair().expect("pipe pair");
+        let (tool_read, harness_write) = (pair[0], pair[1]);
+        let (verdict_tx, verdict_rx) = mpsc::channel::<messages::Verdict>();
+        let outcome_for_driver = outcome;
+        let outcome_for_tool = outcome;
+
+        let driver = thread::spawn(move || {
+            let mut channel = Channel::from_fds(
+                unsafe { OwnedFd::from(File::from_raw_fd(harness_read)) },
+                unsafe { OwnedFd::from(File::from_raw_fd(harness_write)) },
+            );
+            let harness_name = "scenarios/HarnessOutcomeProbe";
+
+            let hello = channel.read_message().expect("hello");
+            let HarnessRequest::Hello { version } = hello else {
+                panic!("expected Hello");
+            };
+            assert_eq!(version, messages::PROTOCOL_VERSION);
+            channel
+                .write_message(&HarnessResponse::HelloAck {
+                    version: messages::PROTOCOL_VERSION,
+                    scenario: ScenarioSummary {
+                        name: harness_name.to_owned(),
+                        scene: "outcome/scene".into(),
+                        duration_ns: 6_000_000,
+                        step_count: 0,
+                        capture_count: 0,
+                    },
+                })
+                .expect("hello ack");
+            channel
+                .write_message(&HarnessResponse::Open {
+                    scenario: ScenarioSummary {
+                        name: harness_name.to_owned(),
+                        scene: "outcome/scene".into(),
+                        duration_ns: 6_000_000,
+                        step_count: 0,
+                        capture_count: 0,
+                    },
+                })
+                .expect("open");
+
+            let probe = channel.read_message().expect("probe");
+            let HarnessRequest::Probe { quantum_ns, .. } = probe else {
+                panic!("expected Probe");
+            };
+            let quantum = Quantum::from_nanos(quantum_ns).expect("quantum");
+            let harness_name_owned = harness_name.to_owned();
+            let planned = make_planned(harness_name_owned.clone(), quantum_ns);
+
+            let entries = planned
+                .plan
+                .steps
+                .iter()
+                .map(|step| ScheduleEntry::at(step.boundary, step.action.clone()))
+                .collect();
+            let program = Program::normalize(
+                &harness_name_owned,
+                quantum,
+                planned.plan.duration,
+                entries,
+                planned.plan.captures.clone(),
+            )
+            .expect("normalize");
+            channel
+                .write_message(&HarnessResponse::Program {
+                    program_envelope_b64: encode_program_envelope(&program),
+                    transitions: program.transition_count(),
+                    model_identity: "outcome_model".to_owned(),
+                })
+                .expect("program");
+
+            let evidence = channel.read_message().expect("evidence");
+            let HarnessRequest::Evidence {
+                report,
+                cleanup_succeeded,
+                lifecycle_passing,
+            } = evidence
+            else {
+                panic!("expected Evidence");
+            };
+            let verdict = seal_and_verify(
+                &planned,
+                &program,
+                &report,
+                cleanup_succeeded,
+                lifecycle_passing,
+            );
+            verdict_tx.send(verdict.clone()).expect("send verdict");
+            channel
+                .write_message(&HarnessResponse::Verdict(verdict))
+                .expect("verdict");
+        });
+
+        let tool = thread::spawn(move || {
+            let mut tool_read = unsafe { File::from_raw_fd(tool_read) };
+            let mut tool_write = unsafe { File::from_raw_fd(tool_write) };
+            tool_write
+                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Hello {
+                    version: messages::PROTOCOL_VERSION,
+                }).unwrap()))
+                .expect("hello");
+            let _ = read_frame(&mut tool_read);
+            let _ = read_frame(&mut tool_read);
+            tool_write
+                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Probe {
+                    quantum_ns: 2_000_000,
+                    model_identity: "outcome_model".to_owned(),
+                }).unwrap()))
+                .expect("probe");
+            let _ = read_frame(&mut tool_read);
+            let (lifecycle_passing, cleanup_succeeded, completed_steps) = match outcome_for_tool {
+                LifecycleOutcome::AdmissionRefused => (false, false, 0),
+                LifecycleOutcome::CleanupFailed => (true, false, 3),
+                LifecycleOutcome::EvidenceMismatch => (true, true, 0),
+            };
+            tool_write
+                .write_all(&frame(&serde_json::to_vec(&HarnessRequest::Evidence {
+                    report: messages::LifecycleReport {
+                        execution_id: "exec/outcome".to_owned(),
+                        quantum_ns: 2_000_000,
+                        completed_steps,
+                        final_observation_cut_observed: completed_steps > 0,
+                        final_capture_drain_observed: false,
+                        step_outcomes: Vec::new(),
+                        capture_records: Vec::new(),
+                        command_replies: Vec::new(),
+                        native_body: None,
+                    },
+                    cleanup_succeeded,
+                    lifecycle_passing,
+                }).unwrap()))
+                .expect("evidence");
+            read_frame(&mut tool_read)
+        });
+
+        let verdict = verdict_rx.recv().expect("verdict");
+        let _ = tool.join();
+        let _ = driver.join();
+        let _ = outcome_for_driver;
+        verdict
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum LifecycleOutcome {
+        AdmissionRefused,
+        CleanupFailed,
+        EvidenceMismatch,
     }
 
     // Helpers ---------------------------------------------------------------
