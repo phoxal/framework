@@ -65,13 +65,11 @@ pub(crate) const FACADE: &str = "phoxal";
 /// a nested Cargo package underneath it. Adding `tools/cargo-phoxal/<name>`
 /// here would re-introduce the prohibited shape; the no-nested-Cargo.toml
 /// rule below guards against that pattern.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 18] = [
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 16] = [
     "phoxal",
     "supervisor",
     "crates/macros",
     "crates/build",
-    "crates/port",
-    "crates/robotics",
     "crates/mujoco",
     // The shared serialized artifact format. Owned by the framework but
     // published through the Phoxal registry so external consumers can
@@ -586,8 +584,6 @@ mod tests {
             ("supervisor", "phoxal-supervisor"),
             ("crates/macros", "phoxal-macros"),
             ("crates/build", "phoxal-build"),
-            ("crates/port", "phoxal-port"),
-            ("crates/robotics", "phoxal-robotics"),
             ("crates/mujoco", "phoxal-mujoco"),
             ("services/motion", "phoxal-service-motion"),
             ("services/navigation", "phoxal-service-navigation"),

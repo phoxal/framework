@@ -664,7 +664,6 @@ fn port_kind_label(kind: crate::port::PortKind) -> &'static str {
         crate::port::PortKind::Setpoint => "setpoint",
         crate::port::PortKind::Read => "read",
         crate::port::PortKind::Commands => "commands",
-        _ => "unknown",
     }
 }
 

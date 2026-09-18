@@ -7,6 +7,12 @@
 //! from build dependencies and maps their packages to canonical Rust contract
 //! crates, so a service can consume one shared wire vocabulary without
 //! regenerating or locating dependency-owned source files.
+//!
+//! [`compile_protos_with_output`] is the explicit form for a build script
+//! that performs more than one compilation in the same `OUT_DIR`: it accepts
+//! the descriptor output filename directly so each invocation lands in a
+//! distinct file. The simple forms write [`DESCRIPTOR_FILE`] and remain the
+//! right call for a single compilation.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -138,12 +144,39 @@ pub enum Error {
 ///
 /// The explicitly listed files are the contract owner's files.
 /// Imported services remain dependency descriptors and do not generate Phoxal
-/// ports in this build.
+/// ports in this build. The retained descriptor closure lands in
+/// [`OUT_DIR`]`/[`[`DESCRIPTOR_FILE`]`]`; a build script that compiles more
+/// than one owner in the same `OUT_DIR` must use
+/// [`compile_protos_with_output`] (or the matching
+/// [`compile_protos_with_dependencies`]-plus-output variant) to name a
+/// distinct descriptor file per compilation.
 pub fn compile_protos(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
 ) -> Result<(), Error> {
     compile_protos_with_dependencies(protos, includes, &[], &[])
+}
+
+/// Compiles owned Protobuf files into a named descriptor output file.
+///
+/// Equivalent to [`compile_protos`] but writes the retained descriptor closure
+/// to `OUT_DIR/<descriptor_file>` instead of [`DESCRIPTOR_FILE`]. A build
+/// script that needs multiple descriptor closures in the same `OUT_DIR` —
+/// for example one for the framework-owned protocol protos and a separate one
+/// for a domain vocabulary — gives each compilation a distinct filename.
+pub fn compile_protos_with_output(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    descriptor_file: &str,
+) -> Result<(), Error> {
+    compile_to_with_dependencies(
+        protos,
+        includes,
+        &descriptor_out_dir()?,
+        &[],
+        &[],
+        descriptor_file,
+    )
 }
 
 /// One descriptor closure supplied by a direct Cargo build dependency.
@@ -173,17 +206,24 @@ impl<'a> DependencyDescriptor<'a> {
 /// leading dot) and the Rust path Prost should use for that package. The
 /// imported descriptors remain in the owner's descriptor closure, while their
 /// messages are referenced rather than regenerated. Dependency source trees
-/// are deliberately not accepted as include roots.
+/// are deliberately not accepted as include roots. The retained descriptor
+/// closure lands in `OUT_DIR/[DESCRIPTOR_FILE]`; the output filename variant
+/// [`compile_protos_with_output`] is the right call when a single build
+/// script must keep more than one closure distinct.
 pub fn compile_protos_with_dependencies(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
     dependencies: &[DependencyDescriptor<'_>],
     extern_paths: &[(&str, &str)],
 ) -> Result<(), Error> {
-    let out_dir = std::env::var_os("OUT_DIR")
+    let out_dir = descriptor_out_dir()?;
+    compile_to_with_dependencies(protos, includes, &out_dir, dependencies, extern_paths, DESCRIPTOR_FILE)
+}
+
+fn descriptor_out_dir() -> Result<PathBuf, Error> {
+    std::env::var_os("OUT_DIR")
         .map(PathBuf::from)
-        .ok_or(Error::MissingEnvironment("OUT_DIR"))?;
-    compile_to_with_dependencies(protos, includes, &out_dir, dependencies, extern_paths)
+        .ok_or(Error::MissingEnvironment("OUT_DIR"))
 }
 
 #[cfg(test)]
@@ -191,8 +231,9 @@ fn compile_to(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
     out_dir: &Path,
+    descriptor_file: &str,
 ) -> Result<(), Error> {
-    compile_to_with_dependencies(protos, includes, out_dir, &[], &[])
+    compile_to_with_dependencies(protos, includes, out_dir, &[], &[], descriptor_file)
 }
 
 fn compile_to_with_dependencies(
@@ -201,6 +242,7 @@ fn compile_to_with_dependencies(
     out_dir: &Path,
     dependencies: &[DependencyDescriptor<'_>],
     extern_paths: &[(&str, &str)],
+    descriptor_file: &str,
 ) -> Result<(), Error> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let google_include = protoc_bin_vendored::include_path()?;
@@ -220,7 +262,7 @@ fn compile_to_with_dependencies(
         .map(|path| canonical(path.as_ref()))
         .collect::<Result<Vec<_>, _>>()?;
     let owned_names = owned_file_names(&owned_paths, &include_roots)?;
-    let descriptor_path = out_dir.join(DESCRIPTOR_FILE);
+    let descriptor_path = out_dir.join(descriptor_file);
     let dependency_descriptor_path = if dependencies.is_empty() {
         None
     } else {
@@ -306,6 +348,7 @@ fn compile_to_with_dependencies(
             out_dir,
             service_package.as_deref().unwrap_or_default(),
             descriptor_bytes.len(),
+            descriptor_file,
         )?;
     }
 
@@ -498,6 +541,7 @@ fn embed_descriptor_section(
     out_dir: &Path,
     service_package: &str,
     descriptor_len: usize,
+    descriptor_file: &str,
 ) -> Result<(), Error> {
     let generated = out_dir.join(format!("{service_package}.rs"));
     let frame_len = descriptor_len
@@ -508,7 +552,7 @@ fn embed_descriptor_section(
             actual: descriptor_len,
         })?;
     let section = format!(
-        "\n#[doc(hidden)]\n#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\nstatic __PHOXAL_DESCRIPTOR_SET: [u8; {frame_len}] = ::phoxal::port::descriptor_frame::<{frame_len}>(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{DESCRIPTOR_FILE}\")));\n"
+        "\n#[doc(hidden)]\n#[used]\n#[cfg_attr(target_os = \"macos\", unsafe(link_section = \"__DATA,__phoxal_desc\"))]\n#[cfg_attr(not(target_os = \"macos\"), unsafe(link_section = \".phoxal_desc\"))]\nstatic __PHOXAL_DESCRIPTOR_SET: [u8; {frame_len}] = ::phoxal::port::descriptor_frame::<{frame_len}>(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{descriptor_file}\")));\n"
     );
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -770,7 +814,7 @@ mod tests {
             fs::write(&path, contents).expect("fixture source");
             paths.push(path);
         }
-        let result = compile_to(&paths, &[source.path()], output.path());
+        let result = compile_to(&paths, &[source.path()], output.path(), DESCRIPTOR_FILE);
         (source, output, result)
     }
 
@@ -853,7 +897,7 @@ mod tests {
         )
         .expect("fixture source");
 
-        compile_to(&[&proto], &[source.path()], output.path()).expect("contract generation");
+        compile_to(&[&proto], &[source.path()], output.path(), DESCRIPTOR_FILE).expect("contract generation");
 
         let generated = fs::read_to_string(output.path().join("example.vocabulary.v1.rs"))
             .expect("generated Rust");
@@ -958,6 +1002,7 @@ mod tests {
             owner_output.path(),
             &[DependencyDescriptor::new("example-shared", &descriptors)],
             &[(".example.shared.v1", "::example_shared")],
+            DESCRIPTOR_FILE,
         )
         .expect("descriptor-only dependency import");
 
@@ -1007,6 +1052,7 @@ mod tests {
             owner_output.path(),
             &[DependencyDescriptor::new("example-shared", &stripped)],
             &[(".example.shared.v1", "::example_shared")],
+            DESCRIPTOR_FILE,
         )
         .expect("source-location-free dependency import");
 
@@ -1414,6 +1460,7 @@ sys.stdout.buffer.write(bytes((0x08, 0xAC, 0x02)))
             &[PathBuf::from(outside.path())],
             &[source.path()],
             output.path(),
+            DESCRIPTOR_FILE,
         );
         assert!(matches!(result, Err(Error::SourceOutsideIncludes(_))));
     }

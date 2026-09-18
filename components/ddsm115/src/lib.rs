@@ -8,4 +8,4 @@ pub use ddsm115::ports;
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/phoxal-descriptors.bin"));
 
-pub use phoxal_robotics::EncoderSample;
+pub use phoxal::robotics::EncoderSample;

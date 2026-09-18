@@ -56,7 +56,15 @@ pub use anyhow::{Result, anyhow};
 /// Inert generated public-port descriptors.
 #[cfg(feature = "port")]
 #[cfg_attr(docsrs, doc(cfg(feature = "port")))]
-pub use phoxal_port as port;
+pub mod port;
+
+/// Framework-owned shared robotics vocabulary: generated Protobuf messages
+/// and their domain validation. Independent of the protocol/transport
+/// features so a component or service that only needs the inert port surface
+/// does not pay for the robotics codegen.
+#[cfg(feature = "robotics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "robotics")))]
+pub mod robotics;
 
 /// Authoring helper for Protobuf build scripts.
 ///

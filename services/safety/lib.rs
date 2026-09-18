@@ -13,7 +13,7 @@ use std::collections::HashSet;
 include!(concat!(env!("OUT_DIR"), "/phoxal.safety.v1.rs"));
 
 /// Canonical metric range consumed directly from sensor owners.
-pub use phoxal_robotics::RangeSample;
+pub use phoxal::robotics::RangeSample;
 
 /// Re-export the constraint-validation error from the Motion contract so
 /// callers can match it without depending on `phoxal_service_motion` directly.

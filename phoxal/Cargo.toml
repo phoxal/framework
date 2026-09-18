@@ -37,7 +37,15 @@ default = ["runtime"]
 
 # The contract descriptor family is deliberately available without selecting a
 # runner, transport, or host profile.
-port = ["dep:phoxal-port"]
+port = []
+
+# Framework-owned shared robotics vocabulary: generated Protobuf messages and
+# their domain validation. Independent of `protocol` so consumers that need
+# only the inert port surface do not pay for the robotics codegen.
+robotics = [
+    "dep:prost",
+    "dep:thiserror",
+]
 
 # Authoring helper for Protobuf build scripts. The `phoxal::build` module
 # re-exports `compile_protos` and `compile_protos_with_dependencies` over the
@@ -129,7 +137,6 @@ tempfile = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 zenoh = { workspace = true, optional = true }
 
-phoxal-port = { workspace = true, optional = true }
 phoxal-build = { workspace = true, optional = true }
 phoxal-artifact-format = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }

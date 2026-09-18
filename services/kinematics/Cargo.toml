@@ -27,16 +27,14 @@ default = []
 runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde"]
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["port"] }
-phoxal-robotics = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["port", "robotics"] }
 prost = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 
 [build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
-phoxal-robotics = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["build", "robotics"] }
 
 [lints]
 workspace = true

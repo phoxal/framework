@@ -7,5 +7,10 @@ fn main() -> Result<(), phoxal_build::Error> {
             "proto/phoxal/simulation/v1/simulation.proto",
         ],
         &["proto"],
+    )?;
+    phoxal_build::compile_protos_with_output(
+        &["proto/phoxal/robotics/v1/robotics.proto"],
+        &["proto"],
+        "phoxal-robotics-descriptors.bin",
     )
 }

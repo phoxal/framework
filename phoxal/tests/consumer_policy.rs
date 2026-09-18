@@ -71,7 +71,7 @@ fn port_profile_is_transport_free() {
     let tree = direct_tree("port");
     assert_direct_packages(
         &tree,
-        &["phoxal-port"],
+        &["phoxal"],
         &["tokio", "tokio-util", "zenoh", "phoxal-macros", "clap"],
     );
 }
@@ -81,7 +81,7 @@ fn session_profile_is_public_client_only() {
     let tree = direct_tree("session");
     assert_direct_packages(
         &tree,
-        &["phoxal-port", "prost", "tokio", "tokio-util", "zenoh"],
+        &["phoxal", "prost", "tokio", "tokio-util", "zenoh"],
         &[
             "phoxal-macros",
             "clap",

@@ -11,7 +11,7 @@ include!(concat!(env!("OUT_DIR"), "/phoxal.kinematics.v1.rs"));
 
 /// The shared encoder payload used by physical producers and this service's
 /// encoder input port.
-pub use phoxal_robotics::EncoderSample;
+pub use phoxal::robotics::EncoderSample;
 
 /// Public typed ports owned by the Kinematics Protobuf service.
 pub use kinematics::ports;

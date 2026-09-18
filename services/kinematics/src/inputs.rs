@@ -1,5 +1,5 @@
 use phoxal::runtime::input::Samples;
-use phoxal_robotics::EncoderSample;
+use phoxal::robotics::EncoderSample;
 
 /// One immutable encoder input cut.
 #[phoxal::runtime::inputs]

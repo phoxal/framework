@@ -2354,7 +2354,6 @@ dependencies = [
  "phoxal-artifact-format",
  "phoxal-build",
  "phoxal-macros",
- "phoxal-port",
  "prost",
  "schemars 1.2.1",
  "serde",
@@ -2412,7 +2411,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-robotics",
  "phoxal-service-motion",
  "prost",
  "serde",
@@ -2435,7 +2433,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-robotics",
  "prost",
  "serde",
 ]
@@ -2510,23 +2507,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-port"
-version = "0.1.0"
-
-[[package]]
 name = "phoxal-port-consumer-fixture"
 version = "0.1.0"
 dependencies = [
  "phoxal",
-]
-
-[[package]]
-name = "phoxal-robotics"
-version = "0.1.0"
-dependencies = [
- "phoxal",
- "prost",
- "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -2542,7 +2526,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-robotics",
  "prost",
  "serde",
  "thiserror 2.0.19",
@@ -2579,7 +2562,6 @@ version = "0.68.0"
 dependencies = [
  "anyhow",
  "phoxal",
- "phoxal-robotics",
  "phoxal-service-motion",
  "phoxal-service-world",
  "prost",

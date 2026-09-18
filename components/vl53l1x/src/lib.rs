@@ -1,5 +1,5 @@
 /// Shared physical range contract.
-pub use phoxal_robotics::RangeSample;
+pub use phoxal::robotics::RangeSample;
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.component.vl53l1x.v1.rs"));
 

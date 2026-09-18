@@ -28,16 +28,14 @@ default = ["runtime"]
 runtime = ["phoxal/runtime", "dep:anyhow", "dep:serde", "dep:phoxal-service-motion"]
 
 [dependencies]
-phoxal = { workspace = true, default-features = false, features = ["port"] }
+phoxal = { workspace = true, default-features = false, features = ["port", "robotics"] }
 anyhow = { workspace = true, optional = true }
 phoxal-service-motion = { workspace = true, optional = true }
-phoxal-robotics = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [build-dependencies]
-phoxal = { workspace = true, default-features = false, features = ["build"] }
-phoxal-robotics = { workspace = true }
+phoxal = { workspace = true, default-features = false, features = ["build", "robotics"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

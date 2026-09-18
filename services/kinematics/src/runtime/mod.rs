@@ -9,7 +9,7 @@ use phoxal::runtime::Sample;
 use phoxal::runtime::input::Samples;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
 #[cfg(test)]
-use phoxal_robotics::EncoderSample;
+use phoxal::robotics::EncoderSample;
 use phoxal_service_kinematics::{
     FrameTransform, FrameTree, KinematicsStatus, LookupFrameRequest, LookupFrameResponse,
     OdometryState, UnavailableReason, ports,

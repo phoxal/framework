@@ -1,13 +1,13 @@
 //! Shared physical and robotics vocabulary for Phoxal contracts.
 //!
-//! This crate contains generated Protobuf messages and their domain validation.
+//! Contains generated Protobuf messages and their domain validation.
 //! It starts no runtime, transport, hardware driver, or simulator.
 
 include!(concat!(env!("OUT_DIR"), "/phoxal.robotics.v1.rs"));
 
 /// The original descriptor closure for independent language generation and inspection.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/phoxal-descriptors.bin"));
+    include_bytes!(concat!(env!("OUT_DIR"), "/phoxal-robotics-descriptors.bin"));
 
 /// A shared robotics value violates its public domain contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

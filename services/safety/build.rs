@@ -5,7 +5,7 @@ fn main() -> Result<(), phoxal::build::Error> {
         &[
             phoxal::build::DependencyDescriptor::new(
                 "phoxal-robotics",
-                phoxal_robotics::FILE_DESCRIPTOR_SET,
+                phoxal::robotics::FILE_DESCRIPTOR_SET,
             ),
             phoxal::build::DependencyDescriptor::new(
                 "phoxal-service-motion",
@@ -17,7 +17,7 @@ fn main() -> Result<(), phoxal::build::Error> {
             ),
         ],
         &[
-            (".phoxal.robotics.v1", "::phoxal_robotics"),
+            (".phoxal.robotics.v1", "::phoxal::robotics"),
             (".phoxal.motion.v1", "::phoxal_service_motion"),
             (".phoxal.world.v1", "::phoxal_service_world"),
         ],

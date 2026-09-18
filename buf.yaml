@@ -9,7 +9,6 @@ modules:
         - ENUM_VALUE_PREFIX
         - PACKAGE_DIRECTORY_MATCH
         - PACKAGE_VERSION_SUFFIX
-  - path: crates/robotics/proto
   - path: phoxal/proto
   - path: services/motion/proto
     lint:

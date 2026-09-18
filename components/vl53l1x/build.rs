@@ -4,8 +4,8 @@ fn main() -> Result<(), phoxal::build::Error> {
         &["proto"],
         &[phoxal::build::DependencyDescriptor::new(
             "phoxal-robotics",
-            phoxal_robotics::FILE_DESCRIPTOR_SET,
+            phoxal::robotics::FILE_DESCRIPTOR_SET,
         )],
-        &[(".phoxal.robotics.v1", "::phoxal_robotics")],
+        &[(".phoxal.robotics.v1", "::phoxal::robotics")],
     )
 }
