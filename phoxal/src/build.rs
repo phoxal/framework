@@ -17,7 +17,8 @@
 
 pub use phoxal_build::{
     DependencyDescriptor, PORT_PROTO, compile_protos, compile_protos_with_dependencies,
-    compile_protos_with_output, descriptor_set_path, include_dir,
+    compile_protos_with_dependencies_and_output, compile_protos_with_output,
+    descriptor_set_path, include_dir,
 };
 
 pub use phoxal_build::Error;

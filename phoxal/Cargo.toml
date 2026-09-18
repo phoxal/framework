@@ -191,6 +191,10 @@ workspace = true
 # therefore declare the profile that publishes it; `cargo test -p phoxal
 # --all-features` is what runs the whole set.
 [[test]]
+name = "feature_codegen"
+path = "tests/feature_codegen.rs"
+
+[[test]]
 name = "consumer_policy"
 path = "tests/consumer_policy.rs"
 required-features = ["port"]

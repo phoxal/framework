@@ -3,16 +3,21 @@
 //! [`compile_protos`] supplies the shared `phoxal/port.proto` import and a
 //! pinned Protobuf compiler, emits Prost messages with type names, retains the
 //! original descriptor closure, and generates inert typed port references.
-//! [`compile_protos_with_dependencies`] additionally imports descriptor sets
-//! from build dependencies and maps their packages to canonical Rust contract
-//! crates, so a service can consume one shared wire vocabulary without
-//! regenerating or locating dependency-owned source files.
 //!
-//! [`compile_protos_with_output`] is the explicit form for a build script
-//! that performs more than one compilation in the same `OUT_DIR`: it accepts
-//! the descriptor output filename directly so each invocation lands in a
-//! distinct file. The simple forms write [`DESCRIPTOR_FILE`] and remain the
-//! right call for a single compilation.
+//! Two flags tune what a build script needs:
+//!
+//! * **dependency descriptors** — [`compile_protos_with_dependencies`] (and
+//!   [`compile_protos_with_dependencies_and_output`]) additionally import
+//!   descriptor sets from build dependencies and map their packages to
+//!   canonical Rust contract crates, so a service can consume one shared wire
+//!   vocabulary without regenerating or locating dependency-owned source
+//!   files.
+//! * **descriptor output filename** — [`compile_protos_with_output`] (and
+//!   [`compile_protos_with_dependencies_and_output`]) name the file the
+//!   retained descriptor closure lands in. A build script that performs more
+//!   than one compilation in the same `OUT_DIR` must give each invocation a
+//!   distinct filename; the two simple forms write [`DESCRIPTOR_FILE`] and
+//!   are the right call for a single compilation.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -145,11 +150,10 @@ pub enum Error {
 /// The explicitly listed files are the contract owner's files.
 /// Imported services remain dependency descriptors and do not generate Phoxal
 /// ports in this build. The retained descriptor closure lands in
-/// [`OUT_DIR`]`/[`[`DESCRIPTOR_FILE`]`]`; a build script that compiles more
-/// than one owner in the same `OUT_DIR` must use
-/// [`compile_protos_with_output`] (or the matching
-/// [`compile_protos_with_dependencies`]-plus-output variant) to name a
-/// distinct descriptor file per compilation.
+/// `OUT_DIR/<DESCRIPTOR_FILE>`; a build script that compiles more than one
+/// owner in the same `OUT_DIR` must use [`compile_protos_with_output`] (or
+/// [`compile_protos_with_dependencies_and_output`]) to name a distinct
+/// descriptor file per compilation.
 pub fn compile_protos(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
@@ -207,17 +211,42 @@ impl<'a> DependencyDescriptor<'a> {
 /// imported descriptors remain in the owner's descriptor closure, while their
 /// messages are referenced rather than regenerated. Dependency source trees
 /// are deliberately not accepted as include roots. The retained descriptor
-/// closure lands in `OUT_DIR/[DESCRIPTOR_FILE]`; the output filename variant
-/// [`compile_protos_with_output`] is the right call when a single build
-/// script must keep more than one closure distinct.
+/// closure lands in `OUT_DIR/<DESCRIPTOR_FILE>`; the descriptor-filename
+/// variant [`compile_protos_with_dependencies_and_output`] is the right call
+/// when a build script needs both dependency imports and a non-default
+/// descriptor filename.
 pub fn compile_protos_with_dependencies(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
     dependencies: &[DependencyDescriptor<'_>],
     extern_paths: &[(&str, &str)],
 ) -> Result<(), Error> {
+    compile_protos_with_dependencies_and_output(
+        protos,
+        includes,
+        dependencies,
+        extern_paths,
+        DESCRIPTOR_FILE,
+    )
+}
+
+/// Compiles owned Protobuf files using dependency descriptors and writes the
+/// retained closure to a named descriptor output file.
+///
+/// Combines [`compile_protos_with_dependencies`] with [`compile_protos_with_output`]:
+/// a build script that imports descriptor closures from build dependencies
+/// *and* must keep more than one closure distinct in the same `OUT_DIR` —
+/// for example the framework compilation next to a domain-vocabulary
+/// compilation — gives each invocation a distinct filename.
+pub fn compile_protos_with_dependencies_and_output(
+    protos: &[impl AsRef<Path>],
+    includes: &[impl AsRef<Path>],
+    dependencies: &[DependencyDescriptor<'_>],
+    extern_paths: &[(&str, &str)],
+    descriptor_file: &str,
+) -> Result<(), Error> {
     let out_dir = descriptor_out_dir()?;
-    compile_to_with_dependencies(protos, includes, &out_dir, dependencies, extern_paths, DESCRIPTOR_FILE)
+    compile_to_with_dependencies(protos, includes, &out_dir, dependencies, extern_paths, descriptor_file)
 }
 
 fn descriptor_out_dir() -> Result<PathBuf, Error> {
