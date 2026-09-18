@@ -1,27 +1,23 @@
-//! Public-session transport (client + server halves).
+//! Public-session client transport.
 //!
 //! This module owns the wire exchange, bounded query collection, and the
-//! lifetime of the public queryables for the `phoxal.session.v1` protocol.
-//! The Protobuf messages and route/admission rules remain in
-//! [`crate::communication`].
+//! lifetime of the public queryables for the `phoxal.session.v1` protocol
+//! from the **client** side. The server half — queryables, dispatch, backend
+//! invocation, simulation authority, and the simulation state machine —
+//! lives under `framework/supervisor`, not in the SDK. The Protobuf
+//! messages and route/admission rules remain in [`crate::communication`].
 //!
-//! Submodule layout (both currently in the SDK):
+//! Submodule layout (client only, in the SDK):
 //!
 //! - [`client`] — bounded, principal-bound, target-bound client transport.
 //!   Public types: `PublicSessionTransport`, `PublicSessionConfig`,
 //!   `PublicSessionConnection`, `PublicSubscription`, `DiscoveryEvent`,
 //!   `SupervisorWatch`, `PublicTlsCredentials`, `PublicTransportSecurity`,
 //!   `PublicTransportLimits`, `PublicTransportError`.
-//! - [`server`] — queryables, dispatch, backend invocation, simulation
-//!   authority. Public types: `PublicSessionServer`, `PrincipalPolicy`,
-//!   `PublicSessionBackend`, `PublicSimulationBackend`,
-//!   `PublicSimulationContext`, `PublicBindingContext`.
-//! - [`simulation`] — simulation authority state machine (server-only
-//!   authoritative ownership of grants; client consumes the typed protobuf
-//!   messages in [`crate::communication::simulation`]).
 //!
-//! Shared constants and helpers live in this parent module so both halves
-//! reference the same values without cyclic imports.
+//! Shared constants and helpers live in this parent module so the client
+//! and the supervisor-side helpers that consume the typed protobuf
+//! messages reference the same values without cyclic imports.
 #![allow(unused_imports, dead_code)]
 
 pub(crate) mod client;

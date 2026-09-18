@@ -96,19 +96,24 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 15] = [
 /// The contract fixtures include one library-plus-binary owner fixture and two
 /// binary-only consumers. The hardware driver fixture is also a library-plus-
 /// binary package so its acceptance implementation cannot accidentally become
-/// an official artifact or a release candidate.
-pub(crate) const INTERNAL_CRATE_DIRS: [&str; 4] = [
+/// an official artifact or a release candidate. The scenario fixture is a
+/// library-only owner that constructs planned scenarios and validates them
+/// against non-rover quanta without depending on the project compiler, the
+/// simulator, or any service package.
+pub(crate) const INTERNAL_CRATE_DIRS: [&str; 5] = [
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
     "tests/fixtures/ports/consumer",
     "tests/fixtures/hardware/driver",
+    "tests/fixtures/scenarios",
 ];
 
 /// The subset of [`INTERNAL_CRATE_DIRS`] that carries a library target and is
 /// therefore checked by the library-directory completeness rule.
-pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 2] = [
+pub(crate) const INTERNAL_LIBRARY_CRATE_DIRS: [&str; 3] = [
     "tests/fixtures/contracts/producer",
     "tests/fixtures/hardware/driver",
+    "tests/fixtures/scenarios",
 ];
 
 /// The package a library crate directory must hold, or `None` for a directory
