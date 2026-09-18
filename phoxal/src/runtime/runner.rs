@@ -14,7 +14,7 @@ mod read;
 use input::ExecutionInputAdapter;
 use output::ExecutionOutputAdapter;
 #[cfg(test)]
-mod tests;
+mod runner_lifecycle_tests;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;

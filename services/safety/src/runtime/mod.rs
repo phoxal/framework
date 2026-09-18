@@ -162,4 +162,4 @@ impl Safety {
 }
 
 #[cfg(test)]
-mod tests;
+mod safety_runtime_tests;

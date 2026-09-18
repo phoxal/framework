@@ -89,4 +89,4 @@ impl Runtime for HardwareFixtureDriver {
 }
 
 #[cfg(test)]
-mod tests;
+mod hardware_driver_runtime_tests;

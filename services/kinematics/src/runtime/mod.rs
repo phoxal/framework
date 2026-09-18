@@ -260,4 +260,4 @@ fn normalize_yaw(yaw: f64) -> f64 {
 }
 
 #[cfg(test)]
-mod tests;
+mod kinematics_runtime_tests;

@@ -20,7 +20,7 @@ mod submission;
 mod validation;
 
 #[cfg(test)]
-mod tests;
+mod project_tests;
 
 pub use artifact::{
     ArtifactContract, ArtifactSummary, DescriptorInfo, DescriptorSummary, InputKind, InputRecord,
