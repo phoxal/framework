@@ -90,35 +90,6 @@ jobs:
           --path examples/runtime-rewrite/components/passive-caster
           --dry-run
 
-  # MuJoCo is an explicit native boundary owned by the independent simulator.
-  # Keep it out of the ordinary workspace job, which must remain usable for
-  # hardware-only and generic runtime consumers without a native installation.
-  mujoco-native:
-    name: MuJoCo native
-    if: >-
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'push' &&
-       !startsWith(github.event.head_commit.message, 'chore(release): release v'))
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: Install Linux offscreen graphics
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1-mesa-dev libgl1-mesa-dri
-      - name: Install pinned MuJoCo
-        run: .github/scripts/setup_mujoco.sh "$RUNNER_TEMP/native-mujoco"
-      - name: Test native models, composition, and offscreen RGB and depth
-        run: cargo test --locked -p phoxal-mujoco --features rendering
-      - name: Check native library documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked -p phoxal-mujoco --features rendering --no-deps
-
   # Every consumer profile, built explicitly.
   #
   # The shared `ci` job builds the workspace, and a workspace build unifies

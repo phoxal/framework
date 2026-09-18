@@ -1,9 +1,0 @@
-<mujoco model="composition-scene">
-  <compiler fusestatic="false"/>
-  <worldbody>
-    <body name="base">
-      <site name="mount"/>
-      <site name="right_mount" pos="0.1 0 0"/>
-    </body>
-  </worldbody>
-</mujoco>

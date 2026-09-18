@@ -16,7 +16,6 @@ resolver = "3"
 # independent workspace packages.
 members = [
     "phoxal/build-support",
-    "simulation/mujoco",
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
     "tests/fixtures/hardware/driver",
@@ -48,7 +47,6 @@ members = [
 # otherwise plain cargo build/test silently skips it.
 default-members = [
     "phoxal/build-support",
-    "simulation/mujoco",
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
     "tests/fixtures/hardware/driver",

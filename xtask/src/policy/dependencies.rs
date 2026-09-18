@@ -30,10 +30,10 @@ use super::{Subject, Violation, is_library_package};
 /// `phoxal-build` stays inside Cargo's build-dependency graph and is not a
 /// normal runtime edge.
 ///
-/// `phoxal-mujoco` is a framework library that depends on the facade's port
+/// `phoxal` is a framework library that depends on the facade's port
 /// surface plus its owned component contract crates; component crates
 /// themselves are not libraries for this rule and so are checked elsewhere.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 22] = [
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 21] = [
     // The facade owns the typed-port macros, the internal build helper, and
     // the inert typed-port surface as its own module - those are the edges it
     // grows to its build-script-visible toolchain.
@@ -45,8 +45,6 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 22] = [
     // Framework host binaries that own the rest of the runtime / authoring
     // graph.
     ("phoxal-supervisor", "phoxal"),
-    // The native engine binding consumes the facade's port vocabulary.
-    ("phoxal-mujoco", "phoxal"),
     // Service-owned contract libraries reach the facade through its `port`
     // feature; they never declare a separate typed-port crate directly.
     ("phoxal-service-motion", "phoxal"),
@@ -95,20 +93,19 @@ const FORBIDDEN_EDGES: [(&str, &[&str]); 4] = [
             "phoxal",
             "phoxal-cli",
             "phoxal-supervisor",
-            "phoxal-mujoco",
         ],
     ),
     // The SDK stays a library facade. It does not reach for the CLI, the host
-    // binary, the native adapter, the tool-owned implementation packages, or
-    // any official service or component contract - no matter the dependency
-    // kind (normal, build, dev).
+    // binary, the tool-owned implementation packages, or any official
+    // service or component contract - no matter the dependency kind (normal,
+    // build, dev). Native physics (MuJoCo) is owned by the simulator
+    // application, not the framework, and lives outside this graph entirely.
     (
         "phoxal",
         &[
             "phoxal-cli",
             "cargo-phoxal",
             "phoxal-supervisor",
-            "phoxal-mujoco",
             "phoxal-project",
             "phoxal-installation",
             "phoxal-service-motion",
@@ -132,7 +129,6 @@ const FORBIDDEN_EDGES: [(&str, &[&str]); 4] = [
             "phoxal-cli",
             "cargo-phoxal",
             "phoxal-supervisor",
-            "phoxal-mujoco",
             "phoxal-project",
             "phoxal-installation",
         ],

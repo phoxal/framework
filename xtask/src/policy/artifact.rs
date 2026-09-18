@@ -416,12 +416,13 @@ impl ManifestClassification {
         };
         let directory = directory.join("/");
         // Component packages combine a published library with a private
-        // executable; their contract library is consumed directly by
-        // `phoxal-mujoco` and other framework libraries, so they appear in
-        // `LIBRARY_CRATE_DIRS` as well as in the artifact grammar. The
-        // artifact classification wins: a path under `components/<id>/` is
-        // an artifact of kind Component regardless of its library listing.
-        // The library half is checked by the library-completeness rule.
+        // executable; their contract library is consumed directly by the
+        // simulator application and other framework libraries, so they
+        // appear in `LIBRARY_CRATE_DIRS` as well as in the artifact grammar.
+        // The artifact classification wins: a path under `components/<id>/`
+        // is an artifact of kind Component regardless of its library
+        // listing. The library half is checked by the library-completeness
+        // rule.
         if let Ok(kind) = ArtifactKind::try_from(top_level) {
             let [_top, id, "Cargo.toml"] = components.as_slice() else {
                 bail!(

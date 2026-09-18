@@ -65,12 +65,11 @@ pub(crate) const FACADE: &str = "phoxal";
 /// a nested Cargo package underneath it. Adding `tools/cargo-phoxal/<name>`
 /// here would re-introduce the prohibited shape; the no-nested-Cargo.toml
 /// rule below guards against that pattern.
-pub(crate) const LIBRARY_CRATE_DIRS: [&str; 16] = [
+pub(crate) const LIBRARY_CRATE_DIRS: [&str; 15] = [
     "phoxal",
     "supervisor",
     "phoxal/macros",
     "phoxal/build-support",
-    "simulation/mujoco",
     // The shared serialized artifact format. Owned by the framework but
     // published through the Phoxal registry so external consumers can
     // deserialize recorded bundles without depending on the project
@@ -82,8 +81,8 @@ pub(crate) const LIBRARY_CRATE_DIRS: [&str; 16] = [
     "services/world",
     "services/safety",
     // Components combine a published library with a private executable; the
-    // library half is reusable (e.g. `phoxal-mujoco` consumes component
-    // types directly), so the package is recognized here.
+    // library half is reusable (e.g. the simulator application consumes
+    // component types directly), so the package is recognized here.
     "components/bno085",
     "components/ddsm115",
     "components/oak_d_lite",
@@ -143,7 +142,6 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
         // `crates/<suffix>` branch would not derive from these paths.
         "phoxal/macros" => return Some("phoxal-macros".into()),
         "phoxal/build-support" => return Some("phoxal-build".into()),
-        "simulation/mujoco" => return Some("phoxal-mujoco".into()),
         _ => {}
     }
     if directory == FACADE {
@@ -592,7 +590,6 @@ mod tests {
             ("supervisor", "phoxal-supervisor"),
             ("phoxal/macros", "phoxal-macros"),
             ("phoxal/build-support", "phoxal-build"),
-            ("simulation/mujoco", "phoxal-mujoco"),
             ("services/motion", "phoxal-service-motion"),
             ("services/navigation", "phoxal-service-navigation"),
             ("services/kinematics", "phoxal-service-kinematics"),
