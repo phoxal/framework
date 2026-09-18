@@ -115,7 +115,8 @@ pub enum SealError {
     /// exceed `MAX_RUN_BYTES`.
     RunByteOverflow { bytes: usize, cap: usize },
     /// The seal was called without terminal evidence recorded by
-    /// the actual execution lifecycle.    ///     MissingTerminalEvidence,
+    /// the actual execution lifecycle.
+    MissingTerminalEvidence,
     /// The seal refused to record a second terminal-evidence call.
     DuplicateTerminalEvidence,
     /// The lifecycle's terminal-evidence final observation cut was
@@ -271,10 +272,10 @@ pub struct ScenarioRun {
     /// Sealed command-reply records keyed by declared correlation label.
     command_replies: BTreeMap<String, CommandReply>,
     /// Terminal evidence recorded by the actual execution lifecycle.
-    /// `seal` refuses to finalize without it; the reproduction
-    /// probes cannot synthesize this surface because the surface is
-    /// owned by the actual execution lifecycle and only the lifecycle
-    /// can populate it once every owned child is reaped and every
+    /// `seal` refuses to finalize without it; reproduction probes
+    /// cannot synthesize this surface because the surface is owned
+    /// by the actual execution lifecycle and only the lifecycle can
+    /// populate it once every owned child is reaped and every
     /// borrowed simulator released.
     terminal_evidence: Option<TerminalEvidence>,
     /// Whether the host considers the run successful. Computed by
@@ -609,7 +610,8 @@ pub struct EvidenceCollector {
     record_bytes_total: usize,
     /// Terminal evidence recorded by the actual execution lifecycle.
     /// `seal` refuses without it; `record_terminal_evidence` is the
-    /// only path that can install this field.    ///     terminal_evidence: Option<TerminalEvidence>,
+    /// only path that can install this field.
+    terminal_evidence: Option<TerminalEvidence>,
 }
 
 impl EvidenceCollector {
@@ -826,10 +828,9 @@ impl EvidenceCollector {
     /// Record one command-reply acknowledgement. The collector
     /// rejects duplicate recordings, replies for undeclared command
     /// labels, and reply payloads that exceed the per-record or
-    /// cumulative run byte caps. See Gate B3 of
-    /// the scenario acceptance review: "Account for every retained payload,
-    /// including command replies, step error details, capture
-    /// metadata, and nested interval entries."
+    /// cumulative run byte caps. Every retained payload, including
+    /// command replies, step error details, capture metadata, and
+    /// nested interval entries, must be accounted for.
     pub fn record_command_reply(
         &mut self,
         label: String,
@@ -888,7 +889,7 @@ impl EvidenceCollector {
     /// after every owned child was reaped and every borrowed
     /// simulator released.
     ///
-    /// `seal` will refuse without terminal evidence. The reproduction
+    /// `seal` will refuse without terminal evidence. Reproduction
     /// probes cannot call this method because the surface is owned
     /// by the actual execution lifecycle and only the lifecycle can
     /// populate it once every owned child is reaped and every
@@ -921,7 +922,8 @@ impl EvidenceCollector {
     /// `with_terminal_quantum_ns` / `with_completed_transitions`.
     /// The builder is the only path that constructs
     /// [`TerminalEvidence`]; external code cannot assemble the
-    /// surface from arbitrary fields.    ///     pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
+    /// surface from arbitrary fields.
+    pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
         TerminalEvidenceBuilder {
             execution_identity: String::new(),
             terminal_quantum_ns: None,
@@ -994,8 +996,9 @@ impl EvidenceCollector {
         // Terminal evidence gate: the actual execution lifecycle owns this
         // surface. The collector cannot synthesize it; tests that call
         // the existing record_* helpers without going through the
-        // lifecycle will seal as failed because the reproduction probes
-        // cannot populate the terminal evidence this gate requires.
+        // lifecycle will seal as failed because the reproduction
+        // probes cannot populate the terminal evidence this gate
+        // requires.
         let terminal = self
             .terminal_evidence
             .take()
@@ -1200,8 +1203,8 @@ mod tests {
 
     #[test]
     fn run_records_outcomes_captures_and_replies() {
-        // Gate B1 of the scenario acceptance review removed the synthetic step
-        // emitter and `FixtureTrace`. The collector-only construction
+        // The synthetic step emitter and `FixtureTrace` were removed;
+        // the collector-only construction
         // path is exercised by the sealed scenario run path elsewhere
         // in this module; this test now asserts the typed correlation
         // registry invariant (no run was performed, so the correlation
@@ -1300,7 +1303,7 @@ mod tests {
             quantum,
             // 6 ms at the 2 ms quantum = 3 transitions; the setpoint
             // acknowledgement at boundary 0 is the only authored
-            // action..
+            // action.
             std::time::Duration::from_micros(6_000),
             vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
@@ -1806,9 +1809,9 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // the four reproduction probes
-    // from lines 166-173 plus the boundary / interruption / mismatch
-    // / sparse-valid regressions required by line 195. These tests
+    // The four reproduction probes from the case-host lifecycle
+    // definition plus the boundary / interruption / mismatch
+    // / sparse-valid regressions they require. These tests
     // exercise the public collector API directly, without going
     // through the case-host lifecycle, so terminal evidence is not
     // recorded and the seal must refuse.
