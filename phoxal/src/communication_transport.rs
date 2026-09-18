@@ -9,11 +9,14 @@
 //!
 //! Submodule layout (client only, in the SDK):
 //!
-//! - [`client`] — bounded, principal-bound, target-bound client transport.
-//!   Public types: `PublicSessionTransport`, `PublicSessionConfig`,
+//! - the `client` submodule is the bounded, principal-bound, target-bound
+//!   client transport. It is declared `pub(crate)` because the SDK does
+//!   not expose the wire protocol as a public re-export; it owns the
+//!   `PublicSessionTransport`, `PublicSessionConfig`,
 //!   `PublicSessionConnection`, `PublicSubscription`, `DiscoveryEvent`,
 //!   `SupervisorWatch`, `PublicTlsCredentials`, `PublicTransportSecurity`,
-//!   `PublicTransportLimits`, `PublicTransportError`.
+//!   `PublicTransportLimits`, and `PublicTransportError` types that the
+//!   supervisor consumes through this parent module.
 //!
 //! Shared constants and helpers live in this parent module so the client
 //! and the supervisor-side helpers that consume the typed protobuf
