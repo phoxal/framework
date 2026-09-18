@@ -135,6 +135,13 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
     match directory {
         "tests/fixtures/contracts/producer" => return Some("phoxal-contract-owner-fixture".into()),
         "tests/fixtures/hardware/driver" => return Some("phoxal-hardware-driver-fixture".into()),
+        // The scenario fixture is a library-only owner that constructs
+        // planned scenarios and validates them against non-rover quanta
+        // without depending on the project compiler, the simulator, or
+        // any service package. It mirrors the contract / hardware
+        // fixture shape, so it is recognised by directory here the same
+        // way those owners are.
+        "tests/fixtures/scenarios" => return Some("phoxal-scenario-fixture".into()),
         // The shared serialized artifact format is owned by the framework
         // but lives one directory deeper than `crates/<name>/` so the
         // crate prefix rule does not match. The package name is the
