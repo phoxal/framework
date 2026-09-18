@@ -94,7 +94,7 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
     //     into a real controlled-runtime execution and only it may
     //     produce the final [`ScenarioOutcome`].
     //
-    //     See Gate P1 #3 of the scenario acceptance review: the macro now
+    //     the macro now
     //     registers a generic SDK case entry that plans and returns;
     //     the case host executes and verifies.
     let expanded = quote! {
@@ -107,7 +107,7 @@ pub fn expand_scenario(_attr: TokenStream, item: TokenStream) -> syn::Result<Tok
             // its own `default` method. The instance is retained in a
             // `Box<dyn ScenarioBox>` so the case host invokes the
             // user's `verify()` on the same struct the macro called
-            // `plan()` on. See Gate P1 #3 of the scenario acceptance review.
+            // `plan()` on.
             let scenario = <#self_type as ::std::default::Default>::default();
             // Validate the user's plan so an authored impl that does
             // not type-check or fails validation never registers. The

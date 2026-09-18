@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn small_consumer_exchange_program_admits_into_collector_without_synthetic_preprocessing() {
         // Renamed from `real_phase_loop_seals_a_small_consumer_exchange`
-        // per Gate P1 #6 of the scenario acceptance review: the previous test
+        // per the previous test
         // claimed a seal path that does not exist (the synthetic
         // emitter and `run_through_owned` were removed by Gate B1).
         // The real phase loop is the case-host lifecycle that

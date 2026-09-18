@@ -16,7 +16,7 @@
 //! companion trait; the [`#[phoxal::scenario]`](../macro@phoxal)
 //! attribute generates a `Box<dyn ScenarioBox>` per registered
 //! type so `plan()` and `verify()` observe the same instance's
-//! state. See Gate P1 #3 of the scenario acceptance review.
+//! state.
 
 use crate::scenario::plan::ScenarioPlan;
 use crate::scenario::results::ScenarioRun;

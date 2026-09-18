@@ -203,9 +203,7 @@ impl CargoSelection {
     /// selector (target, example, test, bench, lib, bins). The
     /// case-host validator shares this predicate because every
     /// such selector conflicts with the owned `--package <root-id>`
-    /// selection the harness build emits. See Gate P2 of
-    /// the scenario acceptance review.
-    pub(crate) fn has_target_selectors(&self) -> bool {
+    /// selection the harness build emits.    ///     pub(crate) fn has_target_selectors(&self) -> bool {
         self.all_targets
             || self.lib
             || self.bins

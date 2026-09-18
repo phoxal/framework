@@ -604,9 +604,7 @@ fn port_signature(
 ) -> Result<crate::port::PortSignature, ProgramError> {
     // `PortSignature::new_owned` owns the borrowed wire metadata and
     // delegates the lifetime promotion to the port crate. The decoder
-    // does not reach for `Box::leak` directly; see Gate P1 #4 of
-    // the scenario acceptance review.
-    Ok(crate::port::PortSignature::new_owned(
+    // does not reach for `Box::leak` directly;    //     Ok(crate::port::PortSignature::new_owned(
         name,
         service,
         method,

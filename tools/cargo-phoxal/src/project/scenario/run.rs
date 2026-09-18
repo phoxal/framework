@@ -243,7 +243,7 @@ fn build_harness_binary(
 /// already passes the explicit `--package <root-id>` it resolved from
 /// the staged manifest; a user-supplied `--workspace`, `--package`,
 /// or `--exclude` would silently drop or override that owned
-/// selection. See Gate P2 of the scenario acceptance review: validate
+/// selection. validate
 /// conflicting package/target selections before preparation writes
 /// anything.
 fn validate_options_for_case_host(options: &CargoOptions) -> Result<(), CaseHostOptionError> {
@@ -661,7 +661,7 @@ mod parse_artifact_tests {
     }
 
     // ----------------------------------------------------------------
-    // Gate P2 of the scenario acceptance review: prepared-Cargo-context
+    // prepared-Cargo-context
     // propagation and selection-flag validation for `list_scenarios`.
     // ----------------------------------------------------------------
 

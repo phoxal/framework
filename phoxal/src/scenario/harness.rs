@@ -171,10 +171,8 @@ mod tests {
 
     /// Production `run_harness` must fail closed: it must never
     /// produce a passing [`HarnessRun`] for any registered
-    /// descriptor until the supervisor-driven lifecycle lands. This
-    /// is the regression the scenario acceptance review required: a missing
-    /// driver chain is a non-pass, not a synthetic success. See Gate
-    /// P1 #1 of the scenario acceptance review.
+    /// descriptor until the supervisor-driven lifecycle lands. A missing
+    /// driver chain must produce a non-pass rather than a synthetic success.
     #[test]
     fn production_run_harness_rejects_unsupported_driver_chain() {
         let entries = crate::scenario::registry::list_scenarios().expect("list scenarios");
@@ -294,9 +292,7 @@ mod tests {
     /// surface any eager construction at listing or registration
     /// time. The inventory snapshot is already sorted by short name;
     /// we look up the descriptor by exact match so the test cannot
-    /// silently accept another module's entry. See Gate P1 #6 of
-    /// the scenario acceptance review.
-    #[allow(dead_code)]
+    /// silently accept another module's entry.    ///     #[allow(dead_code)]
     #[derive(Debug)]
     struct PanicOnDefaultScenario;
 
@@ -563,9 +559,7 @@ mod tests {
     /// run whose `passed` flag is false must surface as a
     /// `ScenarioFailed` before `verify()` runs. The fabricator's
     /// failure mode (sealing as passing without lifecycle evidence)
-    /// must be rejected at this seam. See Gate P1 #1 of
-    /// the scenario acceptance review.
-    #[test]
+    /// must be rejected at this seam.    ///     #[test]
     fn case_host_rejects_sealed_run_that_did_not_pass() {
         use crate::scenario::Scenario;
 
@@ -664,10 +658,8 @@ mod tests {
 
     /// Lifecycle ownership: the seal must refuse a run whose
     /// terminal evidence quantum does not match the program's
-    /// quantum in nanoseconds. This is the regression the
-    /// scenario acceptance review required: a driver that fabricates quantum
-    /// or completed-transition counts cannot reach a passing
-    /// seal. See Gate P1 #2 of the scenario acceptance review.
+    /// quantum in nanoseconds. A driver that fabricates quantum
+    /// or completed-transition counts must not reach a passing seal.
     #[test]
     fn seal_rejects_terminal_evidence_with_mismatched_quantum() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
@@ -708,9 +700,7 @@ mod tests {
 
     /// Lifecycle ownership: the seal must refuse a run whose
     /// terminal evidence completed-transition count does not match
-    /// the program's transition_count. See Gate P1 #2 of
-    /// the scenario acceptance review.
-    #[test]
+    /// the program's transition_count.    ///     #[test]
     fn seal_rejects_terminal_evidence_with_mismatched_completed_transitions() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = crate::scenario::Program::normalize(

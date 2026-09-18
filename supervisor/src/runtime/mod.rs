@@ -148,9 +148,7 @@ pub async fn run(
         // nanoseconds: comparing the simulation's `quantum_ns` against
         // `program.quantum().micros() * 1_000` avoids the integer
         // truncation that would otherwise accept `2_000_001 ns`
-        // against a `2_000 us` program. See Gate P1 #4 of
-        // the scenario acceptance review.
-        let simulation = runtime.simulation().ok_or_else(|| {
+        // against a `2_000 us` program.        //         let simulation = runtime.simulation().ok_or_else(|| {
             anyhow::anyhow!("scenario bundle must declare a controlled simulation")
         })?;
         validate_simulation_quantum(
@@ -650,9 +648,7 @@ fn router_endpoint(socket: &Path) -> String {
 /// the scenario program's quantum (us) without truncating either
 /// side. Returns a human-readable diagnostic naming the scenario,
 /// the program's quantum in both units, and the simulation's
-/// quantum in nanoseconds when the two disagree. See Gate P1 #4 of
-/// the scenario acceptance review.
-fn validate_simulation_quantum(
+/// quantum in nanoseconds when the two disagree./// fn validate_simulation_quantum(
     scenario_name: &str,
     program_quantum_micros: u32,
     simulation_quantum_ns: u64,

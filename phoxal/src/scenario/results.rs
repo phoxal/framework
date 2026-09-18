@@ -115,9 +115,7 @@ pub enum SealError {
     /// exceed `MAX_RUN_BYTES`.
     RunByteOverflow { bytes: usize, cap: usize },
     /// The seal was called without terminal evidence recorded by
-    /// the actual execution lifecycle. See Gate P1 #2 of
-    /// the scenario acceptance review.
-    MissingTerminalEvidence,
+    /// the actual execution lifecycle.    ///     MissingTerminalEvidence,
     /// The seal refused to record a second terminal-evidence call.
     DuplicateTerminalEvidence,
     /// The lifecycle's terminal-evidence final observation cut was
@@ -273,10 +271,11 @@ pub struct ScenarioRun {
     /// Sealed command-reply records keyed by declared correlation label.
     command_replies: BTreeMap<String, CommandReply>,
     /// Terminal evidence recorded by the actual execution lifecycle.
-    /// `seal` refuses to finalize without it; the four collector
-    /// reproduction probes from the scenario acceptance review all fail
-    /// because they cannot synthesize this surface. See Gate P1 #2
-    /// of that review.
+    /// `seal` refuses to finalize without it; the reproduction
+    /// probes cannot synthesize this surface because the surface is
+    /// owned by the actual execution lifecycle and only the lifecycle
+    /// can populate it once every owned child is reaped and every
+    /// borrowed simulator released.
     terminal_evidence: Option<TerminalEvidence>,
     /// Whether the host considers the run successful. Computed by
     /// `seal`; the `verify` callback may reject on top of this.
@@ -610,9 +609,7 @@ pub struct EvidenceCollector {
     record_bytes_total: usize,
     /// Terminal evidence recorded by the actual execution lifecycle.
     /// `seal` refuses without it; `record_terminal_evidence` is the
-    /// only path that can install this field. See Gate P1 #2 of
-    /// the scenario acceptance review.
-    terminal_evidence: Option<TerminalEvidence>,
+    /// only path that can install this field.    ///     terminal_evidence: Option<TerminalEvidence>,
 }
 
 impl EvidenceCollector {
@@ -891,10 +888,11 @@ impl EvidenceCollector {
     /// after every owned child was reaped and every borrowed
     /// simulator released.
     ///
-    /// `seal` will refuse without terminal evidence. The four
-    /// collector reproduction probes from the scenario acceptance review all
-    /// fail because they cannot call this method. See Gate P1 #2
-    /// of that review.
+    /// `seal` will refuse without terminal evidence. The reproduction
+    /// probes cannot call this method because the surface is owned
+    /// by the actual execution lifecycle and only the lifecycle can
+    /// populate it once every owned child is reaped and every
+    /// borrowed simulator released.
     pub fn record_terminal_evidence(
         &mut self,
         evidence: TerminalEvidence,
@@ -923,9 +921,7 @@ impl EvidenceCollector {
     /// `with_terminal_quantum_ns` / `with_completed_transitions`.
     /// The builder is the only path that constructs
     /// [`TerminalEvidence`]; external code cannot assemble the
-    /// surface from arbitrary fields. See Gate P1 #2 of
-    /// the scenario acceptance review.
-    pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
+    /// surface from arbitrary fields.    ///     pub fn terminal_evidence_builder(&mut self) -> TerminalEvidenceBuilder {
         TerminalEvidenceBuilder {
             execution_identity: String::new(),
             terminal_quantum_ns: None,
@@ -998,9 +994,8 @@ impl EvidenceCollector {
         // Terminal evidence gate: the actual execution lifecycle owns this
         // surface. The collector cannot synthesize it; tests that call
         // the existing record_* helpers without going through the
-        // lifecycle will seal as failed. See Gate P1 #2 of
-        // the scenario acceptance review: the four collector reproduction probes
-        // fail here.
+        // lifecycle will seal as failed because the reproduction probes
+        // cannot populate the terminal evidence this gate requires.
         let terminal = self
             .terminal_evidence
             .take()
@@ -1305,7 +1300,7 @@ mod tests {
             quantum,
             // 6 ms at the 2 ms quantum = 3 transitions; the setpoint
             // acknowledgement at boundary 0 is the only authored
-            // action. See Gate B2 and Gate P1 #2.
+            // action..
             std::time::Duration::from_micros(6_000),
             vec![ScheduleEntry::at(0, setpoint_action(1))],
             vec![Capture::state("motion", state_sig()).expect("motion capture")],
@@ -1811,7 +1806,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // Gate P1 #2 of the scenario acceptance review: the four reproduction probes
+    // the four reproduction probes
     // from lines 166-173 plus the boundary / interruption / mismatch
     // / sparse-valid regressions required by line 195. These tests
     // exercise the public collector API directly, without going
