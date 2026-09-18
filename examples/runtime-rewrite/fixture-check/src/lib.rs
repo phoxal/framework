@@ -1,9 +1,25 @@
 #[cfg(test)]
 mod tests {
+    //! Pure DTO import + field-shape assertions for the maintained MuJoCo
+    //! fixture.
+    //!
+    //! The inert record family (`RobotDocument`, `ComponentDocument`,
+    //! `NativeTargetKind`, etc.) lives in
+    //! `phoxal_artifact_format::document`; this test only decodes
+    //! shared shapes and inspects fields. Authored-file *parsing*
+    //! happens here too because [`ComponentDocument::parse`] and
+    //! [`RobotDocument::parse`] are inert decode methods on the
+    //! shared types. Semantic authored-document *validation* lives
+    //! in `cargo-phoxal`'s `project::document` module, which is a
+    //! private module of the project tool and therefore cannot be
+    //! reached from this example crate. The same maintained YAML
+    //! fixtures are exercised by `parse_and_validate_accepts_the_maintained_fixtures`
+    //! in `cargo-phoxal`.
+
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use phoxal_artifact_format::{ComponentDocument, NativeTargetKind, RobotDocument};
+    use phoxal_artifact_format::document::{ComponentDocument, NativeTargetKind, RobotDocument};
 
     fn fixture_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -29,9 +45,6 @@ mod tests {
 
         let motor = ComponentDocument::parse(&read("../components/bench-motor/component.yaml"))
             .expect("motor component definition parses");
-        motor
-            .validate()
-            .expect("motor component definition validates");
         assert_eq!(motor.model.file, Path::new("model.xml"));
         assert_eq!(motor.model.root_body, "mount");
         assert_eq!(
@@ -50,7 +63,6 @@ mod tests {
 
         let imu = ComponentDocument::parse(&read("../components/bench-imu/component.yaml"))
             .expect("IMU component definition parses");
-        imu.validate().expect("IMU component definition validates");
         assert_eq!(imu.model.file, Path::new("model.xml"));
         assert_eq!(imu.model.root_body, "mount");
         assert_eq!(
@@ -64,7 +76,6 @@ mod tests {
 
         let robot = RobotDocument::parse(&read("../robots/workspace-robot/robot.yaml"))
             .expect("robot definition parses");
-        robot.validate().expect("robot definition validates");
         assert_eq!(robot.robot.model.as_deref(), Some(Path::new("model.xml")));
         assert_eq!(robot.robot.components["left"].mount_site, "left_mount");
         assert_eq!(robot.robot.components["right"].mount_site, "right_mount");

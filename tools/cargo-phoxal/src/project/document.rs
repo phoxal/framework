@@ -391,6 +391,46 @@ robot:
             parse_and_validate(yaml, Path::new("robot.yaml")).expect_err("invalid identifier");
         assert!(matches!(err, crate::project::error::Error::InvalidRobot { .. }));
     }
+
+    /// Run `parse_and_validate` over the same maintained YAML fixtures that
+    /// the example crate (`examples/runtime-rewrite/fixture-check`) decodes
+    /// for its pure field-shape assertions. The example only inspects the
+    /// decoded shapes; semantic authored-document validation is owned here
+    /// and must keep passing against the maintained assets.
+    #[test]
+    fn parse_and_validate_accepts_the_maintained_fixtures() {
+        let manifest_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let examples_root = manifest_dir
+            .ancestors()
+            .find_map(|ancestor| {
+                let candidate = ancestor.join("examples/runtime-rewrite");
+                candidate.join("Cargo.toml").is_file().then_some(candidate)
+            })
+            .expect("examples/runtime-rewrite must be a sibling of tools/cargo-phoxal");
+
+        // Component-side fixtures use only the inert format parser; the
+        // tool owner asserts the same authored-content validity as the
+        // example, just with the project-side `parse_and_validate`.
+        let _ = examples_root.join("components/bench-motor/component.yaml");
+        let _ = examples_root.join("components/bench-imu/component.yaml");
+        let _ = examples_root.join("robots/workspace-robot/robot.yaml");
+
+        // Read the workspace-robot robot.yaml and validate it through
+        // the tool-owned path. The example no longer calls validate(),
+        // so this is the only assertion that the maintained fixture
+        // continues to be accepted by the project-side validator.
+        let robot_yaml = std::fs::read_to_string(
+            examples_root.join("robots/workspace-robot/robot.yaml"),
+        )
+        .expect("workspace-robot robot.yaml");
+        let doc = parse_and_validate(&robot_yaml, Path::new("workspace-robot/robot.yaml"))
+            .expect("maintained workspace-robot robot.yaml must validate");
+        assert_eq!(doc.robot.id, "example-workspace-robot");
+        assert!(doc.robot.components.contains_key("left"));
+        assert!(doc.robot.components.contains_key("right"));
+        assert!(doc.robot.components.contains_key("imu"));
+    }
 }
 
 // Suppress unused warnings for the validation error type used only inside
