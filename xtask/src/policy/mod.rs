@@ -68,9 +68,9 @@ pub(crate) const FACADE: &str = "phoxal";
 pub(crate) const LIBRARY_CRATE_DIRS: [&str; 16] = [
     "phoxal",
     "supervisor",
-    "crates/macros",
-    "crates/build",
-    "crates/mujoco",
+    "phoxal/macros",
+    "phoxal/build-support",
+    "simulation/mujoco",
     // The shared serialized artifact format. Owned by the framework but
     // published through the Phoxal registry so external consumers can
     // deserialize recorded bundles without depending on the project
@@ -136,6 +136,14 @@ pub(crate) fn library_package_name(directory: &str) -> Option<String> {
         // crate prefix rule does not match. The package name is the
         // kebab-case mirror of the directory suffix.
         "internal/artifact-format" => return Some("phoxal-artifact-format".into()),
+        // Unit 6 relocated the proc-macro and code-generation helpers beneath
+        // the facade (`phoxal/macros`, `phoxal/build-support`) and the native
+        // MuJoCo adapter to a new top-level `simulation/` root. The package
+        // names are the historical `phoxal-<suffix>` form, which the
+        // `crates/<suffix>` branch would not derive from these paths.
+        "phoxal/macros" => return Some("phoxal-macros".into()),
+        "phoxal/build-support" => return Some("phoxal-build".into()),
+        "simulation/mujoco" => return Some("phoxal-mujoco".into()),
         _ => {}
     }
     if directory == FACADE {
@@ -521,7 +529,7 @@ mod tests {
             Some("phoxal-supervisor")
         );
         assert_eq!(
-            library_package_name("crates/macros").as_deref(),
+            library_package_name("phoxal/macros").as_deref(),
             Some("phoxal-macros")
         );
         // Nested production paths are deliberately not recognised: the
@@ -547,7 +555,7 @@ mod tests {
 
         assert_eq!(library_package_name("crates"), None);
         assert_eq!(library_package_name("crates/"), None);
-        assert_eq!(library_package_name("crates/macros/inner"), None);
+        assert_eq!(library_package_name("phoxal/macros/inner"), None);
         assert_eq!(library_package_name("phoxal-macros"), None);
         assert_eq!(library_package_name("contracts"), None);
         assert_eq!(library_package_name("services/motion/contract/inner"), None);
@@ -582,9 +590,9 @@ mod tests {
         for (directory, package) in [
             ("phoxal", "phoxal"),
             ("supervisor", "phoxal-supervisor"),
-            ("crates/macros", "phoxal-macros"),
-            ("crates/build", "phoxal-build"),
-            ("crates/mujoco", "phoxal-mujoco"),
+            ("phoxal/macros", "phoxal-macros"),
+            ("phoxal/build-support", "phoxal-build"),
+            ("simulation/mujoco", "phoxal-mujoco"),
             ("services/motion", "phoxal-service-motion"),
             ("services/navigation", "phoxal-service-navigation"),
             ("services/kinematics", "phoxal-service-kinematics"),

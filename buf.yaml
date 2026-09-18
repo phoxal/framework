@@ -1,7 +1,7 @@
 version: v2
 
 modules:
-  - path: crates/build/proto
+  - path: phoxal/build-support/proto
     lint:
       use:
         - STANDARD

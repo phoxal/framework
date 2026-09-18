@@ -15,15 +15,15 @@ resolver = "3"
 # private Rust modules of `tools/cargo-phoxal`; they are not
 # independent workspace packages.
 members = [
-    "crates/build",
-    "crates/mujoco",
+    "phoxal/build-support",
+    "simulation/mujoco",
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
     "tests/fixtures/hardware/driver",
     "tests/fixtures/ports/consumer",
     "tests/fixtures/scenarios",
     "phoxal",
-    "crates/macros",
+    "phoxal/macros",
     "supervisor",
     "components/bno085",
     "components/ddsm115",
@@ -47,15 +47,15 @@ members = [
 # When adding a workspace member, add it to both members and default-members;
 # otherwise plain cargo build/test silently skips it.
 default-members = [
-    "crates/build",
-    "crates/mujoco",
+    "phoxal/build-support",
+    "simulation/mujoco",
     "tests/fixtures/contracts/producer",
     "tests/fixtures/contracts/consumer",
     "tests/fixtures/hardware/driver",
     "tests/fixtures/ports/consumer",
     "tests/fixtures/scenarios",
     "phoxal",
-    "crates/macros",
+    "phoxal/macros",
     "supervisor",
     "components/bno085",
     "components/ddsm115",
@@ -157,8 +157,8 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 # supported role, and a member that inherits a default profile never says which
 # role it is. Every member below names its own.
 phoxal = { path = "phoxal", version = "=0.68.0", registry = "phoxal", default-features = false }
-phoxal-macros = { path = "crates/macros", version = "=0.68.0", registry = "phoxal" }
-phoxal-build = { path = "crates/build", version = "0.1.0", registry = "phoxal" }
+phoxal-macros = { path = "phoxal/macros", version = "=0.68.0", registry = "phoxal" }
+phoxal-build = { path = "phoxal/build-support", version = "0.1.0", registry = "phoxal" }
 phoxal-service-motion = { path = "services/motion", version = "0.68.0", registry = "phoxal" }
 phoxal-service-kinematics = { path = "services/kinematics", version = "0.68.0", registry = "phoxal" }
 phoxal-service-world = { path = "services/world", version = "0.68.0", registry = "phoxal" }

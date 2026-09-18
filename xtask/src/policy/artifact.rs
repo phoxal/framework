@@ -736,7 +736,7 @@ mod tests {
             ManifestClassification::Excluded
         );
         assert_eq!(
-            classify("crates/macros/Cargo.toml")?,
+            classify("phoxal/macros/Cargo.toml")?,
             ManifestClassification::Excluded
         );
         Ok(())

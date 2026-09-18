@@ -76,12 +76,67 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 22] = [
 
 /// The edges a canonical crate may never grow, whatever the dependency kind.
 ///
-/// The direction stays one-way: `phoxal-macros` is expanded by `phoxal` and
-/// knows nothing about it, and neither library reaches for the CLI that
-/// consumes them.
-const FORBIDDEN_EDGES: [(&str, &[&str]); 2] = [
-    ("phoxal-macros", &["phoxal", "phoxal-cli"]),
-    ("phoxal", &["phoxal-cli"]),
+/// Plan §3 sets the dependency rules for the framework: the SDK stays a
+/// library facade with no reverse reach into the CLI, the host binary, the
+/// native engine, the official services, the component packages, or the
+/// tool-owned implementation packages. The macro and code-generation helpers
+/// stay out of the SDK library they generate, and the inert format package
+/// stays out of every system that would otherwise pull registry submission,
+/// native physics, network I/O, or service implementation behind its serialised
+/// records.
+const FORBIDDEN_EDGES: [(&str, &[&str]); 4] = [
+    // The macro helper expands the SDK and the build helper compiles service
+    // contracts; neither reaches back into the library they produce, nor into
+    // the CLI that consumes them.
+    ("phoxal-macros", &["phoxal", "phoxal-build", "phoxal-cli"]),
+    (
+        "phoxal-build",
+        &[
+            "phoxal",
+            "phoxal-cli",
+            "phoxal-supervisor",
+            "phoxal-mujoco",
+        ],
+    ),
+    // The SDK stays a library facade. It does not reach for the CLI, the host
+    // binary, the native adapter, the tool-owned implementation packages, or
+    // any official service or component contract - no matter the dependency
+    // kind (normal, build, dev).
+    (
+        "phoxal",
+        &[
+            "phoxal-cli",
+            "cargo-phoxal",
+            "phoxal-supervisor",
+            "phoxal-mujoco",
+            "phoxal-project",
+            "phoxal-installation",
+            "phoxal-service-motion",
+            "phoxal-service-navigation",
+            "phoxal-service-kinematics",
+            "phoxal-service-world",
+            "phoxal-service-safety",
+            "phoxal-component-bno085",
+            "phoxal-component-ddsm115",
+            "phoxal-component-oak_d_lite",
+            "phoxal-component-vl53l1x",
+            "phoxal-component-zed_f9p",
+        ],
+    ),
+    // The inert format package stays out of every system that would silently
+    // turn its serialised records into executable input.
+    (
+        "phoxal-artifact-format",
+        &[
+            "phoxal",
+            "phoxal-cli",
+            "cargo-phoxal",
+            "phoxal-supervisor",
+            "phoxal-mujoco",
+            "phoxal-project",
+            "phoxal-installation",
+        ],
+    ),
 ];
 
 /// The framework library packages that stopped existing when the framework
@@ -93,13 +148,15 @@ const FORBIDDEN_EDGES: [(&str, &[&str]); 2] = [
 /// vocabulary or the wire contracts - which is a second compatibility identity
 /// in a product that has exactly one. Nothing may depend on them again, whatever
 /// the dependency kind.
-const RETIRED_LIBRARIES: [&str; 6] = [
+const RETIRED_LIBRARIES: [&str; 8] = [
     "phoxal-protocol",
     "phoxal-bus",
     "phoxal-bundle",
     "phoxal-model",
     "phoxal-manifest",
     "phoxal-runtime-contract",
+    "phoxal-port",
+    "phoxal-robotics",
 ];
 
 pub(super) fn public_library_dependency_direction_is_exact(

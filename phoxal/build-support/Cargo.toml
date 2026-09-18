@@ -1,6 +1,12 @@
 [package]
 name = "phoxal-build"
 version = "0.1.0"
+# The framework workspace root lives at `../..` from this crate, but cargo's
+# default workspace walk-up passes through `phoxal/Cargo.toml` (the facade
+# package) first and fails to parse it because the facade inherits from the
+# workspace it sits inside. Pinning the parent workspace explicitly short-
+# circuits that search.
+workspace = "../.."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
