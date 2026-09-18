@@ -396,9 +396,13 @@ robot:
     /// the example crate (`examples/runtime-rewrite/fixture-check`) decodes
     /// for its pure field-shape assertions. The example only inspects the
     /// decoded shapes; semantic authored-document validation is owned here
-    /// and must keep passing against the maintained assets.
+    /// and must keep passing against every maintained asset: the
+    /// `bench-motor` and `bench-imu` components, and the `workspace-robot`
+    /// robot that mounts them.
     #[test]
     fn parse_and_validate_accepts_the_maintained_fixtures() {
+        use super::ValidateComponentDocument;
+
         let manifest_dir =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let examples_root = manifest_dir
@@ -409,21 +413,30 @@ robot:
             })
             .expect("examples/runtime-rewrite must be a sibling of tools/cargo-phoxal");
 
-        // Component-side fixtures use only the inert format parser; the
-        // tool owner asserts the same authored-content validity as the
-        // example, just with the project-side `parse_and_validate`.
-        let _ = examples_root.join("components/bench-motor/component.yaml");
-        let _ = examples_root.join("components/bench-imu/component.yaml");
-        let _ = examples_root.join("robots/workspace-robot/robot.yaml");
+        // Validate both maintained components. Each ComponentDocument
+        // goes through the project-side `parse` (inert format) and the
+        // tool-side `validate` (component model + capabilities).
+        for component_path in [
+            "components/bench-motor/component.yaml",
+            "components/bench-imu/component.yaml",
+        ] {
+            let path = examples_root.join(component_path);
+            let yaml = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let document = ComponentDocument::parse(&yaml).unwrap_or_else(|error| {
+                panic!("parse {}: {error}", path.display())
+            });
+            document.validate().unwrap_or_else(|error| {
+                panic!("validate {}: {error}", path.display())
+            });
+        }
 
-        // Read the workspace-robot robot.yaml and validate it through
-        // the tool-owned path. The example no longer calls validate(),
-        // so this is the only assertion that the maintained fixture
-        // continues to be accepted by the project-side validator.
-        let robot_yaml = std::fs::read_to_string(
-            examples_root.join("robots/workspace-robot/robot.yaml"),
-        )
-        .expect("workspace-robot robot.yaml");
+        // Validate the workspace-robot robot that mounts them. This
+        // asserts the robot-level schema, component identity, brain,
+        // services, and connection graph against the maintained YAML.
+        let robot_path = examples_root.join("robots/workspace-robot/robot.yaml");
+        let robot_yaml = std::fs::read_to_string(&robot_path)
+            .expect("workspace-robot robot.yaml");
         let doc = parse_and_validate(&robot_yaml, Path::new("workspace-robot/robot.yaml"))
             .expect("maintained workspace-robot robot.yaml must validate");
         assert_eq!(doc.robot.id, "example-workspace-robot");
