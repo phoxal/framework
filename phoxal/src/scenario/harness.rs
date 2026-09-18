@@ -559,7 +559,8 @@ mod tests {
     /// run whose `passed` flag is false must surface as a
     /// `ScenarioFailed` before `verify()` runs. The fabricator's
     /// failure mode (sealing as passing without lifecycle evidence)
-    /// must be rejected at this seam.    ///     #[test]
+    /// must be rejected at this seam.
+    #[test]
     fn case_host_rejects_sealed_run_that_did_not_pass() {
         use crate::scenario::Scenario;
 
@@ -700,7 +701,8 @@ mod tests {
 
     /// Lifecycle ownership: the seal must refuse a run whose
     /// terminal evidence completed-transition count does not match
-    /// the program's transition_count.    ///     #[test]
+    /// the program's transition_count.
+    #[test]
     fn seal_rejects_terminal_evidence_with_mismatched_completed_transitions() {
         let quantum = crate::scenario::Quantum::from_micros(2_000).expect("quantum");
         let program = crate::scenario::Program::normalize(

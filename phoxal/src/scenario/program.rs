@@ -132,7 +132,7 @@ impl Quantum {
     /// harness-support protocol uses this constructor to bridge the
     /// simulator-probed `quantum_ns` to the SDK-side [`Quantum`].
     pub fn from_nanos(nanos: u64) -> Option<Self> {
-        if nanos == 0 || nanos % 1_000 != 0 {
+        if nanos == 0 || !nanos.is_multiple_of(1_000) {
             return None;
         }
         let micros = u32::try_from(nanos / 1_000).ok()?;
