@@ -326,7 +326,7 @@ fn prepare_scenarios_compiles_and_runs_generated_harness_list() {
         "schema: phoxal/robot/v0\nrobot:\n  id: p1-robot\n  components: {}\nservices: {}\n",
     )
     .expect("robot.yaml");
-    write_phoxal_local_registry_config(&robot_root);
+    write_test_owned_phoxal_registry(&robot_root);
     fs::create_dir_all(robot_root.join("src")).expect("src");
     fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
     let scenarios = robot_root.join("scenarios");
@@ -543,7 +543,7 @@ fn prepare_scenarios_duplicate_struct_identities_rejected() {
         "schema: phoxal/robot/v0\nrobot:\n  id: p1-robot\n  components: {}\nservices: {}\n",
     )
     .expect("robot.yaml");
-    write_phoxal_local_registry_config(&robot_root);
+    write_test_owned_phoxal_registry(&robot_root);
     fs::create_dir_all(robot_root.join("src")).expect("src");
     fs::write(robot_root.join("src/main.rs"), "fn main() {}\n").expect("bin");
     let scenarios = robot_root.join("scenarios");
@@ -741,24 +741,6 @@ fn prepare_scenarios_preserves_user_authored_phoxal_project_dependency() {
 }
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
-fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
-    // The framework's `phoxal` crate publishes into the local `phoxal`
-    // registry; point Cargo at that local registry so the path
-    // dependency resolves under `--offline`.
-    fs::create_dir_all(robot_root.join(".cargo")).expect("cargo dir");
-    let registry_path = framework_registry_dir()
-        .canonicalize()
-        .expect("canonicalize registry dir")
-        .to_string_lossy()
-        .replace('\\', "/");
-    fs::write(
-        robot_root.join(".cargo/config.toml"),
-        format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}/\"\n"),
-    )
-    .expect("cargo config");
-}
-
-#[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 fn framework_phoxal_dir() -> std::path::PathBuf {
     // The framework's `phoxal` crate is a sibling of the
     // `phoxal-project` test crate, so we can locate it directly from the
@@ -790,20 +772,48 @@ fn framework_supervisor_dir() -> std::path::PathBuf {
         .expect("supervisor crate must be a sibling of tools/cargo-phoxal/project")
 }
 
+/// Write a self-owned, in-tempdir registry config so the test project can
+/// resolve the framework's `phoxal` package without relying on a developer-local
+/// `registry/` directory somewhere in the framework's ancestor tree.
+///
+/// `framework/phoxal/Cargo.toml` declares `publish = ["phoxal"]`, which means
+/// any Cargo process that loads the manifest (even via a path dependency) needs
+/// the `phoxal` registry to exist in its `.cargo/config.toml`. Without this,
+/// cargo errors out with `registry index was not found in any configuration:
+/// "phoxal"`.
+///
+/// The tempdir is removed when the caller drops its `TempDir`. We deliberately
+/// keep the index sparse and offline: no fetch is required because every
+/// dependency in the test manifest is a path dependency. The `config.json`
+/// fields are placeholders; cargo only needs the file to exist so it
+/// recognises the registry index.
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
-fn framework_registry_dir() -> std::path::PathBuf {
-    // The framework's sibling `registry directory is the local registry
-    // index that the `phoxal` package publishes into. The test temp
-    // robots need it on disk so path-based dependencies resolve under
-    // `--offline`.
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .ancestors()
-        .find_map(|ancestor| {
-            let candidate = ancestor.join("registry");
-            candidate.join("config.json").is_file().then_some(candidate)
-        })
-        .expect("registry directory must be a sibling of tools/cargo-phoxal/project")
+fn write_test_owned_phoxal_registry(robot_root: &std::path::Path) {
+    let registry_dir = tempfile::tempdir().expect("registry tempdir");
+    fs::create_dir_all(registry_dir.path()).expect("registry dir");
+    fs::write(
+        registry_dir.path().join("config.json"),
+        r#"{"version":1,"dl":"file:///unused/","api":"file:///unused/"}"#,
+    )
+    .expect("registry config.json");
+    fs::create_dir_all(robot_root.join(".cargo")).expect("cargo dir");
+    let registry_path = registry_dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize registry dir")
+        .to_string_lossy()
+        .replace('\\', "/");
+    fs::write(
+        robot_root.join(".cargo/config.toml"),
+        format!("[registries.phoxal]\nindex = \"sparse+file://{registry_path}/\"\n"),
+    )
+    .expect("cargo config");
+    // Hand ownership of the tempdir to the caller by leaking it; the test
+    // process cleans up at exit. The robot_root's `.cargo/config.toml`
+    // references the absolute path, so the tempdir must outlive the cargo
+    // subprocess. `TempDir` is dropped at end of test only when the path
+    // value goes out of scope; we hold it in a static so it survives.
+    let _ = Box::leak(Box::new(registry_dir));
 }
 
 #[allow(dead_code, clippy::unwrap_used)]
