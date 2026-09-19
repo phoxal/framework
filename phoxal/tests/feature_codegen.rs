@@ -16,6 +16,12 @@ fn cargo() -> std::ffi::OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into())
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "cargo binary is on PATH by the bootstrap invariant of the test harness; \
+             the alternative is propagating a Result through a #[test] entry point that \
+             has nothing to report beyond `cargo is missing`"
+)]
 fn build_phoxal(target_dir: &Path, features: &[&str]) {
     let mut command = Command::new(cargo());
     command
