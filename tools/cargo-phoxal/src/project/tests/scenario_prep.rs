@@ -606,11 +606,19 @@ fn prepare_scenarios_duplicate_struct_identities_rejected() {
 
 #[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 fn write_phoxal_local_registry_config(robot_root: &std::path::Path) {
-    // The framework's `phoxal` crate publishes into the local `phoxal`
-    // registry; point Cargo at that local registry so the path
-    // dependency resolves under `--offline`.
+    // Cargo requires every named registry to have a configured sparse index
+    // even when the selected package is supplied entirely by path.
+    // Keep this fixture self-contained instead of depending on a sibling
+    // checkout of the public registry.
     fs::create_dir_all(robot_root.join(".cargo")).expect("cargo dir");
-    let registry_path = framework_registry_dir()
+    let registry = robot_root.join(".phoxal-test-registry");
+    fs::create_dir_all(&registry).expect("registry dir");
+    fs::write(
+        registry.join("config.json"),
+        "{\"dl\":\"https://example.invalid/{crate}/{version}\"}\n",
+    )
+    .expect("registry config");
+    let registry_path = registry
         .canonicalize()
         .expect("canonicalize registry dir")
         .to_string_lossy()
@@ -651,22 +659,6 @@ fn framework_supervisor_dir() -> std::path::PathBuf {
             candidate.join("Cargo.toml").is_file().then_some(candidate)
         })
         .expect("supervisor crate must be a sibling of tools/cargo-phoxal/project")
-}
-
-#[allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
-fn framework_registry_dir() -> std::path::PathBuf {
-    // The framework's sibling `registry directory is the local registry
-    // index that the `phoxal` package publishes into. The test temp
-    // robots need it on disk so path-based dependencies resolve under
-    // `--offline`.
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .ancestors()
-        .find_map(|ancestor| {
-            let candidate = ancestor.join("registry");
-            candidate.join("config.json").is_file().then_some(candidate)
-        })
-        .expect("registry directory must be a sibling of tools/cargo-phoxal/project")
 }
 
 #[allow(dead_code, clippy::unwrap_used)]

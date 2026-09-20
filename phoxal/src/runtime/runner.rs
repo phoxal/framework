@@ -1579,7 +1579,11 @@ fn decode_digest(value: &str) -> Option<Vec<u8>> {
     }
     let mut digest = Vec::with_capacity(32);
     let bytes = value.as_bytes();
-    for pair in bytes.chunks_exact(2) {
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    for pair in pairs {
         let high = (pair[0] as char).to_digit(16)?;
         let low = (pair[1] as char).to_digit(16)?;
         digest.push(((high << 4) | low) as u8);

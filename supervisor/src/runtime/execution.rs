@@ -2158,9 +2158,12 @@ fn decode_digest(value: &str) -> Option<Vec<u8>> {
     if value.len() != 64 || !value.is_ascii() {
         return None;
     }
-    value
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    pairs
+        .iter()
         .map(|pair| {
             Some(((pair[0] as char).to_digit(16)? * 16 + (pair[1] as char).to_digit(16)?) as u8)
         })
