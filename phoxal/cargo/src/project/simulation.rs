@@ -1273,6 +1273,7 @@ fn package_macos(
     Ok(artifact)
 }
 
+#[cfg(target_os = "macos")]
 fn run_command(command: &mut Command, operation: &str) -> Result<(), Error> {
     let output = command.output().map_err(|source| Error::CargoSpawn {
         operation: operation.to_owned(),
