@@ -793,7 +793,7 @@ fn install_for_platform(
     }
     #[cfg(target_os = "linux")]
     {
-        return install_linux(root, options, request, supplied_distribution);
+        install_linux(root, options, request, supplied_distribution)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
