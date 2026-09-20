@@ -80,7 +80,8 @@ The complete Runtime rewrite examples and fresh-machine setup recipe are in [exa
 Every published library, contract, executable, and simulator package owns a semantic version in its Cargo manifest.
 During the current experimental reset, coherent framework trains use the monotonic `0.0.0-dev.N` sequence and exact internal requirements.
 The source commit is recorded in immutable registry provenance instead of being embedded in the version.
-Changes are planned by release-plz in a reviewable pull request, and unrelated packages remain unchanged after this reset train.
+When a release train is intentionally started, release-plz plans changes in a reviewable pull request, and unrelated packages remain unchanged after this reset train.
+Release planning is manually dispatched because the static reviewed registry has no publication API or release state that release-plz can observe.
 The framework does not publish rewritten packages to crates.io.
 After the owner change is merged, the exact `cargo package` archive and checksum follow the reviewed `phoxal` registry admission path in dependency order.
 Registry publication is intentionally separate from release-plz because the static registry has no Cargo upload API and requires human review of provenance and ownership records.
