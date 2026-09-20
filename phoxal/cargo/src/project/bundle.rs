@@ -22,6 +22,7 @@ use crate::project::cargo;
 use crate::project::selection::PackageSource;
 use crate::project::validation;
 use crate::project::{CargoOptions, Error, PreparedProject, RobotDocument};
+use phoxal::artifact::RuntimeRecord;
 use phoxal::scenario::{Action, Program};
 
 // Re-exports from the framework artifact module. The module is the source of
@@ -59,9 +60,6 @@ pub(crate) fn simulation_model_facts(
     validate_simulation_facts(&facts)?;
     Ok(facts)
 }
-
-/// The compiled project-bundle schema emitted by this source compiler.
-pub use phoxal::artifact::bundle::BUNDLE_SCHEMA;
 
 const BIN_DIR: &str = "bin";
 const ASSET_DIR: &str = "assets";
@@ -354,9 +352,9 @@ pub(crate) fn assemble_with_inputs(
             Ok::<BundleScenarioSection, Error>(section)
         })
         .transpose()?;
-    let manifest = BundleManifest {
-        schema: BUNDLE_SCHEMA.to_owned(),
-        robot_id: prepared.document().robot.id.clone(),
+    let RobotDocument::V0 { robot, .. } = prepared.document();
+    let manifest = BundleManifest::V0 {
+        robot_id: robot.id.clone(),
         document,
         root_package: BundlePackage {
             id: public_package_id(prepared, &prepared.cargo_root_package().id.to_string()),
@@ -444,6 +442,7 @@ fn apply_scenario_substitutions(
     fixture_instance_id: &str,
     contracts: &BTreeMap<String, ArtifactSummary>,
 ) -> Result<(), Error> {
+    let RobotDocument::V0 { connections, .. } = document;
     if fixture_instance_id.is_empty() {
         return Err(simulation_error(
             "scenario fixture instance id must not be empty",
@@ -483,9 +482,8 @@ fn apply_scenario_substitutions(
                 "scenario target `{consumer}` has no compiled input contract"
             ))
         })?;
-        let input = contract
-            .runtime
-            .inputs
+        let RuntimeRecord::V0 { inputs, .. } = &contract.runtime;
+        let input = inputs
             .iter()
             .find(|input| input.name == target_port || input.port.as_deref() == Some(target_port))
             .ok_or_else(|| {
@@ -518,7 +516,7 @@ fn apply_scenario_substitutions(
                 input.port
             )));
         }
-        document.connections.insert(
+        connections.insert(
             consumer,
             crate::project::document::ConnectionSources::One(replacement),
         );
@@ -629,15 +627,17 @@ fn build_simulation_definition(
             expected_setpoint_keys, actual_binding_keys
         )));
     }
-    for (consumer, sources) in &prepared.document().connections {
+    let prepared_document_connections = match prepared.document() {
+        RobotDocument::V0 { connections, .. } => connections,
+    };
+    for (consumer, sources) in prepared_document_connections {
         let consumer = crate::project::document::PortReference::parse(consumer)
             .map_err(|error| simulation_error(error.to_string()))?;
         if !driver_instances.contains(&consumer.instance) {
             continue;
         }
-        let input = contracts[&consumer.instance]
-            .runtime
-            .inputs
+        let RuntimeRecord::V0 { inputs, .. } = &contracts[&consumer.instance].runtime;
+        let input = inputs
             .iter()
             .find(|input| input.name == consumer.port)
             .ok_or_else(|| simulation_error("native driver input has no compiled contract"))?;
@@ -761,11 +761,12 @@ fn build_simulation_definition(
 fn public_outputs(
     contract: &ArtifactSummary,
 ) -> impl Iterator<Item = &crate::project::artifact::OutputRecord> {
-    contract
-        .runtime
-        .transient_outputs
-        .iter()
-        .chain(contract.runtime.service_outputs.iter())
+    let RuntimeRecord::V0 {
+        transient_outputs,
+        service_outputs,
+        ..
+    } = &contract.runtime;
+    transient_outputs.iter().chain(service_outputs.iter())
 }
 
 fn public_output<'a>(
@@ -995,8 +996,7 @@ fn provenance(
         invocations,
         prepared.layout().root(),
     )?;
-    Ok(BundleProvenance {
-        schema: BUNDLE_SCHEMA.to_owned(),
+    Ok(BundleProvenance::V0 {
         robot_manifest_sha256: digest_file(prepared.layout().robot_manifest())?.sha256,
         cargo_manifest_sha256: digest_file(prepared.layout().cargo_manifest())?.sha256,
         cargo_workspace_manifest_sha256: digest_file(&workspace_manifest)?.sha256,
@@ -1117,14 +1117,20 @@ fn toolchain(
 ) -> Result<BundleToolchain, Error> {
     let cargo = options.cargo_program();
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let BundleManifest::V0 {
+        target,
+        profile,
+        features,
+        ..
+    } = manifest;
     Ok(BundleToolchain {
         cargo: version_output(cargo.as_os_str(), &["--version"])?
             .trim_end()
             .to_owned(),
         rustc: version_output(&rustc, &["-vV"])?.trim_end().to_owned(),
-        target: manifest.target.clone(),
-        profile: manifest.profile.clone(),
-        features: manifest.features.clone(),
+        target: target.clone(),
+        profile: profile.clone(),
+        features: features.clone(),
         all_features: effective_all_features(options),
         no_default_features: effective_no_default_features(options),
         lock: effective_lock(options),
@@ -2744,7 +2750,8 @@ fn stage_model(
     prepared: &PreparedProject,
     staged_root: &Path,
 ) -> Result<Option<StagedModel>, Error> {
-    let Some(path) = prepared.document().robot.model.as_ref() else {
+    let RobotDocument::V0 { robot, .. } = prepared.document();
+    let Some(path) = robot.model.as_ref() else {
         return Ok(None);
     };
     let relative = safe_input_path(path)?;

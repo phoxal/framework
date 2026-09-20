@@ -13,38 +13,36 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// The source-language tag accepted by this first project compiler.
-pub const ROBOT_SCHEMA: &str = "phoxal/robot/v0";
-
-/// The component definition generation consumed by native model preparation.
-pub const COMPONENT_SCHEMA: &str = "phoxal/component/v0";
-
 /// A parsed and validated `robot.yaml` document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RobotDocument {
-    /// The authored document generation.
-    #[serde(default)]
-    pub schema: Option<String>,
-    /// Robot identity, physical model, and component instances.
-    pub robot: RobotSection,
-    /// Optional explicit binary selection for a multi-binary root package.
-    #[serde(default)]
-    pub brain: Option<BrainSelection>,
-    /// Explicit behavioral service instances.
-    #[serde(default)]
-    pub services: BTreeMap<String, ServiceSelection>,
-    /// Explicit local input to served-port connections.
-    #[serde(default)]
-    pub connections: BTreeMap<String, ConnectionSources>,
+#[serde(tag = "schema", deny_unknown_fields)]
+pub enum RobotDocument {
+    /// The first authored robot-document generation.
+    #[serde(rename = "phoxal/robot/v0")]
+    V0 {
+        /// Robot identity, physical model, and component instances.
+        robot: RobotSection,
+        /// Optional explicit binary selection for a multi-binary root package.
+        #[serde(default)]
+        brain: Option<BrainSelection>,
+        /// Explicit behavioral service instances.
+        #[serde(default)]
+        services: BTreeMap<String, ServiceSelection>,
+        /// Explicit local input to served-port connections.
+        #[serde(default)]
+        connections: BTreeMap<String, ConnectionSources>,
+    },
 }
 
 impl RobotDocument {
     /// Returns every instance identity available to a connection source.
     #[must_use]
     pub fn instance_ids(&self) -> BTreeSet<String> {
-        let mut ids = self.services.keys().cloned().collect::<BTreeSet<_>>();
-        ids.extend(self.robot.components.keys().cloned());
+        let Self::V0 {
+            robot, services, ..
+        } = self;
+        let mut ids = services.keys().cloned().collect::<BTreeSet<_>>();
+        ids.extend(robot.components.keys().cloned());
         ids.insert("brain".to_owned());
         ids
     }
@@ -104,17 +102,19 @@ pub struct ComponentInstance {
 
 /// A component-owned native model and semantic capability definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ComponentDocument {
-    /// Authored component document generation.
-    pub schema: String,
-    /// Native model entry and attachment root.
-    pub model: ComponentModel,
-    /// Public semantic capabilities keyed by component-local identity.
-    pub capabilities: BTreeMap<String, CapabilityDeclaration>,
-    /// Explicit additional package assets retained by publication tooling.
-    #[serde(default)]
-    pub assets: Vec<PathBuf>,
+#[serde(tag = "schema", deny_unknown_fields)]
+pub enum ComponentDocument {
+    /// The first component-definition generation consumed by native model preparation.
+    #[serde(rename = "phoxal/component/v0")]
+    V0 {
+        /// Native model entry and attachment root.
+        model: ComponentModel,
+        /// Public semantic capabilities keyed by component-local identity.
+        capabilities: BTreeMap<String, CapabilityDeclaration>,
+        /// Explicit additional package assets retained by publication tooling.
+        #[serde(default)]
+        assets: Vec<PathBuf>,
+    },
 }
 
 /// The native model entry selected by a component definition.
@@ -297,6 +297,7 @@ connections:
     #[test]
     fn instance_ids_collect_components_services_and_brain() {
         let yaml = r#"
+schema: phoxal/robot/v0
 robot:
   id: rover
   components:

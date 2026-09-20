@@ -203,18 +203,17 @@ impl RuntimeLaunchManifest {
                     source,
                 })
             })?;
-        if manifest.schema != "phoxal/bundle/v0" {
-            return Err(anyhow::anyhow!(RunnerError::BundleInvalid {
-                message: format!(
-                    "unsupported bundle schema `{}`; expected `phoxal/bundle/v0`",
-                    manifest.schema
-                ),
-            }));
-        }
+        let SourceBundleManifest::V0 {
+            robot_id: bundle_robot_id,
+            document: bundle_document,
+            executables: bundle_executables,
+            simulation: bundle_simulation,
+            scenario: bundle_scenario,
+            ..
+        } = manifest;
         parse_identifier(instance_id)
             .map_err(|message| anyhow::anyhow!(RunnerError::BundleInvalid { message }))?;
-        let executable = manifest
-            .executables
+        let executable = bundle_executables
             .iter()
             .find(|entry| entry.instance == instance_id)
             .ok_or_else(|| {
@@ -262,12 +261,12 @@ impl RuntimeLaunchManifest {
 
         let config = if instance_id == "brain" {
             Value::Object(serde_json::Map::new())
-        } else if let Some(service) = manifest.document.services.get(instance_id) {
+        } else if let Some(service) = bundle_document.services.get(instance_id) {
             service
                 .config
                 .clone()
                 .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
-        } else if let Some(component) = manifest.document.robot.components.get(instance_id) {
+        } else if let Some(component) = bundle_document.robot.components.get(instance_id) {
             let driver = component
                 .driver
                 .as_ref()
@@ -295,14 +294,12 @@ impl RuntimeLaunchManifest {
                 message: format!("configuration for `{instance_id}` is explicit null"),
             }));
         }
-        let connections = manifest
-            .document
+        let connections = bundle_document
             .connections
             .iter()
             .map(|(consumer, sources)| (consumer.clone(), sources.as_slice().to_vec()))
             .collect();
-        let artifacts = manifest
-            .executables
+        let artifacts = bundle_executables
             .iter()
             .filter_map(|entry| {
                 entry
@@ -313,15 +310,14 @@ impl RuntimeLaunchManifest {
             .collect();
         Ok(Self {
             root,
-            robot_id: manifest.robot_id,
+            robot_id: bundle_robot_id,
             instance_id: instance_id.to_owned(),
             executable: canonical_executable,
             executable_sha256,
             config,
             connections,
             artifacts,
-            observation_providers: manifest
-                .simulation
+            observation_providers: bundle_simulation
                 .into_iter()
                 .flat_map(|simulation| simulation.providers)
                 .map(|provider| {
@@ -331,8 +327,7 @@ impl RuntimeLaunchManifest {
                     )
                 })
                 .collect(),
-            scenario_producers: manifest
-                .scenario
+            scenario_producers: bundle_scenario
                 .into_iter()
                 .flat_map(|scenario| scenario.producers)
                 .map(|producer| ((producer.instance.clone(), producer.port.clone()), producer))
@@ -2073,15 +2068,18 @@ fn enforce_process_boundary_with(
 }
 
 #[derive(Debug, Deserialize)]
-struct SourceBundleManifest {
-    schema: String,
-    robot_id: String,
-    document: SourceDocument,
-    executables: Vec<SourceExecutable>,
-    #[serde(default)]
-    simulation: Option<SourceSimulation>,
-    #[serde(default)]
-    scenario: Option<SourceScenario>,
+#[serde(tag = "schema")]
+enum SourceBundleManifest {
+    #[serde(rename = "phoxal/bundle/v0")]
+    V0 {
+        robot_id: String,
+        document: SourceDocument,
+        executables: Vec<SourceExecutable>,
+        #[serde(default)]
+        simulation: Option<SourceSimulation>,
+        #[serde(default)]
+        scenario: Option<SourceScenario>,
+    },
 }
 
 #[derive(Debug, Deserialize)]

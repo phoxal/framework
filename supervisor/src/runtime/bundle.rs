@@ -39,7 +39,9 @@ impl Bundle {
 
     pub(crate) fn robot_id(&self) -> &str {
         match self {
-            Self::Source(bundle) => &bundle.manifest.robot_id,
+            Self::Source(bundle) => match &bundle.manifest {
+                SourceManifest::V0 { robot_id, .. } => robot_id,
+            },
         }
     }
 
@@ -50,11 +52,11 @@ impl Bundle {
     /// reject hardware launches.
     pub(crate) fn scenario_marker(&self) -> Option<String> {
         match self {
-            Self::Source(bundle) => bundle
-                .manifest
-                .scenario
-                .as_ref()
-                .map(|section| section.marker.clone()),
+            Self::Source(bundle) => match &bundle.manifest {
+                SourceManifest::V0 { scenario, .. } => {
+                    scenario.as_ref().map(|section| section.marker.clone())
+                }
+            },
         }
     }
 
@@ -66,11 +68,11 @@ impl Bundle {
     #[allow(dead_code)]
     pub(crate) fn scenario_program(&self) -> Option<ScenarioProgramRef> {
         match self {
-            Self::Source(bundle) => bundle
-                .manifest
-                .scenario
-                .as_ref()
-                .map(|section| section.program.clone()),
+            Self::Source(bundle) => match &bundle.manifest {
+                SourceManifest::V0 { scenario, .. } => {
+                    scenario.as_ref().map(|section| section.program.clone())
+                }
+            },
         }
     }
 
@@ -80,7 +82,9 @@ impl Bundle {
     #[allow(dead_code)]
     pub(crate) fn scenario_section(&self) -> Option<&SourceScenarioSection> {
         match self {
-            Self::Source(bundle) => bundle.manifest.scenario.as_ref(),
+            Self::Source(bundle) => match &bundle.manifest {
+                SourceManifest::V0 { scenario, .. } => scenario.as_ref(),
+            },
         }
     }
 
@@ -90,7 +94,9 @@ impl Bundle {
     /// the fixture has nothing to schedule against.
     pub(crate) fn simulation(&self) -> Option<&SourceSimulation> {
         match self {
-            Self::Source(bundle) => bundle.manifest.simulation.as_ref(),
+            Self::Source(bundle) => match &bundle.manifest {
+                SourceManifest::V0 { simulation, .. } => simulation.as_ref(),
+            },
         }
     }
 
@@ -115,16 +121,19 @@ impl SourceBundle {
     }
 
     pub(crate) fn executables(&self) -> impl Iterator<Item = &SourceExecutable> {
-        self.manifest.executables.iter()
+        match &self.manifest {
+            SourceManifest::V0 { executables, .. } => executables.iter(),
+        }
     }
 
     /// Return the exact artifact summary retained for one executable.
     pub(crate) fn artifact(&self, instance: &str) -> Option<&serde_json::Value> {
-        self.manifest
-            .executables
-            .iter()
-            .find(|executable| executable.instance == instance)
-            .and_then(|executable| executable.artifact.as_ref())
+        match &self.manifest {
+            SourceManifest::V0 { executables, .. } => executables
+                .iter()
+                .find(|executable| executable.instance == instance)
+                .and_then(|executable| executable.artifact.as_ref()),
+        }
     }
 
     pub(crate) fn connections(&self) -> &BTreeMap<String, serde_json::Value> {
@@ -132,7 +141,9 @@ impl SourceBundle {
     }
     /// Return the immutable simulation contract carried by this source bundle.
     pub(crate) fn simulation(&self) -> Option<&SourceSimulation> {
-        self.manifest.simulation.as_ref()
+        match &self.manifest {
+            SourceManifest::V0 { simulation, .. } => simulation.as_ref(),
+        }
     }
 }
 
@@ -154,39 +165,37 @@ pub(crate) fn open(root: &Path) -> Result<Bundle> {
     let bytes = bounded_file(&manifest_path, MAX_MANIFEST_BYTES)?;
     let manifest = serde_json::from_slice::<SourceManifest>(&bytes)
         .with_context(|| format!("{} is not a supported compiled bundle", root.display()))?;
-    if manifest.schema != SOURCE_SCHEMA {
-        bail!("unsupported bundle schema `{}`", manifest.schema);
-    }
     Ok(Bundle::Source(admit_source(root, manifest)?))
 }
 
-const SOURCE_SCHEMA: &str = "phoxal/bundle/v0";
 const MANIFEST_FILE: &str = "manifest.json";
 const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SourceManifest {
-    pub(crate) schema: String,
-    pub(crate) robot_id: String,
-    pub(crate) document: SourceDocument,
-    root_package: SourcePackage,
-    target: String,
-    profile: String,
-    features: Vec<String>,
-    pub(crate) executables: Vec<SourceExecutable>,
-    components: Vec<SourceComponentRecord>,
-    #[serde(default)]
-    pub(crate) simulation: Option<SourceSimulation>,
-    /// Optional scenario execution identity. The presence of this
-    /// section means the bundle is nondeployable and the supervisor
-    /// admission path is in control of the execution. The marker
-    /// and program identity travel together so a tampered or partial
-    /// shape cannot pass admission: there is no scenario_marker or
-    /// scenario_program fallback field. See Gate A3 of
-    /// the scenario acceptance review.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) scenario: Option<SourceScenarioSection>,
+#[serde(tag = "schema", deny_unknown_fields)]
+pub(crate) enum SourceManifest {
+    #[serde(rename = "phoxal/bundle/v0")]
+    V0 {
+        robot_id: String,
+        document: SourceDocument,
+        root_package: SourcePackage,
+        target: String,
+        profile: String,
+        features: Vec<String>,
+        executables: Vec<SourceExecutable>,
+        components: Vec<SourceComponentRecord>,
+        #[serde(default)]
+        simulation: Option<SourceSimulation>,
+        /// Optional scenario execution identity. The presence of this
+        /// section means the bundle is nondeployable and the supervisor
+        /// admission path is in control of the execution. The marker
+        /// and program identity travel together so a tampered or partial
+        /// shape cannot pass admission: there is no scenario_marker or
+        /// scenario_program fallback field. See Gate A3 of
+        /// the scenario acceptance review.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scenario: Option<SourceScenarioSection>,
+    },
 }
 
 /// Scenario execution identity recorded in the source manifest.
@@ -410,22 +419,23 @@ pub(crate) struct SourceActuationBinding {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SourceDocument {
-    #[serde(default)]
-    schema: Option<String>,
-    robot: SourceRobot,
-    #[serde(default)]
-    brain: Option<serde_json::Value>,
-    #[serde(default)]
-    services: BTreeMap<String, SourceService>,
-    #[serde(default)]
-    connections: BTreeMap<String, serde_json::Value>,
+#[serde(tag = "schema", deny_unknown_fields)]
+pub(crate) enum SourceDocument {
+    #[serde(rename = "phoxal/robot/v0")]
+    V0 {
+        robot: SourceRobot,
+        #[serde(default)]
+        brain: Option<serde_json::Value>,
+        #[serde(default)]
+        services: BTreeMap<String, SourceService>,
+        #[serde(default)]
+        connections: BTreeMap<String, serde_json::Value>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct SourceService {
+pub(crate) struct SourceService {
     #[serde(default)]
     implementation: Option<String>,
     #[serde(default)]
@@ -436,7 +446,7 @@ struct SourceService {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SourceRobot {
+pub(crate) struct SourceRobot {
     id: String,
     #[serde(default)]
     model: Option<std::path::PathBuf>,
@@ -457,7 +467,7 @@ struct SourceComponent {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SourcePackage {
+pub(crate) struct SourcePackage {
     id: String,
     name: String,
     source: String,
@@ -467,7 +477,7 @@ struct SourcePackage {
 /// resources, and native binding semantics belong to the simulator and are
 /// deliberately not interpreted by the hardware-capable supervisor.
 #[derive(Clone, Debug, Deserialize)]
-struct SourceComponentRecord {
+pub(crate) struct SourceComponentRecord {
     instance: String,
     dependency_key: String,
     package_id: String,
@@ -568,7 +578,14 @@ impl SourceBundle {
         mut manifest: SourceManifest,
         connections: BTreeMap<String, serde_json::Value>,
     ) -> Self {
-        manifest.document.connections = connections;
+        if let SourceManifest::V0 { document, .. } = &mut manifest
+            && let SourceDocument::V0 {
+                connections: document_connections,
+                ..
+            } = document
+        {
+            *document_connections = connections;
+        }
         Self::for_test(root, manifest)
     }
 }
@@ -579,11 +596,9 @@ impl SourceManifest {
         robot_id: impl Into<String>,
         executables: Vec<SourceExecutable>,
     ) -> Self {
-        Self {
-            schema: SOURCE_SCHEMA.to_owned(),
+        Self::V0 {
             robot_id: robot_id.into(),
-            document: SourceDocument {
-                schema: Some("phoxal/robot/v0".to_owned()),
+            document: SourceDocument::V0 {
                 robot: SourceRobot {
                     id: "fixture".to_owned(),
                     model: None,
@@ -610,22 +625,31 @@ impl SourceManifest {
 }
 
 fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle> {
-    if manifest.schema != SOURCE_SCHEMA {
-        bail!("unsupported bundle schema `{}`", manifest.schema);
-    }
-    validate_segment(&manifest.robot_id, "robot_id")?;
+    let SourceManifest::V0 {
+        robot_id,
+        document,
+        executables,
+        simulation,
+        scenario: _,
+        ..
+    } = &manifest;
+    let SourceDocument::V0 {
+        robot: document_robot,
+        ..
+    } = document;
+    validate_segment(robot_id, "robot_id")?;
     validate_source_document(&manifest)?;
     validate_source_metadata(&manifest)?;
-    if let Some(simulation) = manifest.simulation.as_ref() {
-        validate_source_simulation(simulation, &manifest.document.robot.components)?;
+    if let Some(simulation) = simulation.as_ref() {
+        validate_source_simulation(simulation, &document_robot.components)?;
     }
-    validate_simulation_executables(manifest.simulation.as_ref(), &manifest.executables)?;
-    if manifest.executables.is_empty() {
+    validate_simulation_executables(simulation.as_ref(), executables)?;
+    if executables.is_empty() {
         bail!("source bundle contains no executable records");
     }
     let mut seen = std::collections::BTreeSet::new();
     let mut has_brain = false;
-    for executable in &manifest.executables {
+    for executable in executables {
         if !matches!(executable.role.as_str(), "brain" | "service" | "driver") {
             bail!("unsupported executable role `{}`", executable.role);
         }
@@ -710,7 +734,15 @@ fn admit_source(root: PathBuf, manifest: SourceManifest) -> Result<SourceBundle>
     if !has_brain {
         bail!("source bundle is missing executable instance `brain`");
     }
-    for (service, definition) in &manifest.document.services {
+    let SourceManifest::V0 {
+        document: source_document,
+        ..
+    } = &manifest;
+    let SourceDocument::V0 {
+        services: source_services,
+        ..
+    } = source_document;
+    for (service, definition) in source_services {
         validate_segment(service, "service instance")?;
         if service == "brain" {
             bail!("source bundle services cannot contain `brain`");
@@ -877,21 +909,29 @@ fn validate_source_simulation(
 /// replaces a physical driver's input delivery, so no nonexistent driver may
 /// appear in the supervisor's receiver acknowledgement roster.
 fn execution_connections(manifest: &SourceManifest) -> Result<BTreeMap<String, serde_json::Value>> {
+    let SourceManifest::V0 {
+        document,
+        executables,
+        simulation,
+        ..
+    } = manifest;
+    let SourceDocument::V0 {
+        connections: authored_connections,
+        ..
+    } = document;
     let mut connections = BTreeMap::new();
-    for (consumer, sources) in &manifest.document.connections {
+    for (consumer, sources) in authored_connections {
         let (instance, _) = consumer
             .split_once('.')
             .with_context(|| format!("invalid connection consumer `{consumer}`"))?;
-        if manifest
-            .executables
+        if executables
             .iter()
             .any(|executable| executable.instance == instance)
         {
             connections.insert(consumer.clone(), sources.clone());
             continue;
         }
-        let simulation = manifest
-            .simulation
+        let simulation = simulation
             .as_ref()
             .with_context(|| format!("connection consumer `{consumer}` has no executable"))?;
         if !simulation
@@ -929,28 +969,28 @@ fn execution_connections(manifest: &SourceManifest) -> Result<BTreeMap<String, s
 }
 
 fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
-    if let Some(schema) = &manifest.document.schema
-        && schema != "phoxal/robot/v0"
-    {
-        bail!("unsupported authored document schema `{schema}`");
-    }
-    if manifest.document.robot.id != manifest.robot_id {
+    let SourceManifest::V0 {
+        document, robot_id, ..
+    } = manifest;
+    let SourceDocument::V0 {
+        robot: document_robot,
+        brain: document_brain,
+        connections: document_connections,
+        services: document_services,
+        ..
+    } = document;
+    if document_robot.id != *robot_id {
         bail!(
-            "bundle robot_id `{}` does not match document robot.id `{}`",
-            manifest.robot_id,
-            manifest.document.robot.id
+            "bundle robot_id `{robot_id}` does not match document robot.id `{}`",
+            document_robot.id
         );
     }
-    validate_segment(&manifest.document.robot.id, "document robot.id")?;
+    validate_segment(&document_robot.id, "document robot.id")?;
     // The source schema rejects unknown fields. Native model interpretation
     // remains owned by the simulator; the supervisor validates execution
     // artifacts and graph routes below.
-    let _ = (
-        &manifest.document.robot.model,
-        &manifest.document.brain,
-        &manifest.document.connections,
-    );
-    for (instance, component) in &manifest.document.robot.components {
+    let _ = (&document_robot.model, document_brain, document_connections);
+    for (instance, component) in &document_robot.components {
         validate_segment(instance, "component instance")?;
         if component.component.is_empty() {
             bail!("component `{instance}` has an empty dependency key");
@@ -960,7 +1000,7 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
         }
         let _ = (&component.driver, &component.config);
     }
-    for (service, definition) in &manifest.document.services {
+    for (service, definition) in document_services {
         validate_segment(service, "service instance")?;
         if definition
             .implementation
@@ -977,20 +1017,26 @@ fn validate_source_document(manifest: &SourceManifest) -> Result<()> {
 }
 
 fn validate_source_metadata(manifest: &SourceManifest) -> Result<()> {
-    if manifest.root_package.id.is_empty()
-        || manifest.root_package.name.is_empty()
-        || manifest.root_package.source.is_empty()
+    let SourceManifest::V0 {
+        root_package,
+        target,
+        profile,
+        features,
+        components,
+        ..
+    } = manifest;
+    if root_package.id.is_empty() || root_package.name.is_empty() || root_package.source.is_empty()
     {
         bail!("source bundle root package metadata is incomplete");
     }
-    if manifest.target.is_empty() || manifest.profile.is_empty() {
+    if target.is_empty() || profile.is_empty() {
         bail!("source bundle target and profile metadata must not be empty");
     }
-    if manifest.features.iter().any(String::is_empty) {
+    if features.iter().any(String::is_empty) {
         bail!("source bundle features must not contain empty names");
     }
     let mut seen = std::collections::BTreeSet::new();
-    for component in &manifest.components {
+    for component in components {
         validate_segment(&component.instance, "component instance")?;
         if !seen.insert(component.instance.as_str()) {
             bail!(
@@ -1211,7 +1257,8 @@ mod tests {
 
         let bundle = open(directory.path()).expect("source bundle admission");
         let Bundle::Source(bundle) = bundle;
-        assert_eq!(bundle.manifest.robot_id, "fixture");
+        let SourceManifest::V0 { robot_id, .. } = &bundle.manifest;
+        assert_eq!(robot_id, "fixture");
         assert_eq!(
             bundle
                 .executables()
@@ -1291,47 +1338,107 @@ mod tests {
 
     #[test]
     fn native_driver_delivery_is_removed_only_from_the_execution_graph() {
-        let mut manifest = SourceManifest::for_test(
-            "fixture",
-            vec![SourceExecutable::for_test(
+        let mut manifest = SourceManifest::V0 {
+            robot_id: "fixture".to_owned(),
+            document: SourceDocument::V0 {
+                robot: SourceRobot {
+                    id: "fixture".to_owned(),
+                    model: None,
+                    components: BTreeMap::new(),
+                },
+                brain: None,
+                services: BTreeMap::new(),
+                connections: BTreeMap::from([
+                    ("imu.actuator".into(), serde_json::json!("motion.actuators")),
+                    (
+                        "motion.measurements".into(),
+                        serde_json::json!("imu.sample"),
+                    ),
+                ]),
+            },
+            root_package: SourcePackage {
+                id: "fixture".to_owned(),
+                name: "fixture".to_owned(),
+                source: "local".to_owned(),
+            },
+            target: "host".to_owned(),
+            profile: "dev".to_owned(),
+            features: Vec::new(),
+            executables: vec![SourceExecutable::for_test(
                 "motion",
                 "bin/motion",
                 1,
                 "0".repeat(64),
             )],
-        );
-        manifest.simulation = Some(simulation_fixture());
-        manifest.document.connections = BTreeMap::from([
-            ("imu.actuator".into(), serde_json::json!("motion.actuators")),
-            (
-                "motion.measurements".into(),
-                serde_json::json!("imu.sample"),
-            ),
-        ]);
-        let authored = manifest.document.connections.clone();
-        let graph = execution_connections(&manifest).unwrap();
-        assert_eq!(graph.len(), 1);
-        assert_eq!(graph["motion.measurements"], "imu.sample");
-        assert_eq!(manifest.document.connections, authored);
-
+            components: Vec::new(),
+            simulation: Some(simulation_fixture()),
+            scenario: None,
+        };
+        {
+            let SourceManifest::V0 {
+                document: manifest_document,
+                ..
+            } = &manifest;
+            let SourceDocument::V0 {
+                connections: manifest_connections,
+                ..
+            } = manifest_document;
+            let authored = manifest_connections.clone();
+            let graph = execution_connections(&manifest).unwrap();
+            assert_eq!(graph.len(), 1);
+            assert_eq!(graph["motion.measurements"], "imu.sample");
+            assert_eq!(*manifest_connections, authored);
+        }
         for source in [
             serde_json::json!("motion.unbound"),
             serde_json::json!([]),
             serde_json::json!([null]),
         ] {
-            manifest
-                .document
-                .connections
-                .insert("imu.actuator".into(), source);
-            assert!(execution_connections(&manifest).is_err());
+            let SourceManifest::V0 {
+                document: mut_document,
+                ..
+            } = &mut manifest;
+            let SourceDocument::V0 {
+                connections: mut_connections,
+                ..
+            } = mut_document;
+            mut_connections.insert("imu.actuator".into(), source);
         }
-        manifest.document.connections = BTreeMap::from([(
-            "missing.actuator".into(),
-            serde_json::json!("motion.actuators"),
-        )]);
         assert!(execution_connections(&manifest).is_err());
-        manifest.document.connections = authored;
-        manifest.simulation = None;
+        {
+            let SourceManifest::V0 {
+                document: mut_document,
+                ..
+            } = &mut manifest;
+            let SourceDocument::V0 {
+                connections: mut_connections,
+                ..
+            } = mut_document;
+            *mut_connections = BTreeMap::from([(
+                "missing.actuator".into(),
+                serde_json::json!("motion.actuators"),
+            )]);
+        }
+        assert!(execution_connections(&manifest).is_err());
+        {
+            let SourceManifest::V0 {
+                document: mut_document,
+                simulation: mut_simulation,
+                ..
+            } = &mut manifest;
+            let SourceDocument::V0 {
+                connections: mut_connections,
+                ..
+            } = mut_document;
+            *mut_connections = BTreeMap::from([
+                ("imu.actuator".into(), serde_json::json!("motion.actuators")),
+                (
+                    "motion.measurements".into(),
+                    serde_json::json!("imu.sample"),
+                ),
+            ]);
+            *mut_simulation = None;
+        }
         assert!(execution_connections(&manifest).is_err());
     }
 
@@ -1506,7 +1613,7 @@ mod tests {
         // fail with `unknown field scenario_marker`/`scenario_program`
         // since those are no longer part of the schema.
         let flat_payload = serde_json::json!({
-            "schema": SOURCE_SCHEMA,
+            "schema": "phoxal/bundle/v0",
             "robot_id": "robot",
             "document": { "robot": { "id": "robot" } },
             "root_package": { "id": "robot", "name": "robot", "source": "local" },

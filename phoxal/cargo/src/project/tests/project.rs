@@ -2,9 +2,11 @@ use std::fs;
 use std::path::{Component, Path};
 use std::process::Command;
 
+use crate::project::bundle::{BundleManifest, BundleProvenance};
+use crate::project::document::ComponentDocument;
 use crate::project::{
     CargoOperation, CargoOptions, CargoSelection, Error, LockMode, PackageSource, Project,
-    SourceError,
+    RobotDocument, SourceError,
 };
 use sha2::{Digest, Sha256};
 
@@ -440,28 +442,28 @@ fn targetless_local_logical_identity_is_stable_across_shadow_preparations()
 
     assert_eq!(first_metadata, second_metadata);
     assert_eq!(first_sources, *second.sources());
-    assert_eq!(
-        first_bundle.provenance().sources,
-        second_bundle.provenance().sources
-    );
-    assert_eq!(
-        first_bundle.provenance().source_closure_sha256,
-        second_bundle.provenance().source_closure_sha256
-    );
-    assert_eq!(
-        first_bundle.provenance().source_tree,
-        second_bundle.provenance().source_tree
-    );
-    assert_eq!(
-        first_bundle.provenance().toolchain.invocations,
-        second_bundle.provenance().toolchain.invocations
-    );
+    let BundleProvenance::V0 {
+        sources: first_provenance_sources,
+        source_closure_sha256: first_source_closure_sha256,
+        source_tree: first_source_tree,
+        toolchain: first_toolchain,
+        ..
+    } = first_bundle.provenance();
+    let BundleProvenance::V0 {
+        sources: second_provenance_sources,
+        source_closure_sha256: second_source_closure_sha256,
+        source_tree: second_source_tree,
+        toolchain: second_toolchain,
+        ..
+    } = second_bundle.provenance();
+    assert_eq!(first_provenance_sources, second_provenance_sources);
+    assert_eq!(first_source_closure_sha256, second_source_closure_sha256);
+    assert_eq!(first_source_tree, second_source_tree);
+    assert_eq!(first_toolchain.invocations, second_toolchain.invocations);
     assert!(!first_metadata.contains("_phoxal_path_dependencies"));
     let provenance = serde_json::to_string(first_bundle.provenance())?;
     assert!(!provenance.contains(&fixture.path().display().to_string()));
-    let passive = first_bundle
-        .provenance()
-        .sources
+    let passive = first_provenance_sources
         .iter()
         .find(|source| source.package == "passive-sensor")
         .expect("targetless component provenance");
@@ -665,7 +667,8 @@ fn an_unresolved_or_fuzzy_service_key_is_rejected_without_fallback()
     let robot = fixture.path().join("robot.yaml");
     write(
         &robot,
-        r#"robot:
+        r#"schema: phoxal/robot/v0
+robot:
   id: fixture-robot
   components: {}
 services:
@@ -733,7 +736,8 @@ fn failed_selection_restores_a_preexisting_workspace_lock_exactly()
     )?;
     write(
         &fixture.path().join("robot.yaml"),
-        r#"robot:
+        r#"schema: phoxal/robot/v0
+robot:
   id: fixture-robot
   components: {}
 services:
@@ -1183,16 +1187,20 @@ fn run_local_builds_the_bundle_and_launches_the_local_supervisor()
     assert!(bundle.executable("brain").is_file());
     assert!(bundle.executable("counter").is_file());
     assert!(bundle.executable("supervisor").is_file());
-    assert_eq!(bundle.provenance().supervisor.instance, "supervisor");
-    assert_eq!(bundle.provenance().supervisor.role, "supervisor");
-    assert_eq!(bundle.provenance().supervisor.package, "phoxal-supervisor");
-    assert_eq!(bundle.provenance().supervisor.version, "0.68.0");
+    let BundleProvenance::V0 {
+        supervisor: bundle_supervisor,
+        ..
+    } = bundle.provenance();
+    assert_eq!(bundle_supervisor.instance, "supervisor");
+    assert_eq!(bundle_supervisor.role, "supervisor");
+    assert_eq!(bundle_supervisor.package, "phoxal-supervisor");
+    assert_eq!(bundle_supervisor.version, "0.68.0");
     assert_eq!(
-        bundle.provenance().supervisor.bytes,
+        bundle_supervisor.bytes,
         fs::metadata(bundle.executable("supervisor"))?.len()
     );
     assert_eq!(
-        bundle.provenance().supervisor.sha256,
+        bundle_supervisor.sha256,
         sha256_file(&bundle.executable("supervisor"))?
     );
     Ok(())
@@ -1386,7 +1394,8 @@ connections: {}
         .expect("selected component driver");
     assert_eq!(driver.package, "phoxal-hardware-driver-fixture");
     assert_eq!(driver.binary.target, "phoxal-hardware-driver-fixture");
-    assert!(prepared.document().robot.model.is_none());
+    let RobotDocument::V0 { robot, .. } = prepared.document();
+    assert!(robot.model.is_none());
     Ok(())
 }
 
@@ -1404,24 +1413,33 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
     let output = fixture.path().join("target/phoxal/fixture-robot/bundle");
     let bundle = prepared.build_bundle(&options, &output)?;
 
-    assert_eq!(bundle.manifest().schema, "phoxal/bundle/v0");
-    assert_eq!(bundle.manifest().executables.len(), 2);
-    assert_eq!(bundle.manifest().components.len(), 1);
-    assert_eq!(bundle.manifest().components[0].mount_site, "sensor_mount");
+    let BundleManifest::V0 {
+        executables: bundle_executables,
+        components: bundle_components,
+        ..
+    } = bundle.manifest();
+    let BundleProvenance::V0 {
+        cargo_lock_sha256: bundle_cargo_lock_sha256,
+        cargo_workspace_manifest_sha256: bundle_cargo_workspace_manifest_sha256,
+        supervisor: bundle_supervisor,
+        source_tree: bundle_source_tree,
+        toolchain: bundle_toolchain,
+        model: bundle_model,
+        model_closure: bundle_model_closure,
+        ..
+    } = bundle.provenance();
+    assert_eq!(bundle_executables.len(), 2);
+    assert_eq!(bundle_components.len(), 1);
+    assert_eq!(bundle_components[0].mount_site, "sensor_mount");
+    let ComponentDocument::V0 {
+        model: component_model,
+        capabilities: component_capabilities,
+        ..
+    } = &bundle_components[0].definition;
+    assert_eq!(component_model.file, Path::new("model.xml"));
+    assert_eq!(component_capabilities["sample"].target.id, "sensor_site");
     assert_eq!(
-        bundle.manifest().components[0].definition.model.file,
-        Path::new("model.xml")
-    );
-    assert_eq!(
-        bundle.manifest().components[0].definition.capabilities["sample"]
-            .target
-            .id,
-        "sensor_site"
-    );
-    assert_eq!(
-        bundle
-            .manifest()
-            .executables
+        bundle_executables
             .iter()
             .map(|executable| executable.instance.as_str())
             .collect::<Vec<_>>(),
@@ -1432,30 +1450,21 @@ fn build_bundle_contains_the_complete_selected_executable_set_and_provenance()
     assert!(bundle.executable("supervisor").is_file());
     assert!(output.join("manifest.json").is_file());
     assert!(output.join("provenance.json").is_file());
-    assert!(bundle.provenance().cargo_lock_sha256.is_some());
-    assert!(
-        !bundle
-            .provenance()
-            .cargo_workspace_manifest_sha256
-            .is_empty()
-    );
-    assert_eq!(bundle.provenance().supervisor.path, "bin/supervisor");
-    assert_eq!(bundle.provenance().source_tree.path, "source");
+    assert!(bundle_cargo_lock_sha256.is_some());
+    assert!(!bundle_cargo_workspace_manifest_sha256.is_empty());
+    assert_eq!(bundle_supervisor.path, "bin/supervisor");
+    assert_eq!(bundle_source_tree.path, "source");
     assert!(bundle.source_root().join("Cargo.lock").is_file());
     assert!(
-        bundle
-            .provenance()
-            .source_tree
+        bundle_source_tree
             .files
             .iter()
             .any(|file| file.path == "Cargo.lock")
     );
-    assert!(!bundle.provenance().toolchain.cargo.is_empty());
-    assert!(!bundle.provenance().toolchain.rustc.is_empty());
-    assert!(bundle.provenance().model.is_some());
-    let model_closure = bundle
-        .provenance()
-        .model_closure
+    assert!(!bundle_toolchain.cargo.is_empty());
+    assert!(!bundle_toolchain.rustc.is_empty());
+    assert!(bundle_model.is_some());
+    let model_closure = bundle_model_closure
         .as_ref()
         .expect("the model closure is recorded");
     assert_eq!(model_closure.entry, "assets/model.xml");
@@ -1500,14 +1509,17 @@ fn bundle_records_the_owning_workspace_manifest() -> Result<(), Box<dyn std::err
     let output = workspace.path().join("target/phoxal/nested-bundle");
     let bundle = prepared.build_bundle(&options, &output)?;
 
+    let BundleProvenance::V0 {
+        cargo_workspace_manifest_sha256: workspace_manifest_sha256,
+        source_tree: bundle_source_tree,
+        ..
+    } = bundle.provenance();
     assert_eq!(
-        bundle.provenance().cargo_workspace_manifest_sha256,
+        workspace_manifest_sha256.clone(),
         sha256_file(&workspace_manifest)?
     );
     assert!(
-        bundle
-            .provenance()
-            .source_tree
+        bundle_source_tree
             .files
             .iter()
             .any(|file| file.path == "Cargo.toml")
@@ -1618,17 +1630,14 @@ fn bundle_carries_a_relocatable_nested_external_path_closure()
     let external_root = source_root.join("_phoxal_path_dependencies");
     let external_count = fs::read_dir(&external_root)?.count();
     assert!(external_count >= 2);
+    let BundleProvenance::V0 { sources, .. } = bundle.provenance();
     assert!(
-        bundle
-            .provenance()
-            .sources
+        sources
             .iter()
             .any(|source| source.package == "fixture-external-helper")
     );
     assert!(
-        bundle
-            .provenance()
-            .sources
+        sources
             .iter()
             .any(|source| source.package == "fixture-external-leaf")
     );
@@ -1751,9 +1760,8 @@ path = "src/main.rs"
         .path()
         .join("target/phoxal/fixture-robot/git-bundle");
     let bundle = prepared.build_bundle(&options, &output)?;
-    let source = bundle
-        .provenance()
-        .sources
+    let BundleProvenance::V0 { sources, .. } = bundle.provenance();
+    let source = sources
         .iter()
         .find(|source| source.package == "fixture-git-service")
         .ok_or("Git source was not retained in bundle provenance")?;
@@ -1788,9 +1796,8 @@ fn bundle_records_registry_checksums_from_the_root_lock() -> Result<(), Box<dyn 
         .path()
         .join("target/phoxal/fixture-robot/registry-bundle");
     let bundle = prepared.build_bundle(&options, &output)?;
-    let registry_sources = bundle
-        .provenance()
-        .sources
+    let BundleProvenance::V0 { sources, .. } = bundle.provenance();
+    let registry_sources = sources
         .iter()
         .filter(|source| source.kind == crate::project::BundleSourceKind::Registry)
         .collect::<Vec<_>>();

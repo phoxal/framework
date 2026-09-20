@@ -8,14 +8,22 @@ use super::RuntimeSpec;
 use super::input::{InputField, InputKind};
 use super::outputs::{OutputField, OutputKind};
 
-/// Schema identifier for the native runtime contract record.
-pub const ARTIFACT_SCHEMA: &str = "phoxal/artifact/v0";
-
 /// Eight-byte prefix used to locate a record inside a native section.
 pub const ARTIFACT_MAGIC: [u8; 8] = *b"PHXART0\n";
 
 /// Maximum encoded record size retained by one runtime binary.
 pub const ARTIFACT_RECORD_CAPACITY: usize = 65_536;
+
+/// Schema identifier for the native runtime contract record.
+///
+/// The `const fn` `runtime_record` writes this string verbatim into the
+/// artifact bytes because it is invoked from a `static` initializer in
+/// `phoxal-macros` and cannot call into serde. The same string lives on the
+/// [`crate::artifact::RuntimeRecord`] enum's `V0` variant as the
+/// `#[serde(rename = ...)]` discriminator. The duplication is forced by the
+/// `const fn` contract; serde's `rename` attribute only accepts string
+/// literals and `runtime_record` cannot borrow the enum's discriminator.
+const ARTIFACT_SCHEMA: &str = "phoxal/artifact/v0";
 
 /// A fixed-capacity, length-delimited native artifact record.
 ///

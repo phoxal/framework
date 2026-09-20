@@ -2,6 +2,7 @@
 
 use super::{ArtifactContract, Error, InputKind, PortKind};
 use crate::project::document::{PortReference, RobotDocument};
+use phoxal::artifact::RuntimeRecord;
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -17,13 +18,17 @@ pub fn validate_connected_endpoints_with_virtual_producers(
     contracts: &BTreeMap<String, ArtifactContract>,
     virtual_producers: &[&str],
 ) -> Result<(), Error> {
+    let RobotDocument::V0 {
+        robot, connections, ..
+    } = document;
     for (instance, contract) in contracts {
-        for input in &contract.runtime.inputs {
+        let RuntimeRecord::V0 { inputs, .. } = &contract.runtime;
+        for input in inputs {
             if matches!(input.kind, InputKind::Commands | InputKind::Operation) {
                 continue;
             }
             let consumer = format!("{instance}.{}", input.name);
-            if !document.connections.contains_key(&consumer) {
+            if !connections.contains_key(&consumer) {
                 return Err(Error::InvalidConnection {
                     consumer,
                     producer: String::new(),
@@ -32,7 +37,7 @@ pub fn validate_connected_endpoints_with_virtual_producers(
             }
         }
     }
-    for (consumer_text, sources) in &document.connections {
+    for (consumer_text, sources) in connections {
         let consumer =
             PortReference::parse(consumer_text).map_err(|error| Error::InvalidConnection {
                 consumer: consumer_text.clone(),
@@ -47,9 +52,11 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                     producer: String::new(),
                     message: "consumer has no executable runtime artifact".into(),
                 })?;
-        let input = consumer_contract
-            .runtime
-            .inputs
+        let RuntimeRecord::V0 {
+            inputs: consumer_inputs,
+            ..
+        } = &consumer_contract.runtime;
+        let input = consumer_inputs
             .iter()
             .find(|input| input.name == consumer.port)
             .ok_or_else(|| Error::InvalidConnection {
@@ -80,7 +87,7 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                 if virtual_producers.contains(&producer.instance.as_str()) {
                     continue;
                 }
-                if document.robot.components.contains_key(&producer.instance) {
+                if robot.components.contains_key(&producer.instance) {
                     // Simulation providers are admitted from the selected
                     // component contracts during native bundle preparation.
                     continue;
@@ -91,10 +98,14 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                     message: "producer has no executable runtime artifact".into(),
                 });
             };
+            let RuntimeRecord::V0 {
+                inputs: producer_inputs,
+                service_outputs,
+                transient_outputs,
+                ..
+            } = &producer_contract.runtime;
             let signature = if input.kind == InputKind::Request {
-                producer_contract
-                    .runtime
-                    .inputs
+                producer_inputs
                     .iter()
                     .find(|input| {
                         input.kind == InputKind::Commands
@@ -102,11 +113,9 @@ pub fn validate_connected_endpoints_with_virtual_producers(
                     })
                     .and_then(|input| input.signature.as_ref())
             } else {
-                producer_contract
-                    .runtime
-                    .service_outputs
+                service_outputs
                     .iter()
-                    .chain(producer_contract.runtime.transient_outputs.iter())
+                    .chain(transient_outputs.iter())
                     .find(|output| output.port.as_deref() == Some(producer.port.as_str()))
                     .and_then(|output| output.signature.as_ref())
             }
@@ -184,9 +193,12 @@ mod tests {
         }
     }
     fn document(connections: serde_json::Value) -> RobotDocument {
-        serde_json::from_value(
-            json!({"robot": {"id": "test"}, "services": {}, "connections": connections}),
-        )
+        serde_json::from_value(json!({
+            "schema": "phoxal/robot/v0",
+            "robot": {"id": "test"},
+            "services": {},
+            "connections": connections,
+        }))
         .unwrap()
     }
 

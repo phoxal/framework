@@ -149,6 +149,12 @@ pub fn resolve_sources(
     metadata: &Metadata,
     manifest_path: &std::path::Path,
 ) -> Result<SourceSelection, SourceError> {
+    let RobotDocument::V0 {
+        brain: authored_brain,
+        services: authored_services,
+        robot,
+        ..
+    } = document;
     let root = metadata.root_package().ok_or(SourceError::MissingBrain)?;
     let root_manifest = PathBuf::from(root.manifest_path.as_std_path());
     let expected_manifest = manifest_path
@@ -158,23 +164,23 @@ pub fn resolve_sources(
         return Err(SourceError::MissingBrain);
     }
 
-    let brain = resolve_brain(root, document.brain.as_ref(), metadata)?;
+    let brain = resolve_brain(root, authored_brain.as_ref(), metadata)?;
     let supervisor = resolve_supervisor(root, metadata)?;
     let mut services = BTreeMap::new();
-    for (instance, selection) in &document.services {
+    for (instance, selection) in authored_services {
         let key = selection
             .implementation
             .as_deref()
             .unwrap_or(instance)
             .to_owned();
         services.insert(
-            instance.clone(),
+            instance.to_owned(),
             resolve_service(instance, &key, selection, root, metadata)?,
         );
     }
 
     let mut components = BTreeMap::new();
-    for (instance, component) in &document.robot.components {
+    for (instance, component) in &robot.components {
         let package = resolve_dependency(
             TargetRole::Component,
             instance,
@@ -193,9 +199,9 @@ pub fn resolve_sources(
             resolve_component_driver(instance, component, &component.component, package, metadata)?;
         let definition = load_component_definition(instance, &component.component, package)?;
         components.insert(
-            instance.clone(),
+            instance.to_owned(),
             SelectedComponent {
-                instance: instance.clone(),
+                instance: instance.to_owned(),
                 dependency_key: component.component.clone(),
                 package_id: package.id.to_string(),
                 package: package.name.to_string(),
@@ -255,7 +261,8 @@ fn load_component_definition(
             package: package.name.to_string(),
             message: format!("{} is invalid: {message}", path.display()),
         })?;
-    let model = root.join(&definition.model.file);
+    let ComponentDocument::V0 { model, .. } = &definition;
+    let model = root.join(&model.file);
     if !model.is_file() {
         return Err(SourceError::InvalidPackageRole {
             role: TargetRole::Component,

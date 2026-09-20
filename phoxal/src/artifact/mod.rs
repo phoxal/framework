@@ -40,6 +40,6 @@ pub mod scenario;
 pub mod simulation;
 
 pub use record::{
-    ARTIFACT_SCHEMA, ArtifactSummary, DescriptorSummary, InputKind, InputRecord, OutputKind,
-    OutputRecord, PortKind, PortSignature, RUNTIME_RECORD, RuntimeRecord,
+    ArtifactSummary, DescriptorSummary, InputKind, InputRecord, OutputKind, OutputRecord, PortKind,
+    PortSignature, RUNTIME_RECORD, RuntimeRecord,
 };

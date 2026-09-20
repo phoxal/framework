@@ -31,12 +31,6 @@ pub enum DiscoveryError {
 /// A malformed authored robot document.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
-    /// The document selected a source-language generation this tool does not know.
-    #[error("schema '{value}' is not supported; expected phoxal/robot/v0")]
-    UnsupportedSchema {
-        /// Authored schema value.
-        value: String,
-    },
     /// The robot identity is empty or whitespace.
     #[error("robot.id must not be empty")]
     EmptyRobotId,

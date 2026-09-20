@@ -13,6 +13,7 @@ use crate::project::artifact::{self, ArtifactContract};
 use crate::project::cargo;
 use crate::project::document::RobotDocument;
 use crate::project::{CargoOptions, Error, PreparedProject};
+use phoxal::artifact::RuntimeRecord;
 
 pub(crate) type ArtifactKey = (String, String);
 
@@ -65,7 +66,8 @@ pub(crate) fn validate_configurations(
         };
         let role = prepared.executable_role(&instance);
         let (field, mut value) = authored_configuration(prepared, &instance, &role)?;
-        if schema_is_null(&contract.runtime.config_schema) && value.is_object() {
+        let RuntimeRecord::V0 { config_schema, .. } = &contract.runtime;
+        if schema_is_null(config_schema) && value.is_object() {
             // `Config = ()` has no authored fields.  Omission and an empty
             // object are the two source forms accepted for that declaration;
             // a non-empty object is still rejected by the exact schema below.
@@ -73,16 +75,15 @@ pub(crate) fn validate_configurations(
                 value = serde_json::Value::Null;
             }
         }
-        let validator =
-            jsonschema::validator_for(&contract.runtime.config_schema).map_err(|error| {
-                Error::ConfigurationInvalid {
-                    role: role.clone(),
-                    instance: instance.clone(),
-                    field: format!("{field} (compiled config_schema)"),
-                    package: target.package.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let validator = jsonschema::validator_for(config_schema).map_err(|error| {
+            Error::ConfigurationInvalid {
+                role: role.clone(),
+                instance: instance.clone(),
+                field: format!("{field} (compiled config_schema)"),
+                package: target.package.clone(),
+                message: error.to_string(),
+            }
+        })?;
         if let Some(error) = validator.iter_errors(&value).next() {
             return Err(Error::ConfigurationInvalid {
                 role,
@@ -126,19 +127,19 @@ fn authored_configuration(
 ) -> Result<(String, serde_json::Value), Error> {
     match role {
         "brain" => Ok(("brain.config".to_owned(), serde_json::Value::Null)),
-        "service" => Ok((
-            format!("services.{instance}.config"),
-            prepared
-                .document()
-                .services
-                .get(instance)
-                .and_then(|selection| selection.config.clone())
-                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
-        )),
+        "service" => {
+            let RobotDocument::V0 { services, .. } = prepared.document();
+            Ok((
+                format!("services.{instance}.config"),
+                services
+                    .get(instance)
+                    .and_then(|selection| selection.config.clone())
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+            ))
+        }
         "driver" => {
-            let value = prepared
-                .document()
-                .robot
+            let RobotDocument::V0 { robot, .. } = prepared.document();
+            let value = robot
                 .components
                 .get(instance)
                 .and_then(|component| component.driver.as_ref())
