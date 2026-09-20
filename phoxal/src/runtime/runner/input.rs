@@ -1,7 +1,7 @@
 //! Receiver queues, immutable input cuts, and command admission.
 use super::exchange::{
-    CorrelationMap, ExchangeCompletion, ExchangeCompletionQueue, ExpiredCorrelationSet,
-    OperationQueue,
+    ActivationStateMap, CorrelationMap, ExchangeCompletion, ExchangeCompletionQueue,
+    ExpiredCorrelationSet, OperationQueue,
 };
 use super::{
     InputDirection, InputSource, ResolvedInputRoute, RuntimeInputReceipt, RuntimeLaunchManifest,
@@ -32,6 +32,9 @@ pub(super) struct ExecutionInputAdapter<R> {
     pub(super) expired_correlations: Option<ExpiredCorrelationSet>,
     pub(super) operation_completions: Option<OperationQueue>,
     pub(super) exchange_completions: Option<ExchangeCompletionQueue>,
+    pub(super) activation_states: Option<ActivationStateMap>,
+    pub(super) managed_inputs: BTreeMap<&'static str, TransportValue>,
+    pub(super) observed_attempts: BTreeMap<&'static str, u64>,
     pub(super) stream_terminal: BTreeSet<&'static str>,
     pub(super) last_input_receipts: Vec<RuntimeInputReceipt>,
     pub(super) stopped: bool,
@@ -709,6 +712,9 @@ impl<R> ExecutionInputAdapter<R> {
             expired_correlations: None,
             operation_completions: None,
             exchange_completions: None,
+            activation_states: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+            managed_inputs: BTreeMap::new(),
+            observed_attempts: BTreeMap::new(),
             stream_terminal: BTreeSet::new(),
             last_input_receipts: Vec::new(),
             stopped: false,
@@ -722,11 +728,13 @@ impl<R> ExecutionInputAdapter<R> {
         expired_correlations: ExpiredCorrelationSet,
         operation_completions: OperationQueue,
         exchange_completions: ExchangeCompletionQueue,
+        activation_states: ActivationStateMap,
     ) -> Self {
         self.correlations = Some(correlations);
         self.expired_correlations = Some(expired_correlations);
         self.operation_completions = Some(operation_completions);
         self.exchange_completions = Some(exchange_completions);
+        self.activation_states = Some(activation_states);
         self
     }
 
@@ -1234,10 +1242,65 @@ where
         self.last_input_receipts.clear();
         let mut input_receipts = BTreeMap::<(String, String, String), RuntimeInputReceipt>::new();
         let mut inputs = R::Inputs::empty();
-        <R::Inputs as TransportInputSet>::expire_transport_fields_at(
-            &mut inputs,
-            _candidate.context().now(),
-        )?;
+        for (field, value) in std::mem::take(&mut self.managed_inputs) {
+            <R::Inputs as crate::runtime::input::TransportInputSink>::restore_managed(
+                &mut inputs,
+                field,
+                value,
+            )?;
+        }
+        let managed_fields = <R::Inputs as crate::runtime::input::InputSet>::FIELDS
+            .iter()
+            .filter(|field| {
+                matches!(
+                    field.kind,
+                    crate::runtime::input::InputKind::Read
+                        | crate::runtime::input::InputKind::Request
+                        | crate::runtime::input::InputKind::Operation
+                )
+            })
+            .collect::<Vec<_>>();
+        let activation_states = self.activation_states.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(TransportError::Transport(
+                "managed activation state is not bound".to_owned(),
+            ))
+        });
+        if managed_fields.is_empty() {
+            <R::Inputs as TransportInputSet>::expire_transport_fields_at(
+                &mut inputs,
+                _candidate.context().now(),
+            )?;
+        } else {
+            let activation_states = activation_states?;
+            let activation_states = activation_states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for field in managed_fields {
+                if let Some(activation) = activation_states.get(field.name) {
+                    let attempt_started = self
+                        .observed_attempts
+                        .insert(field.name, activation.attempt)
+                        != Some(activation.attempt);
+                    <R::Inputs as crate::runtime::input::TransportInputSink>::select_managed(
+                        &mut inputs,
+                        field.name,
+                        activation.key.clone().into_value(),
+                        attempt_started,
+                    )?;
+                } else {
+                    self.observed_attempts.remove(field.name);
+                    <R::Inputs as crate::runtime::input::TransportInputSink>::retire_managed(
+                        &mut inputs,
+                        field.name,
+                    )?;
+                }
+            }
+            drop(activation_states);
+            <R::Inputs as TransportInputSet>::expire_transport_fields_at(
+                &mut inputs,
+                _candidate.context().now(),
+            )?;
+        }
         if let Some(queue) = &self.operation_completions {
             let completions = {
                 let mut queue = match queue.lock() {
@@ -1271,6 +1334,7 @@ where
                             field,
                             key,
                             result,
+                            None,
                         )?
                     }
                     ExchangeCompletion::Request { field, key, result } => {
@@ -1660,6 +1724,28 @@ where
         Ok(inputs)
     }
 
+    fn retain(&mut self, mut inputs: R::Inputs) -> crate::Result<()> {
+        self.managed_inputs.clear();
+        for field in <R::Inputs as crate::runtime::input::InputSet>::FIELDS
+            .iter()
+            .filter(|field| {
+                matches!(
+                    field.kind,
+                    crate::runtime::input::InputKind::Read
+                        | crate::runtime::input::InputKind::Request
+                        | crate::runtime::input::InputKind::Operation
+                )
+            })
+        {
+            let value = <R::Inputs as crate::runtime::input::TransportInputSink>::take_managed(
+                &mut inputs,
+                field.name,
+            )?;
+            self.managed_inputs.insert(field.name, value);
+        }
+        Ok(())
+    }
+
     fn take_input_receipts(&mut self) -> Vec<RuntimeInputReceipt> {
         std::mem::take(&mut self.last_input_receipts)
     }
@@ -1700,6 +1786,8 @@ where
         self.external_ingress_high_watermarks.clear();
         self.future_commands.clear();
         self.stream_terminal.clear();
+        self.managed_inputs.clear();
+        self.observed_attempts.clear();
         self.last_input_receipts.clear();
         self.command_ranks.clear();
         self.bus = None;
@@ -1712,6 +1800,8 @@ where
         self.external_ingress_high_watermarks.clear();
         self.future_commands.clear();
         self.stream_terminal.clear();
+        self.managed_inputs.clear();
+        self.observed_attempts.clear();
         self.last_input_receipts.clear();
         for subscription in &self.subscriptions {
             if let Some(delivery) = &subscription.delivery {

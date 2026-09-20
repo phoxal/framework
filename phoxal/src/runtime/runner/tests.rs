@@ -824,6 +824,7 @@ impl crate::runtime::input::TransportInputSink for TransportInputs {
         field: &str,
         _key: crate::runtime::input::TransportValue,
         _result: Result<crate::runtime::input::TransportValue, ReadError>,
+        _provenance: Option<crate::runtime::ObservationStamp>,
     ) -> crate::Result<()> {
         Err(anyhow::anyhow!(format!("unexpected read field {field}")))
     }
@@ -1272,6 +1273,7 @@ struct OperationInputs {
 
 struct OperationRuntime {
     completion: Arc<Mutex<Option<u32>>>,
+    observations: Arc<Mutex<Vec<(crate::runtime::ReadStatus, bool)>>>,
 }
 
 impl Runtime for OperationRuntime {
@@ -1290,6 +1292,10 @@ impl Runtime for OperationRuntime {
         state: Self::State,
         inputs: &Self::Inputs,
     ) -> crate::Result<(Self::State, Self::Outputs)> {
+        self.observations.lock().unwrap().push((
+            inputs.operation.status(),
+            inputs.operation.new_completion().is_some(),
+        ));
         if let Some(completion) = inputs.operation.new_completion() {
             let value = completion
                 .result()
@@ -1335,11 +1341,13 @@ async fn generated_operation_activation_dispatches_and_returns_typed_completion(
     let expired_correlations = Arc::new(Mutex::new(BTreeSet::new()));
     let operation_completions = Arc::new(Mutex::new(Vec::new()));
     let exchange_completions = Arc::new(Mutex::new(Vec::new()));
+    let activation_states = Arc::new(Mutex::new(BTreeMap::new()));
     let mut input = ExecutionInputAdapter::<OperationRuntime>::unbound().with_shared_state(
         Arc::clone(&correlations),
         Arc::clone(&expired_correlations),
         Arc::clone(&operation_completions),
         Arc::clone(&exchange_completions),
+        Arc::clone(&activation_states),
     );
     input
         .bind_direct(bus.clone(), "operation")
@@ -1350,12 +1358,15 @@ async fn generated_operation_activation_dispatches_and_returns_typed_completion(
         expired_correlations,
         operation_completions,
         exchange_completions,
+        activation_states,
     );
     output.bind_direct(bus.clone(), "operation");
     let completion = Arc::new(Mutex::new(None));
+    let observations = Arc::new(Mutex::new(Vec::new()));
     let mut runner = RuntimeRunner::new(
         OperationRuntime {
             completion: Arc::clone(&completion),
+            observations: Arc::clone(&observations),
         },
         ExecutionTime::default(),
         (),
@@ -1385,6 +1396,22 @@ async fn generated_operation_activation_dispatches_and_returns_typed_completion(
     assert_eq!(
         *completion.lock().expect("operation completion lock"),
         Some(42)
+    );
+    let final_index = observations.lock().unwrap().len() as u64;
+    runner.poll(ExecutionTime::from_nanos(final_index * 2_000_000))?;
+    let observations = observations.lock().unwrap().clone();
+    assert_eq!(
+        observations.first(),
+        Some(&(crate::runtime::ReadStatus::Inactive, false))
+    );
+    assert!(
+        observations
+            .iter()
+            .any(|observation| { *observation == (crate::runtime::ReadStatus::Completed, true) })
+    );
+    assert_eq!(
+        observations.last(),
+        Some(&(crate::runtime::ReadStatus::Completed, false))
     );
     runner.stop().expect("runner stops");
     owner.close().await;
@@ -1510,7 +1537,10 @@ struct ReadClientInputs {
 struct ReadClientRuntime {
     selected_key: Arc<Mutex<Option<u64>>>,
     response: Arc<Mutex<Option<u32>>>,
+    observations: Arc<Mutex<Vec<ReadObservation>>>,
 }
+
+type ReadObservation = (crate::runtime::ReadStatus, bool, Option<(u32, String, u64)>);
 
 impl Runtime for ReadClientRuntime {
     type Config = ();
@@ -1528,10 +1558,21 @@ impl Runtime for ReadClientRuntime {
         state: Self::State,
         inputs: &Self::Inputs,
     ) -> crate::Result<(Self::State, Self::Outputs)> {
-        if let Some(completion) = inputs.read.new_completion() {
-            let response = completion
-                .result()
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let retained = inputs.read.retained_success().map(|success| {
+            (
+                success.response().value,
+                success.provenance().source().to_owned(),
+                success.provenance().capture_time().as_nanos(),
+            )
+        });
+        self.observations.lock().unwrap().push((
+            inputs.read.status(),
+            inputs.read.new_completion().is_some(),
+            retained,
+        ));
+        if let Some(completion) = inputs.read.new_completion()
+            && let Ok(response) = completion.result()
+        {
             *self.response.lock().expect("read response lock") = Some(response.value);
         }
         Ok((state, ()))
@@ -1546,7 +1587,7 @@ impl RegisteredRuntime for ReadClientRuntime {
 
 #[crate::runtime::outputs]
 impl ReadClientRuntime {
-    #[crate::runtime::outputs::activate(read, timeout_ms = 100)]
+    #[crate::runtime::outputs::activate(read, timeout_ms = 100, refresh_every_steps = 4)]
     fn request(&self, _state: &()) -> Option<crate::runtime::Activation<u64, ReadRequest>> {
         self.selected_key
             .lock()
@@ -1560,6 +1601,7 @@ async fn read_client_runner(
     manifest: &RuntimeLaunchManifest,
     selected_key: Arc<Mutex<Option<u64>>>,
     response: Arc<Mutex<Option<u32>>>,
+    observations: Arc<Mutex<Vec<ReadObservation>>>,
 ) -> crate::Result<
     RuntimeRunner<
         ReadClientRuntime,
@@ -1572,11 +1614,13 @@ async fn read_client_runner(
     let expired = Arc::new(Mutex::new(BTreeSet::new()));
     let operations = Arc::new(Mutex::new(Vec::new()));
     let exchanges = Arc::new(Mutex::new(Vec::new()));
+    let activations = Arc::new(Mutex::new(BTreeMap::new()));
     let mut input = ExecutionInputAdapter::<ReadClientRuntime>::unbound().with_shared_state(
         Arc::clone(&correlations),
         Arc::clone(&expired),
         Arc::clone(&operations),
         Arc::clone(&exchanges),
+        Arc::clone(&activations),
     );
     input.bind(bus.clone(), manifest).await?;
     let mut output = ExecutionOutputAdapter::<ReadClientRuntime>::unbound().with_shared_state(
@@ -1584,6 +1628,7 @@ async fn read_client_runner(
         expired,
         operations,
         exchanges,
+        activations,
     );
     output
         .bind(bus.clone(), &manifest.instance_id, manifest)
@@ -1593,6 +1638,7 @@ async fn read_client_runner(
         ReadClientRuntime {
             selected_key,
             response,
+            observations,
         },
         ExecutionTime::default(),
         (),
@@ -1676,12 +1722,14 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         .await
         .expect("request subscriber");
     let response = Arc::new(Mutex::new(None));
+    let observations = Arc::new(Mutex::new(Vec::new()));
     let selected_key = Arc::new(Mutex::new(Some(9)));
     let mut runner = read_client_runner(
         &bus,
         &manifest,
         Arc::clone(&selected_key),
         Arc::clone(&response),
+        Arc::clone(&observations),
     )
     .await?;
     assert!(matches!(
@@ -1702,11 +1750,13 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
     other_manifest.instance_id = "other".to_owned();
     let other_key = Arc::new(Mutex::new(Some(99)));
     let other_response = Arc::new(Mutex::new(None));
+    let other_observations = Arc::new(Mutex::new(Vec::new()));
     let mut other = read_client_runner(
         &bus,
         &other_manifest,
         Arc::clone(&other_key),
         Arc::clone(&other_response),
+        other_observations,
     )
     .await?;
     other.poll(ExecutionTime::default())?;
@@ -1779,10 +1829,84 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
             .is_none(),
         "same completed key must not resend"
     );
-    *selected_key.lock().unwrap() = None;
+    assert_eq!(
+        observations.lock().unwrap().as_slice(),
+        &[
+            (crate::runtime::ReadStatus::Inactive, false, None),
+            (crate::runtime::ReadStatus::Pending, false, None),
+            (crate::runtime::ReadStatus::Completed, true, None),
+            (
+                crate::runtime::ReadStatus::Completed,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+        ]
+    );
     runner.poll(ExecutionTime::from_nanos(4_000_000))?;
-    *selected_key.lock().unwrap() = Some(9);
+    let refresh = tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
+        .await?
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let refresh = WireSample::from_zenoh(refresh)?;
     runner.poll(ExecutionTime::from_nanos(5_000_000))?;
+    let refresh_metadata = refresh.metadata();
+    let failure_metadata = crate::runtime::transport::reply_metadata(
+        "reader",
+        StepContext::first(
+            ExecutionTime::from_nanos(6_000_000),
+            ExecutionDuration::from_millis(1),
+        ),
+        refresh_metadata.command_id.expect("refresh command id"),
+        refresh_metadata
+            .eligible_boundary
+            .expect("refresh boundary"),
+        refresh_metadata.caller_rank.expect("refresh caller rank"),
+    )
+    .with_caller(
+        refresh_metadata
+            .caller
+            .clone()
+            .expect("refresh request caller"),
+    );
+    crate::runtime::transport::PreparedOutput::read_refusal(
+        READ_PORT.signature(),
+        crate::runtime::transport::WireControl::Failed,
+        failure_metadata,
+    )
+    .publish_async(&bus, "reader")
+    .await?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    runner.poll(ExecutionTime::from_nanos(6_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(7_000_000))?;
+    let refresh_observations = observations.lock().unwrap().clone();
+    assert_eq!(
+        &refresh_observations[4..8],
+        &[
+            (
+                crate::runtime::ReadStatus::Completed,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+            (
+                crate::runtime::ReadStatus::Pending,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+            (
+                crate::runtime::ReadStatus::Completed,
+                true,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+            (
+                crate::runtime::ReadStatus::Completed,
+                false,
+                Some((42, "reader".to_owned(), 2_000_000)),
+            ),
+        ]
+    );
+    *selected_key.lock().unwrap() = None;
+    runner.poll(ExecutionTime::from_nanos(8_000_000))?;
+    *selected_key.lock().unwrap() = Some(9);
+    runner.poll(ExecutionTime::from_nanos(9_000_000))?;
     let retry = tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
         .await?
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -1793,7 +1917,7 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         "reactivation after None starts a fresh attempt"
     );
     *selected_key.lock().unwrap() = Some(10);
-    runner.poll(ExecutionTime::from_nanos(6_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(10_000_000))?;
     let replacement = tokio::time::timeout(Duration::from_secs(2), requests.recv_async())
         .await?
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -1802,13 +1926,31 @@ async fn generated_read_activation_uses_graph_target_and_correlated_reply() -> c
         replacement.metadata().command_id,
         retry.metadata().command_id
     );
-    runner.poll(ExecutionTime::from_nanos(7_000_000))?;
+    runner.poll(ExecutionTime::from_nanos(11_000_000))?;
     assert!(
         requests
             .try_recv()
             .expect("request queue readable")
             .is_none(),
         "replacement key also starts once"
+    );
+    let replacement_observations = observations.lock().unwrap().clone();
+    assert_eq!(
+        replacement_observations[9],
+        (crate::runtime::ReadStatus::Inactive, false, None),
+        "retiring a key clears its retained success"
+    );
+    assert_eq!(
+        replacement_observations[11],
+        (crate::runtime::ReadStatus::Pending, false, None),
+        "a replacement key cannot inherit historical success"
+    );
+    runner.reset(ExecutionTime::from_nanos(12_000_000), ())?;
+    runner.poll(ExecutionTime::from_nanos(12_000_000))?;
+    assert_eq!(
+        observations.lock().unwrap().last(),
+        Some(&(crate::runtime::ReadStatus::Inactive, false, None)),
+        "reset starts with no completion or retained success"
     );
     runner.stop()?;
     owner.close().await;

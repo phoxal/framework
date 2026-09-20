@@ -1,5 +1,6 @@
 //! Correlation and completion ownership shared by the input and output adapters.
 use crate::runtime::input::{OperationCompletionRecord, ReadError, RequestError, TransportValue};
+use crate::runtime::outputs::activation::ActivationKey;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -43,6 +44,14 @@ pub(super) enum ExchangeCompletion {
 }
 
 pub(super) type ExchangeCompletionQueue = Arc<Mutex<Vec<ExchangeCompletion>>>;
+
+#[derive(Clone)]
+pub(super) struct AcceptedActivation {
+    pub(super) key: ActivationKey,
+    pub(super) attempt: u64,
+}
+
+pub(super) type ActivationStateMap = Arc<Mutex<BTreeMap<&'static str, AcceptedActivation>>>;
 
 pub(super) fn not_sent_completion(
     field: &'static str,

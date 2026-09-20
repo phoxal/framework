@@ -1,8 +1,8 @@
 //! Accepted output publication, managed work, and immutable read projections.
 use super::exchange::{
-    CorrelationMap, ExchangeCompletion, ExchangeCompletionQueue, ExchangeKind,
-    ExpiredCorrelationSet, MAX_EXPIRED_CORRELATIONS, OperationQueue, PendingCorrelation,
-    not_sent_completion,
+    AcceptedActivation, ActivationStateMap, CorrelationMap, ExchangeCompletion,
+    ExchangeCompletionQueue, ExchangeKind, ExpiredCorrelationSet, MAX_EXPIRED_CORRELATIONS,
+    OperationQueue, PendingCorrelation, not_sent_completion,
 };
 use super::read;
 use super::{
@@ -75,6 +75,7 @@ pub(super) struct ExecutionOutputAdapter<R> {
     expired_correlations: Option<ExpiredCorrelationSet>,
     operation_completions: Option<OperationQueue>,
     exchange_completions: Option<ExchangeCompletionQueue>,
+    activation_states: Option<ActivationStateMap>,
     next_refresh_steps: BTreeMap<&'static str, u64>,
     last_state_values: BTreeMap<&'static str, ChangeToken>,
     next_command_id: u64,
@@ -106,6 +107,7 @@ impl<R> ExecutionOutputAdapter<R> {
             expired_correlations: None,
             operation_completions: None,
             exchange_completions: None,
+            activation_states: Some(Arc::new(Mutex::new(BTreeMap::new()))),
             next_refresh_steps: BTreeMap::new(),
             last_state_values: BTreeMap::new(),
             next_command_id: 1,
@@ -124,11 +126,13 @@ impl<R> ExecutionOutputAdapter<R> {
         expired_correlations: ExpiredCorrelationSet,
         operation_completions: OperationQueue,
         exchange_completions: ExchangeCompletionQueue,
+        activation_states: ActivationStateMap,
     ) -> Self {
         self.correlations = Some(correlations);
         self.expired_correlations = Some(expired_correlations);
         self.operation_completions = Some(operation_completions);
         self.exchange_completions = Some(exchange_completions);
+        self.activation_states = Some(activation_states);
         self
     }
 
@@ -611,8 +615,29 @@ impl<R> ExecutionOutputAdapter<R> {
             }
             self.next_refresh_steps.remove(field);
             if let Some(key) = key {
+                let activation_states = self.activation_states.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(TransportError::Transport(
+                        "managed activation state is not bound".to_owned(),
+                    ))
+                })?;
+                activation_states
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(
+                        field,
+                        AcceptedActivation {
+                            key: key.clone(),
+                            attempt: 0,
+                        },
+                    );
                 self.active_keys.insert(field, key);
             } else {
+                if let Some(activation_states) = &self.activation_states {
+                    activation_states
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .remove(field);
+                }
                 self.active_keys.remove(field);
                 if let Some(operation) = self.operations.get_mut(field) {
                     operation.operation.withdraw();
@@ -632,6 +657,25 @@ impl<R> ExecutionOutputAdapter<R> {
     ) -> crate::Result<()> {
         for activation in activations {
             let field = activation.field;
+            let activation_states = self.activation_states.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(TransportError::Transport(
+                    "managed activation state is not bound".to_owned(),
+                ))
+            })?;
+            let mut activation_states = activation_states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let accepted = activation_states.get_mut(field).ok_or_else(|| {
+                anyhow::anyhow!(TransportError::InvalidMetadata {
+                    detail: format!("activation `{field}` has no accepted key"),
+                })
+            })?;
+            accepted.attempt = accepted.attempt.checked_add(1).ok_or_else(|| {
+                anyhow::anyhow!(TransportError::CommandCorrelation(format!(
+                    "activation `{field}` attempt space exhausted"
+                )))
+            })?;
+            drop(activation_states);
             if let Some(completion) = activation.local_completion {
                 self.queue_exchange_completion(completion)?;
                 continue;
@@ -1274,6 +1318,12 @@ where
         self.staged.clear();
         self.staged_keys.clear();
         self.active_keys.clear();
+        if let Some(activation_states) = &self.activation_states {
+            activation_states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
         self.next_refresh_steps.clear();
         self.last_state_values.clear();
         self.last_product_receipts.clear();
@@ -1331,6 +1381,12 @@ where
         self.staged.clear();
         self.staged_keys.clear();
         self.active_keys.clear();
+        if let Some(activation_states) = &self.activation_states {
+            activation_states
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
         self.next_refresh_steps.clear();
         self.last_state_values.clear();
         self.next_command_id = 1;

@@ -27,13 +27,13 @@ Install or update the framework-owned `cargo-phoxal` package from the Phoxal reg
 ```sh
 cargo install cargo-phoxal \
   --index sparse+https://phoxal.github.io/registry/ \
-  --version 0.0.0-dev.3 \
+  --version 0.0.0-dev.6 \
   --locked
 ```
 
 Pre-release tools must be selected explicitly because Cargo does not choose them for a plain `cargo install`.
 The current `cargo-phoxal` release is `0.0.0-dev.6`.
-It consumes the `0.0.0-dev.1` framework package set.
+It consumes the `0.0.0-dev.2` framework package set.
 Later incompatible development trains increment only the final pre-release counter.
 The release order begins with `phoxal-build`, `phoxal-macros`, and `phoxal`, then continues through services, components, the supervisor, and `cargo-phoxal`.
 The build helper is required first because `phoxal` exposes the same Protobuf authoring implementation to consumer build scripts while also using it for its own generated contracts.
