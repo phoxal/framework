@@ -155,11 +155,11 @@ zenoh = { version = "=1.9.0", default-features = false, features = [
 phoxal = { path = "phoxal", version = "=0.0.0-dev.2", registry = "phoxal", default-features = false }
 phoxal-macros = { path = "phoxal/macros", version = "=0.0.0-dev.2", registry = "phoxal" }
 phoxal-build = { path = "phoxal/build-support", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-motion = { path = "services/motion", version = "=0.0.0-dev.2", registry = "phoxal" }
+phoxal-service-motion = { path = "services/motion", version = "=0.0.0-dev.3", registry = "phoxal" }
 phoxal-service-kinematics = { path = "services/kinematics", version = "=0.0.0-dev.2", registry = "phoxal" }
 phoxal-service-world = { path = "services/world", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-safety = { path = "services/safety", version = "=0.0.0-dev.2", registry = "phoxal" }
-phoxal-service-navigation = { path = "services/navigation", version = "=0.0.0-dev.2", registry = "phoxal" }
+phoxal-service-safety = { path = "services/safety", version = "=0.0.0-dev.3", registry = "phoxal" }
+phoxal-service-navigation = { path = "services/navigation", version = "=0.0.0-dev.3", registry = "phoxal" }
 
 [workspace.lints.rust]
 unused = "warn"
