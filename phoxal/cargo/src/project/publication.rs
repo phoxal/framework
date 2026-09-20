@@ -1724,6 +1724,7 @@ fn capture_source(
             let target = root.join(&workspace.package_relative);
             validate_cargo_config(&selected.source_root.join(".cargo"))?;
             copy_tree(&selected.source_root, &target, false)?;
+            capture_external_package_files(selected, &workspace.root, &root)?;
             if root_package {
                 write_staged_file(&workspace_manifest, workspace_text.as_bytes())?;
             }
@@ -1803,6 +1804,68 @@ fn copy_optional_file(source: &Path, destination: &Path) -> Result<(), Error> {
             path: source.to_owned(),
             source: error,
         })?;
+    }
+    Ok(())
+}
+
+fn capture_external_package_files(
+    selected: &SelectedPackage,
+    workspace_root: &Path,
+    staging_root: &Path,
+) -> Result<(), Error> {
+    let package = selected
+        .manifest_value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| PublicationError::MissingPackageManifest {
+            path: selected.manifest.clone(),
+        })?;
+    let canonical_workspace =
+        workspace_root
+            .canonicalize()
+            .map_err(|source| PublicationError::CaptureSource {
+                path: workspace_root.to_owned(),
+                source,
+            })?;
+    for field in ["license-file", "readme"] {
+        let Some(reference) = package.get(field).and_then(toml::Value::as_str) else {
+            continue;
+        };
+        let source = selected.source_root.join(reference);
+        let canonical_source =
+            source
+                .canonicalize()
+                .map_err(|source_error| PublicationError::CaptureSource {
+                    path: source.clone(),
+                    source: source_error,
+                })?;
+        let relative = canonical_source
+            .strip_prefix(&canonical_workspace)
+            .map_err(|_| PublicationError::UnsafeAssetPath {
+                reference: reference.to_owned(),
+                definition: selected.manifest.clone(),
+                root: workspace_root.to_owned(),
+            })?;
+        let metadata = fs::symlink_metadata(&canonical_source).map_err(|source| {
+            PublicationError::CaptureSource {
+                path: canonical_source.clone(),
+                source,
+            }
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(PublicationError::SymbolicLink {
+                path: canonical_source,
+            }
+            .into());
+        }
+        if !metadata.is_file() {
+            return Err(PublicationError::MissingAsset {
+                reference: reference.to_owned(),
+                definition: selected.manifest.clone(),
+            }
+            .into());
+        }
+        copy_optional_file(&canonical_source, &staging_root.join(relative))?;
     }
     Ok(())
 }
@@ -3975,11 +4038,12 @@ mod tests {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"services/example\"]\n[workspace.package]\nedition = \"2024\"\nlicense = \"MIT\"\n",
+            "[workspace]\nmembers = [\"services/example\"]\n[workspace.package]\nedition = \"2024\"\n",
         )?;
+        write(&directory.path().join("LICENSE"), "Example license\n")?;
         write(
             &directory.path().join("services/example/Cargo.toml"),
-            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense.workspace = true\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense-file = \"../../LICENSE\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
         )?;
         write(
             &directory.path().join("services/example/src/main.rs"),
@@ -3996,6 +4060,7 @@ mod tests {
             dry_run: true,
         })?;
         assert!(result.files().iter().any(|file| file.path == "src/main.rs"));
+        assert!(result.files().iter().any(|file| file.path == "LICENSE"));
         Ok(())
     }
 
