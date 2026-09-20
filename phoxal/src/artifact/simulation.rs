@@ -16,22 +16,22 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Evidence schema identifier for the simulator's terminal output.
-pub const SIMULATION_RUN_SCHEMA: &str = "phoxal/simulation-run/v0";
-
 /// Aggregate scenario evidence for a single supervised run.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ScenarioExecutionReport {
-    /// Evidence schema identifier.
-    pub schema: String,
-    /// Fully qualified scenario name.
-    pub scenario_name: String,
-    /// Acknowledged scenario actions.
-    pub steps: Vec<ScenarioStepEvidence>,
-    /// Captured runtime records.
-    pub captures: Vec<ScenarioCaptureEvidence>,
-    /// Command replies keyed by authored step label.
-    pub command_replies: BTreeMap<String, Vec<u8>>,
+#[serde(tag = "schema")]
+pub enum ScenarioExecutionReport {
+    /// The first scenario-execution report generation.
+    #[serde(rename = "phoxal/scenario-execution/v0")]
+    V0 {
+        /// Fully qualified scenario name.
+        scenario_name: String,
+        /// Acknowledged scenario actions.
+        steps: Vec<ScenarioStepEvidence>,
+        /// Captured runtime records.
+        captures: Vec<ScenarioCaptureEvidence>,
+        /// Command replies keyed by authored step label.
+        command_replies: BTreeMap<String, Vec<u8>>,
+    },
 }
 
 /// One runtime-acknowledged scenario action.
@@ -62,30 +62,33 @@ pub struct ScenarioCaptureEvidence {
 
 /// Native terminal evidence emitted by the simulator application.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct SimulatorTerminalEvidence {
-    /// Evidence schema.
-    pub schema: String,
-    #[serde(rename = "provider_contract_verified")]
-    /// Whether the simulator's provider contract was independently verified.
-    pub provider_contract_verified: bool,
-    /// `success` or `stopped`.
-    pub outcome: String,
-    /// Completed native transitions.
-    pub completed_steps: u64,
-    /// Requested native transitions.
-    pub requested_steps: u64,
-    /// Native quantum in nanoseconds.
-    #[serde(default)]
-    pub quantum_ns: u64,
-    /// Supervisor execution identity.
-    #[serde(default)]
-    pub execution_id: String,
-    /// Controlled timeline identity.
-    #[serde(default)]
-    pub timeline_id: String,
-    /// Native root-body samples at 20 ms and terminal boundaries.
-    #[serde(default)]
-    pub native_body: Vec<NativeBodySample>,
+#[serde(tag = "schema")]
+pub enum SimulatorTerminalEvidence {
+    /// The first simulator-terminal evidence generation.
+    #[serde(rename = "phoxal/simulation-run/v0")]
+    V0 {
+        /// Whether the simulator's provider contract was independently verified.
+        #[serde(rename = "provider_contract_verified")]
+        provider_contract_verified: bool,
+        /// `success` or `stopped`.
+        outcome: String,
+        /// Completed native transitions.
+        completed_steps: u64,
+        /// Requested native transitions.
+        requested_steps: u64,
+        /// Native quantum in nanoseconds.
+        #[serde(default)]
+        quantum_ns: u64,
+        /// Supervisor execution identity.
+        #[serde(default)]
+        execution_id: String,
+        /// Controlled timeline identity.
+        #[serde(default)]
+        timeline_id: String,
+        /// Native root-body samples at 20 ms and terminal boundaries.
+        #[serde(default)]
+        native_body: Vec<NativeBodySample>,
+    },
 }
 
 /// One native root-body sample in world coordinates.
@@ -130,8 +133,7 @@ mod tests {
 
     #[test]
     fn terminal_evidence_round_trips_with_default_native_body() {
-        let evidence = SimulatorTerminalEvidence {
-            schema: SIMULATION_RUN_SCHEMA.to_owned(),
+        let evidence = SimulatorTerminalEvidence::V0 {
             provider_contract_verified: true,
             outcome: "success".to_owned(),
             completed_steps: 100,
@@ -148,8 +150,7 @@ mod tests {
 
     #[test]
     fn scenario_execution_report_round_trips() {
-        let report = ScenarioExecutionReport {
-            schema: "phoxal/scenario-evidence/v0".to_owned(),
+        let report = ScenarioExecutionReport::V0 {
             scenario_name: "forward_turn_stop".to_owned(),
             steps: vec![ScenarioStepEvidence {
                 label: "drive".to_owned(),

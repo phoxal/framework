@@ -17,12 +17,6 @@ use sha2::{Digest, Sha256};
 
 use super::{DescriptorSummary, PortKind, RuntimeRecord};
 
-/// The compiled project-bundle schema emitted by the project compiler.
-pub const BUNDLE_SCHEMA: &str = "phoxal/bundle/v0";
-
-/// Provenance schema discriminator.
-pub const PROVENANCE_SCHEMA: &str = "phoxal/provenance/v0";
-
 /// One default bundle-relative path for the scenario program
 /// artifact. The case host writes the normalized program bytes to
 /// `<bundle_root>/program.bin` and the supervisor reads them back
@@ -32,37 +26,40 @@ pub const DEFAULT_SCENARIO_PROGRAM_PATH: &str = "program.bin";
 
 /// The inspectable graph and artifact inventory for one compiled robot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BundleManifest {
-    /// Format discriminator for the compiled bundle.
-    pub schema: String,
-    /// Authored robot identity.
-    pub robot_id: String,
-    /// The complete source document used for this compilation.
-    pub document: super::document::RobotDocument,
-    /// Root Cargo package selected as the brain owner.
-    pub root_package: BundlePackage,
-    /// Cargo target triple or the explicit host marker.
-    pub target: String,
-    /// Cargo profile used for artifact construction.
-    pub profile: String,
-    /// Root features selected for this build.
-    pub features: Vec<String>,
-    /// Every executable selected for this robot, in stable bundle order.
-    pub executables: Vec<BundleExecutable>,
-    /// Every mounted component, including passive components without a binary.
-    pub components: Vec<BundleComponent>,
-    /// The immutable controlled-simulation contract, when this bundle was
-    /// assembled for an independent simulator run.
-    #[serde(default)]
-    pub simulation: Option<BundleSimulation>,
-    /// Optional scenario execution identity. Set by the case-host path
-    /// when this bundle was assembled for a controlled-simulation
-    /// scenario run. Presence here is the contract that the supervisor
-    /// and fixture will admit only controlled execution and refuse
-    /// hardware launches; absence means the bundle is the normal
-    /// runtime bundle.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scenario: Option<BundleScenarioSection>,
+#[serde(tag = "schema")]
+pub enum BundleManifest {
+    /// The first compiled project-bundle generation.
+    #[serde(rename = "phoxal/bundle/v0")]
+    V0 {
+        /// Authored robot identity.
+        robot_id: String,
+        /// The complete source document used for this compilation.
+        document: super::document::RobotDocument,
+        /// Root Cargo package selected as the brain owner.
+        root_package: BundlePackage,
+        /// Cargo target triple or the explicit host marker.
+        target: String,
+        /// Cargo profile used for artifact construction.
+        profile: String,
+        /// Root features selected for this build.
+        features: Vec<String>,
+        /// Every executable selected for this robot, in stable bundle order.
+        executables: Vec<BundleExecutable>,
+        /// Every mounted component, including passive components without a binary.
+        components: Vec<BundleComponent>,
+        /// The immutable controlled-simulation contract, when this bundle was
+        /// assembled for an independent simulator run.
+        #[serde(default)]
+        simulation: Option<BundleSimulation>,
+        /// Optional scenario execution identity. Set by the case-host path
+        /// when this bundle was assembled for a controlled-simulation
+        /// scenario run. Presence here is the contract that the supervisor
+        /// and fixture will admit only controlled execution and refuse
+        /// hardware launches; absence means the bundle is the normal
+        /// runtime bundle.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scenario: Option<BundleScenarioSection>,
+    },
 }
 
 /// One coherent scenario execution representation. Presence means
@@ -480,34 +477,37 @@ pub struct BundleSourceClosure {
 
 /// Source and tool inputs used to construct a bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BundleProvenance {
-    /// Format discriminator for the provenance record.
-    pub schema: String,
-    /// SHA-256 of the authored robot document.
-    pub robot_manifest_sha256: String,
-    /// SHA-256 of the root Cargo manifest.
-    pub cargo_manifest_sha256: String,
-    /// SHA-256 of the owning workspace-root Cargo manifest.
-    pub cargo_workspace_manifest_sha256: String,
-    /// SHA-256 of the workspace-owned Cargo lock, when present.
-    pub cargo_lock_sha256: Option<String>,
-    /// Exact workspace-owned Cargo.lock input, when present.
-    pub cargo_lock: Option<BundleFile>,
-    /// Deduplicated package source closure used by the selected Cargo graph.
-    pub sources: Vec<BundleSource>,
-    /// Digest over the ordered source records.
-    pub source_closure_sha256: String,
-    /// Relocatable local source and lock closure carried by the bundle.
-    pub source_tree: BundleSourceClosure,
-    /// Compiler and invocation inputs used for the bundle.
-    pub toolchain: BundleToolchain,
-    /// The exact supervisor executable copied into the bundle and launched by
-    /// local execution.
-    pub supervisor: BundleSupervisor,
-    /// Model path and digest when the authored model exists.
-    pub model: Option<BundleFile>,
-    /// The validated model/resource closure copied into the bundle's assets.
-    pub model_closure: Option<BundleModelClosure>,
+#[serde(tag = "schema")]
+pub enum BundleProvenance {
+    /// The first bundle-provenance generation.
+    #[serde(rename = "phoxal/provenance/v0")]
+    V0 {
+        /// SHA-256 of the authored robot document.
+        robot_manifest_sha256: String,
+        /// SHA-256 of the root Cargo manifest.
+        cargo_manifest_sha256: String,
+        /// SHA-256 of the owning workspace-root Cargo manifest.
+        cargo_workspace_manifest_sha256: String,
+        /// SHA-256 of the workspace-owned Cargo lock, when present.
+        cargo_lock_sha256: Option<String>,
+        /// Exact workspace-owned Cargo.lock input, when present.
+        cargo_lock: Option<BundleFile>,
+        /// Deduplicated package source closure used by the selected Cargo graph.
+        sources: Vec<BundleSource>,
+        /// Digest over the ordered source records.
+        source_closure_sha256: String,
+        /// Relocatable local source and lock closure carried by the bundle.
+        source_tree: BundleSourceClosure,
+        /// Compiler and invocation inputs used for the bundle.
+        toolchain: BundleToolchain,
+        /// The exact supervisor executable copied into the bundle and launched by
+        /// local execution.
+        supervisor: BundleSupervisor,
+        /// Model path and digest when the authored model exists.
+        model: Option<BundleFile>,
+        /// The validated model/resource closure copied into the bundle's assets.
+        model_closure: Option<BundleModelClosure>,
+    },
 }
 
 /// One authored input file and its digest.
@@ -581,14 +581,14 @@ mod tests {
 
     fn sample_manifest() -> BundleManifest {
         let yaml = r#"
+schema: phoxal/robot/v0
 robot:
   id: rover
   components: {}
 "#;
         let document: super::super::document::RobotDocument =
             serde_yaml::from_str(yaml).expect("document parses");
-        BundleManifest {
-            schema: BUNDLE_SCHEMA.to_owned(),
+        BundleManifest::V0 {
             robot_id: "rover".to_owned(),
             document,
             root_package: BundlePackage {

@@ -28,6 +28,9 @@ use super::bundle::SourceBundle;
 use super::public_backend::RuntimeBoundaryHook;
 use super::state::{ExecutionState, TimeMode};
 use crate::runtime::transport::server::PublicSimulationContext;
+use phoxal::artifact::simulation::{
+    ScenarioCaptureEvidence, ScenarioExecutionReport, ScenarioStepEvidence,
+};
 use phoxal::communication::simulation::{
     AcquireAuthorityRequest, AdmitInitialObservationsRequest, AdmitInitialObservationsResponse,
     AdmitObservationsRequest, AdmitObservationsResponse, CutReceipt, PrepareBoundaryRequest,
@@ -154,31 +157,6 @@ struct ScenarioDriverState {
     captures: BTreeMap<String, ScenarioCaptureEvidence>,
     command_labels: BTreeMap<u64, String>,
     command_replies: BTreeMap<String, Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ScenarioExecutionReport {
-    pub(crate) schema: String,
-    pub(crate) scenario_name: String,
-    pub(crate) steps: Vec<ScenarioStepEvidence>,
-    pub(crate) captures: Vec<ScenarioCaptureEvidence>,
-    pub(crate) command_replies: BTreeMap<String, Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ScenarioStepEvidence {
-    pub(crate) label: String,
-    pub(crate) kind: String,
-    pub(crate) production_boundary: u64,
-    pub(crate) eligible_boundary: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ScenarioCaptureEvidence {
-    pub(crate) name: String,
-    pub(crate) kind: String,
-    pub(crate) boundary: u64,
-    pub(crate) payloads: Vec<Vec<u8>>,
 }
 
 /// Supervisor-side owner of private runtime admission and controlled progress.
@@ -601,8 +579,7 @@ impl RuntimeExecutionProtocol {
         let scenario = self.inner.scenario.as_ref()?;
         self.drain_scenario_records().await;
         let state = scenario.state.lock().await;
-        Some(ScenarioExecutionReport {
-            schema: "phoxal/scenario-execution/v0".to_owned(),
+        Some(ScenarioExecutionReport::V0 {
             scenario_name: scenario.program.scenario_name().to_owned(),
             steps: state.steps.clone(),
             captures: state.captures.values().cloned().collect(),
@@ -2964,7 +2941,11 @@ mod tests {
                     }),
                 )],
             );
-            manifest.simulation = Some(super::super::bundle::SourceSimulation {
+            let SourceManifest::V0 {
+                simulation: manifest_simulation,
+                ..
+            } = &mut manifest;
+            *manifest_simulation = Some(super::super::bundle::SourceSimulation {
                 protocol: "phoxal.simulation.v1".into(),
                 mode: "controlled".into(),
                 model_identity: "fixture".into(),

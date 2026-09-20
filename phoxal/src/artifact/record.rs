@@ -15,9 +15,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Schema discriminator recorded by the runtime artifact section.
-pub const ARTIFACT_SCHEMA: &str = "phoxal/artifact/v0";
-
 /// Runtime-record discriminator written by `phoxal-macros`.
 pub const RUNTIME_RECORD: &str = "runtime";
 
@@ -43,26 +40,28 @@ pub struct DescriptorSummary {
 
 /// Runtime timing, config-schema, and checked binding facts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeRecord {
-    /// Artifact schema discriminator.
-    pub schema: String,
-    /// Runtime record discriminator.
-    pub record: String,
-    /// Logical runtime period in milliseconds.
-    pub period_ms: u64,
-    /// Complete invocation deadline in milliseconds.
-    pub timeout_ms: u64,
-    /// Initialization deadline in milliseconds.
-    pub init_timeout_ms: u64,
-    /// The exact JSON Schema admitted by the runtime configuration type.
-    pub config_schema: serde_json::Value,
-    /// Runtime input bindings in source order.
-    pub inputs: Vec<InputRecord>,
-    /// Transient per-invocation outputs in source order.
-    pub transient_outputs: Vec<OutputRecord>,
-    /// Service projection and handler bindings in source order.
-    pub service_outputs: Vec<OutputRecord>,
+#[serde(tag = "schema", deny_unknown_fields)]
+pub enum RuntimeRecord {
+    /// The first runtime-artifact generation.
+    #[serde(rename = "phoxal/artifact/v0")]
+    V0 {
+        /// Runtime record discriminator.
+        record: String,
+        /// Logical runtime period in milliseconds.
+        period_ms: u64,
+        /// Complete invocation deadline in milliseconds.
+        timeout_ms: u64,
+        /// Initialization deadline in milliseconds.
+        init_timeout_ms: u64,
+        /// The exact JSON Schema admitted by the runtime configuration type.
+        config_schema: serde_json::Value,
+        /// Runtime input bindings in source order.
+        inputs: Vec<InputRecord>,
+        /// Transient per-invocation outputs in source order.
+        transient_outputs: Vec<OutputRecord>,
+        /// Service projection and handler bindings in source order.
+        service_outputs: Vec<OutputRecord>,
+    },
 }
 
 /// One checked runtime input binding.
@@ -221,8 +220,7 @@ mod tests {
     use super::*;
 
     fn sample_runtime() -> RuntimeRecord {
-        RuntimeRecord {
-            schema: ARTIFACT_SCHEMA.to_owned(),
+        RuntimeRecord::V0 {
             record: RUNTIME_RECORD.to_owned(),
             period_ms: 20,
             timeout_ms: 100,
@@ -277,8 +275,7 @@ mod tests {
 
     #[test]
     fn runtime_record_rejects_unknown_fields() {
-        let mut value = sample_runtime();
-        value.schema = ARTIFACT_SCHEMA.to_owned();
+        let value = sample_runtime();
         let mut json: serde_json::Value = serde_json::to_value(&value).expect("value");
         json.as_object_mut()
             .expect("object")

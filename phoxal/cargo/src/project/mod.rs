@@ -603,11 +603,12 @@ impl PreparedProject {
     /// Returns the default bundle path under Cargo's target directory.
     #[must_use]
     pub fn default_bundle_path(&self) -> PathBuf {
+        let RobotDocument::V0 { robot, .. } = &self.document;
         self.metadata
             .target_directory
             .as_std_path()
             .join("phoxal")
-            .join(&self.document.robot.id)
+            .join(&robot.id)
             .join("bundle")
     }
 

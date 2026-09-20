@@ -26,8 +26,8 @@ use crate::project::document::RobotDocument;
 // truth; this module re-exports the inert record family so
 // existing internal references continue to use `crate::project::artifact::*`.
 pub use phoxal::artifact::{
-    ARTIFACT_SCHEMA, ArtifactSummary, DescriptorSummary, InputKind, OutputKind, OutputRecord,
-    PortKind, RUNTIME_RECORD, RuntimeRecord,
+    ArtifactSummary, DescriptorSummary, InputKind, OutputKind, OutputRecord, PortKind,
+    RUNTIME_RECORD, RuntimeRecord,
 };
 #[cfg(test)]
 pub use phoxal::artifact::{InputRecord, PortSignature};
@@ -329,30 +329,33 @@ fn parse_descriptor_frames(section: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
 }
 
 fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
-    if runtime.schema != ARTIFACT_SCHEMA {
+    let RuntimeRecord::V0 {
+        record,
+        period_ms,
+        timeout_ms,
+        init_timeout_ms,
+        config_schema,
+        inputs,
+        transient_outputs,
+        service_outputs,
+    } = runtime;
+    if record != RUNTIME_RECORD {
         return Err(Error::InvalidContract(format!(
-            "schema '{}' is not {ARTIFACT_SCHEMA}",
-            runtime.schema
+            "record '{record}' is not {RUNTIME_RECORD}"
         )));
     }
-    if runtime.record != RUNTIME_RECORD {
-        return Err(Error::InvalidContract(format!(
-            "record '{}' is not {RUNTIME_RECORD}",
-            runtime.record
-        )));
-    }
-    if runtime.period_ms == 0 || runtime.timeout_ms == 0 || runtime.init_timeout_ms == 0 {
+    if *period_ms == 0 || *timeout_ms == 0 || *init_timeout_ms == 0 {
         return Err(Error::InvalidContract(
             "period and deadlines must be positive".to_owned(),
         ));
     }
-    if !runtime.config_schema.is_object() {
+    if !config_schema.is_object() {
         return Err(Error::InvalidContract(
             "config_schema must be a JSON schema object".to_owned(),
         ));
     }
     let mut input_names = BTreeSet::new();
-    for input in &runtime.inputs {
+    for input in inputs {
         if !input_names.insert(input.name.as_str()) {
             return Err(Error::InvalidContract(format!(
                 "duplicate input binding '{}'",
@@ -399,11 +402,7 @@ fn validate_runtime(runtime: &RuntimeRecord) -> Result<(), Error> {
         }
     }
     let mut output_names = BTreeSet::new();
-    for output in runtime
-        .transient_outputs
-        .iter()
-        .chain(runtime.service_outputs.iter())
-    {
+    for output in transient_outputs.iter().chain(service_outputs.iter()) {
         if !output_names.insert(output.name.as_str()) {
             return Err(Error::InvalidContract(format!(
                 "duplicate output binding '{}'",
@@ -506,7 +505,8 @@ mod tests {
     fn extracts_a_record_from_an_elf_section_without_execution() {
         let bytes = native_artifact(EMPTY_RUNTIME, b".phoxal_art");
         let contract = inspect_bytes(&bytes).expect("native artifact contract");
-        assert_eq!(contract.runtime.period_ms, 20);
+        let RuntimeRecord::V0 { period_ms, .. } = &contract.runtime;
+        assert_eq!(*period_ms, 20);
         assert!(contract.descriptors.is_empty());
     }
 
@@ -539,6 +539,7 @@ mod tests {
     fn rejects_kind_only_incompatibility_before_payload_filtering() {
         let document: RobotDocument = serde_yaml::from_str(
             r#"
+schema: phoxal/robot/v0
 robot:
   id: rover
   components: {}
@@ -559,8 +560,7 @@ connections:
             response: "example.Payload".to_owned(),
         };
         let producer = ArtifactContract {
-            runtime: RuntimeRecord {
-                schema: ARTIFACT_SCHEMA.to_owned(),
+            runtime: RuntimeRecord::V0 {
                 record: RUNTIME_RECORD.to_owned(),
                 period_ms: 1,
                 timeout_ms: 1,
@@ -589,8 +589,7 @@ connections:
             descriptors: Vec::new(),
         };
         let consumer = ArtifactContract {
-            runtime: RuntimeRecord {
-                schema: ARTIFACT_SCHEMA.to_owned(),
+            runtime: RuntimeRecord::V0 {
                 record: RUNTIME_RECORD.to_owned(),
                 period_ms: 1,
                 timeout_ms: 1,

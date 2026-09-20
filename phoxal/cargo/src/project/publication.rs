@@ -26,9 +26,6 @@ use crate::project::ProjectLayout;
 use crate::project::error::{Error, PublicationError};
 use crate::project::preparation;
 
-/// The publication evidence document generation.
-pub const PUBLICATION_SCHEMA: &str = "phoxal/publication/v0";
-
 const GENERATED_LIB: &str = "_cargo/lib.rs";
 const INVENTORY_FILE: &str = "review-inventory.json";
 const CHECKSUM_FILE: &str = "archive.sha256";
@@ -287,8 +284,7 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
     )?;
 
     let inventory_path = staging_root.join(INVENTORY_FILE);
-    let inventory = InventoryDocument {
-        schema: PUBLICATION_SCHEMA.to_owned(),
+    let inventory = InventoryDocument::V0 {
         kind: selected.role.publication_kind(),
         package: selected.package.clone(),
         version: selected.version.clone(),
@@ -3300,17 +3296,20 @@ struct VerifiedArchive {
 }
 
 #[derive(Debug, Serialize)]
-struct InventoryDocument {
-    schema: String,
-    kind: PublicationKind,
-    package: String,
-    version: String,
-    source_root: String,
-    archive: String,
-    checksum: String,
-    bytes: u64,
-    files: Vec<PublicationFile>,
-    source: PublicationSourceProvenance,
+#[serde(tag = "schema")]
+enum InventoryDocument {
+    #[serde(rename = "phoxal/publication/v0")]
+    V0 {
+        kind: PublicationKind,
+        package: String,
+        version: String,
+        source_root: String,
+        archive: String,
+        checksum: String,
+        bytes: u64,
+        files: Vec<PublicationFile>,
+        source: PublicationSourceProvenance,
+    },
 }
 
 fn verify_archive(

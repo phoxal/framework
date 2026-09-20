@@ -26,10 +26,6 @@ pub use phoxal::artifact::document::{
     RobotDocument, ServiceSelection,
 };
 
-/// Re-export of the source-language tag for callers that still import
-/// `document::ROBOT_SCHEMA`.
-pub use phoxal::artifact::document::{COMPONENT_SCHEMA, ROBOT_SCHEMA};
-
 /// Parses and validates a `robot.yaml` document with its authored path
 /// attached to errors. The YAML parse and the validation belong
 /// together at this boundary because a malformed file must surface both
@@ -99,27 +95,27 @@ impl ValidateComponentDocument for ComponentDocument {
     }
 }
 
-fn validate_schema(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
-    if let Some(schema) = &document.schema
-        && schema != ROBOT_SCHEMA
-    {
-        errors.push(ValidationError::UnsupportedSchema {
-            value: schema.clone(),
-        });
-    }
+fn validate_schema(_document: &RobotDocument, _errors: &mut Vec<ValidationError>) {
+    // Schema selection is enforced by serde's `#[serde(tag = "schema",
+    // deny_unknown_fields)]` on the enum variant. Unknown or missing
+    // `schema:` keys are rejected at parse time, so nothing remains to
+    // validate here.
 }
 
 fn validate_robot(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
-    if document.robot.id.trim().is_empty() {
+    let RobotDocument::V0 {
+        robot, services, ..
+    } = document;
+    if robot.id.trim().is_empty() {
         errors.push(ValidationError::EmptyRobotId);
-    } else if !is_identifier(&document.robot.id) {
+    } else if !is_identifier(&robot.id) {
         errors.push(ValidationError::InvalidIdentifier {
             field: "robot.id".to_owned(),
-            value: document.robot.id.clone(),
+            value: robot.id.clone(),
         });
     }
 
-    for (instance, component) in &document.robot.components {
+    for (instance, component) in &robot.components {
         push_identifier_error(&format!("robot.components.{instance}"), instance, errors);
         if instance.contains("__") {
             errors.push(ValidationError::ReservedNamespaceSeparator {
@@ -127,7 +123,7 @@ fn validate_robot(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
                 value: instance.clone(),
             });
         }
-        if document.services.contains_key(instance) {
+        if services.contains_key(instance) {
             errors.push(ValidationError::InstanceCollision {
                 instance: instance.clone(),
             });
@@ -179,7 +175,8 @@ fn validate_robot(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
 }
 
 fn validate_brain(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
-    if let Some(brain) = &document.brain
+    let RobotDocument::V0 { brain, .. } = document;
+    if let Some(brain) = brain
         && let Some(binary) = &brain.binary
         && (binary.trim().is_empty() || !is_identifier(binary))
     {
@@ -191,7 +188,8 @@ fn validate_brain(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
 }
 
 fn validate_services(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
-    for (service, selection) in &document.services {
+    let RobotDocument::V0 { services, .. } = document;
+    for (service, selection) in services {
         push_identifier_error(&format!("services.{service}"), service, errors);
         if service == "brain" {
             errors.push(ValidationError::ReservedBrainId {
@@ -229,7 +227,13 @@ fn validate_services(document: &RobotDocument, errors: &mut Vec<ValidationError>
 
 fn validate_connections(document: &RobotDocument, errors: &mut Vec<ValidationError>) {
     let known = document.instance_ids();
-    for (consumer_text, sources) in &document.connections {
+    let RobotDocument::V0 {
+        robot,
+        services,
+        connections,
+        ..
+    } = document;
+    for (consumer_text, sources) in connections {
         let consumer = match PortReference::parse(consumer_text) {
             Ok(reference) => reference,
             Err(_) => {
@@ -246,9 +250,8 @@ fn validate_connections(document: &RobotDocument, errors: &mut Vec<ValidationErr
                 instance: consumer.instance.clone(),
             });
         } else if consumer.instance != "brain"
-            && !document.services.contains_key(&consumer.instance)
-            && document
-                .robot
+            && !services.contains_key(&consumer.instance)
+            && robot
                 .components
                 .get(&consumer.instance)
                 .is_none_or(|component| component.driver.is_none())
@@ -295,31 +298,25 @@ fn validate_connections(document: &RobotDocument, errors: &mut Vec<ValidationErr
 }
 
 fn validate_component_model(document: &ComponentDocument, errors: &mut Vec<String>) {
-    if document.schema != COMPONENT_SCHEMA {
-        errors.push(format!(
-            "unsupported component schema '{}'; expected {COMPONENT_SCHEMA}",
-            document.schema
-        ));
-    }
-    if document.model.file.as_os_str().is_empty()
-        || document.model.file.to_string_lossy().contains("..")
-    {
+    let ComponentDocument::V0 { model, .. } = document;
+    if model.file.as_os_str().is_empty() || model.file.to_string_lossy().contains("..") {
         errors.push(format!(
             "component model path must be a relative, parent-free POSIX path: got '{}'",
-            document.model.file.display()
+            model.file.display()
         ));
     }
-    if !is_identifier(&document.model.root_body) {
+    if !is_identifier(&model.root_body) {
         errors.push(format!(
             "component root_body '{}' must be a valid native body name",
-            document.model.root_body
+            model.root_body
         ));
     }
 }
 
 fn validate_component_capabilities(document: &ComponentDocument, errors: &mut Vec<String>) {
+    let ComponentDocument::V0 { capabilities, .. } = document;
     let mut seen_names = BTreeSet::new();
-    for (name, capability) in &document.capabilities {
+    for (name, capability) in capabilities {
         if !is_identifier(name) {
             errors.push(format!(
                 "capability name '{name}' must be a valid identifier"
@@ -386,7 +383,8 @@ robot:
   id: rover
 "#;
         let doc = parse_and_validate(yaml, Path::new("robot.yaml")).expect("valid");
-        assert_eq!(doc.robot.id, "rover");
+        let RobotDocument::V0 { robot, .. } = &doc;
+        assert_eq!(robot.id, "rover");
     }
 
     #[test]

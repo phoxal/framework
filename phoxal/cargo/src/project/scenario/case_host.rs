@@ -110,12 +110,19 @@ pub fn run_case_host(
 
     let (evidence, lifecycle_passing, cleanup_succeeded, performance) = match lifecycle {
         Ok(report) => {
-            let passing = report.simulator_exit_code == Some(0)
-                && report.cleanup.error.is_none()
-                && report.supervisor_ready
-                && report.provider_contract_verified;
+            let SimulationRunReport::V0 {
+                simulator_exit_code,
+                cleanup,
+                supervisor_ready,
+                provider_contract_verified,
+                ..
+            } = &report;
+            let passing = *simulator_exit_code == Some(0)
+                && cleanup.error.is_none()
+                && *supervisor_ready
+                && *provider_contract_verified;
             let evidence = build_lifecycle_report(&facts, &harness_program, &report);
-            let cleanup_succeeded = report.cleanup.error.is_none();
+            let cleanup_succeeded = cleanup.error.is_none();
             let performance = headless.then(|| performance_summary(&report)).flatten();
             (evidence, passing, cleanup_succeeded, performance)
         }
@@ -157,12 +164,25 @@ pub fn run_case_host(
 }
 
 fn performance_summary(report: &SimulationRunReport) -> Option<String> {
-    let terminal = report.terminal.as_ref()?;
-    if terminal.quantum_ns == 0 || report.simulator_wall_time_ns == 0 {
+    let terminal = match report {
+        SimulationRunReport::V0 { terminal, .. } => terminal.as_ref(),
+    }?;
+    let SimulatorTerminalEvidence::V0 {
+        quantum_ns,
+        completed_steps,
+        ..
+    } = terminal;
+    let simulator_wall_time_ns = match report {
+        SimulationRunReport::V0 {
+            simulator_wall_time_ns,
+            ..
+        } => *simulator_wall_time_ns,
+    };
+    if *quantum_ns == 0 || simulator_wall_time_ns == 0 {
         return None;
     }
-    let simulated_seconds = terminal.completed_steps as f64 * terminal.quantum_ns as f64 / 1e9;
-    let wall_seconds = report.simulator_wall_time_ns as f64 / 1e9;
+    let simulated_seconds = *completed_steps as f64 * *quantum_ns as f64 / 1e9;
+    let wall_seconds = simulator_wall_time_ns as f64 / 1e9;
     Some(format!(
         "performance: {simulated_seconds:.3} simulated seconds in {wall_seconds:.3} wall seconds ({:.2}x)",
         simulated_seconds / wall_seconds
@@ -235,21 +255,61 @@ fn build_lifecycle_report(
     program: &Program,
     report: &SimulationRunReport,
 ) -> LifecycleReport {
-    let terminal: Option<&SimulatorTerminalEvidence> = report.terminal.as_ref();
-    let scenario: Option<&ScenarioExecutionReport> = report.scenario.as_ref();
-    let program_quantum_ns = terminal.map(|t| t.quantum_ns).unwrap_or(facts.quantum_ns);
-    let program_transition_count = terminal.map_or(0, |t| t.completed_steps);
-    let final_observation_cut = terminal
-        .map(|t| t.completed_steps == t.requested_steps)
-        .unwrap_or(false);
+    let SimulationRunReport::V0 {
+        terminal: report_terminal,
+        scenario: report_scenario,
+        provider_contract_verified,
+        supervisor_ready,
+        ..
+    } = report;
+    let terminal: Option<&SimulatorTerminalEvidence> = report_terminal.as_ref();
+    let scenario: Option<&ScenarioExecutionReport> = report_scenario.as_ref();
+    let terminal_v0 = terminal.map(|t| match t {
+        SimulatorTerminalEvidence::V0 {
+            quantum_ns,
+            completed_steps,
+            requested_steps,
+            execution_id,
+            native_body,
+            ..
+        } => (
+            *quantum_ns,
+            *completed_steps,
+            *requested_steps,
+            execution_id.clone(),
+            native_body,
+        ),
+    });
+    let (
+        program_quantum_ns,
+        program_transition_count,
+        final_observation_cut,
+        execution_id,
+        terminal_native_body,
+    ) = match terminal_v0 {
+        Some((quantum_ns, completed_steps, requested_steps, execution_id, native_body)) => (
+            quantum_ns,
+            completed_steps,
+            completed_steps == requested_steps,
+            execution_id,
+            Some(native_body),
+        ),
+        None => (facts.quantum_ns, 0, false, String::new(), None),
+    };
     let final_capture_drain =
-        final_observation_cut && report.provider_contract_verified && report.supervisor_ready;
+        final_observation_cut && *provider_contract_verified && *supervisor_ready;
     let mut step_outcomes = Vec::new();
     let mut capture_records = Vec::new();
     let mut command_replies = Vec::new();
     let mut native_body = None;
     if let Some(scenario) = scenario {
-        for observed in &scenario.steps {
+        let ScenarioExecutionReport::V0 {
+            steps,
+            captures,
+            command_replies: scenario_command_replies,
+            ..
+        } = scenario;
+        for observed in steps {
             // The harness translates observed labels into the typed
             // outcomes by walking the user's plan. The tool only ships
             // the supervisor-observed evidence; the harness keeps the
@@ -260,7 +320,7 @@ fn build_lifecycle_report(
                 outcome: observed_step_outcome(program, scenario, observed),
             });
         }
-        for capture in &scenario.captures {
+        for capture in captures {
             let record = match capture.kind.as_str() {
                 "state" => {
                     CaptureRecord::State(capture.payloads.last().cloned().unwrap_or_default())
@@ -274,20 +334,21 @@ fn build_lifecycle_report(
                 record,
             });
         }
-        for (label, payload) in &scenario.command_replies {
+        for (label, payload) in scenario_command_replies {
             command_replies.push(messages::CommandReplyRef {
                 label: label.clone(),
                 response_bytes: payload.clone(),
             });
         }
     }
-    if let Some(terminal) = terminal
-        && !terminal.native_body.is_empty()
-        && let Some(phoxal::scenario::Capture::NativeBody { name, .. }) = program
+    if let (Some(native_body_vec), Some(phoxal::scenario::Capture::NativeBody { name, .. })) = (
+        terminal_native_body,
+        program
             .captures()
             .iter()
-            .find(|capture| matches!(capture, phoxal::scenario::Capture::NativeBody { .. }))
-        && let Ok(payload) = serde_json::to_vec(&terminal.native_body)
+            .find(|capture| matches!(capture, phoxal::scenario::Capture::NativeBody { .. })),
+    ) && !native_body_vec.is_empty()
+        && let Ok(payload) = serde_json::to_vec(native_body_vec)
     {
         native_body = Some(messages::NativeBodyRef {
             capture_name: name.clone(),
@@ -295,7 +356,7 @@ fn build_lifecycle_report(
         });
     }
     LifecycleReport {
-        execution_id: terminal.map(|t| t.execution_id.clone()).unwrap_or_default(),
+        execution_id,
         quantum_ns: program_quantum_ns,
         completed_steps: program_transition_count,
         final_observation_cut_observed: final_observation_cut,
@@ -312,6 +373,10 @@ fn observed_step_outcome(
     report: &ScenarioExecutionReport,
     observed: &ScenarioStepEvidence,
 ) -> StepOutcome {
+    let ScenarioExecutionReport::V0 {
+        command_replies: report_command_replies,
+        ..
+    } = report;
     let Some(step) = program
         .steps()
         .iter()
@@ -341,7 +406,7 @@ fn observed_step_outcome(
                 .div_ceil(quantum_micros);
             StepOutcome::CommandIssued {
                 label: label.clone(),
-                reply_pending: !report.command_replies.contains_key(label),
+                reply_pending: !report_command_replies.contains_key(label),
                 simulated_deadline_boundary: observed
                     .production_boundary
                     .saturating_add(simulated_budget),

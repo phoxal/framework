@@ -152,7 +152,11 @@ mod tests {
                 }),
             )],
         );
-        manifest.simulation = Some(SourceSimulation {
+        let SourceManifest::V0 {
+            simulation: manifest_simulation,
+            ..
+        } = &mut manifest;
+        *manifest_simulation = Some(SourceSimulation {
             protocol: "phoxal.simulation.v1".into(),
             mode: "controlled".into(),
             model_identity: "fixture".into(),

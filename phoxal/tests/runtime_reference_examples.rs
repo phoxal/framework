@@ -524,7 +524,8 @@ fn read_status_distinguishes_pending_and_completed_inputs() {
 fn compiled_input_records_retain_concrete_owner_message_names() {
     let bytes = __PHOXAL_RUNTIME_ARTIFACT_periodic_reader.as_bytes();
     let record: RuntimeRecord = serde_json::from_slice(&bytes[12..]).unwrap();
-    let input = &record.inputs[0];
+    let RuntimeRecord::V0 { inputs, .. } = &record;
+    let input = &inputs[0];
     assert_eq!(
         input.request_fqn.as_deref(),
         Some("phoxal.examples.runtime.CounterReadRequest")
@@ -535,8 +536,9 @@ fn compiled_input_records_retain_concrete_owner_message_names() {
     );
     let counter: RuntimeRecord =
         serde_json::from_slice(&__PHOXAL_RUNTIME_ARTIFACT_counter.as_bytes()[12..]).unwrap();
+    let RuntimeRecord::V0 { inputs, .. } = &counter;
     assert_eq!(
-        counter.inputs[0].response_fqn.as_deref(),
+        inputs[0].response_fqn.as_deref(),
         Some("google.protobuf.UInt64Value")
     );
 }

@@ -250,40 +250,43 @@ pub struct SimulationCleanup {
 
 /// Terminal evidence retained by one local finite simulation run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SimulationRunReport {
-    /// Summary schema identifier.
-    pub schema: String,
-    /// Canonical scene resource path.
-    pub scene: PathBuf,
-    /// Exact simulator artifact used.
-    pub simulator: SimulatorArtifactSummary,
-    /// Compiled simulation bundle path.
-    pub bundle: PathBuf,
-    /// Explicit router namespace.
-    pub scope: String,
-    /// Explicit supervisor identity.
-    pub supervisor_id: String,
-    /// Explicit finite run identity.
-    pub run_id: String,
-    /// Whether the supervisor survived startup readiness.
-    pub supervisor_ready: bool,
-    /// Whether the simulator emitted the required provider-contract terminal
-    /// evidence for the finite run.
-    pub provider_contract_verified: bool,
-    /// Simulator exit code, or none when it terminated by signal.
-    pub simulator_exit_code: Option<i32>,
-    /// Wall time spent inside the simulator process for this finite run.
-    pub simulator_wall_time_ns: u64,
-    /// Complete simulator standard output.
-    pub simulator_stdout: String,
-    /// Complete simulator standard error.
-    pub simulator_stderr: String,
-    /// Bounded supervisor cleanup evidence.
-    pub cleanup: SimulationCleanup,
-    /// Runtime-observed scenario evidence, when this was a scenario run.
-    pub scenario: Option<ScenarioExecutionReport>,
-    /// Parsed terminal evidence emitted by the native simulator.
-    pub terminal: Option<SimulatorTerminalEvidence>,
+#[serde(tag = "schema")]
+pub enum SimulationRunReport {
+    /// The first simulation-run report generation.
+    #[serde(rename = "phoxal/simulation-run/v0")]
+    V0 {
+        /// Canonical scene resource path.
+        scene: PathBuf,
+        /// Exact simulator artifact used.
+        simulator: SimulatorArtifactSummary,
+        /// Compiled simulation bundle path.
+        bundle: PathBuf,
+        /// Explicit router namespace.
+        scope: String,
+        /// Explicit supervisor identity.
+        supervisor_id: String,
+        /// Explicit finite run identity.
+        run_id: String,
+        /// Whether the supervisor survived startup readiness.
+        supervisor_ready: bool,
+        /// Whether the simulator emitted the required provider-contract terminal
+        /// evidence for the finite run.
+        provider_contract_verified: bool,
+        /// Simulator exit code, or none when it terminated by signal.
+        simulator_exit_code: Option<i32>,
+        /// Wall time spent inside the simulator process for this finite run.
+        simulator_wall_time_ns: u64,
+        /// Complete simulator standard output.
+        simulator_stdout: String,
+        /// Complete simulator standard error.
+        simulator_stderr: String,
+        /// Bounded supervisor cleanup evidence.
+        cleanup: SimulationCleanup,
+        /// Runtime-observed scenario evidence, when this was a scenario run.
+        scenario: Option<ScenarioExecutionReport>,
+        /// Parsed terminal evidence emitted by the native simulator.
+        terminal: Option<SimulatorTerminalEvidence>,
+    },
 }
 
 /// Evidence observed by the supervisor while executing one scenario program.
@@ -309,27 +312,37 @@ impl SimulationRunReport {
     /// Whether the simulator exited successfully and cleanup completed.
     #[must_use]
     pub fn success(&self) -> bool {
-        self.simulator_exit_code == Some(0)
-            && self.cleanup.error.is_none()
-            && self.supervisor_ready
-            && self.provider_contract_verified
+        let Self::V0 {
+            simulator_exit_code,
+            cleanup,
+            supervisor_ready,
+            provider_contract_verified,
+            ..
+        } = self;
+        *simulator_exit_code == Some(0)
+            && cleanup.error.is_none()
+            && *supervisor_ready
+            && *provider_contract_verified
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct SimulatorSelection {
-    schema: String,
-    package: String,
-    version: String,
-    binary: String,
-    source: String,
-    executable: PathBuf,
-    cargo_manifest: Option<PathBuf>,
-    cargo_lock: Option<PathBuf>,
-    executable_bytes: u64,
-    executable_sha256: String,
-    cargo_manifest_sha256: Option<String>,
-    cargo_lock_sha256: Option<String>,
+#[serde(tag = "schema")]
+enum SimulatorSelection {
+    #[serde(rename = "phoxal/simulator-selection/v0")]
+    V0 {
+        package: String,
+        version: String,
+        binary: String,
+        source: String,
+        executable: PathBuf,
+        cargo_manifest: Option<PathBuf>,
+        cargo_lock: Option<PathBuf>,
+        executable_bytes: u64,
+        executable_sha256: String,
+        cargo_manifest_sha256: Option<String>,
+        cargo_lock_sha256: Option<String>,
+    },
 }
 
 /// Result of inspecting the managed simulator installation.
@@ -356,27 +369,32 @@ struct SimulatorArtifact {
 
 impl SimulatorArtifact {
     fn from_selection(selection: SimulatorSelection) -> Result<Self, Error> {
-        if selection.schema != "phoxal/simulator-selection/v0" {
-            return Err(simulation_error(format!(
-                "unsupported simulator selection schema {}",
-                selection.schema
-            )));
-        }
-        ensure_regular_file(&selection.executable, "simulator executable")?;
-        let digest = digest_file(&selection.executable)?;
-        if digest.bytes != selection.executable_bytes
-            || digest.sha256 != selection.executable_sha256
-        {
+        let SimulatorSelection::V0 {
+            package,
+            version,
+            binary,
+            source,
+            executable,
+            cargo_manifest,
+            cargo_lock,
+            executable_bytes,
+            executable_sha256,
+            cargo_manifest_sha256,
+            cargo_lock_sha256,
+        } = selection;
+        ensure_regular_file(&executable, "simulator executable")?;
+        let digest = digest_file(&executable)?;
+        if digest.bytes != executable_bytes || digest.sha256 != executable_sha256 {
             return Err(simulation_error(format!(
                 "selected simulator executable {} changed after provisioning",
-                selection.executable.display()
+                executable.display()
             )));
         }
-        match (&selection.cargo_manifest, &selection.cargo_lock) {
+        match (&cargo_manifest, &cargo_lock) {
             (Some(manifest), Some(lock)) => {
                 ensure_regular_file(manifest, "simulator Cargo.toml")?;
                 let actual = digest_file(manifest)?.sha256;
-                if selection.cargo_manifest_sha256.as_deref() != Some(actual.as_str()) {
+                if cargo_manifest_sha256.as_deref() != Some(actual.as_str()) {
                     return Err(simulation_error(format!(
                         "selected simulator Cargo.toml {} changed after provisioning",
                         manifest.display()
@@ -384,7 +402,7 @@ impl SimulatorArtifact {
                 }
                 ensure_regular_file(lock, "simulator Cargo.lock")?;
                 let actual = digest_file(lock)?.sha256;
-                if selection.cargo_lock_sha256.as_deref() != Some(actual.as_str()) {
+                if cargo_lock_sha256.as_deref() != Some(actual.as_str()) {
                     return Err(simulation_error(format!(
                         "selected simulator Cargo.lock {} changed after provisioning",
                         lock.display()
@@ -392,7 +410,7 @@ impl SimulatorArtifact {
                 }
             }
             (None, None) => {
-                if selection.source.starts_with("registry:") {
+                if source.starts_with("registry:") {
                     return Err(simulation_error(
                         "registry simulator selection is missing its standalone Cargo graph",
                     ));
@@ -406,17 +424,17 @@ impl SimulatorArtifact {
         }
         Ok(Self {
             summary: SimulatorArtifactSummary {
-                package: selection.package,
-                version: selection.version,
-                binary: selection.binary,
-                source: selection.source,
-                executable: selection.executable,
+                package,
+                version,
+                binary,
+                source,
+                executable,
                 sha256: digest.sha256,
-                cargo_manifest_sha256: selection.cargo_manifest_sha256,
-                cargo_lock_sha256: selection.cargo_lock_sha256,
+                cargo_manifest_sha256,
+                cargo_lock_sha256,
             },
-            cargo_manifest: selection.cargo_manifest,
-            cargo_lock: selection.cargo_lock,
+            cargo_manifest,
+            cargo_lock,
         })
     }
 }
@@ -589,15 +607,21 @@ fn selected_artifact(
     selection: SimulatorSelection,
     request: &SimulationRunOptions,
 ) -> Result<SimulatorArtifact, Error> {
-    if selection.package != request.simulator_package
-        || selection.version != request.simulator_version
-        || selection.binary != request.simulator_binary
+    let SimulatorSelection::V0 {
+        package,
+        version,
+        binary,
+        ..
+    } = &selection;
+    if package != &request.simulator_package
+        || version != &request.simulator_version
+        || binary != &request.simulator_binary
     {
         return Err(simulation_error(format!(
             "stored simulator selection is {} {} {}, but this run requests {} {} {}",
-            selection.package,
-            selection.version,
-            selection.binary,
+            package,
+            version,
+            binary,
             request.simulator_package,
             request.simulator_version,
             request.simulator_binary
@@ -767,8 +791,7 @@ fn write_selection(root: &Path, artifact: &SimulatorArtifact) -> Result<(), Erro
             path: artifact.summary.executable.clone(),
             source,
         })?;
-    let selection = SimulatorSelection {
-        schema: "phoxal/simulator-selection/v0".to_owned(),
+    let selection = SimulatorSelection::V0 {
         package: artifact.summary.package.clone(),
         version: artifact.summary.version.clone(),
         binary: artifact.summary.binary.clone(),
@@ -1587,8 +1610,7 @@ fn launch(
     } else {
         None
     };
-    Ok(SimulationRunReport {
-        schema: "phoxal/simulation-run/v0".to_owned(),
+    Ok(SimulationRunReport::V0 {
         scene: scene.to_owned(),
         simulator: simulator.summary.clone(),
         bundle: bundle.root().to_owned(),
@@ -1631,19 +1653,26 @@ fn terminal_evidence_verified(
     evidence: &SimulatorTerminalEvidence,
     presentation: SimulationPresentation,
 ) -> bool {
-    evidence.schema == "phoxal/simulation-run/v0"
-        && evidence.provider_contract_verified
-        && ((evidence.outcome == "success" && evidence.completed_steps == evidence.requested_steps)
+    let SimulatorTerminalEvidence::V0 {
+        provider_contract_verified,
+        outcome,
+        completed_steps,
+        requested_steps,
+        ..
+    } = evidence;
+    *provider_contract_verified
+        && ((outcome == "success" && completed_steps == requested_steps)
             || (presentation == SimulationPresentation::Desktop
-                && evidence.outcome == "stopped"
-                && evidence.completed_steps <= evidence.requested_steps))
-        && evidence.requested_steps > 0
+                && outcome == "stopped"
+                && completed_steps <= requested_steps))
+        && *requested_steps > 0
 }
 
 #[derive(Deserialize)]
-struct SupervisorReadiness {
-    schema: String,
-    execution: String,
+#[serde(tag = "schema")]
+enum SupervisorReadiness {
+    #[serde(rename = "phoxal/supervisor-ready/v0")]
+    V0 { execution: String },
 }
 
 fn wait_process_ready(
@@ -1665,7 +1694,8 @@ fn wait_process_ready(
                         readiness_path.display()
                     ))
                 })?;
-            if readiness.schema != "phoxal/supervisor-ready/v0" || readiness.execution.is_empty() {
+            let SupervisorReadiness::V0 { execution } = &readiness;
+            if execution.is_empty() {
                 return Err(simulation_error(format!(
                     "supervisor readiness {} has an unsupported or incomplete contract",
                     readiness_path.display()
@@ -2006,8 +2036,7 @@ mod tests {
         fs::write(&executable, "fake simulator")?;
         let digest = digest_file(&executable)?;
         let selection_path = root.join("selection.json");
-        let selection = SimulatorSelection {
-            schema: "phoxal/simulator-selection/v0".to_owned(),
+        let selection = SimulatorSelection::V0 {
             package: DEFAULT_SIMULATOR_PACKAGE.to_owned(),
             version: DEFAULT_SIMULATOR_VERSION.to_owned(),
             binary: DEFAULT_SIMULATOR_BINARY.to_owned(),

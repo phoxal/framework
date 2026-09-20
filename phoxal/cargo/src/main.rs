@@ -9,8 +9,8 @@ mod project;
 use project::{
     CargoOperation, CargoOptions, CargoSelection, LockMode, PreparedProject, Project,
     PublicationKind, PublicationOptions, SelectedTarget, SimulationBound, SimulationPresentation,
-    SimulationRunOptions, SubmissionResult, install_simulator, prepare_publication,
-    simulator_status, submit_publication, uninstall_simulator,
+    SimulationRunOptions, SimulationRunReport, SubmissionResult, install_simulator,
+    prepare_publication, simulator_status, submit_publication, uninstall_simulator,
 };
 
 fn main() -> ExitCode {
@@ -233,9 +233,14 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), crate::project::Er
         })
     })?)?;
     let report = project.run_simulation(&cargo_options, &request)?;
-    if !report.simulator_stdout.trim().is_empty() {
-        print!("{}", report.simulator_stdout);
-        if !report.simulator_stdout.ends_with('\n') {
+    let SimulationRunReport::V0 {
+        simulator_stdout,
+        simulator_stderr: _,
+        ..
+    } = &report;
+    if !simulator_stdout.trim().is_empty() {
+        print!("{}", simulator_stdout);
+        if !simulator_stdout.ends_with('\n') {
             println!();
         }
     }
@@ -247,19 +252,29 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), crate::project::Er
             }
         })?
     );
-    if !report.simulator_stderr.is_empty() {
-        eprint!("{}", report.simulator_stderr);
+    let SimulationRunReport::V0 {
+        simulator: report_simulator,
+        bundle: report_bundle,
+        simulator_exit_code,
+        simulator_stderr,
+        provider_contract_verified,
+        supervisor_ready,
+        cleanup,
+        ..
+    } = &report;
+    if !simulator_stderr.is_empty() {
+        eprint!("{}", simulator_stderr);
     }
     eprintln!(
         "simulation: simulator={} bundle={} provider_contract={} cleanup={}",
-        report.simulator.executable.display(),
-        report.bundle.display(),
-        if report.provider_contract_verified {
+        report_simulator.executable.display(),
+        report_bundle.display(),
+        if *provider_contract_verified {
             "verified"
         } else {
             "unverified"
         },
-        if report.cleanup.error.is_none() {
+        if cleanup.error.is_none() {
             "complete"
         } else {
             "incomplete"
@@ -271,12 +286,10 @@ fn run_simulation(arguments: SimulationRunArgs) -> Result<(), crate::project::Er
         Err(crate::project::Error::SimulationInvalid {
             message: format!(
                 "simulation did not complete successfully (exit={}, supervisor_ready={}, provider_contract_verified={}, cleanup={})",
-                report
-                    .simulator_exit_code
-                    .map_or_else(|| "signal".to_owned(), |code| code.to_string()),
-                report.supervisor_ready,
-                report.provider_contract_verified,
-                if report.cleanup.error.is_none() {
+                simulator_exit_code.map_or_else(|| "signal".to_owned(), |code| code.to_string()),
+                supervisor_ready,
+                provider_contract_verified,
+                if cleanup.error.is_none() {
                     "complete"
                 } else {
                     "incomplete"
