@@ -30,43 +30,51 @@ mod tests {
         let motor: ComponentDocument =
             serde_yaml::from_str(&read("../components/bench-motor/component.yaml"))
                 .expect("motor component definition parses");
-        assert_eq!(motor.model.file, Path::new("model.xml"));
-        assert_eq!(motor.model.root_body, "mount");
+        let ComponentDocument::V0 {
+            model,
+            capabilities,
+            ..
+        } = motor;
+        assert_eq!(model.file, Path::new("model.xml"));
+        assert_eq!(model.root_body, "mount");
         assert_eq!(
-            motor.capabilities["motor"].target.kind,
+            capabilities["motor"].target.kind,
             NativeTargetKind::Actuator
         );
-        assert_eq!(motor.capabilities["motor"].target.id, "motor");
+        assert_eq!(capabilities["motor"].target.id, "motor");
+        assert_eq!(capabilities["motor"].joint.as_deref(), Some("motor_joint"));
         assert_eq!(
-            motor.capabilities["motor"].joint.as_deref(),
-            Some("motor_joint")
-        );
-        assert_eq!(
-            motor.capabilities["encoder"].target.kind,
+            capabilities["encoder"].target.kind,
             NativeTargetKind::Joint
         );
 
         let imu: ComponentDocument =
             serde_yaml::from_str(&read("../components/bench-imu/component.yaml"))
                 .expect("IMU component definition parses");
-        assert_eq!(imu.model.file, Path::new("model.xml"));
-        assert_eq!(imu.model.root_body, "mount");
+        let ComponentDocument::V0 {
+            model,
+            capabilities,
+            ..
+        } = imu;
+        assert_eq!(model.file, Path::new("model.xml"));
+        assert_eq!(model.root_body, "mount");
         assert_eq!(
-            imu.capabilities["accelerometer"].target.kind,
+            capabilities["accelerometer"].target.kind,
             NativeTargetKind::Site
         );
         assert_eq!(
-            imu.capabilities["accelerometer"].signals["acceleration"],
+            capabilities["accelerometer"].signals["acceleration"],
             "accelerometer"
         );
 
         let robot: RobotDocument =
             serde_yaml::from_str(&read("../robots/workspace-robot/robot.yaml"))
                 .expect("robot definition parses");
-        assert_eq!(robot.robot.model.as_deref(), Some(Path::new("model.xml")));
-        assert_eq!(robot.robot.components["left"].mount_site, "left_mount");
-        assert_eq!(robot.robot.components["right"].mount_site, "right_mount");
-        assert_eq!(robot.robot.components["imu"].mount_site, "imu_mount");
+        let RobotDocument::V0 { robot, .. } = robot;
+        assert_eq!(robot.model.as_deref(), Some(Path::new("model.xml")));
+        assert_eq!(robot.components["left"].mount_site, "left_mount");
+        assert_eq!(robot.components["right"].mount_site, "right_mount");
+        assert_eq!(robot.components["imu"].mount_site, "imu_mount");
         assert_eq!(
             read("../robots/workspace-robot/simulation/scene.xml")
                 .lines()
