@@ -43,7 +43,7 @@ toml_edit = { workspace = true }
 # The case host drives the supervised lifecycle from the harness. The
 # harness binary itself depends only on the SDK, but the case-host
 # protocol in `scenario::__harness` requires the scenario feature.
-phoxal = { path = "..", version = "=0.0.0-dev.1", registry = "phoxal", default-features = false, features = ["scenario"] }
+phoxal = { path = "..", version = "=0.0.0-dev.2", registry = "phoxal", default-features = false, features = ["scenario"] }
 
 [lints]
 workspace = true
