@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-phoxal"
-version = "0.0.0-dev.5"
+version = "0.0.0-dev.6"
 dependencies = [
  "base64",
  "cargo_metadata",

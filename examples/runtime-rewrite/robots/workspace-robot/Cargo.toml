@@ -23,8 +23,8 @@ bench_imu = { package = "example-bench-imu", path = "../../components/bench-imu"
 bench_motor = { package = "example-bench-motor", path = "../../components/bench-motor" }
 counter = { package = "example-counter-service", path = "../../services/counter" }
 counter-contract = { package = "example-counter-contract", path = "../../services/counter/contract" }
-phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.1", default-features = false, features = ["runtime"] }
-phoxal-supervisor = { path = "../../../../supervisor", version = "=0.0.0-dev.1" }
+phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["runtime"] }
+phoxal-supervisor = { path = "../../../../supervisor", version = "=0.0.0-dev.2" }
 
 [lints]
 workspace = true

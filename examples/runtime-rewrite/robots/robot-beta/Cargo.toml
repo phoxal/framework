@@ -7,8 +7,8 @@ license = "AGPL-3.0-only"
 description = "The second robot package in the multiple-robot example."
 
 [dependencies]
-phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.1", default-features = false, features = ["runtime"] }
-phoxal-supervisor = { path = "../../../../supervisor", version = "=0.0.0-dev.1" }
+phoxal = { path = "../../../../phoxal", version = "=0.0.0-dev.2", default-features = false, features = ["runtime"] }
+phoxal-supervisor = { path = "../../../../supervisor", version = "=0.0.0-dev.2" }
 
 [lints]
 workspace = true
