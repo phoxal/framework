@@ -15,9 +15,6 @@ include = [
     "model.xml",
 ]
 
-[package.metadata.phoxal]
-kind = "component"
-
 [lib]
 name = "phoxal_hardware_driver_fixture"
 path = "src/lib.rs"

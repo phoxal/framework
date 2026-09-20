@@ -72,6 +72,10 @@ fn prepare_scenarios_persists_manifest_and_writes_harness() {
         persisted.contains("scenario"),
         "scenario feature missing from dev-dep:\n{persisted}"
     );
+    assert!(
+        persisted.contains("clap") && persisted.contains("derive"),
+        "generated harness Clap dependency missing:\n{persisted}"
+    );
     let harness_path = robot_root.join(".phoxal/generated/scenarios/main.rs");
     assert!(harness_path.is_file(), "harness not generated");
     let harness = fs::read_to_string(&harness_path).expect("read harness");
@@ -194,10 +198,10 @@ fn prepare_scenarios_retains_persistent_setup_when_last_scenario_removed() {
     assert!(persisted.contains("phoxal-scenarios"));
 
     // Delete all scenarios and re-run. Per the plan, the persistent setup
-    // (managed `[[test]]` target + `scenario` dev-dep feature) must remain
-    // because the user might add scenarios back later. Only the disposable
-    // harness is regenerated to an empty body so the binary compiles an
-    // empty registry.
+    // (managed `[[test]]` target, scenario feature, and Clap derive feature)
+    // must remain because the user might add scenarios back later. Only the
+    // disposable harness is regenerated to an empty body so the binary
+    // compiles an empty registry.
     fs::remove_file(scenarios.join("a.rs")).expect("rm a");
     fs::remove_file(scenarios.join("b.rs")).expect("rm b");
     let second = project.prepare_scenarios(&options).expect("second run");
@@ -216,6 +220,10 @@ fn prepare_scenarios_retains_persistent_setup_when_last_scenario_removed() {
     assert!(
         after.contains("scenario"),
         "managed `scenario` dev-dep feature must be retained when no scenarios remain; manifest:\n{after}"
+    );
+    assert!(
+        after.contains("clap") && after.contains("derive"),
+        "managed Clap dev-dep must be retained when no scenarios remain; manifest:\n{after}"
     );
     let harness = fs::read_to_string(robot_root.join(".phoxal/generated/scenarios/main.rs"))
         .expect("harness");
@@ -658,7 +666,7 @@ fn framework_supervisor_dir() -> std::path::PathBuf {
             let candidate = ancestor.join("supervisor");
             candidate.join("Cargo.toml").is_file().then_some(candidate)
         })
-        .expect("supervisor crate must be a sibling of tools/cargo-phoxal/project")
+        .expect("supervisor crate must be a sibling of phoxal/cargo/project")
 }
 
 #[allow(dead_code, clippy::unwrap_used)]

@@ -41,6 +41,7 @@ pub use selection::{
 };
 pub use simulation::{
     SimulationBound, SimulationPresentation, SimulationRunOptions, SimulationRunReport,
+    install_simulator, simulator_status, uninstall_simulator,
 };
 pub use submission::{SubmissionResult, submit_publication};
 
@@ -89,12 +90,6 @@ impl Project {
             });
         }
         Ok(Self { layout, document })
-    }
-
-    /// Returns the canonical source layout.
-    #[must_use]
-    pub fn layout(&self) -> &ProjectLayout {
-        &self.layout
     }
 
     /// Prepares the authored Cargo graph and resolves all explicit sources.

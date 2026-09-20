@@ -30,7 +30,8 @@ pub const SUPERVISOR_REGISTRY: &str = "phoxal";
 /// Ordinary unlocked preparation adds the mandatory supervisor dependency.
 /// Scenario preparation adds the managed `[[test]] phoxal-scenarios`
 /// target when missing, the `scenario` feature on `[dev-dependencies]
-/// phoxal` when missing, and regenerates the disposable harness source.
+/// phoxal`, the Clap derive feature used by the generated binary, and
+/// regenerates the disposable harness source.
 /// Per the plan, preparation never removes authored configuration:
 /// removing the last scenario leaves an empty harness and the existing
 /// persistent setup untouched.
@@ -332,6 +333,7 @@ pub(crate) struct ScenarioChangePlan {
     pub discovered: Vec<crate::project::scenario::DiscoveredScenario>,
     pub add_test_target: bool,
     pub add_scenario_feature: bool,
+    pub add_clap_derive: bool,
     pub harness_changed: bool,
     /// `true` if any persistent setup (test target or feature) needs to be
     /// added — the case that locked/frozen modes must refuse.
@@ -346,8 +348,8 @@ pub(crate) struct ScenarioChangePlan {
 ///
 /// Per the plan, this never removes authored configuration: when the
 /// last scenario is removed, the existing managed `[[test]]` target and
-/// the existing `[dev-dependencies] phoxal.features = ["scenario"]`
-/// entry are preserved (the binary simply compiles an empty harness).
+/// existing Phoxal scenario and Clap derive dev-dependency features are
+/// preserved (the binary simply compiles an empty harness).
 pub(crate) fn prepare_scenario_target(
     layout: &ProjectLayout,
     options: &CargoOptions,
@@ -380,13 +382,15 @@ pub(crate) fn compute_scenario_change_plan(
         lookup_scenario_test_target(document).is_some_and(|table| managed_target_matches(&table));
     let add_test_target = !has_managed_test_target;
     let add_scenario_feature = !dev_dependency_has_scenario_feature(document);
+    let add_clap_derive = !dev_dependency_has_feature(document, "clap", "derive");
     let harness_changed = harness_needs_write(robot_root, &discovered, has_managed_test_target);
     let needs_persistent_setup =
-        (add_test_target || add_scenario_feature) && !discovered.is_empty();
+        (add_test_target || add_scenario_feature || add_clap_derive) && !discovered.is_empty();
     Ok(ScenarioChangePlan {
         discovered,
         add_test_target,
         add_scenario_feature,
+        add_clap_derive,
         harness_changed,
         needs_persistent_setup,
     })
@@ -425,10 +429,14 @@ fn managed_target_matches(table: &Table) -> bool {
 }
 
 fn dev_dependency_has_scenario_feature(document: &DocumentMut) -> bool {
+    dev_dependency_has_feature(document, "phoxal", "scenario")
+}
+
+fn dev_dependency_has_feature(document: &DocumentMut, dependency: &str, feature: &str) -> bool {
     let Some(dev) = document.get("dev-dependencies").and_then(Item::as_table) else {
         return false;
     };
-    let Some(entry) = dev.get("phoxal").and_then(Item::as_value) else {
+    let Some(entry) = dev.get(dependency).and_then(Item::as_value) else {
         return false;
     };
     let Some(inline) = entry.as_inline_table() else {
@@ -437,7 +445,7 @@ fn dev_dependency_has_scenario_feature(document: &DocumentMut) -> bool {
     inline
         .get("features")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().any(|v| v.as_str() == Some("scenario")))
+        .map(|arr| arr.iter().any(|v| v.as_str() == Some(feature)))
         .unwrap_or(false)
 }
 
@@ -470,6 +478,15 @@ fn apply_scenario_change_plan(
                     path: robot_root.join("Cargo.toml"),
                     message,
                 }
+            })?
+    {
+        changes.push(change);
+    }
+    if plan.add_clap_derive
+        && let Some(change) =
+            ensure_clap_dev_dependency(document).map_err(|message| Error::ManifestPreparation {
+                path: robot_root.join("Cargo.toml"),
+                message,
             })?
     {
         changes.push(change);
@@ -508,8 +525,9 @@ pub(crate) fn prepare_scenario_target_in_transaction(
                 return Err(Error::ManifestPreparation {
                     path: manifest.to_owned(),
                     message: format!(
-                        "scenario setup needs to add `[[test]] {SCENARIO_TEST_TARGET_NAME}` \
-                         and `[dev-dependencies] phoxal.features = [\"scenario\"]`; refusing \
+                        "scenario setup needs to add its `[[test]]`, \
+                         `[dev-dependencies] phoxal.features = [\"scenario\"]`, or \
+                         `[dev-dependencies] clap.features = [\"derive\"]`; refusing \
                          to mutate the manifest while {:?} is in effect. Re-run without \
                          --locked / --frozen.",
                         options.lock
@@ -704,6 +722,72 @@ fn ensure_scenario_dev_dependency(
     Ok(Some(PreparationChange::DevDependencyFeatureAdded {
         dependency: "phoxal".to_owned(),
         feature: "scenario".to_owned(),
+    }))
+}
+
+fn ensure_clap_dev_dependency(
+    document: &mut DocumentMut,
+) -> Result<Option<PreparationChange>, String> {
+    let dev_table = ensure_dev_dependencies_table(document)?;
+    if !dev_table.contains_key("clap") {
+        let mut dependency = InlineTable::new();
+        dependency.insert("version", Value::from("4.6.1"));
+        dependency.insert(
+            "features",
+            Value::Array(Array::from_iter(["derive".to_owned()])),
+        );
+        dev_table.insert("clap", Item::Value(Value::InlineTable(dependency)));
+        return Ok(Some(PreparationChange::DevDependencyFeatureAdded {
+            dependency: "clap".to_owned(),
+            feature: "derive".to_owned(),
+        }));
+    }
+
+    let entry = dev_table
+        .get_mut("clap")
+        .ok_or_else(|| "missing clap dev-dependency after existence check".to_owned())?;
+    let value = entry.as_value_mut().ok_or_else(|| {
+        "`clap` dev-dependency is not a value; cannot add derive feature".to_owned()
+    })?;
+    if let Some(version) = value.as_str().map(str::to_owned) {
+        let mut dependency = InlineTable::new();
+        dependency.insert("version", Value::from(version));
+        dependency.insert(
+            "features",
+            Value::Array(Array::from_iter(["derive".to_owned()])),
+        );
+        *value = Value::InlineTable(dependency);
+    } else {
+        let inline = value.as_inline_table_mut().ok_or_else(|| {
+            "`clap` dev-dependency must be a version string or inline table".to_owned()
+        })?;
+        if inline
+            .get("features")
+            .and_then(Value::as_array)
+            .is_some_and(|features| {
+                features
+                    .iter()
+                    .any(|feature| feature.as_str() == Some("derive"))
+            })
+        {
+            return Ok(None);
+        }
+        match inline.get_mut("features") {
+            Some(features) => features
+                .as_array_mut()
+                .ok_or_else(|| "clap `features` is not an array".to_owned())?
+                .push("derive"),
+            None => {
+                inline.insert(
+                    "features",
+                    Value::Array(Array::from_iter(["derive".to_owned()])),
+                );
+            }
+        }
+    }
+    Ok(Some(PreparationChange::DevDependencyFeatureAdded {
+        dependency: "clap".to_owned(),
+        feature: "derive".to_owned(),
     }))
 }
 

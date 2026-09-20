@@ -21,9 +21,9 @@ use super::{
 };
 
 const CARGO_PHOXAL_PACKAGE: &str = "cargo-phoxal";
-const CARGO_PHOXAL_MANIFEST: &str = "tools/cargo-phoxal/Cargo.toml";
+const CARGO_PHOXAL_MANIFEST: &str = "phoxal/cargo/Cargo.toml";
 const CARGO_PHOXAL_BIN: &str = "cargo-phoxal";
-const CARGO_PHOXAL_SOURCE: &str = "tools/cargo-phoxal/src/main.rs";
+const CARGO_PHOXAL_SOURCE: &str = "phoxal/cargo/src/main.rs";
 
 /// The disjoint executable sets declared by the workspace.
 ///
@@ -231,6 +231,10 @@ mod tests {
         fs::write(package_dir.join("src/main.rs"), "fn main() {}\n")?;
         fs::write(package_dir.join("src/other.rs"), "fn main() {}\n")?;
         fs::write(
+            package_dir.join("src/package.rs"),
+            "//! Cargo package anchor.\n",
+        )?;
+        fs::write(
             package_dir.join("src/lib.rs"),
             "//! invalid library target\n",
         )?;
@@ -285,11 +289,14 @@ autolib = false
             let directory = manifest.parent().context("spec manifest has no parent")?;
             fs::create_dir_all(directory.join("src"))?;
             fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
-            fs::write(directory.join("src/lib.rs"), "//! supervisor library\n")?;
+            fs::write(
+                directory.join("src/package.rs"),
+                "//! Cargo package anchor.\n",
+            )?;
             fs::write(
                 manifest,
                 format!(
-                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[lib]\nname = \"{}\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"AGPL-3.0-only\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[lib]\nname = \"{}\"\npath = \"src/package.rs\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
                     spec.package_name(),
                     spec.lib_name(),
                     spec.bin_name()
@@ -347,7 +354,7 @@ autolib = false
 
     #[test]
     fn framework_executable_lookalikes_cannot_enter_the_registry() {
-        let valid_target = "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n";
+        let valid_target = "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/package.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n";
         let cases = [
             (
                 "wrong-package",
@@ -362,7 +369,7 @@ autolib = false
                 "supervisor",
                 "phoxal-supervisor",
                 "[\"phoxal\"]",
-                "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"supervisor\"\npath = \"src/main.rs\"\n",
+                "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/package.rs\"\n\n[[bin]]\nname = \"supervisor\"\npath = \"src/main.rs\"\n",
                 "only binary target is 'supervisor'; expected 'phoxal-supervisor'",
             ),
             (
@@ -370,15 +377,15 @@ autolib = false
                 "supervisor",
                 "phoxal-supervisor",
                 "[\"phoxal\"]",
-                "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/other.rs\"\n",
+                "[lib]\nname = \"phoxal_supervisor\"\npath = \"src/package.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/other.rs\"\n",
                 "binary source is supervisor/src/other.rs; expected supervisor/src/main.rs",
             ),
             (
-                "wrong-library-name",
+                "wrong-library",
                 "supervisor",
                 "phoxal-supervisor",
                 "[\"phoxal\"]",
-                "[lib]\nname = \"supervisor\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n",
+                "[lib]\nname = \"supervisor\"\npath = \"src/package.rs\"\n\n[[bin]]\nname = \"phoxal-supervisor\"\npath = \"src/main.rs\"\n",
                 "only library target is 'supervisor'; expected 'phoxal_supervisor'",
             ),
             (

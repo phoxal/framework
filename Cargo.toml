@@ -12,7 +12,7 @@ repository = "https://github.com/phoxal/framework"
 resolver = "3"
 # The framework runtime, its proc-macros, official services, and suite
 # component crates. The project compiler and installation helper are
-# private Rust modules of `tools/cargo-phoxal`; they are not
+# private Rust modules of `phoxal/cargo`; they are not
 # independent workspace packages.
 members = [
     "phoxal/build-support",
@@ -35,7 +35,7 @@ members = [
     "services/safety",
     "services/world",
     "xtask",
-    "tools/cargo-phoxal",
+    "phoxal/cargo",
 ]
 # Keep the workspace's command runner out of plain root cargo builds: `xtask`
 # is the runner a maintainer invokes by name (`cargo xtask <verb>`), not part of
@@ -64,7 +64,7 @@ default-members = [
     "services/navigation",
     "services/safety",
     "services/world",
-    "tools/cargo-phoxal",
+    "phoxal/cargo",
 ]
 
 [workspace.dependencies]

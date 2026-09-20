@@ -60,7 +60,7 @@ pub(super) enum LaunchModeArg {
     Hardware,
 }
 
-impl From<LaunchModeArg> for phoxal_supervisor::ScenarioLaunchMode {
+impl From<LaunchModeArg> for crate::scenario_admission::ScenarioLaunchMode {
     fn from(value: LaunchModeArg) -> Self {
         match value {
             LaunchModeArg::Controlled => Self::Controlled,

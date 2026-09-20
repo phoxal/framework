@@ -21,10 +21,10 @@ use super::{Subject, Violation};
 pub struct Spec {
     package_name: &'static str,
     manifest_path: &'static str,
-    bin_name: &'static str,
-    bin_source_path: &'static str,
     lib_name: &'static str,
     lib_source_path: &'static str,
+    bin_name: &'static str,
+    bin_source_path: &'static str,
     forbidden_dependencies: &'static [&'static str],
 }
 
@@ -38,13 +38,13 @@ impl Spec {
     }
 
     #[cfg(test)]
-    pub const fn bin_name(self) -> &'static str {
-        self.bin_name
+    pub const fn lib_name(self) -> &'static str {
+        self.lib_name
     }
 
     #[cfg(test)]
-    pub const fn lib_name(self) -> &'static str {
-        self.lib_name
+    pub const fn bin_name(self) -> &'static str {
+        self.bin_name
     }
 
     /// Dependencies that would move non-supervisor policy into this
@@ -113,10 +113,10 @@ impl Spec {
 pub const SPECS: [Spec; 1] = [Spec {
     package_name: "phoxal-supervisor",
     manifest_path: "supervisor/Cargo.toml",
+    lib_name: "phoxal_supervisor",
+    lib_source_path: "supervisor/src/package.rs",
     bin_name: "phoxal-supervisor",
     bin_source_path: "supervisor/src/main.rs",
-    lib_name: "phoxal_supervisor",
-    lib_source_path: "supervisor/src/lib.rs",
     forbidden_dependencies: &[
         // The supervisor is built from the one framework library, never from
         // its former CLI owner.

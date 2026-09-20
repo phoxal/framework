@@ -45,7 +45,7 @@ This example workspace keeps the same table in `.cargo/config.toml` so direct Ca
 Install the released framework tool into Cargo's user binary directory with:
 
 ```sh
-cargo install cargo-phoxal --registry phoxal --version 0.0.0-dev.1 --locked
+cargo install cargo-phoxal --registry phoxal --version 0.0.0-dev.3 --locked
 ```
 
 Cargo requires the explicit version because the development train is a pre-release.
@@ -66,17 +66,23 @@ Buf is the contract owner's CI and schema-linting tool, not a Runtime installati
 
 Install Buf separately only when editing or reviewing Protobuf contracts, and use the version required by the repository's CI configuration.
 
-The independent simulator owns MuJoCo, rendering libraries, and native provider requirements.
-
 Hardware-only projects do not install MuJoCo or a renderer.
 
-Simulation users install the MuJoCo distribution and platform graphics prerequisites described by the simulator package, then run `cargo phoxal simulation run` with the independent simulator application.
+Simulation users provision the supported native distribution and released application through the developer tool:
+
+```sh
+cargo phoxal simulation install
+cargo phoxal simulation status
+```
+
+The independent simulator owns physics, rendering, composition, and native provider behavior.
+`cargo-phoxal` owns downloading and verifying MuJoCo, building the exact registry release, preserving licenses and provenance, and maintaining the user installation.
 
 The framework owns the Runtime and supervisor APIs, contract build helper, project compiler, and developer tool, while Rustup, Buf, Protobuf, and MuJoCo remain the owners of their respective host tools.
 
 ## Example matrix
 
-The workspace contains one canonical contract, one reusable service, three robot packages, and one standalone local passive component.
+The examples contain one canonical contract, one reusable service, four small robot packages, and one standalone local passive component.
 
 The passive component is deliberately not a Cargo workspace member because its authored package has no Rust target; its maintained qualification boundary is the cargo-phoxal publication dry run.
 
@@ -87,6 +93,7 @@ The passive component is deliberately not a Cargo workspace member because its a
 | Local passive component | `components/passive-caster/` | `cargo phoxal publish component example-passive-caster --path ... --dry-run` |
 | Robot package inside a workspace | `robots/workspace-robot/` with the repeated-component model fixture | `cargo phoxal check --locked` from that directory |
 | Two robot packages in one repository | `robots/robot-alpha/` and `robots/robot-beta/` | Run the same check from each directory |
+| Native movement scenario | `robots/simulation-rover/` | `cargo phoxal simulation scenario run ForwardTurnStop --locked --release` |
 
 No creation or scaffolding command is required.
 
@@ -181,30 +188,30 @@ The component packages are driver-free authoring packages and do not create Runt
 
 Their model composition and native provider behavior are separate MuJoCo gates and are not implied by a successful Cargo check.
 
-### Fresh MuJoCo preparation and simulation boundary
+### Native movement scenario
 
-From the workspace robot directory, the eventual preparation command for the authored model and component graph is:
+`robots/simulation-rover/` is a standalone, path-based robot project that exercises the framework checkout before registry publication.
+It contains a small four-wheel robot model, one scene, and the `ForwardTurnStop` scenario.
+Its dependencies point at local framework packages deliberately, so source changes are tested without first releasing a package or updating the public rover repository.
+
+Prepare the managed simulator once, then run the scenario from that directory:
 
 ```sh
-cd robots/workspace-robot
+cargo phoxal simulation install
+cd robots/simulation-rover
 cargo phoxal check --locked
+cargo phoxal simulation scenario run ForwardTurnStop --locked --release
 ```
 
-The project compiler stages the two targetless local component carriers before Cargo metadata and retains the nested workspace lock at `robots/workspace-robot/Cargo.lock`.
-
-After the independent simulator application has been installed or provisioned by its owner, the fresh finite-run command is:
+For simulator source development, bypass the managed installation explicitly:
 
 ```sh
-cargo phoxal simulation run simulation/scene.xml --headless --steps 1
+cargo phoxal simulation scenario run ForwardTurnStop --locked --release \
+  --simulator /absolute/path/to/phoxal-simulator
 ```
 
-The simulation command owns its own simulator application selection and provenance and must not add MuJoCo or a simulator dependency to the robot manifest.
-
-This repository CI does not run the simulation command because native MuJoCo and platform graphics prerequisites are owned by the independent simulator application.
-
-The maintained example currently proves the authored YAML shape through the real project document API, canonical contract imports in the compilable service/brain path, robot model and scene closure inputs, and the exact finite-run command shape.
-
-It does not yet prove native repeated-component attachment, compiled target-kind admission, provider observation meaning, offscreen rendering, reset, or bundle-backed simulator execution.
+The scenario validates the real source-to-bundle path, supervisor and simulator intercommunication, native displacement and yaw, and a stopped terminal state.
+It is a maintained end-to-end development gate, while the simpler examples remain focused on isolated authoring and package behavior.
 
 ### Two robot packages in one repository
 
@@ -236,15 +243,16 @@ cargo test --manifest-path examples/runtime-rewrite/Cargo.toml --workspace --all
 for robot in \
   examples/runtime-rewrite/robots/robot-alpha \
   examples/runtime-rewrite/robots/robot-beta \
-  examples/runtime-rewrite/robots/workspace-robot; do
-  (cd "$robot" && cargo run --manifest-path ../../../../tools/cargo-phoxal/Cargo.toml -- check --locked)
+  examples/runtime-rewrite/robots/workspace-robot \
+  examples/runtime-rewrite/robots/simulation-rover; do
+  (cd "$robot" && cargo run --manifest-path ../../../../phoxal/cargo/Cargo.toml -- check --locked)
 done
 cargo test --manifest-path examples/runtime-rewrite/Cargo.toml \
   --package example-mujoco-fixture-check
-cargo run --manifest-path tools/cargo-phoxal/Cargo.toml -- \
+cargo run --manifest-path phoxal/cargo/Cargo.toml -- \
   publish component example-passive-caster \
   --path examples/runtime-rewrite/components/passive-caster \
   --dry-run
 ```
 
-The outer example workspace and the nested workspace-robot `Cargo.lock` files are committed so `--locked` remains meaningful for fresh checkouts.
+The outer example workspace and standalone robot `Cargo.lock` files are committed so `--locked` remains meaningful for fresh checkouts.

@@ -11,9 +11,6 @@ homepage.workspace = true
 repository.workspace = true
 include = ["build.rs", "src/**", "proto/**", "Cargo.toml", "component.yaml", "model.xml"]
 
-[package.metadata.phoxal]
-kind = "component"
-
 [lib]
 name = "phoxal_component_bno085"
 path = "src/lib.rs"

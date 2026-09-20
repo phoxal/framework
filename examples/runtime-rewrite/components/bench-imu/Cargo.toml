@@ -7,6 +7,3 @@ license = "AGPL-3.0-only"
 description = "A driver-free accelerometer component for the maintained MuJoCo authoring fixture."
 autolib = false
 autobins = false
-
-[package.metadata.phoxal]
-kind = "component"

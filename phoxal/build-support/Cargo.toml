@@ -17,9 +17,6 @@ homepage.workspace = true
 repository.workspace = true
 include = ["src/**", "proto/**", "Cargo.toml", "README.md"]
 
-[package.metadata.phoxal]
-kind = "library"
-
 [dependencies]
 heck = { workspace = true }
 prost = { workspace = true }

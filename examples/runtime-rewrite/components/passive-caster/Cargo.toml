@@ -7,6 +7,3 @@ license = "AGPL-3.0-only"
 description = "A local passive component with no authored Rust target."
 autolib = false
 autobins = false
-
-[package.metadata.phoxal]
-kind = "component"

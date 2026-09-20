@@ -702,26 +702,8 @@ pub enum PublicationError {
         /// Expected definition path.
         path: PathBuf,
     },
-    /// A package metadata role was not recognized.
-    #[error("package '{package}' declares unsupported [package.metadata.phoxal].kind '{kind}'")]
-    UnsupportedPackageKind {
-        /// Cargo package name.
-        package: String,
-        /// Unsupported role.
-        kind: String,
-    },
-    /// A Rust package did not declare which reviewed registry role it owns.
-    #[error(
-        "package '{package}' at {path} must declare [package.metadata.phoxal].kind or contain a recognized component.yaml/service.yaml definition"
-    )]
-    MissingPackageKind {
-        /// Cargo package name.
-        package: String,
-        /// Package source directory.
-        path: PathBuf,
-    },
-    /// A declared registry role did not match the package's Cargo targets.
-    #[error("package '{package}' declares registry kind '{kind}', but {requirement}")]
+    /// A requested registry role did not match the package's standard files and Cargo targets.
+    #[error("package '{package}' was selected as registry kind '{kind}', but {requirement}")]
     InvalidPackageShape {
         /// Cargo package name.
         package: String,

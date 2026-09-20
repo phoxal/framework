@@ -10,11 +10,12 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
-[package.metadata.phoxal]
-kind = "application"
-
+# Cargo resolves packages used as dependencies through a library target.
+# This code-free carrier keeps the exact supervisor package in robot lockfiles;
+# all implementation remains private to the executable modules.
 [lib]
-path = "src/lib.rs"
+name = "phoxal_supervisor"
+path = "src/package.rs"
 
 # The durable headless execution observer. It takes one compiled bundle root and
 # nothing else: no mode flags, no driver flags, and no subcommands - `phoxal`

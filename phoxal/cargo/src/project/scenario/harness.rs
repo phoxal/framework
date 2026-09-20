@@ -59,7 +59,7 @@ pub fn generate_harness_source(
     // scenarios and forwards a `run <name>` invocation to the case
     // host over the private control channel. The case host is owned
     // by the cargo-phoxal project implementation
-    // (`tools/cargo-phoxal/src/project/scenario/case_host.rs`) and
+    // (`phoxal/cargo/src/project/scenario/case_host.rs`) and
     // owns the simulation lifecycle (provisioning, supervisor
     // admission, native completion, bounded cleanup, lifecycle-owned
     // terminal evidence). The harness binary depends only on the SDK;
@@ -70,31 +70,35 @@ pub fn generate_harness_source(
     // success when lifecycle, evidence validation, and author
     // verification all succeed.
     source.push_str(
-        r#"fn main() -> phoxal::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(String::as_str).unwrap_or("list") {
-        "list" => {
+        r#"use clap::{Parser, Subcommand};
+
+#[derive(Debug, Parser)]
+#[command(name = "phoxal-scenarios", about = "List or run authored Phoxal scenarios")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    List,
+    Run { scenario: String },
+}
+
+fn main() -> phoxal::Result<()> {
+    match Cli::parse().command.unwrap_or(Command::List) {
+        Command::List => {
             let scenarios =
-                phoxal::scenario::list_scenarios().map_err(|e| phoxal::anyhow!("{e}"))?;
-            for s in scenarios {
-                println!("{}\t{}", s.name, s.module_path);
+                phoxal::scenario::list_scenarios().map_err(|error| phoxal::anyhow!("{error}"))?;
+            for scenario in scenarios {
+                println!("{}\t{}", scenario.name, scenario.module_path);
             }
             Ok(())
         }
-        "run" => {
-            let name = args
-                .get(2)
-                .ok_or_else(|| phoxal::anyhow!("usage: phoxal-scenarios run <name>"))?;
-            // The tool pre-positions two file descriptors in the
-            // environment (PHOXAL_HARNESS_CTL_IN / _OUT) before
-            // launching this binary. The SDK's hidden __harness
-            // module reads them and walks the eight-step protocol.
-            phoxal::scenario::__harness::run_harness_case(name)
-                .map_err(|e| phoxal::anyhow!("scenario `{name}` case host failed: {e:#}"))
-        }
-        _ => Err(phoxal::anyhow!(
-            "usage: phoxal-scenarios [list | run <name>]"
-        )),
+        Command::Run { scenario } => phoxal::scenario::__harness::run_harness_case(&scenario)
+            .map_err(|error| {
+                phoxal::anyhow!("scenario `{scenario}` case host failed: {error:#}")
+            }),
     }
 }
 "#,

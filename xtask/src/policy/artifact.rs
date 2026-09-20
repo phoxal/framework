@@ -21,7 +21,6 @@ use std::path::{Component, Path};
 
 use anyhow::{Context, Result, bail};
 use cargo_metadata::Target;
-use serde_json::Value;
 
 use super::executable::PHOXAL_PROVIDER;
 use super::executable::{ServiceTargetSpec, validate_registry_publish, validate_service_targets};
@@ -305,37 +304,6 @@ impl OfficialArtifact {
     }
 }
 
-/// Official artifacts carry their publication role in Cargo metadata as well
-/// as in their repository path. The two declarations are intentionally checked
-/// together so registry admission cannot silently treat an artifact as another
-/// package role when its manifest is copied or republished.
-fn validate_role_metadata(
-    kind: ArtifactKind,
-    package_name: &str,
-    metadata: &Value,
-    root: &Path,
-    manifest_path: &Path,
-) -> Result<()> {
-    let actual = metadata
-        .get("phoxal")
-        .and_then(Value::as_object)
-        .and_then(|phoxal| phoxal.get("kind"))
-        .and_then(Value::as_str);
-    if actual != Some(kind.name_segment()) {
-        let found = actual.map_or_else(
-            || "missing or non-string kind".to_owned(),
-            |value| format!("kind = {value:?}"),
-        );
-        bail!(
-            "{package_name} is an official {kind} package but {} must declare exactly \
-             [package.metadata.phoxal] kind = \"{}\"; found {found}",
-            relative_display(root, manifest_path),
-            kind.name_segment()
-        );
-    }
-    Ok(())
-}
-
 pub(crate) fn discover_package(
     root: &Path,
     package: &cargo_metadata::Package,
@@ -363,7 +331,6 @@ pub(crate) fn discover_package(
     };
 
     kind.validate_package_name(&package_name, &id, root, &manifest_path)?;
-    validate_role_metadata(kind, &package_name, &package.metadata, root, &manifest_path)?;
     OfficialArtifact::validate_publish(
         &package_name,
         package.publish.as_deref(),
@@ -779,63 +746,6 @@ mod tests {
     }
 
     #[test]
-    fn official_artifacts_require_the_exact_role_metadata() {
-        let manifest = root().join("services/drive/Cargo.toml");
-        let valid = serde_json::json!({"phoxal": {"kind": "service"}});
-        validate_role_metadata(
-            ArtifactKind::Service,
-            "phoxal-service-drive",
-            &valid,
-            &root(),
-            &manifest,
-        )
-        .expect("the exact service role should be accepted");
-
-        for metadata in [
-            serde_json::json!({}),
-            serde_json::json!({"phoxal": {"kind": "component"}}),
-            serde_json::json!({"phoxal": {"kind": 1}}),
-        ] {
-            let error = validate_role_metadata(
-                ArtifactKind::Service,
-                "phoxal-service-drive",
-                &metadata,
-                &root(),
-                &manifest,
-            )
-            .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("must declare exactly [package.metadata.phoxal] kind = \"service\""),
-                "unexpected role diagnostic: {error}"
-            );
-        }
-
-        validate_role_metadata(
-            ArtifactKind::Component,
-            "phoxal-component-ddsm115",
-            &serde_json::json!({"phoxal": {"kind": "component"}}),
-            &root(),
-            &root().join("components/ddsm115/Cargo.toml"),
-        )
-        .expect("the exact component role should be accepted");
-        let error = validate_role_metadata(
-            ArtifactKind::Component,
-            "phoxal-component-ddsm115",
-            &serde_json::json!({}),
-            &root(),
-            &root().join("components/ddsm115/Cargo.toml"),
-        )
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("must declare exactly [package.metadata.phoxal] kind = \"component\"")
-        );
-    }
-
-    #[test]
     fn discovery_enforces_library_and_executable_official_artifacts() -> Result<()> {
         let workspace_dir = tempfile::tempdir().context("failed to create temp workspace dir")?;
         let root = workspace_dir.path();
@@ -850,11 +760,14 @@ mod tests {
             members.push(directory.strip_prefix(root)?.display().to_string());
             fs::create_dir_all(directory.join("src"))?;
             fs::write(directory.join("src/main.rs"), "fn main() {}\n")?;
-            fs::write(directory.join("src/lib.rs"), "//! supervisor library\n")?;
+            fs::write(
+                directory.join("src/package.rs"),
+                "//! Cargo package anchor.\n",
+            )?;
             fs::write(
                 manifest,
                 format!(
-                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[lib]\nname = \"{}\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
+                    "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = [\"phoxal\"]\nautobins = false\nautolib = false\n\n[lib]\nname = \"{}\"\npath = \"src/package.rs\"\n\n[[bin]]\nname = \"{}\"\npath = \"src/main.rs\"\n",
                     spec.package_name(),
                     spec.lib_name(),
                     spec.bin_name(),
@@ -934,9 +847,6 @@ description = "Component target validation fixture."
 autobins = false
 autolib = false
 
-[package.metadata.phoxal]
-kind = "component"
-
 {targets}"#
                 ),
             )?;
@@ -965,9 +875,6 @@ autotests = false
 autoexamples = false
 autobenches = false
 build = "build.rs"
-
-[package.metadata.phoxal]
-kind = "component"
 
 [lib]
 name = "phoxal_component_test"

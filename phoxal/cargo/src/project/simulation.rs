@@ -19,16 +19,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::project::cargo::{CargoOptions, LockMode, PHOXAL_REGISTRY_INDEX};
+use crate::project::cargo::{CargoOptions, PHOXAL_REGISTRY_INDEX};
 use crate::project::{CompiledBundle, Error, Project, SimulationModelFacts};
 use phoxal::scenario::Program;
 
 /// The official independently installed native simulation application.
-pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator-mujoco";
+pub const DEFAULT_SIMULATOR_PACKAGE: &str = "phoxal-simulator";
 /// The first simulator package release selected by the framework tool.
-pub const DEFAULT_SIMULATOR_VERSION: &str = "0.1.0";
+pub const DEFAULT_SIMULATOR_VERSION: &str = "0.0.0-dev.1";
 /// The binary target exposed by the official simulator package.
-pub const DEFAULT_SIMULATOR_BINARY: &str = "phoxal-simulator-mujoco";
+pub const DEFAULT_SIMULATOR_BINARY: &str = "phoxal-simulator";
 const SELECTION_FILE: &str = "selection.json";
 const PROVISION_LOCK: &str = "provision.lock";
 const SIMULATOR_MANIFEST: &str = "Cargo.toml";
@@ -38,6 +38,23 @@ const ARTIFACT_ROOT: &str = "artifacts";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const PROCESS_POLL: Duration = Duration::from_millis(25);
+const MANAGED_MARKER: &str = ".managed-by-cargo-phoxal";
+const MUJOCO_VERSION: &str = "3.12.0";
+#[cfg(target_os = "macos")]
+const MUJOCO_MACOS_URL: &str = "https://github.com/google-deepmind/mujoco/releases/download/3.12.0/mujoco-3.12.0-macos-universal2.dmg";
+#[cfg(target_os = "macos")]
+const MUJOCO_MACOS_SHA256: &str =
+    "8410882d724c3637b935dc0482b0de90efed44b17bbcfcb4a165ee46285a4865";
+#[cfg(target_os = "linux")]
+const MUJOCO_LINUX_X86_64_URL: &str = "https://github.com/google-deepmind/mujoco/releases/download/3.12.0/mujoco-3.12.0-linux-x86_64.tar.gz";
+#[cfg(target_os = "linux")]
+const MUJOCO_LINUX_X86_64_SHA256: &str =
+    "a9367911e6d5eaeade17c2197304687421c1fc932cdf7bcd4cb8cfaf0374dcb2";
+#[cfg(target_os = "linux")]
+const MUJOCO_LINUX_AARCH64_URL: &str = "https://github.com/google-deepmind/mujoco/releases/download/3.12.0/mujoco-3.12.0-linux-aarch64.tar.gz";
+#[cfg(target_os = "linux")]
+const MUJOCO_LINUX_AARCH64_SHA256: &str =
+    "08fd5627a2ef7d5a42580c40e014ab2c1a644f082010c584ca361a3ed8cad838";
 
 /// The presentation selected for a finite simulation run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -312,6 +329,21 @@ struct SimulatorSelection {
     cargo_lock_sha256: Option<String>,
 }
 
+/// Result of inspecting the managed simulator installation.
+#[derive(Debug, Clone, Serialize)]
+pub struct SimulatorInstallationStatus {
+    /// Whether a valid managed selection is installed.
+    pub installed: bool,
+    /// Managed installation root.
+    pub root: PathBuf,
+    /// Installed simulator package version.
+    pub simulator_version: Option<String>,
+    /// Managed MuJoCo version.
+    pub mujoco_version: Option<String>,
+    /// Selected simulator executable.
+    pub executable: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 struct SimulatorArtifact {
     summary: SimulatorArtifactSummary,
@@ -400,7 +432,7 @@ pub(crate) fn run(
     // locked or frozen mode therefore fails before the robot Cargo manifest or
     // its owning Cargo.lock can be changed by automatic supervisor setup.
     let scene = canonical_scene(request.scene())?;
-    let simulator = provision(project, cargo_options, request)?;
+    let simulator = provision(request)?;
     let prepared = project.prepare(cargo_options)?;
     let probe_output = probe_bundle_path(&prepared);
     let probe_bundle = match scenario {
@@ -439,7 +471,7 @@ pub fn probe_simulation_scene(
     cargo_options.validate()?;
     validate_request(request)?;
     let scene = canonical_scene(request.scene())?;
-    let simulator = provision(project, cargo_options, request)?;
+    let simulator = provision(request)?;
     let prepared = project.prepare(cargo_options)?;
     let probe_output = probe_bundle_path(&prepared);
     let probe_bundle = prepared.build_bundle(cargo_options, &probe_output)?;
@@ -511,11 +543,7 @@ fn probe_bundle_path(prepared: &crate::PreparedProject) -> PathBuf {
         .with_file_name("simulation-probe-bundle")
 }
 
-fn provision(
-    project: &Project,
-    options: &CargoOptions,
-    request: &SimulationRunOptions,
-) -> Result<SimulatorArtifact, Error> {
+fn provision(request: &SimulationRunOptions) -> Result<SimulatorArtifact, Error> {
     if let Some(path) = &request.simulator_executable {
         ensure_regular_file(path, "explicit simulator executable")?;
         let digest = digest_file(path)?;
@@ -538,66 +566,20 @@ fn provision(
         });
     }
 
-    let root = simulator_store_root(project);
+    let root = simulator_store_root()?;
+    provision_at(&root, request)
+}
+
+fn provision_at(root: &Path, request: &SimulationRunOptions) -> Result<SimulatorArtifact, Error> {
     let selection_path = root.join(SELECTION_FILE);
     if selection_path.is_file() {
         let selection = read_selection(&selection_path)?;
         return selected_artifact(selection, request);
     }
-
-    if !matches!(options.lock, LockMode::Unlocked) {
-        return Err(simulation_error(format!(
-            "simulator provisioning is required for {} {} and no exact local selection exists; rerun without --locked/--frozen to provision before project preparation",
-            request.simulator_package, request.simulator_version
-        )));
-    }
-    fs::create_dir_all(&root).map_err(|source| Error::ArtifactFile {
-        path: root.clone(),
-        source,
-    })?;
-    let lock_path = root.join(PROVISION_LOCK);
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|source| Error::ArtifactFile {
-            path: lock_path.clone(),
-            source,
-        })?;
-    let _lock = ExclusiveFileLock::try_acquire(lock).map_err(|error| {
-        simulation_error(format!(
-            "cannot acquire simulator provisioning lock {}: {error}",
-            lock_path.display()
-        ))
-    })?;
-    if selection_path.is_file() {
-        let selection = read_selection(&selection_path)?;
-        return selected_artifact(selection, request);
-    }
-    let artifact = build_registry_simulator(&root, options, request)?;
-    let executable_metadata =
-        fs::metadata(&artifact.summary.executable).map_err(|source| Error::ArtifactFile {
-            path: artifact.summary.executable.clone(),
-            source,
-        })?;
-    let selection = SimulatorSelection {
-        schema: "phoxal/simulator-selection/v0".to_owned(),
-        package: artifact.summary.package.clone(),
-        version: artifact.summary.version.clone(),
-        binary: artifact.summary.binary.clone(),
-        source: artifact.summary.source.clone(),
-        executable: artifact.summary.executable.clone(),
-        cargo_manifest: artifact.cargo_manifest.clone(),
-        cargo_lock: artifact.cargo_lock.clone(),
-        executable_bytes: executable_metadata.len(),
-        executable_sha256: artifact.summary.sha256.clone(),
-        cargo_manifest_sha256: artifact.summary.cargo_manifest_sha256.clone(),
-        cargo_lock_sha256: artifact.summary.cargo_lock_sha256.clone(),
-    };
-    atomic_json(&selection_path, &selection)?;
-    Ok(artifact)
+    Err(simulation_error(format!(
+        "{} {} is not installed; run `cargo phoxal simulation install` before starting a simulation or pass --simulator",
+        request.simulator_package, request.simulator_version
+    )))
 }
 
 fn selected_artifact(
@@ -621,8 +603,377 @@ fn selected_artifact(
     SimulatorArtifact::from_selection(selection)
 }
 
-fn simulator_store_root(project: &Project) -> PathBuf {
-    project.layout().root().join("target/phoxal/simulation")
+fn simulator_store_root() -> Result<PathBuf, Error> {
+    if let Some(root) = std::env::var_os("PHOXAL_HOME") {
+        if root.is_empty() {
+            return Err(simulation_error("PHOXAL_HOME cannot be empty"));
+        }
+        return Ok(PathBuf::from(root).join("simulation"));
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            simulation_error("cannot locate the user data directory; set PHOXAL_HOME")
+        })?;
+    #[cfg(target_os = "macos")]
+    {
+        Ok(PathBuf::from(home).join("Library/Application Support/Phoxal/simulation"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(home).join(".local/share"));
+        Ok(data.join("phoxal/simulation"))
+    }
+}
+
+/// Install or replace the managed MuJoCo distribution and simulator application.
+pub fn install_simulator(
+    options: &CargoOptions,
+    mujoco_distribution: Option<&Path>,
+    replace: bool,
+) -> Result<SimulatorInstallationStatus, Error> {
+    let root = simulator_store_root()?;
+    let parent = root
+        .parent()
+        .ok_or_else(|| simulation_error("managed simulator root has no parent"))?;
+    fs::create_dir_all(parent).map_err(|source| Error::ArtifactFile {
+        path: parent.to_owned(),
+        source,
+    })?;
+    let lock_path = parent.join(PROVISION_LOCK);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| Error::ArtifactFile {
+            path: lock_path.clone(),
+            source,
+        })?;
+    let _lock = ExclusiveFileLock::try_acquire(lock).map_err(|error| {
+        simulation_error(format!(
+            "cannot acquire simulator installation lock {}: {error}",
+            lock_path.display()
+        ))
+    })?;
+
+    if root.exists() {
+        if !root.join(MANAGED_MARKER).is_file() {
+            return Err(simulation_error(format!(
+                "refusing to replace unmanaged directory {}",
+                root.display()
+            )));
+        }
+        if !replace && root.join(SELECTION_FILE).is_file() {
+            return simulator_status_at(&root);
+        }
+        fs::remove_dir_all(&root).map_err(|source| Error::ArtifactFile {
+            path: root.clone(),
+            source,
+        })?;
+    }
+    fs::create_dir_all(&root).map_err(|source| Error::ArtifactFile {
+        path: root.clone(),
+        source,
+    })?;
+    fs::write(
+        root.join(MANAGED_MARKER),
+        "This directory is managed by cargo phoxal simulation install.\n",
+    )
+    .map_err(|source| Error::ArtifactFile {
+        path: root.join(MANAGED_MARKER),
+        source,
+    })?;
+
+    let request = SimulationRunOptions::new(
+        PathBuf::from("managed-installation-placeholder.xml"),
+        SimulationPresentation::Headless,
+        SimulationBound::Steps(1),
+    )?;
+    let artifact = install_for_platform(&root, options, &request, mujoco_distribution)?;
+    for transient in [root.join(BUILD_ROOT), root.join("native-link")] {
+        if transient.is_dir() {
+            fs::remove_dir_all(&transient).map_err(|source| Error::ArtifactFile {
+                path: transient,
+                source,
+            })?;
+        }
+    }
+    write_selection(&root, &artifact)?;
+    simulator_status_at(&root)
+}
+
+/// Inspect the managed simulator without modifying it.
+pub fn simulator_status() -> Result<SimulatorInstallationStatus, Error> {
+    let root = simulator_store_root()?;
+    simulator_status_at(&root)
+}
+
+fn simulator_status_at(root: &Path) -> Result<SimulatorInstallationStatus, Error> {
+    let selection_path = root.join(SELECTION_FILE);
+    if !selection_path.is_file() {
+        return Ok(SimulatorInstallationStatus {
+            installed: false,
+            root: root.to_owned(),
+            simulator_version: None,
+            mujoco_version: None,
+            executable: None,
+        });
+    }
+    let selection = read_selection(&selection_path)?;
+    let artifact = SimulatorArtifact::from_selection(selection)?;
+    Ok(SimulatorInstallationStatus {
+        installed: true,
+        root: root.to_owned(),
+        simulator_version: Some(artifact.summary.version),
+        mujoco_version: Some(MUJOCO_VERSION.to_owned()),
+        executable: Some(artifact.summary.executable),
+    })
+}
+
+/// Remove the exact managed simulator installation.
+pub fn uninstall_simulator() -> Result<PathBuf, Error> {
+    let root = simulator_store_root()?;
+    uninstall_simulator_at(&root)
+}
+
+fn uninstall_simulator_at(root: &Path) -> Result<PathBuf, Error> {
+    if !root.exists() {
+        return Ok(root.to_owned());
+    }
+    if !root.join(MANAGED_MARKER).is_file() {
+        return Err(simulation_error(format!(
+            "refusing to remove unmanaged directory {}",
+            root.display()
+        )));
+    }
+    fs::remove_dir_all(root).map_err(|source| Error::ArtifactFile {
+        path: root.to_owned(),
+        source,
+    })?;
+    Ok(root.to_owned())
+}
+
+fn write_selection(root: &Path, artifact: &SimulatorArtifact) -> Result<(), Error> {
+    let executable_metadata =
+        fs::metadata(&artifact.summary.executable).map_err(|source| Error::ArtifactFile {
+            path: artifact.summary.executable.clone(),
+            source,
+        })?;
+    let selection = SimulatorSelection {
+        schema: "phoxal/simulator-selection/v0".to_owned(),
+        package: artifact.summary.package.clone(),
+        version: artifact.summary.version.clone(),
+        binary: artifact.summary.binary.clone(),
+        source: artifact.summary.source.clone(),
+        executable: artifact.summary.executable.clone(),
+        cargo_manifest: artifact.cargo_manifest.clone(),
+        cargo_lock: artifact.cargo_lock.clone(),
+        executable_bytes: executable_metadata.len(),
+        executable_sha256: artifact.summary.sha256.clone(),
+        cargo_manifest_sha256: artifact.summary.cargo_manifest_sha256.clone(),
+        cargo_lock_sha256: artifact.summary.cargo_lock_sha256.clone(),
+    };
+    atomic_json(&root.join(SELECTION_FILE), &selection)
+}
+
+fn install_for_platform(
+    root: &Path,
+    options: &CargoOptions,
+    request: &SimulationRunOptions,
+    supplied_distribution: Option<&Path>,
+) -> Result<SimulatorArtifact, Error> {
+    #[cfg(target_os = "macos")]
+    {
+        install_macos(root, options, request, supplied_distribution)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return install_linux(root, options, request, supplied_distribution);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (root, options, request, supplied_distribution);
+        Err(simulation_error(
+            "managed simulator installation currently supports macOS and Linux",
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos(
+    root: &Path,
+    options: &CargoOptions,
+    request: &SimulationRunOptions,
+    supplied_distribution: Option<&Path>,
+) -> Result<SimulatorArtifact, Error> {
+    if let Some(distribution) = supplied_distribution {
+        let distribution = distribution
+            .canonicalize()
+            .map_err(|source| Error::ArtifactFile {
+                path: distribution.to_owned(),
+                source,
+            })?;
+        return build_and_package_macos(root, options, request, &distribution);
+    }
+    if options.offline {
+        return Err(simulation_error(
+            "offline installation requires --mujoco-distribution",
+        ));
+    }
+    let download = download_asset(MUJOCO_MACOS_URL, MUJOCO_MACOS_SHA256, "mujoco.dmg")?;
+    let mount = tempfile::Builder::new()
+        .prefix("phoxal-mujoco-mount-")
+        .tempdir()
+        .map_err(|source| Error::ArtifactFile {
+            path: root.to_owned(),
+            source,
+        })?;
+    run_command(
+        Command::new("hdiutil")
+            .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
+            .arg(mount.path())
+            .arg(&download.path),
+        "mount MuJoCo disk image",
+    )?;
+    let result = build_and_package_macos(root, options, request, mount.path());
+    let detach = run_command(
+        Command::new("hdiutil").arg("detach").arg(mount.path()),
+        "detach MuJoCo disk image",
+    );
+    match (result, detach) {
+        (Ok(artifact), Ok(())) => Ok(artifact),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_and_package_macos(
+    root: &Path,
+    options: &CargoOptions,
+    request: &SimulationRunOptions,
+    distribution: &Path,
+) -> Result<SimulatorArtifact, Error> {
+    let framework = distribution.join("mujoco.framework/Versions/A");
+    let native = framework.join(format!("libmujoco.{MUJOCO_VERSION}.dylib"));
+    for required in [
+        native.as_path(),
+        &distribution.join("LICENSE"),
+        &distribution.join("THIRD_PARTY_NOTICES"),
+    ] {
+        ensure_regular_file(required, "MuJoCo distribution file")?;
+    }
+    let link = root.join("native-link");
+    fs::create_dir_all(&link).map_err(|source| Error::ArtifactFile {
+        path: link.clone(),
+        source,
+    })?;
+    copy_regular(&native, &link.join("libmujoco.dylib"))?;
+    let artifact = build_registry_simulator(root, options, request, &link, None)?;
+    package_macos(root, artifact, distribution, &native)
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux(
+    root: &Path,
+    options: &CargoOptions,
+    request: &SimulationRunOptions,
+    supplied_distribution: Option<&Path>,
+) -> Result<SimulatorArtifact, Error> {
+    let distribution = if let Some(distribution) = supplied_distribution {
+        distribution
+            .canonicalize()
+            .map_err(|source| Error::ArtifactFile {
+                path: distribution.to_owned(),
+                source,
+            })?
+    } else {
+        if options.offline {
+            return Err(simulation_error(
+                "offline installation requires --mujoco-distribution",
+            ));
+        }
+        let (url, checksum) = match std::env::consts::ARCH {
+            "x86_64" => (MUJOCO_LINUX_X86_64_URL, MUJOCO_LINUX_X86_64_SHA256),
+            "aarch64" => (MUJOCO_LINUX_AARCH64_URL, MUJOCO_LINUX_AARCH64_SHA256),
+            architecture => {
+                return Err(simulation_error(format!(
+                    "MuJoCo {MUJOCO_VERSION} has no managed Linux asset for {architecture}"
+                )));
+            }
+        };
+        let download = download_asset(url, checksum, "mujoco.tar.gz")?;
+        let native_root = root.join("native");
+        fs::create_dir_all(&native_root).map_err(|source| Error::ArtifactFile {
+            path: native_root.clone(),
+            source,
+        })?;
+        let archive_file = File::open(&download.path).map_err(|source| Error::ArtifactFile {
+            path: download.path.clone(),
+            source,
+        })?;
+        let decoder = flate2::read::GzDecoder::new(archive_file);
+        let mut archive = tar::Archive::new(decoder);
+        archive
+            .unpack(&native_root)
+            .map_err(|source| Error::ArtifactFile {
+                path: native_root.clone(),
+                source,
+            })?;
+        native_root.join(format!("mujoco-{MUJOCO_VERSION}"))
+    };
+    let link = distribution.join("lib");
+    ensure_regular_file(
+        &link.join(format!("libmujoco.so.{MUJOCO_VERSION}")),
+        "MuJoCo shared library",
+    )?;
+    build_registry_simulator(root, options, request, &link, Some(&link))
+}
+
+struct DownloadedAsset {
+    _directory: tempfile::TempDir,
+    path: PathBuf,
+}
+
+fn download_asset(url: &str, expected_sha256: &str, name: &str) -> Result<DownloadedAsset, Error> {
+    let directory = tempfile::Builder::new()
+        .prefix("phoxal-mujoco-download-")
+        .tempdir()
+        .map_err(|source| Error::ArtifactFile {
+            path: PathBuf::from(name),
+            source,
+        })?;
+    let path = directory.path().join(name);
+    let mut response = reqwest::blocking::get(url)
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| simulation_error(format!("cannot download {url}: {error}")))?;
+    let mut file = File::create(&path).map_err(|source| Error::ArtifactFile {
+        path: path.clone(),
+        source,
+    })?;
+    std::io::copy(&mut response, &mut file).map_err(|source| Error::ArtifactFile {
+        path: path.clone(),
+        source,
+    })?;
+    file.sync_all().map_err(|source| Error::ArtifactFile {
+        path: path.clone(),
+        source,
+    })?;
+    let actual = digest_file(&path)?.sha256;
+    if actual != expected_sha256 {
+        return Err(simulation_error(format!(
+            "downloaded MuJoCo asset checksum {actual} does not match {expected_sha256}"
+        )));
+    }
+    Ok(DownloadedAsset {
+        _directory: directory,
+        path,
+    })
 }
 
 fn read_selection(path: &Path) -> Result<SimulatorSelection, Error> {
@@ -642,6 +993,8 @@ fn build_registry_simulator(
     root: &Path,
     options: &CargoOptions,
     request: &SimulationRunOptions,
+    native_link_dir: &Path,
+    runtime_library_dir: Option<&Path>,
 ) -> Result<SimulatorArtifact, Error> {
     let staging = tempfile::Builder::new()
         .prefix("phoxal-simulator-build-")
@@ -743,6 +1096,19 @@ fn build_registry_simulator(
         })?;
     let mut command = Command::new(options.cargo_program());
     command.current_dir(&application_root);
+    command.env("MUJOCO_DYNAMIC_LINK_DIR", native_link_dir);
+    if let Some(runtime_library_dir) = runtime_library_dir {
+        let inherited = std::env::var("RUSTFLAGS").unwrap_or_default();
+        let rpath = format!("-C link-arg=-Wl,-rpath,{}", runtime_library_dir.display());
+        command.env(
+            "RUSTFLAGS",
+            if inherited.is_empty() {
+                rpath
+            } else {
+                format!("{inherited} {rpath}")
+            },
+        );
+    }
     command.args([
         "build",
         "--manifest-path",
@@ -807,6 +1173,121 @@ fn build_registry_simulator(
         cargo_manifest: Some(retained_manifest),
         cargo_lock: Some(retained_lock),
     })
+}
+
+#[cfg(target_os = "macos")]
+fn package_macos(
+    root: &Path,
+    mut artifact: SimulatorArtifact,
+    distribution: &Path,
+    native: &Path,
+) -> Result<SimulatorArtifact, Error> {
+    let app = root.join("Phoxal Simulator.app");
+    let contents = app.join("Contents");
+    let executable = contents.join("MacOS/phoxal-simulator");
+    let resources = contents.join("Resources");
+    let frameworks = contents.join("Frameworks");
+    fs::create_dir_all(
+        executable
+            .parent()
+            .ok_or_else(|| simulation_error("simulator application executable has no parent"))?,
+    )
+    .and_then(|()| fs::create_dir_all(&resources))
+    .and_then(|()| fs::create_dir_all(&frameworks))
+    .map_err(|source| Error::ArtifactFile {
+        path: app.clone(),
+        source,
+    })?;
+    copy_regular(&artifact.summary.executable, &executable)?;
+    let native_name = format!("libmujoco.{MUJOCO_VERSION}.dylib");
+    let bundled_native = frameworks.join(&native_name);
+    copy_regular(native, &bundled_native)?;
+    copy_regular(
+        &distribution.join("LICENSE"),
+        &resources.join("MUJOCO_LICENSE"),
+    )?;
+    copy_regular(
+        &distribution.join("THIRD_PARTY_NOTICES"),
+        &resources.join("MUJOCO_THIRD_PARTY_NOTICES"),
+    )?;
+    copy_regular(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../LICENSE"),
+        &resources.join("PHOXAL_LICENSE"),
+    )?;
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n\
+         <key>CFBundleExecutable</key><string>phoxal-simulator</string>\n\
+         <key>CFBundleIdentifier</key><string>org.phoxal.simulator</string>\n\
+         <key>CFBundleName</key><string>Phoxal Simulator</string>\n\
+         <key>CFBundlePackageType</key><string>APPL</string>\n\
+         <key>CFBundleShortVersionString</key><string>0.0.0</string>\n\
+         <key>CFBundleVersion</key><string>1</string>\n\
+         <key>LSMinimumSystemVersion</key><string>13.0</string>\n\
+         <key>PhoxalSimulatorVersion</key><string>{}</string>\n\
+         <key>PhoxalMuJoCoVersion</key><string>{MUJOCO_VERSION}</string>\n\
+         </dict></plist>\n",
+        artifact.summary.version
+    );
+    fs::write(contents.join("Info.plist"), plist).map_err(|source| Error::ArtifactFile {
+        path: contents.join("Info.plist"),
+        source,
+    })?;
+    run_command(
+        Command::new("install_name_tool")
+            .args(["-add_rpath", "@executable_path/../Frameworks"])
+            .arg(&executable),
+        "add the simulator application rpath",
+    )?;
+    let dependency = format!("@rpath/mujoco.framework/Versions/A/libmujoco.{MUJOCO_VERSION}.dylib");
+    run_command(
+        Command::new("install_name_tool")
+            .arg("-change")
+            .arg(dependency)
+            .arg(format!("@rpath/{native_name}"))
+            .arg(&executable),
+        "rewrite the simulator MuJoCo dependency",
+    )?;
+    run_command(
+        Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&bundled_native),
+        "sign the bundled MuJoCo library",
+    )?;
+    run_command(
+        Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&executable),
+        "sign the simulator executable",
+    )?;
+    run_command(
+        Command::new("codesign")
+            .args(["--force", "--deep", "--sign", "-"])
+            .arg(&app),
+        "sign the simulator application",
+    )?;
+    let digest = digest_file(&executable)?;
+    artifact.summary.executable = executable;
+    artifact.summary.sha256 = digest.sha256;
+    Ok(artifact)
+}
+
+fn run_command(command: &mut Command, operation: &str) -> Result<(), Error> {
+    let output = command.output().map_err(|source| Error::CargoSpawn {
+        operation: operation.to_owned(),
+        source,
+    })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(Error::CargoCommand {
+            operation: operation.to_owned(),
+            status: status_string(output.status),
+            stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
 }
 
 fn generate_application_lock(manifest: &Path, options: &CargoOptions) -> Result<(), Error> {
@@ -1441,23 +1922,6 @@ fn simulation_error(message: impl Into<String>) -> Error {
 mod tests {
     use super::*;
 
-    fn project_fixture() -> Result<(tempfile::TempDir, Project), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        fs::write(
-            directory.path().join("Cargo.toml"),
-            "[package]\nname = \"simulation-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )?;
-        fs::create_dir_all(directory.path().join("src"))?;
-        fs::write(directory.path().join("src/main.rs"), "fn main() {}\n")?;
-        fs::write(directory.path().join("scene.xml"), "<mujoco/>\n")?;
-        fs::write(
-            directory.path().join("robot.yaml"),
-            "schema: phoxal/robot/v0\nrobot:\n  id: simulation-fixture\n  model: scene.xml\n  components: {}\nbrain: {}\nservices: {}\nconnections: {}\n",
-        )?;
-        let project = Project::discover(directory.path())?;
-        Ok((directory, project))
-    }
-
     #[test]
     fn simulation_bound_rejects_zero_and_non_finite_values() {
         assert!(SimulationBound::Steps(0).validate().is_err());
@@ -1513,53 +1977,37 @@ mod tests {
     }
 
     #[test]
-    fn locked_or_frozen_missing_simulator_fails_before_store_creation()
+    fn a_run_never_installs_a_missing_simulator_implicitly()
     -> Result<(), Box<dyn std::error::Error>> {
-        for lock in [LockMode::Locked, LockMode::Frozen] {
-            let (fixture, project) = project_fixture()?;
-            let manifest = fixture.path().join("Cargo.toml");
-            let before = fs::read(&manifest)?;
-            let request = SimulationRunOptions::new(
-                fixture.path().join("scene.xml"),
-                SimulationPresentation::Headless,
-                SimulationBound::Steps(1),
-            )?;
-            let error = provision(
-                &project,
-                &CargoOptions {
-                    lock,
-                    offline: true,
-                    ..CargoOptions::default()
-                },
-                &request,
-            )
-            .expect_err("locked simulator provisioning must require an existing selection");
-            assert!(matches!(
-                error,
-                Error::SimulationInvalid { message }
-                    if message.contains("provisioning is required")
-            ));
-            assert_eq!(fs::read(&manifest)?, before);
-            assert!(!fixture.path().join("target").exists());
-        }
+        let fixture = tempfile::tempdir()?;
+        let request = SimulationRunOptions::new(
+            fixture.path().join("scene.xml"),
+            SimulationPresentation::Headless,
+            SimulationBound::Steps(1),
+        )?;
+        let root = fixture.path().join("managed");
+        let error = provision_at(&root, &request)
+            .expect_err("a run must require an explicit prior installation");
+        assert!(matches!(
+            error,
+            Error::SimulationInvalid { message }
+                if message.contains("cargo phoxal simulation install")
+        ));
+        assert!(!root.exists());
         Ok(())
     }
 
     #[test]
-    fn a_valid_stored_selection_is_reused_in_frozen_mode() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let (fixture, project) = project_fixture()?;
-        let executable = fixture
-            .path()
-            .join("target/phoxal/simulation/artifacts/fake/simulator");
+    fn a_valid_stored_selection_is_reused() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("managed");
+        let executable = root.join("artifacts/fake/simulator");
         if let Some(parent) = executable.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(&executable, "fake simulator")?;
         let digest = digest_file(&executable)?;
-        let selection_path = fixture
-            .path()
-            .join("target/phoxal/simulation/selection.json");
+        let selection_path = root.join("selection.json");
         let selection = SimulatorSelection {
             schema: "phoxal/simulator-selection/v0".to_owned(),
             package: DEFAULT_SIMULATOR_PACKAGE.to_owned(),
@@ -1580,17 +2028,44 @@ mod tests {
             SimulationPresentation::Headless,
             SimulationBound::Steps(1),
         )?;
-        let artifact = provision(
-            &project,
-            &CargoOptions {
-                lock: LockMode::Frozen,
-                offline: true,
-                ..CargoOptions::default()
-            },
-            &request,
-        )?;
+        let artifact = provision_at(&root, &request)?;
         assert_eq!(artifact.summary.source, "fixture");
         assert_eq!(artifact.summary.sha256, digest.sha256);
+        Ok(())
+    }
+
+    #[test]
+    fn status_is_read_only_when_no_managed_installation_exists()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("simulation");
+        let status = simulator_status_at(&root)?;
+        assert!(!status.installed);
+        assert_eq!(status.root, root);
+        assert!(!root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_removes_only_a_marked_managed_directory() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = tempfile::tempdir()?;
+        let unmanaged = fixture.path().join("unmanaged");
+        fs::create_dir(&unmanaged)?;
+        let error = uninstall_simulator_at(&unmanaged)
+            .expect_err("an unmanaged directory must never be removed");
+        assert!(matches!(
+            error,
+            Error::SimulationInvalid { message }
+                if message.contains("refusing to remove unmanaged directory")
+        ));
+        assert!(unmanaged.is_dir());
+
+        let managed = fixture.path().join("managed");
+        fs::create_dir(&managed)?;
+        fs::write(managed.join(MANAGED_MARKER), "managed\n")?;
+        assert_eq!(uninstall_simulator_at(&managed)?, managed);
+        assert!(!managed.exists());
         Ok(())
     }
 
@@ -1605,17 +2080,17 @@ mod tests {
         let manifest = simulator_manifest(&request);
         assert!(manifest.contains("registry = \"phoxal\""));
         assert!(!manifest.contains("path ="));
-        assert!(manifest.contains("version = \"=0.1.0\""));
+        assert!(manifest.contains("version = \"=0.0.0-dev.1\""));
         Ok(())
     }
 
     #[test]
     fn artifact_path_requires_the_exact_package_and_binary() {
-        let line = r#"{"reason":"compiler-artifact","package_id":"registry+https://example.invalid/#phoxal-simulator-mujoco@0.1.0","target":{"kind":["bin"],"crate_types":["bin"],"name":"phoxal-simulator-mujoco","src_path":"/tmp/main.rs","edition":"2024","required-features":[]},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false,"panic":"unwind","incremental":true,"codegen-units":256,"rpath":false},"features":[],"filenames":[],"executable":"/tmp/simulator","fresh":false}"#;
+        let line = r#"{"reason":"compiler-artifact","package_id":"registry+https://example.invalid/#phoxal-simulator@0.0.0-dev.1","target":{"kind":["bin"],"crate_types":["bin"],"name":"phoxal-simulator","src_path":"/tmp/main.rs","edition":"2024","required-features":[]},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false,"panic":"unwind","incremental":true,"codegen-units":256,"rpath":false},"features":[],"filenames":[],"executable":"/tmp/simulator","fresh":false}"#;
         let path = artifact_path(
             line.as_bytes(),
-            "registry+https://example.invalid/#phoxal-simulator-mujoco@0.1.0",
-            "phoxal-simulator-mujoco",
+            "registry+https://example.invalid/#phoxal-simulator@0.0.0-dev.1",
+            "phoxal-simulator",
         );
         assert_eq!(path.ok(), Some(PathBuf::from("/tmp/simulator")));
     }

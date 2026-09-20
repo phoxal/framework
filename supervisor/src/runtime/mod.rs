@@ -32,11 +32,11 @@ use phoxal::communication_transport::PublicTransportLimits;
 
 use self::adapter::SupervisorAdapter;
 use self::transport::server::{PrincipalPolicy, PublicSessionServer};
-use phoxal::identity::ExecutionId;
-use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner};
-use phoxal_supervisor::scenario_admission::{
+use crate::scenario_admission::{
     ScenarioLaunchMode, admission_diagnostic, evaluate_scenario_admission,
 };
+use phoxal::identity::ExecutionId;
+use phoxal::runtime::connection::{Connection, ConnectionConfig, ConnectionOwner};
 use tokio_util::sync::CancellationToken;
 
 use bundle::Bundle;
