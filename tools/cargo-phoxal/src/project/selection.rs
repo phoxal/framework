@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use cargo_metadata::{DependencyKind, Metadata, Package, PackageId, Target};
 
+use crate::project::cargo;
 use crate::project::document::{
     BrainSelection, ComponentDocument, RobotDocument, ServiceSelection, ValidateComponentDocument,
 };
@@ -673,7 +674,7 @@ fn package_source(package: &Package) -> PackageSource {
         Some(source) if source.repr.starts_with("git+") => PackageSource::Git {
             source: source.repr.clone(),
         },
-        Some(source) if source.repr.starts_with("registry+") => PackageSource::Registry {
+        Some(source) if cargo::is_registry_source(&source.repr) => PackageSource::Registry {
             source: source.repr.clone(),
         },
         Some(source) => PackageSource::Other {

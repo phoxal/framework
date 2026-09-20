@@ -2304,7 +2304,7 @@ fn source_record(
     let kind = match package.source.as_ref().map(|source| source.repr.as_str()) {
         None => BundleSourceKind::Local,
         Some(source) if source.starts_with("git+") => BundleSourceKind::Git,
-        Some(source) if source.starts_with("registry+") => BundleSourceKind::Registry,
+        Some(source) if cargo::is_registry_source(source) => BundleSourceKind::Registry,
         Some(source) => {
             return Err(Error::ArtifactInvalid {
                 path: PathBuf::from(package.manifest_path.as_std_path()),

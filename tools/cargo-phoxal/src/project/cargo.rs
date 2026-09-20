@@ -9,6 +9,11 @@ use crate::project::error::Error;
 /// The retained public sparse index used by official Phoxal package coordinates.
 pub(crate) const PHOXAL_REGISTRY_INDEX: &str = "sparse+https://phoxal.github.io/registry/";
 
+/// Returns whether Cargo's source identity denotes any registry protocol.
+pub(crate) fn is_registry_source(source: &str) -> bool {
+    source.starts_with("registry+") || source.starts_with("sparse+")
+}
+
 fn registry_config() -> String {
     format!("registries.phoxal.index=\"{PHOXAL_REGISTRY_INDEX}\"")
 }
@@ -698,6 +703,15 @@ fn status_string(status: ExitStatus) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_sources_include_git_and_sparse_index_protocols() {
+        assert!(is_registry_source("registry+https://example.invalid/index"));
+        assert!(is_registry_source(
+            "sparse+https://phoxal.github.io/registry/"
+        ));
+        assert!(!is_registry_source("git+https://example.invalid/repo"));
+    }
 
     #[test]
     fn collect_existing_features_reads_space_and_equals_forms() {
