@@ -297,6 +297,7 @@ fn run_publication(arguments: PublishArgs) -> Result<(), crate::project::Error> 
         path: package.path,
         dry_run,
     })?;
+    let result = if dry_run { result.retain() } else { result };
     println!(
         "publication: {}",
         if dry_run { "dry-run" } else { "prepared" }

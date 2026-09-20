@@ -155,8 +155,9 @@ pub struct PublicationSourceProvenance {
 }
 
 /// The local result of a validated publication preparation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct PublicationResult {
+    staging: Option<tempfile::TempDir>,
     kind: PublicationKind,
     package: String,
     version: String,
@@ -171,6 +172,19 @@ pub struct PublicationResult {
 }
 
 impl PublicationResult {
+    /// Retains the prepared files after this value is dropped.
+    ///
+    /// Normal publication keeps its staging directory scoped to the command.
+    /// Explicit dry runs use this method because their local artifacts are the
+    /// requested output.
+    #[must_use]
+    pub fn retain(mut self) -> Self {
+        if let Some(staging) = self.staging.take() {
+            let _retained_root = staging.keep();
+        }
+        self
+    }
+
     /// Returns the selected semantic package role.
     #[must_use]
     pub const fn kind(&self) -> PublicationKind {
@@ -314,11 +328,8 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
         source,
     })?;
 
-    let retained_root = staging.keep();
-    let archive = relocate_path(&archive, &staging_root, &retained_root);
-    let inventory_path = relocate_path(&inventory_path, &staging_root, &retained_root);
-    let checksum_file = relocate_path(&checksum_file, &staging_root, &retained_root);
     Ok(PublicationResult {
+        staging: Some(staging),
         kind: selected.role.publication_kind(),
         package: selected.package,
         version: selected.version,
@@ -331,11 +342,6 @@ pub fn prepare_publication(options: &PublicationOptions) -> Result<PublicationRe
         bytes: verified.bytes,
         files: verified.files,
     })
-}
-
-fn relocate_path(path: &Path, old_root: &Path, new_root: &Path) -> PathBuf {
-    path.strip_prefix(old_root)
-        .map_or_else(|_| path.to_owned(), |relative| new_root.join(relative))
 }
 
 #[derive(Debug, Clone)]
