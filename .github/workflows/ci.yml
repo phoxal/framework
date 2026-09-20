@@ -86,7 +86,7 @@ jobs:
 
       - name: Validate the local passive component
         run: >-
-          cargo run --manifest-path tools/cargo-phoxal/Cargo.toml --
+          cargo run --manifest-path phoxal/cargo/Cargo.toml --
           publish component example-passive-caster
           --path examples/runtime-rewrite/components/passive-caster
           --dry-run
