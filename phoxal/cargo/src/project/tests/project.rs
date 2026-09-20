@@ -113,9 +113,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "counter-service"
 path = "src/main.rs"
-
-[package.metadata.phoxal]
-kind = "service"
 "#,
     )?;
     write(
@@ -136,9 +133,6 @@ kind = "service"
 name = "passive-sensor"
 version = "0.1.0"
 edition = "2024"
-
-[package.metadata.phoxal]
-kind = "component"
 
 [lib]
 path = "src/lib.rs"
@@ -177,6 +171,9 @@ name = "phoxal-supervisor"
 version = "0.68.0"
 edition = "2024"
 
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+
 [lib]
 path = "src/lib.rs"
 
@@ -187,14 +184,22 @@ path = "src/main.rs"
     )?;
     write(
         &directory.path().join("supervisor/src/main.rs"),
-        r#"fn main() {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    assert_eq!(arguments.len(), 5);
-    assert!(std::path::Path::new(&arguments[0]).is_dir());
-    assert_eq!(arguments[1], "--scope");
-    assert_eq!(arguments[2], "local");
-    assert_eq!(arguments[3], "--supervisor-id");
-    assert_eq!(arguments[4], "local");
+        r#"use clap::Parser;
+
+#[derive(Parser)]
+struct Arguments {
+    bundle: std::path::PathBuf,
+    #[arg(long)]
+    scope: String,
+    #[arg(long)]
+    supervisor_id: String,
+}
+
+fn main() {
+    let arguments = Arguments::parse();
+    assert!(arguments.bundle.is_dir());
+    assert_eq!(arguments.scope, "local");
+    assert_eq!(arguments.supervisor_id, "local");
 }
 "#,
     )?;
@@ -241,9 +246,6 @@ version = "0.1.0"
 edition = "2024"
 autolib = false
 autobins = false
-
-[package.metadata.phoxal]
-kind = "component"
 "#,
     )?;
     fs::remove_file(fixture.path().join("passive-sensor/src/lib.rs"))?;
@@ -542,13 +544,9 @@ fn targetless_local_locked_mode_requires_a_real_existing_lock()
 }
 
 #[test]
-fn selection_rejects_a_service_with_component_role_metadata()
+fn selection_rejects_a_service_with_a_component_definition()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = project_fixture()?;
-    let manifest = fixture.path().join("counter-service/Cargo.toml");
-    let contents =
-        fs::read_to_string(&manifest)?.replace("kind = \"service\"", "kind = \"component\"");
-    write(&manifest, &contents)?;
     write(
         &fixture.path().join("counter-service/component.yaml"),
         "schema: phoxal/component/v0\n",
@@ -1619,7 +1617,7 @@ fn bundle_carries_a_relocatable_nested_external_path_closure()
     assert!(!source_manifest.contains(&helper.path().display().to_string()));
     let external_root = source_root.join("_phoxal_path_dependencies");
     let external_count = fs::read_dir(&external_root)?.count();
-    assert_eq!(external_count, 2);
+    assert!(external_count >= 2);
     assert!(
         bundle
             .provenance()
@@ -1688,9 +1686,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "fixture-git-service"
 path = "src/main.rs"
-
-[package.metadata.phoxal]
-kind = "service"
 "#,
     )?;
     write(

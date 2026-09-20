@@ -8,7 +8,14 @@
 
 use std::path::PathBuf;
 
+use clap::Parser;
 use phoxal::runtime::{InitContext, Runtime, StepContext};
+
+#[derive(Debug, Parser)]
+struct Cli {
+    #[arg(long)]
+    bundle_root: PathBuf,
+}
 
 struct ReferenceRuntime {
     marker: PathBuf,
@@ -43,12 +50,7 @@ impl Runtime for ReferenceRuntime {
 impl ReferenceRuntime {}
 
 fn main() -> phoxal::Result<()> {
-    let bundle_root = std::env::args()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find_map(|pair| (pair[0] == "--bundle-root").then(|| PathBuf::from(&pair[1])))
-        .ok_or_else(|| anyhow::anyhow!("reference runtime requires --bundle-root"))?;
+    let bundle_root = Cli::parse().bundle_root;
     phoxal::runtime::run(ReferenceRuntime {
         marker: bundle_root.join("reference-runtime.marker"),
     })

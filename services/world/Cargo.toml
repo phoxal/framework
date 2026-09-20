@@ -11,9 +11,6 @@ homepage.workspace = true
 repository.workspace = true
 include = ["build.rs", "lib.rs", "validation.rs", "src/**", "proto/**", "Cargo.toml", "README.md"]
 
-[package.metadata.phoxal]
-kind = "service"
-
 [lib]
 path = "lib.rs"
 

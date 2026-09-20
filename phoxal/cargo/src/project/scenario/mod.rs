@@ -11,7 +11,7 @@
 //! generated harness `#[path = "..."] mod ...;` declarations.
 //!
 //! The auto Cargo integration (test target + dev-dep) lives in
-//! `tools/cargo-phoxal/src/project/preparation.rs`; the actual
+//! `phoxal/cargo/src/project/preparation.rs`; the actual
 //! `cargo metadata` / `cargo test --no-run` invocation lives in `run.rs`.
 
 pub mod case_host;

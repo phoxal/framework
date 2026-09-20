@@ -73,10 +73,11 @@ jobs:
           for robot in \
             examples/runtime-rewrite/robots/robot-alpha \
             examples/runtime-rewrite/robots/robot-beta \
-            examples/runtime-rewrite/robots/workspace-robot; do
+            examples/runtime-rewrite/robots/workspace-robot \
+            examples/runtime-rewrite/robots/simulation-rover; do
             (
               cd "$robot"
-              cargo run --manifest-path ../../../../tools/cargo-phoxal/Cargo.toml -- check --locked
+              cargo run --manifest-path ../../../../phoxal/cargo/Cargo.toml -- check --locked
             )
           done
 
@@ -85,7 +86,7 @@ jobs:
 
       - name: Validate the local passive component
         run: >-
-          cargo run --manifest-path tools/cargo-phoxal/Cargo.toml --
+          cargo run --manifest-path phoxal/cargo/Cargo.toml --
           publish component example-passive-caster
           --path examples/runtime-rewrite/components/passive-caster
           --dry-run

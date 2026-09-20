@@ -12,12 +12,12 @@ Install or update the released package from the Phoxal registry:
 ```sh
 cargo install cargo-phoxal \
   --index sparse+https://phoxal.github.io/registry/ \
-  --version 0.0.0-dev.2 \
+  --version 0.0.0-dev.3 \
   --locked
 ```
 
 Cargo requires an explicit version when installing a pre-release.
-The current `cargo-phoxal` release is `0.0.0-dev.2`.
+The current `cargo-phoxal` release is `0.0.0-dev.3`.
 It consumes the `0.0.0-dev.1` framework package set.
 
 Cargo exposes the installed binary as `cargo phoxal`.
@@ -30,7 +30,7 @@ For framework development before those packages are released, run the workspace 
 cargo run --locked -p cargo-phoxal -- phoxal --help
 ```
 
-The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, and reviewed package publication.
+The tooling supports `cargo phoxal check`, `cargo phoxal build`, `cargo phoxal run`, `cargo phoxal test`, `cargo phoxal update`, managed simulation installation and execution, and reviewed package publication.
 
 Each command discovers the nearest robot project, validates explicit composition, resolves source packages through the root Cargo graph, and applies the requested Cargo lock and offline policy.
 
@@ -51,8 +51,31 @@ Ordinary preparation adds the known `phoxal-supervisor` dependency with an uncon
 `--locked` and `--frozen` report an actionable initialization error before changing `Cargo.toml` or `Cargo.lock`.
 Every selected runtime executable must expose its exact compiled contract metadata, and authored configuration is checked against that metadata before a bundle is published.
 
+## Simulation installation
+
+Install the supported MuJoCo distribution and the matching released simulator with:
+
+```sh
+cargo phoxal simulation install
+cargo phoxal simulation status
+```
+
+The installer verifies the official MuJoCo archive checksum, builds the exact `phoxal-simulator` registry package, preserves its standalone Cargo graph and native licenses, and writes one managed user installation.
+On macOS the result is a self-contained locally signed application bundle.
+On Linux the executable is linked to the managed native distribution with an explicit runtime search path.
+Robot manifests never depend on MuJoCo or the simulator.
+
+Use `cargo phoxal simulation upgrade` to replace the managed installation and `cargo phoxal simulation uninstall` to remove only the directory marked as owned by `cargo-phoxal`.
+Use `--mujoco-distribution <path>` when an official MuJoCo distribution is already available, or together with `--offline` for an installation that performs no download.
+An explicit `--simulator <path>` remains available for simulator source development and deterministic test fixtures.
+
 `cargo phoxal publish <role> <name> --dry-run` selects an exact local Cargo package and produces a verified `.crate` archive, review inventory, and SHA-256 sidecar in isolated temporary staging.
 Supported roles are `component`, `service`, `preset`, `library`, `proc-macro`, `simulator`, `application`, and `tool`.
+
+The developer selects the publication role in the command instead of repeating it in `[package.metadata.phoxal]`.
+`cargo-phoxal` verifies that selection from standard project structure: `component.yaml` identifies a component, `service.yaml` identifies a service preset, and Cargo target shape distinguishes ordinary libraries, procedural macros, applications, simulators, and tools.
+Runtime composition similarly derives service and component roles from `robot.yaml` dependency selection.
+No Phoxal-specific package metadata table is required.
 
 The optional `--path <source-directory>` selects a package explicitly, while omitting it selects the matching current package or a uniquely named member of the current Cargo workspace.
 

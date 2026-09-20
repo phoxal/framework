@@ -4,6 +4,7 @@
 mod config;
 mod rendezvous;
 mod runtime;
+mod scenario_admission;
 mod transport;
 
 use std::process::ExitCode;
@@ -26,7 +27,7 @@ async fn main() -> ExitCode {
         }
     };
     init_tracing();
-    let launch_mode: phoxal_supervisor::ScenarioLaunchMode = cli.launch_mode.into();
+    let launch_mode: scenario_admission::ScenarioLaunchMode = cli.launch_mode.into();
     match runtime::run(
         &cli.bundle_root,
         target,

@@ -6,7 +6,7 @@
 //! cannot be: the wire protocol version the transport actually speaks is proved
 //! against the owning protocol contract, while project preparation and source
 //! validation are proved in `cargo-phoxal`'s own tests under
-//! `tools/cargo-phoxal/src/project/tests/`.
+//! `phoxal/cargo/src/project/tests/`.
 
 use std::fs;
 
@@ -33,7 +33,7 @@ use super::{Subject, Violation, is_library_package};
 /// `phoxal` is a framework library that depends on the facade's port
 /// surface plus its owned component contract crates; component crates
 /// themselves are not libraries for this rule and so are checked elsewhere.
-const ALLOWED_LIBRARY_EDGES: [(&str, &str); 20] = [
+const ALLOWED_LIBRARY_EDGES: [(&str, &str); 19] = [
     // The facade owns the typed-port macros, the internal build helper, and
     // the inert typed-port surface as its own module - those are the edges it
     // grows to its build-script-visible toolchain.
@@ -41,7 +41,6 @@ const ALLOWED_LIBRARY_EDGES: [(&str, &str); 20] = [
     ("phoxal", "phoxal-build"),
     // Framework host binaries that own the rest of the runtime / authoring
     // graph.
-    ("phoxal-supervisor", "phoxal"),
     // Service-owned contract libraries reach the facade through its `port`
     // feature; they never declare a separate typed-port crate directly.
     ("phoxal-service-motion", "phoxal"),

@@ -9,7 +9,8 @@ mod project;
 use project::{
     CargoOperation, CargoOptions, CargoSelection, LockMode, PreparedProject, Project,
     PublicationKind, PublicationOptions, SelectedTarget, SimulationBound, SimulationPresentation,
-    SimulationRunOptions, SubmissionResult, prepare_publication, submit_publication,
+    SimulationRunOptions, SubmissionResult, install_simulator, prepare_publication,
+    simulator_status, submit_publication, uninstall_simulator,
 };
 
 fn main() -> ExitCode {
@@ -41,6 +42,10 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
     match command {
         Command::Publish(arguments) => run_publication(arguments),
         Command::Simulation(arguments) => match arguments.command {
+            SimulationCommand::Install(arguments) => run_simulator_install(arguments, false),
+            SimulationCommand::Upgrade(arguments) => run_simulator_install(arguments, true),
+            SimulationCommand::Status(arguments) => run_simulator_status(arguments),
+            SimulationCommand::Uninstall => run_simulator_uninstall(),
             SimulationCommand::Run(arguments) => run_simulation(arguments),
             SimulationCommand::Scenario(arguments) => match arguments.command {
                 ScenarioCommand::List(arguments) => run_scenario_list(arguments),
@@ -107,6 +112,74 @@ fn run(cli: Cli) -> Result<(), crate::project::Error> {
             }
         }
     }
+}
+
+fn run_simulator_install(
+    arguments: SimulationInstallArgs,
+    replace: bool,
+) -> Result<(), crate::project::Error> {
+    let options = CargoOptions {
+        cargo_path: arguments.cargo,
+        offline: arguments.offline,
+        ..CargoOptions::default()
+    };
+    let status = install_simulator(
+        &options,
+        arguments.mujoco_distribution.as_deref(),
+        replace || arguments.force,
+    )?;
+    println!("simulator: installed");
+    println!(
+        "version: {}",
+        status.simulator_version.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "mujoco: {}",
+        status.mujoco_version.as_deref().unwrap_or("unknown")
+    );
+    if let Some(executable) = status.executable {
+        println!("executable: {}", executable.display());
+    }
+    Ok(())
+}
+
+fn run_simulator_status(arguments: SimulationStatusArgs) -> Result<(), crate::project::Error> {
+    let status = simulator_status()?;
+    if arguments.json {
+        println!(
+            "{}",
+            serde_json::to_string(&status).map_err(|source| {
+                crate::project::Error::SimulationInvalid {
+                    message: format!("cannot encode simulator status: {source}"),
+                }
+            })?
+        );
+    } else if status.installed {
+        println!("simulator: installed");
+        println!("root: {}", status.root.display());
+        println!(
+            "version: {}",
+            status.simulator_version.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "mujoco: {}",
+            status.mujoco_version.as_deref().unwrap_or("unknown")
+        );
+        if let Some(executable) = status.executable {
+            println!("executable: {}", executable.display());
+        }
+    } else {
+        println!("simulator: not installed");
+        println!("root: {}", status.root.display());
+    }
+    Ok(())
+}
+
+fn run_simulator_uninstall() -> Result<(), crate::project::Error> {
+    let root = uninstall_simulator()?;
+    println!("simulator: uninstalled");
+    println!("root: {}", root.display());
+    Ok(())
 }
 
 fn run_simulation(arguments: SimulationRunArgs) -> Result<(), crate::project::Error> {
@@ -514,6 +587,7 @@ fn print_bytes(bytes: &[u8], stderr: bool) {
 #[command(
     name = "cargo phoxal",
     bin_name = "cargo phoxal",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Validate and build a Phoxal robot project"
 )]
 struct Cli {
@@ -531,6 +605,8 @@ impl Cli {
             Command::Test(arguments) => json_common(&arguments.options, &[]),
             Command::Update(arguments) => json_common(&arguments.options, &arguments.cargo_args),
             Command::Simulation(arguments) => match &arguments.command {
+                SimulationCommand::Install(_) | SimulationCommand::Upgrade(_) => false,
+                SimulationCommand::Status(_) | SimulationCommand::Uninstall => false,
                 SimulationCommand::Run(arguments) => json_common(&arguments.options, &[]),
                 SimulationCommand::Scenario(arguments) => match &arguments.command {
                     ScenarioCommand::List(arguments) => json_common(&arguments.options, &[]),
@@ -568,10 +644,41 @@ struct SimulationArgs {
 
 #[derive(Debug, Subcommand)]
 enum SimulationCommand {
+    /// Download MuJoCo and install the matching simulator from the Phoxal registry.
+    Install(SimulationInstallArgs),
+    /// Replace the managed MuJoCo and simulator installation with the current versions.
+    Upgrade(SimulationInstallArgs),
+    /// Inspect the managed simulator installation.
+    Status(SimulationStatusArgs),
+    /// Remove the managed simulator installation.
+    Uninstall,
     /// Run one finite scene against the selected robot bundle.
     Run(SimulationRunArgs),
     /// List, plan, or run authored scenarios for the selected robot bundle.
     Scenario(ScenarioArgs),
+}
+
+#[derive(Debug, Args)]
+struct SimulationInstallArgs {
+    /// Use an existing MuJoCo distribution instead of downloading the official release.
+    #[arg(long = "mujoco-distribution")]
+    mujoco_distribution: Option<PathBuf>,
+    /// Replace an existing managed installation.
+    #[arg(long)]
+    force: bool,
+    /// Cargo executable used to build the registry simulator package.
+    #[arg(long, env = "CARGO", hide_env_values = true)]
+    cargo: Option<PathBuf>,
+    /// Use only already cached Cargo packages and require an explicit MuJoCo distribution.
+    #[arg(long)]
+    offline: bool,
+}
+
+#[derive(Debug, Args)]
+struct SimulationStatusArgs {
+    /// Emit one machine-readable JSON record.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -997,6 +1104,7 @@ mod tests {
                 SimulationCommand::Scenario(_) => {
                     panic!("simulation command parsed as a scenario")
                 }
+                _ => panic!("simulation run parsed as a management command"),
             },
             _ => panic!("simulation command parsed as a different variant"),
         };
@@ -1052,7 +1160,7 @@ mod tests {
             "ForwardTurnStop",
             "--headless",
             "--simulator",
-            "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator-mujoco",
+            "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator",
             "--locked",
             "--release",
         ])
@@ -1064,6 +1172,7 @@ mod tests {
                     ScenarioCommand::List(_) => panic!("scenario command parsed as list"),
                 },
                 SimulationCommand::Run(_) => panic!("scenario parsed as simulation run"),
+                _ => panic!("scenario parsed as a management command"),
             },
             _ => panic!("scenario parsed as a different command"),
         };
@@ -1072,7 +1181,7 @@ mod tests {
         assert_eq!(
             arguments.simulator,
             Some(PathBuf::from(
-                "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator-mujoco"
+                "/Applications/Phoxal Simulator.app/Contents/MacOS/phoxal-simulator"
             ))
         );
         let options = arguments.options.into_options(Vec::new(), Vec::new());

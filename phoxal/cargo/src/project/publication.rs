@@ -59,11 +59,6 @@ pub enum PublicationKind {
     Application,
     /// A standalone developer or operator tool.
     Tool,
-    /// Any explicitly classified package, used by owner release automation.
-    #[doc(hidden)]
-    #[serde(skip)]
-    #[cfg(test)]
-    Package,
 }
 
 impl PublicationKind {
@@ -79,8 +74,6 @@ impl PublicationKind {
             Self::SimulatorApplication => "simulator",
             Self::Application => "application",
             Self::Tool => "tool",
-            #[cfg(test)]
-            Self::Package => "package",
         }
     }
 
@@ -88,8 +81,6 @@ impl PublicationKind {
         match self {
             Self::Component => matches!(actual, Self::Component),
             Self::Service => matches!(actual, Self::Service | Self::Preset),
-            #[cfg(test)]
-            Self::Package => !matches!(actual, Self::Package),
             Self::Preset => matches!(actual, Self::Preset),
             Self::Library => matches!(actual, Self::Library),
             Self::ProcMacro => matches!(actual, Self::ProcMacro),
@@ -607,7 +598,7 @@ fn selected_from_manifest(
         })?
         .to_owned();
     let workspace = find_workspace(&source_root, &manifest)?;
-    let role = classify_package(&source_root, &manifest_value, actual_name)?;
+    let role = classify_package(&source_root, &manifest_value, actual_name, options.kind)?;
     if !options.kind.accepts(role.publication_kind()) {
         return Err(PublicationError::WrongPublicationKind {
             package: actual_name.to_owned(),
@@ -652,98 +643,46 @@ fn classify_package(
     source_root: &Path,
     manifest: &toml::Value,
     package: &str,
+    requested: PublicationKind,
 ) -> Result<PackageRole, Error> {
-    let package_table = manifest
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| PublicationError::MissingPackageManifest {
-            path: source_root.join("Cargo.toml"),
-        })?;
-    let metadata_kind = package_table
-        .get("metadata")
-        .and_then(toml::Value::as_table)
-        .and_then(|metadata| metadata.get("phoxal"))
-        .and_then(toml::Value::as_table)
-        .and_then(|phoxal| phoxal.get("kind"))
-        .and_then(toml::Value::as_str);
-    if let Some(kind) = metadata_kind {
-        let targets = target_shape(source_root, manifest);
-        let role = match kind {
-            "component" => {
-                require_component_definition(source_root, package, manifest)?;
-                if targets.library {
-                    PackageRole::RustComponent
-                } else if targets.binaries || has_authored_target(source_root, manifest) {
-                    return Err(PublicationError::InvalidPackageShape {
-                        package: package.to_owned(),
-                        kind: kind.to_owned(),
-                        requirement:
-                            "component packages with Rust targets must expose a library target"
-                                .to_owned(),
-                    }
-                    .into());
-                } else {
-                    PackageRole::PassiveComponent
-                }
-            }
-            "service" => {
-                if targets.library && targets.binaries {
-                    PackageRole::Service
-                } else {
-                    return Err(PublicationError::InvalidPackageShape {
-                        package: package.to_owned(),
-                        kind: kind.to_owned(),
-                        requirement: "service packages must expose both library and binary targets"
-                            .to_owned(),
-                    }
-                    .into());
-                }
-            }
-            "preset" if !targets.binaries => PackageRole::Preset,
-            "preset" => {
-                return Err(PublicationError::InvalidPackageShape {
-                    package: package.to_owned(),
-                    kind: kind.to_owned(),
-                    requirement: "configuration presets cannot expose a binary target".to_owned(),
-                }
-                .into());
-            }
-            "library" if targets.library => PackageRole::Library,
-            "proc-macro" if targets.proc_macro => PackageRole::ProcMacro,
-            "simulator" if targets.binaries => PackageRole::SimulatorApplication,
-            "application" if targets.binaries => PackageRole::Application,
-            "tool" if targets.binaries => PackageRole::Tool,
-            "library" | "proc-macro" | "simulator" | "application" | "tool" => {
-                return Err(PublicationError::InvalidPackageShape {
-                    package: package.to_owned(),
-                    kind: kind.to_owned(),
-                    requirement: match kind {
-                        "library" => "library packages must expose a library target",
-                        "proc-macro" => {
-                            "proc-macro packages must expose a proc-macro library target"
-                        }
-                        _ => {
-                            "application, simulator, and tool packages must expose a binary target"
-                        }
-                    }
-                    .to_owned(),
-                }
-                .into());
-            }
-            other => {
-                return Err(PublicationError::UnsupportedPackageKind {
-                    package: package.to_owned(),
-                    kind: other.to_owned(),
-                }
-                .into());
-            }
+    let targets = target_shape(source_root, manifest);
+    if source_root.join("component.yaml").is_file()
+        && !matches!(requested, PublicationKind::Component)
+    {
+        let actual = if targets.library {
+            PackageRole::RustComponent
+        } else {
+            PackageRole::PassiveComponent
         };
-        return Ok(role);
+        return Err(PublicationError::WrongPublicationKind {
+            package: package.to_owned(),
+            path: source_root.to_owned(),
+            actual: actual.to_string(),
+            requested,
+        }
+        .into());
     }
-
-    if source_root.join("component.yaml").is_file() {
+    if source_root.join("service.yaml").is_file()
+        && !matches!(
+            requested,
+            PublicationKind::Service | PublicationKind::Preset
+        )
+    {
+        let actual = if targets.binaries {
+            PackageRole::Service
+        } else {
+            PackageRole::Preset
+        };
+        return Err(PublicationError::WrongPublicationKind {
+            package: package.to_owned(),
+            path: source_root.to_owned(),
+            actual: actual.to_string(),
+            requested,
+        }
+        .into());
+    }
+    if matches!(requested, PublicationKind::Component) {
         require_component_definition(source_root, package, manifest)?;
-        let targets = target_shape(source_root, manifest);
         return if targets.library {
             Ok(PackageRole::RustComponent)
         } else if targets.binaries || has_authored_target(source_root, manifest) {
@@ -758,25 +697,63 @@ fn classify_package(
             Ok(PackageRole::PassiveComponent)
         };
     }
-    if source_root.join("service.yaml").is_file() {
-        let targets = target_shape(source_root, manifest);
-        return if targets.library && targets.binaries {
-            Ok(PackageRole::Service)
-        } else if !targets.binaries {
-            Ok(PackageRole::Preset)
-        } else {
-            Err(PublicationError::InvalidPackageShape {
-                package: package.to_owned(),
-                kind: "service".to_owned(),
-                requirement: "service packages must expose both library and binary targets"
-                    .to_owned(),
-            }
-            .into())
-        };
-    }
-    Err(PublicationError::MissingPackageKind {
+    let (role, requirement) = match requested {
+        PublicationKind::Service if targets.library && targets.binaries => {
+            return Ok(PackageRole::Service);
+        }
+        PublicationKind::Service
+            if !targets.binaries && source_root.join("service.yaml").is_file() =>
+        {
+            return Ok(PackageRole::Preset);
+        }
+        PublicationKind::Service => (
+            PackageRole::Service,
+            "service packages must expose both library and binary targets",
+        ),
+        PublicationKind::Preset
+            if !targets.binaries && source_root.join("service.yaml").is_file() =>
+        {
+            return Ok(PackageRole::Preset);
+        }
+        PublicationKind::Preset => (
+            PackageRole::Preset,
+            "configuration presets must contain service.yaml and cannot expose a binary target",
+        ),
+        PublicationKind::Library if targets.library && !targets.proc_macro => {
+            return Ok(PackageRole::Library);
+        }
+        PublicationKind::Library => (
+            PackageRole::Library,
+            "library packages must expose a non-proc-macro library target",
+        ),
+        PublicationKind::ProcMacro if targets.proc_macro => return Ok(PackageRole::ProcMacro),
+        PublicationKind::ProcMacro => (
+            PackageRole::ProcMacro,
+            "proc-macro packages must expose a proc-macro library target",
+        ),
+        PublicationKind::SimulatorApplication if targets.binaries => {
+            return Ok(PackageRole::SimulatorApplication);
+        }
+        PublicationKind::SimulatorApplication => (
+            PackageRole::SimulatorApplication,
+            "simulator packages must expose a binary target",
+        ),
+        PublicationKind::Application if targets.binaries => return Ok(PackageRole::Application),
+        PublicationKind::Application => (
+            PackageRole::Application,
+            "application packages must expose a binary target",
+        ),
+        PublicationKind::Tool if targets.binaries => return Ok(PackageRole::Tool),
+        PublicationKind::Tool => (
+            PackageRole::Tool,
+            "tool packages must expose a binary target",
+        ),
+        PublicationKind::Component => unreachable!("component classification returned above"),
+    };
+    Err(PublicationError::InvalidPackageShape {
         package: package.to_owned(),
-        path: source_root.to_owned(),
+        kind: role.registry_kind().to_owned(),
+        requirement: requirement.to_owned(),
     }
     .into())
 }
@@ -784,9 +761,9 @@ fn classify_package(
 /// Validates a package selected as a runtime service or component.
 ///
 /// Publication owns the canonical package-role classifier, including the
-/// `[package.metadata.phoxal]` role, target shape, and component definition
-/// root checks. Project selection calls this boundary instead of maintaining a
-/// second interpretation of package metadata.
+/// requested runtime role, target shape, and component definition root checks.
+/// Project selection calls this boundary instead of maintaining a second
+/// interpretation of package structure.
 pub(crate) fn validate_runtime_package(
     manifest: &Path,
     package: &str,
@@ -799,7 +776,11 @@ pub(crate) fn validate_runtime_package(
                 path: manifest.to_owned(),
             })?;
     let manifest_value = read_manifest(manifest)?;
-    let detected = classify_package(source_root, &manifest_value, package)?;
+    let requested = match expected {
+        RuntimePackageRole::Service => PublicationKind::Service,
+        RuntimePackageRole::Component => PublicationKind::Component,
+    };
+    let detected = classify_package(source_root, &manifest_value, package, requested)?;
     let valid = match expected {
         RuntimePackageRole::Service => detected == PackageRole::Service,
         RuntimePackageRole::Component => {
@@ -864,18 +845,9 @@ fn target_shape(source_root: &Path, manifest: &toml::Value) -> TargetShape {
 fn require_component_definition(
     source_root: &Path,
     package: &str,
-    manifest: &toml::Value,
+    _manifest: &toml::Value,
 ) -> Result<PathBuf, Error> {
-    let relative = manifest
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .and_then(|package| package.get("metadata"))
-        .and_then(toml::Value::as_table)
-        .and_then(|metadata| metadata.get("phoxal"))
-        .and_then(toml::Value::as_table)
-        .and_then(|phoxal| phoxal.get("definition"))
-        .and_then(toml::Value::as_str)
-        .unwrap_or("component.yaml");
+    let relative = "component.yaml";
     let path =
         safe_source_path(source_root, relative).map_err(|_| PublicationError::UnsafeAssetPath {
             reference: relative.to_owned(),
@@ -1444,14 +1416,14 @@ fn classify_targetless(
     manifest: &toml::Value,
     package: &str,
 ) -> Result<Option<PackageRole>, Error> {
-    match classify_package(source_root, manifest, package) {
-        Ok(role) if matches!(role, PackageRole::PassiveComponent | PackageRole::Preset) => {
-            Ok(Some(role))
-        }
-        Ok(_) => Ok(None),
-        Err(Error::Publication(PublicationError::MissingPackageKind { .. })) => Ok(None),
-        Err(error) => Err(error),
+    if source_root.join("component.yaml").is_file() {
+        return classify_package(source_root, manifest, package, PublicationKind::Component)
+            .map(Some);
     }
+    if source_root.join("service.yaml").is_file() && is_targetless(source_root, manifest) {
+        return classify_package(source_root, manifest, package, PublicationKind::Preset).map(Some);
+    }
+    Ok(None)
 }
 
 fn capture_project_source(
@@ -2111,6 +2083,25 @@ fn capture_path_dependencies(
                         .cloned()
                         .unwrap_or_else(|| staging_root.to_owned());
                     let staged = if let Some(staged) = state.locations.get(&canonical) {
+                        if canonical == workspace_root {
+                            let staged_manifest = staged_workspace_manifest.ok_or_else(|| {
+                                PublicationError::CaptureSource {
+                                    path: manifest_path.clone(),
+                                    source: io::Error::other(
+                                        "workspace root package has no captured workspace manifest",
+                                    ),
+                                }
+                            })?;
+                            let manifest_bytes = fs::read(staged_manifest).map_err(|source| {
+                                PublicationError::CaptureSource {
+                                    path: staged_manifest.to_owned(),
+                                    source,
+                                }
+                            })?;
+                            validate_cargo_config(&canonical.join(".cargo"))?;
+                            copy_tree(&canonical, staged, false)?;
+                            write_staged_file(staged_manifest, &manifest_bytes)?;
+                        }
                         staged.clone()
                     } else {
                         let relative = canonical
@@ -2124,10 +2115,8 @@ fn capture_path_dependencies(
                             })?;
                         let staged = owner_staging_root.join(relative);
                         state.locations.insert(canonical.clone(), staged.clone());
-                        if !staged.exists() {
-                            validate_cargo_config(&canonical.join(".cargo"))?;
-                            copy_tree(&canonical, &staged, false)?;
-                        }
+                        validate_cargo_config(&canonical.join(".cargo"))?;
+                        copy_tree(&canonical, &staged, false)?;
                         staged
                     };
                     (
@@ -2157,10 +2146,8 @@ fn capture_path_dependencies(
                             })?;
                         let staged = staging_root.join(relative);
                         state.locations.insert(canonical.clone(), staged.clone());
-                        if !staged.exists() {
-                            validate_cargo_config(&canonical.join(".cargo"))?;
-                            copy_tree(&canonical, &staged, false)?;
-                        }
+                        validate_cargo_config(&canonical.join(".cargo"))?;
+                        copy_tree(&canonical, &staged, false)?;
                         staged
                     } else {
                         let digest = digest_source_tree(&canonical)?;
@@ -3691,8 +3678,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unclassified_rust_package_is_not_silently_published_as_a_service()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn a_library_cannot_be_published_as_a_service() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
@@ -3708,28 +3694,29 @@ mod tests {
             path: Some(directory.path().to_owned()),
             dry_run: true,
         };
-        let error = select_package(&options).expect_err("an unclassified library must fail");
+        let error =
+            select_package(&options).expect_err("a library selected as a service must fail");
         assert!(matches!(
             error,
-            Error::Publication(PublicationError::MissingPackageKind { .. })
+            Error::Publication(PublicationError::InvalidPackageShape { .. })
         ));
         Ok(())
     }
 
     #[test]
-    fn owner_publication_retains_an_explicit_library_role() -> Result<(), Box<dyn std::error::Error>>
+    fn publication_uses_the_explicit_library_command_role() -> Result<(), Box<dyn std::error::Error>>
     {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
-            "[package]\nname = \"owned-library\"\nversion = \"0.1.0\"\nedition = \"2024\"\ndescription = \"Owned library\"\nlicense = \"MIT\"\n\n[package.metadata.phoxal]\nkind = \"library\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+            "[package]\nname = \"owned-library\"\nversion = \"0.1.0\"\nedition = \"2024\"\ndescription = \"Owned library\"\nlicense = \"MIT\"\n\n[lib]\npath = \"src/lib.rs\"\n",
         )?;
         write(
             &directory.path().join("src/lib.rs"),
             "pub struct Library;\n",
         )?;
         let result = prepare_publication(&PublicationOptions {
-            kind: PublicationKind::Package,
+            kind: PublicationKind::Library,
             name: "owned-library".to_owned(),
             path: Some(directory.path().to_owned()),
             dry_run: true,
@@ -3764,7 +3751,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
-            "[package]\nname = \"bin-only-service\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[[bin]]\nname = \"bin-only-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"bin-only-service\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[[bin]]\nname = \"bin-only-service\"\npath = \"src/main.rs\"\n",
         )?;
         write(&directory.path().join("src/main.rs"), "fn main() {}\n")?;
         let error = select_package(&PublicationOptions {
@@ -3962,7 +3949,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         write(
             &directory.path().join("Cargo.toml"),
-            "[package]\nname = \"example-service\"\nversion = \"0.2.0\"\nedition = \"2024\"\ndescription = \"Example service\"\nlicense = \"MIT\"\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"example-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"example-service\"\nversion = \"0.2.0\"\nedition = \"2024\"\ndescription = \"Example service\"\nlicense = \"MIT\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"example-service\"\npath = \"src/main.rs\"\n",
         )?;
         write(
             &directory.path().join("src/lib.rs"),
@@ -3992,7 +3979,7 @@ mod tests {
         )?;
         write(
             &directory.path().join("services/example/Cargo.toml"),
-            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense.workspace = true\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"workspace-service\"\nversion = \"0.3.0\"\nedition.workspace = true\nlicense.workspace = true\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"workspace-service\"\npath = \"src/main.rs\"\n",
         )?;
         write(
             &directory.path().join("services/example/src/main.rs"),
@@ -4006,6 +3993,36 @@ mod tests {
             kind: PublicationKind::Service,
             name: "workspace-service".to_owned(),
             path: Some(directory.path().join("services/example")),
+            dry_run: true,
+        })?;
+        assert!(result.files().iter().any(|file| file.path == "src/main.rs"));
+        Ok(())
+    }
+
+    #[test]
+    fn nested_tool_publication_captures_its_parent_package_dependency()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        write(
+            &directory.path().join("Cargo.toml"),
+            "[package]\nname = \"itoa\"\nversion = \"1.0.18\"\nedition = \"2024\"\nlicense = \"MIT OR Apache-2.0\"\npublish = false\n\n[workspace]\nmembers = [\"cargo\"]\n",
+        )?;
+        write(
+            &directory.path().join("src/lib.rs"),
+            "pub struct Buffer;\nimpl Buffer { pub const fn new() -> Self { Self } }\n",
+        )?;
+        write(
+            &directory.path().join("cargo/Cargo.toml"),
+            "[package]\nname = \"publication-tool\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = \"MIT\"\nworkspace = \"..\"\n\n[[bin]]\nname = \"publication-tool\"\npath = \"src/main.rs\"\n\n[dependencies]\npublication-sdk = { package = \"itoa\", path = \"..\", version = \"1.0.18\" }\n",
+        )?;
+        write(
+            &directory.path().join("cargo/src/main.rs"),
+            "fn main() { let _ = publication_sdk::Buffer::new(); }\n",
+        )?;
+        let result = prepare_publication(&PublicationOptions {
+            kind: PublicationKind::Tool,
+            name: "publication-tool".to_owned(),
+            path: Some(directory.path().join("cargo")),
             dry_run: true,
         })?;
         assert!(result.files().iter().any(|file| file.path == "src/main.rs"));
@@ -4042,7 +4059,7 @@ mod tests {
         write(&directory.path().join("Cargo.toml"), &workspace_manifest)?;
         write(
             &directory.path().join("services/example/Cargo.toml"),
-            "[package]\nname = \"publication-workspace-service\"\nversion = \"0.1.0\"\nedition.workspace = true\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"publication-workspace-service\"\npath = \"src/main.rs\"\n\n[dependencies]\npublication-helper = { workspace = true }\n",
+            "[package]\nname = \"publication-workspace-service\"\nversion = \"0.1.0\"\nedition.workspace = true\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"publication-workspace-service\"\npath = \"src/main.rs\"\n\n[dependencies]\npublication-helper = { workspace = true }\n",
         )?;
         write(
             &directory.path().join("services/example/src/lib.rs"),
@@ -4154,7 +4171,7 @@ mod tests {
         )?;
         write(
             &directory.path().join("service/Cargo.toml"),
-            "[package]\nname = \"publication-nested-workspace-service\"\nversion = \"0.1.0\"\nedition.workspace = true\n\n[package.metadata.phoxal]\nkind = \"service\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"publication-nested-workspace-service\"\npath = \"src/main.rs\"\n\n[dependencies]\nexternal-helper = { workspace = true }\n",
+            "[package]\nname = \"publication-nested-workspace-service\"\nversion = \"0.1.0\"\nedition.workspace = true\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"publication-nested-workspace-service\"\npath = \"src/main.rs\"\n\n[dependencies]\nexternal-helper = { workspace = true }\n",
         )?;
         write(
             &directory.path().join("service/src/lib.rs"),

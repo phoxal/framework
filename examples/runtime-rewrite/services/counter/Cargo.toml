@@ -6,9 +6,6 @@ rust-version = "1.88"
 license = "AGPL-3.0-only"
 description = "A small service-owned Runtime example."
 
-[package.metadata.phoxal]
-kind = "service"
-
 [lib]
 name = "example_counter_service"
 path = "src/lib.rs"
